@@ -13,7 +13,6 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { Message } from './Message';
 import { ArtifactViewer } from './ArtifactViewer';
-import { IntegrationsPanel } from './IntegrationsPanel';
 import type { ChatMessage as APIChatMessage } from '../api/client';
 import { getChatHistory } from '../api/client';
 
@@ -32,20 +31,61 @@ interface Artifact {
   data: Record<string, unknown>;
 }
 
+interface Integration {
+  id: string;
+  name: string;
+  connected: boolean;
+  icon: JSX.Element;
+}
+
 interface ChatProps {
   userId: string;
   customerId?: string;
+  onLogout: () => void;
 }
 
-export function Chat({ userId, customerId }: ChatProps): JSX.Element {
+export function Chat({ userId, customerId, onLogout }: ChatProps): JSX.Element {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState<string>('');
   const [currentArtifact, setCurrentArtifact] = useState<Artifact | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
-  const [showIntegrations, setShowIntegrations] = useState<boolean>(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const streamingMessageIdRef = useRef<string | null>(null);
+
+  // Mock integrations state - in production, fetch from API
+  const [integrations] = useState<Integration[]>([
+    {
+      id: 'hubspot',
+      name: 'HubSpot',
+      connected: true,
+      icon: (
+        <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M17.5 14.5c0 .82-.67 1.5-1.5 1.5s-1.5-.68-1.5-1.5.67-1.5 1.5-1.5 1.5.68 1.5 1.5z"/>
+        </svg>
+      ),
+    },
+    {
+      id: 'slack',
+      name: 'Slack',
+      connected: true,
+      icon: (
+        <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M5.042 15.165a2.528 2.528 0 0 1-2.52 2.523A2.528 2.528 0 0 1 0 15.165a2.527 2.527 0 0 1 2.522-2.52h2.52v2.52z"/>
+        </svg>
+      ),
+    },
+    {
+      id: 'google_calendar',
+      name: 'Calendar',
+      connected: false,
+      icon: (
+        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+        </svg>
+      ),
+    },
+  ]);
 
   const { sendMessage, lastMessage, isConnected, connectionState } = useWebSocket(
     `/ws/chat/${userId}`
@@ -141,7 +181,7 @@ export function Chat({ userId, customerId }: ChatProps): JSX.Element {
 
   const handleLogout = (): void => {
     localStorage.removeItem('user_id');
-    window.location.reload();
+    onLogout();
   };
 
   if (isLoading) {
@@ -157,7 +197,63 @@ export function Chat({ userId, customerId }: ChatProps): JSX.Element {
 
   return (
     <div className="min-h-screen flex">
-      {/* Sidebar for artifacts */}
+      {/* Left sidebar - Integrations */}
+      <aside className="w-16 bg-surface-900 border-r border-surface-800 flex flex-col items-center py-4">
+        {/* Logo */}
+        <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-primary-500 to-primary-700 flex items-center justify-center mb-6">
+          <svg className="w-5 h-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
+          </svg>
+        </div>
+
+        {/* Connected Integrations */}
+        <div className="flex-1 flex flex-col gap-2">
+          {integrations.map((integration) => (
+            <button
+              key={integration.id}
+              className={`w-10 h-10 rounded-lg flex items-center justify-center transition-colors relative group ${
+                integration.connected 
+                  ? 'bg-surface-800 text-surface-200 hover:bg-surface-700' 
+                  : 'bg-surface-800/50 text-surface-500 hover:bg-surface-800'
+              }`}
+              title={integration.name}
+            >
+              {integration.icon}
+              {integration.connected && (
+                <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 bg-emerald-500 rounded-full border-2 border-surface-900" />
+              )}
+              {/* Tooltip */}
+              <span className="absolute left-full ml-2 px-2 py-1 bg-surface-800 text-surface-200 text-xs rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none">
+                {integration.name}
+                {!integration.connected && ' (not connected)'}
+              </span>
+            </button>
+          ))}
+          
+          {/* Add integration button */}
+          <button 
+            className="w-10 h-10 rounded-lg bg-surface-800/50 text-surface-500 hover:bg-surface-800 hover:text-surface-300 flex items-center justify-center transition-colors"
+            title="Add integration"
+          >
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+            </svg>
+          </button>
+        </div>
+
+        {/* Logout button at bottom */}
+        <button
+          onClick={handleLogout}
+          className="w-10 h-10 rounded-lg text-surface-500 hover:bg-surface-800 hover:text-surface-300 flex items-center justify-center transition-colors"
+          title="Logout"
+        >
+          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+          </svg>
+        </button>
+      </aside>
+
+      {/* Artifact sidebar */}
       {currentArtifact && (
         <div className="w-96 border-r border-surface-800 bg-surface-900 p-4">
           <div className="flex items-center justify-between mb-4">
@@ -169,12 +265,7 @@ export function Chat({ userId, customerId }: ChatProps): JSX.Element {
               className="text-surface-400 hover:text-surface-200"
             >
               <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M6 18L18 6M6 6l12 12"
-                />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
               </svg>
             </button>
           </div>
@@ -185,43 +276,13 @@ export function Chat({ userId, customerId }: ChatProps): JSX.Element {
       {/* Main chat area */}
       <div className="flex-1 flex flex-col">
         {/* Header */}
-        <header className="h-16 border-b border-surface-800 flex items-center justify-between px-6">
+        <header className="h-14 border-b border-surface-800 flex items-center justify-between px-6">
           <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-primary-500 to-primary-700 flex items-center justify-center">
-              <svg
-                className="w-4 h-4 text-white"
-                fill="none"
-                viewBox="0 0 24 24"
-                stroke="currentColor"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"
-                />
-              </svg>
-            </div>
-            <h1 className="text-lg font-semibold text-surface-100">Revenue Copilot</h1>
+            <h1 className="text-lg font-semibold text-surface-100">Revtops</h1>
           </div>
 
           <div className="flex items-center gap-4">
             <ConnectionStatus state={connectionState} />
-            <button
-              onClick={() => setShowIntegrations(true)}
-              className="text-surface-400 hover:text-surface-200 text-sm flex items-center gap-1"
-            >
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101" />
-              </svg>
-              Integrations
-            </button>
-            <button
-              onClick={handleLogout}
-              className="text-surface-400 hover:text-surface-200 text-sm"
-            >
-              Logout
-            </button>
           </div>
         </header>
 
@@ -276,13 +337,6 @@ export function Chat({ userId, customerId }: ChatProps): JSX.Element {
         </div>
       </div>
 
-      {/* Integrations Panel */}
-      {showIntegrations && customerId && (
-        <IntegrationsPanel
-          customerId={customerId}
-          onClose={() => setShowIntegrations(false)}
-        />
-      )}
     </div>
   );
 }

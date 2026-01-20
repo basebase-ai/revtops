@@ -1,4 +1,4 @@
-# Revenue Copilot
+# Revtops: Your Revenue Copilot  
 
 AI-powered revenue operations assistant that connects to HubSpot, Slack, Google Calendar (and Salesforce), normalizes data, and enables natural language querying and analysis through a chat interface.
 

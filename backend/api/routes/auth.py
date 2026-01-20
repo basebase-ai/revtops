@@ -232,8 +232,8 @@ async def nango_callback(
         if integration:
             integration.is_active = True
             integration.last_error = None
-                integration.nango_connection_id = connection_id
-                integration.updated_at = datetime.utcnow()
+            integration.nango_connection_id = connection_id
+            integration.updated_at = datetime.utcnow()
         else:
             integration = Integration(
                 customer_id=customer_uuid,
