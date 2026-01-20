@@ -1,0 +1,39 @@
+# Web Framework
+fastapi==0.109.2
+uvicorn[standard]==0.27.1
+websockets==12.0
+
+# Database
+sqlalchemy[asyncio]==2.0.25
+asyncpg==0.29.0
+psycopg2-binary==2.9.9
+alembic==1.13.1
+
+# Redis
+redis==5.0.1
+aioredis==2.0.1
+
+# HTTP Client
+httpx==0.26.0
+
+# Salesforce
+simple-salesforce==1.12.5
+
+# Anthropic
+anthropic==0.18.1
+
+# Configuration
+pydantic==2.6.1
+pydantic-settings==2.2.1
+python-dotenv==1.0.1
+
+# Security
+cryptography==42.0.2
+python-jose[cryptography]==3.3.0
+
+# Utilities
+structlog==24.1.0
+
+# Testing
+pytest>=7.0.0,<8.0.0
+pytest-asyncio==0.23.4
