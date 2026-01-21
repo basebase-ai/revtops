@@ -1,0 +1,183 @@
+/**
+ * User profile management panel (slide-out).
+ * 
+ * Features:
+ * - View/edit profile info
+ * - Change avatar
+ * - Sign out
+ */
+
+import { useState } from 'react';
+import type { UserProfile } from './AppLayout';
+
+interface ProfilePanelProps {
+  user: UserProfile;
+  onClose: () => void;
+  onLogout: () => void;
+}
+
+export function ProfilePanel({ user, onClose, onLogout }: ProfilePanelProps): JSX.Element {
+  const [name, setName] = useState(user.name ?? '');
+  const [isSaving, setIsSaving] = useState(false);
+  const [avatarPreview, setAvatarPreview] = useState<string | null>(user.avatarUrl);
+
+  const handleSave = async (): Promise<void> => {
+    setIsSaving(true);
+    try {
+      // TODO: Call update profile API
+      await new Promise((r) => setTimeout(r, 1000));
+      alert('Profile updated!');
+    } catch (error) {
+      console.error('Failed to save:', error);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleAvatarChange = (e: React.ChangeEvent<HTMLInputElement>): void => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setAvatarPreview(reader.result as string);
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  const handleLogout = (): void => {
+    onClose();
+    onLogout();
+  };
+
+  return (
+    <>
+      {/* Backdrop */}
+      <div
+        className="fixed inset-0 bg-black/50 z-40"
+        onClick={onClose}
+      />
+
+      {/* Panel */}
+      <div className="fixed right-0 top-0 bottom-0 w-full max-w-md bg-surface-900 border-l border-surface-800 z-50 flex flex-col shadow-2xl">
+        {/* Header */}
+        <header className="flex items-center justify-between px-6 py-4 border-b border-surface-800">
+          <h2 className="font-semibold text-surface-100">Profile</h2>
+          <button
+            onClick={onClose}
+            className="p-2 text-surface-400 hover:text-surface-200 hover:bg-surface-800 rounded-lg transition-colors"
+          >
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </header>
+
+        {/* Content */}
+        <div className="flex-1 overflow-y-auto p-6 space-y-6">
+          {/* Avatar Section */}
+          <div className="flex flex-col items-center">
+            <div className="relative">
+              {avatarPreview ? (
+                <img
+                  src={avatarPreview}
+                  alt={name || user.email}
+                  className="w-24 h-24 rounded-full object-cover"
+                />
+              ) : (
+                <div className="w-24 h-24 rounded-full bg-primary-600 flex items-center justify-center text-white font-bold text-3xl">
+                  {(name || user.email).charAt(0).toUpperCase()}
+                </div>
+              )}
+              <label className="absolute bottom-0 right-0 p-2 bg-surface-800 hover:bg-surface-700 rounded-full cursor-pointer transition-colors">
+                <svg className="w-4 h-4 text-surface-200" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
+                </svg>
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={handleAvatarChange}
+                  className="hidden"
+                />
+              </label>
+            </div>
+            <p className="text-sm text-surface-400 mt-3">
+              Click camera icon to change photo
+            </p>
+          </div>
+
+          {/* Form Fields */}
+          <div className="space-y-4">
+            <div>
+              <label className="block text-sm font-medium text-surface-200 mb-2">
+                Display name
+              </label>
+              <input
+                type="text"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="Your name"
+                className="input-field"
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-surface-200 mb-2">
+                Email
+              </label>
+              <input
+                type="email"
+                value={user.email}
+                disabled
+                className="input-field opacity-60 cursor-not-allowed"
+              />
+              <p className="text-xs text-surface-500 mt-1">
+                Email cannot be changed
+              </p>
+            </div>
+          </div>
+
+          {/* Save Button */}
+          <button
+            onClick={() => void handleSave()}
+            disabled={isSaving}
+            className="w-full btn-primary disabled:opacity-50"
+          >
+            {isSaving ? 'Saving...' : 'Save changes'}
+          </button>
+
+          {/* Account Info */}
+          <div className="pt-4 border-t border-surface-800">
+            <h3 className="text-sm font-medium text-surface-200 mb-3">Account</h3>
+            <div className="card p-4 space-y-3 text-sm">
+              <div className="flex justify-between">
+                <span className="text-surface-400">Account ID</span>
+                <span className="text-surface-300 font-mono text-xs">
+                  {user.id.slice(0, 8)}...
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-surface-400">Sign-in method</span>
+                <span className="text-surface-300">Google OAuth</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div className="p-6 border-t border-surface-800">
+          <button
+            onClick={handleLogout}
+            className="w-full flex items-center justify-center gap-2 px-4 py-3 text-red-400 hover:text-red-300 hover:bg-red-500/10 rounded-lg transition-colors font-medium"
+          >
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+            </svg>
+            Sign out
+          </button>
+        </div>
+      </div>
+    </>
+  );
+}

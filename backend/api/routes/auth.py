@@ -18,7 +18,7 @@ from datetime import datetime
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Response
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Response
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -188,12 +188,13 @@ async def nango_callback(
     provider: str,
     connection_id: str,
     user_id: str,
+    background_tasks: BackgroundTasks,
 ) -> dict[str, str]:
     """
     Handle callback after Nango OAuth completes.
 
     This is called by the frontend after Nango redirects back.
-    We record the integration in our database.
+    We record the integration in our database and trigger initial sync.
     """
     try:
         user_uuid = UUID(user_id)
@@ -247,7 +248,10 @@ async def nango_callback(
 
         await session.commit()
 
-    return {"status": "connected", "provider": provider}
+    # Trigger initial sync in the background
+    background_tasks.add_task(run_initial_sync, str(org_uuid), provider)
+
+    return {"status": "connected", "provider": provider, "sync_started": True}
 
 
 @router.get("/integrations", response_model=IntegrationsListResponse)
@@ -390,3 +394,47 @@ async def register_user(request: CreateUserRequest) -> CreateUserResponse:
             user_id=str(user.id),
             organization_id=str(organization.id),
         )
+
+
+# =============================================================================
+# Background Sync Helper
+# =============================================================================
+
+
+async def run_initial_sync(organization_id: str, provider: str) -> None:
+    """
+    Run initial data sync after OAuth connection.
+    
+    This runs in the background so the user isn't blocked waiting.
+    """
+    from connectors.hubspot import HubSpotConnector
+    from connectors.salesforce import SalesforceConnector
+    from connectors.slack import SlackConnector
+    from connectors.google_calendar import GoogleCalendarConnector
+
+    connectors = {
+        "hubspot": HubSpotConnector,
+        "salesforce": SalesforceConnector,
+        "slack": SlackConnector,
+        "google_calendar": GoogleCalendarConnector,
+    }
+
+    connector_class = connectors.get(provider)
+    if not connector_class:
+        print(f"No connector for provider: {provider}")
+        return
+
+    try:
+        print(f"Starting initial sync for {provider} (org: {organization_id})")
+        connector = connector_class(organization_id)
+        counts = await connector.sync_all()
+        await connector.update_last_sync()
+        print(f"Initial sync complete for {provider}: {counts}")
+    except Exception as e:
+        print(f"Initial sync failed for {provider}: {str(e)}")
+        # Record the error
+        try:
+            connector = connector_class(organization_id)
+            await connector.record_error(str(e))
+        except Exception:
+            pass  # Ignore errors while recording error

@@ -1,12 +1,11 @@
 /**
  * Main application component.
  *
- * Handles routing between:
- * - Landing page (public)
- * - Auth (sign in / sign up)
- * - Company setup (for new companies)
- * - Onboarding (connect data sources)
- * - Chat (main app)
+ * Handles:
+ * - Authentication flow (landing → auth → onboarding → app)
+ * - Work email validation
+ * - Company setup for new organizations
+ * - Main app layout routing
  */
 
 import { useEffect, useState } from 'react';
@@ -16,34 +15,56 @@ import { Landing } from './components/Landing';
 import { Auth } from './components/Auth';
 import { CompanySetup } from './components/CompanySetup';
 import { Onboarding } from './components/Onboarding';
-import { Chat } from './components/Chat';
+import { AppLayout } from './components/AppLayout';
 import { OAuthCallback } from './components/OAuthCallback';
 import type { User } from '@supabase/supabase-js';
+import type { UserProfile, OrganizationInfo } from './components/AppLayout';
 
-type Screen = 'landing' | 'auth' | 'blocked-email' | 'company-setup' | 'onboarding' | 'chat';
+type Screen = 'landing' | 'auth' | 'blocked-email' | 'company-setup' | 'onboarding' | 'app';
 
-interface UserInfo {
+interface UserState {
   id: string;
   email: string;
   emailDomain: string;
   name: string | null;
+  avatarUrl: string | null;
   companyId: string | null;
   companyName: string | null;
 }
 
 // Simple in-memory store for companies (MVP - in production, use API)
-function getStoredCompanies(): Record<string, string> {
+interface StoredCompany {
+  id: string; // UUID
+  name: string;
+  memberCount: number;
+}
+
+function generateUUID(): string {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
+
+function getStoredCompanies(): Record<string, StoredCompany> {
   const stored = localStorage.getItem('revtops_companies');
   return stored ? JSON.parse(stored) : {};
 }
 
-function storeCompany(domain: string, name: string): void {
+function storeCompany(domain: string, name: string): StoredCompany {
   const companies = getStoredCompanies();
-  companies[domain] = name;
+  const company: StoredCompany = {
+    id: generateUUID(),
+    name,
+    memberCount: 1,
+  };
+  companies[domain] = company;
   localStorage.setItem('revtops_companies', JSON.stringify(companies));
+  return company;
 }
 
-function getCompanyByDomain(domain: string): string | null {
+function getCompanyByDomain(domain: string): StoredCompany | null {
   const companies = getStoredCompanies();
   return companies[domain] || null;
 }
@@ -51,13 +72,12 @@ function getCompanyByDomain(domain: string): string | null {
 function App(): JSX.Element {
   const [screen, setScreen] = useState<Screen>('landing');
   const [isLoading, setIsLoading] = useState<boolean>(true);
-  const [user, setUser] = useState<UserInfo | null>(null);
+  const [user, setUser] = useState<UserState | null>(null);
 
   // Check auth status on mount
   useEffect(() => {
     const checkAuth = async (): Promise<void> => {
       try {
-        // Check Supabase session
         const { data: { session } } = await supabase.auth.getSession();
 
         if (session?.user) {
@@ -66,16 +86,16 @@ function App(): JSX.Element {
           // Check legacy localStorage auth
           const storedUserId = localStorage.getItem('user_id');
           if (storedUserId) {
-            // For backwards compatibility with existing MVP auth
             setUser({
               id: storedUserId,
               email: 'user@example.com',
               emailDomain: 'example.com',
               name: null,
-              companyId: null,
-              companyName: null,
+              avatarUrl: null,
+              companyId: 'example.com',
+              companyName: 'Example Company',
             });
-            setScreen('chat');
+            setScreen('app');
           }
         }
       } catch (error) {
@@ -85,7 +105,6 @@ function App(): JSX.Element {
       }
     };
 
-    // Listen for auth changes
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       async (event, session) => {
         if (event === 'SIGNED_IN' && session?.user) {
@@ -110,13 +129,19 @@ function App(): JSX.Element {
     const email = supabaseUser.email ?? '';
     const emailDomain = getEmailDomain(email);
 
-    // Check if personal email (for OAuth users who bypassed frontend validation)
+    // Get avatar from OAuth metadata
+    const avatarUrl = supabaseUser.user_metadata?.avatar_url ??
+      supabaseUser.user_metadata?.picture ??
+      null;
+
+    // Check if personal email
     if (isPersonalEmail(email)) {
       setUser({
         id: supabaseUser.id,
         email,
         emailDomain,
-        name: supabaseUser.user_metadata?.name ?? null,
+        name: supabaseUser.user_metadata?.name ?? supabaseUser.user_metadata?.full_name ?? null,
+        avatarUrl,
         companyId: null,
         companyName: null,
       });
@@ -131,13 +156,13 @@ function App(): JSX.Element {
       id: supabaseUser.id,
       email,
       emailDomain,
-      name: supabaseUser.user_metadata?.name ?? null,
-      companyId: existingCompany ? emailDomain : null,
-      companyName: existingCompany,
+      name: supabaseUser.user_metadata?.name ?? supabaseUser.user_metadata?.full_name ?? null,
+      avatarUrl,
+      companyId: existingCompany?.id ?? null,
+      companyName: existingCompany?.name ?? null,
     });
 
     if (!existingCompany) {
-      // New company - need to set it up
       setScreen('company-setup');
       return;
     }
@@ -145,7 +170,7 @@ function App(): JSX.Element {
     // Check if user has completed onboarding
     const completedOnboarding = localStorage.getItem(`onboarding_${supabaseUser.id}`);
     if (completedOnboarding) {
-      setScreen('chat');
+      setScreen('app');
     } else {
       setScreen('onboarding');
     }
@@ -154,17 +179,14 @@ function App(): JSX.Element {
   const handleCompanySetup = (companyName: string): void => {
     if (!user) return;
 
-    // Store the company
-    storeCompany(user.emailDomain, companyName);
+    const company = storeCompany(user.emailDomain, companyName);
 
-    // Update user with company info
     setUser({
       ...user,
-      companyId: user.emailDomain,
-      companyName,
+      companyId: company.id,
+      companyName: company.name,
     });
 
-    // Proceed to onboarding
     setScreen('onboarding');
   };
 
@@ -179,14 +201,14 @@ function App(): JSX.Element {
     if (user) {
       localStorage.setItem(`onboarding_${user.id}`, 'true');
     }
-    setScreen('chat');
+    setScreen('app');
   };
 
   const handleOnboardingSkip = (): void => {
     if (user) {
       localStorage.setItem(`onboarding_${user.id}`, 'true');
     }
-    setScreen('chat');
+    setScreen('app');
   };
 
   // Handle OAuth callback route
@@ -221,7 +243,7 @@ function App(): JSX.Element {
         <Auth
           onBack={() => setScreen('landing')}
           onSuccess={() => {
-            // Auth component handles the redirect via onAuthStateChange
+            // Auth component handles redirect via onAuthStateChange
           }}
         />
       );
@@ -240,7 +262,7 @@ function App(): JSX.Element {
               Revtops is designed for teams. Please sign in with your work email address
               (not {user?.emailDomain}).
             </p>
-            <button onClick={handleLogout} className="btn-primary">
+            <button onClick={() => void handleLogout()} className="btn-primary">
               Sign in with work email
             </button>
           </div>
@@ -252,7 +274,7 @@ function App(): JSX.Element {
         <CompanySetup
           emailDomain={user?.emailDomain ?? ''}
           onComplete={handleCompanySetup}
-          onBack={handleLogout}
+          onBack={() => void handleLogout()}
         />
       );
 
@@ -264,14 +286,36 @@ function App(): JSX.Element {
         />
       );
 
-    case 'chat':
+    case 'app': {
+      if (!user || !user.companyId) {
+        return <Landing onGetStarted={() => setScreen('auth')} />;
+      }
+
+      // Look up company by domain to get member count
+      const company = getCompanyByDomain(user.emailDomain);
+
+      const userProfile: UserProfile = {
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        avatarUrl: user.avatarUrl,
+      };
+
+      const organization: OrganizationInfo = {
+        id: user.companyId, // This is now a UUID
+        name: user.companyName ?? 'My Company',
+        logoUrl: null, // TODO: Store and retrieve logo
+        memberCount: company?.memberCount ?? 1,
+      };
+
       return (
-        <Chat
-          userId={user?.id ?? ''}
-          organizationId={user?.companyId ?? undefined}
-          onLogout={handleLogout}
+        <AppLayout
+          user={userProfile}
+          organization={organization}
+          onLogout={() => void handleLogout()}
         />
       );
+    }
 
     default:
       return <Landing onGetStarted={() => setScreen('auth')} />;
