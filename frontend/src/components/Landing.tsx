@@ -101,17 +101,22 @@ export function Landing({ onGetStarted }: LandingProps): JSX.Element {
               <div className="p-6 space-y-4">
                 <div className="flex gap-3">
                   <div className="w-8 h-8 rounded-full bg-surface-700 flex-shrink-0" />
-                  <div className="bg-surface-800 rounded-2xl rounded-tl-sm px-4 py-3 max-w-md">
-                    <p className="text-surface-200">Show me all deals closing this month over $50k</p>
+                  <div className="bg-surface-800 rounded-2xl rounded-tl-sm px-4 py-3 max-w-lg">
+                    <p className="text-surface-200">What should I prioritize this week for my pipeline?</p>
                   </div>
                 </div>
                 <div className="flex gap-3 justify-end">
-                  <div className="bg-primary-600/20 border border-primary-500/30 rounded-2xl rounded-tr-sm px-4 py-3 max-w-lg">
-                    <p className="text-surface-200 mb-2">Found 8 deals closing in January over $50k:</p>
-                    <div className="text-sm text-surface-400 space-y-1">
-                      <p>• Acme Corp - $125,000 (Negotiation)</p>
-                      <p>• TechStart Inc - $89,000 (Proposal)</p>
-                      <p>• Global Systems - $67,500 (Contract)</p>
+                  <div className="bg-primary-600/20 border border-primary-500/30 rounded-2xl rounded-tr-sm px-4 py-3 max-w-xl">
+                    <div className="flex gap-2 mb-3 flex-wrap">
+                      <span className="px-2 py-0.5 text-xs rounded-full bg-orange-500/20 text-orange-400 border border-orange-500/30">HubSpot</span>
+                      <span className="px-2 py-0.5 text-xs rounded-full bg-purple-500/20 text-purple-400 border border-purple-500/30">Slack</span>
+                      <span className="px-2 py-0.5 text-xs rounded-full bg-blue-500/20 text-blue-400 border border-blue-500/30">Calendar</span>
+                    </div>
+                    <p className="text-surface-200 mb-2">Based on your data, here are your top priorities:</p>
+                    <div className="text-sm text-surface-400 space-y-2">
+                      <p><span className="text-orange-400">🔥</span> <strong className="text-surface-300">Acme Corp ($125k)</strong> - Contract expires Friday. Sarah mentioned budget approval in #deals yesterday.</p>
+                      <p><span className="text-yellow-400">⚠️</span> <strong className="text-surface-300">TechStart ($89k)</strong> - No meeting scheduled. Last contact was 12 days ago.</p>
+                      <p><span className="text-emerald-400">✓</span> <strong className="text-surface-300">Global Systems ($67k)</strong> - Demo call tomorrow at 2pm. They asked about API pricing in Slack.</p>
                     </div>
                   </div>
                   <div className="w-8 h-8 rounded-full bg-gradient-to-br from-primary-500 to-primary-700 flex-shrink-0 flex items-center justify-center">

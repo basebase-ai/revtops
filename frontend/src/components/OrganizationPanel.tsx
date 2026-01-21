@@ -9,7 +9,7 @@
  */
 
 import { useState } from 'react';
-import type { OrganizationInfo } from './AppLayout';
+import type { OrganizationInfo, UserProfile } from './AppLayout';
 
 interface TeamMember {
   id: string;
@@ -17,30 +17,29 @@ interface TeamMember {
   email: string;
   role: 'admin' | 'member';
   avatarUrl: string | null;
-  joinedAt: Date;
 }
 
 interface OrganizationPanelProps {
   organization: OrganizationInfo;
+  currentUser: UserProfile;
   onClose: () => void;
 }
 
-export function OrganizationPanel({ organization, onClose }: OrganizationPanelProps): JSX.Element {
+export function OrganizationPanel({ organization, currentUser, onClose }: OrganizationPanelProps): JSX.Element {
   const [activeTab, setActiveTab] = useState<'team' | 'billing' | 'settings'>('team');
   const [inviteEmail, setInviteEmail] = useState('');
   const [isInviting, setIsInviting] = useState(false);
 
-  // Mock team data
-  const [teamMembers] = useState<TeamMember[]>([
+  // Current user as first team member (TODO: fetch full team from API)
+  const teamMembers: TeamMember[] = [
     {
-      id: '1',
-      name: 'You',
-      email: 'admin@company.com',
+      id: currentUser.id,
+      name: currentUser.name ?? 'You',
+      email: currentUser.email,
       role: 'admin',
-      avatarUrl: null,
-      joinedAt: new Date(Date.now() - 1000 * 60 * 60 * 24 * 30),
+      avatarUrl: currentUser.avatarUrl,
     },
-  ]);
+  ];
 
   const handleInvite = async (): Promise<void> => {
     if (!inviteEmail.trim()) return;
@@ -209,7 +208,7 @@ export function OrganizationPanel({ organization, onClose }: OrganizationPanelPr
                   </div>
                   <div className="flex justify-between text-sm">
                     <span className="text-surface-400">Billing email</span>
-                    <span className="text-surface-200">admin@company.com</span>
+                    <span className="text-surface-200">{currentUser.email}</span>
                   </div>
                   <button className="w-full mt-2 px-4 py-2 text-sm font-medium text-primary-400 border border-primary-500/30 hover:bg-primary-500/10 rounded-lg transition-colors">
                     Add payment method

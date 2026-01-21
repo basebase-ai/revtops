@@ -9,6 +9,7 @@ Responsibilities:
 - Save conversation history
 """
 
+from datetime import datetime
 from fastapi import WebSocket, WebSocketDisconnect
 from uuid import UUID
 
@@ -36,16 +37,20 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str) -> None:
     async with get_session() as session:
         user = await session.get(User, user_uuid)
         
-        # For MVP: if user doesn't exist in our DB yet (came from Supabase Auth),
-        # we still allow the connection but with limited functionality
+        # Auto-create user if they don't exist (came from Supabase Auth)
         if not user:
-            # Create a temporary orchestrator without organization context
-            # In production, this should sync with Supabase or require proper onboarding
-            orchestrator = ChatOrchestrator(
-                user_id=str(user_uuid), organization_id=None
+            user = User(
+                id=user_uuid,
+                email=f"user-{user_id[:8]}@placeholder.local",  # Placeholder, updated on sync
+                name=None,
+                last_login=datetime.utcnow(),
             )
-        elif user.organization_id is None:
-            # User exists but has no organization yet
+            session.add(user)
+            await session.commit()
+            await session.refresh(user)
+            print(f"Auto-created user {user_uuid} for WebSocket connection")
+        
+        if user.organization_id is None:
             orchestrator = ChatOrchestrator(
                 user_id=str(user.id), organization_id=None
             )

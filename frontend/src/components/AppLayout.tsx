@@ -195,6 +195,7 @@ export function AppLayout({ user, organization, onLogout }: AppLayoutProps): JSX
         {showOrgPanel && (
           <OrganizationPanel
             organization={organization}
+            currentUser={user}
             onClose={() => setShowOrgPanel(false)}
           />
         )}
