@@ -73,9 +73,9 @@ export function Landing({ onGetStarted }: LandingProps): JSX.Element {
                 <svg className="w-5 h-5 text-primary-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
                 </svg>
-                <span className="font-semibold text-surface-100">Chat & Insights</span>
+                <span className="font-semibold text-surface-100">Chat & Take Action</span>
               </div>
-              <p className="text-sm text-surface-400">Ask questions in plain English. Get instant answers about your pipeline, deals, and performance.</p>
+              <p className="text-sm text-surface-400">Ask questions, get insights, and update your CRM—add contacts, update deals, all via chat.</p>
             </div>
             <div className="flex-1 p-4 rounded-xl border border-surface-700 bg-surface-900/30 text-left">
               <div className="flex items-center gap-2 mb-2">
@@ -169,7 +169,7 @@ export function Landing({ onGetStarted }: LandingProps): JSX.Element {
                 </svg>
               ),
               title: 'CRM Integration',
-              description: 'Connect HubSpot or Salesforce. Query deals, contacts, and pipeline in natural language.',
+              description: 'Connect HubSpot or Salesforce. Query, add, and update deals and contacts via chat.',
               color: 'from-orange-500 to-red-500',
             },
             {
@@ -226,7 +226,7 @@ export function Landing({ onGetStarted }: LandingProps): JSX.Element {
         <div className="grid md:grid-cols-4 gap-6">
           {[
             { step: '1', title: 'Connect your tools', desc: 'Link HubSpot, Slack, and Google Calendar with secure OAuth.' },
-            { step: '2', title: 'Ask anything', desc: 'Query your data using natural language. No SQL or dashboards needed.' },
+            { step: '2', title: 'Ask or update', desc: 'Query data and make changes using natural language—no SQL or forms needed.' },
             { step: '3', title: 'Get insights', desc: 'Receive instant answers, reports, and actionable recommendations.' },
             { step: '4', title: 'Automate workflows', desc: 'Build automations that keep your team focused on high-impact work.' },
           ].map((item, i) => (
