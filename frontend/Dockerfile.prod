@@ -33,15 +33,10 @@ FROM nginx:alpine
 # Copy built files
 COPY --from=builder /app/dist /usr/share/nginx/html
 
-# Copy nginx config template
-COPY nginx.conf /etc/nginx/templates/default.conf.template
-
-# Set default port (Railway provides PORT env var)
-ENV PORT=80
+# Copy nginx config (use port 8080 for Railway)
+COPY nginx.conf /etc/nginx/conf.d/default.conf
 
 # Expose port
-EXPOSE 80
+EXPOSE 8080
 
-# nginx:alpine image automatically runs envsubst on .template files
-# and outputs to /etc/nginx/conf.d/
 CMD ["nginx", "-g", "daemon off;"]
