@@ -24,11 +24,12 @@ app = FastAPI(title="Revenue Copilot API", version="1.0.0")
 cors_origins: list[str] = [
     "http://localhost:5173",  # Vite dev server
     "http://localhost:3000",
+    "https://revtops-frontend-production.up.railway.app",  # Railway production
 ]
 
-# Add production frontend URL from environment
+# Add production frontend URL from environment (if different)
 frontend_url = os.environ.get("FRONTEND_URL")
-if frontend_url:
+if frontend_url and frontend_url not in cors_origins:
     cors_origins.append(frontend_url)
 
 # For Railway deployments, allow the railway.app domain
