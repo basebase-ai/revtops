@@ -45,10 +45,9 @@ export function Landing({ onGetStarted }: LandingProps): JSX.Element {
 
       {/* Hero Section */}
       <section className="relative z-10 max-w-7xl mx-auto px-6 pt-20 pb-32">
-        <div 
-          className={`text-center transition-all duration-1000 ${
-            isVisible ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-8'
-          }`}
+        <div
+          className={`text-center transition-all duration-1000 ${isVisible ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-8'
+            }`}
         >
           <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-primary-500/10 border border-primary-500/20 text-primary-400 text-sm mb-6">
             <span className="relative flex h-2 w-2">
@@ -57,18 +56,16 @@ export function Landing({ onGetStarted }: LandingProps): JSX.Element {
             </span>
             AI-Powered Revenue Intelligence
           </div>
-          
+
           <h1 className="text-5xl md:text-7xl font-bold text-surface-50 mb-6 leading-tight">
-            Your Revenue Data,
+            Your Revenue Copilot
             <br />
-            <span className="bg-gradient-to-r from-primary-400 via-emerald-400 to-primary-400 bg-clip-text text-transparent">
-              One Conversation Away
-            </span>
           </h1>
-          
+
           <p className="text-xl text-surface-400 max-w-2xl mx-auto mb-10">
-            Connect your CRM, Slack, and calendar. Ask questions in plain English.
-            Get instant insights about your pipeline, deals, and team performance.
+            Connect your CRM, Slack, email, calendar, meeting notes, and more.
+            <br />
+            Ask questions in plain English and get instant insights about your pipeline, deals, and team performance.
           </p>
 
           <div className="flex flex-col sm:flex-row gap-4 justify-center">
@@ -88,10 +85,9 @@ export function Landing({ onGetStarted }: LandingProps): JSX.Element {
         </div>
 
         {/* Hero Visual */}
-        <div 
-          className={`mt-20 transition-all duration-1000 delay-300 ${
-            isVisible ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-8'
-          }`}
+        <div
+          className={`mt-20 transition-all duration-1000 delay-300 ${isVisible ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-8'
+            }`}
         >
           <div className="relative max-w-4xl mx-auto">
             <div className="absolute inset-0 bg-gradient-to-t from-surface-950 via-transparent to-transparent z-10 pointer-events-none" />
@@ -154,7 +150,7 @@ export function Landing({ onGetStarted }: LandingProps): JSX.Element {
             {
               icon: (
                 <svg className="w-6 h-6" viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M5.042 15.165a2.528 2.528 0 0 1-2.52 2.523A2.528 2.528 0 0 1 0 15.165a2.527 2.527 0 0 1 2.522-2.52h2.52v2.52zm1.271 0a2.527 2.527 0 0 1 2.521-2.52 2.527 2.527 0 0 1 2.521 2.52v6.313A2.528 2.528 0 0 1 8.834 24a2.528 2.528 0 0 1-2.521-2.522v-6.313z"/>
+                  <path d="M5.042 15.165a2.528 2.528 0 0 1-2.52 2.523A2.528 2.528 0 0 1 0 15.165a2.527 2.527 0 0 1 2.522-2.52h2.52v2.52zm1.271 0a2.527 2.527 0 0 1 2.521-2.52 2.527 2.527 0 0 1 2.521 2.52v6.313A2.528 2.528 0 0 1 8.834 24a2.528 2.528 0 0 1-2.521-2.522v-6.313z" />
                 </svg>
               ),
               title: 'Slack Integration',

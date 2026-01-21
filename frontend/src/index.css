@@ -52,6 +52,25 @@
            transition-all duration-150;
   }
 
+  .input {
+    @apply w-full px-4 py-3 bg-surface-800 text-surface-100 rounded-lg
+           border border-surface-700 placeholder-surface-500
+           focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent
+           transition-all duration-150;
+  }
+
+  /* Fix autofill styling for dark theme */
+  .input:-webkit-autofill,
+  .input:-webkit-autofill:hover,
+  .input:-webkit-autofill:focus,
+  .input-field:-webkit-autofill,
+  .input-field:-webkit-autofill:hover,
+  .input-field:-webkit-autofill:focus {
+    -webkit-box-shadow: 0 0 0 1000px theme('colors.surface.800') inset !important;
+    -webkit-text-fill-color: theme('colors.surface.100') !important;
+    caret-color: theme('colors.surface.100') !important;
+  }
+
   .card {
     @apply bg-surface-900 border border-surface-800 rounded-xl p-6;
   }

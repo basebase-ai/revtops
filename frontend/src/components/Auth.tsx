@@ -53,7 +53,7 @@ export function Auth({ onBack, onSuccess }: AuthProps): JSX.Element {
     }
   };
 
-  const handleOAuthSignIn = async (provider: 'google' | 'github') => {
+  const handleOAuthSignIn = async (provider: 'google' | 'azure') => {
     setLoading(true);
     setError(null);
 
@@ -109,13 +109,13 @@ export function Auth({ onBack, onSuccess }: AuthProps): JSX.Element {
         </div>
 
         {/* Auth Card */}
-        <div className="card">
+        <div className="bg-surface-900/80 backdrop-blur-sm border border-surface-800 rounded-2xl p-8">
           {/* OAuth buttons */}
-          <div className="space-y-3 mb-6">
+          <div className="space-y-3 mb-8">
             <button
               onClick={() => handleOAuthSignIn('google')}
               disabled={loading}
-              className="w-full flex items-center justify-center gap-3 px-4 py-3 rounded-lg border border-surface-700 hover:border-surface-600 hover:bg-surface-800/50 transition-all"
+              className="w-full flex items-center justify-center gap-3 px-4 py-3.5 rounded-xl bg-surface-800 border border-surface-700 hover:bg-surface-700 hover:border-surface-600 transition-all disabled:opacity-50"
             >
               <svg className="w-5 h-5" viewBox="0 0 24 24">
                 <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
@@ -123,36 +123,39 @@ export function Auth({ onBack, onSuccess }: AuthProps): JSX.Element {
                 <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/>
                 <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
               </svg>
-              <span className="text-surface-200">Continue with Google</span>
+              <span className="text-surface-100 font-medium">Continue with Google</span>
             </button>
 
             <button
-              onClick={() => handleOAuthSignIn('github')}
+              onClick={() => handleOAuthSignIn('azure')}
               disabled={loading}
-              className="w-full flex items-center justify-center gap-3 px-4 py-3 rounded-lg border border-surface-700 hover:border-surface-600 hover:bg-surface-800/50 transition-all"
+              className="w-full flex items-center justify-center gap-3 px-4 py-3.5 rounded-xl bg-surface-800 border border-surface-700 hover:bg-surface-700 hover:border-surface-600 transition-all disabled:opacity-50"
             >
-              <svg className="w-5 h-5 text-surface-200" fill="currentColor" viewBox="0 0 24 24">
-                <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
+              <svg className="w-5 h-5" viewBox="0 0 23 23">
+                <path fill="#f35325" d="M1 1h10v10H1z"/>
+                <path fill="#81bc06" d="M12 1h10v10H12z"/>
+                <path fill="#05a6f0" d="M1 12h10v10H1z"/>
+                <path fill="#ffba08" d="M12 12h10v10H12z"/>
               </svg>
-              <span className="text-surface-200">Continue with GitHub</span>
+              <span className="text-surface-100 font-medium">Continue with Microsoft</span>
             </button>
           </div>
 
           {/* Divider */}
-          <div className="relative mb-6">
+          <div className="relative mb-8">
             <div className="absolute inset-0 flex items-center">
               <div className="w-full border-t border-surface-700"></div>
             </div>
             <div className="relative flex justify-center text-sm">
-              <span className="px-2 bg-surface-900 text-surface-500">or continue with email</span>
+              <span className="px-4 bg-surface-900 text-surface-500">or continue with email</span>
             </div>
           </div>
 
           {/* Email form */}
-          <form onSubmit={handleSubmit} className="space-y-4">
+          <form onSubmit={handleSubmit} className="space-y-5">
             {mode === 'signup' && (
               <div>
-                <label htmlFor="name" className="block text-sm font-medium text-surface-300 mb-1">
+                <label htmlFor="name" className="block text-sm font-medium text-surface-300 mb-2">
                   Name
                 </label>
                 <input
@@ -167,7 +170,7 @@ export function Auth({ onBack, onSuccess }: AuthProps): JSX.Element {
             )}
 
             <div>
-              <label htmlFor="email" className="block text-sm font-medium text-surface-300 mb-1">
+              <label htmlFor="email" className="block text-sm font-medium text-surface-300 mb-2">
                 Email
               </label>
               <input
@@ -182,7 +185,7 @@ export function Auth({ onBack, onSuccess }: AuthProps): JSX.Element {
             </div>
 
             <div>
-              <label htmlFor="password" className="block text-sm font-medium text-surface-300 mb-1">
+              <label htmlFor="password" className="block text-sm font-medium text-surface-300 mb-2">
                 Password
               </label>
               <input
@@ -212,10 +215,10 @@ export function Auth({ onBack, onSuccess }: AuthProps): JSX.Element {
             <button
               type="submit"
               disabled={loading}
-              className="btn-primary w-full disabled:opacity-50 disabled:cursor-not-allowed"
+              className="btn-primary w-full py-3.5 text-base disabled:opacity-50 disabled:cursor-not-allowed mt-2"
             >
               {loading ? (
-                <span className="inline-flex items-center gap-2">
+                <span className="inline-flex items-center justify-center gap-2">
                   <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
                   {mode === 'signin' ? 'Signing in...' : 'Creating account...'}
                 </span>
@@ -226,13 +229,13 @@ export function Auth({ onBack, onSuccess }: AuthProps): JSX.Element {
           </form>
 
           {/* Toggle mode */}
-          <p className="text-center text-surface-400 text-sm mt-6">
+          <p className="text-center text-surface-400 text-sm mt-8">
             {mode === 'signin' ? (
               <>
                 Don't have an account?{' '}
                 <button
                   onClick={() => setMode('signup')}
-                  className="text-primary-400 hover:text-primary-300 font-medium"
+                  className="text-primary-400 hover:text-primary-300 font-medium transition-colors"
                 >
                   Sign up
                 </button>
@@ -242,7 +245,7 @@ export function Auth({ onBack, onSuccess }: AuthProps): JSX.Element {
                 Already have an account?{' '}
                 <button
                   onClick={() => setMode('signin')}
-                  className="text-primary-400 hover:text-primary-300 font-medium"
+                  className="text-primary-400 hover:text-primary-300 font-medium transition-colors"
                 >
                   Sign in
                 </button>

@@ -1,10 +1,12 @@
 /**
  * OAuth callback handler component.
  *
- * Handles the redirect from Salesforce OAuth and stores the user session.
+ * Handles the redirect from Supabase OAuth providers (Google, Microsoft, etc.)
+ * Supabase automatically handles the token exchange via the URL hash.
  */
 
 import { useEffect, useState } from 'react';
+import { supabase } from '../lib/supabase';
 
 type CallbackState = 'processing' | 'success' | 'error';
 
@@ -13,31 +15,66 @@ export function OAuthCallback(): JSX.Element {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    const handleCallback = (): void => {
-      const urlParams = new URLSearchParams(window.location.search);
-      const userId = urlParams.get('user_id');
-      const errorParam = urlParams.get('error');
+    const handleCallback = async (): Promise<void> => {
+      try {
+        // Check URL for error params (OAuth errors)
+        const urlParams = new URLSearchParams(window.location.search);
+        const errorParam = urlParams.get('error');
+        const errorDescription = urlParams.get('error_description');
 
-      if (errorParam) {
-        setState('error');
-        setError(errorParam);
-        return;
-      }
+        if (errorParam) {
+          setState('error');
+          setError(errorDescription || errorParam);
+          return;
+        }
 
-      if (userId) {
-        localStorage.setItem('user_id', userId);
-        setState('success');
-        // Redirect to home after a brief delay
-        setTimeout(() => {
-          window.location.href = '/';
-        }, 1500);
-      } else {
+        // Supabase automatically handles the OAuth tokens from the URL hash
+        // We just need to wait for the session to be established
+        const { data, error: sessionError } = await supabase.auth.getSession();
+
+        if (sessionError) {
+          setState('error');
+          setError(sessionError.message);
+          return;
+        }
+
+        if (data.session) {
+          setState('success');
+          // Redirect to home after a brief delay
+          setTimeout(() => {
+            window.location.href = '/';
+          }, 1500);
+        } else {
+          // No session yet - might still be processing
+          // Listen for auth state change
+          const { data: { subscription } } = supabase.auth.onAuthStateChange(
+            (event, session) => {
+              if (event === 'SIGNED_IN' && session) {
+                setState('success');
+                setTimeout(() => {
+                  window.location.href = '/';
+                }, 1500);
+                subscription.unsubscribe();
+              }
+            }
+          );
+
+          // Timeout after 10 seconds
+          setTimeout(() => {
+            if (state === 'processing') {
+              setState('error');
+              setError('Authentication timed out. Please try again.');
+              subscription.unsubscribe();
+            }
+          }, 10000);
+        }
+      } catch (err) {
         setState('error');
-        setError('No user ID received from authentication');
+        setError(err instanceof Error ? err.message : 'An unknown error occurred');
       }
     };
 
-    handleCallback();
+    void handleCallback();
   }, []);
 
   return (
@@ -57,7 +94,7 @@ export function OAuthCallback(): JSX.Element {
 
         {state === 'success' && (
           <div className="animate-fade-in">
-            <div className="w-12 h-12 rounded-full bg-green-500 flex items-center justify-center mx-auto mb-4">
+            <div className="w-12 h-12 rounded-full bg-primary-500 flex items-center justify-center mx-auto mb-4">
               <svg
                 className="w-6 h-6 text-white"
                 fill="none"
@@ -73,9 +110,9 @@ export function OAuthCallback(): JSX.Element {
               </svg>
             </div>
             <h2 className="text-xl font-semibold text-surface-100 mb-2">
-              Connected successfully!
+              Welcome to Revtops!
             </h2>
-            <p className="text-surface-400">Redirecting you to Revenue Copilot...</p>
+            <p className="text-surface-400">Redirecting you to the app...</p>
           </div>
         )}
 
@@ -99,7 +136,7 @@ export function OAuthCallback(): JSX.Element {
             <h2 className="text-xl font-semibold text-surface-100 mb-2">
               Authentication failed
             </h2>
-            <p className="text-surface-400 mb-4">{error ?? 'An unknown error occurred'}</p>
+            <p className="text-surface-400 mb-6">{error ?? 'An unknown error occurred'}</p>
             <a href="/" className="btn-primary inline-block">
               Try again
             </a>
