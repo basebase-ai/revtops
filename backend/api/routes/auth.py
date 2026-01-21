@@ -27,7 +27,7 @@ from config import settings, get_nango_integration_id
 from models.database import get_session
 from models.integration import Integration
 from models.user import User
-from models.customer import Customer
+from models.organization import Organization
 from services.nango import get_nango_client
 
 router = APIRouter()
@@ -45,7 +45,7 @@ class UserResponse(BaseModel):
     email: str
     name: Optional[str]
     role: Optional[str]
-    customer_id: Optional[str]
+    organization_id: Optional[str]
 
 
 class IntegrationResponse(BaseModel):
@@ -104,7 +104,7 @@ async def get_current_user(user_id: Optional[str] = None) -> UserResponse:
             email=user.email,
             name=user.name,
             role=user.role,
-            customer_id=str(user.customer_id) if user.customer_id else None,
+            organization_id=str(user.organization_id) if user.organization_id else None,
         )
 
 
@@ -145,13 +145,13 @@ async def get_connect_url(provider: str, user_id: str) -> ConnectUrlResponse:
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid user ID")
 
-    # Get user and customer
+    # Get user and organization
     async with get_session() as session:
         user = await session.get(User, user_uuid)
-        if not user or not user.customer_id:
+        if not user or not user.organization_id:
             raise HTTPException(status_code=404, detail="User not found")
 
-        customer_id = str(user.customer_id)
+        organization_id = str(user.organization_id)
 
     # Get Nango integration ID
     try:
@@ -165,7 +165,7 @@ async def get_connect_url(provider: str, user_id: str) -> ConnectUrlResponse:
 
     connect_url = nango.get_connect_url(
         integration_id=nango_integration_id,
-        connection_id=customer_id,
+        connection_id=organization_id,
         redirect_url=redirect_url,
     )
 
@@ -197,7 +197,7 @@ async def nango_callback(
     """
     try:
         user_uuid = UUID(user_id)
-        customer_uuid = UUID(connection_id)
+        org_uuid = UUID(connection_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid ID format")
 
@@ -217,13 +217,13 @@ async def nango_callback(
     async with get_session() as session:
         # Verify user
         user = await session.get(User, user_uuid)
-        if not user or user.customer_id != customer_uuid:
+        if not user or user.organization_id != org_uuid:
             raise HTTPException(status_code=403, detail="User not authorized")
 
         # Check for existing integration
         result = await session.execute(
             select(Integration).where(
-                Integration.customer_id == customer_uuid,
+                Integration.organization_id == org_uuid,
                 Integration.provider == provider,
             )
         )
@@ -236,7 +236,7 @@ async def nango_callback(
             integration.updated_at = datetime.utcnow()
         else:
             integration = Integration(
-                customer_id=customer_uuid,
+                organization_id=org_uuid,
                 provider=provider,
                 nango_connection_id=connection_id,
                 connected_by_user_id=user_uuid,
@@ -252,7 +252,7 @@ async def nango_callback(
 
 @router.get("/integrations", response_model=IntegrationsListResponse)
 async def list_integrations(user_id: str) -> IntegrationsListResponse:
-    """List all connected integrations for a user's customer."""
+    """List all connected integrations for a user's organization."""
     try:
         user_uuid = UUID(user_id)
     except ValueError:
@@ -260,11 +260,11 @@ async def list_integrations(user_id: str) -> IntegrationsListResponse:
 
     async with get_session() as session:
         user = await session.get(User, user_uuid)
-        if not user or not user.customer_id:
+        if not user or not user.organization_id:
             raise HTTPException(status_code=404, detail="User not found")
 
         result = await session.execute(
-            select(Integration).where(Integration.customer_id == user.customer_id)
+            select(Integration).where(Integration.organization_id == user.organization_id)
         )
         integrations = result.scalars().all()
 
@@ -293,13 +293,13 @@ async def disconnect_integration(provider: str, user_id: str) -> dict[str, str]:
 
     async with get_session() as session:
         user = await session.get(User, user_uuid)
-        if not user or not user.customer_id:
+        if not user or not user.organization_id:
             raise HTTPException(status_code=404, detail="User not found")
 
         # Find integration
         result = await session.execute(
             select(Integration).where(
-                Integration.customer_id == user.customer_id,
+                Integration.organization_id == user.organization_id,
                 Integration.provider == provider,
             )
         )
@@ -346,7 +346,7 @@ class CreateUserResponse(BaseModel):
     """Response model for created user."""
 
     user_id: str
-    customer_id: str
+    organization_id: str
 
 
 @router.post("/register", response_model=CreateUserResponse)
@@ -354,7 +354,7 @@ async def register_user(request: CreateUserRequest) -> CreateUserResponse:
     """
     Simple user registration for MVP.
 
-    Creates a user and customer record without OAuth.
+    Creates a user and organization record without OAuth.
     """
     async with get_session() as session:
         # Check if user exists
@@ -366,21 +366,21 @@ async def register_user(request: CreateUserRequest) -> CreateUserResponse:
         if existing_user:
             return CreateUserResponse(
                 user_id=str(existing_user.id),
-                customer_id=str(existing_user.customer_id) if existing_user.customer_id else "",
+                organization_id=str(existing_user.organization_id) if existing_user.organization_id else "",
             )
 
         # Create customer
-        customer = Customer(
+        organization = Organization(
             name=request.company_name or f"{request.email}'s Company",
         )
-        session.add(customer)
+        session.add(organization)
         await session.flush()
 
         # Create user
         user = User(
             email=request.email,
             name=request.name,
-            customer_id=customer.id,
+            organization_id=organization.id,
             role="admin",
         )
         session.add(user)
@@ -388,5 +388,5 @@ async def register_user(request: CreateUserRequest) -> CreateUserResponse:
 
         return CreateUserResponse(
             user_id=str(user.id),
-            customer_id=str(customer.id),
+            organization_id=str(organization.id),
         )

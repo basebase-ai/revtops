@@ -2,10 +2,12 @@
  * Authentication component.
  * 
  * Handles sign up and sign in using Supabase Auth.
+ * Requires work email (blocks personal email domains).
  */
 
 import { useState } from 'react';
 import { supabase } from '../lib/supabase';
+import { isPersonalEmail } from '../lib/email';
 
 interface AuthProps {
   onBack: () => void;
@@ -26,6 +28,13 @@ export function Auth({ onBack, onSuccess }: AuthProps): JSX.Element {
     setLoading(true);
     setError(null);
     setMessage(null);
+
+    // Validate work email
+    if (isPersonalEmail(email)) {
+      setError('Please use your work email address. Personal email domains like Gmail and Hotmail are not allowed.');
+      setLoading(false);
+      return;
+    }
 
     try {
       if (mode === 'signup') {

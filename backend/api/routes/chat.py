@@ -102,11 +102,10 @@ async def send_message(request: SendMessageRequest) -> SendMessageResponse:
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
 
-        if user.customer_id is None:
-            raise HTTPException(status_code=400, detail="User has no associated customer")
-
+        # Allow users without organization to chat with limited functionality
         orchestrator = ChatOrchestrator(
-            user_id=str(user.id), customer_id=str(user.customer_id)
+            user_id=str(user.id), 
+            organization_id=str(user.organization_id) if user.organization_id else None
         )
 
         # Collect all chunks into a single response

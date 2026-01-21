@@ -175,7 +175,7 @@ class HubSpotConnector(BaseConnector):
 
         return Deal(
             id=uuid.uuid4(),
-            customer_id=uuid.UUID(self.customer_id),
+            organization_id=uuid.UUID(self.organization_id),
             source_system=self.source_system,
             source_id=hs_id,
             name=props.get("dealname", "Untitled Deal"),
@@ -241,7 +241,7 @@ class HubSpotConnector(BaseConnector):
 
         return Account(
             id=uuid.uuid4(),
-            customer_id=uuid.UUID(self.customer_id),
+            organization_id=uuid.UUID(self.organization_id),
             source_system=self.source_system,
             source_id=hs_id,
             name=props.get("name", "Unknown Company"),
@@ -292,7 +292,7 @@ class HubSpotConnector(BaseConnector):
 
         return Contact(
             id=uuid.uuid4(),
-            customer_id=uuid.UUID(self.customer_id),
+            organization_id=uuid.UUID(self.organization_id),
             source_system=self.source_system,
             source_id=hs_id,
             name=full_name,
@@ -377,7 +377,7 @@ class HubSpotConnector(BaseConnector):
 
         return Activity(
             id=uuid.uuid4(),
-            customer_id=uuid.UUID(self.customer_id),
+            organization_id=uuid.UUID(self.organization_id),
             source_system=self.source_system,
             source_id=hs_id,
             type=type_map.get(engagement_type, engagement_type),
@@ -397,7 +397,7 @@ class HubSpotConnector(BaseConnector):
             # Look for user with matching HubSpot ID in custom_fields or a dedicated field
             result = await session.execute(
                 select(User).where(
-                    User.customer_id == uuid.UUID(self.customer_id),
+                    User.organization_id == uuid.UUID(self.organization_id),
                 )
             )
             # For MVP, return first user; in production, match by HubSpot owner ID

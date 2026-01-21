@@ -60,7 +60,7 @@ class SalesforceConnector(BaseConnector):
             result = await session.execute(
                 select(Account).where(
                     Account.source_id == sf_account_id,
-                    Account.customer_id == uuid.UUID(self.customer_id),
+                    Account.organization_id == uuid.UUID(self.organization_id),
                 )
             )
             account = result.scalar_one_or_none()
@@ -121,7 +121,7 @@ class SalesforceConnector(BaseConnector):
 
         return Deal(
             id=uuid.uuid4(),  # Generate new UUID for our system
-            customer_id=uuid.UUID(self.customer_id),
+            organization_id=uuid.UUID(self.organization_id),
             source_system="salesforce",
             source_id=sf_opp["Id"],
             name=sf_opp["Name"],
@@ -171,7 +171,7 @@ class SalesforceConnector(BaseConnector):
 
         return Account(
             id=uuid.uuid4(),
-            customer_id=uuid.UUID(self.customer_id),
+            organization_id=uuid.UUID(self.organization_id),
             source_system="salesforce",
             source_id=sf_acc["Id"],
             name=sf_acc["Name"],
@@ -210,7 +210,7 @@ class SalesforceConnector(BaseConnector):
 
         return Contact(
             id=uuid.uuid4(),
-            customer_id=uuid.UUID(self.customer_id),
+            organization_id=uuid.UUID(self.organization_id),
             source_system="salesforce",
             source_id=sf_cont["Id"],
             account_id=account_id,
@@ -269,7 +269,7 @@ class SalesforceConnector(BaseConnector):
 
         return Activity(
             id=uuid.uuid4(),
-            customer_id=uuid.UUID(self.customer_id),
+            organization_id=uuid.UUID(self.organization_id),
             source_system="salesforce",
             source_id=sf_task["Id"],
             type="task",
@@ -291,7 +291,7 @@ class SalesforceConnector(BaseConnector):
 
         return Activity(
             id=uuid.uuid4(),
-            customer_id=uuid.UUID(self.customer_id),
+            organization_id=uuid.UUID(self.organization_id),
             source_system="salesforce",
             source_id=sf_event["Id"],
             type="meeting",

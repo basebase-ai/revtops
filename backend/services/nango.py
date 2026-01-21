@@ -48,7 +48,7 @@ class NangoClient:
 
         Args:
             integration_id: The Nango integration ID (e.g., 'hubspot', 'slack')
-            connection_id: The unique connection identifier (e.g., customer_id)
+            connection_id: The unique connection identifier (e.g., organization_id)
 
         Returns:
             Connection details including credentials

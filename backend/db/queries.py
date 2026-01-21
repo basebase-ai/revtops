@@ -13,14 +13,14 @@ from models.deal import Deal
 
 
 async def get_pipeline_summary(
-    session: AsyncSession, customer_id: UUID, user_id: Optional[UUID] = None
+    session: AsyncSession, organization_id: UUID, user_id: Optional[UUID] = None
 ) -> dict[str, Any]:
     """
     Get pipeline summary statistics.
 
     Args:
         session: Database session
-        customer_id: Customer UUID to filter by
+        organization_id: Customer UUID to filter by
         user_id: Optional user UUID to filter by owner
 
     Returns:
@@ -31,7 +31,7 @@ async def get_pipeline_summary(
         func.count(Deal.id).label("count"),
         func.sum(Deal.amount).label("total_amount"),
         func.avg(Deal.amount).label("avg_amount"),
-    ).where(Deal.customer_id == customer_id)
+    ).where(Deal.organization_id == organization_id)
 
     if user_id:
         query = query.where(Deal.owner_id == user_id)
@@ -62,7 +62,7 @@ async def get_pipeline_summary(
 
 async def get_deals_closing_soon(
     session: AsyncSession,
-    customer_id: UUID,
+    organization_id: UUID,
     days: int = 30,
     user_id: Optional[UUID] = None,
 ) -> list[dict[str, Any]]:
@@ -71,7 +71,7 @@ async def get_deals_closing_soon(
 
     Args:
         session: Database session
-        customer_id: Customer UUID to filter by
+        organization_id: Customer UUID to filter by
         days: Number of days to look ahead (default 30)
         user_id: Optional user UUID to filter by owner
 
@@ -85,7 +85,7 @@ async def get_deals_closing_soon(
 
     query = (
         select(Deal)
-        .where(Deal.customer_id == customer_id)
+        .where(Deal.organization_id == organization_id)
         .where(Deal.close_date >= today)
         .where(Deal.close_date <= end_date)
         .order_by(Deal.close_date)
@@ -101,14 +101,14 @@ async def get_deals_closing_soon(
 
 
 async def get_top_accounts_by_deal_value(
-    session: AsyncSession, customer_id: UUID, limit: int = 10
+    session: AsyncSession, organization_id: UUID, limit: int = 10
 ) -> list[dict[str, Any]]:
     """
     Get top accounts by total deal value.
 
     Args:
         session: Database session
-        customer_id: Customer UUID to filter by
+        organization_id: Customer UUID to filter by
         limit: Maximum number of accounts to return
 
     Returns:
@@ -121,7 +121,7 @@ async def get_top_accounts_by_deal_value(
             func.sum(Deal.amount).label("total_deal_value"),
         )
         .join(Deal, Deal.account_id == Account.id, isouter=True)
-        .where(Account.customer_id == customer_id)
+        .where(Account.organization_id == organization_id)
         .group_by(Account.id)
         .order_by(func.sum(Deal.amount).desc().nullslast())
         .limit(limit)

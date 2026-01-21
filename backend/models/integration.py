@@ -30,14 +30,14 @@ class Integration(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
-    customer_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("customers.id"), nullable=False
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False
     )
 
     # Integration type: 'hubspot', 'slack', 'google_calendar', 'salesforce'
     provider: Mapped[str] = mapped_column(String(50), nullable=False)
 
-    # Nango connection ID (usually same as customer_id, but stored for reference)
+    # Nango connection ID (usually same as organization_id, but stored for reference)
     nango_connection_id: Mapped[Optional[str]] = mapped_column(
         String(255), nullable=True
     )
@@ -67,7 +67,7 @@ class Integration(Base):
         """Convert to dictionary for API responses."""
         return {
             "id": str(self.id),
-            "customer_id": str(self.customer_id),
+            "organization_id": str(self.organization_id),
             "provider": self.provider,
             "is_active": self.is_active,
             "last_sync_at": self.last_sync_at.isoformat() if self.last_sync_at else None,

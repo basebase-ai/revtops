@@ -23,14 +23,14 @@ class BaseConnector(ABC):
     # Override in subclasses - must match our provider names
     source_system: str = "unknown"
 
-    def __init__(self, customer_id: str) -> None:
+    def __init__(self, organization_id: str) -> None:
         """
         Initialize the connector.
 
         Args:
-            customer_id: UUID of the customer to sync data for
+            organization_id: UUID of the organization to sync data for
         """
-        self.customer_id = customer_id
+        self.organization_id = organization_id
         self._token: Optional[str] = None
         self._credentials: Optional[dict[str, Any]] = None
         self._integration: Optional[Integration] = None
@@ -95,7 +95,7 @@ class BaseConnector(ABC):
         async with get_session() as session:
             result = await session.execute(
                 select(Integration).where(
-                    Integration.customer_id == UUID(self.customer_id),
+                    Integration.organization_id == UUID(self.organization_id),
                     Integration.provider == self.source_system,
                     Integration.is_active == True,
                 )
@@ -104,7 +104,7 @@ class BaseConnector(ABC):
 
             if not integration:
                 raise ValueError(
-                    f"No active {self.source_system} integration for customer: {self.customer_id}"
+                    f"No active {self.source_system} integration for organization: {self.organization_id}"
                 )
 
             self._integration = integration
@@ -113,8 +113,8 @@ class BaseConnector(ABC):
         nango = get_nango_client()
         nango_integration_id = get_nango_integration_id(self.source_system)
 
-        # Use customer_id as the Nango connection_id
-        connection_id = self.customer_id
+        # Use organization_id as the Nango connection_id
+        connection_id = self.organization_id
 
         try:
             self._token = await nango.get_token(nango_integration_id, connection_id)
@@ -139,7 +139,7 @@ class BaseConnector(ABC):
 
         nango = get_nango_client()
         nango_integration_id = get_nango_integration_id(self.source_system)
-        connection_id = self.customer_id
+        connection_id = self.organization_id
 
         self._credentials = await nango.get_credentials(
             nango_integration_id, connection_id
@@ -155,7 +155,7 @@ class BaseConnector(ABC):
             async with get_session() as session:
                 result = await session.execute(
                     select(Integration).where(
-                        Integration.customer_id == UUID(self.customer_id),
+                        Integration.organization_id == UUID(self.organization_id),
                         Integration.provider == self.source_system,
                     )
                 )

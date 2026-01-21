@@ -1,7 +1,7 @@
 """Database models package."""
 from models.database import Base, get_session, init_db
 from models.user import User
-from models.customer import Customer
+from models.organization import Organization
 from models.deal import Deal
 from models.account import Account
 from models.contact import Contact
@@ -15,7 +15,7 @@ __all__ = [
     "get_session",
     "init_db",
     "User",
-    "Customer",
+    "Organization",
     "Deal",
     "Account",
     "Contact",

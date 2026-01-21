@@ -126,29 +126,33 @@ def get_tools() -> list[dict[str, Any]]:
 
 
 async def execute_tool(
-    tool_name: str, tool_input: dict[str, Any], customer_id: str, user_id: str
+    tool_name: str, tool_input: dict[str, Any], organization_id: str | None, user_id: str
 ) -> dict[str, Any]:
     """Execute a tool and return results."""
+    
+    # If no organization, tools that need org data won't work
+    if organization_id is None:
+        return {"error": "No organization associated with user. Please complete onboarding."}
 
     if tool_name == "query_deals":
-        return await _query_deals(tool_input, customer_id, user_id)
+        return await _query_deals(tool_input, organization_id, user_id)
 
     elif tool_name == "query_accounts":
-        return await _query_accounts(tool_input, customer_id)
+        return await _query_accounts(tool_input, organization_id)
 
     elif tool_name == "create_artifact":
-        return await _create_artifact(tool_input, customer_id, user_id)
+        return await _create_artifact(tool_input, organization_id, user_id)
 
     else:
         return {"error": f"Unknown tool: {tool_name}"}
 
 
 async def _query_deals(
-    filters: dict[str, Any], customer_id: str, user_id: str
+    filters: dict[str, Any], organization_id: str, user_id: str
 ) -> dict[str, Any]:
     """Query deals with filters."""
     async with get_session() as session:
-        query = select(Deal).where(Deal.customer_id == UUID(customer_id))
+        query = select(Deal).where(Deal.organization_id == UUID(organization_id))
 
         # Apply filters
         if "stage" in filters and filters["stage"]:
@@ -189,11 +193,11 @@ async def _query_deals(
 
 
 async def _query_accounts(
-    filters: dict[str, Any], customer_id: str
+    filters: dict[str, Any], organization_id: str
 ) -> dict[str, Any]:
     """Query accounts with filters."""
     async with get_session() as session:
-        query = select(Account).where(Account.customer_id == UUID(customer_id))
+        query = select(Account).where(Account.organization_id == UUID(organization_id))
 
         # Apply filters
         if "industry" in filters and filters["industry"]:
@@ -222,13 +226,13 @@ async def _query_accounts(
 
 
 async def _create_artifact(
-    data: dict[str, Any], customer_id: str, user_id: str
+    data: dict[str, Any], organization_id: str, user_id: str
 ) -> dict[str, Any]:
     """Save an artifact."""
     async with get_session() as session:
         artifact = Artifact(
             user_id=UUID(user_id),
-            customer_id=UUID(customer_id),
+            organization_id=UUID(organization_id),
             type=data["type"],
             title=data["title"],
             description=data.get("description"),

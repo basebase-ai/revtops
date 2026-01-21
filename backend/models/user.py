@@ -14,7 +14,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from models.database import Base
 
 if TYPE_CHECKING:
-    from models.customer import Customer
+    from models.organization import Organization
     from models.deal import Deal
 
 
@@ -28,8 +28,8 @@ class User(Base):
     )
     email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
     name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    customer_id: Mapped[Optional[uuid.UUID]] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("customers.id"), nullable=True
+    organization_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=True
     )
     salesforce_user_id: Mapped[Optional[str]] = mapped_column(
         String(255), nullable=True
@@ -43,8 +43,8 @@ class User(Base):
     last_login: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
     # Relationships
-    customer: Mapped[Optional["Customer"]] = relationship(
-        "Customer", back_populates="users"
+    organization: Mapped[Optional["Organization"]] = relationship(
+        "Organization", back_populates="users", foreign_keys=[organization_id]
     )
     deals: Mapped[list["Deal"]] = relationship("Deal", back_populates="owner")
 
@@ -55,5 +55,5 @@ class User(Base):
             "email": self.email,
             "name": self.name,
             "role": self.role,
-            "customer_id": str(self.customer_id) if self.customer_id else None,
+            "organization_id": str(self.organization_id) if self.organization_id else None,
         }

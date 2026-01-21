@@ -42,16 +42,16 @@ You have access to the user's Salesforce data that has been synced to the system
 class ChatOrchestrator:
     """Orchestrates chat interactions with Claude."""
 
-    def __init__(self, user_id: str, customer_id: str) -> None:
+    def __init__(self, user_id: str, organization_id: str | None) -> None:
         """
         Initialize the orchestrator.
 
         Args:
             user_id: UUID of the authenticated user
-            customer_id: UUID of the user's customer/organization
+            organization_id: UUID of the user's organization (may be None for new users)
         """
         self.user_id = user_id
-        self.customer_id = customer_id
+        self.organization_id = organization_id
         self.client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
 
     async def process_message(
@@ -116,7 +116,7 @@ class ChatOrchestrator:
 
                 # Execute tool
                 tool_result = await execute_tool(
-                    tool_name, tool_input, self.customer_id, self.user_id
+                    tool_name, tool_input, self.organization_id, self.user_id
                 )
 
                 # Continue conversation with tool result

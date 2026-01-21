@@ -35,17 +35,24 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str) -> None:
 
     async with get_session() as session:
         user = await session.get(User, user_uuid)
+        
+        # For MVP: if user doesn't exist in our DB yet (came from Supabase Auth),
+        # we still allow the connection but with limited functionality
         if not user:
-            await websocket.close(code=1008, reason="User not found")
-            return
-
-        if user.customer_id is None:
-            await websocket.close(code=1008, reason="User has no associated customer")
-            return
-
-        orchestrator = ChatOrchestrator(
-            user_id=str(user.id), customer_id=str(user.customer_id)
-        )
+            # Create a temporary orchestrator without organization context
+            # In production, this should sync with Supabase or require proper onboarding
+            orchestrator = ChatOrchestrator(
+                user_id=str(user_uuid), organization_id=None
+            )
+        elif user.organization_id is None:
+            # User exists but has no organization yet
+            orchestrator = ChatOrchestrator(
+                user_id=str(user.id), organization_id=None
+            )
+        else:
+            orchestrator = ChatOrchestrator(
+                user_id=str(user.id), organization_id=str(user.organization_id)
+            )
 
         try:
             while True:

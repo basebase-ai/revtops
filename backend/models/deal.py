@@ -1,6 +1,7 @@
 """
 Deal model - normalized representation of opportunities.
 """
+from __future__ import annotations
 
 import uuid
 from datetime import date, datetime
@@ -27,8 +28,8 @@ class Deal(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
-    customer_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("customers.id"), nullable=False
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False
     )
     source_system: Mapped[str] = mapped_column(
         String(50), default="salesforce", nullable=False

@@ -2,9 +2,9 @@
 Sync trigger endpoints for all integrations.
 
 Endpoints:
-- POST /api/sync/{customer_id}/{provider} - Trigger sync for specific integration
-- GET /api/sync/{customer_id}/{provider}/status - Get sync status
-- POST /api/sync/{customer_id}/all - Sync all active integrations
+- POST /api/sync/{organization_id}/{provider} - Trigger sync for specific integration
+- GET /api/sync/{organization_id}/{provider}/status - Get sync status
+- POST /api/sync/{organization_id}/all - Sync all active integrations
 """
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ from connectors.salesforce import SalesforceConnector
 from connectors.slack import SlackConnector
 from models.database import get_session
 from models.integration import Integration
-from models.customer import Customer
+from models.organization import Organization
 
 router = APIRouter()
 
@@ -41,7 +41,7 @@ _sync_status: dict[str, dict[str, str | datetime | None | dict[str, int]]] = {}
 class SyncStatusResponse(BaseModel):
     """Response model for sync status."""
 
-    customer_id: str
+    organization_id: str
     provider: str
     status: str
     started_at: Optional[str]
@@ -54,7 +54,7 @@ class SyncTriggerResponse(BaseModel):
     """Response model for sync trigger."""
 
     status: str
-    customer_id: str
+    organization_id: str
     provider: str
 
 
@@ -62,22 +62,22 @@ class SyncAllResponse(BaseModel):
     """Response model for syncing all integrations."""
 
     status: str
-    customer_id: str
+    organization_id: str
     integrations: list[str]
 
 
-def _get_status_key(customer_id: str, provider: str) -> str:
+def _get_status_key(organization_id: str, provider: str) -> str:
     """Generate a unique key for sync status tracking."""
-    return f"{customer_id}:{provider}"
+    return f"{organization_id}:{provider}"
 
 
-@router.post("/{customer_id}/{provider}", response_model=SyncTriggerResponse)
+@router.post("/{organization_id}/{provider}", response_model=SyncTriggerResponse)
 async def trigger_sync(
-    customer_id: str, provider: str, background_tasks: BackgroundTasks
+    organization_id: str, provider: str, background_tasks: BackgroundTasks
 ) -> SyncTriggerResponse:
     """Trigger a sync for a specific integration."""
     try:
-        customer_uuid = UUID(customer_id)
+        customer_uuid = UUID(organization_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid customer ID")
 
@@ -91,7 +91,7 @@ async def trigger_sync(
     async with get_session() as session:
         result = await session.execute(
             select(Integration).where(
-                Integration.customer_id == customer_uuid,
+                Integration.organization_id == customer_uuid,
                 Integration.provider == provider,
                 Integration.is_active == True,
             )
@@ -105,7 +105,7 @@ async def trigger_sync(
             )
 
     # Initialize sync status
-    status_key = _get_status_key(customer_id, provider)
+    status_key = _get_status_key(organization_id, provider)
     _sync_status[status_key] = {
         "status": "syncing",
         "started_at": datetime.utcnow(),
@@ -115,22 +115,22 @@ async def trigger_sync(
     }
 
     # Add background task
-    background_tasks.add_task(sync_integration_data, customer_id, provider)
+    background_tasks.add_task(sync_integration_data, organization_id, provider)
 
     return SyncTriggerResponse(
-        status="syncing", customer_id=customer_id, provider=provider
+        status="syncing", organization_id=organization_id, provider=provider
     )
 
 
-@router.get("/{customer_id}/{provider}/status", response_model=SyncStatusResponse)
-async def get_sync_status(customer_id: str, provider: str) -> SyncStatusResponse:
+@router.get("/{organization_id}/{provider}/status", response_model=SyncStatusResponse)
+async def get_sync_status(organization_id: str, provider: str) -> SyncStatusResponse:
     """Get sync status for a specific integration."""
     try:
-        UUID(customer_id)
+        UUID(organization_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid customer ID")
 
-    status_key = _get_status_key(customer_id, provider)
+    status_key = _get_status_key(organization_id, provider)
     status = _sync_status.get(status_key)
 
     if not status:
@@ -138,7 +138,7 @@ async def get_sync_status(customer_id: str, provider: str) -> SyncStatusResponse
         async with get_session() as session:
             result = await session.execute(
                 select(Integration).where(
-                    Integration.customer_id == UUID(customer_id),
+                    Integration.organization_id == UUID(organization_id),
                     Integration.provider == provider,
                 )
             )
@@ -146,7 +146,7 @@ async def get_sync_status(customer_id: str, provider: str) -> SyncStatusResponse
 
             if integration and integration.last_sync_at:
                 return SyncStatusResponse(
-                    customer_id=customer_id,
+                    organization_id=organization_id,
                     provider=provider,
                     status="completed",
                     started_at=None,
@@ -156,7 +156,7 @@ async def get_sync_status(customer_id: str, provider: str) -> SyncStatusResponse
                 )
 
         return SyncStatusResponse(
-            customer_id=customer_id,
+            organization_id=organization_id,
             provider=provider,
             status="never_synced",
             started_at=None,
@@ -170,7 +170,7 @@ async def get_sync_status(customer_id: str, provider: str) -> SyncStatusResponse
     counts = status.get("counts")
 
     return SyncStatusResponse(
-        customer_id=customer_id,
+        organization_id=organization_id,
         provider=provider,
         status=str(status.get("status", "unknown")),
         started_at=started_at.isoformat() if isinstance(started_at, datetime) else None,
@@ -180,13 +180,13 @@ async def get_sync_status(customer_id: str, provider: str) -> SyncStatusResponse
     )
 
 
-@router.post("/{customer_id}/all", response_model=SyncAllResponse)
+@router.post("/{organization_id}/all", response_model=SyncAllResponse)
 async def trigger_sync_all(
-    customer_id: str, background_tasks: BackgroundTasks
+    organization_id: str, background_tasks: BackgroundTasks
 ) -> SyncAllResponse:
     """Trigger sync for all active integrations."""
     try:
-        customer_uuid = UUID(customer_id)
+        customer_uuid = UUID(organization_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid customer ID")
 
@@ -194,7 +194,7 @@ async def trigger_sync_all(
     async with get_session() as session:
         result = await session.execute(
             select(Integration).where(
-                Integration.customer_id == customer_uuid,
+                Integration.organization_id == customer_uuid,
                 Integration.is_active == True,
             )
         )
@@ -208,7 +208,7 @@ async def trigger_sync_all(
     # Trigger sync for each integration
     for provider in providers:
         if provider in CONNECTORS:
-            status_key = _get_status_key(customer_id, provider)
+            status_key = _get_status_key(organization_id, provider)
             _sync_status[status_key] = {
                 "status": "syncing",
                 "started_at": datetime.utcnow(),
@@ -216,18 +216,18 @@ async def trigger_sync_all(
                 "error": None,
                 "counts": None,
             }
-            background_tasks.add_task(sync_integration_data, customer_id, provider)
+            background_tasks.add_task(sync_integration_data, organization_id, provider)
 
     return SyncAllResponse(
         status="syncing",
-        customer_id=customer_id,
+        organization_id=organization_id,
         integrations=providers,
     )
 
 
-async def sync_integration_data(customer_id: str, provider: str) -> None:
+async def sync_integration_data(organization_id: str, provider: str) -> None:
     """Background task to sync data for a specific integration."""
-    status_key = _get_status_key(customer_id, provider)
+    status_key = _get_status_key(organization_id, provider)
     connector_class = CONNECTORS.get(provider)
 
     if not connector_class:
@@ -237,7 +237,7 @@ async def sync_integration_data(customer_id: str, provider: str) -> None:
         return
 
     try:
-        connector = connector_class(customer_id)
+        connector = connector_class(organization_id)
         counts = await connector.sync_all()
         await connector.update_last_sync()
 
@@ -253,16 +253,16 @@ async def sync_integration_data(customer_id: str, provider: str) -> None:
 
         # Record error in database
         try:
-            connector = connector_class(customer_id)
+            connector = connector_class(organization_id)
             await connector.record_error(error_msg)
         except Exception:
             pass  # Ignore errors recording the error
 
 
 # Legacy endpoint for backwards compatibility
-@router.post("/{customer_id}")
+@router.post("/{organization_id}")
 async def trigger_sync_legacy(
-    customer_id: str, background_tasks: BackgroundTasks
+    organization_id: str, background_tasks: BackgroundTasks
 ) -> SyncAllResponse:
     """Legacy endpoint - triggers sync for all integrations."""
-    return await trigger_sync_all(customer_id, background_tasks)
+    return await trigger_sync_all(organization_id, background_tasks)

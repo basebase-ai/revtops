@@ -10,7 +10,7 @@ from models.database import Base
 
 # Import all models to ensure they're registered with Base.metadata
 from models.user import User
-from models.customer import Customer
+from models.organization import Organization
 from models.deal import Deal
 from models.account import Account
 from models.contact import Contact

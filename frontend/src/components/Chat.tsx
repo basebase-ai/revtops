@@ -40,11 +40,11 @@ interface Integration {
 
 interface ChatProps {
   userId: string;
-  customerId?: string;
+  organizationId?: string;
   onLogout: () => void;
 }
 
-export function Chat({ userId, customerId, onLogout }: ChatProps): JSX.Element {
+export function Chat({ userId, organizationId, onLogout }: ChatProps): JSX.Element {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState<string>('');
   const [currentArtifact, setCurrentArtifact] = useState<Artifact | null>(null);
@@ -60,8 +60,8 @@ export function Chat({ userId, customerId, onLogout }: ChatProps): JSX.Element {
       name: 'HubSpot',
       connected: true,
       icon: (
-        <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
-          <path d="M17.5 14.5c0 .82-.67 1.5-1.5 1.5s-1.5-.68-1.5-1.5.67-1.5 1.5-1.5 1.5.68 1.5 1.5z"/>
+        <svg className="w-5 h-5" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M18.164 7.93V5.307a2.31 2.31 0 001.378-2.116 2.31 2.31 0 00-4.622 0c0 .953.588 1.775 1.416 2.116V7.93a6.144 6.144 0 00-3.398 1.606l-6.627-5.148A2.602 2.602 0 006.307 4.2a2.602 2.602 0 00-2.602-2.602 2.602 2.602 0 000 5.204c.497 0 .959-.144 1.354-.383l6.533 5.075a6.093 6.093 0 00-.702 2.863c0 1.024.255 1.988.702 2.837l-2.705 2.704a2.076 2.076 0 00-1.258-.428 2.077 2.077 0 100 4.153c1.147 0 2.078-.93 2.078-2.076 0-.461-.152-.886-.409-1.23l2.664-2.664a6.144 6.144 0 009.2-5.296 6.144 6.144 0 00-3.998-5.427z"/>
         </svg>
       ),
     },
@@ -70,8 +70,8 @@ export function Chat({ userId, customerId, onLogout }: ChatProps): JSX.Element {
       name: 'Slack',
       connected: true,
       icon: (
-        <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
-          <path d="M5.042 15.165a2.528 2.528 0 0 1-2.52 2.523A2.528 2.528 0 0 1 0 15.165a2.527 2.527 0 0 1 2.522-2.52h2.52v2.52z"/>
+        <svg className="w-5 h-5" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M5.042 15.165a2.528 2.528 0 01-2.52 2.523A2.528 2.528 0 010 15.165a2.527 2.527 0 012.522-2.52h2.52v2.52zm1.271 0a2.527 2.527 0 012.521-2.52 2.527 2.527 0 012.521 2.52v6.313A2.528 2.528 0 018.834 24a2.528 2.528 0 01-2.521-2.522v-6.313zM8.834 5.042a2.528 2.528 0 01-2.521-2.52A2.528 2.528 0 018.834 0a2.528 2.528 0 012.521 2.522v2.52H8.834zm0 1.271a2.528 2.528 0 012.521 2.521 2.528 2.528 0 01-2.521 2.521H2.522A2.528 2.528 0 010 8.834a2.528 2.528 0 012.522-2.521h6.312zm10.122 2.521a2.528 2.528 0 012.522-2.521A2.528 2.528 0 0124 8.834a2.528 2.528 0 01-2.522 2.521h-2.522V8.834zm-1.268 0a2.528 2.528 0 01-2.523 2.521 2.527 2.527 0 01-2.52-2.521V2.522A2.527 2.527 0 0115.165 0a2.528 2.528 0 012.523 2.522v6.312zm-2.523 10.122a2.528 2.528 0 012.523 2.522A2.528 2.528 0 0115.165 24a2.527 2.527 0 01-2.52-2.522v-2.522h2.52zm0-1.268a2.527 2.527 0 01-2.52-2.523 2.526 2.526 0 012.52-2.52h6.313A2.527 2.527 0 0124 15.165a2.528 2.528 0 01-2.522 2.523h-6.313z"/>
         </svg>
       ),
     },
@@ -80,8 +80,8 @@ export function Chat({ userId, customerId, onLogout }: ChatProps): JSX.Element {
       name: 'Calendar',
       connected: false,
       icon: (
-        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+        <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M6.75 3v2.25M17.25 3v2.25M3 18.75V7.5a2.25 2.25 0 012.25-2.25h13.5A2.25 2.25 0 0121 7.5v11.25m-18 0A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75m-18 0v-7.5A2.25 2.25 0 015.25 9h13.5A2.25 2.25 0 0121 11.25v7.5" />
         </svg>
       ),
     },

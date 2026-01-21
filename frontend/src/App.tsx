@@ -4,26 +4,48 @@
  * Handles routing between:
  * - Landing page (public)
  * - Auth (sign in / sign up)
+ * - Company setup (for new companies)
  * - Onboarding (connect data sources)
  * - Chat (main app)
  */
 
 import { useEffect, useState } from 'react';
 import { supabase } from './lib/supabase';
+import { getEmailDomain, isPersonalEmail } from './lib/email';
 import { Landing } from './components/Landing';
 import { Auth } from './components/Auth';
+import { CompanySetup } from './components/CompanySetup';
 import { Onboarding } from './components/Onboarding';
 import { Chat } from './components/Chat';
 import { OAuthCallback } from './components/OAuthCallback';
 import type { User } from '@supabase/supabase-js';
 
-type Screen = 'landing' | 'auth' | 'onboarding' | 'chat';
+type Screen = 'landing' | 'auth' | 'blocked-email' | 'company-setup' | 'onboarding' | 'chat';
 
 interface UserInfo {
   id: string;
   email: string;
+  emailDomain: string;
   name: string | null;
-  customer_id: string | null;
+  companyId: string | null;
+  companyName: string | null;
+}
+
+// Simple in-memory store for companies (MVP - in production, use API)
+function getStoredCompanies(): Record<string, string> {
+  const stored = localStorage.getItem('revtops_companies');
+  return stored ? JSON.parse(stored) : {};
+}
+
+function storeCompany(domain: string, name: string): void {
+  const companies = getStoredCompanies();
+  companies[domain] = name;
+  localStorage.setItem('revtops_companies', JSON.stringify(companies));
+}
+
+function getCompanyByDomain(domain: string): string | null {
+  const companies = getStoredCompanies();
+  return companies[domain] || null;
 }
 
 function App(): JSX.Element {
@@ -48,8 +70,10 @@ function App(): JSX.Element {
             setUser({
               id: storedUserId,
               email: 'user@example.com',
+              emailDomain: 'example.com',
               name: null,
-              customer_id: null,
+              companyId: null,
+              companyName: null,
             });
             setScreen('chat');
           }
@@ -65,7 +89,9 @@ function App(): JSX.Element {
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       async (event, session) => {
         if (event === 'SIGNED_IN' && session?.user) {
+          setIsLoading(true);
           await handleAuthenticatedUser(session.user);
+          setIsLoading(false);
         } else if (event === 'SIGNED_OUT') {
           setUser(null);
           setScreen('landing');
@@ -81,20 +107,65 @@ function App(): JSX.Element {
   }, []);
 
   const handleAuthenticatedUser = async (supabaseUser: User): Promise<void> => {
+    const email = supabaseUser.email ?? '';
+    const emailDomain = getEmailDomain(email);
+
+    // Check if personal email (for OAuth users who bypassed frontend validation)
+    if (isPersonalEmail(email)) {
+      setUser({
+        id: supabaseUser.id,
+        email,
+        emailDomain,
+        name: supabaseUser.user_metadata?.name ?? null,
+        companyId: null,
+        companyName: null,
+      });
+      setScreen('blocked-email');
+      return;
+    }
+
+    // Check if company exists for this domain
+    const existingCompany = getCompanyByDomain(emailDomain);
+
     setUser({
       id: supabaseUser.id,
-      email: supabaseUser.email ?? '',
+      email,
+      emailDomain,
       name: supabaseUser.user_metadata?.name ?? null,
-      customer_id: supabaseUser.user_metadata?.customer_id ?? null,
+      companyId: existingCompany ? emailDomain : null,
+      companyName: existingCompany,
     });
 
-    // Check if user has completed onboarding (check localStorage for MVP)
-    const completed = localStorage.getItem(`onboarding_${supabaseUser.id}`);
-    if (completed) {
+    if (!existingCompany) {
+      // New company - need to set it up
+      setScreen('company-setup');
+      return;
+    }
+
+    // Check if user has completed onboarding
+    const completedOnboarding = localStorage.getItem(`onboarding_${supabaseUser.id}`);
+    if (completedOnboarding) {
       setScreen('chat');
     } else {
       setScreen('onboarding');
     }
+  };
+
+  const handleCompanySetup = (companyName: string): void => {
+    if (!user) return;
+
+    // Store the company
+    storeCompany(user.emailDomain, companyName);
+
+    // Update user with company info
+    setUser({
+      ...user,
+      companyId: user.emailDomain,
+      companyName,
+    });
+
+    // Proceed to onboarding
+    setScreen('onboarding');
   };
 
   const handleLogout = async (): Promise<void> => {
@@ -155,6 +226,36 @@ function App(): JSX.Element {
         />
       );
 
+    case 'blocked-email':
+      return (
+        <div className="min-h-screen flex items-center justify-center p-4">
+          <div className="max-w-md w-full text-center">
+            <div className="w-16 h-16 rounded-full bg-red-500/20 flex items-center justify-center mx-auto mb-6">
+              <svg className="w-8 h-8 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+              </svg>
+            </div>
+            <h1 className="text-2xl font-bold text-surface-50 mb-3">Work email required</h1>
+            <p className="text-surface-400 mb-6">
+              Revtops is designed for teams. Please sign in with your work email address
+              (not {user?.emailDomain}).
+            </p>
+            <button onClick={handleLogout} className="btn-primary">
+              Sign in with work email
+            </button>
+          </div>
+        </div>
+      );
+
+    case 'company-setup':
+      return (
+        <CompanySetup
+          emailDomain={user?.emailDomain ?? ''}
+          onComplete={handleCompanySetup}
+          onBack={handleLogout}
+        />
+      );
+
     case 'onboarding':
       return (
         <Onboarding
@@ -167,7 +268,7 @@ function App(): JSX.Element {
       return (
         <Chat
           userId={user?.id ?? ''}
-          customerId={user?.customer_id ?? undefined}
+          organizationId={user?.companyId ?? undefined}
           onLogout={handleLogout}
         />
       );

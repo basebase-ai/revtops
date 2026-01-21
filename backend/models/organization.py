@@ -1,5 +1,5 @@
 """
-Customer model representing organizations using the platform.
+Organization model representing companies using the Revtops platform.
 """
 from __future__ import annotations
 
@@ -17,15 +17,20 @@ if TYPE_CHECKING:
     from models.user import User
 
 
-class Customer(Base):
-    """Customer model representing an organization/company using the platform."""
+class Organization(Base):
+    """Organization model representing a company/tenant using Revtops."""
 
-    __tablename__ = "customers"
+    __tablename__ = "organizations"
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
+    email_domain: Mapped[Optional[str]] = mapped_column(
+        String(255), unique=True, nullable=True, index=True
+    )  # e.g., "acmecorp.com" - used to auto-match new users
+    
+    # Legacy Salesforce fields (kept for backwards compatibility)
     salesforce_instance_url: Mapped[Optional[str]] = mapped_column(
         String(255), nullable=True
     )
@@ -48,7 +53,10 @@ class Customer(Base):
 
     # Relationships
     users: Mapped[list["User"]] = relationship(
-        "User", back_populates="customer", foreign_keys="User.customer_id"
+        "User", back_populates="organization", foreign_keys="User.organization_id"
+    )
+    token_owner: Mapped[Optional["User"]] = relationship(
+        "User", foreign_keys=[token_owner_user_id]
     )
 
     def to_dict(self) -> dict[str, Optional[str]]:
@@ -56,6 +64,7 @@ class Customer(Base):
         return {
             "id": str(self.id),
             "name": self.name,
+            "email_domain": self.email_domain,
             "salesforce_org_id": self.salesforce_org_id,
             "last_sync_at": self.last_sync_at.isoformat() if self.last_sync_at else None,
         }

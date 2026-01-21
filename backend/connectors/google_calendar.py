@@ -220,7 +220,7 @@ class GoogleCalendarConnector(BaseConnector):
 
         return Activity(
             id=uuid.uuid4(),
-            customer_id=uuid.UUID(self.customer_id),
+            organization_id=uuid.UUID(self.organization_id),
             source_system=self.source_system,
             source_id=event_id,
             type=meeting_type,
