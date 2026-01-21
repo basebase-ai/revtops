@@ -63,7 +63,7 @@ alembic upgrade head
 
 ```bash
 cd backend
-python -m venv venv
+python3 -m venv venv
 source venv/bin/activate  # or `venv\Scripts\activate` on Windows
 pip install -r requirements.txt
 uvicorn api.main:app --reload

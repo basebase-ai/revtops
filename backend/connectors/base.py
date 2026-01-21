@@ -113,8 +113,12 @@ class BaseConnector(ABC):
         nango = get_nango_client()
         nango_integration_id = get_nango_integration_id(self.source_system)
 
-        # Use organization_id as the Nango connection_id
-        connection_id = self.organization_id
+        # Use the actual Nango connection ID from the integration record
+        connection_id = self._integration.nango_connection_id
+        if not connection_id:
+            raise ValueError(
+                f"No Nango connection ID stored for {self.source_system} integration"
+            )
 
         try:
             self._token = await nango.get_token(nango_integration_id, connection_id)
@@ -137,9 +141,19 @@ class BaseConnector(ABC):
         if self._credentials:
             return self._credentials
 
+        # Ensure integration is loaded
+        if not self._integration:
+            await self.get_token()
+
         nango = get_nango_client()
         nango_integration_id = get_nango_integration_id(self.source_system)
-        connection_id = self.organization_id
+        
+        # Use the actual Nango connection ID from the integration record
+        connection_id = self._integration.nango_connection_id
+        if not connection_id:
+            raise ValueError(
+                f"No Nango connection ID stored for {self.source_system} integration"
+            )
 
         self._credentials = await nango.get_credentials(
             nango_integration_id, connection_id

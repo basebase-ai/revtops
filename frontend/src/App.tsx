@@ -49,7 +49,25 @@ function generateUUID(): string {
 
 function getStoredCompanies(): Record<string, StoredCompany> {
   const stored = localStorage.getItem('revtops_companies');
-  return stored ? JSON.parse(stored) : {};
+  if (!stored) return {};
+  
+  const companies = JSON.parse(stored) as Record<string, Partial<StoredCompany> & { name: string }>;
+  let needsMigration = false;
+  
+  // Migrate old company format (without UUID) to new format
+  for (const domain of Object.keys(companies)) {
+    if (!companies[domain].id) {
+      companies[domain].id = generateUUID();
+      companies[domain].memberCount = companies[domain].memberCount ?? 1;
+      needsMigration = true;
+    }
+  }
+  
+  if (needsMigration) {
+    localStorage.setItem('revtops_companies', JSON.stringify(companies));
+  }
+  
+  return companies as Record<string, StoredCompany>;
 }
 
 function storeCompany(domain: string, name: string): StoredCompany {
@@ -149,8 +167,30 @@ function App(): JSX.Element {
       return;
     }
 
-    // Check if company exists for this domain
-    const existingCompany = getCompanyByDomain(emailDomain);
+    // Check if company exists - first in localStorage, then in backend
+    let existingCompany = getCompanyByDomain(emailDomain);
+
+    // If not in localStorage, check backend (colleague on different machine scenario)
+    if (!existingCompany) {
+      try {
+        const response = await fetch(`/api/auth/organizations/by-domain/${encodeURIComponent(emailDomain)}`);
+        if (response.ok) {
+          const backendOrg: { id: string; name: string; email_domain: string } = await response.json();
+          // Store in localStorage for future use
+          existingCompany = {
+            id: backendOrg.id,
+            name: backendOrg.name,
+            memberCount: 1,
+          };
+          // Update localStorage
+          const companies = getStoredCompanies();
+          companies[emailDomain] = existingCompany;
+          localStorage.setItem('revtops_companies', JSON.stringify(companies));
+        }
+      } catch (error) {
+        console.error('Failed to check backend for organization:', error);
+      }
+    }
 
     setUser({
       id: supabaseUser.id,
@@ -167,6 +207,21 @@ function App(): JSX.Element {
       return;
     }
 
+    // Ensure organization exists in backend (migration for existing localStorage data)
+    try {
+      await fetch('/api/auth/organizations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: existingCompany.id,
+          name: existingCompany.name,
+          email_domain: emailDomain,
+        }),
+      });
+    } catch (error) {
+      console.error('Failed to sync organization to backend:', error);
+    }
+
     // Check if user has completed onboarding
     const completedOnboarding = localStorage.getItem(`onboarding_${supabaseUser.id}`);
     if (completedOnboarding) {
@@ -176,10 +231,30 @@ function App(): JSX.Element {
     }
   };
 
-  const handleCompanySetup = (companyName: string): void => {
+  const handleCompanySetup = async (companyName: string): Promise<void> => {
     if (!user) return;
 
+    // Store in localStorage first
     const company = storeCompany(user.emailDomain, companyName);
+
+    // Create organization in backend database
+    try {
+      const response = await fetch('/api/auth/organizations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: company.id,
+          name: companyName,
+          email_domain: user.emailDomain,
+        }),
+      });
+
+      if (!response.ok) {
+        console.error('Failed to create organization in backend:', await response.text());
+      }
+    } catch (error) {
+      console.error('Failed to create organization:', error);
+    }
 
     setUser({
       ...user,
@@ -273,7 +348,7 @@ function App(): JSX.Element {
       return (
         <CompanySetup
           emailDomain={user?.emailDomain ?? ''}
-          onComplete={handleCompanySetup}
+          onComplete={(name) => void handleCompanySetup(name)}
           onBack={() => void handleLogout()}
         />
       );

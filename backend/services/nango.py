@@ -20,14 +20,20 @@ NANGO_API_BASE = "https://api.nango.dev"
 class NangoClient:
     """Client for interacting with Nango API."""
 
-    def __init__(self, secret_key: Optional[str] = None) -> None:
+    def __init__(
+        self,
+        secret_key: Optional[str] = None,
+        public_key: Optional[str] = None,
+    ) -> None:
         """
         Initialize Nango client.
 
         Args:
             secret_key: Nango secret key. Falls back to settings if not provided.
+            public_key: Nango public key for connect URLs. Falls back to settings.
         """
         self.secret_key = secret_key or settings.NANGO_SECRET_KEY
+        self.public_key = public_key or settings.NANGO_PUBLIC_KEY
         if not self.secret_key:
             raise ValueError("NANGO_SECRET_KEY is required")
 
@@ -111,21 +117,22 @@ class NangoClient:
 
     async def list_connections(
         self,
-        connection_id: Optional[str] = None,
+        end_user_id: Optional[str] = None,
     ) -> list[dict[str, Any]]:
         """
-        List all connections, optionally filtered by connection_id.
+        List all connections, optionally filtered by end_user_id.
 
         Args:
-            connection_id: Optional filter by connection ID
+            end_user_id: Optional filter by end user ID (organization ID)
 
         Returns:
             List of connections
         """
         async with httpx.AsyncClient() as client:
             params: dict[str, str] = {}
-            if connection_id:
-                params["connectionId"] = connection_id
+            # Nango uses endUserId to filter connections by the end_user.id we set during session creation
+            if end_user_id:
+                params["endUserId"] = end_user_id
 
             response = await client.get(
                 f"{NANGO_API_BASE}/connections",
@@ -133,9 +140,24 @@ class NangoClient:
                 params=params,
                 timeout=30.0,
             )
-            response.raise_for_status()
+            
+            if response.status_code != 200:
+                print(f"Nango list connections failed ({response.status_code}): {response.text}")
+                return []
+            
             data = response.json()
-            return data.get("connections", [])
+            connections = data.get("connections", [])
+            
+            # If filtering didn't work via API, filter locally
+            if end_user_id and connections:
+                filtered = [
+                    c for c in connections
+                    if c.get("end_user", {}).get("id") == end_user_id
+                ]
+                if filtered:
+                    return filtered
+            
+            return connections
 
     async def delete_connection(
         self,
@@ -206,7 +228,50 @@ class NangoClient:
             )
             return response.status_code == 200
 
-    def get_connect_url(
+    async def create_connect_session(
+        self,
+        integration_id: str,
+        connection_id: str,
+    ) -> dict[str, Any]:
+        """
+        Create a Nango Connect session for OAuth.
+
+        Returns the session token for use with the frontend SDK.
+
+        Args:
+            integration_id: The Nango integration ID
+            connection_id: The unique connection identifier (organization_id)
+
+        Returns:
+            Dict with token and other session info
+        """
+        async with httpx.AsyncClient() as client:
+            payload: dict[str, Any] = {
+                "end_user": {
+                    "id": connection_id,
+                },
+                "allowed_integrations": [integration_id],
+            }
+
+            response = await client.post(
+                f"{NANGO_API_BASE}/connect/sessions",
+                headers=self._get_headers(),
+                json=payload,
+                timeout=30.0,
+            )
+
+            if response.status_code not in (200, 201):
+                raise ValueError(f"Failed to create Nango session: {response.text}")
+
+            response_data = response.json()
+            # Token is nested inside 'data' object
+            data = response_data.get("data", response_data)
+            return {
+                "token": data.get("token"),
+                "expires_at": data.get("expires_at"),
+            }
+
+    async def get_connect_url(
         self,
         integration_id: str,
         connection_id: str,
@@ -215,7 +280,7 @@ class NangoClient:
         """
         Generate a Nango Connect URL for OAuth.
 
-        This URL redirects users to Nango's hosted OAuth flow.
+        Creates a session token and returns the connect URL.
 
         Args:
             integration_id: The Nango integration ID
@@ -223,16 +288,66 @@ class NangoClient:
             redirect_url: URL to redirect to after OAuth completes
 
         Returns:
-            Nango Connect URL
+            Nango Connect URL with session token
         """
-        # Use public key for connect URL (derived from secret key format)
-        # In production, you'd use the actual public key from Nango dashboard
+        from urllib.parse import quote
+
+        # Try to create a connect session via API
+        async with httpx.AsyncClient() as client:
+            payload: dict[str, Any] = {
+                "end_user": {
+                    "id": connection_id,
+                },
+                "allowed_integrations": [integration_id],
+            }
+
+            try:
+                response = await client.post(
+                    f"{NANGO_API_BASE}/connect/sessions",
+                    headers=self._get_headers(),
+                    json=payload,
+                    timeout=30.0,
+                )
+                
+                # Log non-success responses for debugging
+                if response.status_code not in (200, 201):
+                    print(f"Nango session creation failed ({response.status_code}): {response.text}")
+
+                if response.status_code in (200, 201):
+                    response_data = response.json()
+                    # Token is nested inside 'data' object
+                    data = response_data.get("data", response_data)
+                    
+                    # Nango provides a connect_link - use it directly
+                    # The session already knows allowed integrations
+                    connect_link = data.get("connect_link")
+                    if connect_link:
+                        # Append redirect_url if provided
+                        if redirect_url:
+                            separator = "&" if "?" in connect_link else "?"
+                            connect_link = f"{connect_link}{separator}redirect_url={quote(redirect_url)}"
+                        
+                        return connect_link
+                    
+                    # Fallback: build URL from token
+                    token = data.get("token")
+                    if token:
+                        base_url = "https://connect.nango.dev"
+                        if redirect_url:
+                            return f"{base_url}?session_token={token}&redirect_url={quote(redirect_url)}"
+                        return f"{base_url}?session_token={token}"
+                    
+                    print(f"Nango session response (unexpected format): {response_data}")
+            except Exception as e:
+                print(f"Nango session creation failed: {e}")
+
+        # Fallback: Use direct OAuth URL (works with some Nango setups)
+        # This initiates OAuth flow directly through Nango's backend
         base_url = f"https://api.nango.dev/oauth/connect/{integration_id}"
         params = [f"connection_id={connection_id}"]
-
         if redirect_url:
-            params.append(f"redirect_url={redirect_url}")
-
+            params.append(f"redirect_url={quote(redirect_url)}")
+        
         return f"{base_url}?{'&'.join(params)}"
 
 

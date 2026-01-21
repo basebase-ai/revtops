@@ -72,6 +72,14 @@ class ConnectUrlResponse(BaseModel):
     provider: str
 
 
+class ConnectSessionResponse(BaseModel):
+    """Response model for Nango connect session token."""
+
+    session_token: str
+    provider: str
+    expires_at: Optional[str]
+
+
 class AvailableIntegrationsResponse(BaseModel):
     """Response model for available integrations."""
 
@@ -114,6 +122,94 @@ async def logout(response: Response) -> dict[str, str]:
     return {"status": "logged out"}
 
 
+class CreateOrganizationRequest(BaseModel):
+    """Request model for creating an organization."""
+
+    id: str  # UUID from frontend
+    name: str
+    email_domain: str
+
+
+class OrganizationResponse(BaseModel):
+    """Response model for organization."""
+
+    id: str
+    name: str
+    email_domain: Optional[str]
+
+
+@router.get("/organizations/by-domain/{email_domain}", response_model=OrganizationResponse)
+async def get_organization_by_domain(email_domain: str) -> OrganizationResponse:
+    """Get organization by email domain.
+    
+    Used to check if an organization exists for a domain when a new user signs up.
+    """
+    async with get_session() as session:
+        result = await session.execute(
+            select(Organization).where(Organization.email_domain == email_domain)
+        )
+        org = result.scalar_one_or_none()
+        
+        if not org:
+            raise HTTPException(status_code=404, detail="Organization not found")
+        
+        return OrganizationResponse(
+            id=str(org.id),
+            name=org.name,
+            email_domain=org.email_domain,
+        )
+
+
+@router.post("/organizations", response_model=OrganizationResponse)
+async def create_organization(request: CreateOrganizationRequest) -> OrganizationResponse:
+    """Create a new organization.
+    
+    Called when the first user from a company domain signs up.
+    """
+    try:
+        org_uuid = UUID(request.id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid organization ID")
+
+    async with get_session() as session:
+        # Check if organization already exists by ID
+        existing = await session.get(Organization, org_uuid)
+        if existing:
+            return OrganizationResponse(
+                id=str(existing.id),
+                name=existing.name,
+                email_domain=existing.email_domain,
+            )
+        
+        # Check if organization exists for this email domain (different browser scenario)
+        result = await session.execute(
+            select(Organization).where(Organization.email_domain == request.email_domain)
+        )
+        existing_by_domain = result.scalar_one_or_none()
+        if existing_by_domain:
+            return OrganizationResponse(
+                id=str(existing_by_domain.id),
+                name=existing_by_domain.name,
+                email_domain=existing_by_domain.email_domain,
+            )
+
+        # Create new organization
+        new_org = Organization(
+            id=org_uuid,
+            name=request.name,
+            email_domain=request.email_domain,
+        )
+        session.add(new_org)
+        await session.commit()
+        await session.refresh(new_org)
+
+        return OrganizationResponse(
+            id=str(new_org.id),
+            name=new_org.name,
+            email_domain=new_org.email_domain,
+        )
+
+
 # =============================================================================
 # Nango Integration Endpoints
 # =============================================================================
@@ -133,25 +229,41 @@ async def get_available_integrations() -> AvailableIntegrationsResponse:
 
 
 @router.get("/connect/{provider}", response_model=ConnectUrlResponse)
-async def get_connect_url(provider: str, user_id: str) -> ConnectUrlResponse:
+async def get_connect_url(
+    provider: str,
+    user_id: Optional[str] = None,
+    organization_id: Optional[str] = None,
+) -> ConnectUrlResponse:
     """
     Get Nango connect URL for a provider.
 
     The frontend should redirect the user to this URL to initiate OAuth.
     After OAuth completes, Nango redirects back to our callback.
+    Accepts either user_id (to look up org) or organization_id directly.
     """
-    try:
-        user_uuid = UUID(user_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid user ID")
+    org_id_str: str
 
-    # Get user and organization
-    async with get_session() as session:
-        user = await session.get(User, user_uuid)
-        if not user or not user.organization_id:
-            raise HTTPException(status_code=404, detail="User not found")
+    if organization_id:
+        # Direct organization ID provided
+        try:
+            UUID(organization_id)  # Validate it's a valid UUID
+            org_id_str = organization_id
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid organization ID")
+    elif user_id:
+        # Look up organization via user
+        try:
+            user_uuid = UUID(user_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid user ID")
 
-        organization_id = str(user.organization_id)
+        async with get_session() as session:
+            user = await session.get(User, user_uuid)
+            if not user or not user.organization_id:
+                raise HTTPException(status_code=404, detail="User not found")
+            org_id_str = str(user.organization_id)
+    else:
+        raise HTTPException(status_code=400, detail="Either user_id or organization_id required")
 
     # Get Nango integration ID
     try:
@@ -163,23 +275,85 @@ async def get_connect_url(provider: str, user_id: str) -> ConnectUrlResponse:
     nango = get_nango_client()
     redirect_url = f"{settings.FRONTEND_URL}/?integration={provider}&status=success"
 
-    connect_url = nango.get_connect_url(
+    connect_url = await nango.get_connect_url(
         integration_id=nango_integration_id,
-        connection_id=organization_id,
+        connection_id=org_id_str,
         redirect_url=redirect_url,
     )
 
     return ConnectUrlResponse(connect_url=connect_url, provider=provider)
 
 
+@router.get("/connect/{provider}/session", response_model=ConnectSessionResponse)
+async def get_connect_session(
+    provider: str,
+    user_id: Optional[str] = None,
+    organization_id: Optional[str] = None,
+) -> ConnectSessionResponse:
+    """
+    Get a Nango connect session token for the frontend SDK.
+
+    This is the recommended approach - returns a session token that
+    the frontend uses with @nangohq/frontend to open a popup OAuth flow.
+
+    Accepts either user_id (looks up organization) or organization_id directly.
+    """
+    org_id_str: str = ""
+
+    if organization_id:
+        try:
+            UUID(organization_id)
+            org_id_str = organization_id
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid organization ID")
+    elif user_id:
+        try:
+            user_uuid = UUID(user_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid user ID")
+
+        async with get_session() as session:
+            user = await session.get(User, user_uuid)
+            if not user or not user.organization_id:
+                raise HTTPException(status_code=404, detail="User not found")
+            org_id_str = str(user.organization_id)
+    else:
+        raise HTTPException(status_code=400, detail="Either user_id or organization_id required")
+
+    try:
+        nango_integration_id = get_nango_integration_id(provider)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Unknown provider: {provider}")
+
+    nango = get_nango_client()
+    try:
+        session_data = await nango.create_connect_session(
+            integration_id=nango_integration_id,
+            connection_id=org_id_str,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return ConnectSessionResponse(
+        session_token=session_data["token"],
+        provider=provider,
+        expires_at=session_data.get("expires_at"),
+    )
+
+
 @router.get("/connect/{provider}/redirect")
-async def connect_redirect(provider: str, user_id: str) -> RedirectResponse:
+async def connect_redirect(
+    provider: str,
+    user_id: Optional[str] = None,
+    organization_id: Optional[str] = None,
+) -> RedirectResponse:
     """
     Redirect to Nango connect URL.
 
     Alternative to get_connect_url for direct browser redirects.
+    Accepts either user_id or organization_id.
     """
-    response = await get_connect_url(provider, user_id)
+    response = await get_connect_url(provider, user_id=user_id, organization_id=organization_id)
     return RedirectResponse(url=response.connect_url)
 
 
@@ -255,22 +429,91 @@ async def nango_callback(
 
 
 @router.get("/integrations", response_model=IntegrationsListResponse)
-async def list_integrations(user_id: str) -> IntegrationsListResponse:
-    """List all connected integrations for a user's organization."""
+async def list_integrations(
+    user_id: Optional[str] = None, organization_id: Optional[str] = None
+) -> IntegrationsListResponse:
+    """List all connected integrations for a user's organization.
+    
+    Checks both our local database AND Nango for connections,
+    syncing any new connections found in Nango to our database.
+    """
+    org_uuid: Optional[UUID] = None
+
+    if organization_id:
+        try:
+            org_uuid = UUID(organization_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid organization ID")
+    elif user_id:
+        try:
+            user_uuid = UUID(user_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid user ID")
+
+        async with get_session() as session:
+            user = await session.get(User, user_uuid)
+            if not user or not user.organization_id:
+                raise HTTPException(status_code=404, detail="User not found")
+            org_uuid = user.organization_id
+    else:
+        raise HTTPException(status_code=400, detail="Either user_id or organization_id required")
+
+    # Check Nango for connections and sync to our database
+    nango = get_nango_client()
     try:
-        user_uuid = UUID(user_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid user ID")
+        nango_connections = await nango.list_connections(end_user_id=str(org_uuid))
+        print(f"Found {len(nango_connections)} Nango connections for org {org_uuid}")
+    except Exception as e:
+        print(f"Failed to fetch Nango connections: {e}")
+        nango_connections = []
 
     async with get_session() as session:
-        user = await session.get(User, user_uuid)
-        if not user or not user.organization_id:
-            raise HTTPException(status_code=404, detail="User not found")
-
+        # Ensure organization exists before inserting integrations
+        if nango_connections:
+            existing_org = await session.get(Organization, org_uuid)
+            if not existing_org:
+                # Create the organization
+                new_org = Organization(
+                    id=org_uuid,
+                    name="Organization",  # Will be updated when user sets company name
+                )
+                session.add(new_org)
+                await session.flush()  # Ensure org is created before adding integrations
+        
+        # Get existing integrations from our database
         result = await session.execute(
-            select(Integration).where(Integration.organization_id == user.organization_id)
+            select(Integration).where(Integration.organization_id == org_uuid)
         )
-        integrations = result.scalars().all()
+        existing_integrations = {i.provider: i for i in result.scalars().all()}
+
+        # Sync Nango connections to our database
+        for conn in nango_connections:
+            provider = conn.get("provider_config_key") or conn.get("provider")
+            # Get the actual Nango connection ID
+            nango_conn_id = conn.get("connection_id") or conn.get("id")
+            print(f"Nango connection: provider={provider}, conn_id={nango_conn_id}, full={conn}")
+            
+            if provider and provider not in existing_integrations:
+                # Create new integration record with actual Nango connection ID
+                new_integration = Integration(
+                    organization_id=org_uuid,
+                    provider=provider,
+                    nango_connection_id=nango_conn_id,
+                    is_active=True,
+                )
+                session.add(new_integration)
+                existing_integrations[provider] = new_integration
+            elif provider and nango_conn_id:
+                # Update existing integration with correct Nango connection ID if different
+                existing = existing_integrations[provider]
+                if existing.nango_connection_id != nango_conn_id:
+                    existing.nango_connection_id = nango_conn_id
+        
+        await session.commit()
+        
+        # Refresh to get any auto-generated fields
+        for integration in existing_integrations.values():
+            await session.refresh(integration)
 
         return IntegrationsListResponse(
             integrations=[
@@ -282,53 +525,77 @@ async def list_integrations(user_id: str) -> IntegrationsListResponse:
                     last_error=i.last_error,
                     connected_at=i.created_at.isoformat() if i.created_at else None,
                 )
-                for i in integrations
+                for i in existing_integrations.values()
             ]
         )
 
 
 @router.delete("/integrations/{provider}")
-async def disconnect_integration(provider: str, user_id: str) -> dict[str, str]:
+async def disconnect_integration(
+    provider: str,
+    user_id: Optional[str] = None,
+    organization_id: Optional[str] = None,
+) -> dict[str, str]:
     """Disconnect an integration."""
-    try:
-        user_uuid = UUID(user_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid user ID")
+    org_uuid: Optional[UUID] = None
+
+    if organization_id:
+        try:
+            org_uuid = UUID(organization_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid organization ID")
+    elif user_id:
+        try:
+            user_uuid = UUID(user_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid user ID")
+
+        async with get_session() as session:
+            user = await session.get(User, user_uuid)
+            if not user or not user.organization_id:
+                raise HTTPException(status_code=404, detail="User not found")
+            org_uuid = user.organization_id
+    else:
+        raise HTTPException(status_code=400, detail="Either user_id or organization_id required")
 
     async with get_session() as session:
-        user = await session.get(User, user_uuid)
-        if not user or not user.organization_id:
-            raise HTTPException(status_code=404, detail="User not found")
-
         # Find integration
         result = await session.execute(
             select(Integration).where(
-                Integration.organization_id == user.organization_id,
+                Integration.organization_id == org_uuid,
                 Integration.provider == provider,
             )
         )
         integration = result.scalar_one_or_none()
 
         if not integration:
+            print(f"Disconnect: Integration not found for org={org_uuid}, provider={provider}")
             raise HTTPException(status_code=404, detail="Integration not found")
+
+        print(f"Disconnect: Found integration id={integration.id}, nango_conn_id={integration.nango_connection_id}")
 
         # Delete from Nango
         if integration.nango_connection_id:
             try:
                 nango = get_nango_client()
                 nango_integration_id = get_nango_integration_id(provider)
+                print(f"Disconnect: Deleting from Nango: integration={nango_integration_id}, conn_id={integration.nango_connection_id}")
                 await nango.delete_connection(
                     nango_integration_id,
                     integration.nango_connection_id,
                 )
+                print("Disconnect: Nango deletion successful")
             except Exception as e:
                 # Log but don't fail - connection might already be gone
-                print(f"Warning: Failed to delete Nango connection: {e}")
+                print(f"Disconnect: Failed to delete Nango connection: {e}")
+        else:
+            print("Disconnect: No nango_connection_id, skipping Nango deletion")
 
-        # Mark as inactive in our database
-        integration.is_active = False
-        integration.nango_connection_id = None
+        # Mark as inactive in our database and DELETE the record
+        print(f"Disconnect: Deleting integration from database")
+        await session.delete(integration)
         await session.commit()
+        print(f"Disconnect: Database deletion successful")
 
     return {"status": "disconnected", "provider": provider}
 

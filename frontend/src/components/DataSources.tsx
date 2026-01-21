@@ -8,7 +8,8 @@
  * - Disconnect integrations
  */
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
+import Nango from '@nangohq/frontend';
 
 interface Integration {
   id: string;
@@ -105,50 +106,129 @@ export function DataSources({ organizationId }: DataSourcesProps): JSX.Element {
   const [integrations, setIntegrations] = useState<Integration[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [syncingProviders, setSyncingProviders] = useState<Set<string>>(new Set());
+  const [connectingProvider, setConnectingProvider] = useState<string | null>(null);
 
-  useEffect(() => {
-    loadIntegrations();
-  }, [organizationId]);
-
-  const loadIntegrations = async (): Promise<void> => {
+  const loadIntegrations = useCallback(async (): Promise<void> => {
     setIsLoading(true);
     try {
-      // TODO: Fetch actual integration status from API
-      // For now, mock some connected integrations
-      const mockConnected = ['hubspot', 'slack'];
+      // Fetch actual connected integrations from backend
+      const response = await fetch(`/api/auth/integrations?organization_id=${organizationId}`);
+      
+      let connectedMap: Record<string, { lastSyncAt: string | null; lastError: string | null }> = {};
+      
+      if (response.ok) {
+        const data = await response.json();
+        // Build a map of connected integrations
+        for (const integration of data.integrations || []) {
+          connectedMap[integration.provider] = {
+            lastSyncAt: integration.last_sync_at,
+            lastError: integration.last_error,
+          };
+        }
+      }
       
       const integrationsWithStatus: Integration[] = AVAILABLE_INTEGRATIONS.map((i) => ({
         ...i,
-        connected: mockConnected.includes(i.id),
-        lastSyncAt: mockConnected.includes(i.id) ? new Date(Date.now() - 1000 * 60 * 30).toISOString() : null,
-        lastError: null,
+        connected: i.provider in connectedMap,
+        lastSyncAt: connectedMap[i.provider]?.lastSyncAt ?? null,
+        lastError: connectedMap[i.provider]?.lastError ?? null,
       }));
 
       setIntegrations(integrationsWithStatus);
     } catch (error) {
       console.error('Failed to load integrations:', error);
+      // Fallback to showing all as disconnected
+      const integrationsWithStatus: Integration[] = AVAILABLE_INTEGRATIONS.map((i) => ({
+        ...i,
+        connected: false,
+        lastSyncAt: null,
+        lastError: null,
+      }));
+      setIntegrations(integrationsWithStatus);
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [organizationId]);
+
+  useEffect(() => {
+    void loadIntegrations();
+  }, [loadIntegrations]);
 
   const handleConnect = async (provider: string): Promise<void> => {
-    // TODO: Redirect to OAuth flow
-    window.location.href = `/api/auth/connect/${provider}/redirect?user_id=${organizationId}`;
+    if (connectingProvider) return;
+    setConnectingProvider(provider);
+
+    try {
+      // Get session token from backend
+      const response = await fetch(
+        `/api/auth/connect/${provider}/session?organization_id=${organizationId}`
+      );
+
+      if (!response.ok) {
+        throw new Error('Failed to get session token');
+      }
+
+      const data: { session_token: string } = await response.json();
+
+      // Initialize Nango and open connect UI in popup
+      const nango = new Nango();
+      
+      nango.openConnectUI({
+        sessionToken: data.session_token,
+        onEvent: (event) => {
+          console.log('Nango event:', event);
+          
+          // Handle different possible event types from Nango
+          const eventType = event.type as string;
+          if (
+            eventType === 'connect' ||
+            eventType === 'connection-created' ||
+            eventType === 'success'
+          ) {
+            // Connection successful - reload integrations
+            console.log('Connection successful, reloading integrations');
+            void loadIntegrations();
+            setConnectingProvider(null);
+          } else if (eventType === 'close' || eventType === 'closed') {
+            // User closed the popup
+            setConnectingProvider(null);
+          }
+        },
+      });
+    } catch (error) {
+      console.error('Failed to connect:', error);
+      setConnectingProvider(null);
+    }
   };
 
   const handleDisconnect = async (provider: string): Promise<void> => {
     if (!confirm(`Are you sure you want to disconnect ${provider}?`)) return;
 
+    const url = `/api/auth/integrations/${provider}?organization_id=${organizationId}`;
+    console.log('Disconnecting:', { provider, organizationId, url });
+
     try {
-      // TODO: Call disconnect API
-      setIntegrations((prev) =>
-        prev.map((i) =>
-          i.id === provider ? { ...i, connected: false, lastSyncAt: null } : i
-        )
-      );
+      const response = await fetch(url, { method: 'DELETE' });
+      
+      console.log('Disconnect response:', {
+        status: response.status,
+        statusText: response.statusText,
+        ok: response.ok,
+      });
+
+      const responseText = await response.text();
+      console.log('Disconnect response body:', responseText);
+
+      if (!response.ok) {
+        throw new Error(responseText);
+      }
+
+      console.log('Disconnect successful, reloading integrations...');
+      // Reload integrations to reflect the change
+      await loadIntegrations();
     } catch (error) {
       console.error('Failed to disconnect:', error);
+      alert(`Failed to disconnect: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   };
 
@@ -342,9 +422,20 @@ export function DataSources({ organizationId }: DataSourcesProps): JSX.Element {
                 </div>
                 <button
                   onClick={() => void handleConnect(integration.provider)}
-                  className="w-full mt-4 px-4 py-2 text-sm font-medium text-primary-400 border border-primary-500/30 hover:bg-primary-500/10 rounded-lg transition-colors"
+                  disabled={connectingProvider === integration.provider}
+                  className="w-full mt-4 px-4 py-2 text-sm font-medium text-primary-400 border border-primary-500/30 hover:bg-primary-500/10 disabled:opacity-50 rounded-lg transition-colors flex items-center justify-center gap-2"
                 >
-                  Connect
+                  {connectingProvider === integration.provider ? (
+                    <>
+                      <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                      </svg>
+                      Connecting...
+                    </>
+                  ) : (
+                    'Connect'
+                  )}
                 </button>
               </div>
             ))}
