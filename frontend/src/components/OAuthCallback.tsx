@@ -7,6 +7,7 @@
 
 import { useEffect, useState } from 'react';
 import { supabase } from '../lib/supabase';
+import type { AuthChangeEvent, Session } from '@supabase/supabase-js';
 
 type CallbackState = 'processing' | 'success' | 'error';
 
@@ -48,7 +49,7 @@ export function OAuthCallback(): JSX.Element {
           // No session yet - might still be processing
           // Listen for auth state change
           const { data: { subscription } } = supabase.auth.onAuthStateChange(
-            (event, session) => {
+            (event: AuthChangeEvent, session: Session | null) => {
               if (event === 'SIGNED_IN' && session) {
                 setState('success');
                 setTimeout(() => {

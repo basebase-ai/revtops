@@ -34,17 +34,17 @@ export function ArtifactViewer({ artifact }: ArtifactViewerProps): JSX.Element {
 function renderArtifactData(data: Record<string, unknown>): JSX.Element {
   // Check if this is a deals summary
   if ('count' in data && 'deals' in data) {
-    return <DealsView data={data as DealsData} />;
+    return <DealsView data={data as unknown as DealsData} />;
   }
 
   // Check if this is an accounts summary
   if ('count' in data && 'accounts' in data) {
-    return <AccountsView data={data as AccountsData} />;
+    return <AccountsView data={data as unknown as AccountsData} />;
   }
 
   // Check if this is a pipeline summary
   if ('by_stage' in data) {
-    return <PipelineView data={data as PipelineData} />;
+    return <PipelineView data={data as unknown as PipelineData} />;
   }
 
   // Default: JSON view

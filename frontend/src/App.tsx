@@ -17,7 +17,7 @@ import { CompanySetup } from './components/CompanySetup';
 import { Onboarding } from './components/Onboarding';
 import { AppLayout } from './components/AppLayout';
 import { OAuthCallback } from './components/OAuthCallback';
-import type { User } from '@supabase/supabase-js';
+import type { User, AuthChangeEvent, Session } from '@supabase/supabase-js';
 import type { UserProfile, OrganizationInfo } from './components/AppLayout';
 
 type Screen = 'landing' | 'auth' | 'blocked-email' | 'company-setup' | 'onboarding' | 'app';
@@ -56,9 +56,10 @@ function getStoredCompanies(): Record<string, StoredCompany> {
   
   // Migrate old company format (without UUID) to new format
   for (const domain of Object.keys(companies)) {
-    if (!companies[domain].id) {
-      companies[domain].id = generateUUID();
-      companies[domain].memberCount = companies[domain].memberCount ?? 1;
+    const company = companies[domain];
+    if (company && !company.id) {
+      company.id = generateUUID();
+      company.memberCount = company.memberCount ?? 1;
       needsMigration = true;
     }
   }
@@ -124,7 +125,7 @@ function App(): JSX.Element {
     };
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      async (event, session) => {
+      async (event: AuthChangeEvent, session: Session | null) => {
         if (event === 'SIGNED_IN' && session?.user) {
           setIsLoading(true);
           await handleAuthenticatedUser(session.user);

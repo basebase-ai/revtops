@@ -39,7 +39,8 @@ interface ChatProps {
   onChatCreated?: (id: string, title: string) => void;
 }
 
-export function Chat({ userId, organizationId, chatId, onChatCreated }: ChatProps): JSX.Element {
+export function Chat({ userId, organizationId: _organizationId, chatId, onChatCreated }: ChatProps): JSX.Element {
+  // Note: _organizationId will be used for org-scoped features
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState<string>('');
   const [currentArtifact, setCurrentArtifact] = useState<Artifact | null>(null);
