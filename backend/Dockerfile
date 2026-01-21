@@ -21,5 +21,5 @@ ENV PYTHONPATH=/app
 # Expose port (Railway provides PORT env var)
 EXPOSE 8000
 
-# Run the application using shell form to expand $PORT
-CMD uvicorn api.main:app --host 0.0.0.0 --port ${PORT:-8000}
+# Run the application - use shell to expand $PORT
+CMD ["/bin/sh", "-c", "uvicorn api.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
