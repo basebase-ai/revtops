@@ -31,7 +31,17 @@ export function useWebSocket(url: string): UseWebSocketReturn {
 
     setConnectionState('connecting');
 
-    const wsUrl = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}${url}`;
+    // In production, use the API URL for WebSocket connection
+    // In development, use current host (proxied by Vite)
+    let wsUrl: string;
+    const apiUrl = import.meta.env.VITE_API_URL as string | undefined;
+    if (apiUrl) {
+      // Convert http(s) to ws(s)
+      const wsBase = apiUrl.replace(/^http/, 'ws');
+      wsUrl = `${wsBase}${url}`;
+    } else {
+      wsUrl = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}${url}`;
+    }
     const ws = new WebSocket(wsUrl);
 
     ws.onopen = (): void => {

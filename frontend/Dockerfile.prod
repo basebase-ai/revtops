@@ -1,0 +1,47 @@
+# Build stage
+FROM node:20-alpine AS builder
+
+WORKDIR /app
+
+# Copy package files
+COPY package*.json ./
+
+# Install dependencies
+RUN npm ci
+
+# Copy source code
+COPY . .
+
+# Build for production
+ARG VITE_API_URL
+ENV VITE_API_URL=$VITE_API_URL
+
+ARG VITE_SUPABASE_URL
+ENV VITE_SUPABASE_URL=$VITE_SUPABASE_URL
+
+ARG VITE_SUPABASE_ANON_KEY
+ENV VITE_SUPABASE_ANON_KEY=$VITE_SUPABASE_ANON_KEY
+
+ARG VITE_NANGO_PUBLIC_KEY
+ENV VITE_NANGO_PUBLIC_KEY=$VITE_NANGO_PUBLIC_KEY
+
+RUN npm run build
+
+# Production stage with nginx
+FROM nginx:alpine
+
+# Copy built files
+COPY --from=builder /app/dist /usr/share/nginx/html
+
+# Copy nginx config template
+COPY nginx.conf /etc/nginx/templates/default.conf.template
+
+# Set default port (Railway provides PORT env var)
+ENV PORT=80
+
+# Expose port
+EXPOSE 80
+
+# nginx:alpine image automatically runs envsubst on .template files
+# and outputs to /etc/nginx/conf.d/
+CMD ["nginx", "-g", "daemon off;"]

@@ -10,6 +10,7 @@ Responsibilities:
 """
 from __future__ import annotations
 
+import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -19,10 +20,25 @@ from models.database import init_db
 
 app = FastAPI(title="Revenue Copilot API", version="1.0.0")
 
-# CORS configuration
+# CORS configuration - allow frontend origins
+cors_origins: list[str] = [
+    "http://localhost:5173",  # Vite dev server
+    "http://localhost:3000",
+]
+
+# Add production frontend URL from environment
+frontend_url = os.environ.get("FRONTEND_URL")
+if frontend_url:
+    cors_origins.append(frontend_url)
+
+# For Railway deployments, allow the railway.app domain
+railway_domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN")
+if railway_domain:
+    cors_origins.append(f"https://{railway_domain}")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],  # Vite dev server
+    allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

@@ -2,7 +2,11 @@
  * API client for backend communication.
  */
 
-const API_BASE = '/api';
+// In production, VITE_API_URL points to the backend service
+// In development, we use '/api' which is proxied by Vite to localhost:8000
+const API_BASE = import.meta.env.VITE_API_URL 
+  ? `${import.meta.env.VITE_API_URL}/api`
+  : '/api';
 
 interface ApiResponse<T> {
   data: T | null;
