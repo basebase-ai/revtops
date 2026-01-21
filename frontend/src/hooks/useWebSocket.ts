@@ -31,21 +31,20 @@ export function useWebSocket(url: string): UseWebSocketReturn {
 
     setConnectionState('connecting');
 
-    // Determine WebSocket URL
-    let wsUrl: string;
-    const apiUrl = import.meta.env.VITE_API_URL as string | undefined;
+    // Backend URL for production
+    const PRODUCTION_BACKEND_WS = 'wss://revtops-backend-production.up.railway.app';
     
-    if (apiUrl) {
-      // Convert http(s) to ws(s)
-      const wsBase = apiUrl.replace(/^http/, 'ws');
-      wsUrl = `${wsBase}${url}`;
-    } else if (typeof window !== 'undefined' && window.location.hostname.includes('railway.app')) {
-      // Auto-detect Railway production - use backend WebSocket
-      wsUrl = `wss://revtops-backend-production.up.railway.app${url}`;
-    } else {
-      // Local development - use current host (proxied by Vite)
-      wsUrl = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}${url}`;
-    }
+    // Determine if we're in production
+    const isProduction = typeof window !== 'undefined' && 
+      (window.location.hostname.includes('railway.app') || 
+       window.location.hostname.includes('revtops'));
+
+    // WebSocket URL
+    const wsUrl = isProduction 
+      ? `${PRODUCTION_BACKEND_WS}${url}`
+      : `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}${url}`;
+    
+    console.log('[WebSocket] isProduction:', isProduction, 'wsUrl:', wsUrl);
     const ws = new WebSocket(wsUrl);
 
     ws.onopen = (): void => {

@@ -2,24 +2,21 @@
  * API client for backend communication.
  */
 
-// Determine API base URL
-// In production (railway.app domain), use the backend URL directly
-// In development, use '/api' which is proxied by Vite to localhost:8000
-function getApiBase(): string {
-  // Check for explicit env var first
-  if (import.meta.env.VITE_API_URL) {
-    return `${import.meta.env.VITE_API_URL}/api`;
-  }
-  // Auto-detect Railway production environment
-  if (typeof window !== 'undefined' && window.location.hostname.includes('railway.app')) {
-    // Replace frontend domain with backend domain
-    return 'https://revtops-backend-production.up.railway.app/api';
-  }
-  // Local development - use proxy
-  return '/api';
-}
+// Backend URL for production
+const PRODUCTION_BACKEND = 'https://revtops-backend-production.up.railway.app';
 
-const API_BASE = getApiBase();
+// Determine if we're in production (Railway)
+const isProduction = typeof window !== 'undefined' && 
+  (window.location.hostname.includes('railway.app') || 
+   window.location.hostname.includes('revtops'));
+
+// API base URL
+const API_BASE = isProduction 
+  ? `${PRODUCTION_BACKEND}/api`
+  : '/api';
+
+// Debug log (remove after confirming it works)
+console.log('[API Client] isProduction:', isProduction, 'API_BASE:', API_BASE);
 
 interface ApiResponse<T> {
   data: T | null;
