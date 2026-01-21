@@ -12,18 +12,21 @@ RUN npm ci
 # Copy source code
 COPY . .
 
-# Build for production
+# Build for production - Railway passes these as build args
 ARG VITE_API_URL
-ENV VITE_API_URL=$VITE_API_URL
-
 ARG VITE_SUPABASE_URL
-ENV VITE_SUPABASE_URL=$VITE_SUPABASE_URL
-
 ARG VITE_SUPABASE_ANON_KEY
-ENV VITE_SUPABASE_ANON_KEY=$VITE_SUPABASE_ANON_KEY
-
 ARG VITE_NANGO_PUBLIC_KEY
-ENV VITE_NANGO_PUBLIC_KEY=$VITE_NANGO_PUBLIC_KEY
+
+# Debug: print env vars during build
+RUN echo "VITE_API_URL=${VITE_API_URL}"
+
+# Create .env file for Vite to read
+RUN echo "VITE_API_URL=${VITE_API_URL}" > .env && \
+    echo "VITE_SUPABASE_URL=${VITE_SUPABASE_URL}" >> .env && \
+    echo "VITE_SUPABASE_ANON_KEY=${VITE_SUPABASE_ANON_KEY}" >> .env && \
+    echo "VITE_NANGO_PUBLIC_KEY=${VITE_NANGO_PUBLIC_KEY}" >> .env && \
+    cat .env
 
 RUN npm run build
 

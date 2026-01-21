@@ -2,11 +2,24 @@
  * API client for backend communication.
  */
 
-// In production, VITE_API_URL points to the backend service
-// In development, we use '/api' which is proxied by Vite to localhost:8000
-const API_BASE = import.meta.env.VITE_API_URL 
-  ? `${import.meta.env.VITE_API_URL}/api`
-  : '/api';
+// Determine API base URL
+// In production (railway.app domain), use the backend URL directly
+// In development, use '/api' which is proxied by Vite to localhost:8000
+function getApiBase(): string {
+  // Check for explicit env var first
+  if (import.meta.env.VITE_API_URL) {
+    return `${import.meta.env.VITE_API_URL}/api`;
+  }
+  // Auto-detect Railway production environment
+  if (typeof window !== 'undefined' && window.location.hostname.includes('railway.app')) {
+    // Replace frontend domain with backend domain
+    return 'https://revtops-backend-production.up.railway.app/api';
+  }
+  // Local development - use proxy
+  return '/api';
+}
+
+const API_BASE = getApiBase();
 
 interface ApiResponse<T> {
   data: T | null;
