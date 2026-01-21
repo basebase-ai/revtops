@@ -138,6 +138,79 @@ class OrganizationResponse(BaseModel):
     email_domain: Optional[str]
 
 
+class SyncUserRequest(BaseModel):
+    """Request model for syncing a user from Supabase auth."""
+
+    id: str  # Supabase user ID
+    email: str
+    name: Optional[str] = None
+    organization_id: Optional[str] = None
+
+
+class SyncUserResponse(BaseModel):
+    """Response model for synced user."""
+
+    id: str
+    email: str
+    name: Optional[str]
+    organization_id: Optional[str]
+
+
+@router.post("/users/sync", response_model=SyncUserResponse)
+async def sync_user(request: SyncUserRequest) -> SyncUserResponse:
+    """Sync a user from Supabase auth to our database.
+    
+    Called when a user authenticates via Supabase OAuth.
+    Creates the user in our database if they don't exist.
+    """
+    try:
+        user_uuid = UUID(request.id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid user ID")
+
+    org_uuid: Optional[UUID] = None
+    if request.organization_id:
+        try:
+            org_uuid = UUID(request.organization_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid organization ID")
+
+    async with get_session() as session:
+        # Check if user already exists
+        existing = await session.get(User, user_uuid)
+        if existing:
+            # Update organization if provided and different
+            if org_uuid and existing.organization_id != org_uuid:
+                existing.organization_id = org_uuid
+                await session.commit()
+                await session.refresh(existing)
+            
+            return SyncUserResponse(
+                id=str(existing.id),
+                email=existing.email,
+                name=existing.name,
+                organization_id=str(existing.organization_id) if existing.organization_id else None,
+            )
+
+        # Create new user
+        new_user = User(
+            id=user_uuid,
+            email=request.email,
+            name=request.name,
+            organization_id=org_uuid,
+        )
+        session.add(new_user)
+        await session.commit()
+        await session.refresh(new_user)
+
+        return SyncUserResponse(
+            id=str(new_user.id),
+            email=new_user.email,
+            name=new_user.name,
+            organization_id=str(new_user.organization_id) if new_user.organization_id else None,
+        )
+
+
 @router.get("/organizations/by-domain/{email_domain}", response_model=OrganizationResponse)
 async def get_organization_by_domain(email_domain: str) -> OrganizationResponse:
     """Get organization by email domain.

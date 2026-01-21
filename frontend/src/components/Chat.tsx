@@ -62,7 +62,7 @@ export function Chat({ userId, organizationId, chatId, onChatCreated }: ChatProp
 
       if (chatId) {
         // Load existing chat
-        const { data, error } = await getChatHistory();
+        const { data, error } = await getChatHistory(userId);
         if (data && !error) {
           const loadedMessages: ChatMessage[] = data.messages.map(
             (msg: APIChatMessage) => ({
@@ -91,7 +91,7 @@ export function Chat({ userId, organizationId, chatId, onChatCreated }: ChatProp
     };
 
     void loadHistory();
-  }, [chatId]);
+  }, [chatId, userId]);
 
   // Handle incoming WebSocket messages
   useEffect(() => {

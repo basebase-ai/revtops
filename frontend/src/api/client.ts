@@ -160,10 +160,11 @@ export interface ChatHistoryResponse {
 }
 
 export async function getChatHistory(
+  userId: string,
   limit = 50,
   offset = 0
 ): Promise<ApiResponse<ChatHistoryResponse>> {
-  return request<ChatHistoryResponse>(`/chat/history?limit=${limit}&offset=${offset}`);
+  return request<ChatHistoryResponse>(`/chat/history?user_id=${userId}&limit=${limit}&offset=${offset}`);
 }
 
 // =============================================================================

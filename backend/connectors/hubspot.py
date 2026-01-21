@@ -122,14 +122,28 @@ class HubSpotConnector(BaseConnector):
         async with get_session() as session:
             count = 0
             for raw_deal in raw_deals:
-                deal = await self._normalize_deal(raw_deal)
+                hs_id = raw_deal.get("id", "")
+                
+                # Check if deal already exists
+                result = await session.execute(
+                    select(Deal).where(
+                        Deal.organization_id == uuid.UUID(self.organization_id),
+                        Deal.source_system == self.source_system,
+                        Deal.source_id == hs_id,
+                    )
+                )
+                existing = result.scalar_one_or_none()
+                
+                deal = await self._normalize_deal(raw_deal, existing_id=existing.id if existing else None)
                 await session.merge(deal)
                 count += 1
             await session.commit()
 
         return count
 
-    async def _normalize_deal(self, hs_deal: dict[str, Any]) -> Deal:
+    async def _normalize_deal(
+        self, hs_deal: dict[str, Any], existing_id: Optional[uuid.UUID] = None
+    ) -> Deal:
         """Transform HubSpot Deal to our Deal model."""
         props = hs_deal.get("properties", {})
         hs_id = hs_deal.get("id", "")
@@ -149,36 +163,41 @@ class HubSpotConnector(BaseConnector):
         close_date = None
         if props.get("closedate"):
             try:
-                close_date = datetime.fromisoformat(
+                dt = datetime.fromisoformat(
                     props["closedate"].replace("Z", "+00:00")
-                ).date()
+                )
+                close_date = dt.date()
             except (ValueError, TypeError):
                 pass
 
         created_date = None
         if props.get("createdate"):
             try:
-                created_date = datetime.fromisoformat(
+                dt = datetime.fromisoformat(
                     props["createdate"].replace("Z", "+00:00")
                 )
+                # Convert to naive datetime (strip timezone)
+                created_date = dt.replace(tzinfo=None)
             except (ValueError, TypeError):
                 pass
 
         last_modified = None
         if props.get("hs_lastmodifieddate"):
             try:
-                last_modified = datetime.fromisoformat(
+                dt = datetime.fromisoformat(
                     props["hs_lastmodifieddate"].replace("Z", "+00:00")
                 )
+                # Convert to naive datetime (strip timezone)
+                last_modified = dt.replace(tzinfo=None)
             except (ValueError, TypeError):
                 pass
 
         return Deal(
-            id=uuid.uuid4(),
+            id=existing_id or uuid.uuid4(),
             organization_id=uuid.UUID(self.organization_id),
             source_system=self.source_system,
             source_id=hs_id,
-            name=props.get("dealname", "Untitled Deal"),
+            name=props.get("dealname") or "Untitled Deal",
             amount=amount,
             stage=props.get("dealstage"),
             close_date=close_date,
@@ -209,14 +228,28 @@ class HubSpotConnector(BaseConnector):
         async with get_session() as session:
             count = 0
             for raw_company in raw_companies:
-                account = await self._normalize_account(raw_company)
+                hs_id = raw_company.get("id", "")
+                
+                # Check if account already exists
+                result = await session.execute(
+                    select(Account).where(
+                        Account.organization_id == uuid.UUID(self.organization_id),
+                        Account.source_system == self.source_system,
+                        Account.source_id == hs_id,
+                    )
+                )
+                existing = result.scalar_one_or_none()
+                
+                account = await self._normalize_account(raw_company, existing_id=existing.id if existing else None)
                 await session.merge(account)
                 count += 1
             await session.commit()
 
         return count
 
-    async def _normalize_account(self, hs_company: dict[str, Any]) -> Account:
+    async def _normalize_account(
+        self, hs_company: dict[str, Any], existing_id: Optional[uuid.UUID] = None
+    ) -> Account:
         """Transform HubSpot Company to our Account model."""
         props = hs_company.get("properties", {})
         hs_id = hs_company.get("id", "")
@@ -239,12 +272,17 @@ class HubSpotConnector(BaseConnector):
             except (ValueError, TypeError):
                 pass
 
+        # Name is required - use domain or fallback if name is None/empty
+        name = props.get("name")
+        if not name:
+            name = props.get("domain") or f"Company {hs_id}"
+
         return Account(
-            id=uuid.uuid4(),
+            id=existing_id or uuid.uuid4(),
             organization_id=uuid.UUID(self.organization_id),
             source_system=self.source_system,
             source_id=hs_id,
-            name=props.get("name", "Unknown Company"),
+            name=name,
             domain=props.get("domain"),
             industry=props.get("industry"),
             employee_count=employee_count,
@@ -273,25 +311,43 @@ class HubSpotConnector(BaseConnector):
         async with get_session() as session:
             count = 0
             for raw_contact in raw_contacts:
-                contact = await self._normalize_contact(raw_contact)
+                hs_id = raw_contact.get("id", "")
+                
+                # Check if contact already exists
+                result = await session.execute(
+                    select(Contact).where(
+                        Contact.organization_id == uuid.UUID(self.organization_id),
+                        Contact.source_system == self.source_system,
+                        Contact.source_id == hs_id,
+                    )
+                )
+                existing = result.scalar_one_or_none()
+                
+                contact = self._normalize_contact(raw_contact, existing_id=existing.id if existing else None)
                 await session.merge(contact)
                 count += 1
             await session.commit()
 
         return count
 
-    async def _normalize_contact(self, hs_contact: dict[str, Any]) -> Contact:
+    def _normalize_contact(
+        self, hs_contact: dict[str, Any], existing_id: Optional[uuid.UUID] = None
+    ) -> Contact:
         """Transform HubSpot Contact to our Contact model."""
         props = hs_contact.get("properties", {})
         hs_id = hs_contact.get("id", "")
 
         # Combine first and last name
-        first_name = props.get("firstname", "")
-        last_name = props.get("lastname", "")
-        full_name = f"{first_name} {last_name}".strip() or None
+        first_name = props.get("firstname") or ""
+        last_name = props.get("lastname") or ""
+        full_name = f"{first_name} {last_name}".strip()
+        
+        # Use email or ID as fallback if no name
+        if not full_name:
+            full_name = props.get("email") or f"Contact {hs_id}"
 
         return Contact(
-            id=uuid.uuid4(),
+            id=existing_id or uuid.uuid4(),
             organization_id=uuid.UUID(self.organization_id),
             source_system=self.source_system,
             source_id=hs_id,
@@ -363,7 +419,8 @@ class HubSpotConnector(BaseConnector):
             try:
                 # HubSpot timestamps are in milliseconds
                 ts = int(props["hs_timestamp"])
-                activity_date = datetime.fromtimestamp(ts / 1000)
+                # Use naive datetime (no timezone)
+                activity_date = datetime.utcfromtimestamp(ts / 1000)
             except (ValueError, TypeError):
                 pass
 

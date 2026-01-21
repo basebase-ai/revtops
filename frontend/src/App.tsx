@@ -152,21 +152,6 @@ function App(): JSX.Element {
       supabaseUser.user_metadata?.picture ??
       null;
 
-    // Check if personal email
-    if (isPersonalEmail(email)) {
-      setUser({
-        id: supabaseUser.id,
-        email,
-        emailDomain,
-        name: supabaseUser.user_metadata?.name ?? supabaseUser.user_metadata?.full_name ?? null,
-        avatarUrl,
-        companyId: null,
-        companyName: null,
-      });
-      setScreen('blocked-email');
-      return;
-    }
-
     // Check if company exists - first in localStorage, then in backend
     let existingCompany = getCompanyByDomain(emailDomain);
 
@@ -190,6 +175,45 @@ function App(): JSX.Element {
       } catch (error) {
         console.error('Failed to check backend for organization:', error);
       }
+    }
+
+    // Always sync user to backend (do this early, before we might return for company setup)
+    if (existingCompany) {
+      try {
+        console.log('Syncing user to backend:', supabaseUser.id, email, existingCompany.id);
+        const response = await fetch('/api/auth/users/sync', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            id: supabaseUser.id,
+            email,
+            name: supabaseUser.user_metadata?.name ?? supabaseUser.user_metadata?.full_name ?? null,
+            organization_id: existingCompany.id,
+          }),
+        });
+        if (!response.ok) {
+          console.error('User sync failed:', await response.text());
+        } else {
+          console.log('User synced successfully');
+        }
+      } catch (error) {
+        console.error('Failed to sync user to backend:', error);
+      }
+    }
+
+    // Check if personal email
+    if (isPersonalEmail(email)) {
+      setUser({
+        id: supabaseUser.id,
+        email,
+        emailDomain,
+        name: supabaseUser.user_metadata?.name ?? supabaseUser.user_metadata?.full_name ?? null,
+        avatarUrl,
+        companyId: null,
+        companyName: null,
+      });
+      setScreen('blocked-email');
+      return;
     }
 
     setUser({
