@@ -9,13 +9,20 @@
  * - Organization & Profile sections at bottom
  */
 
-import { useState, useEffect, createContext, useContext } from 'react';
+import { useState, useEffect, createContext, useContext, useCallback } from 'react';
 import { Sidebar } from './Sidebar';
 import { DataSources } from './DataSources';
 import { ChatsList } from './ChatsList';
 import { Chat } from './Chat';
 import { OrganizationPanel } from './OrganizationPanel';
 import { ProfilePanel } from './ProfilePanel';
+
+// API base URL
+const PRODUCTION_BACKEND = 'https://revtops-backend-production.up.railway.app';
+const isProduction = typeof window !== 'undefined' && 
+  (window.location.hostname.includes('railway.app') || 
+   window.location.hostname.includes('revtops'));
+const API_BASE = isProduction ? `${PRODUCTION_BACKEND}/api` : '/api';
 
 // Types
 export type View = 'chat' | 'data-sources' | 'chats-list';
@@ -116,11 +123,28 @@ export function AppLayout({ user, organization, onLogout }: AppLayoutProps): JSX
     ]);
   }, []);
 
-  // Load connected sources count
+  // Load connected sources count from API
+  const loadConnectedSourcesCount = useCallback(async () => {
+    console.log('[AppLayout] Loading connected sources for org:', organization.id);
+    try {
+      const response = await fetch(`${API_BASE}/auth/integrations?organization_id=${organization.id}`);
+      console.log('[AppLayout] Integrations response status:', response.status);
+      if (response.ok) {
+        const data = await response.json() as { integrations: { provider: string }[] };
+        console.log('[AppLayout] Integrations data:', data);
+        // Count integrations that exist (same logic as DataSources.tsx)
+        const connectedCount = data.integrations?.length ?? 0;
+        console.log('[AppLayout] Connected count:', connectedCount);
+        setConnectedSourcesCount(connectedCount);
+      }
+    } catch (error) {
+      console.error('[AppLayout] Failed to load connected sources count:', error);
+    }
+  }, [organization.id]);
+
   useEffect(() => {
-    // TODO: Fetch from API
-    setConnectedSourcesCount(2); // Mock: HubSpot + Slack connected
-  }, []);
+    void loadConnectedSourcesCount();
+  }, [loadConnectedSourcesCount]);
 
   const startNewChat = (): void => {
     setCurrentChatId(null);
