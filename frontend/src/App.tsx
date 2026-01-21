@@ -11,6 +11,13 @@
 import { useEffect, useState } from 'react';
 import { supabase } from './lib/supabase';
 import { getEmailDomain, isPersonalEmail } from './lib/email';
+
+// API base URL - must match client.ts logic
+const PRODUCTION_BACKEND = 'https://revtops-backend-production.up.railway.app';
+const isProduction = typeof window !== 'undefined' && 
+  (window.location.hostname.includes('railway.app') || 
+   window.location.hostname.includes('revtops'));
+const API_BASE = isProduction ? `${PRODUCTION_BACKEND}/api` : '/api';
 import { Landing } from './components/Landing';
 import { Auth } from './components/Auth';
 import { CompanySetup } from './components/CompanySetup';
@@ -159,7 +166,7 @@ function App(): JSX.Element {
     // If not in localStorage, check backend (colleague on different machine scenario)
     if (!existingCompany) {
       try {
-        const response = await fetch(`/api/auth/organizations/by-domain/${encodeURIComponent(emailDomain)}`);
+        const response = await fetch(`${API_BASE}/auth/organizations/by-domain/${encodeURIComponent(emailDomain)}`);
         if (response.ok) {
           const backendOrg: { id: string; name: string; email_domain: string } = await response.json();
           // Store in localStorage for future use
@@ -182,7 +189,7 @@ function App(): JSX.Element {
     if (existingCompany) {
       try {
         console.log('Syncing user to backend:', supabaseUser.id, email, existingCompany.id);
-        const response = await fetch('/api/auth/users/sync', {
+        const response = await fetch(`${API_BASE}/auth/users/sync`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -234,7 +241,7 @@ function App(): JSX.Element {
 
     // Ensure organization exists in backend (migration for existing localStorage data)
     try {
-      await fetch('/api/auth/organizations', {
+      await fetch(`${API_BASE}/auth/organizations`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -264,7 +271,7 @@ function App(): JSX.Element {
 
     // Create organization in backend database
     try {
-      const response = await fetch('/api/auth/organizations', {
+      const response = await fetch(`${API_BASE}/auth/organizations`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

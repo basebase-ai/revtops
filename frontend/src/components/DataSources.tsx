@@ -11,6 +11,13 @@
 import { useState, useEffect, useCallback } from 'react';
 import Nango from '@nangohq/frontend';
 
+// API base URL
+const PRODUCTION_BACKEND = 'https://revtops-backend-production.up.railway.app';
+const isProduction = typeof window !== 'undefined' && 
+  (window.location.hostname.includes('railway.app') || 
+   window.location.hostname.includes('revtops'));
+const API_BASE = isProduction ? `${PRODUCTION_BACKEND}/api` : '/api';
+
 interface Integration {
   id: string;
   provider: string;
@@ -112,7 +119,7 @@ export function DataSources({ organizationId }: DataSourcesProps): JSX.Element {
     setIsLoading(true);
     try {
       // Fetch actual connected integrations from backend
-      const response = await fetch(`/api/auth/integrations?organization_id=${organizationId}`);
+      const response = await fetch(`${API_BASE}/auth/integrations?organization_id=${organizationId}`);
       
       let connectedMap: Record<string, { lastSyncAt: string | null; lastError: string | null }> = {};
       
@@ -238,7 +245,7 @@ export function DataSources({ organizationId }: DataSourcesProps): JSX.Element {
     setSyncingProviders((prev) => new Set(prev).add(provider));
 
     try {
-      const response = await fetch(`/api/sync/${organizationId}/${provider}`, {
+      const response = await fetch(`${API_BASE}/sync/${organizationId}/${provider}`, {
         method: 'POST',
       });
 
@@ -247,7 +254,7 @@ export function DataSources({ organizationId }: DataSourcesProps): JSX.Element {
       // Poll for completion
       let attempts = 0;
       const checkStatus = async (): Promise<void> => {
-        const statusRes = await fetch(`/api/sync/${organizationId}/${provider}/status`);
+        const statusRes = await fetch(`${API_BASE}/sync/${organizationId}/${provider}/status`);
         const status = await statusRes.json();
 
         if (status.status === 'completed' || status.status === 'failed' || attempts >= 30) {
