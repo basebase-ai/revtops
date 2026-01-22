@@ -10,8 +10,31 @@
 
 import { useState, useEffect } from 'react';
 import Nango from '@nangohq/frontend';
+import type { IconType } from 'react-icons';
+import {
+  SiSalesforce,
+  SiHubspot,
+  SiSlack,
+  SiGooglecalendar,
+  SiGmail,
+} from 'react-icons/si';
+import { HiOutlineCalendar, HiOutlineMail, HiGlobeAlt } from 'react-icons/hi';
 import { API_BASE } from '../lib/api';
 import { useAppStore } from '../store';
+
+// Icon map for integration providers
+const ICON_MAP: Record<string, IconType> = {
+  hubspot: SiHubspot,
+  salesforce: SiSalesforce,
+  slack: SiSlack,
+  'google-calendar': SiGooglecalendar,
+  google_calendar: SiGooglecalendar,
+  gmail: SiGmail,
+  'microsoft-calendar': HiOutlineCalendar,
+  microsoft_calendar: HiOutlineCalendar,
+  'microsoft-mail': HiOutlineMail,
+  microsoft_mail: HiOutlineMail,
+};
 
 export function DataSources(): JSX.Element {
   // Get state from Zustand store
@@ -162,59 +185,8 @@ export function DataSources(): JSX.Element {
 
   // Icon renderer based on icon identifier
   const renderIcon = (iconId: string): JSX.Element => {
-    switch (iconId) {
-      case 'hubspot':
-        return (
-          <svg viewBox="0 0 24 24" fill="currentColor" className="w-8 h-8">
-            <path d="M18.164 7.93V5.307a2.31 2.31 0 001.378-2.116 2.31 2.31 0 00-4.622 0c0 .953.588 1.775 1.416 2.116V7.93a6.144 6.144 0 00-3.398 1.606l-6.627-5.148A2.602 2.602 0 006.307 4.2a2.602 2.602 0 00-2.602-2.602 2.602 2.602 0 000 5.204c.497 0 .959-.144 1.354-.383l6.533 5.075a6.093 6.093 0 00-.702 2.863c0 1.024.255 1.988.702 2.837l-2.705 2.704a2.076 2.076 0 00-1.258-.428 2.077 2.077 0 100 4.153c1.147 0 2.078-.93 2.078-2.076 0-.461-.152-.886-.409-1.23l2.664-2.664a6.144 6.144 0 009.2-5.296 6.144 6.144 0 00-3.998-5.427z"/>
-          </svg>
-        );
-      case 'salesforce':
-        return (
-          <svg viewBox="0 0 24 24" fill="currentColor" className="w-8 h-8">
-            <path d="M10.006 5.415a4.195 4.195 0 013.045-1.306c1.56 0 2.954.9 3.69 2.205.63-.3 1.35-.45 2.1-.45 2.85 0 5.159 2.34 5.159 5.22s-2.31 5.22-5.16 5.22c-.45 0-.884-.06-1.305-.165a3.975 3.975 0 01-3.63 2.385 3.96 3.96 0 01-2.58-.96 4.65 4.65 0 01-3.66 1.8c-2.595 0-4.695-2.1-4.695-4.695 0-.975.3-1.875.81-2.625A3.92 3.92 0 012 8.835c0-2.19 1.77-3.96 3.96-3.96 1.02 0 1.95.39 2.67 1.02a4.17 4.17 0 011.376-.48z"/>
-          </svg>
-        );
-      case 'slack':
-        return (
-          <svg viewBox="0 0 24 24" fill="currentColor" className="w-8 h-8">
-            <path d="M5.042 15.165a2.528 2.528 0 01-2.52 2.523A2.528 2.528 0 010 15.165a2.527 2.527 0 012.522-2.52h2.52v2.52zm1.271 0a2.527 2.527 0 012.521-2.52 2.527 2.527 0 012.521 2.52v6.313A2.528 2.528 0 018.834 24a2.528 2.528 0 01-2.521-2.522v-6.313zM8.834 5.042a2.528 2.528 0 01-2.521-2.52A2.528 2.528 0 018.834 0a2.528 2.528 0 012.521 2.522v2.52H8.834zm0 1.271a2.528 2.528 0 012.521 2.521 2.528 2.528 0 01-2.521 2.521H2.522A2.528 2.528 0 010 8.834a2.528 2.528 0 012.522-2.521h6.312zm10.122 2.521a2.528 2.528 0 012.522-2.521A2.528 2.528 0 0124 8.834a2.528 2.528 0 01-2.522 2.521h-2.522V8.834zm-1.268 0a2.528 2.528 0 01-2.523 2.521 2.527 2.527 0 01-2.52-2.521V2.522A2.527 2.527 0 0115.165 0a2.528 2.528 0 012.523 2.522v6.312zm-2.523 10.122a2.528 2.528 0 012.523 2.522A2.528 2.528 0 0115.165 24a2.527 2.527 0 01-2.52-2.522v-2.522h2.52zm0-1.268a2.527 2.527 0 01-2.52-2.523 2.526 2.526 0 012.52-2.52h6.313A2.527 2.527 0 0124 15.165a2.528 2.528 0 01-2.522 2.523h-6.313z"/>
-          </svg>
-        );
-      case 'google-calendar':
-      case 'google_calendar':
-        return (
-          <svg viewBox="0 0 24 24" fill="currentColor" className="w-8 h-8">
-            <path d="M19.5 3h-3V1.5H15V3H9V1.5H7.5V3h-3C3.675 3 3 3.675 3 4.5v15c0 .825.675 1.5 1.5 1.5h15c.825 0 1.5-.675 1.5-1.5v-15c0-.825-.675-1.5-1.5-1.5zm0 16.5h-15V8.25h15v11.25zM7.5 10.5h3v3h-3v-3zm4.5 0h3v3h-3v-3zm4.5 0h3v3h-3v-3z"/>
-          </svg>
-        );
-      case 'gmail':
-        return (
-          <svg viewBox="0 0 24 24" fill="currentColor" className="w-8 h-8">
-            <path d="M20 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4l-8 5-8-5V6l8 5 8-5v2z"/>
-          </svg>
-        );
-      case 'microsoft-calendar':
-      case 'microsoft_calendar':
-        return (
-          <svg viewBox="0 0 24 24" fill="currentColor" className="w-8 h-8">
-            <path d="M19.5 3h-3V1.5H15V3H9V1.5H7.5V3h-3C3.675 3 3 3.675 3 4.5v15c0 .825.675 1.5 1.5 1.5h15c.825 0 1.5-.675 1.5-1.5v-15c0-.825-.675-1.5-1.5-1.5zm0 16.5h-15V8.25h15v11.25zM7.5 10.5h3v3h-3v-3zm4.5 0h3v3h-3v-3zm4.5 0h3v3h-3v-3z"/>
-          </svg>
-        );
-      case 'microsoft-mail':
-      case 'microsoft_mail':
-        return (
-          <svg viewBox="0 0 24 24" fill="currentColor" className="w-8 h-8">
-            <path d="M20 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4l-8 5-8-5V6l8 5 8-5v2z"/>
-          </svg>
-        );
-      default:
-        return (
-          <svg viewBox="0 0 24 24" fill="currentColor" className="w-8 h-8">
-            <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/>
-          </svg>
-        );
-    }
+    const IconComponent = ICON_MAP[iconId] ?? HiGlobeAlt;
+    return <IconComponent className="w-8 h-8" />;
   };
 
   // Color mapper

@@ -1,21 +1,29 @@
 /**
  * Landing page component.
  * 
- * Public-facing marketing page with hero, features, and CTA.
+ * Public-facing marketing page with hero, features, and waitlist CTA.
  */
 
 import { useEffect, useState } from 'react';
+import { WaitlistForm } from './WaitlistForm';
 
 interface LandingProps {
   onGetStarted: () => void;
 }
 
 export function Landing({ onGetStarted }: LandingProps): JSX.Element {
-  const [isVisible, setIsVisible] = useState(false);
+  const [isVisible, setIsVisible] = useState<boolean>(false);
+  const [showWaitlistForm, setShowWaitlistForm] = useState<boolean>(false);
+  const [showWaitlistSuccess, setShowWaitlistSuccess] = useState<boolean>(false);
 
   useEffect(() => {
     setIsVisible(true);
   }, []);
+
+  const handleWaitlistSuccess = (): void => {
+    setShowWaitlistForm(false);
+    setShowWaitlistSuccess(true);
+  };
 
   return (
     <div className="min-h-screen bg-surface-950 overflow-hidden">
@@ -39,7 +47,7 @@ export function Landing({ onGetStarted }: LandingProps): JSX.Element {
           onClick={onGetStarted}
           className="px-4 py-2 text-sm font-medium text-surface-300 hover:text-white transition-colors"
         >
-          Sign In
+          Already have an account? Sign In
         </button>
       </nav>
 
@@ -90,10 +98,10 @@ export function Landing({ onGetStarted }: LandingProps): JSX.Element {
 
           <div className="flex flex-col sm:flex-row gap-4 justify-center">
             <button
-              onClick={onGetStarted}
+              onClick={() => setShowWaitlistForm(true)}
               className="btn-primary text-lg px-8 py-4 inline-flex items-center gap-2"
             >
-              Get Started Free
+              Join the Waitlist
               <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
               </svg>
@@ -242,12 +250,12 @@ export function Landing({ onGetStarted }: LandingProps): JSX.Element {
 
         <div className="text-center mt-16">
           <button
-            onClick={onGetStarted}
+            onClick={() => setShowWaitlistForm(true)}
             className="btn-primary text-lg px-8 py-4"
           >
-            Start Free Trial
+            Join the Waitlist
           </button>
-          <p className="text-sm text-surface-500 mt-4">No credit card required</p>
+          <p className="text-sm text-surface-500 mt-4">Be first in line for early access</p>
         </div>
       </section>
 
@@ -260,7 +268,7 @@ export function Landing({ onGetStarted }: LandingProps): JSX.Element {
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
               </svg>
             </div>
-            <span className="text-surface-400 text-sm">© 2025 Revtops. All rights reserved.</span>
+            <span className="text-surface-400 text-sm">© 2026 Revtops. All rights reserved.</span>
           </div>
           <div className="flex gap-6 text-sm text-surface-500">
             <a href="#" className="hover:text-surface-300 transition-colors">Privacy</a>
@@ -269,6 +277,37 @@ export function Landing({ onGetStarted }: LandingProps): JSX.Element {
           </div>
         </div>
       </footer>
+
+      {/* Waitlist Form Modal */}
+      {showWaitlistForm && (
+        <WaitlistForm
+          onClose={() => setShowWaitlistForm(false)}
+          onSuccess={handleWaitlistSuccess}
+        />
+      )}
+
+      {/* Waitlist Success Modal */}
+      {showWaitlistSuccess && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+          <div className="w-full max-w-md p-8 rounded-2xl bg-surface-900 border border-surface-700 shadow-2xl text-center">
+            <div className="w-16 h-16 rounded-full bg-emerald-500/20 flex items-center justify-center mx-auto mb-6">
+              <svg className="w-8 h-8 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+              </svg>
+            </div>
+            <h2 className="text-2xl font-bold text-surface-50 mb-3">You're on the list!</h2>
+            <p className="text-surface-400 mb-6">
+              Thanks for signing up. We'll email you when it's your turn to get started with Revtops.
+            </p>
+            <button
+              onClick={() => setShowWaitlistSuccess(false)}
+              className="btn-primary px-6 py-2"
+            >
+              Got it
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -3,6 +3,7 @@ Tool definitions and execution for Claude.
 
 Tools:
 - run_sql_query: Execute arbitrary SELECT queries (read-only)
+- search_activities: Semantic search across emails, meetings, messages
 - create_artifact: Save analysis/dashboard
 """
 
@@ -53,6 +54,45 @@ IMPORTANT: Only SELECT queries are allowed. No INSERT, UPDATE, DELETE, DROP, etc
                     "query": {
                         "type": "string",
                         "description": "The SQL SELECT query to execute",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+        {
+            "name": "search_activities",
+            "description": """Semantic search across emails, meetings, slack messages, and other activities.
+
+Use this when the user wants to find activities by meaning/concept rather than exact text.
+This searches the content of emails, meeting subjects, slack messages, etc.
+
+Examples:
+- "Find emails about pricing negotiations"
+- "Search for meetings discussing the Q4 roadmap"
+- "Look for communications about contract renewal"
+
+For exact text matching (e.g., emails from a specific domain), use run_sql_query instead.""",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Natural language search query describing what to find",
+                    },
+                    "types": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional filter by activity type: 'email', 'meeting', 'call', etc.",
+                    },
+                    "sources": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional filter by source: 'gmail', 'microsoft_mail', 'google_calendar', 'microsoft_calendar', 'slack'",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max results to return (default 10)",
+                        "default": 10,
                     },
                 },
                 "required": ["query"],
@@ -113,6 +153,11 @@ async def execute_tool(
     if tool_name == "run_sql_query":
         result = await _run_sql_query(tool_input, organization_id, user_id)
         logger.info("[Tools] run_sql_query returned %d rows", result.get("row_count", 0))
+        return result
+
+    elif tool_name == "search_activities":
+        result = await _search_activities(tool_input, organization_id, user_id)
+        logger.info("[Tools] search_activities returned %d results", len(result.get("results", [])))
         return result
 
     elif tool_name == "create_artifact":
@@ -311,6 +356,54 @@ async def _run_sql_query(
     except Exception as e:
         logger.error("[Tools._run_sql_query] Query execution failed: %s", str(e))
         return {"error": f"Query execution failed: {str(e)}"}
+
+
+async def _search_activities(
+    params: dict[str, Any], organization_id: str, user_id: str
+) -> dict[str, Any]:
+    """Execute semantic search across activities."""
+    query = params.get("query", "").strip()
+    
+    if not query:
+        return {"error": "No search query provided"}
+    
+    activity_types = params.get("types")
+    source_systems = params.get("sources")
+    limit = min(params.get("limit", 10), 50)  # Cap at 50
+    
+    try:
+        from services.embedding_sync import search_activities_by_embedding
+        
+        results = await search_activities_by_embedding(
+            organization_id=organization_id,
+            query_text=query,
+            limit=limit,
+            activity_types=activity_types,
+            source_systems=source_systems,
+        )
+        
+        if not results:
+            return {
+                "results": [],
+                "message": "No matching activities found. Activities may not have embeddings yet - try syncing data first.",
+            }
+        
+        return {
+            "results": results,
+            "count": len(results),
+            "query": query,
+        }
+        
+    except ValueError as e:
+        # OpenAI API key not configured
+        logger.warning("[Tools._search_activities] Embedding service not available: %s", e)
+        return {
+            "error": "Semantic search is not configured. OPENAI_API_KEY may be missing.",
+            "suggestion": "Use run_sql_query with ILIKE for text search instead.",
+        }
+    except Exception as e:
+        logger.error("[Tools._search_activities] Search failed: %s", str(e))
+        return {"error": f"Search failed: {str(e)}"}
 
 
 async def _create_artifact(

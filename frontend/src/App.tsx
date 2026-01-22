@@ -19,9 +19,10 @@ import { CompanySetup } from './components/CompanySetup';
 import { Onboarding } from './components/Onboarding';
 import { AppLayout } from './components/AppLayout';
 import { OAuthCallback } from './components/OAuthCallback';
+import { AdminWaitlist } from './components/AdminWaitlist';
 import type { User, AuthChangeEvent, Session } from '@supabase/supabase-js';
 
-type Screen = 'landing' | 'auth' | 'blocked-email' | 'company-setup' | 'onboarding' | 'app';
+type Screen = 'landing' | 'auth' | 'blocked-email' | 'not-registered' | 'waitlist' | 'company-setup' | 'onboarding' | 'app';
 
 // Simple in-memory store for companies (MVP - in production, use API)
 interface StoredCompany {
@@ -184,7 +185,58 @@ function App(): JSX.Element {
       supabaseUser.user_metadata?.full_name ?? 
       null;
 
-    // Check if company exists - first in localStorage, then in backend
+    // Check if personal email
+    if (isPersonalEmail(email)) {
+      setUser({
+        id: supabaseUser.id,
+        email,
+        name,
+        avatarUrl,
+      });
+      setScreen('blocked-email');
+      return;
+    }
+
+    // Set user in store first (needed for syncUserToBackend)
+    setUser({
+      id: supabaseUser.id,
+      email,
+      name,
+      avatarUrl,
+    });
+
+    // CHECK WAITLIST STATUS FIRST - before any company/org setup
+    // This catches users who signed up via waitlist form
+    try {
+      const syncResponse = await fetch(`${API_BASE}/auth/users/sync`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: supabaseUser.id,
+          email,
+          name,
+        }),
+      });
+
+      if (syncResponse.status === 403) {
+        // User not registered - needs to join waitlist
+        setScreen('not-registered');
+        return;
+      }
+
+      if (syncResponse.ok) {
+        const userData = await syncResponse.json() as { status: string };
+        if (userData.status === 'waitlist') {
+          setScreen('waitlist');
+          return;
+        }
+        // If status is 'invited', it gets upgraded to 'active' by the backend
+      }
+    } catch (error) {
+      console.error('Failed to check user status:', error);
+    }
+
+    // User is allowed in - now check company/organization
     let existingCompany = getCompanyByDomain(domain);
 
     // If not in localStorage, check backend (colleague on different machine scenario)
@@ -209,26 +261,6 @@ function App(): JSX.Element {
       }
     }
 
-    // Check if personal email
-    if (isPersonalEmail(email)) {
-      setUser({
-        id: supabaseUser.id,
-        email,
-        name,
-        avatarUrl,
-      });
-      setScreen('blocked-email');
-      return;
-    }
-
-    // Set user in store
-    setUser({
-      id: supabaseUser.id,
-      email,
-      name,
-      avatarUrl,
-    });
-
     if (!existingCompany) {
       setScreen('company-setup');
       return;
@@ -242,7 +274,7 @@ function App(): JSX.Element {
       memberCount: existingCompany.memberCount,
     });
 
-    // Sync user to backend
+    // Sync user with organization to backend
     await syncUserToBackend();
 
     // Ensure organization exists in backend (migration for existing localStorage data)
@@ -338,6 +370,24 @@ function App(): JSX.Element {
     return <OAuthCallback />;
   }
 
+  // Handle admin waitlist route
+  if (path === '/admin/waitlist') {
+    const params = new URLSearchParams(window.location.search);
+    const adminKey = params.get('key');
+    if (adminKey) {
+      return <AdminWaitlist adminKey={adminKey} />;
+    }
+    // No key provided - show error
+    return (
+      <div className="min-h-screen flex items-center justify-center p-4">
+        <div className="text-center">
+          <h1 className="text-xl font-bold text-surface-50 mb-2">Access Denied</h1>
+          <p className="text-surface-400">Admin key required. Add ?key=YOUR_KEY to the URL.</p>
+        </div>
+      </div>
+    );
+  }
+
   // Loading state
   if (isLoading) {
     return (
@@ -385,6 +435,50 @@ function App(): JSX.Element {
             </p>
             <button onClick={() => void handleLogout()} className="btn-primary">
               Sign in with work email
+            </button>
+          </div>
+        </div>
+      );
+
+    case 'not-registered':
+      return (
+        <div className="min-h-screen flex items-center justify-center p-4">
+          <div className="max-w-md w-full text-center">
+            <div className="w-16 h-16 rounded-full bg-yellow-500/20 flex items-center justify-center mx-auto mb-6">
+              <svg className="w-8 h-8 text-yellow-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+              </svg>
+            </div>
+            <h1 className="text-2xl font-bold text-surface-50 mb-3">Join the waitlist first</h1>
+            <p className="text-surface-400 mb-6">
+              We're currently invite-only. Join the waitlist on our homepage and we'll let you know when it's your turn.
+            </p>
+            <div className="flex gap-3 justify-center">
+              <button onClick={() => void handleLogout()} className="btn-primary">
+                Back to homepage
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+
+    case 'waitlist':
+      return (
+        <div className="min-h-screen flex items-center justify-center p-4">
+          <div className="max-w-md w-full text-center">
+            <div className="w-16 h-16 rounded-full bg-primary-500/20 flex items-center justify-center mx-auto mb-6">
+              <svg className="w-8 h-8 text-primary-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+            </div>
+            <h1 className="text-2xl font-bold text-surface-50 mb-3">You're on the waitlist!</h1>
+            <p className="text-surface-400 mb-6">
+              Thanks for signing up. We're gradually letting people in and will email you at{' '}
+              <span className="text-surface-200 font-medium">{user?.email}</span>{' '}
+              when it's your turn.
+            </p>
+            <button onClick={() => void handleLogout()} className="btn-secondary">
+              Sign out
             </button>
           </div>
         </div>

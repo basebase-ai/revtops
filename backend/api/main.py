@@ -18,7 +18,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.websockets import websocket_endpoint
-from api.routes import auth, chat, sync
+from api.routes import auth, chat, sync, waitlist
 from models.database import init_db
 
 # Configure logging
@@ -61,6 +61,7 @@ app.add_middleware(
 app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
 app.include_router(chat.router, prefix="/api/chat", tags=["chat"])
 app.include_router(sync.router, prefix="/api/sync", tags=["sync"])
+app.include_router(waitlist.router, prefix="/api/waitlist", tags=["waitlist"])
 
 # WebSocket
 app.add_api_websocket_route("/ws/chat/{user_id}", websocket_endpoint)

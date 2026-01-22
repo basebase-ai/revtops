@@ -8,6 +8,7 @@ sqlalchemy[asyncio]==2.0.25
 asyncpg==0.29.0
 psycopg2-binary==2.9.9
 alembic==1.13.1
+pgvector==0.2.5
 
 # Redis
 redis==5.0.1
@@ -22,8 +23,11 @@ simple-salesforce==1.12.5
 # Anthropic
 anthropic==0.18.1
 
+# OpenAI (for embeddings)
+openai==1.12.0
+
 # Configuration
-pydantic==2.6.1
+pydantic[email]==2.6.1
 pydantic-settings==2.2.1
 python-dotenv==1.0.1
 

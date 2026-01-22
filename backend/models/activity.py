@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Optional
 
-from sqlalchemy import DateTime, ForeignKey, String, Text
+from sqlalchemy import DateTime, ForeignKey, LargeBinary, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -60,6 +60,10 @@ class Activity(Base):
     synced_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime, default=datetime.utcnow, nullable=True
     )
+    
+    # Semantic search fields
+    searchable_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    embedding: Mapped[Optional[bytes]] = mapped_column(LargeBinary, nullable=True)
 
     # Relationships
     deal: Mapped[Optional["Deal"]] = relationship("Deal", back_populates="activities")

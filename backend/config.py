@@ -21,6 +21,9 @@ class Settings(BaseSettings):
 
     # Anthropic
     ANTHROPIC_API_KEY: Optional[str] = None
+    
+    # OpenAI (for embeddings)
+    OPENAI_API_KEY: Optional[str] = None
 
     # Nango - OAuth & credential management for all integrations
     NANGO_SECRET_KEY: Optional[str] = None
@@ -40,6 +43,13 @@ class Settings(BaseSettings):
     SECRET_KEY: str = "dev-secret-change-in-production"
     ENVIRONMENT: str = "development"
     FRONTEND_URL: str = "http://localhost:5173"
+    
+    # Admin
+    ADMIN_KEY: Optional[str] = None  # Simple admin auth for MVP
+    
+    # Email (Resend)
+    RESEND_API_KEY: Optional[str] = None
+    EMAIL_FROM: str = "Revtops <hello@revtops.com>"
 
     class Config:
         env_file = str(_env_file)

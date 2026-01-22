@@ -132,7 +132,7 @@ interface AppState {
   updateToolMessage: (toolId: string, updates: Partial<ToolCallData>) => void;
   
   // Actions - Sync user to backend
-  syncUserToBackend: () => Promise<void>;
+  syncUserToBackend: () => Promise<string | null>; // Returns user status or null on error
 }
 
 // =============================================================================
@@ -509,10 +509,10 @@ export const useAppStore = create<AppState>()(
         set({ messages: updated });
       },
 
-      // Sync user to backend
-      syncUserToBackend: async () => {
+      // Sync user to backend - returns user status ('waitlist', 'invited', 'active') or error string
+      syncUserToBackend: async (): Promise<string | null> => {
         const { user, organization } = get();
-        if (!user) return;
+        if (!user) return null;
 
         try {
           console.log('[Store] Syncing user to backend:', user.id, user.email, organization?.id);
@@ -529,13 +529,21 @@ export const useAppStore = create<AppState>()(
           });
 
           if (!response.ok) {
+            // 403 means user needs to join waitlist first
+            if (response.status === 403) {
+              console.log('[Store] User not on waitlist');
+              return 'not_registered';
+            }
             const errorData = await response.json().catch(() => ({})) as { detail?: string };
             throw new Error(errorData.detail ?? `HTTP ${response.status}`);
           }
 
-          console.log('[Store] User synced successfully');
+          const data = await response.json() as { status: string };
+          console.log('[Store] User synced successfully, status:', data.status);
+          return data.status;
         } catch (error) {
           console.error('[Store] Failed to sync user to backend:', error);
+          return null;
         }
       },
     }),

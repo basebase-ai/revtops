@@ -1,0 +1,252 @@
+"""
+Waitlist routes for managing early access signups.
+
+Endpoints:
+- POST /api/waitlist - Submit waitlist form
+- GET /api/admin/waitlist - List waitlist entries (admin only)
+- POST /api/admin/waitlist/{user_id}/invite - Approve and invite user
+"""
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Any, Optional
+from uuid import UUID
+
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel, EmailStr
+from sqlalchemy import select
+
+from config import settings
+from models.database import get_session
+from models.user import User
+from services.email import send_invitation_email, send_waitlist_notification
+
+router = APIRouter()
+
+
+# =============================================================================
+# Request/Response Models
+# =============================================================================
+
+
+class WaitlistSubmitRequest(BaseModel):
+    """Request model for waitlist submission."""
+
+    email: EmailStr
+    name: str
+    title: str
+    company_name: str
+    num_employees: str  # e.g., "1-10", "11-50", "51-200", "201-500", "500+"
+    apps_of_interest: list[str]  # e.g., ["salesforce", "hubspot", "slack"]
+    core_needs: list[str]  # e.g., ["query_crm", "insights", "automations"]
+
+
+class WaitlistSubmitResponse(BaseModel):
+    """Response for waitlist submission."""
+
+    success: bool
+    message: str
+
+
+class WaitlistEntryResponse(BaseModel):
+    """Response model for a waitlist entry."""
+
+    id: str
+    email: str
+    name: Optional[str]
+    status: str
+    waitlist_data: Optional[dict[str, Any]]
+    waitlisted_at: Optional[str]
+    invited_at: Optional[str]
+    created_at: Optional[str]
+
+
+class WaitlistListResponse(BaseModel):
+    """Response for listing waitlist entries."""
+
+    entries: list[WaitlistEntryResponse]
+    total: int
+
+
+class InviteResponse(BaseModel):
+    """Response for inviting a user."""
+
+    success: bool
+    message: str
+    user_id: str
+
+
+# =============================================================================
+# Public Endpoints
+# =============================================================================
+
+
+@router.post("", response_model=WaitlistSubmitResponse)
+async def submit_waitlist(request: WaitlistSubmitRequest) -> WaitlistSubmitResponse:
+    """
+    Submit a waitlist application.
+    
+    Creates a new user with status='waitlist' and stores the form data.
+    """
+    async with get_session() as session:
+        # Check if email already exists
+        result = await session.execute(
+            select(User).where(User.email == request.email)
+        )
+        existing_user = result.scalar_one_or_none()
+
+        if existing_user:
+            if existing_user.status == "waitlist":
+                return WaitlistSubmitResponse(
+                    success=True,
+                    message="You're already on the waitlist! We'll be in touch soon.",
+                )
+            elif existing_user.status in ("invited", "active"):
+                return WaitlistSubmitResponse(
+                    success=True,
+                    message="You already have access! Sign in to get started.",
+                )
+
+        # Create new waitlist user
+        waitlist_data: dict[str, Any] = {
+            "title": request.title,
+            "company_name": request.company_name,
+            "num_employees": request.num_employees,
+            "apps_of_interest": request.apps_of_interest,
+            "core_needs": request.core_needs,
+        }
+
+        new_user = User(
+            email=request.email,
+            name=request.name,
+            status="waitlist",
+            waitlist_data=waitlist_data,
+            waitlisted_at=datetime.utcnow(),
+        )
+        session.add(new_user)
+        await session.commit()
+
+        # Send notification email to support
+        try:
+            await send_waitlist_notification(
+                applicant_email=request.email,
+                applicant_name=request.name,
+                waitlist_data=waitlist_data,
+            )
+        except Exception as e:
+            print(f"Failed to send waitlist notification: {e}")
+            # Don't fail the signup if notification fails
+
+        return WaitlistSubmitResponse(
+            success=True,
+            message="You're on the list! We'll email you when it's your turn.",
+        )
+
+
+# =============================================================================
+# Admin Endpoints
+# =============================================================================
+
+
+@router.get("/admin", response_model=WaitlistListResponse)
+async def list_waitlist(
+    status: Optional[str] = None,
+    admin_key: Optional[str] = None,
+) -> WaitlistListResponse:
+    """
+    List all waitlist entries.
+    
+    Requires admin_key for authentication (simple auth for MVP).
+    Filter by status: 'waitlist', 'invited', or 'all'.
+    """
+    # Simple admin auth for MVP
+    if admin_key != settings.ADMIN_KEY:
+        raise HTTPException(status_code=403, detail="Invalid admin key")
+
+    async with get_session() as session:
+        query = select(User).where(User.waitlisted_at.isnot(None))
+        
+        if status and status != "all":
+            query = query.where(User.status == status)
+        
+        query = query.order_by(User.waitlisted_at.desc())
+        
+        result = await session.execute(query)
+        users = result.scalars().all()
+
+        entries = [
+            WaitlistEntryResponse(
+                id=str(u.id),
+                email=u.email,
+                name=u.name,
+                status=u.status,
+                waitlist_data=u.waitlist_data,
+                waitlisted_at=u.waitlisted_at.isoformat() if u.waitlisted_at else None,
+                invited_at=u.invited_at.isoformat() if u.invited_at else None,
+                created_at=u.created_at.isoformat() if u.created_at else None,
+            )
+            for u in users
+        ]
+
+        return WaitlistListResponse(entries=entries, total=len(entries))
+
+
+@router.post("/admin/{user_id}/invite", response_model=InviteResponse)
+async def invite_user(
+    user_id: str,
+    admin_key: Optional[str] = None,
+) -> InviteResponse:
+    """
+    Invite a user from the waitlist.
+    
+    Sets status to 'invited' and sends invitation email.
+    """
+    # Simple admin auth for MVP
+    if admin_key != settings.ADMIN_KEY:
+        raise HTTPException(status_code=403, detail="Invalid admin key")
+
+    try:
+        user_uuid = UUID(user_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid user ID")
+
+    async with get_session() as session:
+        user = await session.get(User, user_uuid)
+        
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        if user.status == "active":
+            return InviteResponse(
+                success=False,
+                message="User is already active",
+                user_id=str(user.id),
+            )
+        
+        if user.status == "invited":
+            return InviteResponse(
+                success=False,
+                message="User has already been invited",
+                user_id=str(user.id),
+            )
+
+        # Update status
+        user.status = "invited"
+        user.invited_at = datetime.utcnow()
+        await session.commit()
+
+        # Send invitation email
+        try:
+            await send_invitation_email(
+                to_email=user.email,
+                name=user.name or "there",
+            )
+        except Exception as e:
+            print(f"Failed to send invitation email: {e}")
+            # Don't fail the request if email fails - user is still invited
+
+        return InviteResponse(
+            success=True,
+            message=f"Invitation sent to {user.email}",
+            user_id=str(user.id),
+        )

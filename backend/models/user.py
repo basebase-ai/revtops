@@ -5,10 +5,10 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from sqlalchemy import DateTime, ForeignKey, String
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from models.database import Base
@@ -37,6 +37,17 @@ class User(Base):
     role: Mapped[Optional[str]] = mapped_column(
         String(50), nullable=True
     )  # 'ae', 'sales_manager', 'cro', 'admin'
+    
+    # Waitlist fields
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="active"
+    )  # 'waitlist', 'invited', 'active'
+    waitlist_data: Mapped[Optional[dict[str, Any]]] = mapped_column(
+        JSONB, nullable=True
+    )  # {title, company_name, num_employees, apps_of_interest[], core_needs[]}
+    waitlisted_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    invited_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    
     created_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime, default=datetime.utcnow, nullable=True
     )
@@ -55,5 +66,6 @@ class User(Base):
             "email": self.email,
             "name": self.name,
             "role": self.role,
+            "status": self.status,
             "organization_id": str(self.organization_id) if self.organization_id else None,
         }

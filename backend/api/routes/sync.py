@@ -251,6 +251,18 @@ async def sync_integration_data(organization_id: str, provider: str) -> None:
         _sync_status[status_key]["completed_at"] = datetime.utcnow()
         _sync_status[status_key]["counts"] = counts
 
+        # Generate embeddings for newly synced activities (non-blocking)
+        try:
+            from services.embedding_sync import generate_embeddings_for_organization
+            embedded_count = await generate_embeddings_for_organization(
+                organization_id, limit=500  # Limit per sync to avoid timeout
+            )
+            if embedded_count > 0:
+                print(f"Generated embeddings for {embedded_count} activities")
+        except Exception as embed_err:
+            # Don't fail sync if embedding generation fails
+            print(f"Warning: Embedding generation failed: {embed_err}")
+
     except Exception as e:
         error_msg = str(e)
         _sync_status[status_key]["status"] = "failed"

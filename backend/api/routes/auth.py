@@ -154,6 +154,7 @@ class SyncUserResponse(BaseModel):
     email: str
     name: Optional[str]
     organization_id: Optional[str]
+    status: str  # 'waitlist', 'invited', 'active'
 
 
 @router.post("/users/sync", response_model=SyncUserResponse)
@@ -185,29 +186,24 @@ async def sync_user(request: SyncUserRequest) -> SyncUserResponse:
                 await session.commit()
                 await session.refresh(existing)
             
+            # If user was invited, upgrade to active on signin
+            if existing.status == "invited":
+                existing.status = "active"
+                await session.commit()
+                await session.refresh(existing)
+            
             return SyncUserResponse(
                 id=str(existing.id),
                 email=existing.email,
                 name=existing.name,
                 organization_id=str(existing.organization_id) if existing.organization_id else None,
+                status=existing.status,
             )
 
-        # Create new user
-        new_user = User(
-            id=user_uuid,
-            email=request.email,
-            name=request.name,
-            organization_id=org_uuid,
-        )
-        session.add(new_user)
-        await session.commit()
-        await session.refresh(new_user)
-
-        return SyncUserResponse(
-            id=str(new_user.id),
-            email=new_user.email,
-            name=new_user.name,
-            organization_id=str(new_user.organization_id) if new_user.organization_id else None,
+        # User doesn't exist - they need to join the waitlist first
+        raise HTTPException(
+            status_code=403,
+            detail="Please join the waitlist first. Visit the homepage to sign up.",
         )
 
 
