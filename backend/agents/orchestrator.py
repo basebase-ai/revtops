@@ -132,7 +132,7 @@ Connected integrations (HubSpot, Slack, etc.).
 ```
 id (UUID, PK)
 organization_id (UUID, FK -> organizations)
-provider (VARCHAR) -- 'hubspot', 'slack', 'google_calendar', 'microsoft_calendar', 'salesforce'
+provider (VARCHAR) -- 'hubspot', 'slack', 'google_calendar', 'gmail', 'microsoft_calendar', 'microsoft_mail', 'salesforce'
 nango_connection_id (VARCHAR, nullable)
 connected_by_user_id (UUID, FK -> users, nullable)
 is_active (BOOLEAN)
@@ -164,22 +164,25 @@ LIMIT 10
 
 ## Email Data
 
-Emails from Microsoft Mail (Outlook) are stored in the **activities** table with:
-- `source_system = 'microsoft_mail'`
+Emails from Gmail and Microsoft Mail (Outlook) are stored in the **activities** table with:
+- `source_system = 'gmail'` or `source_system = 'microsoft_mail'`
 - `type = 'email'`
 - `subject` = email subject
-- `description` = email body preview
+- `description` = email body preview/snippet
 - `activity_date` = received timestamp
-- `custom_fields` contains: from_email, from_name, to_emails, cc_emails, recipient_count, has_attachments, importance, is_read, conversation_id
+- `custom_fields` contains: from_email, from_name, to_emails, cc_emails, recipient_count, has_attachments
+
+Gmail-specific custom_fields: is_unread, is_sent, labels, thread_id
+Microsoft Mail custom_fields: importance, is_read, conversation_id
 
 Example query for recent emails:
 ```sql
-SELECT subject, activity_date, 
+SELECT subject, activity_date, source_system,
        custom_fields->>'from_email' as from_email,
        custom_fields->>'from_name' as from_name,
        custom_fields->'to_emails' as to_emails
 FROM activities 
-WHERE source_system = 'microsoft_mail'
+WHERE source_system IN ('gmail', 'microsoft_mail')
 ORDER BY activity_date DESC
 LIMIT 20
 ```

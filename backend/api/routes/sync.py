@@ -16,6 +16,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
 
+from connectors.gmail import GmailConnector
 from connectors.google_calendar import GoogleCalendarConnector
 from connectors.hubspot import HubSpotConnector
 from connectors.microsoft_calendar import MicrosoftCalendarConnector
@@ -34,6 +35,7 @@ CONNECTORS = {
     "hubspot": HubSpotConnector,
     "slack": SlackConnector,
     "google_calendar": GoogleCalendarConnector,
+    "gmail": GmailConnector,
     "microsoft_calendar": MicrosoftCalendarConnector,
     "microsoft_mail": MicrosoftMailConnector,
 }

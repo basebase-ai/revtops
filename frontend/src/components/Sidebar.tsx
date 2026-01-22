@@ -11,7 +11,30 @@
  * - Profile section
  */
 
+import { useState } from 'react';
 import type { View, ChatSummary, UserProfile, OrganizationInfo } from './AppLayout';
+
+/** Avatar component with error fallback */
+function UserAvatar({ user }: { user: UserProfile }): JSX.Element {
+  const [imgError, setImgError] = useState(false);
+  
+  if (user.avatarUrl && !imgError) {
+    return (
+      <img
+        src={user.avatarUrl}
+        alt={user.name ?? user.email}
+        className="w-8 h-8 rounded-full object-cover"
+        onError={() => setImgError(true)}
+      />
+    );
+  }
+  
+  return (
+    <div className="w-8 h-8 rounded-full bg-primary-600 flex items-center justify-center text-white font-medium text-sm">
+      {(user.name ?? user.email).charAt(0).toUpperCase()}
+    </div>
+  );
+}
 
 interface SidebarProps {
   collapsed: boolean;
@@ -62,6 +85,9 @@ export function Sidebar({
               </svg>
             </div>
             <span className="font-semibold text-surface-100">Revtops</span>
+            <span className="px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide bg-primary-500/20 text-primary-400 rounded">
+              Beta
+            </span>
           </div>
         )}
         {collapsed && (
@@ -219,17 +245,7 @@ export function Sidebar({
           onClick={onOpenProfilePanel}
           className={`w-full flex items-center gap-3 px-3 py-3 hover:bg-surface-800/50 transition-colors border-t border-surface-800 ${collapsed ? 'justify-center' : ''}`}
         >
-          {user.avatarUrl ? (
-            <img
-              src={user.avatarUrl}
-              alt={user.name ?? user.email}
-              className="w-8 h-8 rounded-full object-cover"
-            />
-          ) : (
-            <div className="w-8 h-8 rounded-full bg-primary-600 flex items-center justify-center text-white font-medium text-sm">
-              {(user.name ?? user.email).charAt(0).toUpperCase()}
-            </div>
-          )}
+          <UserAvatar user={user} />
           {!collapsed && (
             <div className="flex-1 min-w-0 text-left">
               <div className="text-sm font-medium text-surface-200 truncate">

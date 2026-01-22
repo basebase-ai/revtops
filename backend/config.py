@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     NANGO_HUBSPOT_INTEGRATION_ID: str = "hubspot"
     NANGO_SLACK_INTEGRATION_ID: str = "slack"
     NANGO_GOOGLE_CALENDAR_INTEGRATION_ID: str = "google-calendar"
+    NANGO_GMAIL_INTEGRATION_ID: str = "google-mail"
     NANGO_SALESFORCE_INTEGRATION_ID: str = "salesforce"
     NANGO_MICROSOFT_CALENDAR_INTEGRATION_ID: str = "microsoft"
     NANGO_MICROSOFT_MAIL_INTEGRATION_ID: str = "microsoft"
@@ -54,6 +55,7 @@ NANGO_INTEGRATION_IDS: dict[str, str] = {
     "hubspot": settings.NANGO_HUBSPOT_INTEGRATION_ID,
     "slack": settings.NANGO_SLACK_INTEGRATION_ID,
     "google_calendar": settings.NANGO_GOOGLE_CALENDAR_INTEGRATION_ID,
+    "gmail": settings.NANGO_GMAIL_INTEGRATION_ID,
     "salesforce": settings.NANGO_SALESFORCE_INTEGRATION_ID,
     "microsoft_calendar": settings.NANGO_MICROSOFT_CALENDAR_INTEGRATION_ID,
     "microsoft_mail": settings.NANGO_MICROSOFT_MAIL_INTEGRATION_ID,

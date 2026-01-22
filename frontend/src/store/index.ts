@@ -166,11 +166,19 @@ const AVAILABLE_INTEGRATIONS: Omit<Integration, 'connected' | 'lastSyncAt' | 'la
   },
   {
     id: 'google-calendar',
-    provider: 'google-calendar',
+    provider: 'google_calendar',
     name: 'Google Calendar',
     description: 'Meetings, events, and scheduling data',
     icon: 'google-calendar',
     color: 'from-green-500 to-green-600',
+  },
+  {
+    id: 'gmail',
+    provider: 'gmail',
+    name: 'Gmail',
+    description: 'Google email communications',
+    icon: 'gmail',
+    color: 'from-red-500 to-red-600',
   },
   {
     id: 'microsoft_calendar',
