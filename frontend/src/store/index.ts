@@ -180,6 +180,14 @@ const AVAILABLE_INTEGRATIONS: Omit<Integration, 'connected' | 'lastSyncAt' | 'la
     icon: 'microsoft_calendar',
     color: 'from-sky-500 to-sky-600',
   },
+  {
+    id: 'microsoft_mail',
+    provider: 'microsoft_mail',
+    name: 'Microsoft Mail',
+    description: 'Outlook emails and communications',
+    icon: 'microsoft_mail',
+    color: 'from-blue-500 to-blue-600',
+  },
 ];
 
 // =============================================================================

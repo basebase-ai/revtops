@@ -162,6 +162,28 @@ ORDER BY activity_date
 LIMIT 10
 ```
 
+## Email Data
+
+Emails from Microsoft Mail (Outlook) are stored in the **activities** table with:
+- `source_system = 'microsoft_mail'`
+- `type = 'email'`
+- `subject` = email subject
+- `description` = email body preview
+- `activity_date` = received timestamp
+- `custom_fields` contains: from_email, from_name, to_emails, cc_emails, recipient_count, has_attachments, importance, is_read, conversation_id
+
+Example query for recent emails:
+```sql
+SELECT subject, activity_date, 
+       custom_fields->>'from_email' as from_email,
+       custom_fields->>'from_name' as from_name,
+       custom_fields->'to_emails' as to_emails
+FROM activities 
+WHERE source_system = 'microsoft_mail'
+ORDER BY activity_date DESC
+LIMIT 20
+```
+
 ## Guidelines
 
 1. **Use SQL for complex queries**: The run_sql_query tool is powerful - use it for JOINs, aggregations, date filtering, etc.

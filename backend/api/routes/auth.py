@@ -297,6 +297,7 @@ async def get_available_integrations() -> AvailableIntegrationsResponse:
             {"id": "slack", "name": "Slack", "description": "Team communication and messages"},
             {"id": "google_calendar", "name": "Google Calendar", "description": "Calendar events and meetings"},
             {"id": "microsoft_calendar", "name": "Microsoft Calendar", "description": "Outlook calendar events and meetings"},
+            {"id": "microsoft_mail", "name": "Microsoft Mail", "description": "Outlook emails and communications"},
             {"id": "salesforce", "name": "Salesforce", "description": "CRM - Opportunities, Accounts"},
         ]
     )
@@ -561,35 +562,38 @@ async def list_integrations(
         existing_integrations = {i.provider: i for i in result.scalars().all()}
 
         # Map Nango provider names to our internal provider names
-        nango_to_internal_provider: dict[str, str] = {
-            "microsoft": "microsoft_calendar",
-            "google-calendar": "google_calendar",
+        # Note: "microsoft" Nango integration is used for both calendar and mail
+        nango_to_internal_providers: dict[str, list[str]] = {
+            "microsoft": ["microsoft_calendar", "microsoft_mail"],  # Both use same OAuth
+            "google-calendar": ["google_calendar"],
         }
 
         # Sync Nango connections to our database
         for conn in nango_connections:
             nango_provider = conn.get("provider_config_key") or conn.get("provider")
-            # Map to internal provider name if needed
-            provider = nango_to_internal_provider.get(nango_provider, nango_provider)
             # Get the actual Nango connection ID
             nango_conn_id = conn.get("connection_id") or conn.get("id")
-            print(f"Nango connection: nango_provider={nango_provider}, internal_provider={provider}, conn_id={nango_conn_id}")
             
-            if provider and provider not in existing_integrations:
-                # Create new integration record with actual Nango connection ID
-                new_integration = Integration(
-                    organization_id=org_uuid,
-                    provider=provider,
-                    nango_connection_id=nango_conn_id,
-                    is_active=True,
-                )
-                session.add(new_integration)
-                existing_integrations[provider] = new_integration
-            elif provider and nango_conn_id:
-                # Update existing integration with correct Nango connection ID if different
-                existing = existing_integrations[provider]
-                if existing.nango_connection_id != nango_conn_id:
-                    existing.nango_connection_id = nango_conn_id
+            # Map to internal provider name(s) - some Nango integrations map to multiple internal providers
+            internal_providers = nango_to_internal_providers.get(nango_provider, [nango_provider])
+            print(f"Nango connection: nango_provider={nango_provider}, internal_providers={internal_providers}, conn_id={nango_conn_id}")
+            
+            for provider in internal_providers:
+                if provider and provider not in existing_integrations:
+                    # Create new integration record with actual Nango connection ID
+                    new_integration = Integration(
+                        organization_id=org_uuid,
+                        provider=provider,
+                        nango_connection_id=nango_conn_id,
+                        is_active=True,
+                    )
+                    session.add(new_integration)
+                    existing_integrations[provider] = new_integration
+                elif provider and nango_conn_id:
+                    # Update existing integration with correct Nango connection ID if different
+                    existing = existing_integrations[provider]
+                    if existing.nango_connection_id != nango_conn_id:
+                        existing.nango_connection_id = nango_conn_id
         
         await session.commit()
         
@@ -761,6 +765,7 @@ async def run_initial_sync(organization_id: str, provider: str) -> None:
     from connectors.slack import SlackConnector
     from connectors.google_calendar import GoogleCalendarConnector
     from connectors.microsoft_calendar import MicrosoftCalendarConnector
+    from connectors.microsoft_mail import MicrosoftMailConnector
 
     connectors = {
         "hubspot": HubSpotConnector,
@@ -768,6 +773,7 @@ async def run_initial_sync(organization_id: str, provider: str) -> None:
         "slack": SlackConnector,
         "google_calendar": GoogleCalendarConnector,
         "microsoft_calendar": MicrosoftCalendarConnector,
+        "microsoft_mail": MicrosoftMailConnector,
     }
 
     connector_class = connectors.get(provider)
