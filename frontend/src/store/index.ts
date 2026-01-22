@@ -89,6 +89,9 @@ interface AppState {
   setCurrentChatId: (id: string | null) => void;
   startNewChat: () => void;
   
+  // Actions - Conversations
+  addConversation: (id: string, title: string) => void;
+  
   // Actions - Sync user to backend
   syncUserToBackend: () => Promise<void>;
 }
@@ -242,6 +245,27 @@ export const useAppStore = create<AppState>()(
       setCurrentView: (currentView) => set({ currentView }),
       setCurrentChatId: (currentChatId) => set({ currentChatId }),
       startNewChat: () => set({ currentChatId: null, currentView: 'chat' }),
+
+      // Conversation actions
+      addConversation: (id, title) => {
+        const { recentChats } = get();
+        // Avoid duplicates
+        if (recentChats.some((chat) => chat.id === id)) {
+          console.log('[Store] Conversation already exists:', id);
+          return;
+        }
+        console.log('[Store] Adding conversation:', id, title);
+        // Only update recentChats - don't change currentChatId
+        // The Chat component tracks the conversation internally via conversationIdRef
+        // Changing currentChatId mid-stream can cause the chatId prop to change
+        // and trigger unwanted re-renders/effects
+        set({
+          recentChats: [
+            { id, title, lastMessageAt: new Date(), previewText: '' },
+            ...recentChats.slice(0, 9),
+          ],
+        });
+      },
 
       // Sync user to backend
       syncUserToBackend: async () => {

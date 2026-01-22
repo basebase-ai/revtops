@@ -2,10 +2,10 @@
  * Chat interface component.
  *
  * Features:
- * - WebSocket connection to backend
+ * - WebSocket connection to backend with conversation support
  * - Message history display
  * - Input for user messages
- * - Streaming response display
+ * - Streaming response display with "thinking" indicator
  * - Artifact viewer for dashboards/reports
  * - Auto-generates chat title from first message
  */
@@ -14,15 +14,16 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { Message } from './Message';
 import { ArtifactViewer } from './ArtifactViewer';
-import type { ChatMessage as APIChatMessage } from '../api/client';
-import { getChatHistory } from '../api/client';
+import { getConversation } from '../api/client';
+import { useAppStore } from '../store';
 
 interface ChatMessage {
   id: string;
-  role: 'user' | 'assistant';
+  role: 'user' | 'assistant' | 'tool';
   content: string;
   timestamp: Date;
   isStreaming?: boolean;
+  toolName?: string; // For tool messages
 }
 
 interface Artifact {
@@ -36,100 +37,248 @@ interface ChatProps {
   userId: string;
   organizationId: string;
   chatId?: string | null;
-  onChatCreated?: (id: string, title: string) => void;
 }
 
-export function Chat({ userId, organizationId: _organizationId, chatId, onChatCreated }: ChatProps): JSX.Element {
-  // Note: _organizationId will be used for org-scoped features
+// WebSocket message types
+interface WsConversationCreated {
+  type: 'conversation_created';
+  conversation_id: string;
+}
+
+interface WsMessageComplete {
+  type: 'message_complete';
+  conversation_id: string;
+}
+
+type WsControlMessage = WsConversationCreated | WsMessageComplete;
+
+function isControlMessage(data: unknown): data is WsControlMessage {
+  return typeof data === 'object' && data !== null && 'type' in data;
+}
+
+export function Chat({ userId, organizationId: _organizationId, chatId }: ChatProps): JSX.Element {
+  // Get store action (stable reference)
+  const addConversation = useAppStore((state) => state.addConversation);
+  
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState<string>('');
   const [currentArtifact, setCurrentArtifact] = useState<Artifact | null>(null);
-  const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [isLoading, setIsLoading] = useState<boolean>(false);
+  const [isThinking, setIsThinking] = useState<boolean>(false);
   const [chatTitle, setChatTitle] = useState<string>('New Chat');
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const streamingMessageIdRef = useRef<string | null>(null);
-  const hasCreatedChat = useRef<boolean>(false);
+  const conversationIdRef = useRef<string | null>(null);
+  const notifiedConversationRef = useRef<string | null>(null);
 
-  const { sendMessage, lastMessage, isConnected, connectionState } = useWebSocket(
+  const { sendMessage, isConnected, connectionState, messageQueue, clearMessageQueue } = useWebSocket(
     `/ws/chat/${userId}`
   );
 
-  // Load chat history
+  // Reset state when chatId becomes null (New Chat clicked)
   useEffect(() => {
-    const loadHistory = async (): Promise<void> => {
-      setIsLoading(true);
-      hasCreatedChat.current = false;
+    if (chatId === null) {
+      console.log('[Chat] New chat started, clearing state');
+      setMessages([]);
+      setChatTitle('New Chat');
+      conversationIdRef.current = null;
+      streamingMessageIdRef.current = null;
+      notifiedConversationRef.current = null; // Reset notification tracker
+      setIsThinking(false);
+    }
+  }, [chatId]);
 
-      if (chatId) {
-        // Load existing chat
-        const { data, error } = await getChatHistory(userId);
-        if (data && !error) {
-          const loadedMessages: ChatMessage[] = data.messages.map(
-            (msg: APIChatMessage) => ({
-              id: msg.id,
-              role: msg.role,
-              content: msg.content,
-              timestamp: new Date(msg.created_at),
-            })
-          );
-          setMessages(loadedMessages);
-
-          // Set title from first message
-          if (loadedMessages.length > 0) {
-            const firstUserMsg = loadedMessages.find((m) => m.role === 'user');
-            if (firstUserMsg) {
-              setChatTitle(generateTitle(firstUserMsg.content));
-            }
-          }
-        }
-      } else {
-        // New chat
-        setMessages([]);
-        setChatTitle('New Chat');
+  // Load conversation when selecting an existing chat from sidebar
+  useEffect(() => {
+    const loadConversation = async (): Promise<void> => {
+      // If no chatId, this is a new chat
+      if (!chatId) {
+        return;
       }
+
+      // If chatId matches our current conversation, don't reload
+      if (chatId === conversationIdRef.current) {
+        console.log('[Chat] Skipping load - already loaded this conversation');
+        return;
+      }
+
+      console.log('[Chat] Loading conversation:', chatId);
+      setIsLoading(true);
+
+      const { data, error } = await getConversation(chatId, userId);
+      if (data && !error) {
+        conversationIdRef.current = chatId;
+        setChatTitle(data.title ?? 'New Chat');
+        
+        const loadedMessages: ChatMessage[] = data.messages.map((msg) => ({
+          id: msg.id,
+          role: msg.role as 'user' | 'assistant',
+          content: msg.content,
+          timestamp: new Date(msg.created_at),
+        }));
+        setMessages(loadedMessages);
+      } else {
+        console.error('[Chat] Failed to load conversation:', error);
+      }
+      
       setIsLoading(false);
     };
 
-    void loadHistory();
+    void loadConversation();
   }, [chatId, userId]);
 
-  // Handle incoming WebSocket messages
+  // Track the pending title for when conversation is created
+  const pendingTitleRef = useRef<string | null>(null);
+
+  // Track processed message indices to avoid re-processing
+  const processedCountRef = useRef<number>(0);
+
+  // Handle incoming WebSocket messages - process only new messages
   useEffect(() => {
-    if (!lastMessage) return;
+    if (messageQueue.length === 0) {
+      processedCountRef.current = 0;
+      return;
+    }
+
+    // Only process messages we haven't seen yet
+    const newMessages = messageQueue.slice(processedCountRef.current);
+    if (newMessages.length === 0) return;
+
+    console.log('[Chat] Processing', newMessages.length, 'new messages');
+
+    // Process each new message
+    for (const message of newMessages) {
+      processMessageSync(message);
+    }
+    
+    processedCountRef.current = messageQueue.length;
+    
+    // Clear the queue after a short delay to ensure all updates are processed
+    const timeoutId = setTimeout(() => {
+      clearMessageQueue();
+      processedCountRef.current = 0;
+    }, 50);
+    
+    return () => clearTimeout(timeoutId);
+  }, [messageQueue, clearMessageQueue, addConversation]);
+
+  // Process a single WebSocket message (synchronous, no useCallback to avoid stale closures)
+  const processMessageSync = (message: string): void => {
+    // Try to parse as JSON control message
+    try {
+      const parsed: unknown = JSON.parse(message);
+      if (isControlMessage(parsed)) {
+        if (parsed.type === 'conversation_created') {
+          // Only process if we haven't already notified for this conversation
+          if (notifiedConversationRef.current === parsed.conversation_id) {
+            console.log('[Chat] Already notified for conversation:', parsed.conversation_id);
+            return;
+          }
+          
+          console.log('[Chat] Conversation created:', parsed.conversation_id);
+          conversationIdRef.current = parsed.conversation_id;
+          notifiedConversationRef.current = parsed.conversation_id;
+          
+          // Use pending title or generate from ref
+          const title = pendingTitleRef.current ?? 'New Chat';
+          setChatTitle(title);
+          
+          // Add to store (stable action, no dependency issues)
+          addConversation(parsed.conversation_id, title);
+          pendingTitleRef.current = null;
+          return;
+        }
+        if (parsed.type === 'message_complete') {
+          console.log('[Chat] Message complete');
+          // Mark streaming message as complete
+          setMessages((prev) =>
+            prev.map((msg) =>
+              msg.id === streamingMessageIdRef.current
+                ? { ...msg, isStreaming: false }
+                : msg
+            )
+          );
+          streamingMessageIdRef.current = null;
+          return;
+        }
+      }
+    } catch {
+      // Not JSON, treat as text chunk
+    }
+
+    // Check if this is a tool call indicator (e.g., "*Querying query_deals...*")
+    const trimmed = message.trim();
+    const toolCallMatch = trimmed.match(/^\*([^*]+)\.\.\.\*$/);
+    if (toolCallMatch) {
+      const toolAction = toolCallMatch[1];
+      console.log('[Chat] Tool call detected:', toolAction);
+      
+      // Add as a tool message
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `tool-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+          role: 'tool' as const,
+          content: toolAction,
+          toolName: extractToolName(toolAction),
+          timestamp: new Date(),
+        },
+      ]);
+      setIsThinking(false);
+      return;
+    }
+
+    // Text chunk from assistant
+    console.log('[Chat] Received text chunk:', message.substring(0, 30) + '...');
+    setIsThinking(false);
 
     setMessages((prev) => {
       if (streamingMessageIdRef.current) {
+        // Append to existing streaming message
         return prev.map((msg) => {
           if (msg.id === streamingMessageIdRef.current) {
-            return { ...msg, content: msg.content + lastMessage };
+            return { ...msg, content: msg.content + message };
           }
           return msg;
         });
       } else {
+        // First chunk - create new assistant message
         const newId = `assistant-${Date.now()}`;
         streamingMessageIdRef.current = newId;
+        console.log('[Chat] Creating new assistant message:', newId);
         return [
           ...prev,
           {
             id: newId,
             role: 'assistant' as const,
-            content: lastMessage,
+            content: message,
             timestamp: new Date(),
             isStreaming: true,
           },
         ];
       }
     });
-  }, [lastMessage]);
+  };
+
+  // Extract tool name from action string (e.g., "Querying query_deals" -> "query_deals")
+  const extractToolName = (action: string): string => {
+    const match = action.match(/(?:Querying|Calling|Running|Using)\s+(\w+)/i);
+    return match ? match[1] : action;
+  };
 
   // Auto-scroll to bottom
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+  }, [messages, isThinking]);
 
   const handleSend = useCallback((): void => {
-    if (!input.trim() || !isConnected) return;
+    if (!input.trim() || !isConnected) {
+      console.log('[Chat] handleSend blocked - input empty or not connected');
+      return;
+    }
+
+    console.log('[Chat] Sending message:', input.substring(0, 30) + '...');
 
     const userMessage: ChatMessage = {
       id: `user-${Date.now()}`,
@@ -138,22 +287,24 @@ export function Chat({ userId, organizationId: _organizationId, chatId, onChatCr
       timestamp: new Date(),
     };
 
-    // If this is the first message, generate title and notify parent
-    if (messages.length === 0 && !hasCreatedChat.current) {
-      hasCreatedChat.current = true;
-      const title = generateTitle(input);
-      setChatTitle(title);
-
-      // Generate a new chat ID
-      const newChatId = `chat-${Date.now()}`;
-      onChatCreated?.(newChatId, title);
+    // If this is a new conversation, store the title for when conversation_created arrives
+    if (!conversationIdRef.current) {
+      pendingTitleRef.current = generateTitle(input);
     }
 
     setMessages((prev) => [...prev, userMessage]);
     streamingMessageIdRef.current = null;
-    sendMessage(input);
+    setIsThinking(true);
+
+    // Send message with conversation context
+    const payload = JSON.stringify({
+      message: input,
+      conversation_id: conversationIdRef.current,
+    });
+    console.log('[Chat] Sending to WebSocket:', payload);
+    sendMessage(payload);
     setInput('');
-  }, [input, isConnected, sendMessage, messages.length, onChatCreated]);
+  }, [input, isConnected, sendMessage]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>): void => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -194,17 +345,25 @@ export function Chat({ userId, organizationId: _organizationId, chatId, onChatCr
       <div className="flex-1 flex overflow-hidden">
         {/* Messages */}
         <div className="flex-1 overflow-y-auto p-6">
-          {messages.length === 0 ? (
+          {messages.length === 0 && !isThinking ? (
             <EmptyState onSuggestionClick={handleSuggestionClick} />
           ) : (
-            <div className="max-w-3xl mx-auto space-y-6">
+            <div className="max-w-3xl mx-auto space-y-4">
               {messages.map((msg) => (
-                <Message
-                  key={msg.id}
-                  message={msg}
-                  onArtifactClick={setCurrentArtifact}
-                />
+                msg.role === 'tool' ? (
+                  <ToolCallIndicator key={msg.id} action={msg.content} />
+                ) : (
+                  <Message
+                    key={msg.id}
+                    message={msg}
+                    onArtifactClick={setCurrentArtifact}
+                  />
+                )
               ))}
+
+              {/* Thinking indicator */}
+              {isThinking && <ThinkingIndicator />}
+
               <div ref={messagesEndRef} />
             </div>
           )}
@@ -243,11 +402,11 @@ export function Chat({ userId, organizationId: _organizationId, chatId, onChatCr
               placeholder="Ask about your pipeline..."
               className="input-field resize-none min-h-[52px] max-h-32"
               rows={1}
-              disabled={!isConnected}
+              disabled={!isConnected || isThinking}
             />
             <button
               onClick={handleSend}
-              disabled={!input.trim() || !isConnected}
+              disabled={!input.trim() || !isConnected || isThinking}
               className="btn-primary px-6 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -267,19 +426,55 @@ export function Chat({ userId, organizationId: _organizationId, chatId, onChatCr
 }
 
 /**
+ * Tool call indicator - shows as a small, light note without speech bubble
+ */
+function ToolCallIndicator({ action }: { action: string }): JSX.Element {
+  return (
+    <div className="flex items-center gap-2 py-1 pl-11 text-sm text-surface-500">
+      <svg className="w-3.5 h-3.5 text-surface-600 animate-spin" fill="none" viewBox="0 0 24 24">
+        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+      </svg>
+      <span className="text-surface-500 italic">{action}</span>
+    </div>
+  );
+}
+
+/**
+ * Thinking indicator - shows while waiting for assistant response
+ */
+function ThinkingIndicator(): JSX.Element {
+  return (
+    <div className="flex gap-4">
+      {/* Avatar */}
+      <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-primary-500 to-primary-700 flex items-center justify-center flex-shrink-0">
+        <svg className="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
+        </svg>
+      </div>
+
+      {/* Thinking dots */}
+      <div className="bg-surface-800/50 rounded-2xl rounded-tl-sm px-4 py-3">
+        <div className="flex items-center gap-1.5">
+          <div className="w-2 h-2 bg-surface-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+          <div className="w-2 h-2 bg-surface-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+          <div className="w-2 h-2 bg-surface-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
  * Generate a chat title from the first message.
- * This is a simple client-side version; in production, use LLM.
  */
 function generateTitle(message: string): string {
-  // Clean and truncate the message
   const cleaned = message.trim().replace(/\n/g, ' ');
 
-  // If it's a question, use it as-is (truncated)
   if (cleaned.endsWith('?') && cleaned.length <= 50) {
     return cleaned;
   }
 
-  // Otherwise, create a summary
   const words = cleaned.split(' ').slice(0, 6);
   let title = words.join(' ');
 
@@ -287,7 +482,6 @@ function generateTitle(message: string): string {
     title = title.slice(0, 40);
   }
 
-  // Add ellipsis if truncated
   if (cleaned.length > title.length) {
     title += '...';
   }

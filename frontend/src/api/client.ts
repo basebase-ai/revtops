@@ -16,6 +16,7 @@ export type { ApiResponse };
 
 export interface ChatMessage {
   id: string;
+  conversation_id: string | null;
   role: 'user' | 'assistant';
   content: string;
   created_at: string;
@@ -25,9 +26,34 @@ export interface ChatMessage {
   }>;
 }
 
+export interface ConversationSummary {
+  id: string;
+  user_id: string;
+  title: string | null;
+  summary: string | null;
+  created_at: string;
+  updated_at: string;
+  message_count: number;
+  last_message_preview: string | null;
+}
+
+export interface ConversationListResponse {
+  conversations: ConversationSummary[];
+  total: number;
+}
+
+export interface ConversationDetailResponse {
+  id: string;
+  user_id: string;
+  title: string | null;
+  summary: string | null;
+  created_at: string;
+  updated_at: string;
+  messages: ChatMessage[];
+}
+
 export interface ChatHistoryResponse {
   messages: ChatMessage[];
-  total: number;
 }
 
 // =============================================================================
@@ -70,16 +96,91 @@ export interface SyncStatusResponse {
 // =============================================================================
 
 /**
- * Get chat history for a user
+ * List conversations for a user
  */
-export async function getChatHistory(
+export async function listConversations(
   userId: string,
   limit = 50,
   offset = 0
-): Promise<ApiResponse<ChatHistoryResponse>> {
-  return apiRequest<ChatHistoryResponse>(
-    `/chat/history?user_id=${userId}&limit=${limit}&offset=${offset}`
+): Promise<ApiResponse<ConversationListResponse>> {
+  return apiRequest<ConversationListResponse>(
+    `/chat/conversations?user_id=${userId}&limit=${limit}&offset=${offset}`
   );
+}
+
+/**
+ * Get a conversation with all its messages
+ */
+export async function getConversation(
+  conversationId: string,
+  userId: string
+): Promise<ApiResponse<ConversationDetailResponse>> {
+  return apiRequest<ConversationDetailResponse>(
+    `/chat/conversations/${conversationId}?user_id=${userId}`
+  );
+}
+
+/**
+ * Create a new conversation
+ */
+export async function createConversation(
+  userId: string,
+  title?: string
+): Promise<ApiResponse<ConversationSummary>> {
+  return apiRequest<ConversationSummary>('/chat/conversations', {
+    method: 'POST',
+    body: JSON.stringify({ user_id: userId, title }),
+  });
+}
+
+/**
+ * Update a conversation (title, etc.)
+ */
+export async function updateConversation(
+  conversationId: string,
+  userId: string,
+  title: string
+): Promise<ApiResponse<ConversationSummary>> {
+  return apiRequest<ConversationSummary>(
+    `/chat/conversations/${conversationId}?user_id=${userId}`,
+    {
+      method: 'PATCH',
+      body: JSON.stringify({ title }),
+    }
+  );
+}
+
+/**
+ * Delete a conversation
+ */
+export async function deleteConversation(
+  conversationId: string,
+  userId: string
+): Promise<ApiResponse<{ success: boolean }>> {
+  return apiRequest<{ success: boolean }>(
+    `/chat/conversations/${conversationId}?user_id=${userId}`,
+    { method: 'DELETE' }
+  );
+}
+
+/**
+ * Get chat history for a user (legacy - use getConversation instead)
+ */
+export async function getChatHistory(
+  userId: string,
+  conversationId?: string,
+  limit = 50,
+  offset = 0
+): Promise<ApiResponse<ChatHistoryResponse>> {
+  const params = new URLSearchParams({
+    user_id: userId,
+    limit: limit.toString(),
+    offset: offset.toString(),
+  });
+  if (conversationId) {
+    params.append('conversation_id', conversationId);
+  }
+  return apiRequest<ChatHistoryResponse>(`/chat/history?${params.toString()}`);
 }
 
 /**

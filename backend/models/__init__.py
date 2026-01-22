@@ -7,6 +7,7 @@ from models.account import Account
 from models.contact import Contact
 from models.activity import Activity
 from models.artifact import Artifact
+from models.conversation import Conversation
 from models.chat_message import ChatMessage
 from models.integration import Integration
 
@@ -21,6 +22,7 @@ __all__ = [
     "Contact",
     "Activity",
     "Artifact",
+    "Conversation",
     "ChatMessage",
     "Integration",
 ]

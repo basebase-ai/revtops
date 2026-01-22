@@ -21,6 +21,11 @@ engine = create_async_engine(
     _db_url,
     echo=settings.ENVIRONMENT == "development",
     future=True,
+    # Connection pool settings for Supabase session pooler
+    pool_size=3,  # Keep pool small for session mode
+    max_overflow=2,  # Allow few additional connections
+    pool_pre_ping=True,  # Check connection health before use
+    pool_recycle=300,  # Recycle connections every 5 minutes
 )
 
 AsyncSessionLocal = sessionmaker(

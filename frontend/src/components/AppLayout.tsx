@@ -9,14 +9,15 @@
  * - Organization & Profile sections at bottom
  */
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { Sidebar } from './Sidebar';
 import { DataSources } from './DataSources';
 import { ChatsList } from './ChatsList';
 import { Chat } from './Chat';
 import { OrganizationPanel } from './OrganizationPanel';
 import { ProfilePanel } from './ProfilePanel';
-import { useAppStore, type ChatSummary } from '../store';
+import { useAppStore } from '../store';
 
 // Re-export types from store for backwards compatibility
 export type { UserProfile, OrganizationInfo, ChatSummary, View } from '../store';
@@ -27,52 +28,37 @@ interface AppLayoutProps {
 }
 
 export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
-  // Get state from Zustand store
+  // Get state from Zustand store using shallow comparison to prevent unnecessary re-renders
   const {
     user,
     organization,
     sidebarCollapsed,
-    setSidebarCollapsed,
     currentView,
-    setCurrentView,
     currentChatId,
-    setCurrentChatId,
-    startNewChat,
     connectedIntegrationsCount,
-    fetchIntegrations,
-  } = useAppStore();
+    recentChats,
+  } = useAppStore(
+    useShallow((state) => ({
+      user: state.user,
+      organization: state.organization,
+      sidebarCollapsed: state.sidebarCollapsed,
+      currentView: state.currentView,
+      currentChatId: state.currentChatId,
+      connectedIntegrationsCount: state.connectedIntegrationsCount,
+      recentChats: state.recentChats,
+    }))
+  );
 
-  const [recentChats, setRecentChats] = useState<ChatSummary[]>([]);
+  // Get actions separately (they're stable and don't need shallow comparison)
+  const setSidebarCollapsed = useAppStore((state) => state.setSidebarCollapsed);
+  const setCurrentView = useAppStore((state) => state.setCurrentView);
+  const setCurrentChatId = useAppStore((state) => state.setCurrentChatId);
+  const startNewChat = useAppStore((state) => state.startNewChat);
+  const fetchIntegrations = useAppStore((state) => state.fetchIntegrations);
   
   // Panels
   const [showOrgPanel, setShowOrgPanel] = useState(false);
   const [showProfilePanel, setShowProfilePanel] = useState(false);
-
-  // Load recent chats
-  useEffect(() => {
-    // TODO: Fetch from API
-    // For now, using mock data
-    setRecentChats([
-      {
-        id: '1',
-        title: 'Q4 Pipeline Analysis',
-        lastMessageAt: new Date(Date.now() - 1000 * 60 * 30),
-        previewText: 'Show me deals closing this quarter...',
-      },
-      {
-        id: '2',
-        title: 'Enterprise Account Review',
-        lastMessageAt: new Date(Date.now() - 1000 * 60 * 60 * 2),
-        previewText: 'Which enterprise accounts need attention?',
-      },
-      {
-        id: '3',
-        title: 'Sales Team Performance',
-        lastMessageAt: new Date(Date.now() - 1000 * 60 * 60 * 24),
-        previewText: 'Compare rep performance this month...',
-      },
-    ]);
-  }, []);
 
   // Fetch integrations on mount (if not already loaded)
   useEffect(() => {
@@ -81,10 +67,10 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
     }
   }, [organization, fetchIntegrations]);
 
-  const handleSelectChat = (chatId: string): void => {
+  const handleSelectChat = useCallback((chatId: string): void => {
     setCurrentChatId(chatId);
     setCurrentView('chat');
-  };
+  }, [setCurrentChatId, setCurrentView]);
 
   // Guard against missing user/org (shouldn't happen, but be safe)
   if (!user || !organization) {
@@ -121,14 +107,6 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
             userId={user.id}
             organizationId={organization.id}
             chatId={currentChatId}
-            onChatCreated={(id, title) => {
-              setCurrentChatId(id);
-              // Add to recent chats
-              setRecentChats((prev) => [
-                { id, title, lastMessageAt: new Date(), previewText: '' },
-                ...prev.slice(0, 9),
-              ]);
-            }}
           />
         )}
         {currentView === 'data-sources' && (

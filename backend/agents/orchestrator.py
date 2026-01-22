@@ -10,18 +10,20 @@ Responsibilities:
 - Save conversation to database
 """
 
+from datetime import datetime
 from typing import Any, AsyncGenerator
 from uuid import UUID
 
 import anthropic
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from agents.tools import execute_tool, get_tools
 from config import settings
 from models.chat_message import ChatMessage
+from models.conversation import Conversation
 from models.database import get_session
 
-SYSTEM_PROMPT = """You are Revenue Copilot, an AI assistant for sales and revenue operations.
+SYSTEM_PROMPT = """You are Revtops, an AI assistant for sales and revenue operations.
 
 You help users understand their sales pipeline, analyze deals, and get insights from their CRM data.
 
@@ -36,22 +38,29 @@ When answering questions:
 3. Be concise but thorough
 4. If you create an artifact (dashboard, report, analysis), mention it to the user
 
-You have access to the user's Salesforce data that has been synced to the system."""
+You have access to the user's Hubspot, Slack, Google Calendar, Salesforce, and other enterprise revenue operations data that has been synced to the system."""
 
 
 class ChatOrchestrator:
     """Orchestrates chat interactions with Claude."""
 
-    def __init__(self, user_id: str, organization_id: str | None) -> None:
+    def __init__(
+        self,
+        user_id: str,
+        organization_id: str | None,
+        conversation_id: str | None = None,
+    ) -> None:
         """
         Initialize the orchestrator.
 
         Args:
             user_id: UUID of the authenticated user
             organization_id: UUID of the user's organization (may be None for new users)
+            conversation_id: UUID of the conversation (may be None for new conversations)
         """
         self.user_id = user_id
         self.organization_id = organization_id
+        self.conversation_id = conversation_id
         self.client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
 
     async def process_message(
@@ -61,12 +70,14 @@ class ChatOrchestrator:
         Process a user message and stream Claude's response.
 
         Flow:
-        1. Load conversation history
-        2. Add user message
-        3. Call Claude with tools
-        4. Handle tool calls if any
-        5. Stream response
-        6. Save to database
+        1. Create conversation if needed
+        2. Load conversation history
+        3. Add user message
+        4. Call Claude with tools
+        5. Handle tool calls if any
+        6. Stream response
+        7. Save to database
+        8. Update conversation title if first message
 
         Args:
             user_message: The user's message text
@@ -74,7 +85,11 @@ class ChatOrchestrator:
         Yields:
             String chunks of the assistant's response
         """
-        # Load recent conversation history
+        # Create conversation if needed
+        if not self.conversation_id:
+            self.conversation_id = await self._create_conversation()
+
+        # Load conversation history (only from this conversation)
         history = await self._load_history(limit=20)
 
         # Add user message
@@ -150,16 +165,37 @@ class ChatOrchestrator:
                         yield text
 
         # Save conversation
+        is_first_message = len(history) == 0
         await self._save_messages(
             user_message, assistant_message, tool_calls_made if tool_calls_made else None
         )
 
+        # Update conversation title if first message
+        if is_first_message:
+            title = self._generate_title(user_message)
+            await self._update_conversation_title(title)
+
+    async def _create_conversation(self) -> str:
+        """Create a new conversation and return its ID."""
+        async with get_session() as session:
+            conversation = Conversation(
+                user_id=UUID(self.user_id),
+                title=None,
+            )
+            session.add(conversation)
+            await session.commit()
+            await session.refresh(conversation)
+            return str(conversation.id)
+
     async def _load_history(self, limit: int = 20) -> list[dict[str, str]]:
-        """Load recent chat history from database."""
+        """Load recent chat history from the current conversation."""
+        if not self.conversation_id:
+            return []
+
         async with get_session() as session:
             result = await session.execute(
                 select(ChatMessage)
-                .where(ChatMessage.user_id == UUID(self.user_id))
+                .where(ChatMessage.conversation_id == UUID(self.conversation_id))
                 .order_by(ChatMessage.created_at.desc())
                 .limit(limit)
             )
@@ -176,10 +212,13 @@ class ChatOrchestrator:
         tool_calls: list[dict[str, Any]] | None = None,
     ) -> None:
         """Save conversation to database."""
+        conv_uuid = UUID(self.conversation_id) if self.conversation_id else None
+
         async with get_session() as session:
             # Save user message
             session.add(
                 ChatMessage(
+                    conversation_id=conv_uuid,
                     user_id=UUID(self.user_id),
                     role="user",
                     content=user_msg,
@@ -189,6 +228,7 @@ class ChatOrchestrator:
             # Save assistant message
             session.add(
                 ChatMessage(
+                    conversation_id=conv_uuid,
                     user_id=UUID(self.user_id),
                     role="assistant",
                     content=assistant_msg,
@@ -196,4 +236,47 @@ class ChatOrchestrator:
                 )
             )
 
+            # Update conversation's updated_at
+            if conv_uuid:
+                await session.execute(
+                    update(Conversation)
+                    .where(Conversation.id == conv_uuid)
+                    .values(updated_at=datetime.utcnow())
+                )
+
             await session.commit()
+
+    async def _update_conversation_title(self, title: str) -> None:
+        """Update the conversation title."""
+        if not self.conversation_id:
+            return
+
+        async with get_session() as session:
+            await session.execute(
+                update(Conversation)
+                .where(Conversation.id == UUID(self.conversation_id))
+                .values(title=title, updated_at=datetime.utcnow())
+            )
+            await session.commit()
+
+    def _generate_title(self, message: str) -> str:
+        """Generate a title from the first message."""
+        # Clean and truncate the message
+        cleaned = message.strip().replace("\n", " ")
+
+        # If it's a question, use it as-is (truncated)
+        if cleaned.endswith("?") and len(cleaned) <= 50:
+            return cleaned
+
+        # Otherwise, create a summary
+        words = cleaned.split(" ")[:6]
+        title = " ".join(words)
+
+        if len(title) > 40:
+            title = title[:40]
+
+        # Add ellipsis if truncated
+        if len(cleaned) > len(title):
+            title += "..."
+
+        return title or "New Chat"

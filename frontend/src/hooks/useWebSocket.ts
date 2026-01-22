@@ -3,6 +3,9 @@
  *
  * Handles connection, reconnection, and message streaming.
  * Uses centralized API configuration.
+ * 
+ * Uses a message queue to ensure no messages are lost when multiple
+ * arrive in the same React render cycle.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -13,6 +16,10 @@ interface UseWebSocketReturn {
   lastMessage: string | null;
   isConnected: boolean;
   connectionState: 'connecting' | 'connected' | 'disconnected' | 'error';
+  /** All messages received since last clear, for processing multiple messages per render */
+  messageQueue: string[];
+  /** Clear the message queue after processing */
+  clearMessageQueue: () => void;
 }
 
 export function useWebSocket(url: string): UseWebSocketReturn {
@@ -21,6 +28,7 @@ export function useWebSocket(url: string): UseWebSocketReturn {
     'connecting' | 'connected' | 'disconnected' | 'error'
   >('disconnected');
   const [lastMessage, setLastMessage] = useState<string | null>(null);
+  const [messageQueue, setMessageQueue] = useState<string[]>([]);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<number | null>(null);
   const reconnectAttemptsRef = useRef<number>(0);
@@ -47,6 +55,8 @@ export function useWebSocket(url: string): UseWebSocketReturn {
     };
 
     ws.onmessage = (event: MessageEvent<string>): void => {
+      // Add to queue AND set lastMessage for backwards compatibility
+      setMessageQueue((prev) => [...prev, event.data]);
       setLastMessage(event.data);
     };
 
@@ -94,5 +104,9 @@ export function useWebSocket(url: string): UseWebSocketReturn {
     }
   }, []);
 
-  return { sendMessage, lastMessage, isConnected, connectionState };
+  const clearMessageQueue = useCallback((): void => {
+    setMessageQueue([]);
+  }, []);
+
+  return { sendMessage, lastMessage, isConnected, connectionState, messageQueue, clearMessageQueue };
 }

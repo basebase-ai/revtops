@@ -5,13 +5,16 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, Optional, TYPE_CHECKING
 
 from sqlalchemy import DateTime, ForeignKey, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from models.database import Base
+
+if TYPE_CHECKING:
+    from models.conversation import Conversation
 
 
 class ChatMessage(Base):
@@ -22,8 +25,11 @@ class ChatMessage(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
+    conversation_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("conversations.id"), nullable=True, index=True
+    )
     user_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("users.id"), nullable=False
+        UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True
     )
     role: Mapped[str] = mapped_column(
         String(20), nullable=False
@@ -36,10 +42,16 @@ class ChatMessage(Base):
         DateTime, default=datetime.utcnow, nullable=True
     )
 
+    # Relationships
+    conversation: Mapped[Optional["Conversation"]] = relationship(
+        "Conversation", back_populates="messages"
+    )
+
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for API responses."""
         return {
             "id": str(self.id),
+            "conversation_id": str(self.conversation_id) if self.conversation_id else None,
             "role": self.role,
             "content": self.content,
             "tool_calls": self.tool_calls,
