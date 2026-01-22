@@ -49,6 +49,15 @@ export interface ChatSummary {
   previewText: string;
 }
 
+export interface ChatMessage {
+  id: string;
+  role: 'user' | 'assistant' | 'tool';
+  content: string;
+  timestamp: Date;
+  isStreaming?: boolean;
+  toolName?: string;
+}
+
 export type View = 'chat' | 'data-sources' | 'chats-list';
 
 // =============================================================================
@@ -71,6 +80,13 @@ interface AppState {
   currentChatId: string | null;
   recentChats: ChatSummary[];
   
+  // Chat State
+  messages: ChatMessage[];
+  chatTitle: string;
+  isThinking: boolean;
+  streamingMessageId: string | null;
+  conversationId: string | null;
+  
   // Computed
   connectedIntegrationsCount: number;
   
@@ -92,6 +108,17 @@ interface AppState {
   // Actions - Conversations
   addConversation: (id: string, title: string) => void;
   fetchConversations: () => Promise<void>;
+  
+  // Actions - Chat Messages
+  setMessages: (messages: ChatMessage[]) => void;
+  addMessage: (message: ChatMessage) => void;
+  appendToStreamingMessage: (content: string) => void;
+  startStreamingMessage: (id: string, initialContent: string) => void;
+  markMessageComplete: () => void;
+  setChatTitle: (title: string) => void;
+  setIsThinking: (thinking: boolean) => void;
+  setConversationId: (id: string | null) => void;
+  clearChat: () => void;
   
   // Actions - Sync user to backend
   syncUserToBackend: () => Promise<void>;
@@ -154,6 +181,13 @@ export const useAppStore = create<AppState>()(
       currentChatId: null,
       recentChats: [],
       connectedIntegrationsCount: 0,
+      
+      // Chat state
+      messages: [],
+      chatTitle: 'New Chat',
+      isThinking: false,
+      streamingMessageId: null,
+      conversationId: null,
 
       // Auth actions
       setUser: (user) => set({ 
@@ -171,6 +205,12 @@ export const useAppStore = create<AppState>()(
         currentChatId: null,
         recentChats: [],
         connectedIntegrationsCount: 0,
+        // Clear chat state
+        messages: [],
+        chatTitle: 'New Chat',
+        isThinking: false,
+        streamingMessageId: null,
+        conversationId: null,
       }),
 
       // Integrations actions
@@ -311,6 +351,70 @@ export const useAppStore = create<AppState>()(
         }
       },
 
+      // Chat message actions
+      setMessages: (messages) => set({ messages }),
+      
+      addMessage: (message) => {
+        const { messages } = get();
+        console.log('[Store] Adding message:', message.role, message.id);
+        set({ messages: [...messages, message] });
+      },
+      
+      appendToStreamingMessage: (content) => {
+        const { messages, streamingMessageId } = get();
+        if (!streamingMessageId) {
+          console.warn('[Store] No streaming message to append to');
+          return;
+        }
+        const updated = messages.map((msg) =>
+          msg.id === streamingMessageId
+            ? { ...msg, content: msg.content + content }
+            : msg
+        );
+        set({ messages: updated });
+      },
+      
+      startStreamingMessage: (id, initialContent) => {
+        const { messages } = get();
+        console.log('[Store] Starting streaming message:', id);
+        const newMessage: ChatMessage = {
+          id,
+          role: 'assistant',
+          content: initialContent,
+          timestamp: new Date(),
+          isStreaming: true,
+        };
+        set({ 
+          messages: [...messages, newMessage],
+          streamingMessageId: id,
+          isThinking: false,
+        });
+      },
+      
+      markMessageComplete: () => {
+        const { messages, streamingMessageId } = get();
+        console.log('[Store] Marking message complete:', streamingMessageId);
+        if (!streamingMessageId) return;
+        const updated = messages.map((msg) =>
+          msg.id === streamingMessageId
+            ? { ...msg, isStreaming: false }
+            : msg
+        );
+        set({ messages: updated, streamingMessageId: null });
+      },
+      
+      setChatTitle: (chatTitle) => set({ chatTitle }),
+      setIsThinking: (isThinking) => set({ isThinking }),
+      setConversationId: (conversationId) => set({ conversationId }),
+      
+      clearChat: () => set({
+        messages: [],
+        chatTitle: 'New Chat',
+        isThinking: false,
+        streamingMessageId: null,
+        conversationId: null,
+      }),
+
       // Sync user to backend
       syncUserToBackend: async () => {
         const { user, organization } = get();
@@ -363,3 +467,9 @@ export const useIntegrations = () => useAppStore((state) => state.integrations);
 export const useConnectedCount = () => useAppStore((state) => state.connectedIntegrationsCount);
 export const useSidebarCollapsed = () => useAppStore((state) => state.sidebarCollapsed);
 export const useCurrentView = () => useAppStore((state) => state.currentView);
+
+// Chat selectors
+export const useMessages = () => useAppStore((state) => state.messages);
+export const useChatTitle = () => useAppStore((state) => state.chatTitle);
+export const useIsThinking = () => useAppStore((state) => state.isThinking);
+export const useConversationId = () => useAppStore((state) => state.conversationId);

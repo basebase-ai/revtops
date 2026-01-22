@@ -3,7 +3,7 @@
  *
  * Features:
  * - WebSocket connection to backend with conversation support
- * - Message history display
+ * - Message history display (stored in Zustand)
  * - Input for user messages
  * - Streaming response display with "thinking" indicator
  * - Artifact viewer for dashboards/reports
@@ -15,16 +15,13 @@ import { useWebSocket } from '../hooks/useWebSocket';
 import { Message } from './Message';
 import { ArtifactViewer } from './ArtifactViewer';
 import { getConversation } from '../api/client';
-import { useAppStore } from '../store';
-
-interface ChatMessage {
-  id: string;
-  role: 'user' | 'assistant' | 'tool';
-  content: string;
-  timestamp: Date;
-  isStreaming?: boolean;
-  toolName?: string; // For tool messages
-}
+import { 
+  useAppStore, 
+  useMessages, 
+  useChatTitle, 
+  useIsThinking,
+  type ChatMessage 
+} from '../store';
 
 interface Artifact {
   id: string;
@@ -57,29 +54,37 @@ function isControlMessage(data: unknown): data is WsControlMessage {
 }
 
 export function Chat({ userId, organizationId: _organizationId, chatId }: ChatProps): JSX.Element {
-  // Get store action (stable reference)
-  const addConversation = useAppStore((state) => state.addConversation);
+  // Get state from Zustand
+  const messages = useMessages();
+  const chatTitle = useChatTitle();
+  const isThinking = useIsThinking();
   
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  // Get actions from Zustand (stable references)
+  const addMessage = useAppStore((s) => s.addMessage);
+  const appendToStreamingMessage = useAppStore((s) => s.appendToStreamingMessage);
+  const startStreamingMessage = useAppStore((s) => s.startStreamingMessage);
+  const markMessageComplete = useAppStore((s) => s.markMessageComplete);
+  const setChatTitle = useAppStore((s) => s.setChatTitle);
+  const setIsThinking = useAppStore((s) => s.setIsThinking);
+  const setConversationId = useAppStore((s) => s.setConversationId);
+  const setMessages = useAppStore((s) => s.setMessages);
+  const clearChat = useAppStore((s) => s.clearChat);
+  const addConversation = useAppStore((s) => s.addConversation);
+  const streamingMessageId = useAppStore((s) => s.streamingMessageId);
+  const conversationId = useAppStore((s) => s.conversationId);
+  
+  // Local state
   const [input, setInput] = useState<string>('');
   const [currentArtifact, setCurrentArtifact] = useState<Artifact | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(false);
-  const [isThinking, setIsThinking] = useState<boolean>(false);
-  const [chatTitle, setChatTitle] = useState<string>('New Chat');
+  
+  // Refs
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const streamingMessageIdRef = useRef<string | null>(null);
-  const conversationIdRef = useRef<string | null>(null);
   const notifiedConversationRef = useRef<string | null>(null);
   const pendingTitleRef = useRef<string | null>(null);
 
-  // Store addConversation in ref so callback can access latest version
-  const addConversationRef = useRef(addConversation);
-  useEffect(() => {
-    addConversationRef.current = addConversation;
-  }, [addConversation]);
-
-  // Handle WebSocket message - called directly from WebSocket event handler
+  // Handle WebSocket message - uses Zustand actions directly
   const handleWebSocketMessage = useCallback((message: string): void => {
     // Try to parse as JSON control message
     try {
@@ -93,29 +98,19 @@ export function Chat({ userId, organizationId: _organizationId, chatId }: ChatPr
           }
           
           console.log('[Chat] Conversation created:', parsed.conversation_id);
-          conversationIdRef.current = parsed.conversation_id;
+          setConversationId(parsed.conversation_id);
           notifiedConversationRef.current = parsed.conversation_id;
           
-          // Use pending title or generate from ref
+          // Use pending title
           const title = pendingTitleRef.current ?? 'New Chat';
           setChatTitle(title);
-          
-          // Add to store via ref (stable reference)
-          addConversationRef.current(parsed.conversation_id, title);
+          addConversation(parsed.conversation_id, title);
           pendingTitleRef.current = null;
           return;
         }
         if (parsed.type === 'message_complete') {
           console.log('[Chat] Message complete');
-          // Mark streaming message as complete
-          setMessages((prev) =>
-            prev.map((msg) =>
-              msg.id === streamingMessageIdRef.current
-                ? { ...msg, isStreaming: false }
-                : msg
-            )
-          );
-          streamingMessageIdRef.current = null;
+          markMessageComplete();
           return;
         }
       }
@@ -134,52 +129,34 @@ export function Chat({ userId, organizationId: _organizationId, chatId }: ChatPr
       const toolNameMatch = toolAction.match(/(?:Querying|Calling|Running|Using)\s+(\w+)/i);
       const toolName = toolNameMatch ? toolNameMatch[1] : toolAction;
       
-      // Add as a tool message
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: `tool-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-          role: 'tool' as const,
-          content: toolAction,
-          toolName,
-          timestamp: new Date(),
-        },
-      ]);
+      // Add tool message
+      addMessage({
+        id: `tool-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+        role: 'tool',
+        content: toolAction,
+        toolName,
+        timestamp: new Date(),
+      });
       setIsThinking(false);
       return;
     }
 
     // Text chunk from assistant
     console.log('[Chat] Received text chunk:', message.substring(0, 30) + '...');
-    setIsThinking(false);
-
-    setMessages((prev) => {
-      if (streamingMessageIdRef.current) {
-        // Append to existing streaming message
-        return prev.map((msg) => {
-          if (msg.id === streamingMessageIdRef.current) {
-            return { ...msg, content: msg.content + message };
-          }
-          return msg;
-        });
-      } else {
-        // First chunk - create new assistant message
-        const newId = `assistant-${Date.now()}`;
-        streamingMessageIdRef.current = newId;
-        console.log('[Chat] Creating new assistant message:', newId);
-        return [
-          ...prev,
-          {
-            id: newId,
-            role: 'assistant' as const,
-            content: message,
-            timestamp: new Date(),
-            isStreaming: true,
-          },
-        ];
-      }
-    });
-  }, []);
+    
+    // Get current streaming state from store
+    const currentStreamingId = useAppStore.getState().streamingMessageId;
+    
+    if (currentStreamingId) {
+      // Append to existing streaming message
+      appendToStreamingMessage(message);
+    } else {
+      // First chunk - create new assistant message
+      const newId = `assistant-${Date.now()}`;
+      console.log('[Chat] Starting streaming message:', newId);
+      startStreamingMessage(newId, message);
+    }
+  }, [addMessage, appendToStreamingMessage, startStreamingMessage, markMessageComplete, setChatTitle, setIsThinking, setConversationId, addConversation]);
 
   const { sendMessage, isConnected, connectionState } = useWebSocket(
     `/ws/chat/${userId}`,
@@ -190,25 +167,21 @@ export function Chat({ userId, organizationId: _organizationId, chatId }: ChatPr
   useEffect(() => {
     if (chatId === null) {
       console.log('[Chat] New chat started, clearing state');
-      setMessages([]);
-      setChatTitle('New Chat');
-      conversationIdRef.current = null;
-      streamingMessageIdRef.current = null;
+      clearChat();
       notifiedConversationRef.current = null;
-      setIsThinking(false);
     }
-  }, [chatId]);
+  }, [chatId, clearChat]);
 
   // Load conversation when selecting an existing chat from sidebar
   useEffect(() => {
-    // If no chatId, this is a new chat - ensure loading is false
+    // If no chatId, this is a new chat
     if (!chatId) {
       setIsLoading(false);
       return;
     }
 
     // If chatId matches our current conversation, don't reload
-    if (chatId === conversationIdRef.current) {
+    if (chatId === conversationId) {
       console.log('[Chat] Skipping load - already loaded this conversation');
       setIsLoading(false);
       return;
@@ -223,15 +196,15 @@ export function Chat({ userId, organizationId: _organizationId, chatId }: ChatPr
       try {
         const { data, error } = await getConversation(chatId, userId);
         
-        // Don't update state if the effect was cancelled (chatId changed)
         if (cancelled) {
           console.log('[Chat] Load cancelled - chatId changed');
           return;
         }
 
         if (data && !error) {
-          conversationIdRef.current = chatId;
+          setConversationId(chatId);
           setChatTitle(data.title ?? 'New Chat');
+          notifiedConversationRef.current = chatId;
           
           const loadedMessages: ChatMessage[] = data.messages.map((msg) => ({
             id: msg.id,
@@ -243,15 +216,12 @@ export function Chat({ userId, organizationId: _organizationId, chatId }: ChatPr
           console.log('[Chat] Loaded', loadedMessages.length, 'messages');
         } else {
           console.error('[Chat] Failed to load conversation:', error);
-          // Show empty state on error
-          setMessages([]);
-          setChatTitle('Chat');
+          clearChat();
         }
       } catch (err) {
         console.error('[Chat] Exception loading conversation:', err);
         if (!cancelled) {
-          setMessages([]);
-          setChatTitle('Chat');
+          clearChat();
         }
       } finally {
         if (!cancelled) {
@@ -265,7 +235,7 @@ export function Chat({ userId, organizationId: _organizationId, chatId }: ChatPr
     return () => {
       cancelled = true;
     };
-  }, [chatId, userId]);
+  }, [chatId, userId, conversationId, setConversationId, setChatTitle, setMessages, clearChat]);
 
   // Auto-scroll to bottom
   useEffect(() => {
@@ -288,23 +258,23 @@ export function Chat({ userId, organizationId: _organizationId, chatId }: ChatPr
     };
 
     // If this is a new conversation, store the title for when conversation_created arrives
-    if (!conversationIdRef.current) {
+    const currentConvId = useAppStore.getState().conversationId;
+    if (!currentConvId) {
       pendingTitleRef.current = generateTitle(input);
     }
 
-    setMessages((prev) => [...prev, userMessage]);
-    streamingMessageIdRef.current = null;
+    addMessage(userMessage);
     setIsThinking(true);
 
     // Send message with conversation context
     const payload = JSON.stringify({
       message: input,
-      conversation_id: conversationIdRef.current,
+      conversation_id: currentConvId,
     });
     console.log('[Chat] Sending to WebSocket:', payload);
     sendMessage(payload);
     setInput('');
-  }, [input, isConnected, sendMessage]);
+  }, [input, isConnected, sendMessage, addMessage, setIsThinking]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>): void => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -430,7 +400,7 @@ export function Chat({ userId, organizationId: _organizationId, chatId }: ChatPr
  */
 function ToolCallIndicator({ action }: { action: string }): JSX.Element {
   return (
-    <div className="flex items-center gap-2 py-1 pl-11 text-sm text-surface-500">
+    <div className="flex items-center gap-2 py-1 pl-8 text-sm text-surface-500">
       <svg className="w-3.5 h-3.5 text-surface-600 animate-spin" fill="none" viewBox="0 0 24 24">
         <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
         <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
@@ -445,20 +415,20 @@ function ToolCallIndicator({ action }: { action: string }): JSX.Element {
  */
 function ThinkingIndicator(): JSX.Element {
   return (
-    <div className="flex gap-4">
+    <div className="flex gap-3">
       {/* Avatar */}
-      <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-primary-500 to-primary-700 flex items-center justify-center flex-shrink-0">
-        <svg className="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+      <div className="w-6 h-6 rounded-md bg-gradient-to-br from-surface-700 to-surface-800 flex items-center justify-center flex-shrink-0">
+        <svg className="w-3 h-3 text-primary-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
         </svg>
       </div>
 
       {/* Thinking dots */}
-      <div className="bg-surface-800/50 rounded-2xl rounded-tl-sm px-4 py-3">
-        <div className="flex items-center gap-1.5">
-          <div className="w-2 h-2 bg-surface-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-          <div className="w-2 h-2 bg-surface-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-          <div className="w-2 h-2 bg-surface-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+      <div className="bg-surface-800/50 rounded-xl rounded-tl-sm px-3 py-2">
+        <div className="flex items-center gap-1">
+          <div className="w-1.5 h-1.5 bg-surface-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+          <div className="w-1.5 h-1.5 bg-surface-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+          <div className="w-1.5 h-1.5 bg-surface-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
         </div>
       </div>
     </div>
