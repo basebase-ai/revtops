@@ -57,6 +57,7 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
   const fetchIntegrations = useAppStore((state) => state.fetchIntegrations);
   const fetchConversations = useAppStore((state) => state.fetchConversations);
   const deleteConversation = useAppStore((state) => state.deleteConversation);
+  const setUser = useAppStore((state) => state.setUser);
   
   // Panels
   const [showOrgPanel, setShowOrgPanel] = useState(false);
@@ -108,7 +109,6 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
         onDeleteChat={handleDeleteChat}
         currentChatId={currentChatId}
         onNewChat={startNewChat}
-        user={user}
         organization={organization}
         onOpenOrgPanel={() => setShowOrgPanel(true)}
         onOpenProfilePanel={() => setShowProfilePanel(true)}
@@ -150,6 +150,7 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
           user={user}
           onClose={() => setShowProfilePanel(false)}
           onLogout={onLogout}
+          onUpdateUser={(updates) => setUser({ ...user, ...updates })}
         />
       )}
     </div>

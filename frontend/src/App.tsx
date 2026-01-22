@@ -100,22 +100,24 @@ function App(): JSX.Element {
   useEffect(() => {
     const checkAuth = async (): Promise<void> => {
       try {
-        // If we already have user in store, skip the loading state
+        // If we already have user in store, show app immediately but still sync with backend
         const currentUser = useAppStore.getState().user;
         const currentOrg = useAppStore.getState().organization;
-        if (currentUser && currentOrg) {
-          console.log('[Auth] User already in store, skipping auth check');
+        const hasPersistedUser = currentUser && currentOrg;
+        
+        if (hasPersistedUser) {
+          console.log('[Auth] User in store, showing app while syncing...');
           setScreen('app');
           setIsLoading(false);
-          return;
         }
 
         const { data: { session } } = await supabase.auth.getSession();
 
         if (session?.user) {
+          // Always sync with backend to get fresh data (including avatar_url)
           await handleAuthenticatedUser(session.user);
-        } else {
-          // Check legacy localStorage auth
+        } else if (!hasPersistedUser) {
+          // No session and no persisted user - check legacy localStorage auth
           const storedUserId = localStorage.getItem('user_id');
           if (storedUserId) {
             setUser({
@@ -176,13 +178,29 @@ function App(): JSX.Element {
     const domain = getEmailDomain(email);
     setEmailDomain(domain);
 
-    // Get avatar from OAuth metadata
-    const avatarUrl = supabaseUser.user_metadata?.avatar_url ??
-      supabaseUser.user_metadata?.picture ??
+    // Get avatar from OAuth metadata - try multiple possible field names
+    // Google OAuth stores it in user_metadata, but also check identities array
+    const identityData = supabaseUser.identities?.[0]?.identity_data as Record<string, unknown> | undefined;
+    const newAvatarUrl = (supabaseUser.user_metadata?.avatar_url as string | undefined) ??
+      (supabaseUser.user_metadata?.picture as string | undefined) ??
+      (identityData?.avatar_url as string | undefined) ??
+      (identityData?.picture as string | undefined) ??
       null;
+    
+    console.log('[Auth] Avatar extraction:', {
+      user_metadata: supabaseUser.user_metadata,
+      identity_data: identityData,
+      extracted_avatar: newAvatarUrl,
+    });
+    
+    // Preserve existing avatar URL if new value is null (session restore may not have metadata)
+    const existingUser = useAppStore.getState().user;
+    const avatarUrl = newAvatarUrl ?? existingUser?.avatarUrl ?? null;
 
-    const name = supabaseUser.user_metadata?.name ?? 
-      supabaseUser.user_metadata?.full_name ?? 
+    const name = (supabaseUser.user_metadata?.name as string | undefined) ?? 
+      (supabaseUser.user_metadata?.full_name as string | undefined) ?? 
+      (identityData?.name as string | undefined) ??
+      (identityData?.full_name as string | undefined) ??
       null;
 
     // Check if personal email
@@ -215,6 +233,7 @@ function App(): JSX.Element {
           id: supabaseUser.id,
           email,
           name,
+          avatar_url: avatarUrl,
         }),
       });
 
@@ -225,7 +244,27 @@ function App(): JSX.Element {
       }
 
       if (syncResponse.ok) {
-        const userData = await syncResponse.json() as { status: string };
+        const userData = await syncResponse.json() as { 
+          status: string; 
+          avatar_url: string | null;
+          name: string | null;
+        };
+        
+        console.log('[Auth] Sync response:', {
+          status: userData.status,
+          avatar_url: userData.avatar_url,
+          name: userData.name,
+          sent_avatar: avatarUrl,
+        });
+        
+        // Update user with avatar_url from backend (authoritative source)
+        setUser({
+          id: supabaseUser.id,
+          email,
+          name: userData.name ?? name,
+          avatarUrl: userData.avatar_url ?? avatarUrl,
+        });
+        
         if (userData.status === 'waitlist') {
           setScreen('waitlist');
           return;

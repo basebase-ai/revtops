@@ -12,7 +12,8 @@
  */
 
 import { useState } from 'react';
-import type { View, ChatSummary, UserProfile, OrganizationInfo } from './AppLayout';
+import type { View, ChatSummary, OrganizationInfo } from './AppLayout';
+import { useAppStore, type UserProfile } from '../store';
 
 /** Avatar component with error fallback */
 function UserAvatar({ user }: { user: UserProfile }): JSX.Element {
@@ -24,7 +25,12 @@ function UserAvatar({ user }: { user: UserProfile }): JSX.Element {
         src={user.avatarUrl}
         alt={user.name ?? user.email}
         className="w-8 h-8 rounded-full object-cover"
-        onError={() => setImgError(true)}
+        referrerPolicy="no-referrer"
+        onError={(e) => {
+          console.error('[UserAvatar] Image failed to load:', user.avatarUrl, e);
+          setImgError(true);
+        }}
+        onLoad={() => console.log('[UserAvatar] Image loaded successfully')}
       />
     );
   }
@@ -47,7 +53,6 @@ interface SidebarProps {
   onDeleteChat: (id: string) => void;
   currentChatId: string | null;
   onNewChat: () => void;
-  user: UserProfile;
   organization: OrganizationInfo;
   onOpenOrgPanel: () => void;
   onOpenProfilePanel: () => void;
@@ -64,11 +69,16 @@ export function Sidebar({
   onDeleteChat,
   currentChatId,
   onNewChat,
-  user,
   organization,
   onOpenOrgPanel,
   onOpenProfilePanel,
 }: SidebarProps): JSX.Element {
+  // Read user directly from store to ensure we always have the latest value
+  const user = useAppStore((state) => state.user);
+  
+  // Debug: log what we're getting from the store
+  console.log('[Sidebar] user from store:', user?.avatarUrl ? 'has avatar' : 'NO avatar', user);
+  
   const sidebarWidth = collapsed ? 'w-16' : 'w-64';
 
   return (
@@ -241,20 +251,22 @@ export function Sidebar({
         </button>
 
         {/* User Profile */}
-        <button
-          onClick={onOpenProfilePanel}
-          className={`w-full flex items-center gap-3 px-3 py-3 hover:bg-surface-800/50 transition-colors border-t border-surface-800 ${collapsed ? 'justify-center' : ''}`}
-        >
-          <UserAvatar user={user} />
-          {!collapsed && (
-            <div className="flex-1 min-w-0 text-left">
-              <div className="text-sm font-medium text-surface-200 truncate">
-                {user.name ?? 'User'}
+        {user && (
+          <button
+            onClick={onOpenProfilePanel}
+            className={`w-full flex items-center gap-3 px-3 py-3 hover:bg-surface-800/50 transition-colors border-t border-surface-800 ${collapsed ? 'justify-center' : ''}`}
+          >
+            <UserAvatar user={user} />
+            {!collapsed && (
+              <div className="flex-1 min-w-0 text-left">
+                <div className="text-sm font-medium text-surface-200 truncate">
+                  {user.name ?? 'User'}
+                </div>
+                <div className="text-xs text-surface-500 truncate">{user.email}</div>
               </div>
-              <div className="text-xs text-surface-500 truncate">{user.email}</div>
-            </div>
-          )}
-        </button>
+            )}
+          </button>
+        )}
       </div>
     </aside>
   );

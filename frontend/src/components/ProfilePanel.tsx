@@ -9,26 +9,55 @@
 
 import { useState } from 'react';
 import type { UserProfile } from './AppLayout';
+import { API_BASE } from '../lib/api';
 
 interface ProfilePanelProps {
   user: UserProfile;
   onClose: () => void;
   onLogout: () => void;
+  onUpdateUser: (updates: Partial<UserProfile>) => void;
 }
 
-export function ProfilePanel({ user, onClose, onLogout }: ProfilePanelProps): JSX.Element {
+export function ProfilePanel({ user, onClose, onLogout, onUpdateUser }: ProfilePanelProps): JSX.Element {
   const [name, setName] = useState(user.name ?? '');
   const [isSaving, setIsSaving] = useState(false);
-  const [avatarPreview, setAvatarPreview] = useState<string | null>(user.avatarUrl);
+  // Only use local state for a NEW avatar selection, otherwise use the user prop directly
+  const [newAvatarFile, setNewAvatarFile] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  
+  // Use new file if selected, otherwise use the user's current avatar
+  const avatarPreview = newAvatarFile ?? user.avatarUrl;
 
   const handleSave = async (): Promise<void> => {
     setIsSaving(true);
+    setError(null);
     try {
-      // TODO: Call update profile API
-      await new Promise((r) => setTimeout(r, 1000));
-      alert('Profile updated!');
-    } catch (error) {
-      console.error('Failed to save:', error);
+      const response = await fetch(`${API_BASE}/auth/me?user_id=${user.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: name || null,
+          avatar_url: avatarPreview,
+        }),
+      });
+
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({})) as { detail?: string };
+        throw new Error(data.detail ?? 'Failed to update profile');
+      }
+
+      const updatedUser = await response.json() as { name: string | null; avatar_url: string | null };
+      
+      // Update the store
+      onUpdateUser({
+        name: updatedUser.name,
+        avatarUrl: updatedUser.avatar_url,
+      });
+      
+      onClose();
+    } catch (err) {
+      console.error('Failed to save:', err);
+      setError(err instanceof Error ? err.message : 'Failed to save profile');
     } finally {
       setIsSaving(false);
     }
@@ -37,9 +66,15 @@ export function ProfilePanel({ user, onClose, onLogout }: ProfilePanelProps): JS
   const handleAvatarChange = (e: React.ChangeEvent<HTMLInputElement>): void => {
     const file = e.target.files?.[0];
     if (file) {
+      // Check file size (limit to 500KB for base64 storage)
+      if (file.size > 500 * 1024) {
+        setError('Image too large. Please choose an image under 500KB.');
+        return;
+      }
       const reader = new FileReader();
       reader.onloadend = () => {
-        setAvatarPreview(reader.result as string);
+        setNewAvatarFile(reader.result as string);
+        setError(null);
       };
       reader.readAsDataURL(file);
     }
@@ -83,6 +118,7 @@ export function ProfilePanel({ user, onClose, onLogout }: ProfilePanelProps): JS
                   src={avatarPreview}
                   alt={name || user.email}
                   className="w-24 h-24 rounded-full object-cover"
+                  referrerPolicy="no-referrer"
                 />
               ) : (
                 <div className="w-24 h-24 rounded-full bg-primary-600 flex items-center justify-center text-white font-bold text-3xl">
@@ -105,6 +141,9 @@ export function ProfilePanel({ user, onClose, onLogout }: ProfilePanelProps): JS
             <p className="text-sm text-surface-400 mt-3">
               Click camera icon to change photo
             </p>
+            {error && (
+              <p className="text-sm text-red-400 mt-2">{error}</p>
+            )}
           </div>
 
           {/* Form Fields */}

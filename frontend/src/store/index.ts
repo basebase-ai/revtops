@@ -511,7 +511,7 @@ export const useAppStore = create<AppState>()(
 
       // Sync user to backend - returns user status ('waitlist', 'invited', 'active') or error string
       syncUserToBackend: async (): Promise<string | null> => {
-        const { user, organization } = get();
+        const { user, organization, setUser } = get();
         if (!user) return null;
 
         try {
@@ -538,8 +538,28 @@ export const useAppStore = create<AppState>()(
             throw new Error(errorData.detail ?? `HTTP ${response.status}`);
           }
 
-          const data = await response.json() as { status: string };
-          console.log('[Store] User synced successfully, status:', data.status);
+          const data = await response.json() as { 
+            status: string; 
+            avatar_url: string | null; 
+            name: string | null;
+          };
+          console.log('[Store] User synced successfully:', {
+            status: data.status,
+            avatar_url: data.avatar_url,
+            name: data.name,
+            current_avatarUrl: user.avatarUrl,
+          });
+          
+          // Update user with data from backend (authoritative source)
+          if (data.avatar_url !== user.avatarUrl || data.name !== user.name) {
+            console.log('[Store] Updating user with backend data');
+            setUser({
+              ...user,
+              name: data.name ?? user.name,
+              avatarUrl: data.avatar_url ?? user.avatarUrl,
+            });
+          }
+          
           return data.status;
         } catch (error) {
           console.error('[Store] Failed to sync user to backend:', error);

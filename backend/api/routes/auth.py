@@ -45,6 +45,7 @@ class UserResponse(BaseModel):
     email: str
     name: Optional[str]
     role: Optional[str]
+    avatar_url: Optional[str]
     organization_id: Optional[str]
 
 
@@ -112,6 +113,52 @@ async def get_current_user(user_id: Optional[str] = None) -> UserResponse:
             email=user.email,
             name=user.name,
             role=user.role,
+            avatar_url=user.avatar_url,
+            organization_id=str(user.organization_id) if user.organization_id else None,
+        )
+
+
+class UpdateProfileRequest(BaseModel):
+    """Request model for updating user profile."""
+
+    name: Optional[str] = None
+    avatar_url: Optional[str] = None
+
+
+@router.patch("/me", response_model=UserResponse)
+async def update_profile(
+    request: UpdateProfileRequest,
+    user_id: Optional[str] = None,
+) -> UserResponse:
+    """Update current user's profile."""
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        user_uuid = UUID(user_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid user ID")
+
+    async with get_session() as session:
+        user = await session.get(User, user_uuid)
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        # Update fields if provided
+        if request.name is not None:
+            user.name = request.name
+        if request.avatar_url is not None:
+            user.avatar_url = request.avatar_url
+
+        await session.commit()
+        await session.refresh(user)
+
+        return UserResponse(
+            id=str(user.id),
+            email=user.email,
+            name=user.name,
+            role=user.role,
+            avatar_url=user.avatar_url,
             organization_id=str(user.organization_id) if user.organization_id else None,
         )
 
@@ -144,6 +191,7 @@ class SyncUserRequest(BaseModel):
     id: str  # Supabase user ID
     email: str
     name: Optional[str] = None
+    avatar_url: Optional[str] = None
     organization_id: Optional[str] = None
 
 
@@ -153,6 +201,7 @@ class SyncUserResponse(BaseModel):
     id: str
     email: str
     name: Optional[str]
+    avatar_url: Optional[str]
     organization_id: Optional[str]
     status: str  # 'waitlist', 'invited', 'active'
 
@@ -180,15 +229,29 @@ async def sync_user(request: SyncUserRequest) -> SyncUserResponse:
         # Check if user already exists
         existing = await session.get(User, user_uuid)
         if existing:
+            needs_commit = False
+            
             # Update organization if provided and different
             if org_uuid and existing.organization_id != org_uuid:
                 existing.organization_id = org_uuid
-                await session.commit()
-                await session.refresh(existing)
+                needs_commit = True
             
             # If user was invited, upgrade to active on signin
             if existing.status == "invited":
                 existing.status = "active"
+                needs_commit = True
+            
+            # Update avatar_url if a new one is provided (don't overwrite with null)
+            if request.avatar_url and existing.avatar_url != request.avatar_url:
+                existing.avatar_url = request.avatar_url
+                needs_commit = True
+            
+            # Update name if provided and different
+            if request.name and existing.name != request.name:
+                existing.name = request.name
+                needs_commit = True
+            
+            if needs_commit:
                 await session.commit()
                 await session.refresh(existing)
             
@@ -196,6 +259,7 @@ async def sync_user(request: SyncUserRequest) -> SyncUserResponse:
                 id=str(existing.id),
                 email=existing.email,
                 name=existing.name,
+                avatar_url=existing.avatar_url,
                 organization_id=str(existing.organization_id) if existing.organization_id else None,
                 status=existing.status,
             )

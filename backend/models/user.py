@@ -37,6 +37,7 @@ class User(Base):
     role: Mapped[Optional[str]] = mapped_column(
         String(50), nullable=True
     )  # 'ae', 'sales_manager', 'cro', 'admin'
+    avatar_url: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
     
     # Waitlist fields
     status: Mapped[str] = mapped_column(
@@ -67,5 +68,6 @@ class User(Base):
             "name": self.name,
             "role": self.role,
             "status": self.status,
+            "avatar_url": self.avatar_url,
             "organization_id": str(self.organization_id) if self.organization_id else None,
         }
