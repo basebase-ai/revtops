@@ -108,6 +108,7 @@ interface AppState {
   // Actions - Conversations
   addConversation: (id: string, title: string) => void;
   fetchConversations: () => Promise<void>;
+  deleteConversation: (id: string) => Promise<void>;
   
   // Actions - Chat Messages
   setMessages: (messages: ChatMessage[]) => void;
@@ -348,6 +349,51 @@ export const useAppStore = create<AppState>()(
           set({ recentChats });
         } catch (error) {
           console.error('[Store] Error fetching conversations:', error);
+        }
+      },
+
+      deleteConversation: async (id) => {
+        const { user, recentChats, currentChatId, conversationId } = get();
+        if (!user) return;
+
+        // Check if conversation exists in our list (prevent double-delete)
+        if (!recentChats.some((chat) => chat.id === id)) {
+          console.log('[Store] Conversation already removed, skipping delete:', id);
+          return;
+        }
+
+        // Optimistically remove from UI first
+        const updated = recentChats.filter((chat) => chat.id !== id);
+        const shouldClearChat = currentChatId === id || conversationId === id;
+        
+        set({
+          recentChats: updated,
+          ...(shouldClearChat ? {
+            currentChatId: null,
+            conversationId: null,
+            messages: [],
+            chatTitle: 'New Chat',
+            isThinking: false,
+            streamingMessageId: null,
+          } : {}),
+        });
+
+        try {
+          console.log('[Store] Deleting conversation:', id);
+          const response = await fetch(
+            `${API_BASE}/chat/conversations/${id}?user_id=${user.id}`,
+            { method: 'DELETE' }
+          );
+
+          if (!response.ok && response.status !== 404) {
+            // 404 is fine - already deleted
+            console.error('[Store] Failed to delete conversation:', response.status);
+            // Could restore the chat here if needed, but usually not worth it
+          }
+          
+          console.log('[Store] Conversation deleted');
+        } catch (error) {
+          console.error('[Store] Error deleting conversation:', error);
         }
       },
 

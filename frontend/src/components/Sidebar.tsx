@@ -21,6 +21,7 @@ interface SidebarProps {
   connectedSourcesCount: number;
   recentChats: ChatSummary[];
   onSelectChat: (id: string) => void;
+  onDeleteChat: (id: string) => void;
   currentChatId: string | null;
   onNewChat: () => void;
   user: UserProfile;
@@ -37,6 +38,7 @@ export function Sidebar({
   connectedSourcesCount,
   recentChats,
   onSelectChat,
+  onDeleteChat,
   currentChatId,
   onNewChat,
   user,
@@ -148,20 +150,33 @@ export function Sidebar({
           </h3>
           <div className="space-y-0.5">
             {recentChats.map((chat) => (
-              <button
+              <div
                 key={chat.id}
-                onClick={() => onSelectChat(chat.id)}
-                className={`w-full text-left px-3 py-2 rounded-lg transition-colors group ${
+                className={`relative w-full text-left px-3 py-2 rounded-lg transition-colors group cursor-pointer ${
                   currentChatId === chat.id
                     ? 'bg-surface-800 text-surface-100'
                     : 'text-surface-400 hover:text-surface-200 hover:bg-surface-800/50'
                 }`}
+                onClick={() => onSelectChat(chat.id)}
               >
-                <div className="truncate text-sm">{chat.title}</div>
+                <div className="truncate text-sm pr-6">{chat.title}</div>
                 <div className="text-xs text-surface-500 truncate mt-0.5">
                   {formatRelativeTime(chat.lastMessageAt)}
                 </div>
-              </button>
+                {/* Delete button - appears on hover */}
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onDeleteChat(chat.id);
+                  }}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded opacity-0 group-hover:opacity-100 hover:bg-surface-700 text-surface-500 hover:text-surface-300 transition-all"
+                  title="Delete conversation"
+                >
+                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
             ))}
           </div>
         </div>

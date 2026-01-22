@@ -56,6 +56,7 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
   const startNewChat = useAppStore((state) => state.startNewChat);
   const fetchIntegrations = useAppStore((state) => state.fetchIntegrations);
   const fetchConversations = useAppStore((state) => state.fetchConversations);
+  const deleteConversation = useAppStore((state) => state.deleteConversation);
   
   // Panels
   const [showOrgPanel, setShowOrgPanel] = useState(false);
@@ -80,6 +81,10 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
     setCurrentView('chat');
   }, [setCurrentChatId, setCurrentView]);
 
+  const handleDeleteChat = useCallback((chatId: string): void => {
+    void deleteConversation(chatId);
+  }, [deleteConversation]);
+
   // Guard against missing user/org (shouldn't happen, but be safe)
   if (!user || !organization) {
     return (
@@ -100,6 +105,7 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
         connectedSourcesCount={connectedIntegrationsCount}
         recentChats={recentChats.slice(0, 10)}
         onSelectChat={handleSelectChat}
+        onDeleteChat={handleDeleteChat}
         currentChatId={currentChatId}
         onNewChat={startNewChat}
         user={user}
