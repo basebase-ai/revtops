@@ -493,10 +493,12 @@ export const useAppStore = create<AppState>()(
     }),
     {
       name: 'revtops-store',
-      // Only persist certain fields
+      // Persist user/org and UI state to survive tab switches
       partialize: (state) => ({
+        user: state.user,
+        organization: state.organization,
+        isAuthenticated: state.isAuthenticated,
         sidebarCollapsed: state.sidebarCollapsed,
-        // Don't persist user/org - let Supabase be the source of truth
       }),
     }
   )

@@ -99,6 +99,16 @@ function App(): JSX.Element {
   useEffect(() => {
     const checkAuth = async (): Promise<void> => {
       try {
+        // If we already have user in store, skip the loading state
+        const currentUser = useAppStore.getState().user;
+        const currentOrg = useAppStore.getState().organization;
+        if (currentUser && currentOrg) {
+          console.log('[Auth] User already in store, skipping auth check');
+          setScreen('app');
+          setIsLoading(false);
+          return;
+        }
+
         const { data: { session } } = await supabase.auth.getSession();
 
         if (session?.user) {
@@ -131,7 +141,17 @@ function App(): JSX.Element {
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       async (event: AuthChangeEvent, session: Session | null) => {
+        console.log('[Auth] Event:', event, 'hasSession:', !!session);
+        
+        // Only handle actual sign-in/sign-out events, not token refreshes
         if (event === 'SIGNED_IN' && session?.user) {
+          // Skip if user is already authenticated (this is just a token refresh)
+          const currentUser = useAppStore.getState().user;
+          if (currentUser?.id === session.user.id) {
+            console.log('[Auth] Token refresh, skipping re-auth');
+            return;
+          }
+          
           setIsLoading(true);
           await handleAuthenticatedUser(session.user);
           setIsLoading(false);
