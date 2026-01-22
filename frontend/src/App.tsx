@@ -11,13 +11,8 @@
 import { useEffect, useState } from 'react';
 import { supabase } from './lib/supabase';
 import { getEmailDomain, isPersonalEmail } from './lib/email';
-
-// API base URL - must match client.ts logic
-const PRODUCTION_BACKEND = 'https://revtops-backend-production.up.railway.app';
-const isProduction = typeof window !== 'undefined' && 
-  (window.location.hostname.includes('railway.app') || 
-   window.location.hostname.includes('revtops'));
-const API_BASE = isProduction ? `${PRODUCTION_BACKEND}/api` : '/api';
+import { API_BASE } from './lib/api';
+import { useAppStore } from './store';
 import { Landing } from './components/Landing';
 import { Auth } from './components/Auth';
 import { CompanySetup } from './components/CompanySetup';
@@ -25,19 +20,8 @@ import { Onboarding } from './components/Onboarding';
 import { AppLayout } from './components/AppLayout';
 import { OAuthCallback } from './components/OAuthCallback';
 import type { User, AuthChangeEvent, Session } from '@supabase/supabase-js';
-import type { UserProfile, OrganizationInfo } from './components/AppLayout';
 
 type Screen = 'landing' | 'auth' | 'blocked-email' | 'company-setup' | 'onboarding' | 'app';
-
-interface UserState {
-  id: string;
-  email: string;
-  emailDomain: string;
-  name: string | null;
-  avatarUrl: string | null;
-  companyId: string | null;
-  companyName: string | null;
-}
 
 // Simple in-memory store for companies (MVP - in production, use API)
 interface StoredCompany {
@@ -98,7 +82,18 @@ function getCompanyByDomain(domain: string): StoredCompany | null {
 function App(): JSX.Element {
   const [screen, setScreen] = useState<Screen>('landing');
   const [isLoading, setIsLoading] = useState<boolean>(true);
-  const [user, setUser] = useState<UserState | null>(null);
+  const [emailDomain, setEmailDomain] = useState<string>('');
+  
+  // Zustand store
+  const { 
+    user, 
+    organization,
+    setUser, 
+    setOrganization, 
+    logout: storeLogout,
+    syncUserToBackend,
+    fetchIntegrations,
+  } = useAppStore();
 
   // Check auth status on mount
   useEffect(() => {
@@ -115,11 +110,14 @@ function App(): JSX.Element {
             setUser({
               id: storedUserId,
               email: 'user@example.com',
-              emailDomain: 'example.com',
               name: null,
               avatarUrl: null,
-              companyId: 'example.com',
-              companyName: 'Example Company',
+            });
+            setOrganization({
+              id: 'example.com',
+              name: 'Example Company',
+              logoUrl: null,
+              memberCount: 1,
             });
             setScreen('app');
           }
@@ -138,7 +136,7 @@ function App(): JSX.Element {
           await handleAuthenticatedUser(session.user);
           setIsLoading(false);
         } else if (event === 'SIGNED_OUT') {
-          setUser(null);
+          storeLogout();
           setScreen('landing');
         }
       }
@@ -149,24 +147,30 @@ function App(): JSX.Element {
     return () => {
       subscription.unsubscribe();
     };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleAuthenticatedUser = async (supabaseUser: User): Promise<void> => {
     const email = supabaseUser.email ?? '';
-    const emailDomain = getEmailDomain(email);
+    const domain = getEmailDomain(email);
+    setEmailDomain(domain);
 
     // Get avatar from OAuth metadata
     const avatarUrl = supabaseUser.user_metadata?.avatar_url ??
       supabaseUser.user_metadata?.picture ??
       null;
 
+    const name = supabaseUser.user_metadata?.name ?? 
+      supabaseUser.user_metadata?.full_name ?? 
+      null;
+
     // Check if company exists - first in localStorage, then in backend
-    let existingCompany = getCompanyByDomain(emailDomain);
+    let existingCompany = getCompanyByDomain(domain);
 
     // If not in localStorage, check backend (colleague on different machine scenario)
     if (!existingCompany) {
       try {
-        const response = await fetch(`${API_BASE}/auth/organizations/by-domain/${encodeURIComponent(emailDomain)}`);
+        const response = await fetch(`${API_BASE}/auth/organizations/by-domain/${encodeURIComponent(domain)}`);
         if (response.ok) {
           const backendOrg: { id: string; name: string; email_domain: string } = await response.json();
           // Store in localStorage for future use
@@ -177,35 +181,11 @@ function App(): JSX.Element {
           };
           // Update localStorage
           const companies = getStoredCompanies();
-          companies[emailDomain] = existingCompany;
+          companies[domain] = existingCompany;
           localStorage.setItem('revtops_companies', JSON.stringify(companies));
         }
       } catch (error) {
         console.error('Failed to check backend for organization:', error);
-      }
-    }
-
-    // Always sync user to backend (do this early, before we might return for company setup)
-    if (existingCompany) {
-      try {
-        console.log('Syncing user to backend:', supabaseUser.id, email, existingCompany.id);
-        const response = await fetch(`${API_BASE}/auth/users/sync`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            id: supabaseUser.id,
-            email,
-            name: supabaseUser.user_metadata?.name ?? supabaseUser.user_metadata?.full_name ?? null,
-            organization_id: existingCompany.id,
-          }),
-        });
-        if (!response.ok) {
-          console.error('User sync failed:', await response.text());
-        } else {
-          console.log('User synced successfully');
-        }
-      } catch (error) {
-        console.error('Failed to sync user to backend:', error);
       }
     }
 
@@ -214,30 +194,36 @@ function App(): JSX.Element {
       setUser({
         id: supabaseUser.id,
         email,
-        emailDomain,
-        name: supabaseUser.user_metadata?.name ?? supabaseUser.user_metadata?.full_name ?? null,
+        name,
         avatarUrl,
-        companyId: null,
-        companyName: null,
       });
       setScreen('blocked-email');
       return;
     }
 
+    // Set user in store
     setUser({
       id: supabaseUser.id,
       email,
-      emailDomain,
-      name: supabaseUser.user_metadata?.name ?? supabaseUser.user_metadata?.full_name ?? null,
+      name,
       avatarUrl,
-      companyId: existingCompany?.id ?? null,
-      companyName: existingCompany?.name ?? null,
     });
 
     if (!existingCompany) {
       setScreen('company-setup');
       return;
     }
+
+    // Set organization in store
+    setOrganization({
+      id: existingCompany.id,
+      name: existingCompany.name,
+      logoUrl: null,
+      memberCount: existingCompany.memberCount,
+    });
+
+    // Sync user to backend
+    await syncUserToBackend();
 
     // Ensure organization exists in backend (migration for existing localStorage data)
     try {
@@ -247,12 +233,15 @@ function App(): JSX.Element {
         body: JSON.stringify({
           id: existingCompany.id,
           name: existingCompany.name,
-          email_domain: emailDomain,
+          email_domain: domain,
         }),
       });
     } catch (error) {
       console.error('Failed to sync organization to backend:', error);
     }
+
+    // Fetch integrations after org is set
+    await fetchIntegrations();
 
     // Check if user has completed onboarding
     const completedOnboarding = localStorage.getItem(`onboarding_${supabaseUser.id}`);
@@ -267,7 +256,15 @@ function App(): JSX.Element {
     if (!user) return;
 
     // Store in localStorage first
-    const company = storeCompany(user.emailDomain, companyName);
+    const company = storeCompany(emailDomain, companyName);
+
+    // Set organization in store
+    setOrganization({
+      id: company.id,
+      name: company.name,
+      logoUrl: null,
+      memberCount: 1,
+    });
 
     // Create organization in backend database
     try {
@@ -277,7 +274,7 @@ function App(): JSX.Element {
         body: JSON.stringify({
           id: company.id,
           name: companyName,
-          email_domain: user.emailDomain,
+          email_domain: emailDomain,
         }),
       });
 
@@ -288,11 +285,8 @@ function App(): JSX.Element {
       console.error('Failed to create organization:', error);
     }
 
-    setUser({
-      ...user,
-      companyId: company.id,
-      companyName: company.name,
-    });
+    // Sync user to backend now that we have an org
+    await syncUserToBackend();
 
     setScreen('onboarding');
   };
@@ -300,7 +294,7 @@ function App(): JSX.Element {
   const handleLogout = async (): Promise<void> => {
     await supabase.auth.signOut();
     localStorage.removeItem('user_id');
-    setUser(null);
+    storeLogout();
     setScreen('landing');
   };
 
@@ -367,7 +361,7 @@ function App(): JSX.Element {
             <h1 className="text-2xl font-bold text-surface-50 mb-3">Work email required</h1>
             <p className="text-surface-400 mb-6">
               Revtops is designed for teams. Please sign in with your work email address
-              (not {user?.emailDomain}).
+              (not {emailDomain}).
             </p>
             <button onClick={() => void handleLogout()} className="btn-primary">
               Sign in with work email
@@ -379,7 +373,7 @@ function App(): JSX.Element {
     case 'company-setup':
       return (
         <CompanySetup
-          emailDomain={user?.emailDomain ?? ''}
+          emailDomain={emailDomain}
           onComplete={(name) => void handleCompanySetup(name)}
           onBack={() => void handleLogout()}
         />
@@ -394,31 +388,12 @@ function App(): JSX.Element {
       );
 
     case 'app': {
-      if (!user || !user.companyId) {
+      if (!user || !organization) {
         return <Landing onGetStarted={() => setScreen('auth')} />;
       }
 
-      // Look up company by domain to get member count
-      const company = getCompanyByDomain(user.emailDomain);
-
-      const userProfile: UserProfile = {
-        id: user.id,
-        email: user.email,
-        name: user.name,
-        avatarUrl: user.avatarUrl,
-      };
-
-      const organization: OrganizationInfo = {
-        id: user.companyId, // This is now a UUID
-        name: user.companyName ?? 'My Company',
-        logoUrl: null, // TODO: Store and retrieve logo
-        memberCount: company?.memberCount ?? 1,
-      };
-
       return (
         <AppLayout
-          user={userProfile}
-          organization={organization}
           onLogout={() => void handleLogout()}
         />
       );

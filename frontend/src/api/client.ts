@@ -1,83 +1,40 @@
 /**
  * API client for backend communication.
+ * 
+ * Uses centralized API configuration from lib/api.ts
  */
 
-// Backend URL for production
-const PRODUCTION_BACKEND = 'https://revtops-backend-production.up.railway.app';
+import { API_BASE, apiRequest, type ApiResponse } from '../lib/api';
 
-// Determine if we're in production (Railway)
-const isProduction = typeof window !== 'undefined' && 
-  (window.location.hostname.includes('railway.app') || 
-   window.location.hostname.includes('revtops'));
-
-// API base URL
-const API_BASE = isProduction 
-  ? `${PRODUCTION_BACKEND}/api`
-  : '/api';
-
-// Debug log (remove after confirming it works)
-console.log('[API Client] isProduction:', isProduction, 'API_BASE:', API_BASE);
-
-interface ApiResponse<T> {
-  data: T | null;
-  error: string | null;
-}
-
-async function request<T>(
-  endpoint: string,
-  options: RequestInit = {}
-): Promise<ApiResponse<T>> {
-  const userId = localStorage.getItem('user_id');
-
-  const headers: HeadersInit = {
-    'Content-Type': 'application/json',
-    ...options.headers,
-  };
-
-  try {
-    const url = new URL(`${API_BASE}${endpoint}`, window.location.origin);
-    if (userId && !url.searchParams.has('user_id')) {
-      url.searchParams.set('user_id', userId);
-    }
-
-    const response = await fetch(url.toString(), {
-      ...options,
-      headers,
-    });
-
-    if (!response.ok) {
-      const errorData = (await response.json().catch(() => ({}))) as {
-        detail?: string;
-      };
-      return {
-        data: null,
-        error: errorData.detail ?? `HTTP ${response.status}`,
-      };
-    }
-
-    const data = (await response.json()) as T;
-    return { data, error: null };
-  } catch (error) {
-    return {
-      data: null,
-      error: error instanceof Error ? error.message : 'Unknown error',
-    };
-  }
-}
+// Re-export for backwards compatibility
+export { API_BASE, apiRequest };
+export type { ApiResponse };
 
 // =============================================================================
-// Auth & Integration API
+// Chat Types
 // =============================================================================
 
-export interface UserInfo {
+export interface ChatMessage {
   id: string;
-  email: string;
-  name: string | null;
-  role: string | null;
-  customer_id: string | null;
+  role: 'user' | 'assistant';
+  content: string;
+  created_at: string;
+  tool_calls?: Array<{
+    name: string;
+    input: Record<string, unknown>;
+  }>;
 }
 
-export interface Integration {
+export interface ChatHistoryResponse {
+  messages: ChatMessage[];
+  total: number;
+}
+
+// =============================================================================
+// Integration Types
+// =============================================================================
+
+export interface IntegrationStatus {
   id: string;
   provider: string;
   is_active: boolean;
@@ -86,10 +43,8 @@ export interface Integration {
   connected_at: string | null;
 }
 
-export interface AvailableIntegration {
-  id: string;
-  name: string;
-  description: string;
+export interface IntegrationsListResponse {
+  integrations: IntegrationStatus[];
 }
 
 export interface ConnectUrlResponse {
@@ -97,126 +52,93 @@ export interface ConnectUrlResponse {
   provider: string;
 }
 
-export async function getCurrentUser(): Promise<ApiResponse<UserInfo>> {
-  return request<UserInfo>('/auth/me');
-}
+// =============================================================================
+// Sync Types
+// =============================================================================
 
-export async function registerUser(
-  email: string,
-  name?: string,
-  companyName?: string
-): Promise<ApiResponse<{ user_id: string; customer_id: string }>> {
-  return request<{ user_id: string; customer_id: string }>('/auth/register', {
-    method: 'POST',
-    body: JSON.stringify({ email, name, company_name: companyName }),
-  });
-}
-
-export async function logout(): Promise<ApiResponse<{ status: string }>> {
-  return request<{ status: string }>('/auth/logout', {
-    method: 'POST',
-  });
-}
-
-export async function getAvailableIntegrations(): Promise<
-  ApiResponse<{ integrations: AvailableIntegration[] }>
-> {
-  return request<{ integrations: AvailableIntegration[] }>(
-    '/auth/available-integrations'
-  );
-}
-
-export async function getConnectedIntegrations(): Promise<
-  ApiResponse<{ integrations: Integration[] }>
-> {
-  return request<{ integrations: Integration[] }>('/auth/integrations');
-}
-
-export async function getConnectUrl(
-  provider: string
-): Promise<ApiResponse<ConnectUrlResponse>> {
-  return request<ConnectUrlResponse>(`/auth/connect/${provider}`);
-}
-
-export async function recordIntegrationCallback(
-  provider: string,
-  connectionId: string
-): Promise<ApiResponse<{ status: string; provider: string }>> {
-  const userId = localStorage.getItem('user_id');
-  return request<{ status: string; provider: string }>(
-    `/auth/callback?provider=${provider}&connection_id=${connectionId}&user_id=${userId}`,
-    { method: 'POST' }
-  );
-}
-
-export async function disconnectIntegration(
-  provider: string
-): Promise<ApiResponse<{ status: string; provider: string }>> {
-  return request<{ status: string; provider: string }>(
-    `/auth/integrations/${provider}`,
-    { method: 'DELETE' }
-  );
+export interface SyncStatusResponse {
+  status: 'idle' | 'syncing' | 'completed' | 'failed';
+  provider: string;
+  started_at: string | null;
+  completed_at: string | null;
+  error: string | null;
+  records_synced: number;
 }
 
 // =============================================================================
-// Chat API
+// API Functions
 // =============================================================================
 
-export interface ChatMessage {
-  id: string;
-  role: 'user' | 'assistant';
-  content: string;
-  created_at: string;
-}
-
-export interface ChatHistoryResponse {
-  messages: ChatMessage[];
-}
-
+/**
+ * Get chat history for a user
+ */
 export async function getChatHistory(
   userId: string,
   limit = 50,
   offset = 0
 ): Promise<ApiResponse<ChatHistoryResponse>> {
-  return request<ChatHistoryResponse>(`/chat/history?user_id=${userId}&limit=${limit}&offset=${offset}`);
+  return apiRequest<ChatHistoryResponse>(
+    `/chat/history?user_id=${userId}&limit=${limit}&offset=${offset}`
+  );
 }
 
-// =============================================================================
-// Sync API
-// =============================================================================
-
-export interface SyncStatus {
-  customer_id: string;
-  provider: string;
-  status: string;
-  started_at: string | null;
-  completed_at: string | null;
-  error: string | null;
-  counts: Record<string, number> | null;
+/**
+ * Get list of integrations for an organization
+ */
+export async function getIntegrations(
+  organizationId: string
+): Promise<ApiResponse<IntegrationsListResponse>> {
+  return apiRequest<IntegrationsListResponse>(
+    `/auth/integrations?organization_id=${organizationId}`
+  );
 }
 
+/**
+ * Get OAuth connect URL for a provider
+ */
+export async function getConnectUrl(
+  provider: string,
+  organizationId: string
+): Promise<ApiResponse<ConnectUrlResponse>> {
+  return apiRequest<ConnectUrlResponse>(
+    `/auth/connect/${provider}?organization_id=${organizationId}`
+  );
+}
+
+/**
+ * Disconnect an integration
+ */
+export async function disconnectIntegration(
+  provider: string,
+  organizationId: string
+): Promise<ApiResponse<{ success: boolean }>> {
+  return apiRequest<{ success: boolean }>(
+    `/auth/integrations/${provider}?organization_id=${organizationId}`,
+    { method: 'DELETE' }
+  );
+}
+
+/**
+ * Trigger a sync for a provider
+ */
 export async function triggerSync(
-  customerId: string,
+  organizationId: string,
   provider: string
-): Promise<ApiResponse<{ status: string; customer_id: string; provider: string }>> {
-  return request<{ status: string; customer_id: string; provider: string }>(
-    `/sync/${customerId}/${provider}`,
+): Promise<ApiResponse<SyncStatusResponse>> {
+  return apiRequest<SyncStatusResponse>(
+    `/sync/${organizationId}/${provider}`,
     { method: 'POST' }
   );
 }
 
-export async function triggerSyncAll(
-  customerId: string
-): Promise<ApiResponse<{ status: string; customer_id: string; integrations: string[] }>> {
-  return request<{ status: string; customer_id: string; integrations: string[] }>(
-    `/sync/${customerId}/all`,
-    { method: 'POST' }
-  );
-}
-
+/**
+ * Get sync status for a provider
+ */
 export async function getSyncStatus(
-  customerId: string,
+  organizationId: string,
   provider: string
-): Promise<ApiResponse<SyncStatus>> {
-  return request<SyncStatus>(`/sync/${customerId}/${provider}/status`);
+): Promise<ApiResponse<SyncStatusResponse>> {
+  return apiRequest<SyncStatusResponse>(
+    `/sync/${organizationId}/${provider}/status`
+  );
 }

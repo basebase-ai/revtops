@@ -9,89 +9,40 @@
  * - Organization & Profile sections at bottom
  */
 
-import { useState, useEffect, createContext, useContext, useCallback } from 'react';
+import { useState, useEffect } from 'react';
 import { Sidebar } from './Sidebar';
 import { DataSources } from './DataSources';
 import { ChatsList } from './ChatsList';
 import { Chat } from './Chat';
 import { OrganizationPanel } from './OrganizationPanel';
 import { ProfilePanel } from './ProfilePanel';
+import { useAppStore, type ChatSummary } from '../store';
 
-// API base URL
-const PRODUCTION_BACKEND = 'https://revtops-backend-production.up.railway.app';
-const isProduction = typeof window !== 'undefined' && 
-  (window.location.hostname.includes('railway.app') || 
-   window.location.hostname.includes('revtops'));
-const API_BASE = isProduction ? `${PRODUCTION_BACKEND}/api` : '/api';
-
-// Types
-export type View = 'chat' | 'data-sources' | 'chats-list';
-
-export interface ChatSummary {
-  id: string;
-  title: string;
-  lastMessageAt: Date;
-  previewText: string;
-}
-
-export interface UserProfile {
-  id: string;
-  email: string;
-  name: string | null;
-  avatarUrl: string | null;
-}
-
-export interface OrganizationInfo {
-  id: string;
-  name: string;
-  logoUrl: string | null;
-  memberCount: number;
-}
-
-export interface IntegrationStatus {
-  id: string;
-  provider: string;
-  name: string;
-  description: string;
-  connected: boolean;
-  lastSyncAt: string | null;
-  icon: string;
-}
-
-// Context for sharing state across components
-interface AppContextValue {
-  currentView: View;
-  setCurrentView: (view: View) => void;
-  currentChatId: string | null;
-  setCurrentChatId: (id: string | null) => void;
-  sidebarCollapsed: boolean;
-  setSidebarCollapsed: (collapsed: boolean) => void;
-  startNewChat: () => void;
-}
-
-const AppContext = createContext<AppContextValue | null>(null);
-
-export function useAppContext(): AppContextValue {
-  const context = useContext(AppContext);
-  if (!context) {
-    throw new Error('useAppContext must be used within AppLayout');
-  }
-  return context;
-}
+// Re-export types from store for backwards compatibility
+export type { UserProfile, OrganizationInfo, ChatSummary, View } from '../store';
 
 // Props
 interface AppLayoutProps {
-  user: UserProfile;
-  organization: OrganizationInfo;
   onLogout: () => void;
 }
 
-export function AppLayout({ user, organization, onLogout }: AppLayoutProps): JSX.Element {
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [currentView, setCurrentView] = useState<View>('chat');
-  const [currentChatId, setCurrentChatId] = useState<string | null>(null);
+export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
+  // Get state from Zustand store
+  const {
+    user,
+    organization,
+    sidebarCollapsed,
+    setSidebarCollapsed,
+    currentView,
+    setCurrentView,
+    currentChatId,
+    setCurrentChatId,
+    startNewChat,
+    connectedIntegrationsCount,
+    fetchIntegrations,
+  } = useAppStore();
+
   const [recentChats, setRecentChats] = useState<ChatSummary[]>([]);
-  const [connectedSourcesCount, setConnectedSourcesCount] = useState(0);
   
   // Panels
   const [showOrgPanel, setShowOrgPanel] = useState(false);
@@ -123,116 +74,92 @@ export function AppLayout({ user, organization, onLogout }: AppLayoutProps): JSX
     ]);
   }, []);
 
-  // Load connected sources count from API
-  const loadConnectedSourcesCount = useCallback(async () => {
-    console.log('[AppLayout] Loading connected sources for org:', organization.id);
-    try {
-      const response = await fetch(`${API_BASE}/auth/integrations?organization_id=${organization.id}`);
-      console.log('[AppLayout] Integrations response status:', response.status);
-      if (response.ok) {
-        const data = await response.json() as { integrations: { provider: string }[] };
-        console.log('[AppLayout] Integrations data:', data);
-        // Count integrations that exist (same logic as DataSources.tsx)
-        const connectedCount = data.integrations?.length ?? 0;
-        console.log('[AppLayout] Connected count:', connectedCount);
-        setConnectedSourcesCount(connectedCount);
-      }
-    } catch (error) {
-      console.error('[AppLayout] Failed to load connected sources count:', error);
-    }
-  }, [organization.id]);
-
+  // Fetch integrations on mount (if not already loaded)
   useEffect(() => {
-    void loadConnectedSourcesCount();
-  }, [loadConnectedSourcesCount]);
-
-  const startNewChat = (): void => {
-    setCurrentChatId(null);
-    setCurrentView('chat');
-  };
+    if (organization) {
+      void fetchIntegrations();
+    }
+  }, [organization, fetchIntegrations]);
 
   const handleSelectChat = (chatId: string): void => {
     setCurrentChatId(chatId);
     setCurrentView('chat');
   };
 
-  const contextValue: AppContextValue = {
-    currentView,
-    setCurrentView,
-    currentChatId,
-    setCurrentChatId,
-    sidebarCollapsed,
-    setSidebarCollapsed,
-    startNewChat,
-  };
+  // Guard against missing user/org (shouldn't happen, but be safe)
+  if (!user || !organization) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <p className="text-surface-400">Loading...</p>
+      </div>
+    );
+  }
 
   return (
-    <AppContext.Provider value={contextValue}>
-      <div className="min-h-screen flex bg-surface-950">
-        {/* Sidebar */}
-        <Sidebar
-          collapsed={sidebarCollapsed}
-          onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
-          currentView={currentView}
-          onViewChange={setCurrentView}
-          connectedSourcesCount={connectedSourcesCount}
-          recentChats={recentChats.slice(0, 10)}
-          onSelectChat={handleSelectChat}
-          currentChatId={currentChatId}
-          onNewChat={startNewChat}
-          user={user}
+    <div className="min-h-screen flex bg-surface-950">
+      {/* Sidebar */}
+      <Sidebar
+        collapsed={sidebarCollapsed}
+        onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
+        currentView={currentView}
+        onViewChange={setCurrentView}
+        connectedSourcesCount={connectedIntegrationsCount}
+        recentChats={recentChats.slice(0, 10)}
+        onSelectChat={handleSelectChat}
+        currentChatId={currentChatId}
+        onNewChat={startNewChat}
+        user={user}
+        organization={organization}
+        onOpenOrgPanel={() => setShowOrgPanel(true)}
+        onOpenProfilePanel={() => setShowProfilePanel(true)}
+      />
+
+      {/* Main Content */}
+      <main className="flex-1 flex flex-col min-w-0">
+        {currentView === 'chat' && (
+          <Chat
+            userId={user.id}
+            organizationId={organization.id}
+            chatId={currentChatId}
+            onChatCreated={(id, title) => {
+              setCurrentChatId(id);
+              // Add to recent chats
+              setRecentChats((prev) => [
+                { id, title, lastMessageAt: new Date(), previewText: '' },
+                ...prev.slice(0, 9),
+              ]);
+            }}
+          />
+        )}
+        {currentView === 'data-sources' && (
+          <DataSources />
+        )}
+        {currentView === 'chats-list' && (
+          <ChatsList
+            chats={recentChats}
+            onSelectChat={handleSelectChat}
+            onNewChat={startNewChat}
+          />
+        )}
+      </main>
+
+      {/* Organization Panel */}
+      {showOrgPanel && (
+        <OrganizationPanel
           organization={organization}
-          onOpenOrgPanel={() => setShowOrgPanel(true)}
-          onOpenProfilePanel={() => setShowProfilePanel(true)}
+          currentUser={user}
+          onClose={() => setShowOrgPanel(false)}
         />
+      )}
 
-        {/* Main Content */}
-        <main className="flex-1 flex flex-col min-w-0">
-          {currentView === 'chat' && (
-            <Chat
-              userId={user.id}
-              organizationId={organization.id}
-              chatId={currentChatId}
-              onChatCreated={(id, title) => {
-                setCurrentChatId(id);
-                // Add to recent chats
-                setRecentChats((prev) => [
-                  { id, title, lastMessageAt: new Date(), previewText: '' },
-                  ...prev.slice(0, 9),
-                ]);
-              }}
-            />
-          )}
-          {currentView === 'data-sources' && (
-            <DataSources organizationId={organization.id} />
-          )}
-          {currentView === 'chats-list' && (
-            <ChatsList
-              chats={recentChats}
-              onSelectChat={handleSelectChat}
-              onNewChat={startNewChat}
-            />
-          )}
-        </main>
-
-        {/* Organization Panel */}
-        {showOrgPanel && (
-          <OrganizationPanel
-            organization={organization}
-            currentUser={user}
-            onClose={() => setShowOrgPanel(false)}
-          />
-        )}
-
-        {/* Profile Panel */}
-        {showProfilePanel && (
-          <ProfilePanel
-            user={user}
-            onClose={() => setShowProfilePanel(false)}
-            onLogout={onLogout}
-          />
-        )}
-      </div>
-    </AppContext.Provider>
+      {/* Profile Panel */}
+      {showProfilePanel && (
+        <ProfilePanel
+          user={user}
+          onClose={() => setShowProfilePanel(false)}
+          onLogout={onLogout}
+        />
+      )}
+    </div>
   );
 }

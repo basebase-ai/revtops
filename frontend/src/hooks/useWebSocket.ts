@@ -2,9 +2,11 @@
  * Custom hook for WebSocket connection.
  *
  * Handles connection, reconnection, and message streaming.
+ * Uses centralized API configuration.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { WS_BASE, isProduction } from '../lib/api';
 
 interface UseWebSocketReturn {
   sendMessage: (message: string) => void;
@@ -31,20 +33,10 @@ export function useWebSocket(url: string): UseWebSocketReturn {
 
     setConnectionState('connecting');
 
-    // Backend URL for production
-    const PRODUCTION_BACKEND_WS = 'wss://revtops-backend-production.up.railway.app';
-    
-    // Determine if we're in production
-    const isProduction = typeof window !== 'undefined' && 
-      (window.location.hostname.includes('railway.app') || 
-       window.location.hostname.includes('revtops'));
-
-    // WebSocket URL
-    const wsUrl = isProduction 
-      ? `${PRODUCTION_BACKEND_WS}${url}`
-      : `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}${url}`;
-    
+    // Build WebSocket URL using centralized config
+    const wsUrl = `${WS_BASE}${url}`;
     console.log('[WebSocket] isProduction:', isProduction, 'wsUrl:', wsUrl);
+    
     const ws = new WebSocket(wsUrl);
 
     ws.onopen = (): void => {
