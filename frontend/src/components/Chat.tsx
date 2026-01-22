@@ -70,7 +70,6 @@ export function Chat({ userId, organizationId: _organizationId, chatId }: ChatPr
   const setMessages = useAppStore((s) => s.setMessages);
   const clearChat = useAppStore((s) => s.clearChat);
   const addConversation = useAppStore((s) => s.addConversation);
-  const streamingMessageId = useAppStore((s) => s.streamingMessageId);
   const conversationId = useAppStore((s) => s.conversationId);
   
   // Local state
@@ -121,13 +120,13 @@ export function Chat({ userId, organizationId: _organizationId, chatId }: ChatPr
     // Check if this is a tool call indicator (e.g., "*Querying query_deals...*")
     const trimmed = message.trim();
     const toolCallMatch = trimmed.match(/^\*([^*]+)\.\.\.\*$/);
-    if (toolCallMatch) {
-      const toolAction = toolCallMatch[1];
+    if (toolCallMatch && toolCallMatch[1]) {
+      const toolAction: string = toolCallMatch[1];
       console.log('[Chat] Tool call detected:', toolAction);
       
       // Extract tool name
       const toolNameMatch = toolAction.match(/(?:Querying|Calling|Running|Using)\s+(\w+)/i);
-      const toolName = toolNameMatch ? toolNameMatch[1] : toolAction;
+      const toolName: string = toolNameMatch?.[1] ?? toolAction;
       
       // Add tool message
       addMessage({
@@ -325,7 +324,7 @@ export function Chat({ userId, organizationId: _organizationId, chatId }: ChatPr
                 ) : (
                   <Message
                     key={msg.id}
-                    message={msg}
+                    message={{ ...msg, role: msg.role as 'user' | 'assistant' }}
                     onArtifactClick={setCurrentArtifact}
                   />
                 )
