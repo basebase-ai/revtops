@@ -91,6 +91,7 @@ interface AppState {
   
   // Actions - Conversations
   addConversation: (id: string, title: string) => void;
+  fetchConversations: () => Promise<void>;
   
   // Actions - Sync user to backend
   syncUserToBackend: () => Promise<void>;
@@ -265,6 +266,49 @@ export const useAppStore = create<AppState>()(
             ...recentChats.slice(0, 9),
           ],
         });
+      },
+
+      fetchConversations: async () => {
+        const { user } = get();
+        if (!user) {
+          console.log('[Store] No user, skipping conversations fetch');
+          return;
+        }
+
+        try {
+          console.log('[Store] Fetching conversations for user:', user.id);
+          const response = await fetch(
+            `${API_BASE}/chat/conversations?user_id=${user.id}&limit=20`
+          );
+
+          if (!response.ok) {
+            console.error('[Store] Failed to fetch conversations:', response.status);
+            return;
+          }
+
+          const data = await response.json() as {
+            conversations: Array<{
+              id: string;
+              title: string | null;
+              updated_at: string;
+              last_message_preview: string | null;
+            }>;
+            total: number;
+          };
+
+          console.log('[Store] Conversations response:', data.conversations.length, 'conversations');
+
+          const recentChats: ChatSummary[] = data.conversations.map((conv) => ({
+            id: conv.id,
+            title: conv.title ?? 'New Chat',
+            lastMessageAt: new Date(conv.updated_at),
+            previewText: conv.last_message_preview ?? '',
+          }));
+
+          set({ recentChats });
+        } catch (error) {
+          console.error('[Store] Error fetching conversations:', error);
+        }
       },
 
       // Sync user to backend

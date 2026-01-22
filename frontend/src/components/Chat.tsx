@@ -71,100 +71,16 @@ export function Chat({ userId, organizationId: _organizationId, chatId }: ChatPr
   const streamingMessageIdRef = useRef<string | null>(null);
   const conversationIdRef = useRef<string | null>(null);
   const notifiedConversationRef = useRef<string | null>(null);
-
-  const { sendMessage, isConnected, connectionState, messageQueue, clearMessageQueue } = useWebSocket(
-    `/ws/chat/${userId}`
-  );
-
-  // Reset state when chatId becomes null (New Chat clicked)
-  useEffect(() => {
-    if (chatId === null) {
-      console.log('[Chat] New chat started, clearing state');
-      setMessages([]);
-      setChatTitle('New Chat');
-      conversationIdRef.current = null;
-      streamingMessageIdRef.current = null;
-      notifiedConversationRef.current = null; // Reset notification tracker
-      setIsThinking(false);
-    }
-  }, [chatId]);
-
-  // Load conversation when selecting an existing chat from sidebar
-  useEffect(() => {
-    const loadConversation = async (): Promise<void> => {
-      // If no chatId, this is a new chat
-      if (!chatId) {
-        return;
-      }
-
-      // If chatId matches our current conversation, don't reload
-      if (chatId === conversationIdRef.current) {
-        console.log('[Chat] Skipping load - already loaded this conversation');
-        return;
-      }
-
-      console.log('[Chat] Loading conversation:', chatId);
-      setIsLoading(true);
-
-      const { data, error } = await getConversation(chatId, userId);
-      if (data && !error) {
-        conversationIdRef.current = chatId;
-        setChatTitle(data.title ?? 'New Chat');
-        
-        const loadedMessages: ChatMessage[] = data.messages.map((msg) => ({
-          id: msg.id,
-          role: msg.role as 'user' | 'assistant',
-          content: msg.content,
-          timestamp: new Date(msg.created_at),
-        }));
-        setMessages(loadedMessages);
-      } else {
-        console.error('[Chat] Failed to load conversation:', error);
-      }
-      
-      setIsLoading(false);
-    };
-
-    void loadConversation();
-  }, [chatId, userId]);
-
-  // Track the pending title for when conversation is created
   const pendingTitleRef = useRef<string | null>(null);
 
-  // Track processed message indices to avoid re-processing
-  const processedCountRef = useRef<number>(0);
-
-  // Handle incoming WebSocket messages - process only new messages
+  // Store addConversation in ref so callback can access latest version
+  const addConversationRef = useRef(addConversation);
   useEffect(() => {
-    if (messageQueue.length === 0) {
-      processedCountRef.current = 0;
-      return;
-    }
+    addConversationRef.current = addConversation;
+  }, [addConversation]);
 
-    // Only process messages we haven't seen yet
-    const newMessages = messageQueue.slice(processedCountRef.current);
-    if (newMessages.length === 0) return;
-
-    console.log('[Chat] Processing', newMessages.length, 'new messages');
-
-    // Process each new message
-    for (const message of newMessages) {
-      processMessageSync(message);
-    }
-    
-    processedCountRef.current = messageQueue.length;
-    
-    // Clear the queue after a short delay to ensure all updates are processed
-    const timeoutId = setTimeout(() => {
-      clearMessageQueue();
-      processedCountRef.current = 0;
-    }, 50);
-    
-    return () => clearTimeout(timeoutId);
-  }, [messageQueue, clearMessageQueue, addConversation]);
-
-  // Process a single WebSocket message (synchronous, no useCallback to avoid stale closures)
-  const processMessageSync = (message: string): void => {
+  // Handle WebSocket message - called directly from WebSocket event handler
+  const handleWebSocketMessage = useCallback((message: string): void => {
     // Try to parse as JSON control message
     try {
       const parsed: unknown = JSON.parse(message);
@@ -184,8 +100,8 @@ export function Chat({ userId, organizationId: _organizationId, chatId }: ChatPr
           const title = pendingTitleRef.current ?? 'New Chat';
           setChatTitle(title);
           
-          // Add to store (stable action, no dependency issues)
-          addConversation(parsed.conversation_id, title);
+          // Add to store via ref (stable reference)
+          addConversationRef.current(parsed.conversation_id, title);
           pendingTitleRef.current = null;
           return;
         }
@@ -214,6 +130,10 @@ export function Chat({ userId, organizationId: _organizationId, chatId }: ChatPr
       const toolAction = toolCallMatch[1];
       console.log('[Chat] Tool call detected:', toolAction);
       
+      // Extract tool name
+      const toolNameMatch = toolAction.match(/(?:Querying|Calling|Running|Using)\s+(\w+)/i);
+      const toolName = toolNameMatch ? toolNameMatch[1] : toolAction;
+      
       // Add as a tool message
       setMessages((prev) => [
         ...prev,
@@ -221,7 +141,7 @@ export function Chat({ userId, organizationId: _organizationId, chatId }: ChatPr
           id: `tool-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
           role: 'tool' as const,
           content: toolAction,
-          toolName: extractToolName(toolAction),
+          toolName,
           timestamp: new Date(),
         },
       ]);
@@ -259,13 +179,93 @@ export function Chat({ userId, organizationId: _organizationId, chatId }: ChatPr
         ];
       }
     });
-  };
+  }, []);
 
-  // Extract tool name from action string (e.g., "Querying query_deals" -> "query_deals")
-  const extractToolName = (action: string): string => {
-    const match = action.match(/(?:Querying|Calling|Running|Using)\s+(\w+)/i);
-    return match ? match[1] : action;
-  };
+  const { sendMessage, isConnected, connectionState } = useWebSocket(
+    `/ws/chat/${userId}`,
+    { onMessage: handleWebSocketMessage }
+  );
+
+  // Reset state when chatId becomes null (New Chat clicked)
+  useEffect(() => {
+    if (chatId === null) {
+      console.log('[Chat] New chat started, clearing state');
+      setMessages([]);
+      setChatTitle('New Chat');
+      conversationIdRef.current = null;
+      streamingMessageIdRef.current = null;
+      notifiedConversationRef.current = null;
+      setIsThinking(false);
+    }
+  }, [chatId]);
+
+  // Load conversation when selecting an existing chat from sidebar
+  useEffect(() => {
+    // If no chatId, this is a new chat - ensure loading is false
+    if (!chatId) {
+      setIsLoading(false);
+      return;
+    }
+
+    // If chatId matches our current conversation, don't reload
+    if (chatId === conversationIdRef.current) {
+      console.log('[Chat] Skipping load - already loaded this conversation');
+      setIsLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+
+    const loadConversation = async (): Promise<void> => {
+      console.log('[Chat] Loading conversation:', chatId);
+      setIsLoading(true);
+
+      try {
+        const { data, error } = await getConversation(chatId, userId);
+        
+        // Don't update state if the effect was cancelled (chatId changed)
+        if (cancelled) {
+          console.log('[Chat] Load cancelled - chatId changed');
+          return;
+        }
+
+        if (data && !error) {
+          conversationIdRef.current = chatId;
+          setChatTitle(data.title ?? 'New Chat');
+          
+          const loadedMessages: ChatMessage[] = data.messages.map((msg) => ({
+            id: msg.id,
+            role: msg.role as 'user' | 'assistant',
+            content: msg.content,
+            timestamp: new Date(msg.created_at),
+          }));
+          setMessages(loadedMessages);
+          console.log('[Chat] Loaded', loadedMessages.length, 'messages');
+        } else {
+          console.error('[Chat] Failed to load conversation:', error);
+          // Show empty state on error
+          setMessages([]);
+          setChatTitle('Chat');
+        }
+      } catch (err) {
+        console.error('[Chat] Exception loading conversation:', err);
+        if (!cancelled) {
+          setMessages([]);
+          setChatTitle('Chat');
+        }
+      } finally {
+        if (!cancelled) {
+          setIsLoading(false);
+        }
+      }
+    };
+
+    void loadConversation();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [chatId, userId]);
 
   // Auto-scroll to bottom
   useEffect(() => {
@@ -320,7 +320,7 @@ export function Chat({ userId, organizationId: _organizationId, chatId }: ChatPr
 
   if (isLoading) {
     return (
-      <div className="flex-1 flex items-center justify-center">
+      <div className="flex-1 flex items-center justify-center min-h-0 overflow-hidden">
         <div className="flex flex-col items-center gap-4">
           <div className="w-8 h-8 border-2 border-primary-500 border-t-transparent rounded-full animate-spin" />
           <p className="text-surface-400">Loading...</p>
@@ -330,9 +330,9 @@ export function Chat({ userId, organizationId: _organizationId, chatId }: ChatPr
   }
 
   return (
-    <div className="flex-1 flex flex-col">
+    <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
       {/* Header */}
-      <header className="h-14 border-b border-surface-800 flex items-center justify-between px-6">
+      <header className="h-14 border-b border-surface-800 flex items-center justify-between px-6 flex-shrink-0">
         <div className="flex items-center gap-3">
           <h1 className="text-lg font-semibold text-surface-100 truncate max-w-md">
             {chatTitle}

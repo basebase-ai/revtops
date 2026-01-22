@@ -4,35 +4,39 @@
  * Handles connection, reconnection, and message streaming.
  * Uses centralized API configuration.
  * 
- * Uses a message queue to ensure no messages are lost when multiple
- * arrive in the same React render cycle.
+ * Uses a callback pattern to handle messages immediately as they arrive,
+ * avoiding React state batching issues.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { WS_BASE, isProduction } from '../lib/api';
 
-interface UseWebSocketReturn {
-  sendMessage: (message: string) => void;
-  lastMessage: string | null;
-  isConnected: boolean;
-  connectionState: 'connecting' | 'connected' | 'disconnected' | 'error';
-  /** All messages received since last clear, for processing multiple messages per render */
-  messageQueue: string[];
-  /** Clear the message queue after processing */
-  clearMessageQueue: () => void;
+interface UseWebSocketOptions {
+  /** Callback called immediately for each message received */
+  onMessage?: (message: string) => void;
 }
 
-export function useWebSocket(url: string): UseWebSocketReturn {
+interface UseWebSocketReturn {
+  sendMessage: (message: string) => void;
+  isConnected: boolean;
+  connectionState: 'connecting' | 'connected' | 'disconnected' | 'error';
+}
+
+export function useWebSocket(url: string, options?: UseWebSocketOptions): UseWebSocketReturn {
   const [isConnected, setIsConnected] = useState<boolean>(false);
   const [connectionState, setConnectionState] = useState<
     'connecting' | 'connected' | 'disconnected' | 'error'
   >('disconnected');
-  const [lastMessage, setLastMessage] = useState<string | null>(null);
-  const [messageQueue, setMessageQueue] = useState<string[]>([]);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<number | null>(null);
   const reconnectAttemptsRef = useRef<number>(0);
+  const onMessageRef = useRef(options?.onMessage);
   const maxReconnectAttempts = 5;
+
+  // Keep onMessage ref updated
+  useEffect(() => {
+    onMessageRef.current = options?.onMessage;
+  }, [options?.onMessage]);
 
   const connect = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
@@ -55,9 +59,8 @@ export function useWebSocket(url: string): UseWebSocketReturn {
     };
 
     ws.onmessage = (event: MessageEvent<string>): void => {
-      // Add to queue AND set lastMessage for backwards compatibility
-      setMessageQueue((prev) => [...prev, event.data]);
-      setLastMessage(event.data);
+      // Call the callback immediately (outside of React's render cycle)
+      onMessageRef.current?.(event.data);
     };
 
     ws.onerror = (error): void => {
@@ -104,9 +107,5 @@ export function useWebSocket(url: string): UseWebSocketReturn {
     }
   }, []);
 
-  const clearMessageQueue = useCallback((): void => {
-    setMessageQueue([]);
-  }, []);
-
-  return { sendMessage, lastMessage, isConnected, connectionState, messageQueue, clearMessageQueue };
+  return { sendMessage, isConnected, connectionState };
 }

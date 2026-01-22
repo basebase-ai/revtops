@@ -55,6 +55,7 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
   const setCurrentChatId = useAppStore((state) => state.setCurrentChatId);
   const startNewChat = useAppStore((state) => state.startNewChat);
   const fetchIntegrations = useAppStore((state) => state.fetchIntegrations);
+  const fetchConversations = useAppStore((state) => state.fetchConversations);
   
   // Panels
   const [showOrgPanel, setShowOrgPanel] = useState(false);
@@ -66,6 +67,13 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
       void fetchIntegrations();
     }
   }, [organization, fetchIntegrations]);
+
+  // Fetch conversations on mount
+  useEffect(() => {
+    if (user) {
+      void fetchConversations();
+    }
+  }, [user, fetchConversations]);
 
   const handleSelectChat = useCallback((chatId: string): void => {
     setCurrentChatId(chatId);
@@ -82,7 +90,7 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
   }
 
   return (
-    <div className="min-h-screen flex bg-surface-950">
+    <div className="h-screen flex bg-surface-950 overflow-hidden">
       {/* Sidebar */}
       <Sidebar
         collapsed={sidebarCollapsed}
@@ -101,7 +109,7 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
       />
 
       {/* Main Content */}
-      <main className="flex-1 flex flex-col min-w-0">
+      <main className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden">
         {currentView === 'chat' && (
           <Chat
             userId={user.id}
