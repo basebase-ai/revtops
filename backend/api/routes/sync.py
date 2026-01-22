@@ -18,6 +18,7 @@ from sqlalchemy import select
 
 from connectors.google_calendar import GoogleCalendarConnector
 from connectors.hubspot import HubSpotConnector
+from connectors.microsoft_calendar import MicrosoftCalendarConnector
 from connectors.salesforce import SalesforceConnector
 from connectors.slack import SlackConnector
 from models.database import get_session
@@ -32,6 +33,7 @@ CONNECTORS = {
     "hubspot": HubSpotConnector,
     "slack": SlackConnector,
     "google_calendar": GoogleCalendarConnector,
+    "microsoft_calendar": MicrosoftCalendarConnector,
 }
 
 # Simple in-memory sync status tracking (use Redis in production)

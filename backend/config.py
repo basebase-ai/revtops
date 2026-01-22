@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     NANGO_SLACK_INTEGRATION_ID: str = "slack"
     NANGO_GOOGLE_CALENDAR_INTEGRATION_ID: str = "google-calendar"
     NANGO_SALESFORCE_INTEGRATION_ID: str = "salesforce"
+    NANGO_MICROSOFT_CALENDAR_INTEGRATION_ID: str = "microsoft"
 
     # App
     SECRET_KEY: str = "dev-secret-change-in-production"
@@ -53,6 +54,7 @@ NANGO_INTEGRATION_IDS: dict[str, str] = {
     "slack": settings.NANGO_SLACK_INTEGRATION_ID,
     "google_calendar": settings.NANGO_GOOGLE_CALENDAR_INTEGRATION_ID,
     "salesforce": settings.NANGO_SALESFORCE_INTEGRATION_ID,
+    "microsoft_calendar": settings.NANGO_MICROSOFT_CALENDAR_INTEGRATION_ID,
 }
 
 

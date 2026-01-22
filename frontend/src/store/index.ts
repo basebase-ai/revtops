@@ -172,6 +172,14 @@ const AVAILABLE_INTEGRATIONS: Omit<Integration, 'connected' | 'lastSyncAt' | 'la
     icon: 'google-calendar',
     color: 'from-green-500 to-green-600',
   },
+  {
+    id: 'microsoft_calendar',
+    provider: 'microsoft_calendar',
+    name: 'Microsoft Calendar',
+    description: 'Outlook calendar events and meetings',
+    icon: 'microsoft_calendar',
+    color: 'from-sky-500 to-sky-600',
+  },
 ];
 
 // =============================================================================

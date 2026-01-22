@@ -296,6 +296,7 @@ async def get_available_integrations() -> AvailableIntegrationsResponse:
             {"id": "hubspot", "name": "HubSpot", "description": "CRM - Deals, Contacts, Companies"},
             {"id": "slack", "name": "Slack", "description": "Team communication and messages"},
             {"id": "google_calendar", "name": "Google Calendar", "description": "Calendar events and meetings"},
+            {"id": "microsoft_calendar", "name": "Microsoft Calendar", "description": "Outlook calendar events and meetings"},
             {"id": "salesforce", "name": "Salesforce", "description": "CRM - Opportunities, Accounts"},
         ]
     )
@@ -559,12 +560,20 @@ async def list_integrations(
         )
         existing_integrations = {i.provider: i for i in result.scalars().all()}
 
+        # Map Nango provider names to our internal provider names
+        nango_to_internal_provider: dict[str, str] = {
+            "microsoft": "microsoft_calendar",
+            "google-calendar": "google_calendar",
+        }
+
         # Sync Nango connections to our database
         for conn in nango_connections:
-            provider = conn.get("provider_config_key") or conn.get("provider")
+            nango_provider = conn.get("provider_config_key") or conn.get("provider")
+            # Map to internal provider name if needed
+            provider = nango_to_internal_provider.get(nango_provider, nango_provider)
             # Get the actual Nango connection ID
             nango_conn_id = conn.get("connection_id") or conn.get("id")
-            print(f"Nango connection: provider={provider}, conn_id={nango_conn_id}, full={conn}")
+            print(f"Nango connection: nango_provider={nango_provider}, internal_provider={provider}, conn_id={nango_conn_id}")
             
             if provider and provider not in existing_integrations:
                 # Create new integration record with actual Nango connection ID
@@ -751,12 +760,14 @@ async def run_initial_sync(organization_id: str, provider: str) -> None:
     from connectors.salesforce import SalesforceConnector
     from connectors.slack import SlackConnector
     from connectors.google_calendar import GoogleCalendarConnector
+    from connectors.microsoft_calendar import MicrosoftCalendarConnector
 
     connectors = {
         "hubspot": HubSpotConnector,
         "salesforce": SalesforceConnector,
         "slack": SlackConnector,
         "google_calendar": GoogleCalendarConnector,
+        "microsoft_calendar": MicrosoftCalendarConnector,
     }
 
     connector_class = connectors.get(provider)

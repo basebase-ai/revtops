@@ -132,7 +132,7 @@ Connected integrations (HubSpot, Slack, etc.).
 ```
 id (UUID, PK)
 organization_id (UUID, FK -> organizations)
-provider (VARCHAR) -- 'hubspot', 'slack', 'google_calendar', 'salesforce'
+provider (VARCHAR) -- 'hubspot', 'slack', 'google_calendar', 'microsoft_calendar', 'salesforce'
 nango_connection_id (VARCHAR, nullable)
 connected_by_user_id (UUID, FK -> users, nullable)
 is_active (BOOLEAN)
@@ -141,6 +141,25 @@ last_error (TEXT, nullable)
 extra_data (JSONB, nullable)
 created_at (TIMESTAMP)
 updated_at (TIMESTAMP)
+```
+
+## Calendar Data
+
+Calendar events from Google Calendar and Microsoft Calendar (Outlook) are stored in the **activities** table with:
+- `source_system = 'google_calendar'` or `source_system = 'microsoft_calendar'`
+- `type` = 'meeting', 'google_meet', 'teams_meeting', 'zoom', or 'online_meeting'
+- `subject` = meeting title
+- `activity_date` = meeting start time
+- `custom_fields` contains: duration_minutes, attendee_count, attendee_emails, conference_link, is_recurring, location
+
+Example query for upcoming meetings:
+```sql
+SELECT subject, activity_date, type, custom_fields->>'duration_minutes' as duration
+FROM activities 
+WHERE source_system IN ('google_calendar', 'microsoft_calendar')
+  AND activity_date >= CURRENT_TIMESTAMP
+ORDER BY activity_date
+LIMIT 10
 ```
 
 ## Guidelines
