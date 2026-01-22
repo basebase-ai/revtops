@@ -2,7 +2,10 @@
  * Chat message component.
  *
  * Renders individual chat messages with different styles for user/assistant.
+ * Uses react-markdown for proper markdown rendering.
  */
+
+import ReactMarkdown from 'react-markdown';
 
 interface MessageProps {
   message: {
@@ -28,11 +31,11 @@ export function Message({ message, onArtifactClick }: MessageProps): JSX.Element
 
   return (
     <div
-      className={`flex gap-3 animate-slide-up ${isUser ? 'flex-row-reverse' : 'flex-row'}`}
+      className={`flex gap-2 animate-slide-up ${isUser ? 'flex-row-reverse' : 'flex-row'}`}
     >
       {/* Avatar */}
       <div
-        className={`flex-shrink-0 w-8 h-8 rounded-lg flex items-center justify-center ${
+        className={`flex-shrink-0 w-6 h-6 rounded-md flex items-center justify-center ${
           isUser
             ? 'bg-primary-600'
             : 'bg-gradient-to-br from-surface-700 to-surface-800'
@@ -40,7 +43,7 @@ export function Message({ message, onArtifactClick }: MessageProps): JSX.Element
       >
         {isUser ? (
           <svg
-            className="w-4 h-4 text-white"
+            className="w-3 h-3 text-white"
             fill="none"
             viewBox="0 0 24 24"
             stroke="currentColor"
@@ -54,7 +57,7 @@ export function Message({ message, onArtifactClick }: MessageProps): JSX.Element
           </svg>
         ) : (
           <svg
-            className="w-4 h-4 text-primary-400"
+            className="w-3 h-3 text-primary-400"
             fill="none"
             viewBox="0 0 24 24"
             stroke="currentColor"
@@ -72,28 +75,36 @@ export function Message({ message, onArtifactClick }: MessageProps): JSX.Element
       {/* Content */}
       <div className={`flex-1 max-w-[85%] ${isUser ? 'text-right' : 'text-left'}`}>
         <div
-          className={`inline-block px-4 py-3 rounded-2xl ${
+          className={`inline-block px-3 py-2 rounded-xl text-[13px] leading-relaxed ${
             isUser
-              ? 'bg-primary-600 text-white rounded-tr-md'
-              : 'bg-surface-800 text-surface-100 rounded-tl-md'
+              ? 'bg-primary-600 text-white rounded-tr-sm'
+              : 'bg-surface-800/80 text-surface-200 rounded-tl-sm'
           }`}
         >
-          <div className="whitespace-pre-wrap break-words">
-            {textContent}
-            {message.isStreaming && (
-              <span className="inline-block w-2 h-4 bg-current animate-pulse ml-1" />
-            )}
-          </div>
+          {isUser ? (
+            // User messages - plain text, smaller
+            <div className="whitespace-pre-wrap break-words">
+              {textContent}
+            </div>
+          ) : (
+            // Assistant messages - render markdown
+            <div className="prose prose-sm prose-invert max-w-none prose-p:my-1 prose-headings:my-2 prose-ul:my-1 prose-ol:my-1 prose-li:my-0.5 prose-pre:my-2 prose-code:text-primary-300 prose-code:bg-surface-900/50 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-code:text-xs prose-pre:bg-surface-900/80 prose-pre:text-xs">
+              <ReactMarkdown>{textContent}</ReactMarkdown>
+            </div>
+          )}
+          {message.isStreaming && (
+            <span className="inline-block w-1.5 h-3 bg-current animate-pulse ml-0.5" />
+          )}
         </div>
 
         {/* Artifacts */}
         {artifacts.length > 0 && (
-          <div className="mt-2 space-y-2">
+          <div className="mt-1.5 space-y-1">
             {artifacts.map((artifact, index) => (
               <button
                 key={index}
                 onClick={() => onArtifactClick?.(artifact)}
-                className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-surface-800 hover:bg-surface-700 text-surface-300 text-sm transition-colors"
+                className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-surface-800 hover:bg-surface-700 text-surface-300 text-xs transition-colors"
               >
                 <ArtifactIcon type={artifact.type} />
                 <span>{artifact.title}</span>
@@ -103,8 +114,8 @@ export function Message({ message, onArtifactClick }: MessageProps): JSX.Element
         )}
 
         {/* Timestamp */}
-        <div className="mt-1">
-          <span className="text-xs text-surface-500">
+        <div className="mt-0.5">
+          <span className="text-[10px] text-surface-500">
             {formatTime(message.timestamp)}
           </span>
         </div>

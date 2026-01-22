@@ -12,8 +12,10 @@
   "dependencies": {
     "@nangohq/frontend": "^0.69.22",
     "@supabase/supabase-js": "^2.39.0",
+    "@tailwindcss/typography": "^0.5.19",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
+    "react-markdown": "^10.1.0",
     "zustand": "^5.0.10"
   },
   "devDependencies": {
