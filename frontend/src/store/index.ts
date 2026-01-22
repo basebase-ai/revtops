@@ -49,6 +49,14 @@ export interface ChatSummary {
   previewText: string;
 }
 
+export interface ToolCallData {
+  toolName: string;
+  toolId: string;
+  input: Record<string, unknown>;
+  result?: Record<string, unknown>;
+  status: 'running' | 'complete' | 'error';
+}
+
 export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant' | 'tool';
@@ -56,6 +64,7 @@ export interface ChatMessage {
   timestamp: Date;
   isStreaming?: boolean;
   toolName?: string;
+  toolCall?: ToolCallData;
 }
 
 export type View = 'chat' | 'data-sources' | 'chats-list';
@@ -120,6 +129,7 @@ interface AppState {
   setIsThinking: (thinking: boolean) => void;
   setConversationId: (id: string | null) => void;
   clearChat: () => void;
+  updateToolMessage: (toolId: string, updates: Partial<ToolCallData>) => void;
   
   // Actions - Sync user to backend
   syncUserToBackend: () => Promise<void>;
@@ -460,6 +470,20 @@ export const useAppStore = create<AppState>()(
         streamingMessageId: null,
         conversationId: null,
       }),
+      
+      updateToolMessage: (toolId, updates) => {
+        const { messages } = get();
+        const updated = messages.map((msg) => {
+          if (msg.toolCall?.toolId === toolId) {
+            return {
+              ...msg,
+              toolCall: { ...msg.toolCall, ...updates },
+            };
+          }
+          return msg;
+        });
+        set({ messages: updated });
+      },
 
       // Sync user to backend
       syncUserToBackend: async () => {

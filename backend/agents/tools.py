@@ -2,92 +2,60 @@
 Tool definitions and execution for Claude.
 
 Tools:
-- query_deals: Search/filter deals from database
-- query_accounts: Search/filter accounts
+- run_sql_query: Execute arbitrary SELECT queries (read-only)
 - create_artifact: Save analysis/dashboard
 """
 
-from datetime import datetime
+import logging
+import re
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import any_, select
+from sqlalchemy import text
 
-from models.account import Account
 from models.artifact import Artifact
 from models.database import get_session
-from models.deal import Deal
+
+logger = logging.getLogger(__name__)
+
+# Tables that require organization_id filtering for multi-tenancy
+ORG_SCOPED_TABLES: set[str] = {
+    "deals", "accounts", "contacts", "activities", "integrations", "artifacts"
+}
+
+# Tables that are allowed to be queried
+ALLOWED_TABLES: set[str] = {
+    "deals", "accounts", "contacts", "activities", "users", "integrations", "organizations"
+}
 
 
 def get_tools() -> list[dict[str, Any]]:
     """Return tool definitions for Claude."""
     return [
         {
-            "name": "query_deals",
-            "description": "Query deals from the database with filters. Returns list of deals matching criteria.",
+            "name": "run_sql_query",
+            "description": """Execute a read-only SQL SELECT query against the database.
+            
+Use this for any data analysis: filtering, joins, aggregations, date comparisons, etc.
+The query is automatically scoped to the user's organization for multi-tenant tables.
+
+Examples:
+- SELECT * FROM deals WHERE stage = 'closedwon' LIMIT 10
+- SELECT stage, COUNT(*), SUM(amount) FROM deals GROUP BY stage
+- SELECT d.name, a.name as account FROM deals d LEFT JOIN accounts a ON d.account_id = a.id
+- SELECT * FROM deals WHERE close_date BETWEEN '2026-01-01' AND '2026-01-31'
+- SELECT * FROM deals WHERE custom_fields->>'pipeline' = 'enterprise'
+
+IMPORTANT: Only SELECT queries are allowed. No INSERT, UPDATE, DELETE, DROP, etc.""",
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "stage": {
+                    "query": {
                         "type": "string",
-                        "description": "Filter by deal stage (e.g., 'Negotiation', 'Closed Won')",
-                    },
-                    "owner_id": {
-                        "type": "string",
-                        "description": "Filter by deal owner UUID",
-                    },
-                    "min_amount": {
-                        "type": "number",
-                        "description": "Minimum deal amount",
-                    },
-                    "max_amount": {
-                        "type": "number",
-                        "description": "Maximum deal amount",
-                    },
-                    "close_date_before": {
-                        "type": "string",
-                        "description": "Close date before this date (ISO format YYYY-MM-DD)",
-                    },
-                    "close_date_after": {
-                        "type": "string",
-                        "description": "Close date after this date (ISO format YYYY-MM-DD)",
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "description": "Max results to return (default 50)",
-                        "default": 50,
+                        "description": "The SQL SELECT query to execute",
                     },
                 },
-            },
-        },
-        {
-            "name": "query_accounts",
-            "description": "Query accounts from the database with filters.",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "industry": {
-                        "type": "string",
-                        "description": "Filter by industry",
-                    },
-                    "min_revenue": {
-                        "type": "number",
-                        "description": "Minimum annual revenue",
-                    },
-                    "min_employees": {
-                        "type": "integer",
-                        "description": "Minimum employee count",
-                    },
-                    "name_contains": {
-                        "type": "string",
-                        "description": "Filter by name containing this string",
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "description": "Max results to return (default 50)",
-                        "default": 50,
-                    },
-                },
+                "required": ["query"],
             },
         },
         {
@@ -129,100 +97,220 @@ async def execute_tool(
     tool_name: str, tool_input: dict[str, Any], organization_id: str | None, user_id: str
 ) -> dict[str, Any]:
     """Execute a tool and return results."""
+    logger.info(
+        "[Tools] execute_tool called: %s | org_id=%s | user_id=%s | input=%s",
+        tool_name,
+        organization_id,
+        user_id,
+        tool_input,
+    )
     
     # If no organization, tools that need org data won't work
     if organization_id is None:
+        logger.warning("[Tools] No organization_id - returning error")
         return {"error": "No organization associated with user. Please complete onboarding."}
 
-    if tool_name == "query_deals":
-        return await _query_deals(tool_input, organization_id, user_id)
-
-    elif tool_name == "query_accounts":
-        return await _query_accounts(tool_input, organization_id)
+    if tool_name == "run_sql_query":
+        result = await _run_sql_query(tool_input, organization_id, user_id)
+        logger.info("[Tools] run_sql_query returned %d rows", result.get("row_count", 0))
+        return result
 
     elif tool_name == "create_artifact":
-        return await _create_artifact(tool_input, organization_id, user_id)
+        result = await _create_artifact(tool_input, organization_id, user_id)
+        logger.info("[Tools] create_artifact result: %s", result)
+        return result
 
     else:
+        logger.error("[Tools] Unknown tool: %s", tool_name)
         return {"error": f"Unknown tool: {tool_name}"}
 
 
-async def _query_deals(
-    filters: dict[str, Any], organization_id: str, user_id: str
+def _validate_sql_query(query: str) -> tuple[bool, str | None]:
+    """
+    Validate that the SQL query is safe to execute.
+    Returns (is_valid, error_message).
+    """
+    query_upper = query.upper().strip()
+    
+    # Must start with SELECT (or WITH for CTEs)
+    if not (query_upper.startswith("SELECT") or query_upper.startswith("WITH")):
+        return False, "Only SELECT queries are allowed"
+    
+    # Block dangerous keywords
+    dangerous_keywords: list[str] = [
+        "INSERT", "UPDATE", "DELETE", "DROP", "TRUNCATE", "ALTER", 
+        "CREATE", "GRANT", "REVOKE", "EXECUTE", "EXEC",
+        "INTO OUTFILE", "INTO DUMPFILE", "LOAD_FILE",
+    ]
+    for keyword in dangerous_keywords:
+        # Check for keyword as whole word (not part of column name)
+        if re.search(rf'\b{keyword}\b', query_upper):
+            return False, f"'{keyword}' statements are not allowed"
+    
+    return True, None
+
+
+def _extract_tables_from_query(query: str) -> set[str]:
+    """Extract table names from a SQL query (best effort)."""
+    tables: set[str] = set()
+    query_upper = query.upper()
+    
+    # Match FROM and JOIN clauses
+    # This is a simplified parser - handles common cases
+    patterns = [
+        r'\bFROM\s+([a-zA-Z_][a-zA-Z0-9_]*)',
+        r'\bJOIN\s+([a-zA-Z_][a-zA-Z0-9_]*)',
+    ]
+    
+    for pattern in patterns:
+        matches = re.findall(pattern, query, re.IGNORECASE)
+        tables.update(m.lower() for m in matches)
+    
+    return tables
+
+
+def _inject_org_filter(query: str, organization_id: str, tables: set[str]) -> str:
+    """
+    Inject organization_id filter into the query for multi-tenant tables.
+    This is a simplified approach - wraps the query as a CTE and adds filters.
+    """
+    org_tables = tables & ORG_SCOPED_TABLES
+    
+    if not org_tables:
+        return query
+    
+    # Build WHERE conditions for org-scoped tables
+    # We wrap the original query and add a filter
+    # This approach works for simple queries; complex queries may need adjustment
+    
+    # For single-table queries, we can inject directly
+    if len(tables) == 1 and len(org_tables) == 1:
+        table = list(org_tables)[0]
+        # Check if WHERE already exists
+        if re.search(r'\bWHERE\b', query, re.IGNORECASE):
+            # Add to existing WHERE
+            query = re.sub(
+                r'\bWHERE\b',
+                f"WHERE {table}.organization_id = '{organization_id}' AND ",
+                query,
+                count=1,
+                flags=re.IGNORECASE
+            )
+        else:
+            # Find position to insert WHERE (before GROUP BY, ORDER BY, LIMIT, or end)
+            insert_patterns = [
+                (r'\bGROUP\s+BY\b', 'GROUP BY'),
+                (r'\bORDER\s+BY\b', 'ORDER BY'),
+                (r'\bLIMIT\b', 'LIMIT'),
+                (r'\bHAVING\b', 'HAVING'),
+            ]
+            
+            insert_pos = len(query)
+            for pattern, _ in insert_patterns:
+                match = re.search(pattern, query, re.IGNORECASE)
+                if match and match.start() < insert_pos:
+                    insert_pos = match.start()
+            
+            where_clause = f" WHERE {table}.organization_id = '{organization_id}' "
+            query = query[:insert_pos] + where_clause + query[insert_pos:]
+    else:
+        # For multi-table queries, wrap in CTE with filter
+        # This is safer but may not work for all query types
+        filter_conditions = " AND ".join(
+            f"{t}.organization_id = '{organization_id}'" for t in org_tables
+        )
+        
+        if re.search(r'\bWHERE\b', query, re.IGNORECASE):
+            query = re.sub(
+                r'\bWHERE\b',
+                f"WHERE ({filter_conditions}) AND ",
+                query,
+                count=1,
+                flags=re.IGNORECASE
+            )
+        else:
+            # Find the right place to insert
+            insert_patterns = [
+                (r'\bGROUP\s+BY\b', 'GROUP BY'),
+                (r'\bORDER\s+BY\b', 'ORDER BY'),
+                (r'\bLIMIT\b', 'LIMIT'),
+                (r'\bHAVING\b', 'HAVING'),
+            ]
+            
+            insert_pos = len(query)
+            for pattern, _ in insert_patterns:
+                match = re.search(pattern, query, re.IGNORECASE)
+                if match and match.start() < insert_pos:
+                    insert_pos = match.start()
+            
+            where_clause = f" WHERE {filter_conditions} "
+            query = query[:insert_pos] + where_clause + query[insert_pos:]
+    
+    return query
+
+
+async def _run_sql_query(
+    params: dict[str, Any], organization_id: str, user_id: str
 ) -> dict[str, Any]:
-    """Query deals with filters."""
-    async with get_session() as session:
-        query = select(Deal).where(Deal.organization_id == UUID(organization_id))
-
-        # Apply filters
-        if "stage" in filters and filters["stage"]:
-            query = query.where(Deal.stage == filters["stage"])
-
-        if "owner_id" in filters and filters["owner_id"]:
-            query = query.where(Deal.owner_id == UUID(filters["owner_id"]))
-
-        if "min_amount" in filters and filters["min_amount"] is not None:
-            query = query.where(Deal.amount >= filters["min_amount"])
-
-        if "max_amount" in filters and filters["max_amount"] is not None:
-            query = query.where(Deal.amount <= filters["max_amount"])
-
-        if "close_date_before" in filters and filters["close_date_before"]:
-            date = datetime.strptime(filters["close_date_before"], "%Y-%m-%d").date()
-            query = query.where(Deal.close_date < date)
-
-        if "close_date_after" in filters and filters["close_date_after"]:
-            date = datetime.strptime(filters["close_date_after"], "%Y-%m-%d").date()
-            query = query.where(Deal.close_date > date)
-
-        # Permission filter: user can only see their deals or deals they have access to
-        user_uuid = UUID(user_id)
-        query = query.where(user_uuid == any_(Deal.visible_to_user_ids))
-
-        # Limit
-        limit = filters.get("limit", 50)
-        query = query.limit(limit)
-
-        result = await session.execute(query)
-        deals = result.scalars().all()
-
-        return {
-            "count": len(deals),
-            "deals": [deal.to_dict() for deal in deals],
-        }
-
-
-async def _query_accounts(
-    filters: dict[str, Any], organization_id: str
-) -> dict[str, Any]:
-    """Query accounts with filters."""
-    async with get_session() as session:
-        query = select(Account).where(Account.organization_id == UUID(organization_id))
-
-        # Apply filters
-        if "industry" in filters and filters["industry"]:
-            query = query.where(Account.industry == filters["industry"])
-
-        if "min_revenue" in filters and filters["min_revenue"] is not None:
-            query = query.where(Account.annual_revenue >= filters["min_revenue"])
-
-        if "min_employees" in filters and filters["min_employees"] is not None:
-            query = query.where(Account.employee_count >= filters["min_employees"])
-
-        if "name_contains" in filters and filters["name_contains"]:
-            query = query.where(Account.name.ilike(f"%{filters['name_contains']}%"))
-
-        # Limit
-        limit = filters.get("limit", 50)
-        query = query.limit(limit)
-
-        result = await session.execute(query)
-        accounts = result.scalars().all()
-
-        return {
-            "count": len(accounts),
-            "accounts": [account.to_dict() for account in accounts],
-        }
+    """Execute a read-only SQL query with organization scoping."""
+    query = params.get("query", "").strip()
+    
+    if not query:
+        return {"error": "No query provided"}
+    
+    logger.info("[Tools._run_sql_query] Original query: %s", query)
+    
+    # Validate query is safe
+    is_valid, error = _validate_sql_query(query)
+    if not is_valid:
+        logger.warning("[Tools._run_sql_query] Query validation failed: %s", error)
+        return {"error": error}
+    
+    # Extract tables and validate they're allowed
+    tables = _extract_tables_from_query(query)
+    logger.debug("[Tools._run_sql_query] Detected tables: %s", tables)
+    
+    disallowed = tables - ALLOWED_TABLES
+    if disallowed:
+        return {"error": f"Access to tables not allowed: {disallowed}"}
+    
+    # Inject organization filter for multi-tenant tables
+    filtered_query = _inject_org_filter(query, organization_id, tables)
+    logger.info("[Tools._run_sql_query] Filtered query: %s", filtered_query)
+    
+    # Add LIMIT if not present to prevent huge result sets
+    if not re.search(r'\bLIMIT\b', filtered_query, re.IGNORECASE):
+        filtered_query = filtered_query.rstrip(';') + " LIMIT 100"
+    
+    try:
+        async with get_session() as session:
+            result = await session.execute(text(filtered_query))
+            rows = result.fetchall()
+            columns = list(result.keys())
+            
+            # Convert to list of dicts for JSON serialization
+            data: list[dict[str, Any]] = []
+            for row in rows:
+                row_dict: dict[str, Any] = {}
+                for i, col in enumerate(columns):
+                    value = row[i]
+                    # Handle UUID and other non-JSON-serializable types
+                    if hasattr(value, '__str__') and not isinstance(value, (str, int, float, bool, type(None), list, dict)):
+                        row_dict[col] = str(value)
+                    else:
+                        row_dict[col] = value
+                data.append(row_dict)
+            
+            logger.info("[Tools._run_sql_query] Query returned %d rows", len(data))
+            
+            return {
+                "columns": columns,
+                "rows": data,
+                "row_count": len(data),
+            }
+    except Exception as e:
+        logger.error("[Tools._run_sql_query] Query execution failed: %s", str(e))
+        return {"error": f"Query execution failed: {str(e)}"}
 
 
 async def _create_artifact(

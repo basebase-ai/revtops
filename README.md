@@ -4,20 +4,22 @@ AI-powered revenue operations assistant that connects to HubSpot, Slack, Google 
 
 ## Tech Stack
 
-- **Frontend**: React + TypeScript + Tailwind CSS + Vite
+- **Frontend**: React + TypeScript + Tailwind CSS + Vite + Zustand
 - **Backend**: Python 3.11 + FastAPI + SQLAlchemy
 - **Database**: PostgreSQL 15 with JSONB support
 - **Cache**: Redis
-- **LLM**: Anthropic Claude API (Sonnet 4)
-- **OAuth**: [Nango](https://nango.dev) - Unified OAuth for all integrations
+- **Auth**: [Supabase](https://supabase.com) - Google OAuth & session management
+- **LLM**: Anthropic Claude API (Opus 4.5)
+- **OAuth (Integrations)**: [Nango](https://nango.dev) - Unified OAuth for all integrations
 - **Integrations**: HubSpot, Slack, Google Calendar, Salesforce
-- **Deployment**: Docker + docker-compose
+- **Deployment**: Docker + docker-compose (dev), Railway (production)
 
 ## Quick Start
 
 ### Prerequisites
 
 - Docker and Docker Compose
+- [Supabase project](https://supabase.com) with Google OAuth configured
 - [Nango account](https://app.nango.dev) with integrations configured
 - Anthropic API key
 
@@ -80,19 +82,21 @@ npm run dev
 ## Project Structure
 
 ```
-revenue-copilot/
+revtops/
 ├── backend/
 │   ├── api/               # FastAPI routes and WebSocket handlers
 │   ├── agents/            # Claude orchestration and tools
 │   ├── connectors/        # HubSpot, Slack, Google Calendar, Salesforce
 │   ├── models/            # SQLAlchemy models
 │   ├── services/          # Nango client and other services
-│   └── db/                # Database utilities and queries
+│   └── db/                # Database migrations and queries
 ├── frontend/
 │   └── src/
 │       ├── components/    # React components
-│       ├── hooks/         # Custom React hooks
-│       └── api/           # API client
+│       ├── hooks/         # Custom React hooks (WebSocket)
+│       ├── api/           # API client
+│       ├── lib/           # Supabase client, utilities
+│       └── store/         # Zustand state management
 └── docker-compose.yml
 ```
 
@@ -118,13 +122,17 @@ We use [Nango](https://nango.dev) to handle all OAuth complexity:
 ### Authentication & Integrations
 | Endpoint | Method | Description |
 |----------|--------|-------------|
+| `/api/auth/me` | GET | Get current user |
+| `/api/auth/users/sync` | POST | Sync Supabase user to backend |
+| `/api/auth/organizations` | POST | Create organization |
+| `/api/auth/organizations/by-domain/{domain}` | GET | Get organization by email domain |
 | `/api/auth/available-integrations` | GET | List available integrations |
 | `/api/auth/connect/{provider}` | GET | Get Nango connect URL |
+| `/api/auth/connect/{provider}/session` | GET | Get Nango session token (for frontend SDK) |
 | `/api/auth/callback` | POST | Record OAuth completion |
 | `/api/auth/integrations` | GET | List connected integrations |
 | `/api/auth/integrations/{provider}` | DELETE | Disconnect integration |
 | `/api/auth/register` | POST | Simple user registration |
-| `/api/auth/me` | GET | Get current user |
 
 ### Sync
 | Endpoint | Method | Description |
@@ -141,18 +149,28 @@ We use [Nango](https://nango.dev) to handle all OAuth complexity:
 
 ## Environment Variables
 
+### Backend
 | Variable | Description |
 |----------|-------------|
 | `DATABASE_URL` | PostgreSQL connection string |
 | `REDIS_URL` | Redis connection string |
 | `ANTHROPIC_API_KEY` | Anthropic API key for Claude |
 | `SECRET_KEY` | Application secret for sessions |
+| `FRONTEND_URL` | Frontend URL for CORS and redirects |
 
 ### Nango Configuration
 | Variable | Description |
 |----------|-------------|
 | `NANGO_SECRET_KEY` | Nango secret key (from dashboard) |
-| `NANGO_PUBLIC_KEY` | Nango public key (for frontend, optional) |
+| `NANGO_PUBLIC_KEY` | Nango public key (for frontend SDK) |
+
+### Frontend (Vite)
+| Variable | Description |
+|----------|-------------|
+| `VITE_API_URL` | Backend API URL |
+| `VITE_SUPABASE_URL` | Supabase project URL |
+| `VITE_SUPABASE_ANON_KEY` | Supabase anonymous key |
+| `VITE_NANGO_PUBLIC_KEY` | Nango public key for frontend SDK |
 
 ### Integration IDs (Optional - defaults provided)
 | Variable | Default | Description |
@@ -162,12 +180,60 @@ We use [Nango](https://nango.dev) to handle all OAuth complexity:
 | `NANGO_GOOGLE_CALENDAR_INTEGRATION_ID` | `google-calendar` | Google Calendar integration ID |
 | `NANGO_SALESFORCE_INTEGRATION_ID` | `salesforce` | Salesforce integration ID |
 
+## Claude Tool Architecture
+
+The chat interface uses Claude with tool calling to query your CRM data. Here's how it works:
+
+### Flow
+
+```
+User Message → WebSocket → Orchestrator → Claude API
+                                              ↓
+                                        Claude decides:
+                                        - Text response → stream to user
+                                        - Tool call → execute & continue
+                                              ↓
+                              Tool Result → Claude API → Final Response
+```
+
+### Backend Components
+
+| File | Responsibility |
+|------|----------------|
+| `agents/orchestrator.py` | Manages Claude conversation, handles tool execution loop |
+| `agents/tools.py` | Tool definitions (schema) and execution logic |
+| `api/websockets.py` | WebSocket endpoint, streams responses to frontend |
+
+### Available Tools
+
+| Tool | Description |
+|------|-------------|
+| `run_sql_query` | Execute arbitrary read-only SQL SELECT queries with automatic org scoping |
+| `create_artifact` | Save dashboards, reports, or analyses |
+
+### Tool Execution Flow
+
+1. User sends message via WebSocket
+2. `ChatOrchestrator.process_message()` calls Claude with tool definitions
+3. If Claude returns a `tool_use` block:
+   - Orchestrator yields `"*Querying {tool_name}...*"` (displayed as spinner in UI)
+   - Executes tool via `execute_tool()` in `tools.py`
+   - Appends tool result to conversation
+   - Calls Claude again to interpret results
+4. Final text response streams back to user
+
+### Frontend Display
+
+The frontend (`Chat.tsx`) has no tool logic—it just detects the `*Querying...*` markdown pattern and displays a loading indicator. All tool definitions and execution happen server-side.
+
 ## Features
 
+- **Google OAuth via Supabase**: Simple sign-in with Google accounts
 - **Multi-Integration Support**: Connect HubSpot, Slack, Google Calendar, Salesforce
-- **Unified OAuth via Nango**: Secure, automatic token management
+- **Unified OAuth via Nango**: Secure, automatic token management for integrations
 - **Natural Language Queries**: Ask questions about your pipeline in plain English
-- **Real-time Chat**: WebSocket-based streaming responses
+- **Real-time Chat**: WebSocket-based streaming responses with conversation history
+- **Multiple Conversations**: Create and switch between chat threads
 - **Data Normalization**: All CRM data normalized to a common schema
 - **Activity Tracking**: Slack messages and calendar events as activities
 

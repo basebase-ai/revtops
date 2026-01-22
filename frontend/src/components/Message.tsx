@@ -6,6 +6,7 @@
  */
 
 import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 
 interface MessageProps {
   message: {
@@ -88,8 +89,8 @@ export function Message({ message, onArtifactClick }: MessageProps): JSX.Element
             </div>
           ) : (
             // Assistant messages - render markdown
-            <div className="prose prose-sm prose-invert max-w-none prose-p:my-1 prose-headings:my-2 prose-ul:my-1 prose-ol:my-1 prose-li:my-0.5 prose-pre:my-2 prose-code:text-primary-300 prose-code:bg-surface-900/50 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-code:text-xs prose-pre:bg-surface-900/80 prose-pre:text-xs">
-              <ReactMarkdown>{textContent}</ReactMarkdown>
+            <div className="prose prose-sm prose-invert max-w-none prose-p:my-1 prose-headings:my-2 prose-ul:my-1 prose-ol:my-1 prose-li:my-0.5 prose-pre:my-2 prose-code:text-primary-300 prose-code:bg-surface-900/50 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-code:text-xs prose-pre:bg-surface-900/80 prose-pre:text-xs prose-table:text-xs prose-th:bg-surface-700/50 prose-th:px-2 prose-th:py-1 prose-td:px-2 prose-td:py-1 prose-td:border-surface-700 prose-th:border-surface-700">
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{textContent}</ReactMarkdown>
             </div>
           )}
           {message.isStreaming && (

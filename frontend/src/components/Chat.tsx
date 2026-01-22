@@ -20,7 +20,8 @@ import {
   useMessages, 
   useChatTitle, 
   useIsThinking,
-  type ChatMessage 
+  type ChatMessage,
+  type ToolCallData,
 } from '../store';
 
 interface Artifact {
@@ -47,7 +48,27 @@ interface WsMessageComplete {
   conversation_id: string;
 }
 
-type WsControlMessage = WsConversationCreated | WsMessageComplete;
+interface WsToolCall {
+  type: 'tool_call';
+  tool_name: string;
+  tool_input: Record<string, unknown>;
+  tool_id: string;
+  status: 'running';
+}
+
+interface WsToolResult {
+  type: 'tool_result';
+  tool_name: string;
+  tool_id: string;
+  result: Record<string, unknown>;
+  status: 'complete';
+}
+
+interface WsTextBlockComplete {
+  type: 'text_block_complete';
+}
+
+type WsControlMessage = WsConversationCreated | WsMessageComplete | WsToolCall | WsToolResult | WsTextBlockComplete;
 
 function isControlMessage(data: unknown): data is WsControlMessage {
   return typeof data === 'object' && data !== null && 'type' in data;
@@ -71,11 +92,13 @@ export function Chat({ userId, organizationId: _organizationId, chatId }: ChatPr
   const clearChat = useAppStore((s) => s.clearChat);
   const addConversation = useAppStore((s) => s.addConversation);
   const conversationId = useAppStore((s) => s.conversationId);
+  const updateToolMessage = useAppStore((s) => s.updateToolMessage);
   
   // Local state
   const [input, setInput] = useState<string>('');
   const [currentArtifact, setCurrentArtifact] = useState<Artifact | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(false);
+  const [selectedToolCall, setSelectedToolCall] = useState<ToolCallData | null>(null);
   
   // Refs
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -112,32 +135,42 @@ export function Chat({ userId, organizationId: _organizationId, chatId }: ChatPr
           markMessageComplete();
           return;
         }
+        if (parsed.type === 'text_block_complete') {
+          console.log('[Chat] Text block complete (tools incoming)');
+          // Mark current message complete so next text starts fresh
+          markMessageComplete();
+          return;
+        }
+        if (parsed.type === 'tool_call') {
+          console.log('[Chat] Tool call:', parsed.tool_name, parsed.tool_id);
+          const toolCallData: ToolCallData = {
+            toolName: parsed.tool_name,
+            toolId: parsed.tool_id,
+            input: parsed.tool_input,
+            status: 'running',
+          };
+          addMessage({
+            id: `tool-${parsed.tool_id}`,
+            role: 'tool',
+            content: `Querying ${parsed.tool_name}`,
+            toolName: parsed.tool_name,
+            toolCall: toolCallData,
+            timestamp: new Date(),
+          });
+          setIsThinking(false);
+          return;
+        }
+        if (parsed.type === 'tool_result') {
+          console.log('[Chat] Tool result:', parsed.tool_name, parsed.tool_id);
+          updateToolMessage(parsed.tool_id, {
+            result: parsed.result,
+            status: 'complete',
+          });
+          return;
+        }
       }
     } catch {
       // Not JSON, treat as text chunk
-    }
-
-    // Check if this is a tool call indicator (e.g., "*Querying query_deals...*")
-    const trimmed = message.trim();
-    const toolCallMatch = trimmed.match(/^\*([^*]+)\.\.\.\*$/);
-    if (toolCallMatch && toolCallMatch[1]) {
-      const toolAction: string = toolCallMatch[1];
-      console.log('[Chat] Tool call detected:', toolAction);
-      
-      // Extract tool name
-      const toolNameMatch = toolAction.match(/(?:Querying|Calling|Running|Using)\s+(\w+)/i);
-      const toolName: string = toolNameMatch?.[1] ?? toolAction;
-      
-      // Add tool message
-      addMessage({
-        id: `tool-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-        role: 'tool',
-        content: toolAction,
-        toolName,
-        timestamp: new Date(),
-      });
-      setIsThinking(false);
-      return;
     }
 
     // Text chunk from assistant
@@ -155,7 +188,7 @@ export function Chat({ userId, organizationId: _organizationId, chatId }: ChatPr
       console.log('[Chat] Starting streaming message:', newId);
       startStreamingMessage(newId, message);
     }
-  }, [addMessage, appendToStreamingMessage, startStreamingMessage, markMessageComplete, setChatTitle, setIsThinking, setConversationId, addConversation]);
+  }, [addMessage, appendToStreamingMessage, startStreamingMessage, markMessageComplete, setChatTitle, setIsThinking, setConversationId, addConversation, updateToolMessage]);
 
   const { sendMessage, isConnected, connectionState } = useWebSocket(
     `/ws/chat/${userId}`,
@@ -320,7 +353,11 @@ export function Chat({ userId, organizationId: _organizationId, chatId }: ChatPr
             <div className="max-w-3xl mx-auto space-y-4">
               {messages.map((msg) => (
                 msg.role === 'tool' ? (
-                  <ToolCallIndicator key={msg.id} action={msg.content} />
+                  <ToolCallIndicator 
+                    key={msg.id} 
+                    toolCall={msg.toolCall}
+                    onClick={() => msg.toolCall && setSelectedToolCall(msg.toolCall)}
+                  />
                 ) : (
                   <Message
                     key={msg.id}
@@ -369,7 +406,7 @@ export function Chat({ userId, organizationId: _organizationId, chatId }: ChatPr
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
               placeholder="Ask about your pipeline..."
-              className="input-field resize-none min-h-[52px] max-h-32"
+              className="input-field resize-none min-h-[52px] max-h-32 text-[13px]"
               rows={1}
               disabled={!isConnected || isThinking}
             />
@@ -390,21 +427,144 @@ export function Chat({ userId, organizationId: _organizationId, chatId }: ChatPr
           </div>
         </div>
       </div>
+
+      {/* Tool Call Detail Modal */}
+      {selectedToolCall && (
+        <ToolCallModal 
+          toolCall={selectedToolCall} 
+          onClose={() => setSelectedToolCall(null)} 
+        />
+      )}
     </div>
   );
 }
 
+// Map tool names to user-friendly descriptions
+const TOOL_FRIENDLY_NAMES: Record<string, string> = {
+  run_sql_query: 'synced data',
+  create_artifact: 'artifact',
+};
+
+function getToolDisplayName(toolName: string): string {
+  return TOOL_FRIENDLY_NAMES[toolName] ?? toolName;
+}
+
 /**
- * Tool call indicator - shows as a small, light note without speech bubble
+ * Tool call indicator - clickable to show details
  */
-function ToolCallIndicator({ action }: { action: string }): JSX.Element {
+function ToolCallIndicator({ 
+  toolCall, 
+  onClick 
+}: { 
+  toolCall?: ToolCallData; 
+  onClick: () => void;
+}): JSX.Element {
+  const isComplete = toolCall?.status === 'complete';
+  const displayName = getToolDisplayName(toolCall?.toolName ?? 'unknown');
+  
   return (
-    <div className="flex items-center gap-2 py-1 pl-8 text-sm text-surface-500">
-      <svg className="w-3.5 h-3.5 text-surface-600 animate-spin" fill="none" viewBox="0 0 24 24">
-        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+    <button
+      onClick={onClick}
+      className="flex items-center gap-2 py-1 pl-8 text-sm text-surface-500 hover:text-surface-300 transition-colors cursor-pointer group"
+    >
+      {isComplete ? (
+        <svg className="w-3.5 h-3.5 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+        </svg>
+      ) : (
+        <svg className="w-3.5 h-3.5 text-surface-600 animate-spin" fill="none" viewBox="0 0 24 24">
+          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+        </svg>
+      )}
+      <span className="text-surface-500 italic group-hover:text-surface-300">
+        {isComplete ? `Queried ${displayName}` : `Querying ${displayName}...`}
+      </span>
+      <svg className="w-3 h-3 text-surface-600 opacity-0 group-hover:opacity-100 transition-opacity" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
       </svg>
-      <span className="text-surface-500 italic">{action}</span>
+    </button>
+  );
+}
+
+/**
+ * Modal for showing tool call details
+ */
+function ToolCallModal({ 
+  toolCall, 
+  onClose 
+}: { 
+  toolCall: ToolCallData; 
+  onClose: () => void;
+}): JSX.Element {
+  const isComplete = toolCall.status === 'complete';
+  
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={onClose}>
+      <div 
+        className="bg-surface-900 border border-surface-700 rounded-xl max-w-2xl w-full max-h-[80vh] overflow-hidden shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between p-4 border-b border-surface-700">
+          <div className="flex items-center gap-3">
+            {isComplete ? (
+              <div className="w-8 h-8 rounded-lg bg-green-500/20 flex items-center justify-center">
+                <svg className="w-4 h-4 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                </svg>
+              </div>
+            ) : (
+              <div className="w-8 h-8 rounded-lg bg-primary-500/20 flex items-center justify-center">
+                <svg className="w-4 h-4 text-primary-400 animate-spin" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                </svg>
+              </div>
+            )}
+            <div>
+              <h3 className="text-lg font-semibold text-surface-100">{toolCall.toolName}</h3>
+              <p className="text-sm text-surface-400">
+                {isComplete ? 'Completed' : 'Running...'}
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={onClose}
+            className="text-surface-400 hover:text-surface-200 p-1"
+          >
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        {/* Content */}
+        <div className="p-4 overflow-y-auto max-h-[calc(80vh-80px)] space-y-4">
+          {/* Input */}
+          <div>
+            <h4 className="text-sm font-medium text-surface-300 mb-2">Input</h4>
+            <pre className="bg-surface-800 rounded-lg p-3 text-sm text-surface-200 overflow-x-auto">
+              {JSON.stringify(toolCall.input, null, 2)}
+            </pre>
+          </div>
+
+          {/* Result */}
+          {toolCall.result && (
+            <div>
+              <h4 className="text-sm font-medium text-surface-300 mb-2">Result</h4>
+              <pre className="bg-surface-800 rounded-lg p-3 text-sm text-surface-200 overflow-x-auto max-h-96 overflow-y-auto">
+                {JSON.stringify(toolCall.result, null, 2)}
+              </pre>
+            </div>
+          )}
+
+          {/* Tool ID for debugging */}
+          <div className="text-xs text-surface-500 pt-2 border-t border-surface-800">
+            Tool ID: {toolCall.toolId}
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

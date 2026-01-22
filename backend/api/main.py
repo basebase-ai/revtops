@@ -10,13 +10,25 @@ Responsibilities:
 """
 from __future__ import annotations
 
+import logging
 import os
+import sys
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.websockets import websocket_endpoint
 from api.routes import auth, chat, sync
 from models.database import init_db
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+    stream=sys.stdout,
+)
+# Set agents module to DEBUG for detailed tool logging
+logging.getLogger("agents").setLevel(logging.DEBUG)
 
 app = FastAPI(title="Revenue Copilot API", version="1.0.0")
 

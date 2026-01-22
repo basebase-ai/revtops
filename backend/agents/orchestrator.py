@@ -10,6 +10,8 @@ Responsibilities:
 - Save conversation to database
 """
 
+import json
+import logging
 from datetime import datetime
 from typing import Any, AsyncGenerator
 from uuid import UUID
@@ -23,22 +25,134 @@ from models.chat_message import ChatMessage
 from models.conversation import Conversation
 from models.database import get_session
 
+logger = logging.getLogger(__name__)
+
 SYSTEM_PROMPT = """You are Revtops, an AI assistant for sales and revenue operations.
 
 You help users understand their sales pipeline, analyze deals, and get insights from their CRM data.
 
-You have access to tools that let you:
-- Query deals from the database with various filters
-- Query accounts with filters
-- Create and save analyses, reports, and dashboards
+## Available Tools
 
-When answering questions:
-1. Use the available tools to fetch relevant data
-2. Provide clear, actionable insights
-3. Be concise but thorough
-4. If you create an artifact (dashboard, report, analysis), mention it to the user
+You have access to powerful tools:
+- **run_sql_query**: Execute arbitrary SELECT queries against the database. Use this for complex analysis.
+- **create_artifact**: Save dashboards, reports, or analyses for the user.
 
-You have access to the user's Hubspot, Slack, Google Calendar, Salesforce, and other enterprise revenue operations data that has been synced to the system."""
+## Database Schema
+
+All tables have `organization_id` for multi-tenancy. Your queries are automatically filtered to the user's organization.
+
+### deals
+Sales opportunities/deals from CRM.
+```
+id (UUID, PK)
+organization_id (UUID, FK -> organizations)
+source_system (VARCHAR) -- 'hubspot', 'salesforce', etc.
+source_id (VARCHAR) -- ID in source system
+name (VARCHAR) -- deal name
+account_id (UUID, FK -> accounts, nullable)
+owner_id (UUID, FK -> users, nullable) -- sales rep
+amount (NUMERIC(15,2), nullable) -- deal value
+stage (VARCHAR, nullable) -- e.g. 'appointmentscheduled', 'qualifiedtobuy', 'closedwon'
+probability (INTEGER, nullable) -- win probability 0-100
+close_date (DATE, nullable)
+created_date (TIMESTAMP)
+last_modified_date (TIMESTAMP)
+visible_to_user_ids (UUID[], nullable) -- permission control
+custom_fields (JSONB, nullable) -- e.g. {"pipeline": "default"}
+synced_at (TIMESTAMP)
+```
+
+### accounts
+Companies/organizations in the CRM.
+```
+id (UUID, PK)
+organization_id (UUID, FK -> organizations)
+source_system (VARCHAR)
+source_id (VARCHAR)
+name (VARCHAR)
+domain (VARCHAR, nullable) -- company website domain
+industry (VARCHAR, nullable)
+employee_count (INTEGER, nullable)
+annual_revenue (NUMERIC(15,2), nullable)
+owner_id (UUID, FK -> users, nullable)
+custom_fields (JSONB, nullable)
+synced_at (TIMESTAMP)
+```
+
+### contacts
+People associated with accounts.
+```
+id (UUID, PK)
+organization_id (UUID, FK -> organizations)
+source_system (VARCHAR)
+source_id (VARCHAR)
+account_id (UUID, FK -> accounts, nullable)
+name (VARCHAR, nullable)
+email (VARCHAR, nullable)
+title (VARCHAR, nullable) -- job title
+phone (VARCHAR, nullable)
+custom_fields (JSONB, nullable)
+synced_at (TIMESTAMP)
+```
+
+### activities
+CRM activities: calls, emails, meetings, notes.
+```
+id (UUID, PK)
+organization_id (UUID, FK -> organizations)
+source_system (VARCHAR)
+source_id (VARCHAR, nullable)
+deal_id (UUID, FK -> deals, nullable)
+account_id (UUID, FK -> accounts, nullable)
+contact_id (UUID, FK -> contacts, nullable)
+type (VARCHAR, nullable) -- 'call', 'email', 'meeting', 'note'
+subject (TEXT, nullable)
+description (TEXT, nullable)
+activity_date (TIMESTAMP, nullable)
+created_by_id (UUID, FK -> users, nullable)
+custom_fields (JSONB, nullable)
+synced_at (TIMESTAMP)
+```
+
+### users
+Users of the Revtops platform.
+```
+id (UUID, PK)
+email (VARCHAR, unique)
+name (VARCHAR, nullable)
+organization_id (UUID, FK -> organizations, nullable)
+salesforce_user_id (VARCHAR, nullable)
+role (VARCHAR, nullable) -- 'ae', 'sales_manager', 'cro', 'admin'
+created_at (TIMESTAMP)
+last_login (TIMESTAMP, nullable)
+```
+
+### integrations
+Connected integrations (HubSpot, Slack, etc.).
+```
+id (UUID, PK)
+organization_id (UUID, FK -> organizations)
+provider (VARCHAR) -- 'hubspot', 'slack', 'google_calendar', 'salesforce'
+nango_connection_id (VARCHAR, nullable)
+connected_by_user_id (UUID, FK -> users, nullable)
+is_active (BOOLEAN)
+last_sync_at (TIMESTAMP, nullable)
+last_error (TEXT, nullable)
+extra_data (JSONB, nullable)
+created_at (TIMESTAMP)
+updated_at (TIMESTAMP)
+```
+
+## Guidelines
+
+1. **Use SQL for complex queries**: The run_sql_query tool is powerful - use it for JOINs, aggregations, date filtering, etc.
+2. **Be precise with dates**: Use PostgreSQL date functions. Current date: use CURRENT_DATE.
+3. **Handle NULLs**: Many fields are nullable. Use COALESCE or IS NOT NULL as needed.
+4. **JSONB queries**: Use -> for objects, ->> for text. E.g. `custom_fields->>'pipeline'`
+5. **Limit results**: For large queries, use LIMIT to avoid overwhelming responses.
+6. **Explain your analysis**: Don't just show data - provide insights and recommendations.
+
+You have access to the user's HubSpot, Slack, Google Calendar, Salesforce, and other enterprise revenue operations data that has been synced to the system."""
 
 
 class ChatOrchestrator:
@@ -103,66 +217,100 @@ class ChatOrchestrator:
 
         # Initial Claude call
         response = self.client.messages.create(
-            model="claude-sonnet-4-20250514",
+            model="claude-opus-4-5",
             max_tokens=4096,
             system=SYSTEM_PROMPT,
             tools=get_tools(),
             messages=messages,
         )
 
-        # Process response content
-        for content_block in response.content:
-            if content_block.type == "text":
-                text = content_block.text
-                assistant_message += text
-                yield text
+        # Process response - handle tool calls in a loop until no more tool use
+        while True:
+            # Extract text and tool_use blocks from response
+            tool_uses: list[Any] = []
+            
+            for content_block in response.content:
+                if content_block.type == "text":
+                    text = content_block.text
+                    assistant_message += text
+                    yield text
+                elif content_block.type == "tool_use":
+                    tool_uses.append(content_block)
+            
+            # If no tool calls, we're done
+            if not tool_uses:
+                break
+            
+            # Signal frontend to complete current text block before showing tools
+            yield json.dumps({"type": "text_block_complete"})
+            
+            # Process ALL tool calls from this response
+            tool_results: list[dict[str, Any]] = []
+            
+            for tool_use in tool_uses:
+                tool_name = tool_use.name
+                tool_input = tool_use.input
+                tool_id = tool_use.id
 
-            elif content_block.type == "tool_use":
-                # Execute the tool
-                tool_name = content_block.name
-                tool_input = content_block.input
-                tool_id = content_block.id
+                logger.info(
+                    "[Orchestrator] Tool call: %s | input=%s | org_id=%s | user_id=%s",
+                    tool_name,
+                    tool_input,
+                    self.organization_id,
+                    self.user_id,
+                )
 
                 tool_calls_made.append(
                     {"name": tool_name, "input": tool_input, "id": tool_id}
                 )
 
-                yield f"\n\n*Querying {tool_name}...*\n\n"
+                # Send tool call info as JSON for frontend to display
+                yield json.dumps({
+                    "type": "tool_call",
+                    "tool_name": tool_name,
+                    "tool_input": tool_input,
+                    "tool_id": tool_id,
+                    "status": "running",
+                })
 
                 # Execute tool
                 tool_result = await execute_tool(
                     tool_name, tool_input, self.organization_id, self.user_id
                 )
 
-                # Continue conversation with tool result
-                messages.append({"role": "assistant", "content": response.content})
-                messages.append(
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "tool_result",
-                                "tool_use_id": tool_id,
-                                "content": str(tool_result),
-                            }
-                        ],
-                    }
+                logger.info(
+                    "[Orchestrator] Tool result for %s: %s",
+                    tool_name,
+                    tool_result,
                 )
 
-                # Get Claude's response to tool result
-                followup_response = self.client.messages.create(
-                    model="claude-sonnet-4-20250514",
-                    max_tokens=4096,
-                    system=SYSTEM_PROMPT,
-                    tools=get_tools(),
-                    messages=messages,
-                )
+                # Send tool result for frontend
+                yield json.dumps({
+                    "type": "tool_result",
+                    "tool_name": tool_name,
+                    "tool_id": tool_id,
+                    "result": tool_result,
+                    "status": "complete",
+                })
 
-                for followup_block in followup_response.content:
-                    if followup_block.type == "text":
-                        text = followup_block.text
-                        assistant_message += text
-                        yield text
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": tool_id,
+                    "content": str(tool_result),
+                })
+            
+            # Add assistant message with all tool uses, then user message with all results
+            messages.append({"role": "assistant", "content": response.content})
+            messages.append({"role": "user", "content": tool_results})
+
+            # Get Claude's response to all tool results
+            response = self.client.messages.create(
+                model="claude-opus-4-5",
+                max_tokens=4096,
+                system=SYSTEM_PROMPT,
+                tools=get_tools(),
+                messages=messages,
+            )
 
         # Save conversation
         is_first_message = len(history) == 0
