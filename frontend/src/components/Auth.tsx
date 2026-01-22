@@ -71,6 +71,7 @@ export function Auth({ onBack, onSuccess }: AuthProps): JSX.Element {
         provider,
         options: {
           redirectTo: `${window.location.origin}/auth/callback`,
+          scopes: provider === 'azure' ? 'email profile openid' : undefined,
         },
       });
       if (error) throw error;
