@@ -26,11 +26,7 @@ function UserAvatar({ user }: { user: UserProfile }): JSX.Element {
         alt={user.name ?? user.email}
         className="w-8 h-8 rounded-full object-cover"
         referrerPolicy="no-referrer"
-        onError={(e) => {
-          console.error('[UserAvatar] Image failed to load:', user.avatarUrl, e);
-          setImgError(true);
-        }}
-        onLoad={() => console.log('[UserAvatar] Image loaded successfully')}
+        onError={() => setImgError(true)}
       />
     );
   }
@@ -75,10 +71,6 @@ export function Sidebar({
 }: SidebarProps): JSX.Element {
   // Read user directly from store to ensure we always have the latest value
   const user = useAppStore((state) => state.user);
-  
-  // Debug: log what we're getting from the store
-  console.log('[Sidebar] user from store:', user?.avatarUrl ? 'has avatar' : 'NO avatar', user);
-  
   const sidebarWidth = collapsed ? 'w-16' : 'w-64';
 
   return (

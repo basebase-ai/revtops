@@ -543,16 +543,10 @@ export const useAppStore = create<AppState>()(
             avatar_url: string | null; 
             name: string | null;
           };
-          console.log('[Store] User synced successfully:', {
-            status: data.status,
-            avatar_url: data.avatar_url,
-            name: data.name,
-            current_avatarUrl: user.avatarUrl,
-          });
+          console.log('[Store] User synced successfully, status:', data.status);
           
           // Update user with data from backend (authoritative source)
           if (data.avatar_url !== user.avatarUrl || data.name !== user.name) {
-            console.log('[Store] Updating user with backend data');
             setUser({
               ...user,
               name: data.name ?? user.name,

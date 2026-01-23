@@ -37,6 +37,9 @@ cors_origins: list[str] = [
     "http://localhost:5173",  # Vite dev server
     "http://localhost:3000",
     "https://revtops-frontend-production.up.railway.app",  # Railway production
+    "https://beta.revtops.com",  # Production custom domain
+    "https://www.revtops.com",  # Production custom domain
+    "https://revtops.com",  # Production custom domain (non-www)
 ]
 
 # Add production frontend URL from environment (if different)

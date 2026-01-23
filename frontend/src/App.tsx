@@ -187,12 +187,6 @@ function App(): JSX.Element {
       (identityData?.picture as string | undefined) ??
       null;
     
-    console.log('[Auth] Avatar extraction:', {
-      user_metadata: supabaseUser.user_metadata,
-      identity_data: identityData,
-      extracted_avatar: newAvatarUrl,
-    });
-    
     // Preserve existing avatar URL if new value is null (session restore may not have metadata)
     const existingUser = useAppStore.getState().user;
     const avatarUrl = newAvatarUrl ?? existingUser?.avatarUrl ?? null;
@@ -249,13 +243,6 @@ function App(): JSX.Element {
           avatar_url: string | null;
           name: string | null;
         };
-        
-        console.log('[Auth] Sync response:', {
-          status: userData.status,
-          avatar_url: userData.avatar_url,
-          name: userData.name,
-          sent_avatar: avatarUrl,
-        });
         
         // Update user with avatar_url from backend (authoritative source)
         setUser({
