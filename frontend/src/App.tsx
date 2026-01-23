@@ -125,6 +125,7 @@ function App(): JSX.Element {
               email: 'user@example.com',
               name: null,
               avatarUrl: null,
+              roles: [],
             });
             setOrganization({
               id: 'example.com',
@@ -204,6 +205,7 @@ function App(): JSX.Element {
         email,
         name,
         avatarUrl,
+        roles: [],
       });
       setScreen('blocked-email');
       return;
@@ -215,6 +217,7 @@ function App(): JSX.Element {
       email,
       name,
       avatarUrl,
+      roles: [],
     });
 
     // CHECK WAITLIST STATUS FIRST - before any company/org setup
@@ -242,14 +245,16 @@ function App(): JSX.Element {
           status: string; 
           avatar_url: string | null;
           name: string | null;
+          roles: string[];
         };
         
-        // Update user with avatar_url from backend (authoritative source)
+        // Update user with data from backend (authoritative source)
         setUser({
           id: supabaseUser.id,
           email,
           name: userData.name ?? name,
           avatarUrl: userData.avatar_url ?? avatarUrl,
+          roles: userData.roles ?? [],
         });
         
         if (userData.status === 'waitlist') {
@@ -321,9 +326,16 @@ function App(): JSX.Element {
     // Fetch integrations after org is set
     await fetchIntegrations();
 
-    // Check if user has completed onboarding
+    // Check if user has completed onboarding OR already has connected integrations
     const completedOnboarding = localStorage.getItem(`onboarding_${supabaseUser.id}`);
-    if (completedOnboarding) {
+    const currentIntegrations = useAppStore.getState().integrations;
+    const hasConnectedIntegrations = currentIntegrations.some((i) => i.connected);
+    
+    if (completedOnboarding || hasConnectedIntegrations) {
+      // Mark onboarding as complete if they have integrations (for future logins)
+      if (hasConnectedIntegrations && !completedOnboarding) {
+        localStorage.setItem(`onboarding_${supabaseUser.id}`, 'true');
+      }
       setScreen('app');
     } else {
       setScreen('onboarding');

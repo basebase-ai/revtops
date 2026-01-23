@@ -204,6 +204,7 @@ class SyncUserResponse(BaseModel):
     avatar_url: Optional[str]
     organization_id: Optional[str]
     status: str  # 'waitlist', 'invited', 'active'
+    roles: list[str]  # Global roles like ['global_admin']
 
 
 @router.post("/users/sync", response_model=SyncUserResponse)
@@ -262,6 +263,7 @@ async def sync_user(request: SyncUserRequest) -> SyncUserResponse:
                 avatar_url=existing.avatar_url,
                 organization_id=str(existing.organization_id) if existing.organization_id else None,
                 status=existing.status,
+                roles=existing.roles or [],
             )
 
         # User doesn't exist - they need to join the waitlist first

@@ -15,6 +15,7 @@ import { Sidebar } from './Sidebar';
 import { DataSources } from './DataSources';
 import { ChatsList } from './ChatsList';
 import { Chat } from './Chat';
+import { AdminPanel } from './AdminPanel';
 import { OrganizationPanel } from './OrganizationPanel';
 import { ProfilePanel } from './ProfilePanel';
 import { useAppStore } from '../store';
@@ -132,6 +133,9 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
             onSelectChat={handleSelectChat}
             onNewChat={startNewChat}
           />
+        )}
+        {currentView === 'admin' && (
+          <AdminPanel />
         )}
       </main>
 

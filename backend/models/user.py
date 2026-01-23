@@ -37,6 +37,9 @@ class User(Base):
     role: Mapped[Optional[str]] = mapped_column(
         String(50), nullable=True
     )  # 'ae', 'sales_manager', 'cro', 'admin'
+    roles: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, default=list
+    )  # Global roles like ['global_admin']
     avatar_url: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
     
     # Waitlist fields
@@ -60,13 +63,14 @@ class User(Base):
     )
     deals: Mapped[list["Deal"]] = relationship("Deal", back_populates="owner")
 
-    def to_dict(self) -> dict[str, Optional[str]]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for API responses."""
         return {
             "id": str(self.id),
             "email": self.email,
             "name": self.name,
             "role": self.role,
+            "roles": self.roles,
             "status": self.status,
             "avatar_url": self.avatar_url,
             "organization_id": str(self.organization_id) if self.organization_id else None,
