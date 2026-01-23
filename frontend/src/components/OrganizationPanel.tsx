@@ -181,7 +181,7 @@ export function OrganizationPanel({ organization, currentUser, onClose }: Organi
                 ) : (
                   <div className="space-y-2">
                     {teamMembers.map((member) => {
-                      const displayName = member.name ?? member.email.split('@')[0];
+                      const displayName = member.name ?? member.email.split('@')[0] ?? 'Unknown';
                       const isAdmin = member.role === 'admin' || member.id === currentUser.id;
                       return (
                         <div
