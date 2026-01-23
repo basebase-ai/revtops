@@ -243,13 +243,16 @@ export function Chat({ userId, organizationId: _organizationId, chatId }: ChatPr
       });
       return newMap;
     });
+    // Include conversation_id so backend can send errors back to the agent
+    const currentConversationId = conversationId || chatId;
     sendMessage(JSON.stringify({
       type: 'crm_approval',
       operation_id: operationId,
       approved: true,
       skip_duplicates: skipDuplicates,
+      conversation_id: currentConversationId,
     }));
-  }, [sendMessage]);
+  }, [sendMessage, conversationId, chatId]);
 
   // Handle CRM cancel
   const handleCrmCancel = useCallback((operationId: string) => {
@@ -263,12 +266,14 @@ export function Chat({ userId, organizationId: _organizationId, chatId }: ChatPr
       });
       return newMap;
     });
+    const currentConversationId = conversationId || chatId;
     sendMessage(JSON.stringify({
       type: 'crm_approval',
       operation_id: operationId,
       approved: false,
+      conversation_id: currentConversationId,
     }));
-  }, [sendMessage]);
+  }, [sendMessage, conversationId, chatId]);
 
   // Reset state when chatId becomes null (New Chat clicked)
   useEffect(() => {
@@ -467,43 +472,56 @@ export function Chat({ userId, organizationId: _organizationId, chatId }: ChatPr
           ) : (
             <div className="max-w-3xl mx-auto space-y-4">
               {messages.map((msg) => {
-                // Check if this is a CRM write tool with pending approval
+                // Check if this is a CRM write tool
                 if (msg.role === 'tool' && msg.toolCall?.toolName === 'crm_write') {
                   const result = msg.toolCall.result as Record<string, unknown> | undefined;
-                  if (result?.status === 'pending_approval' && result?.operation_id) {
+                  if (result?.operation_id) {
                     const operationId = result.operation_id as string;
                     const approvalState = crmApprovals.get(operationId);
-                    return (
-                      <div key={msg.id} className="pl-8">
-                        <CrmApprovalCard
-                          data={result as {
-                            operation_id: string;
-                            target_system: string;
-                            record_type: string;
-                            operation: string;
-                            preview: {
-                              records: Record<string, unknown>[];
-                              record_count: number;
-                              will_create: number;
-                              will_skip: number;
-                              will_update: number;
-                              duplicate_warnings: Array<{
-                                record: Record<string, unknown>;
-                                existing_id: string;
-                                existing: Record<string, unknown>;
-                                match_field: string;
-                                match_value: string;
-                              }>;
-                            };
-                            message: string;
-                          }}
-                          onApprove={handleCrmApprove}
-                          onCancel={handleCrmCancel}
-                          isProcessing={approvalState?.isProcessing ?? false}
-                          result={approvalState?.result ?? null}
-                        />
-                      </div>
-                    );
+                    
+                    // Check if the stored result already has a final state (from reload)
+                    const storedStatus = result?.status as string | undefined;
+                    const isFinalState = storedStatus && ['completed', 'failed', 'canceled', 'expired'].includes(storedStatus);
+                    
+                    // Use stored result if it's a final state, otherwise use live approval state
+                    const finalResult = isFinalState 
+                      ? result as { status: string; message?: string; success_count?: number; failure_count?: number; skipped_count?: number; error?: string }
+                      : approvalState?.result ?? null;
+                    
+                    // Only show approval card if we have preview data (pending) or a result
+                    if (result?.preview || finalResult) {
+                      return (
+                        <div key={msg.id} className="pl-8">
+                          <CrmApprovalCard
+                            data={result as {
+                              operation_id: string;
+                              target_system: string;
+                              record_type: string;
+                              operation: string;
+                              preview: {
+                                records: Record<string, unknown>[];
+                                record_count: number;
+                                will_create: number;
+                                will_skip: number;
+                                will_update: number;
+                                duplicate_warnings: Array<{
+                                  record: Record<string, unknown>;
+                                  existing_id: string;
+                                  existing: Record<string, unknown>;
+                                  match_field: string;
+                                  match_value: string;
+                                }>;
+                              };
+                              message: string;
+                            }}
+                            onApprove={handleCrmApprove}
+                            onCancel={handleCrmCancel}
+                            isProcessing={approvalState?.isProcessing ?? false}
+                            result={finalResult}
+                          />
+                        </div>
+                      );
+                    }
                   }
                 }
                 

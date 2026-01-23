@@ -17,7 +17,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 from uuid import UUID
 
 from agents.orchestrator import ChatOrchestrator
-from agents.tools import execute_crm_operation, cancel_crm_operation
+from agents.tools import execute_crm_operation, cancel_crm_operation, update_tool_call_result
 from models.database import get_session
 from models.user import User
 
@@ -79,6 +79,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str) -> None:
                         operation_id = data.get("operation_id")
                         approved = data.get("approved", False)
                         skip_duplicates = data.get("skip_duplicates", True)
+                        crm_conversation_id = data.get("conversation_id")
                         
                         if not operation_id:
                             await websocket.send_text(json.dumps({
@@ -95,11 +96,42 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str) -> None:
                             # Cancel the operation
                             result = await cancel_crm_operation(operation_id)
                         
+                        # Update the stored tool call result so it persists on reload
+                        await update_tool_call_result(operation_id, {
+                            "type": "crm_approval_result",
+                            "status": result.get("status", "unknown"),
+                            "operation_id": operation_id,
+                            **result,
+                        })
+                        
                         await websocket.send_text(json.dumps({
                             "type": "crm_approval_result",
                             "operation_id": operation_id,
                             **result,
                         }))
+                        
+                        # If the operation failed, automatically send the error to the agent
+                        # so it can understand what went wrong and potentially retry
+                        if result.get("status") == "failed" and result.get("error") and crm_conversation_id:
+                            error_feedback = f"[CRM Operation Failed] The operation you requested was approved but failed with this error:\n\n{result.get('error')}\n\nPlease analyze the error, explain what went wrong to the user, and offer to retry with corrected parameters."
+                            
+                            # Create orchestrator with the same conversation context
+                            orchestrator = ChatOrchestrator(
+                                user_id=str(user.id),
+                                organization_id=organization_id,
+                                conversation_id=crm_conversation_id,
+                            )
+                            
+                            # Stream the agent's response to the error
+                            async for chunk in orchestrator.process_message(error_feedback):
+                                await websocket.send_text(chunk)
+                            
+                            # Send end-of-message marker
+                            await websocket.send_text(json.dumps({
+                                "type": "message_complete",
+                                "conversation_id": orchestrator.conversation_id,
+                            }))
+                        
                         continue
                     
                     # Regular chat message

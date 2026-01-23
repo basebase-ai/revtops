@@ -73,6 +73,7 @@ export function CrmApprovalCard({
 }: CrmApprovalCardProps): JSX.Element {
   const [skipDuplicates, setSkipDuplicates] = useState(true);
   const [showAllRecords, setShowAllRecords] = useState(false);
+  const [showFullError, setShowFullError] = useState(false);
 
   const { operation_id, target_system, record_type, operation, preview, message } = data;
   const { records, will_create, will_skip, will_update, duplicate_warnings } = preview;
@@ -168,7 +169,31 @@ export function CrmApprovalCard({
           </div>
         )}
         {result.error && (
-          <p className="text-sm text-red-400 mt-1">{result.error}</p>
+          <div className="text-sm text-red-400 mt-2">
+            {result.error.length > 200 && !showFullError ? (
+              <>
+                <p className="break-words">{result.error.slice(0, 200)}...</p>
+                <button
+                  onClick={() => setShowFullError(true)}
+                  className="text-red-300 hover:text-red-200 underline mt-1"
+                >
+                  Show full error
+                </button>
+              </>
+            ) : (
+              <>
+                <p className="break-words whitespace-pre-wrap">{result.error}</p>
+                {result.error.length > 200 && (
+                  <button
+                    onClick={() => setShowFullError(false)}
+                    className="text-red-300 hover:text-red-200 underline mt-1"
+                  >
+                    Show less
+                  </button>
+                )}
+              </>
+            )}
+          </div>
         )}
       </div>
     );

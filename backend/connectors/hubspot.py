@@ -61,7 +61,26 @@ class HubSpotConnector(BaseConnector):
                 json=json_data,
                 timeout=30.0,
             )
-            response.raise_for_status()
+            
+            # If error, try to get detailed error message from HubSpot
+            if response.status_code >= 400:
+                error_detail = ""
+                try:
+                    error_body = response.json()
+                    # HubSpot error format: {"message": "...", "errors": [...]}
+                    error_detail = error_body.get("message", "")
+                    if error_body.get("errors"):
+                        error_details = [e.get("message", str(e)) for e in error_body["errors"]]
+                        error_detail = f"{error_detail}: {'; '.join(error_details)}"
+                except Exception:
+                    error_detail = response.text[:500] if response.text else ""
+                
+                raise httpx.HTTPStatusError(
+                    f"HubSpot API error ({response.status_code}): {error_detail}",
+                    request=response.request,
+                    response=response,
+                )
+            
             return response.json()
 
     async def _paginate_results(

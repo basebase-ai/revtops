@@ -9,6 +9,7 @@ Tools:
 - crm_write: Create/update records in CRM (with user approval)
 """
 
+import json
 import logging
 import re
 from datetime import datetime
@@ -193,7 +194,16 @@ Approve/Cancel buttons. Tell them to review and click Approve to proceed.
 Property names for each record type:
 - contact: email (required), firstname, lastname, company, jobtitle, phone
 - company: name (required), domain, industry, numberofemployees
-- deal: dealname (required), amount, dealstage, closedate, pipeline""",
+- deal: dealname (required), amount, dealstage, closedate, pipeline
+
+IMPORTANT: HubSpot industry field requires specific enum values. Common values:
+COMPUTER_SOFTWARE, INFORMATION_TECHNOLOGY_AND_SERVICES, INTERNET, COMPUTER_HARDWARE,
+COMPUTER_NETWORKING, MARKETING_AND_ADVERTISING, FINANCIAL_SERVICES, MANAGEMENT_CONSULTING,
+BANKING, RETAIL, HEALTH_WELLNESS_AND_FITNESS, HOSPITAL_HEALTH_CARE, MEDICAL_DEVICES,
+EDUCATION_MANAGEMENT, E_LEARNING, REAL_ESTATE, CONSTRUCTION, ENTERTAINMENT, MEDIA_PRODUCTION,
+TELECOMMUNICATIONS, AUTOMOTIVE, FOOD_BEVERAGES, CONSUMER_GOODS, PHARMACEUTICALS, BIOTECHNOLOGY,
+INSURANCE, LEGAL_SERVICES, ACCOUNTING, STAFFING_AND_RECRUITING, VENTURE_CAPITAL_PRIVATE_EQUITY.
+Do NOT use freeform values like "Technology" - always use the exact enum values.""",
             "input_schema": {
                 "type": "object",
                 "properties": {
@@ -690,49 +700,57 @@ async def _crm_write(
         return {"error": "No valid records after validation"}
     
     # Check for duplicates in HubSpot (for create/upsert operations)
+    # Only check first 10 records to avoid API rate limits and connection pool exhaustion
     if operation in ["create", "upsert"] and target_system == "hubspot":
         try:
             from connectors.hubspot import HubSpotConnector
             connector = HubSpotConnector(organization_id)
             
-            for record in validated_records:
+            # Limit duplicate checks to first 10 records for performance
+            records_to_check = validated_records[:10]
+            
+            for record in records_to_check:
                 existing: dict[str, Any] | None = None
                 
-                if record_type == "contact" and record.get("email"):
-                    existing = await connector.find_contact_by_email(record["email"])
-                    if existing:
-                        duplicate_warnings.append({
-                            "record": record,
-                            "existing_id": existing["id"],
-                            "existing": existing.get("properties", {}),
-                            "match_field": "email",
-                            "match_value": record["email"],
-                        })
-                        
-                elif record_type == "company" and record.get("domain"):
-                    existing = await connector.find_company_by_domain(record["domain"])
-                    if existing:
-                        duplicate_warnings.append({
-                            "record": record,
-                            "existing_id": existing["id"],
-                            "existing": existing.get("properties", {}),
-                            "match_field": "domain",
-                            "match_value": record["domain"],
-                        })
-                        
-                elif record_type == "deal" and record.get("dealname"):
-                    existing = await connector.find_deal_by_name(record["dealname"])
-                    if existing:
-                        duplicate_warnings.append({
-                            "record": record,
-                            "existing_id": existing["id"],
-                            "existing": existing.get("properties", {}),
-                            "match_field": "dealname",
-                            "match_value": record["dealname"],
-                        })
+                try:
+                    if record_type == "contact" and record.get("email"):
+                        existing = await connector.find_contact_by_email(record["email"])
+                        if existing:
+                            duplicate_warnings.append({
+                                "record": record,
+                                "existing_id": existing["id"],
+                                "existing": existing.get("properties", {}),
+                                "match_field": "email",
+                                "match_value": record["email"],
+                            })
+                            
+                    elif record_type == "company" and record.get("domain"):
+                        existing = await connector.find_company_by_domain(record["domain"])
+                        if existing:
+                            duplicate_warnings.append({
+                                "record": record,
+                                "existing_id": existing["id"],
+                                "existing": existing.get("properties", {}),
+                                "match_field": "domain",
+                                "match_value": record["domain"],
+                            })
+                            
+                    elif record_type == "deal" and record.get("dealname"):
+                        existing = await connector.find_deal_by_name(record["dealname"])
+                        if existing:
+                            duplicate_warnings.append({
+                                "record": record,
+                                "existing_id": existing["id"],
+                                "existing": existing.get("properties", {}),
+                                "match_field": "dealname",
+                                "match_value": record["dealname"],
+                            })
+                except Exception as e:
+                    logger.warning("[Tools._crm_write] Error checking duplicate for record: %s", str(e))
+                    # Continue with next record
                         
         except Exception as e:
-            logger.warning("[Tools._crm_write] Error checking for duplicates: %s", str(e))
+            logger.warning("[Tools._crm_write] Error initializing connector for duplicate check: %s", str(e))
             # Continue without duplicate check - not a blocker
     
     # Create CrmOperation record
@@ -804,15 +822,15 @@ async def execute_crm_operation(operation_id: str, skip_duplicates: bool = True)
         crm_op = await session.get(CrmOperation, UUID(operation_id))
         
         if not crm_op:
-            return {"error": f"Operation {operation_id} not found"}
+            return {"status": "failed", "message": "Operation not found", "error": f"Operation {operation_id} not found"}
         
         if crm_op.status != "pending":
-            return {"error": f"Operation is not pending (status: {crm_op.status})"}
+            return {"status": "failed", "message": "Invalid state", "error": f"Operation is not pending (status: {crm_op.status})"}
         
         if crm_op.is_expired:
             crm_op.status = "expired"
             await session.commit()
-            return {"error": "Operation has expired. Please start again."}
+            return {"status": "expired", "message": "Operation expired", "error": "Operation has expired. Please start again."}
         
         # Mark as executing
         crm_op.status = "executing"
@@ -823,7 +841,7 @@ async def execute_crm_operation(operation_id: str, skip_duplicates: bool = True)
         if crm_op.target_system == "hubspot":
             result = await _execute_hubspot_operation(crm_op, skip_duplicates)
         else:
-            result = {"error": f"Unsupported target system: {crm_op.target_system}"}
+            result = {"status": "failed", "message": "Unsupported system", "error": f"Unsupported target system: {crm_op.target_system}"}
         
         # Update operation with result
         async with get_session() as session:
@@ -845,16 +863,23 @@ async def execute_crm_operation(operation_id: str, skip_duplicates: bool = True)
     except Exception as e:
         logger.error("[Tools.execute_crm_operation] Error: %s", str(e))
         
+        # Truncate error message for storage
+        error_msg = str(e)[:500]
+        
         # Update operation with error
         async with get_session() as session:
             crm_op = await session.get(CrmOperation, UUID(operation_id))
             if crm_op:
                 crm_op.status = "failed"
-                crm_op.error_message = str(e)[:500]
+                crm_op.error_message = error_msg
                 crm_op.executed_at = datetime.utcnow()
                 await session.commit()
         
-        return {"error": f"Operation failed: {str(e)}"}
+        return {
+            "status": "failed",
+            "message": "Operation failed",
+            "error": error_msg,
+        }
 
 
 async def _execute_hubspot_operation(
@@ -956,7 +981,7 @@ async def _execute_hubspot_operation(
                 
     except Exception as e:
         logger.error("[Tools._execute_hubspot_operation] Error: %s", str(e))
-        return {"error": f"HubSpot API error: {str(e)}"}
+        return {"status": "failed", "message": "HubSpot API error", "error": str(e)}
     
     skipped_count = len(crm_op.validated_records) - len(records_to_process)
     
@@ -998,3 +1023,107 @@ async def cancel_crm_operation(operation_id: str) -> dict[str, Any]:
             "message": "Operation canceled by user",
             "operation_id": operation_id,
         }
+
+
+async def update_tool_call_result(operation_id: str, new_result: dict[str, Any]) -> bool:
+    """
+    Update the stored tool call result in chat_messages for a CRM operation.
+    
+    This ensures that when a conversation is reloaded, the tool call shows
+    the final state (completed/failed/canceled) instead of pending_approval.
+    
+    Args:
+        operation_id: UUID of the CRM operation
+        new_result: The new result to store (includes status, message, etc.)
+        
+    Returns:
+        True if updated successfully, False otherwise
+    """
+    from sqlalchemy import text
+    
+    try:
+        new_result_json = json.dumps(new_result)
+        
+        async with get_session() as session:
+            # Find messages that contain this operation_id in their tool_calls
+            # tool_calls is a JSONB array, each item has a 'result' object with 'operation_id'
+            # Using $1, $2, $3 positional parameters for asyncpg
+            query = text("""
+                UPDATE chat_messages
+                SET tool_calls = (
+                    SELECT jsonb_agg(
+                        CASE 
+                            WHEN tc->>'result' IS NOT NULL 
+                                 AND (tc->'result'->>'operation_id')::text = $1
+                            THEN jsonb_set(tc, '{result}', $2::jsonb)
+                            ELSE tc
+                        END
+                    )
+                    FROM jsonb_array_elements(tool_calls) AS tc
+                )
+                WHERE tool_calls IS NOT NULL
+                  AND tool_calls::text LIKE $3
+                RETURNING id
+            """).bindparams(
+                # Bind the parameters in order
+            )
+            
+            result = await session.execute(
+                query,
+                [operation_id, new_result_json, f"%{operation_id}%"]
+            )
+            
+            updated_rows = result.fetchall()
+            await session.commit()
+            
+            if updated_rows:
+                logger.info(
+                    "[Tools.update_tool_call_result] Updated %d message(s) for operation %s",
+                    len(updated_rows),
+                    operation_id
+                )
+                return True
+            else:
+                logger.warning(
+                    "[Tools.update_tool_call_result] No messages found for operation %s",
+                    operation_id
+                )
+                return False
+                
+    except Exception as e:
+        logger.error(
+            "[Tools.update_tool_call_result] Failed to update for operation %s: %s",
+            operation_id,
+            str(e)
+        )
+        return False
+
+
+async def get_crm_operation_status(operation_id: str) -> dict[str, Any]:
+    """
+    Get the current status of a CRM operation.
+    
+    Used to check if a pending_approval operation has already been processed.
+    
+    Args:
+        operation_id: UUID of the CRM operation
+        
+    Returns:
+        Operation status and details
+    """
+    try:
+        async with get_session() as session:
+            crm_op = await session.get(CrmOperation, UUID(operation_id))
+            
+            if not crm_op:
+                return {"error": f"Operation {operation_id} not found"}
+            
+            return crm_op.to_result_dict()
+            
+    except Exception as e:
+        logger.error(
+            "[Tools.get_crm_operation_status] Failed for operation %s: %s",
+            operation_id,
+            str(e)
+        )
+        return {"error": str(e)}

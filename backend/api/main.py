@@ -19,7 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from api.websockets import websocket_endpoint
 from api.routes import auth, chat, sync, waitlist
-from models.database import init_db
+from models.database import init_db, close_db, get_pool_status
 
 # Configure logging
 logging.basicConfig(
@@ -74,9 +74,34 @@ app.add_api_websocket_route("/ws/chat/{user_id}", websocket_endpoint)
 async def startup() -> None:
     """Initialize database on startup."""
     await init_db()
+    logging.info("Database initialized, connection pool ready")
+
+
+@app.on_event("shutdown")
+async def shutdown() -> None:
+    """Clean up database connections on shutdown."""
+    logging.info("Shutting down, closing database connections...")
+    await close_db()
+    logging.info("Database connections closed")
 
 
 @app.get("/health")
 async def health_check() -> dict[str, str]:
     """Health check endpoint."""
     return {"status": "ok"}
+
+
+@app.get("/health/db")
+async def db_health_check() -> dict[str, object]:
+    """Database health check with pool status."""
+    try:
+        pool_status = get_pool_status()
+        return {
+            "status": "ok",
+            "pool": pool_status,
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e),
+        }

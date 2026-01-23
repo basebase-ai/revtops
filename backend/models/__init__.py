@@ -1,5 +1,5 @@
 """Database models package."""
-from models.database import Base, get_session, init_db
+from models.database import Base, get_session, init_db, close_db, get_pool_status, get_engine
 from models.user import User
 from models.organization import Organization
 from models.deal import Deal
