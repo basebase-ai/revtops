@@ -116,6 +116,94 @@ Needs: {needs or "—"}
             return False
 
 
+async def send_waitlist_confirmation(to_email: str, name: str) -> bool:
+    """
+    Send confirmation email to user who signed up for the waitlist.
+    
+    Args:
+        to_email: Recipient email address
+        name: Recipient's name for personalization
+        
+    Returns:
+        True if email sent successfully, False otherwise
+    """
+    if not settings.RESEND_API_KEY:
+        print(f"[Email] RESEND_API_KEY not set, skipping confirmation to {to_email}")
+        return False
+
+    html_content = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    </head>
+    <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <div style="text-align: center; margin-bottom: 30px;">
+            <div style="display: inline-block; width: 48px; height: 48px; background: linear-gradient(135deg, #6366f1, #4f46e5); border-radius: 12px; margin-bottom: 16px;"></div>
+            <h1 style="margin: 0; font-size: 24px; color: #111;">You're on the list!</h1>
+        </div>
+        
+        <p>Hey {name},</p>
+        
+        <p>Thanks for signing up for Revtops! We've added you to our waitlist and will reach out as soon as your spot is ready.</p>
+        
+        <p>We're building Revtops to help revenue teams unlock insights by connecting your CRM, Slack, email, and calendar — all through a simple chat interface.</p>
+        
+        <p>We'll be in touch soon with next steps.</p>
+        
+        <p>— The Revtops Team</p>
+        
+        <hr style="border: none; border-top: 1px solid #eee; margin: 30px 0;">
+        
+        <p style="font-size: 12px; color: #666;">
+            You received this email because you signed up for the Revtops waitlist.
+        </p>
+    </body>
+    </html>
+    """
+
+    text_content = f"""Hey {name},
+
+Thanks for signing up for Revtops! We've added you to our waitlist and will reach out as soon as your spot is ready.
+
+We're building Revtops to help revenue teams unlock insights by connecting your CRM, Slack, email, and calendar — all through a simple chat interface.
+
+We'll be in touch soon with next steps.
+
+— The Revtops Team
+"""
+
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.post(
+                "https://api.resend.com/emails",
+                headers={
+                    "Authorization": f"Bearer {settings.RESEND_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "from": settings.EMAIL_FROM or "Revtops <hello@revtops.com>",
+                    "to": [to_email],
+                    "subject": "You're on the Revtops waitlist!",
+                    "html": html_content,
+                    "text": text_content,
+                },
+                timeout=10.0,
+            )
+            
+            if response.status_code == 200:
+                print(f"[Email] Waitlist confirmation sent to {to_email}")
+                return True
+            else:
+                print(f"[Email] Failed to send confirmation to {to_email}: {response.status_code} {response.text}")
+                return False
+                
+        except Exception as e:
+            print(f"[Email] Error sending confirmation to {to_email}: {e}")
+            return False
+
+
 async def send_invitation_email(to_email: str, name: str) -> bool:
     """
     Send an invitation email to a user who has been approved from the waitlist.

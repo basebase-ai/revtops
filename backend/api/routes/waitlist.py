@@ -19,7 +19,7 @@ from sqlalchemy import select
 from config import settings
 from models.database import get_session
 from models.user import User
-from services.email import send_invitation_email, send_waitlist_notification
+from services.email import send_invitation_email, send_waitlist_confirmation, send_waitlist_notification
 
 router = APIRouter()
 
@@ -125,6 +125,16 @@ async def submit_waitlist(request: WaitlistSubmitRequest) -> WaitlistSubmitRespo
         )
         session.add(new_user)
         await session.commit()
+
+        # Send confirmation email to user
+        try:
+            await send_waitlist_confirmation(
+                to_email=request.email,
+                name=request.name,
+            )
+        except Exception as e:
+            print(f"Failed to send waitlist confirmation: {e}")
+            # Don't fail the signup if email fails
 
         # Send notification email to support
         try:
