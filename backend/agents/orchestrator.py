@@ -216,6 +216,8 @@ class ChatOrchestrator:
         user_id: str,
         organization_id: str | None,
         conversation_id: str | None = None,
+        local_time: str | None = None,
+        timezone: str | None = None,
     ) -> None:
         """
         Initialize the orchestrator.
@@ -224,10 +226,14 @@ class ChatOrchestrator:
             user_id: UUID of the authenticated user
             organization_id: UUID of the user's organization (may be None for new users)
             conversation_id: UUID of the conversation (may be None for new conversations)
+            local_time: ISO timestamp of user's local time
+            timezone: User's timezone (e.g., "America/New_York")
         """
         self.user_id = user_id
         self.organization_id = organization_id
         self.conversation_id = conversation_id
+        self.local_time = local_time
+        self.timezone = timezone
         self.client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
 
     async def process_message(
@@ -268,11 +274,22 @@ class ChatOrchestrator:
         assistant_message = ""
         tool_calls_made: list[dict[str, Any]] = []
 
+        # Build system prompt with time context
+        system_prompt = SYSTEM_PROMPT
+        if self.local_time or self.timezone:
+            time_context = "\n\n## Current Time Context\n"
+            if self.local_time:
+                time_context += f"- User's local time: {self.local_time}\n"
+            if self.timezone:
+                time_context += f"- User's timezone: {self.timezone}\n"
+            time_context += "\nUse this to provide relative time references (e.g., '3 hours ago', 'yesterday') when discussing sync times, activity dates, etc."
+            system_prompt = SYSTEM_PROMPT + time_context
+
         # Initial Claude call
         response = self.client.messages.create(
             model="claude-opus-4-5",
             max_tokens=4096,
-            system=SYSTEM_PROMPT,
+            system=system_prompt,
             tools=get_tools(),
             messages=messages,
         )
@@ -364,7 +381,7 @@ class ChatOrchestrator:
             response = self.client.messages.create(
                 model="claude-opus-4-5",
                 max_tokens=4096,
-                system=SYSTEM_PROMPT,
+                system=system_prompt,
                 tools=get_tools(),
                 messages=messages,
             )

@@ -105,10 +105,14 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str) -> None:
                     # Regular chat message
                     user_message = data.get("message", raw_message)
                     conversation_id = data.get("conversation_id")
+                    local_time = data.get("local_time")
+                    timezone = data.get("timezone")
                     
                 except json.JSONDecodeError:
                     # Plain text message (backwards compatibility)
                     user_message = raw_message
+                    local_time = None
+                    timezone = None
 
                 if not user_message:
                     continue
@@ -118,6 +122,8 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str) -> None:
                     user_id=str(user.id),
                     organization_id=organization_id,
                     conversation_id=conversation_id,
+                    local_time=local_time,
+                    timezone=timezone,
                 )
 
                 # Stream Claude's response

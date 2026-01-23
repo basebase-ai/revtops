@@ -28,12 +28,12 @@ logger = logging.getLogger(__name__)
 
 # Tables that require organization_id filtering for multi-tenancy
 ORG_SCOPED_TABLES: set[str] = {
-    "deals", "accounts", "contacts", "activities", "integrations", "artifacts"
+    "deals", "accounts", "contacts", "activities", "integrations", "artifacts", "users"
 }
 
 # Tables that are allowed to be queried (synced data only - no internal admin tables)
 ALLOWED_TABLES: set[str] = {
-    "deals", "accounts", "contacts", "activities"
+    "deals", "accounts", "contacts", "activities", "integrations", "users"
 }
 
 
@@ -47,12 +47,21 @@ def get_tools() -> list[dict[str, Any]]:
 Use this for any data analysis: filtering, joins, aggregations, date comparisons, etc.
 The query is automatically scoped to the user's organization for multi-tenant tables.
 
+Available tables:
+- deals: Sales opportunities (name, amount, stage, close_date, owner_id, account_id, probability, custom_fields)
+- accounts: Companies/organizations (name, domain, industry, employee_count, annual_revenue, owner_id)
+- contacts: People (name, email, title, phone, account_id)
+- activities: Emails, meetings, calls, notes (type, subject, description, activity_date, source_system)
+- integrations: Connected data sources (provider, is_active, last_sync_at, last_error, scope, user_id)
+- users: Team members (email, full_name, role, avatar_url, salesforce_user_id)
+
 Examples:
 - SELECT * FROM deals WHERE stage = 'closedwon' LIMIT 10
 - SELECT stage, COUNT(*), SUM(amount) FROM deals GROUP BY stage
 - SELECT d.name, a.name as account FROM deals d LEFT JOIN accounts a ON d.account_id = a.id
 - SELECT * FROM deals WHERE close_date BETWEEN '2026-01-01' AND '2026-01-31'
-- SELECT * FROM deals WHERE custom_fields->>'pipeline' = 'enterprise'
+- SELECT provider, last_sync_at, last_error FROM integrations WHERE is_active = true
+- SELECT full_name, email, role FROM users
 
 IMPORTANT: Only SELECT queries are allowed. No INSERT, UPDATE, DELETE, DROP, etc.""",
             "input_schema": {

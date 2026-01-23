@@ -409,10 +409,14 @@ export function Chat({ userId, organizationId: _organizationId, chatId }: ChatPr
     addMessage(userMessage);
     setIsThinking(true);
 
-    // Send message with conversation context
+    // Send message with conversation context and timezone info
+    const now = new Date();
     const payload = JSON.stringify({
       message: input,
       conversation_id: currentConvId,
+      local_time: now.toISOString(),
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      timezone_offset_minutes: now.getTimezoneOffset(),
     });
     console.log('[Chat] Sending to WebSocket:', payload);
     sendMessage(payload);
@@ -643,14 +647,36 @@ function getToolStatusText(
       return `Searching activities for '${truncatedQuery}'...`;
     }
     case 'run_sql_query': {
+      // Extract table names from the SQL query for a more descriptive message
+      const query = typeof input?.query === 'string' ? input.query.toLowerCase() : '';
+      const tableNames: string[] = [];
+      const knownTables = ['deals', 'accounts', 'contacts', 'activities', 'integrations', 'users'];
+      for (const table of knownTables) {
+        if (query.includes(table)) {
+          tableNames.push(table);
+        }
+      }
+      const tableDesc = tableNames.length > 0 
+        ? tableNames.join(' and ') 
+        : 'synced data';
+      
       if (isComplete) {
         const rowCount = typeof result?.row_count === 'number' ? result.row_count : 0;
-        return `Queried synced data (${rowCount} row${rowCount === 1 ? '' : 's'})`;
+        return `Queried ${tableDesc} (${rowCount} row${rowCount === 1 ? '' : 's'})`;
       }
-      return 'Querying synced data...';
+      return `Querying ${tableDesc}...`;
     }
     case 'create_artifact':
       return isComplete ? 'Created artifact' : 'Creating artifact...';
+    case 'crm_write': {
+      const recordType = typeof input?.record_type === 'string' ? input.record_type : 'record';
+      const recordCount = Array.isArray(input?.records) ? input.records.length : 1;
+      const pluralType = recordCount === 1 ? recordType : `${recordType}s`;
+      if (isComplete) {
+        return `Prepared ${recordCount} ${pluralType} for review`;
+      }
+      return `Preparing ${recordCount} ${pluralType} for CRM...`;
+    }
     default:
       return isComplete ? `Completed ${toolName}` : `Running ${toolName}...`;
   }
