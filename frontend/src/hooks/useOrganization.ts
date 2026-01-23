@@ -55,24 +55,6 @@ export const organizationKeys = {
   members: (orgId: string) => ['organization', orgId, 'members'] as const,
 };
 
-// Fetch organization details
-async function fetchOrganization(orgId: string, userId: string): Promise<Organization> {
-  // We don't have a dedicated GET endpoint, so we'll use the PATCH endpoint's response
-  // For now, return from the members endpoint which confirms org exists
-  const response = await fetch(
-    `${API_BASE}/auth/organizations/${orgId}/members?user_id=${userId}`
-  );
-  
-  if (!response.ok) {
-    throw new Error(`Failed to fetch organization: ${response.status}`);
-  }
-  
-  // The members endpoint doesn't return org details, so we need to get it differently
-  // For now, we'll rely on the sync endpoint data stored in Zustand
-  // This is a temporary solution until we add a proper GET /organizations/:id endpoint
-  throw new Error('Organization fetch not implemented - using sync data');
-}
-
 // Fetch team members
 async function fetchTeamMembers(orgId: string, userId: string): Promise<TeamMember[]> {
   const response = await fetch(
@@ -148,7 +130,7 @@ export function useUpdateOrganization() {
   
   return useMutation({
     mutationFn: updateOrganization,
-    onSuccess: (data, variables) => {
+    onSuccess: (_data, variables) => {
       // Invalidate organization queries to refetch fresh data
       void queryClient.invalidateQueries({ 
         queryKey: organizationKeys.detail(variables.orgId) 

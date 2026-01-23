@@ -93,7 +93,6 @@ function App(): JSX.Element {
     setOrganization, 
     logout: storeLogout,
     syncUserToBackend,
-    fetchIntegrations,
   } = useAppStore();
 
   // Check auth status on mount
@@ -323,13 +322,24 @@ function App(): JSX.Element {
       console.error('Failed to sync organization to backend:', error);
     }
 
-    // Fetch integrations after org is set
-    await fetchIntegrations();
-
     // Check if user has completed onboarding OR already has connected integrations
     const completedOnboarding = localStorage.getItem(`onboarding_${supabaseUser.id}`);
-    const currentIntegrations = useAppStore.getState().integrations;
-    const hasConnectedIntegrations = currentIntegrations.some((i) => i.connected);
+    
+    // Fetch integrations directly to check for connected ones
+    let hasConnectedIntegrations = false;
+    try {
+      const integrationsResponse = await fetch(
+        `${API_BASE}/auth/integrations?organization_id=${existingCompany.id}&user_id=${supabaseUser.id}`
+      );
+      if (integrationsResponse.ok) {
+        const integrationsData = await integrationsResponse.json() as { 
+          integrations: Array<{ provider: string; current_user_connected?: boolean }> 
+        };
+        hasConnectedIntegrations = integrationsData.integrations.length > 0;
+      }
+    } catch (error) {
+      console.error('Failed to check integrations:', error);
+    }
     
     if (completedOnboarding || hasConnectedIntegrations) {
       // Mark onboarding as complete if they have integrations (for future logins)

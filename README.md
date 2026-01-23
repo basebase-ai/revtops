@@ -4,7 +4,7 @@ AI-powered revenue operations assistant that connects to HubSpot, Slack, Google 
 
 ## Tech Stack
 
-- **Frontend**: React + TypeScript + Tailwind CSS + Vite + Zustand
+- **Frontend**: React + TypeScript + Tailwind CSS + Vite + React Query + Zustand
 - **Backend**: Python 3.11 + FastAPI + SQLAlchemy
 - **Database**: PostgreSQL 15 with JSONB support
 - **Cache**: Redis
@@ -93,11 +93,95 @@ revtops/
 ├── frontend/
 │   └── src/
 │       ├── components/    # React components
-│       ├── hooks/         # Custom React hooks (WebSocket)
-│       ├── api/           # API client
+│       ├── hooks/         # React Query hooks (server state) + WebSocket
+│       ├── api/           # API client utilities
 │       ├── lib/           # Supabase client, utilities
-│       └── store/         # Zustand state management
+│       └── store/         # Zustand store (UI/client state only)
 └── docker-compose.yml
+```
+
+## State Management
+
+We use **two separate systems** for state management to keep data fresh and avoid stale UI:
+
+### Server State → React Query (`src/hooks/`)
+
+**Use React Query for any data that comes from the backend API.**
+
+```typescript
+// ✅ Good: Use React Query hooks for server data
+const { data: teamMembers, isLoading } = useTeamMembers(orgId, userId);
+const { data: integrations } = useIntegrations(orgId, userId);
+
+// ✅ Good: Use mutations for updates (auto-invalidates cache)
+const updateOrg = useUpdateOrganization();
+await updateOrg.mutateAsync({ orgId, userId, name: 'New Name' });
+```
+
+**Benefits:**
+- Automatic caching with smart invalidation
+- Refetches on window focus (data stays fresh)
+- Loading/error states built-in
+- No manual syncing between components
+
+**Available hooks:**
+| Hook | Purpose |
+|------|---------|
+| `useTeamMembers(orgId, userId)` | Fetch organization members |
+| `useUpdateOrganization()` | Update org name/logo (mutation) |
+| `useIntegrations(orgId, userId)` | Fetch connected integrations |
+| `useInvalidateIntegrations()` | Force refetch after connect/disconnect |
+
+### Client State → Zustand (`src/store/`)
+
+**Use Zustand only for UI state that doesn't come from the server.**
+
+```typescript
+// ✅ Good: UI-only state in Zustand
+const sidebarCollapsed = useAppStore((s) => s.sidebarCollapsed);
+const currentView = useAppStore((s) => s.currentView);
+const messages = useAppStore((s) => s.messages); // Chat streaming state
+
+// ❌ Bad: Don't put server data in Zustand
+const integrations = useAppStore((s) => s.integrations); // NO! Use React Query
+```
+
+**What belongs in Zustand:**
+- `user` / `organization` - Auth session (set once on login)
+- `sidebarCollapsed` - UI preference
+- `currentView` / `currentChatId` - Navigation state
+- `messages` / `isThinking` - WebSocket streaming state
+- `recentChats` - Chat list (could be migrated to React Query)
+
+### Adding New Server Data
+
+When you need to fetch new data from the backend:
+
+1. **Create a hook in `src/hooks/`:**
+```typescript
+// src/hooks/useDeals.ts
+export function useDeals(orgId: string | null) {
+  return useQuery({
+    queryKey: ['deals', orgId],
+    queryFn: () => fetchDeals(orgId!),
+    enabled: Boolean(orgId),
+  });
+}
+```
+
+2. **Use it in components:**
+```typescript
+const { data: deals, isLoading } = useDeals(organization?.id ?? null);
+```
+
+3. **For mutations, invalidate related queries:**
+```typescript
+const createDeal = useMutation({
+  mutationFn: createDealApi,
+  onSuccess: () => {
+    queryClient.invalidateQueries({ queryKey: ['deals'] });
+  },
+});
 ```
 
 ## Nango Integration

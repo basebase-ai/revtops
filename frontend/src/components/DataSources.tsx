@@ -6,9 +6,11 @@
  * - View available data sources to connect
  * - Sync status and manual sync trigger
  * - Disconnect integrations
+ * 
+ * Uses React Query for server state (integrations list).
  */
 
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import Nango from '@nangohq/frontend';
 import type { IconType } from 'react-icons';
 import {
@@ -20,7 +22,8 @@ import {
 } from 'react-icons/si';
 import { HiOutlineCalendar, HiOutlineMail, HiGlobeAlt, HiUserGroup } from 'react-icons/hi';
 import { API_BASE } from '../lib/api';
-import { useAppStore, type Integration } from '../store';
+import { useAppStore } from '../store';
+import { useIntegrations, useInvalidateIntegrations, type Integration } from '../hooks';
 
 // Icon map for integration providers
 const ICON_MAP: Record<string, IconType> = {
@@ -36,26 +39,90 @@ const ICON_MAP: Record<string, IconType> = {
   microsoft_mail: HiOutlineMail,
 };
 
+// Integration display config (colors, icons, descriptions)
+const INTEGRATION_CONFIG: Record<string, { name: string; description: string; icon: string; color: string }> = {
+  hubspot: { name: 'HubSpot', description: 'CRM data including deals, contacts, and companies', icon: 'hubspot', color: 'from-orange-500 to-orange-600' },
+  salesforce: { name: 'Salesforce', description: 'CRM - Opportunities, Accounts', icon: 'salesforce', color: 'from-blue-500 to-blue-600' },
+  slack: { name: 'Slack', description: 'Team messages and communication history', icon: 'slack', color: 'from-purple-500 to-purple-600' },
+  google_calendar: { name: 'Google Calendar', description: 'Meetings, events, and scheduling data', icon: 'google_calendar', color: 'from-green-500 to-green-600' },
+  gmail: { name: 'Gmail', description: 'Google email communications', icon: 'gmail', color: 'from-red-500 to-red-600' },
+  microsoft_calendar: { name: 'Microsoft Calendar', description: 'Outlook calendar events and meetings', icon: 'microsoft_calendar', color: 'from-sky-500 to-sky-600' },
+  microsoft_mail: { name: 'Microsoft Mail', description: 'Outlook emails and communications', icon: 'microsoft_mail', color: 'from-sky-500 to-sky-600' },
+};
+
+// Extended integration type with display info
+interface DisplayIntegration extends Integration {
+  name: string;
+  description: string;
+  icon: string;
+  color: string;
+  connected: boolean;
+}
+
 export function DataSources(): JSX.Element {
-  // Get state from Zustand store
+  // Get user/org from Zustand (auth state)
+  const { user, organization } = useAppStore();
+
+  // React Query: Fetch integrations with automatic caching and refetch
   const { 
-    user,
-    organization,
-    integrations, 
-    integrationsLoading,
-    fetchIntegrations,
-  } = useAppStore();
+    data: rawIntegrations = [], 
+    isLoading: integrationsLoading,
+  } = useIntegrations(organization?.id ?? null, user?.id ?? null);
+
+  // Get invalidation function for manual refetch after connect/disconnect
+  const invalidateIntegrations = useInvalidateIntegrations();
 
   const [syncingProviders, setSyncingProviders] = useState<Set<string>>(new Set());
   const [connectingProvider, setConnectingProvider] = useState<string | null>(null);
 
-  // Fetch integrations on mount
-  useEffect(() => {
-    void fetchIntegrations();
-  }, [fetchIntegrations]);
-
   const organizationId = organization?.id ?? '';
   const userId = user?.id ?? '';
+
+  // Transform raw integrations to display integrations with UI metadata
+  const integrations: DisplayIntegration[] = rawIntegrations.map((integration) => {
+    const config = INTEGRATION_CONFIG[integration.provider] ?? {
+      name: integration.provider,
+      description: 'Data source',
+      icon: integration.provider,
+      color: 'from-surface-500 to-surface-600',
+    };
+    return {
+      ...integration,
+      ...config,
+      connected: integration.isActive,
+    };
+  });
+
+  // Also include available (not connected) integrations
+  const connectedProviders = new Set(integrations.map((i) => i.provider));
+  const availableProviders = Object.keys(INTEGRATION_CONFIG).filter((p) => !connectedProviders.has(p));
+  const availableIntegrationsDisplay: DisplayIntegration[] = availableProviders
+    .filter((provider) => INTEGRATION_CONFIG[provider] !== undefined)
+    .map((provider) => {
+      const config = INTEGRATION_CONFIG[provider]!;
+      const scope = ['gmail', 'google_calendar', 'microsoft_calendar', 'microsoft_mail'].includes(provider) 
+        ? 'user' as const 
+        : 'organization' as const;
+      return {
+        id: provider,
+        provider,
+        scope,
+        isActive: false,
+        lastSyncAt: null,
+        lastError: null,
+        connectedAt: null,
+        connectedBy: null,
+        currentUserConnected: false,
+        teamConnections: [],
+        teamTotal: 0,
+        name: config.name,
+        description: config.description,
+        icon: config.icon,
+        color: config.color,
+        connected: false,
+      };
+    });
+  const allIntegrations: DisplayIntegration[] = [...integrations, ...availableIntegrationsDisplay];
 
   const handleConnect = async (provider: string, scope: 'organization' | 'user'): Promise<void> => {
     if (connectingProvider || !organizationId) return;
@@ -96,9 +163,9 @@ export function DataSources(): JSX.Element {
             eventType === 'connection-created' ||
             eventType === 'success'
           ) {
-            // Connection successful - reload integrations
-            console.log('Connection successful, reloading integrations');
-            void fetchIntegrations();
+            // Connection successful - invalidate cache to refetch integrations
+            console.log('Connection successful, invalidating integrations cache');
+            invalidateIntegrations(organizationId);
             setConnectingProvider(null);
           } else if (eventType === 'close' || eventType === 'closed') {
             // User closed the popup
@@ -142,9 +209,9 @@ export function DataSources(): JSX.Element {
         throw new Error(responseText);
       }
 
-      console.log('Disconnect successful, reloading integrations...');
-      // Reload integrations to reflect the change
-      await fetchIntegrations();
+      console.log('Disconnect successful, invalidating integrations cache...');
+      // Invalidate cache to refetch integrations
+      invalidateIntegrations(organizationId);
     } catch (error) {
       console.error('Failed to disconnect:', error);
       alert(`Failed to disconnect: ${error instanceof Error ? error.message : 'Unknown error'}`);
@@ -176,9 +243,9 @@ export function DataSources(): JSX.Element {
             return next;
           });
 
-          // Refresh integrations to get updated sync status
+          // Invalidate cache to get updated sync status
           if (status.status === 'completed' || status.status === 'failed') {
-            void fetchIntegrations();
+            invalidateIntegrations(organizationId);
           }
         } else {
           attempts++;
@@ -197,8 +264,8 @@ export function DataSources(): JSX.Element {
     }
   };
 
-  const connectedIntegrations = integrations.filter((i) => i.connected);
-  const availableIntegrations = integrations.filter((i) => !i.connected);
+  const connectedIntegrations = allIntegrations.filter((i) => i.connected);
+  const availableIntegrations = allIntegrations.filter((i) => !i.connected);
 
   // Icon renderer based on icon identifier
   const renderIcon = (iconId: string): JSX.Element => {
@@ -220,7 +287,7 @@ export function DataSources(): JSX.Element {
   };
 
   // Team connections footer for user-scoped integrations
-  const renderTeamConnections = (integration: Integration): JSX.Element | null => {
+  const renderTeamConnections = (integration: DisplayIntegration): JSX.Element | null => {
     if (integration.scope !== 'user' || integration.teamTotal === 0) return null;
 
     const connectedCount = integration.teamConnections.length;
@@ -250,7 +317,7 @@ export function DataSources(): JSX.Element {
     );
   };
 
-  if (integrationsLoading && integrations.length === 0) {
+  if (integrationsLoading && rawIntegrations.length === 0) {
     return (
       <div className="flex-1 flex items-center justify-center">
         <div className="w-8 h-8 border-2 border-primary-500 border-t-transparent rounded-full animate-spin" />

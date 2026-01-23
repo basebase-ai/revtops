@@ -4,8 +4,10 @@
  * Centralizes:
  * - User authentication state
  * - Organization data
- * - Connected integrations
  * - UI state (sidebar, current view)
+ * - Chat state (messages, streaming)
+ * 
+ * Note: Integrations are managed via React Query (see hooks/useIntegrations.ts)
  */
 
 import { create } from "zustand";
@@ -29,31 +31,6 @@ export interface OrganizationInfo {
   name: string;
   logoUrl: string | null;
   memberCount: number;
-}
-
-export interface TeamConnection {
-  userId: string;
-  userName: string;
-}
-
-export interface Integration {
-  id: string;
-  provider: string;
-  name: string;
-  description: string;
-  connected: boolean;
-  lastSyncAt: string | null;
-  lastError: string | null;
-  icon: string; // Icon identifier, not JSX
-  color: string;
-  // Scope: 'organization' (shared) or 'user' (per-user)
-  scope: "organization" | "user";
-  // For user-scoped integrations
-  currentUserConnected: boolean;
-  teamConnections: TeamConnection[];
-  teamTotal: number;
-  // For org-scoped integrations
-  connectedBy: string | null;
 }
 
 export interface ChatSummary {
@@ -93,10 +70,6 @@ interface AppState {
   organization: OrganizationInfo | null;
   isAuthenticated: boolean;
 
-  // Integrations
-  integrations: Integration[];
-  integrationsLoading: boolean;
-
   // UI State
   sidebarCollapsed: boolean;
   currentView: View;
@@ -110,17 +83,10 @@ interface AppState {
   streamingMessageId: string | null;
   conversationId: string | null;
 
-  // Computed
-  connectedIntegrationsCount: number;
-
   // Actions - Auth
   setUser: (user: UserProfile | null) => void;
   setOrganization: (org: OrganizationInfo | null) => void;
   logout: () => void;
-
-  // Actions - Integrations
-  fetchIntegrations: () => Promise<void>;
-  setIntegrations: (integrations: Integration[]) => void;
 
   // Actions - UI
   setSidebarCollapsed: (collapsed: boolean) => void;
@@ -150,88 +116,6 @@ interface AppState {
 }
 
 // =============================================================================
-// Available Integrations (static config)
-// =============================================================================
-
-// Static config type - excludes runtime fields
-type IntegrationConfig = Omit<
-  Integration,
-  | "connected"
-  | "lastSyncAt"
-  | "lastError"
-  | "currentUserConnected"
-  | "teamConnections"
-  | "teamTotal"
-  | "connectedBy"
->;
-
-const AVAILABLE_INTEGRATIONS: IntegrationConfig[] = [
-  {
-    id: "hubspot",
-    provider: "hubspot",
-    name: "HubSpot",
-    description: "CRM data including deals, contacts, and companies",
-    icon: "hubspot",
-    color: "from-orange-500 to-orange-600",
-    scope: "organization",
-  },
-  {
-    id: "salesforce",
-    provider: "salesforce",
-    name: "Salesforce",
-    description: "Opportunities, accounts, contacts, and activities",
-    icon: "salesforce",
-    color: "from-blue-500 to-blue-600",
-    scope: "organization",
-  },
-  {
-    id: "slack",
-    provider: "slack",
-    name: "Slack",
-    description: "Team messages and communication history",
-    icon: "slack",
-    color: "from-purple-500 to-purple-600",
-    scope: "organization",
-  },
-  {
-    id: "google-calendar",
-    provider: "google_calendar",
-    name: "Google Calendar",
-    description: "Meetings, events, and scheduling data",
-    icon: "google-calendar",
-    color: "from-green-500 to-green-600",
-    scope: "user",
-  },
-  {
-    id: "gmail",
-    provider: "gmail",
-    name: "Gmail",
-    description: "Google email communications",
-    icon: "gmail",
-    color: "from-red-500 to-red-600",
-    scope: "user",
-  },
-  {
-    id: "microsoft_calendar",
-    provider: "microsoft_calendar",
-    name: "Microsoft Calendar",
-    description: "Outlook calendar events and meetings",
-    icon: "microsoft_calendar",
-    color: "from-sky-500 to-sky-600",
-    scope: "user",
-  },
-  {
-    id: "microsoft_mail",
-    provider: "microsoft_mail",
-    name: "Microsoft Mail",
-    description: "Outlook emails and communications",
-    icon: "microsoft_mail",
-    color: "from-blue-500 to-blue-600",
-    scope: "user",
-  },
-];
-
-// =============================================================================
 // Store Implementation
 // =============================================================================
 
@@ -242,13 +126,10 @@ export const useAppStore = create<AppState>()(
       user: null,
       organization: null,
       isAuthenticated: false,
-      integrations: [],
-      integrationsLoading: false,
       sidebarCollapsed: false,
       currentView: "chat",
       currentChatId: null,
       recentChats: [],
-      connectedIntegrationsCount: 0,
 
       // Chat state
       messages: [],
@@ -271,126 +152,14 @@ export const useAppStore = create<AppState>()(
           user: null,
           organization: null,
           isAuthenticated: false,
-          integrations: [],
           currentChatId: null,
           recentChats: [],
-          connectedIntegrationsCount: 0,
           // Clear chat state
           messages: [],
           chatTitle: "New Chat",
           isThinking: false,
           streamingMessageId: null,
           conversationId: null,
-        }),
-
-      // Integrations actions
-      fetchIntegrations: async () => {
-        const { organization, user } = get();
-        if (!organization) {
-          console.log("[Store] No organization, skipping integrations fetch");
-          return;
-        }
-
-        set({ integrationsLoading: true });
-
-        try {
-          console.log(
-            "[Store] Fetching integrations for org:",
-            organization.id,
-          );
-          // Include user_id for user-scoped integration support
-          const url = user
-            ? `${API_BASE}/auth/integrations?organization_id=${organization.id}&user_id=${user.id}`
-            : `${API_BASE}/auth/integrations?organization_id=${organization.id}`;
-          const response = await fetch(url);
-
-          if (!response.ok) {
-            console.error(
-              "[Store] Failed to fetch integrations:",
-              response.status,
-            );
-            set({ integrationsLoading: false });
-            return;
-          }
-
-          // New response shape includes scope, team_connections, etc.
-          interface ApiIntegration {
-            provider: string;
-            scope: "organization" | "user";
-            last_sync_at: string | null;
-            last_error: string | null;
-            connected_by: string | null;
-            current_user_connected: boolean;
-            team_connections: Array<{ user_id: string; user_name: string }>;
-            team_total: number;
-          }
-
-          const data = (await response.json()) as {
-            integrations: ApiIntegration[];
-          };
-
-          console.log("[Store] Integrations response:", data);
-
-          // Build map from API response
-          const apiMap: Record<string, ApiIntegration> = {};
-          for (const integration of data.integrations || []) {
-            apiMap[integration.provider] = integration;
-          }
-
-          // Merge with available integrations config
-          const integrations: Integration[] = AVAILABLE_INTEGRATIONS.map(
-            (config) => {
-              const apiData = apiMap[config.provider];
-              const isOrgScoped = config.scope === "organization";
-
-              // For org-scoped: connected if we have API data for it
-              // For user-scoped: use current_user_connected from API
-              const connected = apiData
-                ? isOrgScoped
-                  ? true
-                  : apiData.current_user_connected
-                : false;
-
-              return {
-                ...config,
-                connected,
-                lastSyncAt: apiData?.last_sync_at ?? null,
-                lastError: apiData?.last_error ?? null,
-                currentUserConnected: apiData?.current_user_connected ?? false,
-                teamConnections: (apiData?.team_connections ?? []).map(
-                  (tc) => ({
-                    userId: tc.user_id,
-                    userName: tc.user_name,
-                  }),
-                ),
-                teamTotal: apiData?.team_total ?? 0,
-                connectedBy: apiData?.connected_by ?? null,
-              };
-            },
-          );
-
-          // Count connected integrations
-          // For org-scoped: count if any connection exists
-          // For user-scoped: count if current user is connected
-          const connectedCount = integrations.filter((i) => i.connected).length;
-          console.log("[Store] Connected count:", connectedCount);
-
-          set({
-            integrations,
-            integrationsLoading: false,
-            connectedIntegrationsCount: connectedCount,
-          });
-        } catch (error) {
-          console.error("[Store] Error fetching integrations:", error);
-          set({ integrationsLoading: false });
-        }
-      },
-
-      setIntegrations: (integrations) =>
-        set({
-          integrations,
-          connectedIntegrationsCount: integrations.filter((i) => i.connected)
-            .length,
         }),
 
       // UI actions
@@ -703,9 +472,6 @@ export const useUser = () => useAppStore((state) => state.user);
 export const useOrganization = () => useAppStore((state) => state.organization);
 export const useIsAuthenticated = () =>
   useAppStore((state) => state.isAuthenticated);
-export const useIntegrations = () => useAppStore((state) => state.integrations);
-export const useConnectedCount = () =>
-  useAppStore((state) => state.connectedIntegrationsCount);
 export const useSidebarCollapsed = () =>
   useAppStore((state) => state.sidebarCollapsed);
 export const useCurrentView = () => useAppStore((state) => state.currentView);

@@ -6,31 +6,15 @@
  * - Invite new members
  * - Manage subscription/billing
  * - Organization settings
+ * 
+ * Uses React Query for server state (team members, org updates).
  */
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useRef } from 'react';
 import type { OrganizationInfo, UserProfile } from './AppLayout';
-import { apiRequest } from '../lib/api';
 import { supabase } from '../lib/supabase';
 import { useAppStore } from '../store';
-
-interface TeamMember {
-  id: string;
-  name: string | null;
-  email: string;
-  role: string | null;
-  avatarUrl: string | null;
-}
-
-interface TeamMembersResponse {
-  members: Array<{
-    id: string;
-    name: string | null;
-    email: string;
-    role: string | null;
-    avatar_url: string | null;
-  }>;
-}
+import { useTeamMembers, useUpdateOrganization } from '../hooks';
 
 interface OrganizationPanelProps {
   organization: OrganizationInfo;
@@ -43,43 +27,20 @@ export function OrganizationPanel({ organization, currentUser, onClose }: Organi
   const [activeTab, setActiveTab] = useState<'team' | 'billing' | 'settings'>('team');
   const [inviteEmail, setInviteEmail] = useState('');
   const [isInviting, setIsInviting] = useState(false);
-  const [teamMembers, setTeamMembers] = useState<TeamMember[]>([]);
-  const [isLoadingMembers, setIsLoadingMembers] = useState(true);
   const [orgName, setOrgName] = useState(organization.name);
   const [logoUrl, setLogoUrl] = useState(organization.logoUrl);
-  const [isSavingSettings, setIsSavingSettings] = useState(false);
   const [settingsSaved, setSettingsSaved] = useState(false);
   const [isUploadingLogo, setIsUploadingLogo] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Fetch team members on mount
-  useEffect(() => {
-    const fetchMembers = async (): Promise<void> => {
-      if (!organization.id) {
-        setIsLoadingMembers(false);
-        return;
-      }
+  // React Query: Fetch team members with automatic caching and refetch
+  const { 
+    data: teamMembers = [], 
+    isLoading: isLoadingMembers 
+  } = useTeamMembers(organization.id, currentUser.id);
 
-      const response = await apiRequest<TeamMembersResponse>(
-        `/auth/organizations/${organization.id}/members?user_id=${currentUser.id}`
-      );
-
-      if (response.data) {
-        setTeamMembers(
-          response.data.members.map((m) => ({
-            id: m.id,
-            name: m.name,
-            email: m.email,
-            role: m.role,
-            avatarUrl: m.avatar_url,
-          }))
-        );
-      }
-      setIsLoadingMembers(false);
-    };
-
-    void fetchMembers();
-  }, [organization.id, currentUser.id]);
+  // React Query: Mutation for updating organization
+  const updateOrgMutation = useUpdateOrganization();
 
   const handleInvite = async (): Promise<void> => {
     if (!inviteEmail.trim()) return;
@@ -100,30 +61,19 @@ export function OrganizationPanel({ organization, currentUser, onClose }: Organi
   const handleSaveSettings = async (): Promise<void> => {
     if (!orgName.trim() || orgName === organization.name) return;
 
-    setIsSavingSettings(true);
-    setSettingsSaved(false);
     try {
-      const response = await apiRequest<{ id: string; name: string }>(
-        `/auth/organizations/${organization.id}?user_id=${currentUser.id}`,
-        {
-          method: 'PATCH',
-          body: JSON.stringify({ name: orgName }),
-        }
-      );
-
-      if (response.error) {
-        alert(`Failed to save: ${response.error}`);
-      } else {
-        setSettingsSaved(true);
-        // Update the store so sidebar reflects the change
-        setOrganization({ ...organization, name: orgName });
-        // Reset saved indicator after 2 seconds
-        setTimeout(() => setSettingsSaved(false), 2000);
-      }
+      await updateOrgMutation.mutateAsync({
+        orgId: organization.id,
+        userId: currentUser.id,
+        name: orgName,
+      });
+      
+      setSettingsSaved(true);
+      // Update Zustand store so sidebar reflects the change immediately
+      setOrganization({ ...organization, name: orgName });
+      setTimeout(() => setSettingsSaved(false), 2000);
     } catch (error) {
-      console.error('Failed to save settings:', error);
-    } finally {
-      setIsSavingSettings(false);
+      alert(`Failed to save: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   };
 
@@ -169,22 +119,16 @@ export function OrganizationPanel({ organization, currentUser, onClose }: Organi
 
       const newLogoUrl = urlData.publicUrl;
 
-      // Update organization with new logo URL
-      const response = await apiRequest<{ id: string; logo_url: string }>(
-        `/auth/organizations/${organization.id}?user_id=${currentUser.id}`,
-        {
-          method: 'PATCH',
-          body: JSON.stringify({ logo_url: newLogoUrl }),
-        }
-      );
+      // Update organization with new logo URL using React Query mutation
+      await updateOrgMutation.mutateAsync({
+        orgId: organization.id,
+        userId: currentUser.id,
+        logoUrl: newLogoUrl,
+      });
 
-      if (response.error) {
-        alert(`Failed to save logo: ${response.error}`);
-      } else {
-        setLogoUrl(newLogoUrl);
-        // Update the store so sidebar reflects the change
-        setOrganization({ ...organization, logoUrl: newLogoUrl });
-      }
+      setLogoUrl(newLogoUrl);
+      // Update Zustand store so sidebar reflects the change immediately
+      setOrganization({ ...organization, logoUrl: newLogoUrl });
     } catch (error) {
       console.error('Failed to upload logo:', error);
       alert('Failed to upload logo');
@@ -446,10 +390,10 @@ export function OrganizationPanel({ organization, currentUser, onClose }: Organi
               <div className="flex items-center gap-3">
                 <button
                   onClick={() => void handleSaveSettings()}
-                  disabled={isSavingSettings || !hasUnsavedChanges}
+                  disabled={updateOrgMutation.isPending || !hasUnsavedChanges}
                   className="btn-primary disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  {isSavingSettings ? 'Saving...' : 'Save Changes'}
+                  {updateOrgMutation.isPending ? 'Saving...' : 'Save Changes'}
                 </button>
                 {settingsSaved && (
                   <span className="text-sm text-green-400 flex items-center gap-1">

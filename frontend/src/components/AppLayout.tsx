@@ -19,6 +19,7 @@ import { AdminPanel } from './AdminPanel';
 import { OrganizationPanel } from './OrganizationPanel';
 import { ProfilePanel } from './ProfilePanel';
 import { useAppStore } from '../store';
+import { useIntegrations } from '../hooks';
 
 // Re-export types from store for backwards compatibility
 export type { UserProfile, OrganizationInfo, ChatSummary, View } from '../store';
@@ -36,7 +37,6 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
     sidebarCollapsed,
     currentView,
     currentChatId,
-    connectedIntegrationsCount,
     recentChats,
   } = useAppStore(
     useShallow((state) => ({
@@ -45,17 +45,22 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
       sidebarCollapsed: state.sidebarCollapsed,
       currentView: state.currentView,
       currentChatId: state.currentChatId,
-      connectedIntegrationsCount: state.connectedIntegrationsCount,
       recentChats: state.recentChats,
     }))
   );
+
+  // React Query: Get integrations for connected count badge
+  const { data: integrations = [] } = useIntegrations(
+    organization?.id ?? null, 
+    user?.id ?? null
+  );
+  const connectedIntegrationsCount = integrations.filter((i) => i.isActive).length;
 
   // Get actions separately (they're stable and don't need shallow comparison)
   const setSidebarCollapsed = useAppStore((state) => state.setSidebarCollapsed);
   const setCurrentView = useAppStore((state) => state.setCurrentView);
   const setCurrentChatId = useAppStore((state) => state.setCurrentChatId);
   const startNewChat = useAppStore((state) => state.startNewChat);
-  const fetchIntegrations = useAppStore((state) => state.fetchIntegrations);
   const fetchConversations = useAppStore((state) => state.fetchConversations);
   const deleteConversation = useAppStore((state) => state.deleteConversation);
   const setUser = useAppStore((state) => state.setUser);
@@ -63,13 +68,6 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
   // Panels
   const [showOrgPanel, setShowOrgPanel] = useState(false);
   const [showProfilePanel, setShowProfilePanel] = useState(false);
-
-  // Fetch integrations on mount (if not already loaded)
-  useEffect(() => {
-    if (organization) {
-      void fetchIntegrations();
-    }
-  }, [organization, fetchIntegrations]);
 
   // Fetch conversations on mount
   useEffect(() => {
