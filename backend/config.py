@@ -74,6 +74,19 @@ NANGO_INTEGRATION_IDS: dict[str, str] = {
     "microsoft_mail": settings.NANGO_MICROSOFT_MAIL_INTEGRATION_ID,
 }
 
+# Provider scope mapping: which integrations are user-scoped vs org-scoped
+# - 'organization': One connection for the entire org (CRMs)
+# - 'user': Each user connects individually (email, calendar)
+PROVIDER_SCOPES: dict[str, str] = {
+    "hubspot": "organization",
+    "salesforce": "organization",
+    "slack": "organization",
+    "google_calendar": "user",
+    "gmail": "user",
+    "microsoft_calendar": "user",
+    "microsoft_mail": "user",
+}
+
 
 def get_nango_integration_id(provider: str) -> str:
     """Get the Nango integration ID for a provider."""
@@ -81,3 +94,8 @@ def get_nango_integration_id(provider: str) -> str:
     if not integration_id:
         raise ValueError(f"Unknown provider: {provider}")
     return integration_id
+
+
+def get_provider_scope(provider: str) -> str:
+    """Get the scope for a provider ('organization' or 'user')."""
+    return PROVIDER_SCOPES.get(provider, "organization")

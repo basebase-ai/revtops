@@ -23,7 +23,7 @@ from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 
-from config import settings, get_nango_integration_id
+from config import settings, get_nango_integration_id, get_provider_scope
 from models.database import get_session
 from models.integration import Integration
 from models.user import User
@@ -49,15 +49,29 @@ class UserResponse(BaseModel):
     organization_id: Optional[str]
 
 
+class TeamConnection(BaseModel):
+    """A team member who has connected a user-scoped integration."""
+    
+    user_id: str
+    user_name: str
+
+
 class IntegrationResponse(BaseModel):
     """Response model for integration status."""
 
     id: str
     provider: str
+    scope: str  # 'organization' or 'user'
     is_active: bool
     last_sync_at: Optional[str]
     last_error: Optional[str]
     connected_at: Optional[str]
+    # For org-scoped integrations
+    connected_by: Optional[str] = None
+    # For user-scoped integrations
+    current_user_connected: bool = False
+    team_connections: list[TeamConnection] = []
+    team_total: int = 0
 
 
 class IntegrationsListResponse(BaseModel):
@@ -266,7 +280,42 @@ async def sync_user(request: SyncUserRequest) -> SyncUserResponse:
                 roles=existing.roles or [],
             )
 
-        # User doesn't exist - they need to join the waitlist first
+        # User doesn't exist - check if their email domain has an approved org
+        email_domain = request.email.split("@")[1].lower() if "@" in request.email else None
+        
+        if email_domain:
+            # Check if an organization exists for this domain (means someone from their company is already approved)
+            result = await session.execute(
+                select(Organization).where(Organization.email_domain == email_domain)
+            )
+            existing_org = result.scalar_one_or_none()
+            
+            if existing_org:
+                # Auto-create user as active - they're a colleague of an approved user
+                new_user = User(
+                    id=user_uuid,
+                    email=request.email,
+                    name=request.name,
+                    avatar_url=request.avatar_url,
+                    organization_id=existing_org.id,
+                    status="active",
+                    role="member",
+                )
+                session.add(new_user)
+                await session.commit()
+                await session.refresh(new_user)
+                
+                return SyncUserResponse(
+                    id=str(new_user.id),
+                    email=new_user.email,
+                    name=new_user.name,
+                    avatar_url=new_user.avatar_url,
+                    organization_id=str(new_user.organization_id),
+                    status=new_user.status,
+                    roles=new_user.roles or [],
+                )
+        
+        # No approved org for their domain - they need to join the waitlist
         raise HTTPException(
             status_code=403,
             detail="Please join the waitlist first. Visit the homepage to sign up.",
@@ -434,9 +483,18 @@ async def get_connect_session(
     This is the recommended approach - returns a session token that
     the frontend uses with @nangohq/frontend to open a popup OAuth flow.
 
-    Accepts either user_id (looks up organization) or organization_id directly.
+    For user-scoped integrations (email, calendar), user_id is REQUIRED.
+    For org-scoped integrations (CRMs), either user_id or organization_id works.
+    
+    Connection ID format:
+    - Organization-scoped: "{org_id}"
+    - User-scoped: "{org_id}:user:{user_id}"
     """
     org_id_str: str = ""
+    user_id_str: Optional[str] = None
+    
+    # Get the scope for this provider
+    scope = get_provider_scope(provider)
 
     if organization_id:
         try:
@@ -444,30 +502,46 @@ async def get_connect_session(
             org_id_str = organization_id
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid organization ID")
-    elif user_id:
+    
+    if user_id:
         try:
             user_uuid = UUID(user_id)
+            user_id_str = user_id
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid user ID")
 
-        async with get_session() as session:
-            user = await session.get(User, user_uuid)
+        async with get_session() as db_session:
+            user = await db_session.get(User, user_uuid)
             if not user or not user.organization_id:
                 raise HTTPException(status_code=404, detail="User not found")
             org_id_str = str(user.organization_id)
-    else:
+    
+    if not org_id_str:
         raise HTTPException(status_code=400, detail="Either user_id or organization_id required")
+    
+    # For user-scoped integrations, user_id is required
+    if scope == "user" and not user_id_str:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"{provider} is a user-scoped integration. user_id is required."
+        )
 
     try:
         nango_integration_id = get_nango_integration_id(provider)
     except ValueError:
         raise HTTPException(status_code=400, detail=f"Unknown provider: {provider}")
 
+    # Build connection ID based on scope
+    if scope == "user":
+        connection_id = f"{org_id_str}:user:{user_id_str}"
+    else:
+        connection_id = org_id_str
+
     nango = get_nango_client()
     try:
         session_data = await nango.create_connect_session(
             integration_id=nango_integration_id,
-            connection_id=org_id_str,
+            connection_id=connection_id,
         )
     except ValueError as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -570,30 +644,36 @@ async def nango_callback(
 async def list_integrations(
     user_id: Optional[str] = None, organization_id: Optional[str] = None
 ) -> IntegrationsListResponse:
-    """List all connected integrations for a user's organization.
+    """List all integrations for a user's organization.
+    
+    Returns both org-scoped and user-scoped integrations.
+    For user-scoped integrations, includes team connection status.
     
     Checks both our local database AND Nango for connections,
     syncing any new connections found in Nango to our database.
     """
     org_uuid: Optional[UUID] = None
+    current_user_uuid: Optional[UUID] = None
 
     if organization_id:
         try:
             org_uuid = UUID(organization_id)
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid organization ID")
-    elif user_id:
+    
+    if user_id:
         try:
-            user_uuid = UUID(user_id)
+            current_user_uuid = UUID(user_id)
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid user ID")
 
-        async with get_session() as session:
-            user = await session.get(User, user_uuid)
+        async with get_session() as db_session:
+            user = await db_session.get(User, current_user_uuid)
             if not user or not user.organization_id:
                 raise HTTPException(status_code=404, detail="User not found")
             org_uuid = user.organization_id
-    else:
+    
+    if not org_uuid:
         raise HTTPException(status_code=400, detail="Either user_id or organization_id required")
 
     # Check Nango for connections and sync to our database
@@ -605,29 +685,41 @@ async def list_integrations(
         print(f"Failed to fetch Nango connections: {e}")
         nango_connections = []
 
-    async with get_session() as session:
+    async with get_session() as db_session:
         # Ensure organization exists before inserting integrations
         if nango_connections:
-            existing_org = await session.get(Organization, org_uuid)
+            existing_org = await db_session.get(Organization, org_uuid)
             if not existing_org:
-                # Create the organization
                 new_org = Organization(
                     id=org_uuid,
-                    name="Organization",  # Will be updated when user sets company name
+                    name="Organization",
                 )
-                session.add(new_org)
-                await session.flush()  # Ensure org is created before adding integrations
+                db_session.add(new_org)
+                await db_session.flush()
         
-        # Get existing integrations from our database
-        result = await session.execute(
+        # Get all integrations from our database for this org
+        result = await db_session.execute(
             select(Integration).where(Integration.organization_id == org_uuid)
         )
-        existing_integrations = {i.provider: i for i in result.scalars().all()}
+        all_integrations = list(result.scalars().all())
+        
+        # Build lookup structures
+        # For org-scoped: key is provider
+        # For user-scoped: key is (provider, user_id)
+        org_scoped_integrations: dict[str, Integration] = {}
+        user_scoped_integrations: dict[str, list[Integration]] = {}
+        
+        for i in all_integrations:
+            if i.scope == "user":
+                if i.provider not in user_scoped_integrations:
+                    user_scoped_integrations[i.provider] = []
+                user_scoped_integrations[i.provider].append(i)
+            else:
+                org_scoped_integrations[i.provider] = i
 
         # Map Nango provider names to our internal provider names
-        # Note: "microsoft" Nango integration is used for both calendar and mail
         nango_to_internal_providers: dict[str, list[str]] = {
-            "microsoft": ["microsoft_calendar", "microsoft_mail"],  # Both use same OAuth
+            "microsoft": ["microsoft_calendar", "microsoft_mail"],
             "google-calendar": ["google_calendar"],
             "google-mail": ["gmail"],
         }
@@ -635,49 +727,146 @@ async def list_integrations(
         # Sync Nango connections to our database
         for conn in nango_connections:
             nango_provider = conn.get("provider_config_key") or conn.get("provider")
-            # Get the actual Nango connection ID
             nango_conn_id = conn.get("connection_id") or conn.get("id")
             
-            # Map to internal provider name(s) - some Nango integrations map to multiple internal providers
             internal_providers = nango_to_internal_providers.get(nango_provider, [nango_provider])
             print(f"Nango connection: nango_provider={nango_provider}, internal_providers={internal_providers}, conn_id={nango_conn_id}")
             
             for provider in internal_providers:
-                if provider and provider not in existing_integrations:
-                    # Create new integration record with actual Nango connection ID
-                    new_integration = Integration(
-                        organization_id=org_uuid,
-                        provider=provider,
-                        nango_connection_id=nango_conn_id,
-                        is_active=True,
-                    )
-                    session.add(new_integration)
-                    existing_integrations[provider] = new_integration
-                elif provider and nango_conn_id:
-                    # Update existing integration with correct Nango connection ID if different
-                    existing = existing_integrations[provider]
-                    if existing.nango_connection_id != nango_conn_id:
-                        existing.nango_connection_id = nango_conn_id
+                if not provider:
+                    continue
+                    
+                scope = get_provider_scope(provider)
+                
+                if scope == "user":
+                    # Parse user ID from connection ID (format: "{org_id}:user:{user_id}")
+                    user_id_from_conn: Optional[UUID] = None
+                    if nango_conn_id and ":user:" in nango_conn_id:
+                        try:
+                            user_id_str = nango_conn_id.split(":user:")[1]
+                            user_id_from_conn = UUID(user_id_str)
+                        except (IndexError, ValueError):
+                            pass
+                    
+                    if user_id_from_conn:
+                        # Check if this user's integration already exists
+                        existing_user_int = next(
+                            (i for i in user_scoped_integrations.get(provider, []) 
+                             if i.user_id == user_id_from_conn),
+                            None
+                        )
+                        if not existing_user_int:
+                            new_integration = Integration(
+                                organization_id=org_uuid,
+                                provider=provider,
+                                scope="user",
+                                user_id=user_id_from_conn,
+                                nango_connection_id=nango_conn_id,
+                                is_active=True,
+                            )
+                            db_session.add(new_integration)
+                            if provider not in user_scoped_integrations:
+                                user_scoped_integrations[provider] = []
+                            user_scoped_integrations[provider].append(new_integration)
+                        elif existing_user_int.nango_connection_id != nango_conn_id:
+                            existing_user_int.nango_connection_id = nango_conn_id
+                else:
+                    # Org-scoped integration
+                    if provider not in org_scoped_integrations:
+                        new_integration = Integration(
+                            organization_id=org_uuid,
+                            provider=provider,
+                            scope="organization",
+                            nango_connection_id=nango_conn_id,
+                            is_active=True,
+                        )
+                        db_session.add(new_integration)
+                        org_scoped_integrations[provider] = new_integration
+                    elif org_scoped_integrations[provider].nango_connection_id != nango_conn_id:
+                        org_scoped_integrations[provider].nango_connection_id = nango_conn_id
         
-        await session.commit()
+        await db_session.commit()
         
-        # Refresh to get any auto-generated fields
-        for integration in existing_integrations.values():
-            await session.refresh(integration)
-
-        return IntegrationsListResponse(
-            integrations=[
-                IntegrationResponse(
-                    id=str(i.id),
-                    provider=i.provider,
-                    is_active=i.is_active,
-                    last_sync_at=i.last_sync_at.isoformat() if i.last_sync_at else None,
-                    last_error=i.last_error,
-                    connected_at=i.created_at.isoformat() if i.created_at else None,
-                )
-                for i in existing_integrations.values()
-            ]
+        # Get team member count and names for user-scoped integrations
+        team_result = await db_session.execute(
+            select(User).where(User.organization_id == org_uuid)
         )
+        team_members = {u.id: u for u in team_result.scalars().all()}
+        team_total = len(team_members)
+        
+        # Build response
+        response_integrations: list[IntegrationResponse] = []
+        
+        # Add org-scoped integrations
+        for provider, integration in org_scoped_integrations.items():
+            await db_session.refresh(integration)
+            
+            # Get connected_by user name
+            connected_by_name: Optional[str] = None
+            if integration.connected_by_user_id:
+                connected_by_user = team_members.get(integration.connected_by_user_id)
+                if connected_by_user:
+                    connected_by_name = connected_by_user.name or connected_by_user.email
+            
+            response_integrations.append(IntegrationResponse(
+                id=str(integration.id),
+                provider=integration.provider,
+                scope="organization",
+                is_active=integration.is_active,
+                last_sync_at=integration.last_sync_at.isoformat() if integration.last_sync_at else None,
+                last_error=integration.last_error,
+                connected_at=integration.created_at.isoformat() if integration.created_at else None,
+                connected_by=connected_by_name,
+                current_user_connected=True,  # Org-scoped is shared, so always "connected" for UI
+                team_connections=[],
+                team_total=team_total,
+            ))
+        
+        # Add user-scoped integrations (aggregated by provider)
+        all_user_scoped_providers = set(user_scoped_integrations.keys())
+        # Also include providers that are user-scoped but have no connections yet
+        from config import PROVIDER_SCOPES
+        for p, s in PROVIDER_SCOPES.items():
+            if s == "user":
+                all_user_scoped_providers.add(p)
+        
+        for provider in all_user_scoped_providers:
+            integrations_for_provider = user_scoped_integrations.get(provider, [])
+            
+            # Check if current user has connected
+            current_user_integration = next(
+                (i for i in integrations_for_provider if i.user_id == current_user_uuid),
+                None
+            )
+            
+            # Build team connections list
+            team_connections: list[TeamConnection] = []
+            for integration in integrations_for_provider:
+                if integration.user_id and integration.user_id in team_members:
+                    user_obj = team_members[integration.user_id]
+                    team_connections.append(TeamConnection(
+                        user_id=str(integration.user_id),
+                        user_name=user_obj.name or user_obj.email,
+                    ))
+            
+            # Use current user's integration for metadata if available
+            ref_integration = current_user_integration or (integrations_for_provider[0] if integrations_for_provider else None)
+            
+            response_integrations.append(IntegrationResponse(
+                id=str(ref_integration.id) if ref_integration else f"pending-{provider}",
+                provider=provider,
+                scope="user",
+                is_active=ref_integration.is_active if ref_integration else False,
+                last_sync_at=ref_integration.last_sync_at.isoformat() if ref_integration and ref_integration.last_sync_at else None,
+                last_error=ref_integration.last_error if ref_integration else None,
+                connected_at=ref_integration.created_at.isoformat() if ref_integration and ref_integration.created_at else None,
+                connected_by=None,
+                current_user_connected=current_user_integration is not None,
+                team_connections=team_connections,
+                team_total=team_total,
+            ))
+
+        return IntegrationsListResponse(integrations=response_integrations)
 
 
 @router.delete("/integrations/{provider}")
@@ -686,40 +875,68 @@ async def disconnect_integration(
     user_id: Optional[str] = None,
     organization_id: Optional[str] = None,
 ) -> dict[str, str]:
-    """Disconnect an integration."""
+    """Disconnect an integration.
+    
+    For org-scoped integrations: disconnects the shared org connection.
+    For user-scoped integrations: disconnects only the current user's connection.
+    """
     org_uuid: Optional[UUID] = None
+    current_user_uuid: Optional[UUID] = None
+    scope = get_provider_scope(provider)
 
     if organization_id:
         try:
             org_uuid = UUID(organization_id)
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid organization ID")
-    elif user_id:
+    
+    if user_id:
         try:
-            user_uuid = UUID(user_id)
+            current_user_uuid = UUID(user_id)
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid user ID")
 
-        async with get_session() as session:
-            user = await session.get(User, user_uuid)
+        async with get_session() as db_session:
+            user = await db_session.get(User, current_user_uuid)
             if not user or not user.organization_id:
                 raise HTTPException(status_code=404, detail="User not found")
             org_uuid = user.organization_id
-    else:
+    
+    if not org_uuid:
         raise HTTPException(status_code=400, detail="Either user_id or organization_id required")
-
-    async with get_session() as session:
-        # Find integration
-        result = await session.execute(
-            select(Integration).where(
-                Integration.organization_id == org_uuid,
-                Integration.provider == provider,
-            )
+    
+    # For user-scoped integrations, user_id is required
+    if scope == "user" and not current_user_uuid:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{provider} is a user-scoped integration. user_id is required."
         )
+
+    async with get_session() as db_session:
+        # Find integration based on scope
+        if scope == "user":
+            # Find this user's integration
+            result = await db_session.execute(
+                select(Integration).where(
+                    Integration.organization_id == org_uuid,
+                    Integration.provider == provider,
+                    Integration.user_id == current_user_uuid,
+                )
+            )
+        else:
+            # Find org-level integration
+            result = await db_session.execute(
+                select(Integration).where(
+                    Integration.organization_id == org_uuid,
+                    Integration.provider == provider,
+                    Integration.user_id.is_(None),
+                )
+            )
+        
         integration = result.scalar_one_or_none()
 
         if not integration:
-            print(f"Disconnect: Integration not found for org={org_uuid}, provider={provider}")
+            print(f"Disconnect: Integration not found for org={org_uuid}, provider={provider}, user={current_user_uuid}")
             raise HTTPException(status_code=404, detail="Integration not found")
 
         print(f"Disconnect: Found integration id={integration.id}, nango_conn_id={integration.nango_connection_id}")
@@ -736,15 +953,13 @@ async def disconnect_integration(
                 )
                 print("Disconnect: Nango deletion successful")
             except Exception as e:
-                # Log but don't fail - connection might already be gone
                 print(f"Disconnect: Failed to delete Nango connection: {e}")
         else:
             print("Disconnect: No nango_connection_id, skipping Nango deletion")
 
-        # Mark as inactive in our database and DELETE the record
         print(f"Disconnect: Deleting integration from database")
-        await session.delete(integration)
-        await session.commit()
+        await db_session.delete(integration)
+        await db_session.commit()
         print(f"Disconnect: Database deletion successful")
 
     return {"status": "disconnected", "provider": provider}

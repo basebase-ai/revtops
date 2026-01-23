@@ -18,9 +18,9 @@ import {
   SiGooglecalendar,
   SiGmail,
 } from 'react-icons/si';
-import { HiOutlineCalendar, HiOutlineMail, HiGlobeAlt } from 'react-icons/hi';
+import { HiOutlineCalendar, HiOutlineMail, HiGlobeAlt, HiUserGroup } from 'react-icons/hi';
 import { API_BASE } from '../lib/api';
-import { useAppStore } from '../store';
+import { useAppStore, type Integration } from '../store';
 
 // Icon map for integration providers
 const ICON_MAP: Record<string, IconType> = {
@@ -39,6 +39,7 @@ const ICON_MAP: Record<string, IconType> = {
 export function DataSources(): JSX.Element {
   // Get state from Zustand store
   const { 
+    user,
     organization,
     integrations, 
     integrationsLoading,
@@ -54,15 +55,24 @@ export function DataSources(): JSX.Element {
   }, [fetchIntegrations]);
 
   const organizationId = organization?.id ?? '';
+  const userId = user?.id ?? '';
 
-  const handleConnect = async (provider: string): Promise<void> => {
+  const handleConnect = async (provider: string, scope: 'organization' | 'user'): Promise<void> => {
     if (connectingProvider || !organizationId) return;
+    // User-scoped integrations require user_id
+    if (scope === 'user' && !userId) return;
+    
     setConnectingProvider(provider);
 
     try {
       // Get session token from backend
+      // For user-scoped integrations, include user_id
+      const params = new URLSearchParams({ organization_id: organizationId });
+      if (scope === 'user' && userId) {
+        params.set('user_id', userId);
+      }
       const response = await fetch(
-        `${API_BASE}/auth/connect/${provider}/session?organization_id=${organizationId}`
+        `${API_BASE}/auth/connect/${provider}/session?${params.toString()}`
       );
 
       if (!response.ok) {
@@ -102,12 +112,19 @@ export function DataSources(): JSX.Element {
     }
   };
 
-  const handleDisconnect = async (provider: string): Promise<void> => {
+  const handleDisconnect = async (provider: string, scope: 'organization' | 'user'): Promise<void> => {
     if (!organizationId) return;
+    // User-scoped integrations require user_id
+    if (scope === 'user' && !userId) return;
+    
     if (!confirm(`Are you sure you want to disconnect ${provider}?`)) return;
 
-    const url = `${API_BASE}/auth/integrations/${provider}?organization_id=${organizationId}`;
-    console.log('Disconnecting:', { provider, organizationId, url });
+    const params = new URLSearchParams({ organization_id: organizationId });
+    if (scope === 'user' && userId) {
+      params.set('user_id', userId);
+    }
+    const url = `${API_BASE}/auth/integrations/${provider}?${params.toString()}`;
+    console.log('Disconnecting:', { provider, organizationId, userId, url });
 
     try {
       const response = await fetch(url, { method: 'DELETE' });
@@ -202,6 +219,37 @@ export function DataSources(): JSX.Element {
     return colorMap[color] ?? 'bg-surface-600';
   };
 
+  // Team connections footer for user-scoped integrations
+  const renderTeamConnections = (integration: Integration): JSX.Element | null => {
+    if (integration.scope !== 'user' || integration.teamTotal === 0) return null;
+
+    const connectedCount = integration.teamConnections.length;
+    const names = integration.teamConnections.map((tc) => tc.userName);
+    
+    // Show up to 3 names, then "+X more"
+    const displayNames = names.slice(0, 3);
+    const remaining = names.length - 3;
+    const nameText = remaining > 0
+      ? `${displayNames.join(', ')}, +${remaining} more`
+      : displayNames.join(', ');
+
+    return (
+      <div className="mt-3 pt-3 border-t border-surface-700/50">
+        <div className="flex items-center gap-2 text-sm text-surface-400">
+          <HiUserGroup className="w-4 h-4" />
+          <span>
+            {connectedCount}/{integration.teamTotal} team connected
+          </span>
+        </div>
+        {connectedCount > 0 && (
+          <p className="text-xs text-surface-500 mt-1 pl-6">
+            {nameText}
+          </p>
+        )}
+      </div>
+    );
+  };
+
   if (integrationsLoading && integrations.length === 0) {
     return (
       <div className="flex-1 flex items-center justify-center">
@@ -245,62 +293,66 @@ export function DataSources(): JSX.Element {
               {connectedIntegrations.map((integration) => (
                 <div
                   key={integration.id}
-                  className="card flex items-center gap-4 p-4"
+                  className="card p-4"
                 >
-                  <div className={`${getColorClass(integration.color)} p-3 rounded-xl text-white`}>
-                    {renderIcon(integration.icon)}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2">
-                      <h3 className="font-medium text-surface-100">{integration.name}</h3>
-                      <span className="px-2 py-0.5 text-xs font-medium bg-emerald-500/20 text-emerald-400 rounded-full">
-                        Connected
-                      </span>
+                  <div className="flex items-center gap-4">
+                    <div className={`${getColorClass(integration.color)} p-3 rounded-xl text-white`}>
+                      {renderIcon(integration.icon)}
                     </div>
-                    <p className="text-sm text-surface-400 mt-0.5">
-                      {integration.description}
-                    </p>
-                    {integration.lastSyncAt && (
-                      <p className="text-xs text-surface-500 mt-1">
-                        Last synced: {new Date(integration.lastSyncAt).toLocaleString()}
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <h3 className="font-medium text-surface-100">{integration.name}</h3>
+                        <span className="px-2 py-0.5 text-xs font-medium bg-emerald-500/20 text-emerald-400 rounded-full">
+                          Connected
+                        </span>
+                      </div>
+                      <p className="text-sm text-surface-400 mt-0.5">
+                        {integration.description}
                       </p>
-                    )}
-                    {integration.lastError && (
-                      <p className="text-xs text-red-400 mt-1">
-                        Error: {integration.lastError}
-                      </p>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={() => void handleSync(integration.provider)}
-                      disabled={syncingProviders.has(integration.provider)}
-                      className="px-4 py-2 text-sm font-medium text-surface-200 bg-surface-800 hover:bg-surface-700 disabled:opacity-50 rounded-lg transition-colors flex items-center gap-2"
-                    >
-                      {syncingProviders.has(integration.provider) ? (
-                        <>
-                          <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
-                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                          </svg>
-                          Syncing...
-                        </>
-                      ) : (
-                        <>
-                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                          </svg>
-                          Sync
-                        </>
+                      {integration.lastSyncAt && (
+                        <p className="text-xs text-surface-500 mt-1">
+                          Last synced: {new Date(integration.lastSyncAt).toLocaleString()}
+                        </p>
                       )}
-                    </button>
-                    <button
-                      onClick={() => void handleDisconnect(integration.provider)}
-                      className="px-4 py-2 text-sm font-medium text-red-400 hover:text-red-300 hover:bg-red-500/10 rounded-lg transition-colors"
-                    >
-                      Disconnect
-                    </button>
+                      {integration.lastError && (
+                        <p className="text-xs text-red-400 mt-1">
+                          Error: {integration.lastError}
+                        </p>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => void handleSync(integration.provider)}
+                        disabled={syncingProviders.has(integration.provider)}
+                        className="px-4 py-2 text-sm font-medium text-surface-200 bg-surface-800 hover:bg-surface-700 disabled:opacity-50 rounded-lg transition-colors flex items-center gap-2"
+                      >
+                        {syncingProviders.has(integration.provider) ? (
+                          <>
+                            <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                            </svg>
+                            Syncing...
+                          </>
+                        ) : (
+                          <>
+                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                            </svg>
+                            Sync
+                          </>
+                        )}
+                      </button>
+                      <button
+                        onClick={() => void handleDisconnect(integration.provider, integration.scope)}
+                        className="px-4 py-2 text-sm font-medium text-red-400 hover:text-red-300 hover:bg-red-500/10 rounded-lg transition-colors"
+                      >
+                        Disconnect
+                      </button>
+                    </div>
                   </div>
+                  {/* Team connections footer for user-scoped integrations */}
+                  {renderTeamConnections(integration)}
                 </div>
               ))}
             </div>
@@ -331,7 +383,7 @@ export function DataSources(): JSX.Element {
                   </div>
                 </div>
                 <button
-                  onClick={() => void handleConnect(integration.provider)}
+                  onClick={() => void handleConnect(integration.provider, integration.scope)}
                   disabled={connectingProvider === integration.provider}
                   className="w-full mt-4 px-4 py-2 text-sm font-medium text-primary-400 border border-primary-500/30 hover:bg-primary-500/10 disabled:opacity-50 rounded-lg transition-colors flex items-center justify-center gap-2"
                 >
@@ -344,9 +396,11 @@ export function DataSources(): JSX.Element {
                       Connecting...
                     </>
                   ) : (
-                    'Connect'
+                    integration.scope === 'user' ? 'Connect your account' : 'Connect'
                   )}
                 </button>
+                {/* Team connections footer for user-scoped integrations */}
+                {renderTeamConnections(integration)}
               </div>
             ))}
           </div>

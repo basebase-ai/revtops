@@ -49,7 +49,7 @@ export function Landing({ onGetStarted }: LandingProps): JSX.Element {
           onClick={onGetStarted}
           className="px-4 py-2 text-sm font-medium text-surface-300 hover:text-white transition-colors"
         >
-          Already have an account? Sign In
+          Sign In
         </button>
       </nav>
 
