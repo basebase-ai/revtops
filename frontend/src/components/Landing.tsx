@@ -72,8 +72,8 @@ export function Landing({ onGetStarted }: LandingProps): JSX.Element {
           </h1>
 
           <p className="text-xl text-surface-400 max-w-3xl mx-auto mb-10">
-            Connect your CRM, Slack, email, calendar, and more.
-            Chat with your data to uncover insights, then build automations that supercharge your team's efficiency.
+            Imagine an AI agent connected to your CRM, Slack, meeting transcripts, sellers' emails, calendars, and so much more.
+            You could ask it questions about your data to uncover insights, then build automations that supercharge your team's efficiency.
           </p>
 
           {/* CTA buttons */}
