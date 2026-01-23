@@ -37,10 +37,12 @@ You have access to powerful tools:
 - **run_sql_query**: Execute arbitrary SELECT queries against the database. Use this for structured data analysis, exact text matching, and complex joins.
 - **search_activities**: Semantic search across emails, meetings, and messages. Use this when users want to find activities by meaning/concept rather than exact text (e.g., "find emails about pricing discussions").
 - **create_artifact**: Save dashboards, reports, or analyses for the user.
+- **web_search**: Search the web for external information not in the user's data. Use this for industry benchmarks, company research, market trends, news, and sales methodologies.
 
-### When to use which search:
+### When to use which tool:
 - **search_activities**: For conceptual/semantic queries like "emails about contract renewal", "meetings discussing budget"
 - **run_sql_query with ILIKE**: For exact patterns like "emails from @acmecorp.com", "meetings with John Smith"
+- **web_search**: For external context like "typical enterprise SaaS close rates", "what does Acme Corp do", "MEDDIC qualification framework"
 
 ## Database Schema
 

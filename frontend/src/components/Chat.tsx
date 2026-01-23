@@ -439,14 +439,48 @@ export function Chat({ userId, organizationId: _organizationId, chatId }: ChatPr
   );
 }
 
-// Map tool names to user-friendly descriptions
-const TOOL_FRIENDLY_NAMES: Record<string, string> = {
-  run_sql_query: 'synced data',
-  create_artifact: 'artifact',
-};
-
-function getToolDisplayName(toolName: string): string {
-  return TOOL_FRIENDLY_NAMES[toolName] ?? toolName;
+/**
+ * Generate user-friendly status text for tool calls
+ */
+function getToolStatusText(
+  toolName: string, 
+  input: Record<string, unknown> | undefined, 
+  isComplete: boolean,
+  result: Record<string, unknown> | undefined
+): string {
+  switch (toolName) {
+    case 'web_search': {
+      const query = typeof input?.query === 'string' ? input.query : '';
+      const truncatedQuery = query.length > 40 ? query.slice(0, 40) + '...' : query;
+      if (isComplete) {
+        const sources = Array.isArray(result?.sources) ? result.sources.length : 0;
+        const sourceText = sources > 0 ? ` (${sources} source${sources === 1 ? '' : 's'})` : '';
+        return `Searched the web for '${truncatedQuery}'${sourceText}`;
+      }
+      return `Searching the web for '${truncatedQuery}'...`;
+    }
+    case 'search_activities': {
+      const query = typeof input?.query === 'string' ? input.query : '';
+      const truncatedQuery = query.length > 40 ? query.slice(0, 40) + '...' : query;
+      if (isComplete) {
+        const count = typeof result?.count === 'number' ? result.count : 0;
+        const countText = ` (${count} result${count === 1 ? '' : 's'})`;
+        return `Searched activities for '${truncatedQuery}'${countText}`;
+      }
+      return `Searching activities for '${truncatedQuery}'...`;
+    }
+    case 'run_sql_query': {
+      if (isComplete) {
+        const rowCount = typeof result?.row_count === 'number' ? result.row_count : 0;
+        return `Queried synced data (${rowCount} row${rowCount === 1 ? '' : 's'})`;
+      }
+      return 'Querying synced data...';
+    }
+    case 'create_artifact':
+      return isComplete ? 'Created artifact' : 'Creating artifact...';
+    default:
+      return isComplete ? `Completed ${toolName}` : `Running ${toolName}...`;
+  }
 }
 
 /**
@@ -460,7 +494,12 @@ function ToolCallIndicator({
   onClick: () => void;
 }): JSX.Element {
   const isComplete = toolCall?.status === 'complete';
-  const displayName = getToolDisplayName(toolCall?.toolName ?? 'unknown');
+  const statusText = getToolStatusText(
+    toolCall?.toolName ?? 'unknown',
+    toolCall?.input,
+    isComplete,
+    toolCall?.result
+  );
   
   return (
     <button
@@ -478,7 +517,7 @@ function ToolCallIndicator({
         </svg>
       )}
       <span className="text-surface-500 italic group-hover:text-surface-300">
-        {isComplete ? `Queried ${displayName}` : `Querying ${displayName}...`}
+        {statusText}
       </span>
       <svg className="w-3 h-3 text-surface-600 opacity-0 group-hover:opacity-100 transition-opacity" fill="none" viewBox="0 0 24 24" stroke="currentColor">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />

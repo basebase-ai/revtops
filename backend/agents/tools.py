@@ -5,6 +5,7 @@ Tools:
 - run_sql_query: Execute arbitrary SELECT queries (read-only)
 - search_activities: Semantic search across emails, meetings, messages
 - create_artifact: Save analysis/dashboard
+- web_search: Search the web and get summarized results
 """
 
 import logging
@@ -12,8 +13,10 @@ import re
 from typing import Any
 from uuid import UUID
 
+import httpx
 from sqlalchemy import text
 
+from config import settings
 from models.artifact import Artifact
 from models.database import get_session
 
@@ -130,6 +133,34 @@ For exact text matching (e.g., emails from a specific domain), use run_sql_query
                 "required": ["type", "title", "data"],
             },
         },
+        {
+            "name": "web_search",
+            "description": """Search the web for real-time information and get summarized results.
+
+Use this tool when you need external information not available in the user's data:
+- Industry benchmarks or best practices (e.g., "average SaaS close rates")
+- Company information not in the CRM (e.g., "what does Acme Corp do")
+- Market trends or competitor analysis
+- Current events or news about companies
+- Sales methodologies or frameworks (e.g., "MEDDIC qualification")
+
+Examples:
+- "What is the typical close rate for enterprise SaaS deals?"
+- "Latest news about TechCorp acquisition"
+- "BANT vs MEDDIC sales qualification frameworks"
+
+Do NOT use this for data that's in the user's database - use run_sql_query instead.""",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "The search query - be specific and include relevant context",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
     ]
 
 
@@ -163,6 +194,11 @@ async def execute_tool(
     elif tool_name == "create_artifact":
         result = await _create_artifact(tool_input, organization_id, user_id)
         logger.info("[Tools] create_artifact result: %s", result)
+        return result
+
+    elif tool_name == "web_search":
+        result = await _web_search(tool_input)
+        logger.info("[Tools] web_search completed")
         return result
 
     else:
@@ -429,3 +465,67 @@ async def _create_artifact(
             "artifact_id": str(artifact.id),
             "url": f"/artifacts/{artifact.id}",
         }
+
+
+async def _web_search(params: dict[str, Any]) -> dict[str, Any]:
+    """Search the web using Perplexity's Sonar API."""
+    query = params.get("query", "").strip()
+    
+    if not query:
+        return {"error": "No search query provided"}
+    
+    if not settings.PERPLEXITY_API_KEY:
+        return {
+            "error": "Web search is not configured. PERPLEXITY_API_KEY is not set.",
+            "suggestion": "Add PERPLEXITY_API_KEY to your environment variables.",
+        }
+    
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                "https://api.perplexity.ai/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {settings.PERPLEXITY_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": "sonar",
+                    "messages": [
+                        {
+                            "role": "system",
+                            "content": "You are a helpful research assistant. Provide concise, factual answers with relevant details. Focus on information useful for sales and business contexts.",
+                        },
+                        {
+                            "role": "user",
+                            "content": query,
+                        },
+                    ],
+                },
+            )
+            
+            if response.status_code != 200:
+                logger.error("[Tools._web_search] API error: %s %s", response.status_code, response.text)
+                return {"error": f"Search API error: {response.status_code}"}
+            
+            data = response.json()
+            content: str = data["choices"][0]["message"]["content"]
+            
+            # Extract citations if available
+            citations: list[str] = data.get("citations", [])
+            
+            result: dict[str, Any] = {
+                "answer": content,
+                "query": query,
+            }
+            
+            if citations:
+                result["sources"] = citations
+            
+            return result
+            
+    except httpx.TimeoutException:
+        logger.error("[Tools._web_search] Request timed out")
+        return {"error": "Search request timed out. Try a simpler query."}
+    except Exception as e:
+        logger.error("[Tools._web_search] Search failed: %s", str(e))
+        return {"error": f"Search failed: {str(e)}"}

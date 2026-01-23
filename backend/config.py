@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     
     # OpenAI (for embeddings)
     OPENAI_API_KEY: Optional[str] = None
+    
+    # Perplexity (for web search)
+    PERPLEXITY_API_KEY: Optional[str] = None
 
     # Nango - OAuth & credential management for all integrations
     NANGO_SECRET_KEY: Optional[str] = None
