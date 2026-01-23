@@ -238,14 +238,39 @@ export function Chat({ userId, organizationId: _organizationId, chatId }: ChatPr
           setChatTitle(data.title ?? 'New Chat');
           notifiedConversationRef.current = chatId;
           
-          const loadedMessages: ChatMessage[] = data.messages.map((msg) => ({
-            id: msg.id,
-            role: msg.role as 'user' | 'assistant',
-            content: msg.content,
-            timestamp: new Date(msg.created_at),
-          }));
+          // Process messages, expanding tool calls into separate messages
+          const loadedMessages: ChatMessage[] = [];
+          for (const msg of data.messages) {
+            // If assistant message has tool_calls, create tool indicator messages first
+            if (msg.role === 'assistant' && msg.tool_calls && msg.tool_calls.length > 0) {
+              for (const tc of msg.tool_calls) {
+                const toolCall: ToolCallData = {
+                  toolName: tc.name,
+                  toolId: tc.id ?? `tool-${Date.now()}-${Math.random()}`,
+                  input: tc.input ?? {},
+                  result: tc.result,
+                  status: 'complete',
+                };
+                loadedMessages.push({
+                  id: `tool-${toolCall.toolId}`,
+                  role: 'tool',
+                  content: '',
+                  toolName: tc.name,
+                  toolCall,
+                  timestamp: new Date(msg.created_at),
+                });
+              }
+            }
+            // Add the actual message
+            loadedMessages.push({
+              id: msg.id,
+              role: msg.role as 'user' | 'assistant',
+              content: msg.content,
+              timestamp: new Date(msg.created_at),
+            });
+          }
           setMessages(loadedMessages);
-          console.log('[Chat] Loaded', loadedMessages.length, 'messages');
+          console.log('[Chat] Loaded', loadedMessages.length, 'messages (including tool calls)');
         } else {
           console.error('[Chat] Failed to load conversation:', error);
           clearChat();

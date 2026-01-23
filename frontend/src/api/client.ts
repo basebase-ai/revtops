@@ -22,7 +22,9 @@ export interface ChatMessage {
   created_at: string;
   tool_calls?: Array<{
     name: string;
+    id: string;
     input: Record<string, unknown>;
+    result?: Record<string, unknown>;
   }>;
 }
 

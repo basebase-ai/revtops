@@ -66,6 +66,7 @@ class ChatMessageResponse(BaseModel):
     role: str
     content: str
     created_at: str
+    tool_calls: Optional[list[dict]] = None
 
 
 class ConversationDetailResponse(BaseModel):
@@ -242,6 +243,7 @@ async def get_conversation(
                     role=msg.role,
                     content=msg.content,
                     created_at=msg.created_at.isoformat() if msg.created_at else "",
+                    tool_calls=msg.tool_calls,
                 )
                 for msg in messages
             ],
