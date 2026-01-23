@@ -433,11 +433,11 @@ export function Chat({ userId, organizationId: _organizationId, chatId }: ChatPr
               placeholder="Ask about your pipeline..."
               className="input-field resize-none min-h-[52px] max-h-32 text-[13px]"
               rows={1}
-              disabled={!isConnected || isThinking}
+              disabled={!isConnected}
             />
             <button
               onClick={handleSend}
-              disabled={!input.trim() || !isConnected || isThinking}
+              disabled={!input.trim() || !isConnected}
               className="btn-primary px-6 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
