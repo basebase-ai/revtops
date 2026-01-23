@@ -8,9 +8,11 @@
  * - Organization settings
  */
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import type { OrganizationInfo, UserProfile } from './AppLayout';
 import { apiRequest } from '../lib/api';
+import { supabase } from '../lib/supabase';
+import { useAppStore } from '../store';
 
 interface TeamMember {
   id: string;
@@ -37,11 +39,18 @@ interface OrganizationPanelProps {
 }
 
 export function OrganizationPanel({ organization, currentUser, onClose }: OrganizationPanelProps): JSX.Element {
+  const setOrganization = useAppStore((state) => state.setOrganization);
   const [activeTab, setActiveTab] = useState<'team' | 'billing' | 'settings'>('team');
   const [inviteEmail, setInviteEmail] = useState('');
   const [isInviting, setIsInviting] = useState(false);
   const [teamMembers, setTeamMembers] = useState<TeamMember[]>([]);
   const [isLoadingMembers, setIsLoadingMembers] = useState(true);
+  const [orgName, setOrgName] = useState(organization.name);
+  const [logoUrl, setLogoUrl] = useState(organization.logoUrl);
+  const [isSavingSettings, setIsSavingSettings] = useState(false);
+  const [settingsSaved, setSettingsSaved] = useState(false);
+  const [isUploadingLogo, setIsUploadingLogo] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Fetch team members on mount
   useEffect(() => {
@@ -88,6 +97,106 @@ export function OrganizationPanel({ organization, currentUser, onClose }: Organi
     }
   };
 
+  const handleSaveSettings = async (): Promise<void> => {
+    if (!orgName.trim() || orgName === organization.name) return;
+
+    setIsSavingSettings(true);
+    setSettingsSaved(false);
+    try {
+      const response = await apiRequest<{ id: string; name: string }>(
+        `/auth/organizations/${organization.id}?user_id=${currentUser.id}`,
+        {
+          method: 'PATCH',
+          body: JSON.stringify({ name: orgName }),
+        }
+      );
+
+      if (response.error) {
+        alert(`Failed to save: ${response.error}`);
+      } else {
+        setSettingsSaved(true);
+        // Update the store so sidebar reflects the change
+        setOrganization({ ...organization, name: orgName });
+        // Reset saved indicator after 2 seconds
+        setTimeout(() => setSettingsSaved(false), 2000);
+      }
+    } catch (error) {
+      console.error('Failed to save settings:', error);
+    } finally {
+      setIsSavingSettings(false);
+    }
+  };
+
+  const hasUnsavedChanges = orgName !== organization.name;
+
+  const handleLogoUpload = async (event: React.ChangeEvent<HTMLInputElement>): Promise<void> => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    // Validate file type
+    if (!file.type.startsWith('image/')) {
+      alert('Please select an image file');
+      return;
+    }
+
+    // Validate file size (max 2MB)
+    if (file.size > 2 * 1024 * 1024) {
+      alert('Image must be less than 2MB');
+      return;
+    }
+
+    setIsUploadingLogo(true);
+    try {
+      // Generate unique filename
+      const fileExt = file.name.split('.').pop() ?? 'png';
+      const fileName = `${organization.id}/logo-${Date.now()}.${fileExt}`;
+
+      // Upload to Supabase Storage
+      const { error: uploadError } = await supabase.storage
+        .from('org-logos')
+        .upload(fileName, file, { upsert: true });
+
+      if (uploadError) {
+        console.error('Upload error:', uploadError);
+        alert(`Failed to upload: ${uploadError.message}`);
+        return;
+      }
+
+      // Get public URL
+      const { data: urlData } = supabase.storage
+        .from('org-logos')
+        .getPublicUrl(fileName);
+
+      const newLogoUrl = urlData.publicUrl;
+
+      // Update organization with new logo URL
+      const response = await apiRequest<{ id: string; logo_url: string }>(
+        `/auth/organizations/${organization.id}?user_id=${currentUser.id}`,
+        {
+          method: 'PATCH',
+          body: JSON.stringify({ logo_url: newLogoUrl }),
+        }
+      );
+
+      if (response.error) {
+        alert(`Failed to save logo: ${response.error}`);
+      } else {
+        setLogoUrl(newLogoUrl);
+        // Update the store so sidebar reflects the change
+        setOrganization({ ...organization, logoUrl: newLogoUrl });
+      }
+    } catch (error) {
+      console.error('Failed to upload logo:', error);
+      alert('Failed to upload logo');
+    } finally {
+      setIsUploadingLogo(false);
+      // Reset file input
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+    }
+  };
+
   return (
     <>
       {/* Backdrop */}
@@ -101,9 +210,9 @@ export function OrganizationPanel({ organization, currentUser, onClose }: Organi
         {/* Header */}
         <header className="flex items-center justify-between px-6 py-4 border-b border-surface-800">
           <div className="flex items-center gap-3">
-            {organization.logoUrl ? (
+            {logoUrl ? (
               <img
-                src={organization.logoUrl}
+                src={logoUrl}
                 alt={organization.name}
                 className="w-10 h-10 rounded-lg object-cover"
               />
@@ -293,7 +402,8 @@ export function OrganizationPanel({ organization, currentUser, onClose }: Organi
                 </label>
                 <input
                   type="text"
-                  defaultValue={organization.name}
+                  value={orgName}
+                  onChange={(e) => setOrgName(e.target.value)}
                   className="input-field"
                 />
               </div>
@@ -304,9 +414,9 @@ export function OrganizationPanel({ organization, currentUser, onClose }: Organi
                   Logo
                 </label>
                 <div className="flex items-center gap-4">
-                  {organization.logoUrl ? (
+                  {logoUrl ? (
                     <img
-                      src={organization.logoUrl}
+                      src={logoUrl}
                       alt={organization.name}
                       className="w-16 h-16 rounded-xl object-cover"
                     />
@@ -315,10 +425,40 @@ export function OrganizationPanel({ organization, currentUser, onClose }: Organi
                       {organization.name.charAt(0).toUpperCase()}
                     </div>
                   )}
-                  <button className="px-4 py-2 text-sm font-medium text-surface-200 bg-surface-800 hover:bg-surface-700 rounded-lg transition-colors">
-                    Upload logo
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept="image/*"
+                    onChange={(e) => void handleLogoUpload(e)}
+                    className="hidden"
+                  />
+                  <button
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={isUploadingLogo}
+                    className="px-4 py-2 text-sm font-medium text-surface-200 bg-surface-800 hover:bg-surface-700 rounded-lg transition-colors disabled:opacity-50"
+                  >
+                    {isUploadingLogo ? 'Uploading...' : 'Upload logo'}
                   </button>
                 </div>
+              </div>
+
+              {/* Save Button */}
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => void handleSaveSettings()}
+                  disabled={isSavingSettings || !hasUnsavedChanges}
+                  className="btn-primary disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {isSavingSettings ? 'Saving...' : 'Save Changes'}
+                </button>
+                {settingsSaved && (
+                  <span className="text-sm text-green-400 flex items-center gap-1">
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                    </svg>
+                    Saved
+                  </span>
+                )}
               </div>
 
               {/* Danger Zone */}

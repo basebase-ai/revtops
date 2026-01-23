@@ -641,6 +641,11 @@ export const useAppStore = create<AppState>()(
             avatar_url: string | null;
             name: string | null;
             roles: string[];
+            organization: {
+              id: string;
+              name: string;
+              logo_url: string | null;
+            } | null;
           };
           console.log("[Store] User synced successfully, status:", data.status);
 
@@ -656,6 +661,17 @@ export const useAppStore = create<AppState>()(
               name: data.name ?? user.name,
               avatarUrl: data.avatar_url ?? user.avatarUrl,
               roles: newRoles,
+            });
+          }
+
+          // Update organization with data from backend (includes logo_url)
+          if (data.organization) {
+            const { setOrganization } = get();
+            setOrganization({
+              id: data.organization.id,
+              name: data.organization.name,
+              logoUrl: data.organization.logo_url,
+              memberCount: organization?.memberCount ?? 1,
             });
           }
 

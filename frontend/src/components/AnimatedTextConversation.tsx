@@ -114,9 +114,7 @@ export function AnimatedTextConversation({
                   }`}
                 >
                   {agent ? (
-                    <svg className="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
-                    </svg>
+                    <img src="/logo.svg" alt="Revtops" className="w-4 h-4 invert" />
                   ) : (
                     <svg className="w-4 h-4 text-surface-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
@@ -152,9 +150,7 @@ export function AnimatedTextConversation({
           {isPlaying && visibleMessages < conversation.messages.length && visibleMessages > 0 && (
             <div className="flex gap-3 animate-fade-in">
               <div className="w-8 h-8 rounded-full bg-gradient-to-br from-primary-500 to-primary-700 flex-shrink-0 flex items-center justify-center">
-                <svg className="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
-                </svg>
+                <img src="/logo.svg" alt="Revtops" className="w-4 h-4 invert" />
               </div>
               <div className="bg-primary-600/20 border border-primary-500/30 rounded-2xl rounded-tl-sm px-4 py-3">
                 <div className="flex gap-1.5">

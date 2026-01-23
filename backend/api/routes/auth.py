@@ -197,6 +197,7 @@ class OrganizationResponse(BaseModel):
     id: str
     name: str
     email_domain: Optional[str]
+    logo_url: Optional[str] = None
 
 
 class SyncUserRequest(BaseModel):
@@ -209,6 +210,14 @@ class SyncUserRequest(BaseModel):
     organization_id: Optional[str] = None
 
 
+class SyncOrganizationData(BaseModel):
+    """Organization data included in sync response."""
+
+    id: str
+    name: str
+    logo_url: Optional[str] = None
+
+
 class SyncUserResponse(BaseModel):
     """Response model for synced user."""
 
@@ -217,6 +226,7 @@ class SyncUserResponse(BaseModel):
     name: Optional[str]
     avatar_url: Optional[str]
     organization_id: Optional[str]
+    organization: Optional[SyncOrganizationData] = None
     status: str  # 'waitlist', 'invited', 'active'
     roles: list[str]  # Global roles like ['global_admin']
 
@@ -270,12 +280,24 @@ async def sync_user(request: SyncUserRequest) -> SyncUserResponse:
             await session.commit()
             await session.refresh(existing)
             
+            # Load organization data if user has one
+            org_data: Optional[SyncOrganizationData] = None
+            if existing.organization_id:
+                org = await session.get(Organization, existing.organization_id)
+                if org:
+                    org_data = SyncOrganizationData(
+                        id=str(org.id),
+                        name=org.name,
+                        logo_url=org.logo_url,
+                    )
+            
             return SyncUserResponse(
                 id=str(existing.id),
                 email=existing.email,
                 name=existing.name,
                 avatar_url=existing.avatar_url,
                 organization_id=str(existing.organization_id) if existing.organization_id else None,
+                organization=org_data,
                 status=existing.status,
                 roles=existing.roles or [],
             )
@@ -306,12 +328,20 @@ async def sync_user(request: SyncUserRequest) -> SyncUserResponse:
                 await session.commit()
                 await session.refresh(new_user)
                 
+                # Include organization data for new user
+                org_data = SyncOrganizationData(
+                    id=str(existing_org.id),
+                    name=existing_org.name,
+                    logo_url=existing_org.logo_url,
+                )
+                
                 return SyncUserResponse(
                     id=str(new_user.id),
                     email=new_user.email,
                     name=new_user.name,
                     avatar_url=new_user.avatar_url,
                     organization_id=str(new_user.organization_id),
+                    organization=org_data,
                     status=new_user.status,
                     roles=new_user.roles or [],
                 )
@@ -342,6 +372,7 @@ async def get_organization_by_domain(email_domain: str) -> OrganizationResponse:
             id=str(org.id),
             name=org.name,
             email_domain=org.email_domain,
+            logo_url=org.logo_url,
         )
 
 
@@ -364,6 +395,7 @@ async def create_organization(request: CreateOrganizationRequest) -> Organizatio
                 id=str(existing.id),
                 name=existing.name,
                 email_domain=existing.email_domain,
+                logo_url=existing.logo_url,
             )
         
         # Check if organization exists for this email domain (different browser scenario)
@@ -376,6 +408,7 @@ async def create_organization(request: CreateOrganizationRequest) -> Organizatio
                 id=str(existing_by_domain.id),
                 name=existing_by_domain.name,
                 email_domain=existing_by_domain.email_domain,
+                logo_url=existing_by_domain.logo_url,
             )
 
         # Create new organization
@@ -392,6 +425,7 @@ async def create_organization(request: CreateOrganizationRequest) -> Organizatio
             id=str(new_org.id),
             name=new_org.name,
             email_domain=new_org.email_domain,
+            logo_url=new_org.logo_url,
         )
 
 
@@ -452,6 +486,60 @@ async def get_organization_members(
                 )
                 for u in users
             ]
+        )
+
+
+class UpdateOrganizationRequest(BaseModel):
+    """Request model for updating organization settings."""
+
+    name: Optional[str] = None
+    logo_url: Optional[str] = None
+
+
+@router.patch("/organizations/{org_id}", response_model=OrganizationResponse)
+async def update_organization(
+    org_id: str,
+    request: UpdateOrganizationRequest,
+    user_id: Optional[str] = None,
+) -> OrganizationResponse:
+    """Update organization settings.
+    
+    Only accessible by admin members of that organization.
+    """
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        org_uuid = UUID(org_id)
+        user_uuid = UUID(user_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid ID format")
+
+    async with get_session() as session:
+        # Verify requesting user belongs to this organization
+        requesting_user = await session.get(User, user_uuid)
+        if not requesting_user or requesting_user.organization_id != org_uuid:
+            raise HTTPException(status_code=403, detail="Not authorized to update this organization")
+
+        # Fetch and update organization
+        org = await session.get(Organization, org_uuid)
+        if not org:
+            raise HTTPException(status_code=404, detail="Organization not found")
+
+        # Update fields if provided
+        if request.name is not None:
+            org.name = request.name
+        if request.logo_url is not None:
+            org.logo_url = request.logo_url
+
+        await session.commit()
+        await session.refresh(org)
+
+        return OrganizationResponse(
+            id=str(org.id),
+            name=org.name,
+            email_domain=org.email_domain,
+            logo_url=org.logo_url,
         )
 
 

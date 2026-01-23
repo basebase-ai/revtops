@@ -1,7 +1,7 @@
 """Fix scope for existing user-scoped integrations
 
 Revision ID: 008_fix_integration_scopes
-Revises: 007_add_integration_scope
+Revises: 008_add_crm_operations
 Create Date: 2026-01-23
 
 This migration fixes existing integrations that should be user-scoped
@@ -20,7 +20,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision: str = '008_fix_integration_scopes'
-down_revision: Union[str, None] = '007_add_integration_scope'
+down_revision: Union[str, None] = '008_add_crm_operations'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

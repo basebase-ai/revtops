@@ -762,9 +762,7 @@ function ThinkingIndicator(): JSX.Element {
     <div className="flex gap-3">
       {/* Avatar */}
       <div className="w-6 h-6 rounded-md bg-gradient-to-br from-surface-700 to-surface-800 flex items-center justify-center flex-shrink-0">
-        <svg className="w-3 h-3 text-primary-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
-        </svg>
+        <img src="/logo.svg" alt="Revtops" className="w-3.5 h-3.5 opacity-70" style={{ filter: 'invert(67%) sepia(51%) saturate(439%) hue-rotate(108deg) brightness(92%) contrast(88%)' }} />
       </div>
 
       {/* Thinking dots */}
@@ -842,19 +840,12 @@ function EmptyState({ onSuggestionClick }: EmptyStateProps): JSX.Element {
     <div className="h-full flex items-center justify-center">
       <div className="text-center max-w-lg">
         <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-primary-500/20 to-primary-700/20 flex items-center justify-center mx-auto mb-6">
-          <svg
-            className="w-10 h-10 text-primary-400"
-            fill="none"
-            viewBox="0 0 24 24"
-            stroke="currentColor"
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={1.5}
-              d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"
-            />
-          </svg>
+          <img 
+            src="/logo.svg" 
+            alt="Revtops" 
+            className="w-10 h-10" 
+            style={{ filter: 'invert(67%) sepia(51%) saturate(439%) hue-rotate(108deg) brightness(92%) contrast(88%)' }} 
+          />
         </div>
         <h2 className="text-2xl font-bold text-surface-50 mb-2">
           Ask anything about your revenue

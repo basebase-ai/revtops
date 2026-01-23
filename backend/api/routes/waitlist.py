@@ -478,3 +478,75 @@ async def list_admin_users(
             )
 
         return AdminUsersListResponse(users=user_responses, total=len(user_responses))
+
+
+# =============================================================================
+# Admin Organizations List Endpoint
+# =============================================================================
+
+
+class AdminOrganizationResponse(BaseModel):
+    """Response model for an organization in the admin list."""
+
+    id: str
+    name: str
+    email_domain: Optional[str]
+    user_count: int
+    created_at: Optional[str]
+    last_sync_at: Optional[str]
+
+
+class AdminOrganizationsListResponse(BaseModel):
+    """Response for listing all organizations."""
+
+    organizations: list[AdminOrganizationResponse]
+    total: int
+
+
+@router.get("/admin/organizations", response_model=AdminOrganizationsListResponse)
+async def list_admin_organizations(
+    user_id: Optional[str] = None,
+) -> AdminOrganizationsListResponse:
+    """
+    List all organizations.
+    
+    Requires user to have global_admin role.
+    Returns organizations with user counts.
+    """
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    
+    await verify_global_admin(user_id)
+
+    from models.organization import Organization
+    from sqlalchemy import func
+    from sqlalchemy.orm import selectinload
+
+    async with get_session() as session:
+        # Get all organizations with their users loaded
+        query = (
+            select(Organization)
+            .options(selectinload(Organization.users))
+            .order_by(Organization.created_at.desc())
+        )
+        
+        result = await session.execute(query)
+        organizations = result.scalars().all()
+
+        org_responses: list[AdminOrganizationResponse] = []
+        for org in organizations:
+            # Count only active/invited users (not waitlisted)
+            active_user_count = len([u for u in org.users if u.status in ("active", "invited")])
+            
+            org_responses.append(
+                AdminOrganizationResponse(
+                    id=str(org.id),
+                    name=org.name,
+                    email_domain=org.email_domain,
+                    user_count=active_user_count,
+                    created_at=org.created_at.isoformat() if org.created_at else None,
+                    last_sync_at=org.last_sync_at.isoformat() if org.last_sync_at else None,
+                )
+            )
+
+        return AdminOrganizationsListResponse(organizations=org_responses, total=len(org_responses))

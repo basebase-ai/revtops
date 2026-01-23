@@ -83,9 +83,7 @@ export function Sidebar({
         {!collapsed && (
           <div className="flex items-center gap-2">
             <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-primary-500 to-primary-700 flex items-center justify-center">
-              <svg className="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
-              </svg>
+              <img src="/logo.svg" alt="Revtops" className="w-5 h-5 invert" />
             </div>
             <span className="font-semibold text-surface-100">Revtops</span>
             <span className="px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide bg-primary-500/20 text-primary-400 rounded">
@@ -95,9 +93,7 @@ export function Sidebar({
         )}
         {collapsed && (
           <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-primary-500 to-primary-700 flex items-center justify-center mx-auto">
-            <svg className="w-5 h-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
-            </svg>
+            <img src="/logo.svg" alt="Revtops" className="w-6 h-6 invert" />
           </div>
         )}
         <button

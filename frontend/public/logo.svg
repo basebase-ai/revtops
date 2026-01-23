@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" shape-rendering="geometricPrecision">
+  <!-- Main growth line - ends at peak -->
+  <path 
+    d="M2 17 L6 13 L10 16 L18 6" 
+    stroke="currentColor" 
+    stroke-width="2.5" 
+    stroke-linecap="round" 
+    stroke-linejoin="round"
+  />
+  <!-- Mountain right slope - small subtle hint -->
+  <path 
+    d="M21 12 L23 16" 
+    stroke="currentColor" 
+    stroke-width="2.5" 
+    stroke-linecap="round" 
+    stroke-opacity="0.45"
+  />
+</svg>

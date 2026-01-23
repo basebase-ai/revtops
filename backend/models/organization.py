@@ -29,6 +29,7 @@ class Organization(Base):
     email_domain: Mapped[Optional[str]] = mapped_column(
         String(255), unique=True, nullable=True, index=True
     )  # e.g., "acmecorp.com" - used to auto-match new users
+    logo_url: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
     
     # Legacy Salesforce fields (kept for backwards compatibility)
     salesforce_instance_url: Mapped[Optional[str]] = mapped_column(
