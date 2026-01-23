@@ -69,6 +69,7 @@ class HubSpotConnector(BaseConnector):
         endpoint: str,
         properties: list[str],
         limit: int = 100,
+        associations: Optional[list[str]] = None,
     ) -> list[dict[str, Any]]:
         """Paginate through HubSpot API results."""
         all_results: list[dict[str, Any]] = []
@@ -79,6 +80,8 @@ class HubSpotConnector(BaseConnector):
                 "limit": limit,
                 "properties": ",".join(properties),
             }
+            if associations:
+                params["associations"] = ",".join(associations)
             if after:
                 params["after"] = after
 
@@ -304,14 +307,41 @@ class HubSpotConnector(BaseConnector):
             "hs_lastmodifieddate",
         ]
 
+        # Fetch contacts with company associations
         raw_contacts = await self._paginate_results(
-            "/crm/v3/objects/contacts", properties=properties
+            "/crm/v3/objects/contacts",
+            properties=properties,
+            associations=["companies"],
         )
+
+        # Build a map of HubSpot company IDs to internal account IDs
+        hs_company_id_to_account_id: dict[str, uuid.UUID] = {}
+        async with get_session() as session:
+            result = await session.execute(
+                select(Account).where(
+                    Account.organization_id == uuid.UUID(self.organization_id),
+                    Account.source_system == self.source_system,
+                )
+            )
+            accounts = result.scalars().all()
+            for account in accounts:
+                hs_company_id_to_account_id[account.source_id] = account.id
 
         async with get_session() as session:
             count = 0
             for raw_contact in raw_contacts:
                 hs_id = raw_contact.get("id", "")
+                
+                # Extract associated company ID from associations
+                account_id: Optional[uuid.UUID] = None
+                associations = raw_contact.get("associations", {})
+                companies_assoc = associations.get("companies", {})
+                company_results = companies_assoc.get("results", [])
+                if company_results:
+                    # Take the first (primary) company association
+                    hs_company_id = company_results[0].get("id")
+                    if hs_company_id:
+                        account_id = hs_company_id_to_account_id.get(hs_company_id)
                 
                 # Check if contact already exists
                 result = await session.execute(
@@ -323,7 +353,11 @@ class HubSpotConnector(BaseConnector):
                 )
                 existing = result.scalar_one_or_none()
                 
-                contact = self._normalize_contact(raw_contact, existing_id=existing.id if existing else None)
+                contact = self._normalize_contact(
+                    raw_contact,
+                    existing_id=existing.id if existing else None,
+                    account_id=account_id,
+                )
                 await session.merge(contact)
                 count += 1
             await session.commit()
@@ -331,7 +365,10 @@ class HubSpotConnector(BaseConnector):
         return count
 
     def _normalize_contact(
-        self, hs_contact: dict[str, Any], existing_id: Optional[uuid.UUID] = None
+        self,
+        hs_contact: dict[str, Any],
+        existing_id: Optional[uuid.UUID] = None,
+        account_id: Optional[uuid.UUID] = None,
     ) -> Contact:
         """Transform HubSpot Contact to our Contact model."""
         props = hs_contact.get("properties", {})
@@ -355,6 +392,7 @@ class HubSpotConnector(BaseConnector):
             email=props.get("email"),
             title=props.get("jobtitle"),
             phone=props.get("phone"),
+            account_id=account_id,
         )
 
     async def sync_activities(self) -> int:
