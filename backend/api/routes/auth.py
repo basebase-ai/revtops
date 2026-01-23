@@ -244,31 +244,31 @@ async def sync_user(request: SyncUserRequest) -> SyncUserResponse:
         # Check if user already exists
         existing = await session.get(User, user_uuid)
         if existing:
-            needs_commit = False
+            # Always update last_login on sync (user just logged in)
+            existing.last_login = datetime.utcnow()
             
             # Update organization if provided and different
             if org_uuid and existing.organization_id != org_uuid:
                 existing.organization_id = org_uuid
-                needs_commit = True
             
             # If user was invited, upgrade to active on signin
             if existing.status == "invited":
                 existing.status = "active"
-                needs_commit = True
             
             # Update avatar_url if a new one is provided (don't overwrite with null)
             if request.avatar_url and existing.avatar_url != request.avatar_url:
                 existing.avatar_url = request.avatar_url
-                needs_commit = True
             
             # Update name if provided and different
             if request.name and existing.name != request.name:
                 existing.name = request.name
-                needs_commit = True
             
-            if needs_commit:
-                await session.commit()
-                await session.refresh(existing)
+            # Update email if user had a placeholder email
+            if existing.email.endswith("@placeholder.local") and request.email:
+                existing.email = request.email
+            
+            await session.commit()
+            await session.refresh(existing)
             
             return SyncUserResponse(
                 id=str(existing.id),
@@ -300,6 +300,7 @@ async def sync_user(request: SyncUserRequest) -> SyncUserResponse:
                     organization_id=existing_org.id,
                     status="active",
                     role="member",
+                    last_login=datetime.utcnow(),
                 )
                 session.add(new_user)
                 await session.commit()
@@ -391,6 +392,66 @@ async def create_organization(request: CreateOrganizationRequest) -> Organizatio
             id=str(new_org.id),
             name=new_org.name,
             email_domain=new_org.email_domain,
+        )
+
+
+class TeamMemberResponse(BaseModel):
+    """Response model for a team member."""
+
+    id: str
+    name: Optional[str]
+    email: str
+    role: Optional[str]
+    avatar_url: Optional[str]
+
+
+class TeamMembersListResponse(BaseModel):
+    """Response model for list of team members."""
+
+    members: list[TeamMemberResponse]
+
+
+@router.get("/organizations/{org_id}/members", response_model=TeamMembersListResponse)
+async def get_organization_members(
+    org_id: str,
+    user_id: Optional[str] = None,
+) -> TeamMembersListResponse:
+    """Get all team members for an organization.
+    
+    Only accessible by members of that organization.
+    """
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        org_uuid = UUID(org_id)
+        user_uuid = UUID(user_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid ID format")
+
+    async with get_session() as session:
+        # Verify requesting user belongs to this organization
+        requesting_user = await session.get(User, user_uuid)
+        if not requesting_user or requesting_user.organization_id != org_uuid:
+            raise HTTPException(status_code=403, detail="Not authorized to view this organization's members")
+
+        # Fetch all users in the organization
+        result = await session.execute(
+            select(User).where(User.organization_id == org_uuid)
+        )
+        users = result.scalars().all()
+
+        return TeamMembersListResponse(
+            members=[
+                TeamMemberResponse(
+                    id=str(u.id),
+                    name=u.name,
+                    email=u.email,
+                    role=u.role,
+                    avatar_url=u.avatar_url,
+                )
+                for u in users
+            ]
         )
 
 

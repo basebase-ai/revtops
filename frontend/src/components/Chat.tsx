@@ -14,6 +14,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { Message } from './Message';
 import { ArtifactViewer } from './ArtifactViewer';
+import { CrmApprovalCard } from './CrmApprovalCard';
 import { getConversation } from '../api/client';
 import { 
   useAppStore, 
@@ -68,7 +69,25 @@ interface WsTextBlockComplete {
   type: 'text_block_complete';
 }
 
-type WsControlMessage = WsConversationCreated | WsMessageComplete | WsToolCall | WsToolResult | WsTextBlockComplete;
+interface WsCrmApprovalResult {
+  type: 'crm_approval_result';
+  operation_id: string;
+  status: string;
+  message?: string;
+  success_count?: number;
+  failure_count?: number;
+  skipped_count?: number;
+  error?: string;
+}
+
+type WsControlMessage = WsConversationCreated | WsMessageComplete | WsToolCall | WsToolResult | WsTextBlockComplete | WsCrmApprovalResult;
+
+// CRM approval state tracking
+interface CrmApprovalState {
+  operationId: string;
+  isProcessing: boolean;
+  result: WsCrmApprovalResult | null;
+}
 
 function isControlMessage(data: unknown): data is WsControlMessage {
   return typeof data === 'object' && data !== null && 'type' in data;
@@ -99,6 +118,7 @@ export function Chat({ userId, organizationId: _organizationId, chatId }: ChatPr
   const [currentArtifact, setCurrentArtifact] = useState<Artifact | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [selectedToolCall, setSelectedToolCall] = useState<ToolCallData | null>(null);
+  const [crmApprovals, setCrmApprovals] = useState<Map<string, CrmApprovalState>>(new Map());
   
   // Refs
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -168,6 +188,22 @@ export function Chat({ userId, organizationId: _organizationId, chatId }: ChatPr
           });
           return;
         }
+        if (parsed.type === 'crm_approval_result') {
+          console.log('[Chat] CRM approval result:', parsed.operation_id, parsed.status);
+          setCrmApprovals((prev) => {
+            const newMap = new Map(prev);
+            const existing = newMap.get(parsed.operation_id);
+            if (existing) {
+              newMap.set(parsed.operation_id, {
+                ...existing,
+                isProcessing: false,
+                result: parsed,
+              });
+            }
+            return newMap;
+          });
+          return;
+        }
       }
     } catch {
       // Not JSON, treat as text chunk
@@ -194,6 +230,45 @@ export function Chat({ userId, organizationId: _organizationId, chatId }: ChatPr
     `/ws/chat/${userId}`,
     { onMessage: handleWebSocketMessage }
   );
+
+  // Handle CRM approval
+  const handleCrmApprove = useCallback((operationId: string, skipDuplicates: boolean) => {
+    console.log('[Chat] Approving CRM operation:', operationId);
+    setCrmApprovals((prev) => {
+      const newMap = new Map(prev);
+      newMap.set(operationId, {
+        operationId,
+        isProcessing: true,
+        result: null,
+      });
+      return newMap;
+    });
+    sendMessage(JSON.stringify({
+      type: 'crm_approval',
+      operation_id: operationId,
+      approved: true,
+      skip_duplicates: skipDuplicates,
+    }));
+  }, [sendMessage]);
+
+  // Handle CRM cancel
+  const handleCrmCancel = useCallback((operationId: string) => {
+    console.log('[Chat] Canceling CRM operation:', operationId);
+    setCrmApprovals((prev) => {
+      const newMap = new Map(prev);
+      newMap.set(operationId, {
+        operationId,
+        isProcessing: true,
+        result: null,
+      });
+      return newMap;
+    });
+    sendMessage(JSON.stringify({
+      type: 'crm_approval',
+      operation_id: operationId,
+      approved: false,
+    }));
+  }, [sendMessage]);
 
   // Reset state when chatId becomes null (New Chat clicked)
   useEffect(() => {
@@ -376,21 +451,67 @@ export function Chat({ userId, organizationId: _organizationId, chatId }: ChatPr
             <EmptyState onSuggestionClick={handleSuggestionClick} />
           ) : (
             <div className="max-w-3xl mx-auto space-y-4">
-              {messages.map((msg) => (
-                msg.role === 'tool' ? (
-                  <ToolCallIndicator 
-                    key={msg.id} 
-                    toolCall={msg.toolCall}
-                    onClick={() => msg.toolCall && setSelectedToolCall(msg.toolCall)}
-                  />
-                ) : (
+              {messages.map((msg) => {
+                // Check if this is a CRM write tool with pending approval
+                if (msg.role === 'tool' && msg.toolCall?.toolName === 'crm_write') {
+                  const result = msg.toolCall.result as Record<string, unknown> | undefined;
+                  if (result?.status === 'pending_approval' && result?.operation_id) {
+                    const operationId = result.operation_id as string;
+                    const approvalState = crmApprovals.get(operationId);
+                    return (
+                      <div key={msg.id} className="pl-8">
+                        <CrmApprovalCard
+                          data={result as {
+                            operation_id: string;
+                            target_system: string;
+                            record_type: string;
+                            operation: string;
+                            preview: {
+                              records: Record<string, unknown>[];
+                              record_count: number;
+                              will_create: number;
+                              will_skip: number;
+                              will_update: number;
+                              duplicate_warnings: Array<{
+                                record: Record<string, unknown>;
+                                existing_id: string;
+                                existing: Record<string, unknown>;
+                                match_field: string;
+                                match_value: string;
+                              }>;
+                            };
+                            message: string;
+                          }}
+                          onApprove={handleCrmApprove}
+                          onCancel={handleCrmCancel}
+                          isProcessing={approvalState?.isProcessing ?? false}
+                          result={approvalState?.result ?? null}
+                        />
+                      </div>
+                    );
+                  }
+                }
+                
+                // Regular tool call indicator
+                if (msg.role === 'tool') {
+                  return (
+                    <ToolCallIndicator 
+                      key={msg.id} 
+                      toolCall={msg.toolCall}
+                      onClick={() => msg.toolCall && setSelectedToolCall(msg.toolCall)}
+                    />
+                  );
+                }
+                
+                // Regular message
+                return (
                   <Message
                     key={msg.id}
                     message={{ ...msg, role: msg.role as 'user' | 'assistant' }}
                     onArtifactClick={setCurrentArtifact}
                   />
-                )
-              ))}
+                );
+              })}
 
               {/* Thinking indicator */}
               {isThinking && <ThinkingIndicator />}

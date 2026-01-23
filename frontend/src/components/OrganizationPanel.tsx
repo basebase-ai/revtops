@@ -8,15 +8,26 @@
  * - Organization settings
  */
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import type { OrganizationInfo, UserProfile } from './AppLayout';
+import { apiRequest } from '../lib/api';
 
 interface TeamMember {
   id: string;
-  name: string;
+  name: string | null;
   email: string;
-  role: 'admin' | 'member';
+  role: string | null;
   avatarUrl: string | null;
+}
+
+interface TeamMembersResponse {
+  members: Array<{
+    id: string;
+    name: string | null;
+    email: string;
+    role: string | null;
+    avatar_url: string | null;
+  }>;
 }
 
 interface OrganizationPanelProps {
@@ -29,17 +40,37 @@ export function OrganizationPanel({ organization, currentUser, onClose }: Organi
   const [activeTab, setActiveTab] = useState<'team' | 'billing' | 'settings'>('team');
   const [inviteEmail, setInviteEmail] = useState('');
   const [isInviting, setIsInviting] = useState(false);
+  const [teamMembers, setTeamMembers] = useState<TeamMember[]>([]);
+  const [isLoadingMembers, setIsLoadingMembers] = useState(true);
 
-  // Current user as first team member (TODO: fetch full team from API)
-  const teamMembers: TeamMember[] = [
-    {
-      id: currentUser.id,
-      name: currentUser.name ?? 'You',
-      email: currentUser.email,
-      role: 'admin',
-      avatarUrl: currentUser.avatarUrl,
-    },
-  ];
+  // Fetch team members on mount
+  useEffect(() => {
+    const fetchMembers = async (): Promise<void> => {
+      if (!organization.id) {
+        setIsLoadingMembers(false);
+        return;
+      }
+
+      const response = await apiRequest<TeamMembersResponse>(
+        `/auth/organizations/${organization.id}/members?user_id=${currentUser.id}`
+      );
+
+      if (response.data) {
+        setTeamMembers(
+          response.data.members.map((m) => ({
+            id: m.id,
+            name: m.name,
+            email: m.email,
+            role: m.role,
+            avatarUrl: m.avatar_url,
+          }))
+        );
+      }
+      setIsLoadingMembers(false);
+    };
+
+    void fetchMembers();
+  }, [organization.id, currentUser.id]);
 
   const handleInvite = async (): Promise<void> => {
     if (!inviteEmail.trim()) return;
@@ -143,39 +174,49 @@ export function OrganizationPanel({ organization, currentUser, onClose }: Organi
                 <h3 className="text-sm font-medium text-surface-200 mb-3">
                   Team members ({teamMembers.length})
                 </h3>
-                <div className="space-y-2">
-                  {teamMembers.map((member) => (
-                    <div
-                      key={member.id}
-                      className="flex items-center gap-3 p-3 rounded-lg bg-surface-800/50"
-                    >
-                      {member.avatarUrl ? (
-                        <img
-                          src={member.avatarUrl}
-                          alt={member.name}
-                          className="w-10 h-10 rounded-full object-cover"
-                        />
-                      ) : (
-                        <div className="w-10 h-10 rounded-full bg-primary-600 flex items-center justify-center text-white font-medium">
-                          {member.name.charAt(0).toUpperCase()}
-                        </div>
-                      )}
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2">
-                          <span className="font-medium text-surface-100 truncate">
-                            {member.name}
-                          </span>
-                          {member.role === 'admin' && (
-                            <span className="px-2 py-0.5 text-xs font-medium bg-primary-500/20 text-primary-400 rounded-full">
-                              Admin
-                            </span>
+                {isLoadingMembers ? (
+                  <div className="flex items-center justify-center py-8">
+                    <div className="animate-spin w-6 h-6 border-2 border-primary-500 border-t-transparent rounded-full" />
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {teamMembers.map((member) => {
+                      const displayName = member.name ?? member.email.split('@')[0];
+                      const isAdmin = member.role === 'admin' || member.id === currentUser.id;
+                      return (
+                        <div
+                          key={member.id}
+                          className="flex items-center gap-3 p-3 rounded-lg bg-surface-800/50"
+                        >
+                          {member.avatarUrl ? (
+                            <img
+                              src={member.avatarUrl}
+                              alt={displayName}
+                              className="w-10 h-10 rounded-full object-cover"
+                            />
+                          ) : (
+                            <div className="w-10 h-10 rounded-full bg-primary-600 flex items-center justify-center text-white font-medium">
+                              {displayName.charAt(0).toUpperCase()}
+                            </div>
                           )}
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2">
+                              <span className="font-medium text-surface-100 truncate">
+                                {displayName}
+                              </span>
+                              {isAdmin && (
+                                <span className="px-2 py-0.5 text-xs font-medium bg-primary-500/20 text-primary-400 rounded-full">
+                                  Admin
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-sm text-surface-400 truncate">{member.email}</p>
+                          </div>
                         </div>
-                        <p className="text-sm text-surface-400 truncate">{member.email}</p>
-                      </div>
-                    </div>
-                  ))}
-                </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             </div>
           )}

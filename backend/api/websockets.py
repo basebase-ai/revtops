@@ -8,6 +8,7 @@ Responsibilities:
 - Handle tool calls during conversation
 - Save conversation history
 - Support conversation-based chat
+- Handle CRM operation approvals
 """
 
 import json
@@ -16,6 +17,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 from uuid import UUID
 
 from agents.orchestrator import ChatOrchestrator
+from agents.tools import execute_crm_operation, cancel_crm_operation
 from models.database import get_session
 from models.user import User
 
@@ -26,8 +28,10 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str) -> None:
 
     Protocol:
     - Client sends JSON: {"message": "...", "conversation_id": "..." (optional)}
+    - Client sends JSON for approvals: {"type": "crm_approval", "operation_id": "...", "approved": true/false}
     - Server streams text chunks back
     - Server sends JSON for metadata: {"type": "conversation_created", "conversation_id": "..."}
+    - Server sends JSON for approval results: {"type": "crm_approval_result", ...}
 
     Args:
         websocket: The WebSocket connection
@@ -44,18 +48,15 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str) -> None:
     async with get_session() as session:
         user = await session.get(User, user_uuid)
 
-        # Auto-create user if they don't exist (came from Supabase Auth)
+        # Reject if user doesn't exist - they must go through proper auth flow first
         if not user:
-            user = User(
-                id=user_uuid,
-                email=f"user-{user_id[:8]}@placeholder.local",  # Placeholder, updated on sync
-                name=None,
-                last_login=datetime.utcnow(),
-            )
-            session.add(user)
-            await session.commit()
-            await session.refresh(user)
-            print(f"Auto-created user {user_uuid} for WebSocket connection")
+            await websocket.close(code=1008, reason="User not found. Please sign in first.")
+            return
+
+        # Reject users who are on the waitlist (not yet invited)
+        if user.status == "waitlist":
+            await websocket.close(code=1008, reason="You're on the waitlist. We'll notify you when you have access.")
+            return
 
         organization_id = str(user.organization_id) if user.organization_id else None
 
@@ -66,15 +67,51 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str) -> None:
 
                 # Parse message - support both plain text and JSON
                 conversation_id: str | None = None
-                user_message: str
+                user_message: str | None = None
+                message_type: str = "chat"
 
                 try:
                     data = json.loads(raw_message)
+                    message_type = data.get("type", "chat")
+                    
+                    # Handle CRM approval messages
+                    if message_type == "crm_approval":
+                        operation_id = data.get("operation_id")
+                        approved = data.get("approved", False)
+                        skip_duplicates = data.get("skip_duplicates", True)
+                        
+                        if not operation_id:
+                            await websocket.send_text(json.dumps({
+                                "type": "crm_approval_result",
+                                "status": "error",
+                                "error": "Missing operation_id",
+                            }))
+                            continue
+                        
+                        if approved:
+                            # Execute the operation
+                            result = await execute_crm_operation(operation_id, skip_duplicates)
+                        else:
+                            # Cancel the operation
+                            result = await cancel_crm_operation(operation_id)
+                        
+                        await websocket.send_text(json.dumps({
+                            "type": "crm_approval_result",
+                            "operation_id": operation_id,
+                            **result,
+                        }))
+                        continue
+                    
+                    # Regular chat message
                     user_message = data.get("message", raw_message)
                     conversation_id = data.get("conversation_id")
+                    
                 except json.JSONDecodeError:
                     # Plain text message (backwards compatibility)
                     user_message = raw_message
+
+                if not user_message:
+                    continue
 
                 # Create orchestrator with conversation context
                 orchestrator = ChatOrchestrator(

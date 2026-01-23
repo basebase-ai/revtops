@@ -390,3 +390,91 @@ async def invite_user_role_auth(
             message=f"Invitation sent to {user.email}",
             user_id=str(user.id),
         )
+
+
+# =============================================================================
+# Admin Users List Endpoint
+# =============================================================================
+
+
+class AdminUserResponse(BaseModel):
+    """Response model for a user in the admin users list."""
+
+    id: str
+    email: str
+    first_name: Optional[str]
+    last_name: Optional[str]
+    status: str
+    last_login: Optional[str]
+    created_at: Optional[str]
+    organization_id: Optional[str]
+    organization_name: Optional[str]
+
+
+class AdminUsersListResponse(BaseModel):
+    """Response for listing all users."""
+
+    users: list[AdminUserResponse]
+    total: int
+
+
+@router.get("/admin/users", response_model=AdminUsersListResponse)
+async def list_admin_users(
+    user_id: Optional[str] = None,
+) -> AdminUsersListResponse:
+    """
+    List all users who are not on the waitlist (active or invited).
+    
+    Requires user to have global_admin role.
+    Returns users with their organization info and last login time.
+    """
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    
+    await verify_global_admin(user_id)
+
+    from sqlalchemy.orm import selectinload
+
+    async with get_session() as session:
+        # Get all users who are not on the waitlist (active or invited)
+        query = (
+            select(User)
+            .options(selectinload(User.organization))
+            .where(User.status.in_(["active", "invited"]))
+            .order_by(User.created_at.desc())
+        )
+        
+        result = await session.execute(query)
+        users = result.scalars().all()
+
+        def split_name(full_name: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+            """Split a full name into first and last name."""
+            if not full_name:
+                return (None, None)
+            parts = full_name.strip().split(" ", 1)
+            first_name = parts[0] if parts else None
+            last_name = parts[1] if len(parts) > 1 else None
+            return (first_name, last_name)
+
+        user_responses: list[AdminUserResponse] = []
+        for u in users:
+            first_name, last_name = split_name(u.name)
+            org_name: Optional[str] = None
+            if u.organization:
+                org_name = u.organization.name
+            
+            user_responses.append(
+                AdminUserResponse(
+                    id=str(u.id),
+                    email=u.email,
+                    first_name=first_name,
+                    last_name=last_name,
+                    status=u.status,
+                    last_login=u.last_login.isoformat() if u.last_login else None,
+                    created_at=u.created_at.isoformat() if u.created_at else None,
+                    organization_id=str(u.organization_id) if u.organization_id else None,
+                    organization_name=org_name,
+                )
+            )
+
+        return AdminUsersListResponse(users=user_responses, total=len(user_responses))

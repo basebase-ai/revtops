@@ -10,6 +10,7 @@ from models.artifact import Artifact
 from models.conversation import Conversation
 from models.chat_message import ChatMessage
 from models.integration import Integration
+from models.crm_operation import CrmOperation
 
 __all__ = [
     "Base",
@@ -25,4 +26,5 @@ __all__ = [
     "Conversation",
     "ChatMessage",
     "Integration",
+    "CrmOperation",
 ]

@@ -478,3 +478,301 @@ class HubSpotConnector(BaseConnector):
         )
         deal = await self._normalize_deal(data)
         return deal.to_dict()
+
+    # =========================================================================
+    # Write Operations
+    # =========================================================================
+
+    async def create_contact(self, properties: dict[str, Any]) -> dict[str, Any]:
+        """
+        Create a single contact in HubSpot.
+
+        Args:
+            properties: Contact properties (email, firstname, lastname, company, jobtitle, phone)
+
+        Returns:
+            Created contact data with HubSpot ID
+        """
+        data = await self._make_request(
+            "POST",
+            "/crm/v3/objects/contacts",
+            json_data={"properties": properties},
+        )
+        return {
+            "id": data.get("id"),
+            "properties": data.get("properties", {}),
+        }
+
+    async def create_company(self, properties: dict[str, Any]) -> dict[str, Any]:
+        """
+        Create a single company in HubSpot.
+
+        Args:
+            properties: Company properties (name, domain, industry, etc.)
+
+        Returns:
+            Created company data with HubSpot ID
+        """
+        data = await self._make_request(
+            "POST",
+            "/crm/v3/objects/companies",
+            json_data={"properties": properties},
+        )
+        return {
+            "id": data.get("id"),
+            "properties": data.get("properties", {}),
+        }
+
+    async def create_deal(self, properties: dict[str, Any]) -> dict[str, Any]:
+        """
+        Create a single deal in HubSpot.
+
+        Args:
+            properties: Deal properties (dealname, amount, dealstage, closedate, pipeline)
+
+        Returns:
+            Created deal data with HubSpot ID
+        """
+        data = await self._make_request(
+            "POST",
+            "/crm/v3/objects/deals",
+            json_data={"properties": properties},
+        )
+        return {
+            "id": data.get("id"),
+            "properties": data.get("properties", {}),
+        }
+
+    async def update_contact(
+        self, contact_id: str, properties: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Update an existing contact in HubSpot."""
+        data = await self._make_request(
+            "PATCH",
+            f"/crm/v3/objects/contacts/{contact_id}",
+            json_data={"properties": properties},
+        )
+        return {
+            "id": data.get("id"),
+            "properties": data.get("properties", {}),
+        }
+
+    async def update_company(
+        self, company_id: str, properties: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Update an existing company in HubSpot."""
+        data = await self._make_request(
+            "PATCH",
+            f"/crm/v3/objects/companies/{company_id}",
+            json_data={"properties": properties},
+        )
+        return {
+            "id": data.get("id"),
+            "properties": data.get("properties", {}),
+        }
+
+    async def update_deal(
+        self, deal_id: str, properties: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Update an existing deal in HubSpot."""
+        data = await self._make_request(
+            "PATCH",
+            f"/crm/v3/objects/deals/{deal_id}",
+            json_data={"properties": properties},
+        )
+        return {
+            "id": data.get("id"),
+            "properties": data.get("properties", {}),
+        }
+
+    async def create_contacts_batch(
+        self, contacts: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        """
+        Batch create contacts in HubSpot (up to 100 per call).
+
+        Args:
+            contacts: List of contact property dicts
+
+        Returns:
+            Batch result with created contacts and any errors
+        """
+        if len(contacts) > 100:
+            raise ValueError("HubSpot batch limit is 100 records per call")
+
+        inputs = [{"properties": c} for c in contacts]
+        data = await self._make_request(
+            "POST",
+            "/crm/v3/objects/contacts/batch/create",
+            json_data={"inputs": inputs},
+        )
+        return {
+            "status": data.get("status", "COMPLETE"),
+            "results": [
+                {"id": r.get("id"), "properties": r.get("properties", {})}
+                for r in data.get("results", [])
+            ],
+            "errors": data.get("errors", []),
+        }
+
+    async def create_companies_batch(
+        self, companies: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        """Batch create companies in HubSpot (up to 100 per call)."""
+        if len(companies) > 100:
+            raise ValueError("HubSpot batch limit is 100 records per call")
+
+        inputs = [{"properties": c} for c in companies]
+        data = await self._make_request(
+            "POST",
+            "/crm/v3/objects/companies/batch/create",
+            json_data={"inputs": inputs},
+        )
+        return {
+            "status": data.get("status", "COMPLETE"),
+            "results": [
+                {"id": r.get("id"), "properties": r.get("properties", {})}
+                for r in data.get("results", [])
+            ],
+            "errors": data.get("errors", []),
+        }
+
+    async def create_deals_batch(self, deals: list[dict[str, Any]]) -> dict[str, Any]:
+        """Batch create deals in HubSpot (up to 100 per call)."""
+        if len(deals) > 100:
+            raise ValueError("HubSpot batch limit is 100 records per call")
+
+        inputs = [{"properties": d} for d in deals]
+        data = await self._make_request(
+            "POST",
+            "/crm/v3/objects/deals/batch/create",
+            json_data={"inputs": inputs},
+        )
+        return {
+            "status": data.get("status", "COMPLETE"),
+            "results": [
+                {"id": r.get("id"), "properties": r.get("properties", {})}
+                for r in data.get("results", [])
+            ],
+            "errors": data.get("errors", []),
+        }
+
+    async def find_contact_by_email(self, email: str) -> dict[str, Any] | None:
+        """
+        Search for a contact by email address.
+
+        Args:
+            email: Email address to search for
+
+        Returns:
+            Contact data if found, None otherwise
+        """
+        try:
+            data = await self._make_request(
+                "POST",
+                "/crm/v3/objects/contacts/search",
+                json_data={
+                    "filterGroups": [
+                        {
+                            "filters": [
+                                {
+                                    "propertyName": "email",
+                                    "operator": "EQ",
+                                    "value": email,
+                                }
+                            ]
+                        }
+                    ],
+                    "properties": ["email", "firstname", "lastname", "company"],
+                    "limit": 1,
+                },
+            )
+            results = data.get("results", [])
+            if results:
+                return {
+                    "id": results[0].get("id"),
+                    "properties": results[0].get("properties", {}),
+                }
+            return None
+        except httpx.HTTPStatusError:
+            return None
+
+    async def find_company_by_domain(self, domain: str) -> dict[str, Any] | None:
+        """
+        Search for a company by domain.
+
+        Args:
+            domain: Company domain to search for
+
+        Returns:
+            Company data if found, None otherwise
+        """
+        try:
+            data = await self._make_request(
+                "POST",
+                "/crm/v3/objects/companies/search",
+                json_data={
+                    "filterGroups": [
+                        {
+                            "filters": [
+                                {
+                                    "propertyName": "domain",
+                                    "operator": "EQ",
+                                    "value": domain,
+                                }
+                            ]
+                        }
+                    ],
+                    "properties": ["name", "domain", "industry"],
+                    "limit": 1,
+                },
+            )
+            results = data.get("results", [])
+            if results:
+                return {
+                    "id": results[0].get("id"),
+                    "properties": results[0].get("properties", {}),
+                }
+            return None
+        except httpx.HTTPStatusError:
+            return None
+
+    async def find_deal_by_name(self, name: str) -> dict[str, Any] | None:
+        """
+        Search for a deal by name.
+
+        Args:
+            name: Deal name to search for
+
+        Returns:
+            Deal data if found, None otherwise
+        """
+        try:
+            data = await self._make_request(
+                "POST",
+                "/crm/v3/objects/deals/search",
+                json_data={
+                    "filterGroups": [
+                        {
+                            "filters": [
+                                {
+                                    "propertyName": "dealname",
+                                    "operator": "EQ",
+                                    "value": name,
+                                }
+                            ]
+                        }
+                    ],
+                    "properties": ["dealname", "amount", "dealstage"],
+                    "limit": 1,
+                },
+            )
+            results = data.get("results", [])
+            if results:
+                return {
+                    "id": results[0].get("id"),
+                    "properties": results[0].get("properties", {}),
+                }
+            return None
+        except httpx.HTTPStatusError:
+            return None
