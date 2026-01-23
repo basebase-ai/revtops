@@ -6,6 +6,8 @@
 
 import { useEffect, useState } from 'react';
 import { WaitlistForm } from './WaitlistForm';
+import { AnimatedTextConversation } from './AnimatedTextConversation';
+import demoConversation from '../data/demoConversation.json';
 
 interface LandingProps {
   onGetStarted: () => void;
@@ -74,8 +76,32 @@ export function Landing({ onGetStarted }: LandingProps): JSX.Element {
             Chat with your data to uncover insights, then build automations that supercharge your team's efficiency.
           </p>
 
+          {/* CTA buttons */}
+          <div className="flex flex-col sm:flex-row gap-4 justify-center mb-12">
+            <button
+              onClick={() => setShowWaitlistForm(true)}
+              className="btn-primary text-lg px-8 py-4 inline-flex items-center gap-2"
+            >
+              Join the Waitlist
+              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
+              </svg>
+            </button>
+            <button className="px-8 py-4 rounded-lg font-medium text-surface-300 border border-surface-700 hover:border-surface-500 transition-colors">
+              Watch Demo
+            </button>
+          </div>
+
+          {/* Animated conversation demo */}
+          <div className="mb-12">
+            <AnimatedTextConversation
+              conversation={demoConversation}
+              messageDelayMs={4000}
+            />
+          </div>
+
           {/* Two pillars */}
-          <div className="flex flex-col sm:flex-row gap-6 justify-center max-w-2xl mx-auto mb-10">
+          <div className="flex flex-col sm:flex-row gap-6 justify-center max-w-2xl mx-auto">
             <div className="flex-1 p-4 rounded-xl border border-surface-700 bg-surface-900/30 text-left">
               <div className="flex items-center gap-2 mb-2">
                 <svg className="w-5 h-5 text-primary-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -93,67 +119,6 @@ export function Landing({ onGetStarted }: LandingProps): JSX.Element {
                 <span className="font-semibold text-surface-100">Automations</span>
               </div>
               <p className="text-sm text-surface-400">Build and launch workflows that eliminate busywork and boost team performance.</p>
-            </div>
-          </div>
-
-          <div className="flex flex-col sm:flex-row gap-4 justify-center">
-            <button
-              onClick={() => setShowWaitlistForm(true)}
-              className="btn-primary text-lg px-8 py-4 inline-flex items-center gap-2"
-            >
-              Join the Waitlist
-              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
-              </svg>
-            </button>
-            <button className="px-8 py-4 rounded-lg font-medium text-surface-300 border border-surface-700 hover:border-surface-500 transition-colors">
-              Watch Demo
-            </button>
-          </div>
-        </div>
-
-        {/* Hero Visual */}
-        <div
-          className={`mt-20 transition-all duration-1000 delay-300 ${isVisible ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-8'
-            }`}
-        >
-          <div className="relative max-w-4xl mx-auto">
-            <div className="absolute inset-0 bg-gradient-to-t from-surface-950 via-transparent to-transparent z-10 pointer-events-none" />
-            <div className="rounded-xl border border-surface-800 bg-surface-900/50 backdrop-blur-sm overflow-hidden shadow-2xl">
-              {/* Mock chat interface */}
-              <div className="flex items-center gap-2 px-4 py-3 border-b border-surface-800 bg-surface-900/80">
-                <div className="w-3 h-3 rounded-full bg-red-500" />
-                <div className="w-3 h-3 rounded-full bg-yellow-500" />
-                <div className="w-3 h-3 rounded-full bg-green-500" />
-              </div>
-              <div className="p-6 space-y-4">
-                <div className="flex gap-3">
-                  <div className="w-8 h-8 rounded-full bg-surface-700 flex-shrink-0" />
-                  <div className="bg-surface-800 rounded-2xl rounded-tl-sm px-4 py-3 max-w-lg">
-                    <p className="text-surface-200">What should I prioritize this week for my pipeline?</p>
-                  </div>
-                </div>
-                <div className="flex gap-3 justify-end">
-                  <div className="bg-primary-600/20 border border-primary-500/30 rounded-2xl rounded-tr-sm px-4 py-3 max-w-xl">
-                    <div className="flex gap-2 mb-3 flex-wrap">
-                      <span className="px-2 py-0.5 text-xs rounded-full bg-orange-500/20 text-orange-400 border border-orange-500/30">HubSpot</span>
-                      <span className="px-2 py-0.5 text-xs rounded-full bg-purple-500/20 text-purple-400 border border-purple-500/30">Slack</span>
-                      <span className="px-2 py-0.5 text-xs rounded-full bg-blue-500/20 text-blue-400 border border-blue-500/30">Calendar</span>
-                    </div>
-                    <p className="text-surface-200 mb-2">Based on your data, here are your top priorities:</p>
-                    <div className="text-sm text-surface-400 space-y-2">
-                      <p><span className="text-orange-400">🔥</span> <strong className="text-surface-300">Acme Corp ($125k)</strong> - Contract expires Friday. Sarah mentioned budget approval in #deals yesterday.</p>
-                      <p><span className="text-yellow-400">⚠️</span> <strong className="text-surface-300">TechStart ($89k)</strong> - No meeting scheduled. Last contact was 12 days ago.</p>
-                      <p><span className="text-emerald-400">✓</span> <strong className="text-surface-300">Global Systems ($67k)</strong> - Demo call tomorrow at 2pm. They asked about API pricing in Slack.</p>
-                    </div>
-                  </div>
-                  <div className="w-8 h-8 rounded-full bg-gradient-to-br from-primary-500 to-primary-700 flex-shrink-0 flex items-center justify-center">
-                    <svg className="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
-                    </svg>
-                  </div>
-                </div>
-              </div>
             </div>
           </div>
         </div>
