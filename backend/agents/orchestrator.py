@@ -144,34 +144,6 @@ searchable_text (TEXT, nullable) -- combined text used for semantic search
 synced_at (TIMESTAMP)
 ```
 
-### users
-Users of the Revtops platform.
-```
-id (UUID, PK)
-email (VARCHAR, unique)
-name (VARCHAR, nullable)
-organization_id (UUID, FK -> organizations, nullable)
-salesforce_user_id (VARCHAR, nullable)
-role (VARCHAR, nullable) -- 'ae', 'sales_manager', 'cro', 'admin'
-created_at (TIMESTAMP)
-last_login (TIMESTAMP, nullable)
-```
-
-### integrations
-Connected integrations (HubSpot, Slack, etc.).
-```
-id (UUID, PK)
-organization_id (UUID, FK -> organizations)
-provider (VARCHAR) -- 'hubspot', 'slack', 'google_calendar', 'gmail', 'microsoft_calendar', 'microsoft_mail', 'salesforce'
-nango_connection_id (VARCHAR, nullable)
-connected_by_user_id (UUID, FK -> users, nullable)
-is_active (BOOLEAN)
-last_sync_at (TIMESTAMP, nullable)
-last_error (TEXT, nullable)
-extra_data (JSONB, nullable)
-created_at (TIMESTAMP)
-updated_at (TIMESTAMP)
-```
 
 ## Calendar Data
 

@@ -279,6 +279,17 @@ export function Chat({ userId, organizationId: _organizationId, chatId }: ChatPr
     }
   }, [chatId, clearChat]);
 
+  // Auto-focus input when on a new empty chat
+  useEffect(() => {
+    if (chatId === null && messages.length === 0 && !isLoading && isConnected) {
+      // Small delay to ensure component is fully rendered
+      const timer = setTimeout(() => {
+        inputRef.current?.focus();
+      }, 100);
+      return () => clearTimeout(timer);
+    }
+  }, [chatId, messages.length, isLoading, isConnected]);
+
   // Load conversation when selecting an existing chat from sidebar
   useEffect(() => {
     // If no chatId, this is a new chat
@@ -543,31 +554,47 @@ export function Chat({ userId, organizationId: _organizationId, chatId }: ChatPr
       </div>
 
       {/* Input */}
-      <div className="border-t border-surface-800 p-4">
+      <div className="border-t border-surface-800 p-3">
         <div className="max-w-3xl mx-auto">
-          <div className="flex gap-3">
+          <div className="flex items-end gap-2">
+            {/* Attach button */}
+            <button
+              type="button"
+              className="flex-shrink-0 w-8 h-8 mb-0.5 rounded-full border border-surface-600 text-surface-400 hover:text-surface-200 hover:border-surface-500 flex items-center justify-center transition-colors"
+              title="Attach file"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+              </svg>
+            </button>
+            
+            {/* Text input */}
             <textarea
               ref={inputRef}
               value={input}
-              onChange={(e) => setInput(e.target.value)}
+              onChange={(e) => {
+                setInput(e.target.value);
+                // Auto-resize textarea
+                e.target.style.height = 'auto';
+                e.target.style.height = `${Math.min(e.target.scrollHeight, 240)}px`; // 240px ≈ 10 lines
+              }}
               onKeyDown={handleKeyDown}
               placeholder="Ask about your pipeline..."
-              className="input-field resize-none min-h-[52px] max-h-32 text-[13px]"
+              className="flex-1 resize-none bg-surface-900 text-surface-100 rounded-2xl border border-surface-700 px-4 py-2 text-sm placeholder-surface-500 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all duration-150 leading-5 scrollbar-none"
+              style={{ minHeight: '36px', maxHeight: '240px' }}
               rows={1}
               disabled={!isConnected}
+              autoFocus={chatId === null}
             />
+            
+            {/* Send button - circle with up arrow */}
             <button
               onClick={handleSend}
               disabled={!input.trim() || !isConnected}
-              className="btn-primary px-6 disabled:opacity-50 disabled:cursor-not-allowed"
+              className="flex-shrink-0 w-8 h-8 mb-0.5 rounded-full bg-primary-600 text-white hover:bg-primary-500 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center transition-colors"
             >
-              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"
-                />
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 10l7-7m0 0l7 7m-7-7v18" />
               </svg>
             </button>
           </div>

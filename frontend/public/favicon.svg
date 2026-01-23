@@ -15,13 +15,12 @@
     stroke-linecap="round" 
     stroke-linejoin="round"
   />
-  <!-- Mountain right slope - small subtle hint -->
+  <!-- Mountain right slope -->
   <path 
     d="M82 45 L90 62" 
     stroke="white" 
     stroke-width="8" 
     fill="none" 
-    stroke-linecap="round" 
-    stroke-opacity="0.45"
+    stroke-linecap="round"
   />
 </svg>

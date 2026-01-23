@@ -31,9 +31,9 @@ ORG_SCOPED_TABLES: set[str] = {
     "deals", "accounts", "contacts", "activities", "integrations", "artifacts"
 }
 
-# Tables that are allowed to be queried
+# Tables that are allowed to be queried (synced data only - no internal admin tables)
 ALLOWED_TABLES: set[str] = {
-    "deals", "accounts", "contacts", "activities", "users", "integrations", "organizations"
+    "deals", "accounts", "contacts", "activities"
 }
 
 
