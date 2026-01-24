@@ -30,7 +30,6 @@ export interface OrganizationInfo {
   id: string;
   name: string;
   logoUrl: string | null;
-  memberCount: number;
 }
 
 export interface ChatSummary {
@@ -479,7 +478,6 @@ export const useAppStore = create<AppState>()(
               id: data.organization.id,
               name: data.organization.name,
               logoUrl: data.organization.logo_url,
-              memberCount: organization?.memberCount ?? 1,
             });
           }
 

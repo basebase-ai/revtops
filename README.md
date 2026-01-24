@@ -64,11 +64,11 @@ alembic upgrade head
 **Backend:**
 
 ```bash
-cd backend
-python3 -m venv venv
-source venv/bin/activate  # or `venv\Scripts\activate` on Windows
-pip install -r requirements.txt
-uvicorn api.main:app --reload
+cd backend                        # Navigate into the backend directory
+python3 -m venv venv              # Create an isolated Python environment called "venv"
+source venv/bin/activate          # Activate the virtual environment (use `venv\Scripts\activate` on Windows)
+pip install -r requirements.txt   # Install all required Python packages listed in requirements.txt
+uvicorn api.main:app --reload     # Start the FastAPI server with auto-reload on code changes
 ```
 
 **Frontend:**

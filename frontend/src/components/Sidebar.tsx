@@ -50,6 +50,7 @@ interface SidebarProps {
   currentChatId: string | null;
   onNewChat: () => void;
   organization: OrganizationInfo;
+  memberCount: number;
   onOpenOrgPanel: () => void;
   onOpenProfilePanel: () => void;
 }
@@ -66,6 +67,7 @@ export function Sidebar({
   currentChatId,
   onNewChat,
   organization,
+  memberCount,
   onOpenOrgPanel,
   onOpenProfilePanel,
 }: SidebarProps): JSX.Element {
@@ -251,7 +253,7 @@ export function Sidebar({
                 {organization.name}
               </div>
               <div className="text-xs text-surface-500">
-                {organization.memberCount} member{organization.memberCount !== 1 ? 's' : ''}
+                {memberCount} member{memberCount !== 1 ? 's' : ''}
               </div>
             </div>
           )}

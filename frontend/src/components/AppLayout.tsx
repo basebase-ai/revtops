@@ -19,7 +19,7 @@ import { AdminPanel } from './AdminPanel';
 import { OrganizationPanel } from './OrganizationPanel';
 import { ProfilePanel } from './ProfilePanel';
 import { useAppStore } from '../store';
-import { useIntegrations } from '../hooks';
+import { useIntegrations, useTeamMembers } from '../hooks';
 
 // Re-export types from store for backwards compatibility
 export type { UserProfile, OrganizationInfo, ChatSummary, View } from '../store';
@@ -55,6 +55,12 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
     user?.id ?? null
   );
   const connectedIntegrationsCount = integrations.filter((i) => i.isActive).length;
+
+  // React Query: Get team members for member count (single source of truth)
+  const { data: teamMembers = [] } = useTeamMembers(
+    organization?.id ?? null,
+    user?.id ?? null
+  );
 
   // Get actions separately (they're stable and don't need shallow comparison)
   const setSidebarCollapsed = useAppStore((state) => state.setSidebarCollapsed);
@@ -109,6 +115,7 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
         currentChatId={currentChatId}
         onNewChat={startNewChat}
         organization={organization}
+        memberCount={teamMembers.length}
         onOpenOrgPanel={() => setShowOrgPanel(true)}
         onOpenProfilePanel={() => setShowProfilePanel(true)}
       />

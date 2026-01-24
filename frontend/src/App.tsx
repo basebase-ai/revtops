@@ -28,7 +28,6 @@ type Screen = 'landing' | 'auth' | 'blocked-email' | 'not-registered' | 'waitlis
 interface StoredCompany {
   id: string; // UUID
   name: string;
-  memberCount: number;
 }
 
 function generateUUID(): string {
@@ -51,7 +50,6 @@ function getStoredCompanies(): Record<string, StoredCompany> {
     const company = companies[domain];
     if (company && !company.id) {
       company.id = generateUUID();
-      company.memberCount = company.memberCount ?? 1;
       needsMigration = true;
     }
   }
@@ -68,7 +66,6 @@ function storeCompany(domain: string, name: string): StoredCompany {
   const company: StoredCompany = {
     id: generateUUID(),
     name,
-    memberCount: 1,
   };
   companies[domain] = company;
   localStorage.setItem('revtops_companies', JSON.stringify(companies));
@@ -130,7 +127,6 @@ function App(): JSX.Element {
               id: 'example.com',
               name: 'Example Company',
               logoUrl: null,
-              memberCount: 1,
             });
             setScreen('app');
           }
@@ -281,7 +277,6 @@ function App(): JSX.Element {
           existingCompany = {
             id: backendOrg.id,
             name: backendOrg.name,
-            memberCount: 1,
           };
           // Update localStorage
           const companies = getStoredCompanies();
@@ -303,7 +298,6 @@ function App(): JSX.Element {
       id: existingCompany.id,
       name: existingCompany.name,
       logoUrl: null,
-      memberCount: existingCompany.memberCount,
     });
 
     // Sync user with organization to backend
@@ -365,7 +359,6 @@ function App(): JSX.Element {
       id: company.id,
       name: company.name,
       logoUrl: null,
-      memberCount: 1,
     });
 
     // Create organization in backend database
