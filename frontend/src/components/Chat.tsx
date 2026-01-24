@@ -11,6 +11,8 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { Message } from './Message';
 import { ArtifactViewer } from './ArtifactViewer';
@@ -608,108 +610,165 @@ function MessageWithBlocks({
   onCrmCancel: (operationId: string) => void;
   onToolClick: (block: ToolUseBlock) => void;
 }): JSX.Element {
-  // Safely get content blocks (handle undefined for backwards compat)
   const blocks = message.contentBlocks ?? [];
+  const isUser = message.role === 'user';
   
-  // Debug logging
   if (blocks.length === 0) {
     console.warn('[MessageWithBlocks] Empty contentBlocks for message:', message.id, message.role);
-  }
-  
-  // Extract text content for the Message component
-  const textContent = blocks
-    .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
-    .map((b) => b.text)
-    .join('');
-
-  // Get tool_use blocks
-  const toolBlocks = blocks.filter(
-    (b): b is ToolUseBlock => b.type === 'tool_use'
-  );
-
-  // If nothing to render, return empty fragment
-  if (!textContent && toolBlocks.length === 0) {
-    console.warn('[MessageWithBlocks] No content to render for message:', message.id, message);
     return <></>;
   }
 
-  return (
-    <div>
-      {/* Tool calls first (agent runs tools before generating response) */}
-      {toolBlocks.map((block) => {
-        // CRM write gets special handling
-        if (block.name === 'crm_write' && block.result) {
-          const result = block.result as Record<string, unknown>;
-          const operationId = result.operation_id as string;
-          const approvalState = crmApprovals.get(operationId);
-          
-          // Check if stored result already has final state
-          const storedStatus = result?.status as string | undefined;
-          const isFinalState = storedStatus && ['completed', 'failed', 'canceled', 'expired'].includes(storedStatus);
-          
-          const finalResult = isFinalState
-            ? (result as { status: string; message?: string; success_count?: number; failure_count?: number; skipped_count?: number; error?: string })
-            : (approvalState?.result as { status: string; message?: string; success_count?: number; failure_count?: number; skipped_count?: number; error?: string } | null) ?? null;
+  // For user messages, use the simple Message component
+  if (isUser) {
+    const textContent = blocks
+      .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
+      .map((b) => b.text)
+      .join('');
+    
+    return (
+      <Message
+        message={{
+          id: message.id,
+          role: message.role,
+          content: textContent,
+          timestamp: message.timestamp,
+          isStreaming: message.isStreaming,
+        }}
+        onArtifactClick={onArtifactClick}
+      />
+    );
+  }
 
-          if (result?.preview || finalResult) {
+  // For assistant messages, render blocks in order (interleaved)
+  // Find the last text block index for timestamp placement
+  const lastTextIndex = blocks.reduce((lastIdx, block, idx) => 
+    block.type === 'text' ? idx : lastIdx, -1);
+
+  const renderToolBlock = (block: ToolUseBlock): JSX.Element => {
+    // CRM write gets special handling
+    if (block.name === 'crm_write' && block.result) {
+      const result = block.result as Record<string, unknown>;
+      const operationId = result.operation_id as string;
+      const approvalState = crmApprovals.get(operationId);
+      
+      const storedStatus = result?.status as string | undefined;
+      const isFinalState = storedStatus && ['completed', 'failed', 'canceled', 'expired'].includes(storedStatus);
+      
+      const finalResult = isFinalState
+        ? (result as { status: string; message?: string; success_count?: number; failure_count?: number; skipped_count?: number; error?: string })
+        : (approvalState?.result as { status: string; message?: string; success_count?: number; failure_count?: number; skipped_count?: number; error?: string } | null) ?? null;
+
+      if (result?.preview || finalResult) {
+        return (
+          <div key={block.id} className="my-1">
+            <CrmApprovalCard
+              data={result as {
+                operation_id: string;
+                target_system: string;
+                record_type: string;
+                operation: string;
+                preview: {
+                  records: Record<string, unknown>[];
+                  record_count: number;
+                  will_create: number;
+                  will_skip: number;
+                  will_update: number;
+                  duplicate_warnings: Array<{
+                    record: Record<string, unknown>;
+                    existing_id: string;
+                    existing: Record<string, unknown>;
+                    match_field: string;
+                    match_value: string;
+                  }>;
+                };
+                message: string;
+              }}
+              onApprove={onCrmApprove}
+              onCancel={onCrmCancel}
+              isProcessing={approvalState?.isProcessing ?? false}
+              result={finalResult}
+            />
+          </div>
+        );
+      }
+    }
+
+    return (
+      <ToolBlockIndicator
+        key={block.id}
+        block={block}
+        onClick={() => onToolClick(block)}
+      />
+    );
+  };
+
+  return (
+    <div className="flex gap-2">
+      {/* Avatar */}
+      <div className="flex-shrink-0 w-6 h-6 rounded-md bg-gradient-to-br from-surface-700 to-surface-800 flex items-center justify-center">
+        <img 
+          src="/logo.svg" 
+          alt="Revtops" 
+          className="w-3.5 h-3.5" 
+          style={{ filter: 'invert(67%) sepia(51%) saturate(439%) hue-rotate(108deg) brightness(92%) contrast(88%)' }} 
+        />
+      </div>
+
+      {/* Content blocks in order */}
+      <div className="flex-1 max-w-[85%]">
+        {blocks.map((block, index) => {
+          if (block.type === 'text') {
+            const isLast = index === lastTextIndex;
             return (
-              <div key={block.id} className="pl-8">
-                <CrmApprovalCard
-                  data={result as {
-                    operation_id: string;
-                    target_system: string;
-                    record_type: string;
-                    operation: string;
-                    preview: {
-                      records: Record<string, unknown>[];
-                      record_count: number;
-                      will_create: number;
-                      will_skip: number;
-                      will_update: number;
-                      duplicate_warnings: Array<{
-                        record: Record<string, unknown>;
-                        existing_id: string;
-                        existing: Record<string, unknown>;
-                        match_field: string;
-                        match_value: string;
-                      }>;
-                    };
-                    message: string;
-                  }}
-                  onApprove={onCrmApprove}
-                  onCancel={onCrmCancel}
-                  isProcessing={approvalState?.isProcessing ?? false}
-                  result={finalResult}
+              <div key={`text-${index}`} className={index > 0 ? 'mt-2' : ''}>
+                <AssistantTextBlock 
+                  text={block.text} 
+                  isStreaming={isLast && message.isStreaming}
+                  onArtifactClick={onArtifactClick}
                 />
               </div>
             );
           }
-        }
-
-        // Regular tool indicator
-        return (
-          <ToolBlockIndicator
-            key={block.id}
-            block={block}
-            onClick={() => onToolClick(block)}
-          />
-        );
-      })}
-
-      {/* Text content (agent response after running tools) */}
-      {textContent.length > 0 && (
-        <div className={toolBlocks.length > 0 ? 'mt-2' : ''}>
-          <Message
-            message={{
-              id: message.id,
-              role: message.role,
-              content: textContent,
-              timestamp: message.timestamp,
-              isStreaming: message.isStreaming,
-            }}
-            onArtifactClick={onArtifactClick}
-          />
+          if (block.type === 'tool_use') {
+            return (
+              <div key={block.id} className="my-0.5">
+                {renderToolBlock(block)}
+              </div>
+            );
+          }
+          return null;
+        })}
+        
+        {/* Timestamp at the end */}
+        <div className="mt-0.5">
+          <span className="text-[10px] text-surface-500">
+            {message.timestamp.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}
+          </span>
         </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Assistant text block - renders markdown without avatar (avatar is at parent level)
+ */
+function AssistantTextBlock({
+  text,
+  isStreaming,
+  onArtifactClick: _onArtifactClick,
+}: {
+  text: string;
+  isStreaming?: boolean;
+  onArtifactClick?: (artifact: { id: string; type: string; title: string; data: Record<string, unknown> }) => void;
+}): JSX.Element {
+  return (
+    <div className="inline-block px-3 py-2 rounded-xl rounded-tl-sm bg-surface-800/80 text-surface-200 text-[13px] leading-relaxed">
+      <div className="prose prose-sm prose-invert max-w-none prose-p:my-1 prose-headings:my-2 prose-ul:my-1 prose-ol:my-1 prose-li:my-0.5 prose-pre:my-2 prose-code:text-primary-300 prose-code:bg-surface-900/50 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-code:text-xs prose-pre:bg-surface-900/80 prose-pre:text-xs prose-table:text-xs prose-th:bg-surface-700/50 prose-th:px-2 prose-th:py-1 prose-td:px-2 prose-td:py-1 prose-td:border-surface-700 prose-th:border-surface-700">
+        <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
+      </div>
+      {isStreaming && (
+        <span className="inline-block w-1.5 h-3 bg-current animate-pulse ml-0.5" />
       )}
     </div>
   );
@@ -731,7 +790,7 @@ function ToolBlockIndicator({
   return (
     <button
       onClick={onClick}
-      className="flex items-center gap-1.5 py-0.5 ml-8 text-xs text-surface-500 hover:text-surface-300 transition-colors cursor-pointer group text-left"
+      className="flex items-center gap-1.5 py-0.5 text-xs text-surface-500 hover:text-surface-300 transition-colors cursor-pointer group text-left"
     >
       {isComplete ? (
         <svg className="w-3.5 h-3.5 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
