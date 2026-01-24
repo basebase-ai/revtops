@@ -23,7 +23,6 @@ import {
   useIsThinking,
   type ChatMessage,
   type ToolCallData,
-  type ContentBlock,
   type ToolUseBlock,
 } from '../store';
 
@@ -612,6 +611,11 @@ function MessageWithBlocks({
   // Safely get content blocks (handle undefined for backwards compat)
   const blocks = message.contentBlocks ?? [];
   
+  // Debug logging
+  if (blocks.length === 0) {
+    console.warn('[MessageWithBlocks] Empty contentBlocks for message:', message.id, message.role);
+  }
+  
   // Extract text content for the Message component
   const textContent = blocks
     .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
@@ -623,10 +627,16 @@ function MessageWithBlocks({
     (b): b is ToolUseBlock => b.type === 'tool_use'
   );
 
+  // If nothing to render, return empty fragment
+  if (!textContent && toolBlocks.length === 0) {
+    console.warn('[MessageWithBlocks] No content to render for message:', message.id, message);
+    return <></>;
+  }
+
   return (
-    <div className="space-y-2">
+    <div>
       {/* Text content */}
-      {textContent && (
+      {textContent.length > 0 && (
         <Message
           message={{
             id: message.id,
@@ -639,7 +649,7 @@ function MessageWithBlocks({
         />
       )}
 
-      {/* Tool calls */}
+      {/* Tool calls - no vertical spacing between them */}
       {toolBlocks.map((block) => {
         // CRM write gets special handling
         if (block.name === 'crm_write' && block.result) {
@@ -719,7 +729,7 @@ function ToolBlockIndicator({
   return (
     <button
       onClick={onClick}
-      className="flex items-center gap-2 py-1 ml-8 text-sm text-surface-500 hover:text-surface-300 transition-colors cursor-pointer group text-left"
+      className="flex items-center gap-1.5 py-0.5 ml-8 text-xs text-surface-500 hover:text-surface-300 transition-colors cursor-pointer group text-left"
     >
       {isComplete ? (
         <svg className="w-3.5 h-3.5 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -808,46 +818,6 @@ function getToolStatusText(
 /**
  * Tool call indicator - clickable to show details
  */
-function ToolCallIndicator({ 
-  toolCall, 
-  onClick 
-}: { 
-  toolCall?: ToolCallData; 
-  onClick: () => void;
-}): JSX.Element {
-  const isComplete = toolCall?.status === 'complete';
-  const statusText = getToolStatusText(
-    toolCall?.toolName ?? 'unknown',
-    toolCall?.input,
-    isComplete,
-    toolCall?.result
-  );
-  
-  return (
-    <button
-      onClick={onClick}
-      className="flex items-center gap-2 py-1 ml-8 text-sm text-surface-500 hover:text-surface-300 transition-colors cursor-pointer group text-left"
-    >
-      {isComplete ? (
-        <svg className="w-3.5 h-3.5 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-        </svg>
-      ) : (
-        <svg className="w-3.5 h-3.5 text-surface-600 animate-spin" fill="none" viewBox="0 0 24 24">
-          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-        </svg>
-      )}
-      <span className="text-surface-500 italic group-hover:text-surface-300">
-        {statusText}
-      </span>
-      <svg className="w-3 h-3 text-surface-600 opacity-0 group-hover:opacity-100 transition-opacity" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-      </svg>
-    </button>
-  );
-}
-
 /**
  * Modal for showing tool call details
  */

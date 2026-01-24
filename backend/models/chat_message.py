@@ -61,9 +61,9 @@ class ChatMessage(Base):
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for API responses."""
-        # Use content_blocks if available, otherwise convert legacy format
+        # Use content_blocks if available and non-empty, otherwise convert legacy format
         blocks = self.content_blocks
-        if blocks is None:
+        if not blocks:  # Handles None, empty list, etc.
             blocks = self._legacy_to_blocks()
         
         return {

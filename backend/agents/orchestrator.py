@@ -400,6 +400,12 @@ class ChatOrchestrator:
         
         # Save conversation
         is_first_message = len(history) == 0
+        
+        # Debug: log content_blocks order
+        logger.info("[Orchestrator] Saving content_blocks: %s", 
+                    [(b.get("type"), b.get("name") if b.get("type") == "tool_use" else b.get("text", "")[:50]) 
+                     for b in content_blocks])
+        
         await self._save_messages(
             user_message if save_user_message else None,
             content_blocks
