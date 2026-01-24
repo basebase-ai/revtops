@@ -102,8 +102,9 @@ app.add_api_websocket_route("/ws/chat/{user_id}", websocket_endpoint)
 @app.on_event("startup")
 async def startup() -> None:
     """Initialize database on startup."""
-    await init_db()
-    logging.info("Database initialized, connection pool ready")
+    # Note: init_db() skipped - Alembic handles migrations
+    # await init_db()
+    logging.info("Database connection pool ready")
 
 
 @app.on_event("shutdown")

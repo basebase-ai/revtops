@@ -16,7 +16,7 @@ from typing import AsyncGenerator, Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, AsyncEngine, async_sessionmaker
 from sqlalchemy.orm import declarative_base
-from sqlalchemy.pool import NullPool, QueuePool
+from sqlalchemy.pool import NullPool
 
 from config import settings
 
@@ -55,15 +55,9 @@ def get_engine() -> AsyncEngine:
                 _db_url,
                 echo=True,
                 future=True,
-                poolclass=QueuePool,
-                pool_size=3,  # Small pool for local dev
-                max_overflow=2,
-                pool_pre_ping=True,
-                pool_recycle=300,
-                pool_timeout=30,
-                pool_reset_on_return="rollback",
+                poolclass=NullPool,  # NullPool since using Supabase session pooler
             )
-            logger.info("Database engine created with QueuePool: size=3, max_overflow=2")
+            logger.info("Database engine created with NullPool")
     return _engine
 
 
@@ -141,31 +135,14 @@ def get_pool_status() -> dict[str, int | str]:
     """
     Get current connection pool status for monitoring.
     
-    Returns:
-        - pool_size: Configured base pool size
-        - checked_in: Connections available in pool (ready to reuse)
-        - checked_out: Connections currently in use
-        - overflow: Extra connections beyond pool_size
+    Note: Using NullPool - pgbouncer handles actual connection pooling.
     """
-    engine = get_engine()
-    pool = engine.pool
-    
-    # NullPool doesn't track connections - it creates/destroys per request
-    if isinstance(pool, NullPool):
-        return {
-            "pool_type": "NullPool",
-            "pool_size": 0,
-            "checked_in": 0,
-            "checked_out": 0,
-            "overflow": 0,
-        }
-    
     return {
-        "pool_type": "QueuePool",
-        "pool_size": pool.size(),
-        "checked_in": pool.checkedin(),
-        "checked_out": pool.checkedout(),
-        "overflow": pool.overflow(),
+        "pool_type": "NullPool",
+        "pool_size": 0,
+        "checked_in": 0,
+        "checked_out": 0,
+        "overflow": 0,
     }
 
 

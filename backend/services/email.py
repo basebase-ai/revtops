@@ -96,7 +96,7 @@ Needs: {needs or "—"}
                 },
                 json={
                     "from": settings.EMAIL_FROM or "Revtops <hello@revtops.com>",
-                    "to": ["support@basebase.com"],
+                    "to": ["support@revtops.com"],
                     "subject": f"New waitlist signup: {applicant_name} ({waitlist_data.get('company_name', 'Unknown')})",
                     "html": html_content,
                     "text": text_content,
