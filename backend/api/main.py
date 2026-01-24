@@ -14,8 +14,10 @@ import logging
 import os
 import sys
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from api.websockets import websocket_endpoint
 from api.routes import auth, chat, sync, waitlist
@@ -52,13 +54,81 @@ railway_domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN")
 if railway_domain:
     cors_origins.append(f"https://{railway_domain}")
 
+
+def get_cors_headers(origin: str | None) -> dict[str, str]:
+    """Return CORS headers if origin is allowed."""
+    if origin and origin in cors_origins:
+        return {
+            "Access-Control-Allow-Origin": origin,
+            "Access-Control-Allow-Credentials": "true",
+            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, PATCH",
+            "Access-Control-Allow-Headers": "*",
+        }
+    return {}
+
+
+class CORSErrorMiddleware(BaseHTTPMiddleware):
+    """Middleware to ensure CORS headers are present even on error responses.
+    
+    Some browsers (like OpenAI's Atlas) are stricter about CORS headers
+    on error responses. This middleware catches exceptions and ensures
+    CORS headers are always included.
+    """
+
+    async def dispatch(self, request: Request, call_next):
+        origin = request.headers.get("origin")
+        
+        # Handle preflight requests explicitly
+        if request.method == "OPTIONS":
+            cors_headers = get_cors_headers(origin)
+            if cors_headers:
+                return JSONResponse(
+                    content={"status": "ok"},
+                    headers=cors_headers,
+                )
+        
+        try:
+            response = await call_next(request)
+            return response
+        except Exception as e:
+            # Log the error
+            logging.error(f"Request failed with error: {e}")
+            
+            # Return error response with CORS headers
+            cors_headers = get_cors_headers(origin)
+            return JSONResponse(
+                status_code=500,
+                content={"detail": "Internal server error"},
+                headers=cors_headers,
+            )
+
+
+# Add our custom CORS error middleware BEFORE the standard CORSMiddleware
+# This ensures errors are caught and CORS headers are added
+app.add_middleware(CORSErrorMiddleware)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
+
+# Global exception handler to ensure CORS headers on all errors
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    """Handle all uncaught exceptions with CORS headers."""
+    origin = request.headers.get("origin")
+    cors_headers = get_cors_headers(origin)
+    logging.error(f"Unhandled exception: {exc}", exc_info=True)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error"},
+        headers=cors_headers,
+    )
+
 
 # Routes
 app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
