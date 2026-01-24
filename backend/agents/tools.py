@@ -985,9 +985,12 @@ async def _execute_hubspot_operation(
     
     skipped_count = len(crm_op.validated_records) - len(records_to_process)
     
+    # Use appropriate verb based on operation type
+    operation_verb = "Updated" if crm_op.operation == "update" else "Created"
+    
     return {
         "status": "completed",
-        "message": f"Created {len(created)} {crm_op.record_type}(s) in HubSpot",
+        "message": f"{operation_verb} {len(created)} {crm_op.record_type}(s) in HubSpot",
         "success_count": len(created),
         "failure_count": len(errors),
         "skipped_count": skipped_count,
@@ -1039,47 +1042,50 @@ async def update_tool_call_result(operation_id: str, new_result: dict[str, Any])
     Returns:
         True if updated successfully, False otherwise
     """
-    from sqlalchemy import text
+    from sqlalchemy import select
+    from models.chat_message import ChatMessage
     
     try:
-        new_result_json = json.dumps(new_result)
-        
         async with get_session() as session:
             # Find messages that contain this operation_id in their tool_calls
-            # tool_calls is a JSONB array, each item has a 'result' object with 'operation_id'
-            # Using $1, $2, $3 positional parameters for asyncpg
-            query = text("""
-                UPDATE chat_messages
-                SET tool_calls = (
-                    SELECT jsonb_agg(
-                        CASE 
-                            WHEN tc->>'result' IS NOT NULL 
-                                 AND (tc->'result'->>'operation_id')::text = $1
-                            THEN jsonb_set(tc, '{result}', $2::jsonb)
-                            ELSE tc
-                        END
-                    )
-                    FROM jsonb_array_elements(tool_calls) AS tc
-                )
-                WHERE tool_calls IS NOT NULL
-                  AND tool_calls::text LIKE $3
-                RETURNING id
-            """).bindparams(
-                # Bind the parameters in order
-            )
-            
+            # We need to search for messages with tool_calls containing the operation_id
             result = await session.execute(
-                query,
-                [operation_id, new_result_json, f"%{operation_id}%"]
+                select(ChatMessage).where(
+                    ChatMessage.tool_calls.isnot(None)
+                )
             )
+            messages = result.scalars().all()
             
-            updated_rows = result.fetchall()
-            await session.commit()
+            updated_count = 0
+            for msg in messages:
+                if not msg.tool_calls:
+                    continue
+                    
+                # Check if any tool call has this operation_id
+                modified = False
+                updated_tool_calls: list[dict[str, Any]] = []
+                
+                for tc in msg.tool_calls:
+                    tc_result = tc.get("result", {})
+                    if isinstance(tc_result, dict) and tc_result.get("operation_id") == operation_id:
+                        # Update this tool call's result
+                        tc["result"] = new_result
+                        modified = True
+                    updated_tool_calls.append(tc)
+                
+                if modified:
+                    # Assign a new list to ensure SQLAlchemy detects the change
+                    msg.tool_calls = updated_tool_calls
+                    # Flag the attribute as modified for JSONB columns
+                    from sqlalchemy.orm.attributes import flag_modified
+                    flag_modified(msg, "tool_calls")
+                    updated_count += 1
             
-            if updated_rows:
+            if updated_count > 0:
+                await session.commit()
                 logger.info(
                     "[Tools.update_tool_call_result] Updated %d message(s) for operation %s",
-                    len(updated_rows),
+                    updated_count,
                     operation_id
                 )
                 return True

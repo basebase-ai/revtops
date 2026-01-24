@@ -237,7 +237,7 @@ class ChatOrchestrator:
         self.client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
 
     async def process_message(
-        self, user_message: str
+        self, user_message: str, save_user_message: bool = True
     ) -> AsyncGenerator[str, None]:
         """
         Process a user message and stream Claude's response.
@@ -254,6 +254,7 @@ class ChatOrchestrator:
 
         Args:
             user_message: The user's message text
+            save_user_message: If False, don't save user_message to DB (for internal system messages)
 
         Yields:
             String chunks of the assistant's response
@@ -270,9 +271,9 @@ class ChatOrchestrator:
             {"role": "user", "content": user_message}
         ]
 
-        # Keep track of full response for saving
-        assistant_message = ""
-        tool_calls_made: list[dict[str, Any]] = []
+        # Keep track of content blocks for saving (preserves interleaving order)
+        content_blocks: list[dict[str, Any]] = []
+        current_text = ""  # Buffer for current text block
 
         # Build system prompt with time context
         system_prompt = SYSTEM_PROMPT
@@ -302,7 +303,7 @@ class ChatOrchestrator:
             for content_block in response.content:
                 if content_block.type == "text":
                     text = content_block.text
-                    assistant_message += text
+                    current_text += text
                     yield text
                 elif content_block.type == "tool_use":
                     tool_uses.append(content_block)
@@ -310,6 +311,11 @@ class ChatOrchestrator:
             # If no tool calls, we're done
             if not tool_uses:
                 break
+            
+            # Flush current text to content_blocks before processing tools
+            if current_text.strip():
+                content_blocks.append({"type": "text", "text": current_text})
+                current_text = ""
             
             # Signal frontend to complete current text block before showing tools
             yield json.dumps({"type": "text_block_complete"})
@@ -350,12 +356,14 @@ class ChatOrchestrator:
                     tool_result,
                 )
 
-                # Save tool call with result for persistence
-                tool_calls_made.append({
+                # Add tool_use block with result to content_blocks
+                content_blocks.append({
+                    "type": "tool_use",
+                    "id": tool_id,
                     "name": tool_name,
                     "input": tool_input,
-                    "id": tool_id,
                     "result": tool_result,
+                    "status": "complete",
                 })
 
                 # Send tool result for frontend
@@ -386,10 +394,15 @@ class ChatOrchestrator:
                 messages=messages,
             )
 
+        # Flush any remaining text to content_blocks
+        if current_text.strip():
+            content_blocks.append({"type": "text", "text": current_text})
+        
         # Save conversation
         is_first_message = len(history) == 0
         await self._save_messages(
-            user_message, assistant_message, tool_calls_made if tool_calls_made else None
+            user_message if save_user_message else None,
+            content_blocks
         )
 
         # Update conversation title if first message
@@ -412,9 +425,10 @@ class ChatOrchestrator:
     async def _load_history(self, limit: int = 20) -> list[dict[str, Any]]:
         """Load recent chat history from the current conversation.
         
-        Reconstructs proper Claude message format including tool calls:
-        - Assistant messages with tool_use blocks
-        - User messages with tool_result blocks
+        Reconstructs proper Claude message format:
+        - User messages with text content
+        - Assistant messages with text + tool_use blocks
+        - User messages with tool_result blocks (after tool_use)
         """
         if not self.conversation_id:
             return []
@@ -430,70 +444,87 @@ class ChatOrchestrator:
 
             history: list[dict[str, Any]] = []
             for msg in reversed(messages):
+                # Get content blocks (new format or convert from legacy)
+                blocks = msg.content_blocks if msg.content_blocks else msg._legacy_to_blocks()
+                
                 if msg.role == "user":
-                    history.append({"role": "user", "content": msg.content})
+                    # User messages: extract text content
+                    text_content = ""
+                    for block in blocks:
+                        if block.get("type") == "text":
+                            text_content += block.get("text", "")
+                    if text_content:
+                        history.append({"role": "user", "content": text_content})
+                
                 elif msg.role == "assistant":
-                    # Check if this assistant message had tool calls
-                    if msg.tool_calls and len(msg.tool_calls) > 0:
-                        # Build content blocks: text (if any) + tool_use blocks
-                        content_blocks: list[dict[str, Any]] = []
+                    # Check if there are tool_use blocks
+                    tool_uses = [b for b in blocks if b.get("type") == "tool_use"]
+                    
+                    if tool_uses:
+                        # Build Claude-format content blocks: text + tool_use (no results)
+                        claude_blocks: list[dict[str, Any]] = []
+                        for block in blocks:
+                            if block.get("type") == "text":
+                                claude_blocks.append({"type": "text", "text": block.get("text", "")})
+                            elif block.get("type") == "tool_use":
+                                claude_blocks.append({
+                                    "type": "tool_use",
+                                    "id": block.get("id", f"tool_{len(claude_blocks)}"),
+                                    "name": block.get("name", "unknown"),
+                                    "input": block.get("input", {}),
+                                })
                         
-                        if msg.content and msg.content.strip():
-                            content_blocks.append({"type": "text", "text": msg.content})
-                        
-                        for tc in msg.tool_calls:
-                            content_blocks.append({
-                                "type": "tool_use",
-                                "id": tc.get("id", f"tool_{len(content_blocks)}"),
-                                "name": tc.get("name", "unknown"),
-                                "input": tc.get("input", {}),
-                            })
-                        
-                        history.append({"role": "assistant", "content": content_blocks})
+                        history.append({"role": "assistant", "content": claude_blocks})
                         
                         # Add corresponding tool_result in a user message
                         tool_results: list[dict[str, Any]] = []
-                        for tc in msg.tool_calls:
-                            tool_results.append({
-                                "type": "tool_result",
-                                "tool_use_id": tc.get("id", f"tool_{len(tool_results)}"),
-                                "content": json.dumps(tc.get("result", {})),
-                            })
-                        history.append({"role": "user", "content": tool_results})
+                        for block in blocks:
+                            if block.get("type") == "tool_use":
+                                tool_results.append({
+                                    "type": "tool_result",
+                                    "tool_use_id": block.get("id", f"tool_{len(tool_results)}"),
+                                    "content": json.dumps(block.get("result", {})),
+                                })
+                        if tool_results:
+                            history.append({"role": "user", "content": tool_results})
                     else:
-                        # Simple text response
-                        history.append({"role": "assistant", "content": msg.content})
+                        # Simple text response - extract text from blocks
+                        text_content = ""
+                        for block in blocks:
+                            if block.get("type") == "text":
+                                text_content += block.get("text", "")
+                        if text_content:
+                            history.append({"role": "assistant", "content": text_content})
             
             return history
 
     async def _save_messages(
         self,
-        user_msg: str,
-        assistant_msg: str,
-        tool_calls: list[dict[str, Any]] | None = None,
+        user_msg: str | None,
+        assistant_blocks: list[dict[str, Any]],
     ) -> None:
-        """Save conversation to database."""
+        """Save conversation to database using content_blocks format."""
         conv_uuid = UUID(self.conversation_id) if self.conversation_id else None
 
         async with get_session() as session:
-            # Save user message
-            session.add(
-                ChatMessage(
-                    conversation_id=conv_uuid,
-                    user_id=UUID(self.user_id),
-                    role="user",
-                    content=user_msg,
+            # Save user message (skip if None - for internal system messages)
+            if user_msg is not None:
+                session.add(
+                    ChatMessage(
+                        conversation_id=conv_uuid,
+                        user_id=UUID(self.user_id),
+                        role="user",
+                        content_blocks=[{"type": "text", "text": user_msg}],
+                    )
                 )
-            )
 
-            # Save assistant message
+            # Save assistant message with content blocks
             session.add(
                 ChatMessage(
                     conversation_id=conv_uuid,
                     user_id=UUID(self.user_id),
                     role="assistant",
-                    content=assistant_msg,
-                    tool_calls=tool_calls,
+                    content_blocks=assistant_blocks,
                 )
             )
 

@@ -123,7 +123,8 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str) -> None:
                             )
                             
                             # Stream the agent's response to the error
-                            async for chunk in orchestrator.process_message(error_feedback):
+                            # save_user_message=False so internal feedback isn't shown to user
+                            async for chunk in orchestrator.process_message(error_feedback, save_user_message=False):
                                 await websocket.send_text(chunk)
                             
                             # Send end-of-message marker

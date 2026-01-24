@@ -40,6 +40,24 @@ export interface ChatSummary {
   previewText: string;
 }
 
+// Content block types (matches API)
+export interface TextBlock {
+  type: 'text';
+  text: string;
+}
+
+export interface ToolUseBlock {
+  type: 'tool_use';
+  id: string;
+  name: string;
+  input: Record<string, unknown>;
+  result?: Record<string, unknown>;
+  status?: 'pending' | 'running' | 'complete';
+}
+
+export type ContentBlock = TextBlock | ToolUseBlock;
+
+// Legacy type for streaming compatibility
 export interface ToolCallData {
   toolName: string;
   toolId: string;
@@ -50,12 +68,10 @@ export interface ToolCallData {
 
 export interface ChatMessage {
   id: string;
-  role: "user" | "assistant" | "tool";
-  content: string;
+  role: "user" | "assistant";
+  contentBlocks: ContentBlock[];
   timestamp: Date;
   isStreaming?: boolean;
-  toolName?: string;
-  toolCall?: ToolCallData;
 }
 
 export type View = "chat" | "data-sources" | "chats-list" | "admin";
@@ -307,11 +323,18 @@ export const useAppStore = create<AppState>()(
           console.warn("[Store] No streaming message to append to");
           return;
         }
-        const updated = messages.map((msg) =>
-          msg.id === streamingMessageId
-            ? { ...msg, content: msg.content + content }
-            : msg,
-        );
+        const updated = messages.map((msg) => {
+          if (msg.id !== streamingMessageId) return msg;
+          // Append to the last text block, or create one if needed
+          const blocks = [...(msg.contentBlocks ?? [])];
+          const lastBlock = blocks[blocks.length - 1];
+          if (lastBlock && lastBlock.type === 'text') {
+            blocks[blocks.length - 1] = { ...lastBlock, text: lastBlock.text + content };
+          } else {
+            blocks.push({ type: 'text', text: content });
+          }
+          return { ...msg, contentBlocks: blocks };
+        });
         set({ messages: updated });
       },
 
@@ -321,7 +344,7 @@ export const useAppStore = create<AppState>()(
         const newMessage: ChatMessage = {
           id,
           role: "assistant",
-          content: initialContent,
+          contentBlocks: initialContent ? [{ type: 'text', text: initialContent }] : [],
           timestamp: new Date(),
           isStreaming: true,
         };
@@ -358,13 +381,25 @@ export const useAppStore = create<AppState>()(
       updateToolMessage: (toolId, updates) => {
         const { messages } = get();
         const updated = messages.map((msg) => {
-          if (msg.toolCall?.toolId === toolId) {
-            return {
-              ...msg,
-              toolCall: { ...msg.toolCall, ...updates },
-            };
-          }
-          return msg;
+          const blocks = msg.contentBlocks ?? [];
+          // Find tool_use blocks that match the toolId
+          const hasMatchingTool = blocks.some(
+            (block) => block.type === 'tool_use' && block.id === toolId
+          );
+          if (!hasMatchingTool) return msg;
+          
+          // Update the matching tool_use block
+          const updatedBlocks = blocks.map((block) => {
+            if (block.type === 'tool_use' && block.id === toolId) {
+              return {
+                ...block,
+                result: updates.result ?? block.result,
+                status: updates.status as 'pending' | 'running' | 'complete' | undefined ?? block.status,
+              };
+            }
+            return block;
+          });
+          return { ...msg, contentBlocks: updatedBlocks };
         });
         set({ messages: updated });
       },

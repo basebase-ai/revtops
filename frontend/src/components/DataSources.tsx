@@ -79,19 +79,23 @@ export function DataSources(): JSX.Element {
   const userId = user?.id ?? '';
 
   // Transform raw integrations to display integrations with UI metadata
-  const integrations: DisplayIntegration[] = rawIntegrations.map((integration) => {
-    const config = INTEGRATION_CONFIG[integration.provider] ?? {
-      name: integration.provider,
-      description: 'Data source',
-      icon: integration.provider,
-      color: 'from-surface-500 to-surface-600',
-    };
-    return {
-      ...integration,
-      ...config,
-      connected: integration.isActive,
-    };
-  });
+  // Filter out raw "microsoft" integration - it's a meta-integration from Nango's OAuth.
+  // The actual data sources are microsoft_calendar and microsoft_mail.
+  const integrations: DisplayIntegration[] = rawIntegrations
+    .filter((integration) => integration.provider !== 'microsoft')
+    .map((integration) => {
+      const config = INTEGRATION_CONFIG[integration.provider] ?? {
+        name: integration.provider,
+        description: 'Data source',
+        icon: integration.provider,
+        color: 'from-surface-500 to-surface-600',
+      };
+      return {
+        ...integration,
+        ...config,
+        connected: integration.isActive,
+      };
+    });
 
   // Also include available (not connected) integrations
   const connectedProviders = new Set(integrations.map((i) => i.provider));
