@@ -17,7 +17,6 @@ import sys
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from starlette.middleware.base import BaseHTTPMiddleware
 
 from api.websockets import websocket_endpoint
 from api.routes import auth, chat, sync, waitlist
@@ -66,46 +65,6 @@ def get_cors_headers(origin: str | None) -> dict[str, str]:
         }
     return {}
 
-
-class CORSErrorMiddleware(BaseHTTPMiddleware):
-    """Middleware to ensure CORS headers are present even on error responses.
-    
-    Some browsers (like OpenAI's Atlas) are stricter about CORS headers
-    on error responses. This middleware catches exceptions and ensures
-    CORS headers are always included.
-    """
-
-    async def dispatch(self, request: Request, call_next):
-        origin = request.headers.get("origin")
-        
-        # Handle preflight requests explicitly
-        if request.method == "OPTIONS":
-            cors_headers = get_cors_headers(origin)
-            if cors_headers:
-                return JSONResponse(
-                    content={"status": "ok"},
-                    headers=cors_headers,
-                )
-        
-        try:
-            response = await call_next(request)
-            return response
-        except Exception as e:
-            # Log the error
-            logging.error(f"Request failed with error: {e}")
-            
-            # Return error response with CORS headers
-            cors_headers = get_cors_headers(origin)
-            return JSONResponse(
-                status_code=500,
-                content={"detail": "Internal server error"},
-                headers=cors_headers,
-            )
-
-
-# Add our custom CORS error middleware BEFORE the standard CORSMiddleware
-# This ensures errors are caught and CORS headers are added
-app.add_middleware(CORSErrorMiddleware)
 
 app.add_middleware(
     CORSMiddleware,
