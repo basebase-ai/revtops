@@ -483,7 +483,7 @@ export function Chat({ userId, organizationId: _organizationId, chatId }: ChatPr
           {messages.length === 0 && !isThinking ? (
             <EmptyState onSuggestionClick={handleSuggestionClick} />
           ) : (
-            <div className="max-w-3xl mx-auto space-y-4">
+            <div className="max-w-3xl mx-auto space-y-3">
               {messages.map((msg) => (
                 <MessageWithBlocks
                   key={msg.id}
@@ -698,16 +698,18 @@ function MessageWithBlocks({
 
       {/* Text content (agent response after running tools) */}
       {textContent.length > 0 && (
-        <Message
-          message={{
-            id: message.id,
-            role: message.role,
-            content: textContent,
-            timestamp: message.timestamp,
-            isStreaming: message.isStreaming,
-          }}
-          onArtifactClick={onArtifactClick}
-        />
+        <div className={toolBlocks.length > 0 ? 'mt-2' : ''}>
+          <Message
+            message={{
+              id: message.id,
+              role: message.role,
+              content: textContent,
+              timestamp: message.timestamp,
+              isStreaming: message.isStreaming,
+            }}
+            onArtifactClick={onArtifactClick}
+          />
+        </div>
       )}
     </div>
   );
