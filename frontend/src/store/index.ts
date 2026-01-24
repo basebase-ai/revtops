@@ -441,6 +441,7 @@ export const useAppStore = create<AppState>()(
           }
 
           const data = (await response.json()) as {
+            id: string;  // Database user ID (may differ from Supabase ID for waitlist users)
             status: string;
             avatar_url: string | null;
             name: string | null;
@@ -454,14 +455,17 @@ export const useAppStore = create<AppState>()(
           console.log("[Store] User synced successfully, status:", data.status);
 
           // Update user with data from backend (authoritative source)
+          // Always use the database ID from backend - may differ from Supabase ID for waitlist users
           const newRoles = data.roles ?? [];
           if (
+            data.id !== user.id ||
             data.avatar_url !== user.avatarUrl ||
             data.name !== user.name ||
             JSON.stringify(newRoles) !== JSON.stringify(user.roles)
           ) {
             setUser({
               ...user,
+              id: data.id,
               name: data.name ?? user.name,
               avatarUrl: data.avatar_url ?? user.avatarUrl,
               roles: newRoles,

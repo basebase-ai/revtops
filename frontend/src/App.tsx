@@ -241,6 +241,7 @@ function App(): JSX.Element {
 
       if (syncResponse.ok) {
         const userData = await syncResponse.json() as { 
+          id: string;  // Database user ID (may differ from Supabase ID for waitlist users)
           status: string; 
           avatar_url: string | null;
           name: string | null;
@@ -248,8 +249,9 @@ function App(): JSX.Element {
         };
         
         // Update user with data from backend (authoritative source)
+        // Use the database ID from backend - this may differ from Supabase ID for waitlist users
         setUser({
-          id: supabaseUser.id,
+          id: userData.id,
           email,
           name: userData.name ?? name,
           avatarUrl: userData.avatar_url ?? avatarUrl,

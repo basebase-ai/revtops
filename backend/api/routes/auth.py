@@ -251,8 +251,17 @@ async def sync_user(request: SyncUserRequest) -> SyncUserResponse:
             raise HTTPException(status_code=400, detail="Invalid organization ID")
 
     async with get_session() as session:
-        # Check if user already exists
+        # Check if user already exists by ID
         existing = await session.get(User, user_uuid)
+        
+        # Also check by email (handles waitlist users who have a different DB ID than Supabase ID)
+        # This happens when someone joins waitlist (creates user with auto-UUID) then later signs in via OAuth
+        if not existing:
+            result = await session.execute(
+                select(User).where(User.email == request.email)
+            )
+            existing = result.scalar_one_or_none()
+        
         if existing:
             # Always update last_login on sync (user just logged in)
             existing.last_login = datetime.utcnow()
