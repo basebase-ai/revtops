@@ -16,7 +16,7 @@ from typing import AsyncGenerator, Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, AsyncEngine, async_sessionmaker
 from sqlalchemy.orm import declarative_base
-from sqlalchemy.pool import QueuePool
+from sqlalchemy.pool import NullPool, QueuePool
 
 from config import settings
 
@@ -38,23 +38,32 @@ def get_engine() -> AsyncEngine:
     """Get the database engine (singleton - created once, reused)."""
     global _engine
     if _engine is None:
-        _engine = create_async_engine(
-            _db_url,
-            echo=settings.ENVIRONMENT == "development",
-            future=True,
-            poolclass=QueuePool,
-            # Connection pool settings for Supabase session pooler
-            pool_size=5,  # Base pool size - connections kept open and reused
-            max_overflow=10,  # Allow burst up to 15 total connections
-            pool_pre_ping=True,  # Check connection health before checkout
-            pool_recycle=300,  # Recycle connections every 5 minutes
-            pool_timeout=30,  # Wait up to 30s for available connection
-            pool_reset_on_return="rollback",  # Clean state when returned to pool
-        )
-        logger.info(
-            "Database engine created with pool: size=%d, max_overflow=%d (reuses connections)",
-            5, 10
-        )
+        # Use NullPool in production when using external connection pooler (Supabase/PgBouncer)
+        # This lets the external pooler manage all connections
+        is_production = settings.ENVIRONMENT == "production"
+        
+        if is_production:
+            _engine = create_async_engine(
+                _db_url,
+                echo=False,
+                future=True,
+                poolclass=NullPool,  # No local pooling - external pooler handles it
+            )
+            logger.info("Database engine created with NullPool (external pooler manages connections)")
+        else:
+            _engine = create_async_engine(
+                _db_url,
+                echo=True,
+                future=True,
+                poolclass=QueuePool,
+                pool_size=3,  # Small pool for local dev
+                max_overflow=2,
+                pool_pre_ping=True,
+                pool_recycle=300,
+                pool_timeout=30,
+                pool_reset_on_return="rollback",
+            )
+            logger.info("Database engine created with QueuePool: size=3, max_overflow=2")
     return _engine
 
 
@@ -128,7 +137,7 @@ async def close_db() -> None:
         logger.info("Database engine disposed, all connections closed")
 
 
-def get_pool_status() -> dict:
+def get_pool_status() -> dict[str, int | str]:
     """
     Get current connection pool status for monitoring.
     
@@ -140,7 +149,19 @@ def get_pool_status() -> dict:
     """
     engine = get_engine()
     pool = engine.pool
+    
+    # NullPool doesn't track connections - it creates/destroys per request
+    if isinstance(pool, NullPool):
+        return {
+            "pool_type": "NullPool",
+            "pool_size": 0,
+            "checked_in": 0,
+            "checked_out": 0,
+            "overflow": 0,
+        }
+    
     return {
+        "pool_type": "QueuePool",
         "pool_size": pool.size(),
         "checked_in": pool.checkedin(),
         "checked_out": pool.checkedout(),
