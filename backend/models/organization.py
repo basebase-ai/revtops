@@ -67,5 +67,5 @@ class Organization(Base):
             "name": self.name,
             "email_domain": self.email_domain,
             "salesforce_org_id": self.salesforce_org_id,
-            "last_sync_at": self.last_sync_at.isoformat() if self.last_sync_at else None,
+            "last_sync_at": f"{self.last_sync_at.isoformat()}Z" if self.last_sync_at else None,
         }

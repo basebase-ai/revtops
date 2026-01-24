@@ -94,7 +94,11 @@ export function AdminWaitlist({ adminKey }: AdminWaitlistProps): JSX.Element {
 
   const formatDate = (dateStr: string | null): string => {
     if (!dateStr) return '—';
-    return new Date(dateStr).toLocaleDateString('en-US', {
+    // Backend returns UTC times, ensure proper parsing
+    const utcDateStr = dateStr.endsWith('Z') || dateStr.includes('+') || dateStr.includes('-', 10)
+      ? dateStr
+      : `${dateStr}Z`;
+    return new Date(utcDateStr).toLocaleDateString('en-US', {
       month: 'short',
       day: 'numeric',
       year: 'numeric',

@@ -199,7 +199,7 @@ async def search_activities_by_embedding(
                 "type": row.type,
                 "subject": row.subject,
                 "description": row.description[:500] if row.description else None,
-                "activity_date": row.activity_date.isoformat() if row.activity_date else None,
+                "activity_date": f"{row.activity_date.isoformat()}Z" if row.activity_date else None,
                 "custom_fields": row.custom_fields,
                 "similarity": float(row.similarity),
             }

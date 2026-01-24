@@ -79,7 +79,7 @@ class Activity(Base):
             "subject": self.subject,
             "description": self.description,
             "activity_date": (
-                self.activity_date.isoformat() if self.activity_date else None
+                f"{self.activity_date.isoformat()}Z" if self.activity_date else None
             ),
             "deal_id": str(self.deal_id) if self.deal_id else None,
             "account_id": str(self.account_id) if self.account_id else None,

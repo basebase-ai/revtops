@@ -53,9 +53,12 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str) -> None:
             await websocket.close(code=1008, reason="User not found. Please sign in first.")
             return
 
-        # Reject users who are on the waitlist (not yet invited)
+        # Reject users who are on the waitlist (not yet invited) or CRM stubs (haven't signed up)
         if user.status == "waitlist":
             await websocket.close(code=1008, reason="You're on the waitlist. We'll notify you when you have access.")
+            return
+        if user.status == "crm_only":
+            await websocket.close(code=1008, reason="Please sign up to use Revtops.")
             return
 
         organization_id = str(user.organization_id) if user.organization_id else None

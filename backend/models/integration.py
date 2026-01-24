@@ -100,7 +100,7 @@ class Integration(Base):
             "organization_id": str(self.organization_id),
             "provider": self.provider,
             "is_active": self.is_active,
-            "last_sync_at": self.last_sync_at.isoformat() if self.last_sync_at else None,
+            "last_sync_at": f"{self.last_sync_at.isoformat()}Z" if self.last_sync_at else None,
             "last_error": self.last_error,
-            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "created_at": f"{self.created_at.isoformat()}Z" if self.created_at else None,
         }

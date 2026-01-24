@@ -270,8 +270,8 @@ async def sync_user(request: SyncUserRequest) -> SyncUserResponse:
             if org_uuid and existing.organization_id != org_uuid:
                 existing.organization_id = org_uuid
             
-            # If user was invited, upgrade to active on signin
-            if existing.status == "invited":
+            # If user was invited or a CRM stub, upgrade to active on signin
+            if existing.status in ("invited", "crm_only"):
                 existing.status = "active"
             
             # Update avatar_url if a new one is provided (don't overwrite with null)
@@ -971,9 +971,9 @@ async def list_integrations(
                 provider=integration.provider,
                 scope="organization",
                 is_active=integration.is_active,
-                last_sync_at=integration.last_sync_at.isoformat() if integration.last_sync_at else None,
+                last_sync_at=f"{integration.last_sync_at.isoformat()}Z" if integration.last_sync_at else None,
                 last_error=integration.last_error,
-                connected_at=integration.created_at.isoformat() if integration.created_at else None,
+                connected_at=f"{integration.created_at.isoformat()}Z" if integration.created_at else None,
                 connected_by=connected_by_name,
                 current_user_connected=True,  # Org-scoped is shared, so always "connected" for UI
                 team_connections=[],
@@ -1015,9 +1015,9 @@ async def list_integrations(
                 provider=provider,
                 scope="user",
                 is_active=ref_integration.is_active if ref_integration else False,
-                last_sync_at=ref_integration.last_sync_at.isoformat() if ref_integration and ref_integration.last_sync_at else None,
+                last_sync_at=f"{ref_integration.last_sync_at.isoformat()}Z" if ref_integration and ref_integration.last_sync_at else None,
                 last_error=ref_integration.last_error if ref_integration else None,
-                connected_at=ref_integration.created_at.isoformat() if ref_integration and ref_integration.created_at else None,
+                connected_at=f"{ref_integration.created_at.isoformat()}Z" if ref_integration and ref_integration.created_at else None,
                 connected_by=None,
                 current_user_connected=current_user_integration is not None,
                 team_connections=team_connections,

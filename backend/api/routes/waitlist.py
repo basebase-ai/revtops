@@ -191,9 +191,9 @@ async def list_waitlist(
                 name=u.name,
                 status=u.status,
                 waitlist_data=u.waitlist_data,
-                waitlisted_at=u.waitlisted_at.isoformat() if u.waitlisted_at else None,
-                invited_at=u.invited_at.isoformat() if u.invited_at else None,
-                created_at=u.created_at.isoformat() if u.created_at else None,
+                waitlisted_at=f"{u.waitlisted_at.isoformat()}Z" if u.waitlisted_at else None,
+                invited_at=f"{u.invited_at.isoformat()}Z" if u.invited_at else None,
+                created_at=f"{u.created_at.isoformat()}Z" if u.created_at else None,
             )
             for u in users
         ]
@@ -319,9 +319,9 @@ async def list_waitlist_role_auth(
                 name=u.name,
                 status=u.status,
                 waitlist_data=u.waitlist_data,
-                waitlisted_at=u.waitlisted_at.isoformat() if u.waitlisted_at else None,
-                invited_at=u.invited_at.isoformat() if u.invited_at else None,
-                created_at=u.created_at.isoformat() if u.created_at else None,
+                waitlisted_at=f"{u.waitlisted_at.isoformat()}Z" if u.waitlisted_at else None,
+                invited_at=f"{u.invited_at.isoformat()}Z" if u.invited_at else None,
+                created_at=f"{u.created_at.isoformat()}Z" if u.created_at else None,
             )
             for u in users
         ]
@@ -470,8 +470,8 @@ async def list_admin_users(
                     first_name=first_name,
                     last_name=last_name,
                     status=u.status,
-                    last_login=u.last_login.isoformat() if u.last_login else None,
-                    created_at=u.created_at.isoformat() if u.created_at else None,
+                    last_login=f"{u.last_login.isoformat()}Z" if u.last_login else None,
+                    created_at=f"{u.created_at.isoformat()}Z" if u.created_at else None,
                     organization_id=str(u.organization_id) if u.organization_id else None,
                     organization_name=org_name,
                 )
@@ -544,8 +544,8 @@ async def list_admin_organizations(
                     name=org.name,
                     email_domain=org.email_domain,
                     user_count=active_user_count,
-                    created_at=org.created_at.isoformat() if org.created_at else None,
-                    last_sync_at=org.last_sync_at.isoformat() if org.last_sync_at else None,
+                    created_at=f"{org.created_at.isoformat()}Z" if org.created_at else None,
+                    last_sync_at=f"{org.last_sync_at.isoformat()}Z" if org.last_sync_at else None,
                 )
             )
 

@@ -71,7 +71,7 @@ class ChatMessage(Base):
             "conversation_id": str(self.conversation_id) if self.conversation_id else None,
             "role": self.role,
             "content_blocks": blocks,
-            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "created_at": f"{self.created_at.isoformat()}Z" if self.created_at else None,
         }
     
     def _legacy_to_blocks(self) -> list[dict[str, Any]]:

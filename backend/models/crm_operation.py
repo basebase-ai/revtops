@@ -96,7 +96,7 @@ class CrmOperation(Base):
             "records": self.validated_records,
             "duplicate_warnings": self.duplicate_warnings or [],
             "record_count": self.record_count,
-            "expires_at": self.expires_at.isoformat(),
+            "expires_at": f"{self.expires_at.isoformat()}Z",
         }
 
     def to_result_dict(self) -> dict[str, Any]:
@@ -112,5 +112,5 @@ class CrmOperation(Base):
             "failure_count": self.failure_count,
             "result": self.result,
             "error_message": self.error_message,
-            "executed_at": self.executed_at.isoformat() if self.executed_at else None,
+            "executed_at": f"{self.executed_at.isoformat()}Z" if self.executed_at else None,
         }

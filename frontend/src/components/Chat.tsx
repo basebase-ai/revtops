@@ -635,21 +635,7 @@ function MessageWithBlocks({
 
   return (
     <div>
-      {/* Text content */}
-      {textContent.length > 0 && (
-        <Message
-          message={{
-            id: message.id,
-            role: message.role,
-            content: textContent,
-            timestamp: message.timestamp,
-            isStreaming: message.isStreaming,
-          }}
-          onArtifactClick={onArtifactClick}
-        />
-      )}
-
-      {/* Tool calls - no vertical spacing between them */}
+      {/* Tool calls first (agent runs tools before generating response) */}
       {toolBlocks.map((block) => {
         // CRM write gets special handling
         if (block.name === 'crm_write' && block.result) {
@@ -709,6 +695,20 @@ function MessageWithBlocks({
           />
         );
       })}
+
+      {/* Text content (agent response after running tools) */}
+      {textContent.length > 0 && (
+        <Message
+          message={{
+            id: message.id,
+            role: message.role,
+            content: textContent,
+            timestamp: message.timestamp,
+            isStreaming: message.isStreaming,
+          }}
+          onArtifactClick={onArtifactClick}
+        />
+      )}
     </div>
   );
 }

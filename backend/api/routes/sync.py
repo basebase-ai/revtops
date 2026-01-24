@@ -156,7 +156,7 @@ async def get_sync_status(organization_id: str, provider: str) -> SyncStatusResp
                     provider=provider,
                     status="completed",
                     started_at=None,
-                    completed_at=integration.last_sync_at.isoformat(),
+                    completed_at=f"{integration.last_sync_at.isoformat()}Z",
                     error=integration.last_error,
                     counts=None,
                 )
@@ -179,8 +179,8 @@ async def get_sync_status(organization_id: str, provider: str) -> SyncStatusResp
         organization_id=organization_id,
         provider=provider,
         status=str(status.get("status", "unknown")),
-        started_at=started_at.isoformat() if isinstance(started_at, datetime) else None,
-        completed_at=completed_at.isoformat() if isinstance(completed_at, datetime) else None,
+        started_at=f"{started_at.isoformat()}Z" if isinstance(started_at, datetime) else None,
+        completed_at=f"{completed_at.isoformat()}Z" if isinstance(completed_at, datetime) else None,
         error=str(status["error"]) if status.get("error") else None,
         counts=counts if isinstance(counts, dict) else None,
     )

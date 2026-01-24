@@ -33,6 +33,12 @@ class HubSpotConnector(BaseConnector):
 
     source_system = "hubspot"
 
+    def __init__(self, organization_id: str) -> None:
+        """Initialize connector with owner cache."""
+        super().__init__(organization_id)
+        # Cache for HubSpot owner ID -> internal user ID mapping
+        self._owner_cache: dict[str, Optional[uuid.UUID]] = {}
+
     async def _get_headers(self) -> dict[str, str]:
         """Get authorization headers for HubSpot API."""
         token, _ = await self.get_oauth_token()
@@ -503,20 +509,68 @@ class HubSpotConnector(BaseConnector):
     async def _map_hs_owner_to_user(
         self, hs_owner_id: Optional[str]
     ) -> Optional[uuid.UUID]:
-        """Map HubSpot owner ID to our internal user ID."""
+        """
+        Map HubSpot owner ID to our internal user ID by fetching owner email.
+        
+        If no matching user exists, creates a stub user with status='crm_only'
+        that can be upgraded when the person signs up for Revtops.
+        """
         if not hs_owner_id:
             return None
 
-        async with get_session() as session:
-            # Look for user with matching HubSpot ID in custom_fields or a dedicated field
-            result = await session.execute(
-                select(User).where(
-                    User.organization_id == uuid.UUID(self.organization_id),
-                )
+        # Check cache first
+        if hs_owner_id in self._owner_cache:
+            return self._owner_cache[hs_owner_id]
+
+        # Fetch owner details from HubSpot to get their email and name
+        try:
+            owner_data = await self._make_request(
+                "GET", f"/crm/v3/owners/{hs_owner_id}"
             )
-            # For MVP, return first user; in production, match by HubSpot owner ID
-            user = result.scalars().first()
-            return user.id if user else None
+            owner_email: Optional[str] = owner_data.get("email")
+            if not owner_email:
+                self._owner_cache[hs_owner_id] = None
+                return None
+            
+            # Build owner name from firstName/lastName
+            first_name: str = owner_data.get("firstName") or ""
+            last_name: str = owner_data.get("lastName") or ""
+            owner_name: Optional[str] = f"{first_name} {last_name}".strip() or None
+        except httpx.HTTPStatusError:
+            # If we can't fetch owner, fall back to None
+            self._owner_cache[hs_owner_id] = None
+            return None
+
+        # Look up user by email (email is globally unique, not per-org)
+        async with get_session() as session:
+            result = await session.execute(
+                select(User).where(User.email == owner_email)
+            )
+            user = result.scalar_one_or_none()
+            
+            if user:
+                # User exists - check if they belong to this organization
+                if user.organization_id == uuid.UUID(self.organization_id):
+                    self._owner_cache[hs_owner_id] = user.id
+                    return user.id
+                else:
+                    # User exists but in different org - can't assign cross-org ownership
+                    self._owner_cache[hs_owner_id] = None
+                    return None
+            
+            # No user with this email exists - create a stub user for this CRM owner
+            stub_user = User(
+                id=uuid.uuid4(),
+                email=owner_email,
+                name=owner_name,
+                organization_id=uuid.UUID(self.organization_id),
+                status="crm_only",  # Stub user from CRM sync, not yet signed up
+            )
+            session.add(stub_user)
+            await session.commit()
+            
+            self._owner_cache[hs_owner_id] = stub_user.id
+            return stub_user.id
 
     async def fetch_deal(self, deal_id: str) -> dict[str, Any]:
         """Fetch single deal on-demand."""
