@@ -8,7 +8,7 @@
   <rect width="100" height="100" rx="20" fill="url(#grad)"/>
   <!-- Main growth line - ends at peak -->
   <path 
-    d="M15 68 L30 52 L45 62 L72 25" 
+    d="M10 68 L25 52 L40 62 L65 25" 
     stroke="white" 
     stroke-width="8" 
     fill="none" 
@@ -17,7 +17,7 @@
   />
   <!-- Mountain right slope -->
   <path 
-    d="M82 45 L90 62" 
+    d="M75 45 L85 62" 
     stroke="white" 
     stroke-width="8" 
     fill="none" 
