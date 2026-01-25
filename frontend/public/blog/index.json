@@ -1,0 +1,31 @@
+{
+  "posts": [
+    {
+      "slug": "hello-revtops",
+      "title": "Hello Revtops!",
+      "date": "2026-01-24",
+      "author": "Ben Wen",
+      "tags": [
+        "announcement",
+        "getting-started"
+      ],
+      "excerpt": "DRAFT\n\nWe're excited to launch Revtops! This is where we'll share insights, updates, and best practices for revenue operations teams.\n\nWhat to Expect\n\nOur blog will cover a variety of topics including...",
+      "time": "20:01"
+    },
+    {
+      "slug": "integrating-your-data-sources",
+      "title": "Integrating Your Data Sources: A Quick Start Guide",
+      "date": "2026-01-24",
+      "author": "Revtops Team",
+      "tags": [
+        "integrations",
+        "getting-started",
+        "tutorial"
+      ],
+      "excerpt": "Integrating Your Data Sources\n\nOne of the most powerful features of Revtops is the ability to connect all your revenue data sources in one place. This guide will walk you through the integration proce...",
+      "time": "09:00"
+    }
+  ],
+  "generated": "2026-01-25T03:31:53.416Z",
+  "count": 2
+}

@@ -11,9 +11,10 @@ import demoConversation from '../data/demoConversation.json';
 
 interface LandingProps {
   onGetStarted: () => void;
+  onNavigateToBlog: () => void;
 }
 
-export function Landing({ onGetStarted }: LandingProps): JSX.Element {
+export function Landing({ onGetStarted, onNavigateToBlog }: LandingProps): JSX.Element {
   const [isVisible, setIsVisible] = useState<boolean>(false);
   const [showWaitlistForm, setShowWaitlistForm] = useState<boolean>(false);
   const [showWaitlistSuccess, setShowWaitlistSuccess] = useState<boolean>(false);
@@ -43,12 +44,20 @@ export function Landing({ onGetStarted }: LandingProps): JSX.Element {
           </div>
           <span className="text-xl font-bold text-surface-50">Revtops</span>
         </div>
-        <button
-          onClick={onGetStarted}
-          className="px-4 py-2 text-sm font-medium text-surface-300 hover:text-white transition-colors"
-        >
-          Sign In
-        </button>
+        <div className="flex items-center gap-6">
+          <button
+            onClick={onNavigateToBlog}
+            className="px-3 py-2 text-sm font-medium text-surface-300 hover:text-white transition-colors"
+          >
+            Blog
+          </button>
+          <button
+            onClick={onGetStarted}
+            className="px-4 py-2 text-sm font-medium text-surface-300 hover:text-white transition-colors"
+          >
+            Sign In
+          </button>
+        </div>
       </nav>
 
       {/* Hero Section */}
