@@ -35,6 +35,11 @@ export function parseFrontmatter(rawContent: string): ParsedMarkdown {
   }
 
   const [, frontmatterStr, content] = match;
+
+  if (!frontmatterStr || !content) {
+    return { metadata: {}, content: rawContent };
+  }
+
   const metadata: Record<string, unknown> = {};
 
   // Parse YAML-like frontmatter
@@ -102,7 +107,7 @@ export function formatDate(dateStr: string): string {
   try {
     // Parse YYYY-MM-DD as local date to avoid timezone issues
     const match = dateStr.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-    if (match) {
+    if (match && match[1] && match[2] && match[3]) {
       const year = parseInt(match[1], 10);
       const month = parseInt(match[2], 10) - 1; // Month is 0-indexed
       const day = parseInt(match[3], 10);
