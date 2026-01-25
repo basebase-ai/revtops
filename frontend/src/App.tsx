@@ -20,9 +20,11 @@ import { Onboarding } from './components/Onboarding';
 import { AppLayout } from './components/AppLayout';
 import { OAuthCallback } from './components/OAuthCallback';
 import { AdminWaitlist } from './components/AdminWaitlist';
+import { PublicBlog } from './components/PublicBlog';
+import { PublicBlogPost } from './components/PublicBlogPost';
 import type { User, AuthChangeEvent, Session } from '@supabase/supabase-js';
 
-type Screen = 'landing' | 'auth' | 'blocked-email' | 'not-registered' | 'waitlist' | 'company-setup' | 'onboarding' | 'app';
+type Screen = 'landing' | 'auth' | 'blocked-email' | 'not-registered' | 'waitlist' | 'company-setup' | 'onboarding' | 'app' | 'blog' | 'blog-post';
 
 // Simple in-memory store for companies (MVP - in production, use API)
 interface StoredCompany {
@@ -84,6 +86,7 @@ function App(): JSX.Element {
   const [screen, setScreen] = useState<Screen>('landing');
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [emailDomain, setEmailDomain] = useState<string>('');
+  const [currentBlogSlug, setCurrentBlogSlug] = useState<string>('');
   
   // Zustand store
   const { 
@@ -455,7 +458,87 @@ function App(): JSX.Element {
   // Render based on current screen
   switch (screen) {
     case 'landing':
-      return <Landing onGetStarted={() => setScreen('auth')} />;
+      return (
+        <Landing
+          onGetStarted={() => setScreen('auth')}
+          onNavigateToBlog={() => setScreen('blog')}
+        />
+      );
+
+    case 'blog':
+      return (
+        <div className="min-h-screen bg-surface-950">
+          {/* Navigation */}
+          <nav className="sticky top-0 z-50 bg-surface-950/80 backdrop-blur-lg border-b border-surface-800">
+            <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
+              <button
+                onClick={() => setScreen('landing')}
+                className="flex items-center gap-2 hover:opacity-80 transition-opacity"
+              >
+                <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-primary-500 to-primary-700 flex items-center justify-center">
+                  <img src="/logo.svg" alt="Revtops" className="w-5 h-5 invert" />
+                </div>
+                <span className="text-xl font-bold text-surface-50">Revtops</span>
+              </button>
+              <div className="flex items-center gap-6">
+                <button
+                  onClick={() => setScreen('blog')}
+                  className="px-3 py-2 text-sm font-medium text-primary-400"
+                >
+                  Blog
+                </button>
+                <button
+                  onClick={() => setScreen('auth')}
+                  className="px-4 py-2 text-sm font-medium text-surface-300 hover:text-white transition-colors"
+                >
+                  Sign In
+                </button>
+              </div>
+            </div>
+          </nav>
+          <PublicBlog
+            onSelectPost={(slug) => {
+              setCurrentBlogSlug(slug);
+              setScreen('blog-post');
+            }}
+          />
+        </div>
+      );
+
+    case 'blog-post':
+      return (
+        <div className="min-h-screen bg-surface-950">
+          {/* Navigation */}
+          <nav className="sticky top-0 z-50 bg-surface-950/80 backdrop-blur-lg border-b border-surface-800">
+            <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
+              <button
+                onClick={() => setScreen('landing')}
+                className="flex items-center gap-2 hover:opacity-80 transition-opacity"
+              >
+                <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-primary-500 to-primary-700 flex items-center justify-center">
+                  <img src="/logo.svg" alt="Revtops" className="w-5 h-5 invert" />
+                </div>
+                <span className="text-xl font-bold text-surface-50">Revtops</span>
+              </button>
+              <div className="flex items-center gap-6">
+                <button
+                  onClick={() => setScreen('blog')}
+                  className="px-3 py-2 text-sm font-medium text-primary-400"
+                >
+                  Blog
+                </button>
+                <button
+                  onClick={() => setScreen('auth')}
+                  className="px-4 py-2 text-sm font-medium text-surface-300 hover:text-white transition-colors"
+                >
+                  Sign In
+                </button>
+              </div>
+            </div>
+          </nav>
+          <PublicBlogPost slug={currentBlogSlug} onBack={() => setScreen('blog')} />
+        </div>
+      );
 
     case 'auth':
       return (
