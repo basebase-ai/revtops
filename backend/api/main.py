@@ -37,9 +37,11 @@ app = FastAPI(title="Revenue Copilot API", version="1.0.0")
 cors_origins: list[str] = [
     "http://localhost:5173",  # Vite dev server
     "http://localhost:3000",
+    "http://localhost:5174",  # www dev server
     "https://revtops-frontend-production.up.railway.app",  # Railway production
     "https://beta.revtops.com",  # Production custom domain
-    "https://www.revtops.com",  # Production custom domain
+    "https://app.revtops.com",  # App subdomain
+    "https://www.revtops.com",  # Public website
     "https://revtops.com",  # Production custom domain (non-www)
 ]
 

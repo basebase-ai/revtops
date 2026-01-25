@@ -2,10 +2,12 @@
  * Main application component.
  *
  * Handles:
- * - Authentication flow (landing → auth → onboarding → app)
+ * - Authentication flow (auth → onboarding → app)
  * - Work email validation
  * - Company setup for new organizations
  * - Main app layout routing
+ * 
+ * Note: Public landing page and blog are now served from www.revtops.com
  */
 
 import { useEffect, useState } from 'react';
@@ -13,18 +15,18 @@ import { supabase } from './lib/supabase';
 import { getEmailDomain, isPersonalEmail } from './lib/email';
 import { API_BASE } from './lib/api';
 import { useAppStore } from './store';
-import { Landing } from './components/Landing';
 import { Auth } from './components/Auth';
 import { CompanySetup } from './components/CompanySetup';
 import { Onboarding } from './components/Onboarding';
 import { AppLayout } from './components/AppLayout';
 import { OAuthCallback } from './components/OAuthCallback';
 import { AdminWaitlist } from './components/AdminWaitlist';
-import { PublicBlog } from './components/PublicBlog';
-import { PublicBlogPost } from './components/PublicBlogPost';
 import type { User, AuthChangeEvent, Session } from '@supabase/supabase-js';
 
-type Screen = 'landing' | 'auth' | 'blocked-email' | 'not-registered' | 'waitlist' | 'company-setup' | 'onboarding' | 'app' | 'blog' | 'blog-post';
+type Screen = 'auth' | 'blocked-email' | 'not-registered' | 'waitlist' | 'company-setup' | 'onboarding' | 'app';
+
+// URL for public website (landing, blog, waitlist form)
+const WWW_URL = import.meta.env.VITE_WWW_URL ?? 'https://www.revtops.com';
 
 // Simple in-memory store for companies (MVP - in production, use API)
 interface StoredCompany {
@@ -80,10 +82,9 @@ function getCompanyByDomain(domain: string): StoredCompany | null {
 }
 
 function App(): JSX.Element {
-  const [screen, setScreen] = useState<Screen>('landing');
+  const [screen, setScreen] = useState<Screen>('auth');
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [emailDomain, setEmailDomain] = useState<string>('');
-  const [currentBlogSlug, setCurrentBlogSlug] = useState<string>('');
   
   // Zustand store
   const { 
@@ -159,7 +160,8 @@ function App(): JSX.Element {
           setIsLoading(false);
         } else if (event === 'SIGNED_OUT') {
           storeLogout();
-          setScreen('landing');
+          // Redirect to public website on sign out
+          window.location.href = WWW_URL;
         }
       }
     );
@@ -393,7 +395,8 @@ function App(): JSX.Element {
     await supabase.auth.signOut();
     localStorage.removeItem('user_id');
     storeLogout();
-    setScreen('landing');
+    // Redirect to public website
+    window.location.href = WWW_URL;
   };
 
   const handleOnboardingComplete = (): void => {
@@ -450,93 +453,10 @@ function App(): JSX.Element {
 
   // Render based on current screen
   switch (screen) {
-    case 'landing':
-      return (
-        <Landing
-          onGetStarted={() => setScreen('auth')}
-          onNavigateToBlog={() => setScreen('blog')}
-        />
-      );
-
-    case 'blog':
-      return (
-        <div className="min-h-screen bg-surface-950">
-          {/* Navigation */}
-          <nav className="sticky top-0 z-50 bg-surface-950/80 backdrop-blur-lg border-b border-surface-800">
-            <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
-              <button
-                onClick={() => setScreen('landing')}
-                className="flex items-center gap-2 hover:opacity-80 transition-opacity"
-              >
-                <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-primary-500 to-primary-700 flex items-center justify-center">
-                  <img src="/logo.svg" alt="Revtops" className="w-5 h-5 invert" />
-                </div>
-                <span className="text-xl font-bold text-surface-50">Revtops</span>
-              </button>
-              <div className="flex items-center gap-6">
-                <button
-                  onClick={() => setScreen('blog')}
-                  className="px-3 py-2 text-sm font-medium text-primary-400"
-                >
-                  Blog
-                </button>
-                <button
-                  onClick={() => setScreen('auth')}
-                  className="px-4 py-2 text-sm font-medium text-surface-300 hover:text-white transition-colors"
-                >
-                  Sign In
-                </button>
-              </div>
-            </div>
-          </nav>
-          <PublicBlog
-            onSelectPost={(slug) => {
-              setCurrentBlogSlug(slug);
-              setScreen('blog-post');
-            }}
-          />
-        </div>
-      );
-
-    case 'blog-post':
-      return (
-        <div className="min-h-screen bg-surface-950">
-          {/* Navigation */}
-          <nav className="sticky top-0 z-50 bg-surface-950/80 backdrop-blur-lg border-b border-surface-800">
-            <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
-              <button
-                onClick={() => setScreen('landing')}
-                className="flex items-center gap-2 hover:opacity-80 transition-opacity"
-              >
-                <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-primary-500 to-primary-700 flex items-center justify-center">
-                  <img src="/logo.svg" alt="Revtops" className="w-5 h-5 invert" />
-                </div>
-                <span className="text-xl font-bold text-surface-50">Revtops</span>
-              </button>
-              <div className="flex items-center gap-6">
-                <button
-                  onClick={() => setScreen('blog')}
-                  className="px-3 py-2 text-sm font-medium text-primary-400"
-                >
-                  Blog
-                </button>
-                <button
-                  onClick={() => setScreen('auth')}
-                  className="px-4 py-2 text-sm font-medium text-surface-300 hover:text-white transition-colors"
-                >
-                  Sign In
-                </button>
-              </div>
-            </div>
-          </nav>
-          <PublicBlogPost slug={currentBlogSlug} onBack={() => setScreen('blog')} />
-        </div>
-      );
-
     case 'auth':
       return (
         <Auth
-          onBack={() => setScreen('landing')}
+          onBack={() => { window.location.href = WWW_URL; }}
           onSuccess={() => {
             // Auth component handles redirect via onAuthStateChange
           }}
@@ -578,7 +498,10 @@ function App(): JSX.Element {
               We're currently invite-only. Join the waitlist on our homepage and we'll let you know when it's your turn.
             </p>
             <div className="flex gap-3 justify-center">
-              <button onClick={() => void handleLogout()} className="btn-primary">
+              <button 
+                onClick={() => { window.location.href = WWW_URL; }} 
+                className="btn-primary"
+              >
                 Back to homepage
               </button>
             </div>
@@ -627,10 +550,11 @@ function App(): JSX.Element {
 
     case 'app': {
       if (!user || !organization) {
+        // If no user, go to auth
         return (
-          <Landing
-            onGetStarted={() => setScreen('auth')}
-            onNavigateToBlog={() => setScreen('blog')}
+          <Auth
+            onBack={() => { window.location.href = WWW_URL; }}
+            onSuccess={() => {}}
           />
         );
       }
@@ -644,9 +568,9 @@ function App(): JSX.Element {
 
     default:
       return (
-        <Landing
-          onGetStarted={() => setScreen('auth')}
-          onNavigateToBlog={() => setScreen('blog')}
+        <Auth
+          onBack={() => { window.location.href = WWW_URL; }}
+          onSuccess={() => {}}
         />
       );
   }
