@@ -172,8 +172,11 @@ const markdownComponents: Components = {
   li: ({ children }) => <li className="leading-relaxed">{children}</li>,
 
   // Code
-  code: ({ inline, className, children, ...props }) => {
-    if (inline) {
+  code: ({ className, children, ...props }) => {
+    const match = /language-(\w+)/.exec(className || '');
+    const isInline = !match && !className;
+
+    if (isInline) {
       return (
         <code
           className="px-1.5 py-0.5 rounded bg-surface-800 text-primary-300 text-sm font-mono"

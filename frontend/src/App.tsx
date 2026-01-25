@@ -634,7 +634,12 @@ function App(): JSX.Element {
 
     case 'app': {
       if (!user || !organization) {
-        return <Landing onGetStarted={() => setScreen('auth')} />;
+        return (
+          <Landing
+            onGetStarted={() => setScreen('auth')}
+            onNavigateToBlog={() => setScreen('blog')}
+          />
+        );
       }
 
       return (
@@ -645,7 +650,12 @@ function App(): JSX.Element {
     }
 
     default:
-      return <Landing onGetStarted={() => setScreen('auth')} />;
+      return (
+        <Landing
+          onGetStarted={() => setScreen('auth')}
+          onNavigateToBlog={() => setScreen('blog')}
+        />
+      );
   }
 }
 
