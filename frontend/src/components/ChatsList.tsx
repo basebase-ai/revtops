@@ -6,10 +6,12 @@
  * - Sort by date
  * - Delete chats
  * - Click to resume conversation
+ * - Visual indicators for chats with active background tasks
  */
 
 import { useState } from 'react';
 import type { ChatSummary } from './AppLayout';
+import { useActiveTasksByConversation } from '../store';
 
 interface ChatsListProps {
   chats: ChatSummary[];
@@ -20,6 +22,7 @@ interface ChatsListProps {
 export function ChatsList({ chats, onSelectChat, onNewChat }: ChatsListProps): JSX.Element {
   const [searchQuery, setSearchQuery] = useState('');
   const [sortBy, setSortBy] = useState<'recent' | 'oldest'>('recent');
+  const activeTasksByConversation = useActiveTasksByConversation();
 
   const filteredChats = chats
     .filter((chat) =>
@@ -120,27 +123,41 @@ export function ChatsList({ chats, onSelectChat, onNewChat }: ChatsListProps): J
           </div>
         ) : (
           <div className="space-y-2">
-            {filteredChats.map((chat) => (
-              <button
-                key={chat.id}
-                onClick={() => onSelectChat(chat.id)}
-                className="w-full text-left p-4 rounded-xl bg-surface-900 hover:bg-surface-800 border border-surface-800 hover:border-surface-700 transition-colors group"
-              >
-                <div className="flex items-start justify-between gap-4">
-                  <div className="flex-1 min-w-0">
-                    <h3 className="font-medium text-surface-100 truncate group-hover:text-white transition-colors">
-                      {chat.title}
-                    </h3>
-                    <p className="text-sm text-surface-400 truncate mt-1">
-                      {chat.previewText}
-                    </p>
+            {filteredChats.map((chat) => {
+              const hasActiveTask = chat.id in activeTasksByConversation;
+              return (
+                <button
+                  key={chat.id}
+                  onClick={() => onSelectChat(chat.id)}
+                  className="w-full text-left p-4 rounded-xl bg-surface-900 hover:bg-surface-800 border border-surface-800 hover:border-surface-700 transition-colors group"
+                >
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <h3 className="font-medium text-surface-100 truncate group-hover:text-white transition-colors">
+                          {chat.title}
+                        </h3>
+                        {hasActiveTask && (
+                          <span className="flex-shrink-0 flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-primary-500/20 text-primary-400 text-xs">
+                            <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
+                              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                            </svg>
+                            Active
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-sm text-surface-400 truncate mt-1">
+                        {chat.previewText}
+                      </p>
+                    </div>
+                    <div className="text-xs text-surface-500 whitespace-nowrap">
+                      {formatDate(chat.lastMessageAt)}
+                    </div>
                   </div>
-                  <div className="text-xs text-surface-500 whitespace-nowrap">
-                    {formatDate(chat.lastMessageAt)}
-                  </div>
-                </div>
-              </button>
-            ))}
+                </button>
+              );
+            })}
           </div>
         )}
       </div>

@@ -11,6 +11,7 @@ from models.conversation import Conversation
 from models.chat_message import ChatMessage
 from models.integration import Integration
 from models.crm_operation import CrmOperation
+from models.agent_task import AgentTask
 
 __all__ = [
     "Base",
@@ -27,4 +28,5 @@ __all__ = [
     "ChatMessage",
     "Integration",
     "CrmOperation",
+    "AgentTask",
 ]

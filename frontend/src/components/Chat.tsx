@@ -2,27 +2,23 @@
  * Chat interface component.
  *
  * Features:
- * - WebSocket connection to backend with conversation support
- * - Message history display (stored in Zustand)
- * - Input for user messages
+ * - Uses global WebSocket from AppLayout for persistent connections
+ * - Per-conversation state (messages, streaming) from Zustand
+ * - Background tasks continue even when switching chats
  * - Streaming response display with "thinking" indicator
  * - Artifact viewer for dashboards/reports
- * - Auto-generates chat title from first message
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { useWebSocket } from '../hooks/useWebSocket';
 import { Message } from './Message';
 import { ArtifactViewer } from './ArtifactViewer';
 import { CrmApprovalCard } from './CrmApprovalCard';
 import { getConversation } from '../api/client';
 import { 
-  useAppStore, 
-  useMessages, 
-  useChatTitle, 
-  useIsThinking,
+  useAppStore,
+  useConversationState,
   type ChatMessage,
   type ToolCallData,
   type ToolUseBlock,
@@ -39,39 +35,13 @@ interface ChatProps {
   userId: string;
   organizationId: string;
   chatId?: string | null;
+  sendMessage: (data: Record<string, unknown>) => void;
+  isConnected: boolean;
+  connectionState: 'connecting' | 'connected' | 'disconnected' | 'error';
+  crmApprovalResults: Map<string, unknown>;
 }
 
-// WebSocket message types
-interface WsConversationCreated {
-  type: 'conversation_created';
-  conversation_id: string;
-}
-
-interface WsMessageComplete {
-  type: 'message_complete';
-  conversation_id: string;
-}
-
-interface WsToolCall {
-  type: 'tool_call';
-  tool_name: string;
-  tool_input: Record<string, unknown>;
-  tool_id: string;
-  status: 'running';
-}
-
-interface WsToolResult {
-  type: 'tool_result';
-  tool_name: string;
-  tool_id: string;
-  result: Record<string, unknown>;
-  status: 'complete';
-}
-
-interface WsTextBlockComplete {
-  type: 'text_block_complete';
-}
-
+// CRM approval result type (received via parent component)
 interface WsCrmApprovalResult {
   type: 'crm_approval_result';
   operation_id: string;
@@ -83,8 +53,6 @@ interface WsCrmApprovalResult {
   error?: string;
 }
 
-type WsControlMessage = WsConversationCreated | WsMessageComplete | WsToolCall | WsToolResult | WsTextBlockComplete | WsCrmApprovalResult;
-
 // CRM approval state tracking
 interface CrmApprovalState {
   operationId: string;
@@ -92,29 +60,26 @@ interface CrmApprovalState {
   result: WsCrmApprovalResult | null;
 }
 
-function isControlMessage(data: unknown): data is WsControlMessage {
-  return typeof data === 'object' && data !== null && 'type' in data;
-}
-
-export function Chat({ userId, organizationId: _organizationId, chatId }: ChatProps): JSX.Element {
-  // Get state from Zustand
-  const messages = useMessages();
-  const chatTitle = useChatTitle();
-  const isThinking = useIsThinking();
+export function Chat({ 
+  userId, 
+  organizationId: _organizationId, 
+  chatId, 
+  sendMessage,
+  isConnected,
+  connectionState,
+  crmApprovalResults,
+}: ChatProps): JSX.Element {
+  // Get per-conversation state from Zustand
+  const conversationState = useConversationState(chatId ?? null);
+  const conversationMessages = conversationState?.messages ?? [];
+  const chatTitle = conversationState?.title ?? 'New Chat';
+  const conversationThinking = conversationState?.isThinking ?? false;
   
   // Get actions from Zustand (stable references)
-  const addMessage = useAppStore((s) => s.addMessage);
-  const appendToStreamingMessage = useAppStore((s) => s.appendToStreamingMessage);
-  const startStreamingMessage = useAppStore((s) => s.startStreamingMessage);
-  const markMessageComplete = useAppStore((s) => s.markMessageComplete);
-  const setChatTitle = useAppStore((s) => s.setChatTitle);
-  const setIsThinking = useAppStore((s) => s.setIsThinking);
-  const setConversationId = useAppStore((s) => s.setConversationId);
-  const setMessages = useAppStore((s) => s.setMessages);
-  const clearChat = useAppStore((s) => s.clearChat);
-  const addConversation = useAppStore((s) => s.addConversation);
-  const conversationId = useAppStore((s) => s.conversationId);
-  const updateToolMessage = useAppStore((s) => s.updateToolMessage);
+  const addConversationMessage = useAppStore((s) => s.addConversationMessage);
+  const setConversationMessages = useAppStore((s) => s.setConversationMessages);
+  const setConversationTitle = useAppStore((s) => s.setConversationTitle);
+  const setConversationThinking = useAppStore((s) => s.setConversationThinking);
   
   // Local state
   const [input, setInput] = useState<string>('');
@@ -122,142 +87,23 @@ export function Chat({ userId, organizationId: _organizationId, chatId }: ChatPr
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [selectedToolCall, setSelectedToolCall] = useState<ToolCallData | null>(null);
   const [crmApprovals, setCrmApprovals] = useState<Map<string, CrmApprovalState>>(new Map());
+  const [localConversationId, setLocalConversationId] = useState<string | null>(chatId ?? null);
+  // Pending messages for new conversations (before we have an ID)
+  const [pendingMessages, setPendingMessages] = useState<ChatMessage[]>([]);
+  const [pendingThinking, setPendingThinking] = useState<boolean>(false);
   
   // Refs
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const notifiedConversationRef = useRef<string | null>(null);
   const pendingTitleRef = useRef<string | null>(null);
+  const pendingMessagesRef = useRef<ChatMessage[]>([]);
+  
+  // Keep ref in sync with state
+  pendingMessagesRef.current = pendingMessages;
 
-  // Handle WebSocket message - uses Zustand actions directly
-  const handleWebSocketMessage = useCallback((message: string): void => {
-    // Try to parse as JSON control message
-    try {
-      const parsed: unknown = JSON.parse(message);
-      if (isControlMessage(parsed)) {
-        if (parsed.type === 'conversation_created') {
-          // Only process if we haven't already notified for this conversation
-          if (notifiedConversationRef.current === parsed.conversation_id) {
-            console.log('[Chat] Already notified for conversation:', parsed.conversation_id);
-            return;
-          }
-          
-          console.log('[Chat] Conversation created:', parsed.conversation_id);
-          setConversationId(parsed.conversation_id);
-          notifiedConversationRef.current = parsed.conversation_id;
-          
-          // Use pending title
-          const title = pendingTitleRef.current ?? 'New Chat';
-          setChatTitle(title);
-          addConversation(parsed.conversation_id, title);
-          pendingTitleRef.current = null;
-          return;
-        }
-        if (parsed.type === 'message_complete') {
-          console.log('[Chat] Message complete');
-          markMessageComplete();
-          return;
-        }
-        if (parsed.type === 'text_block_complete') {
-          console.log('[Chat] Text block complete (tools incoming)');
-          // Mark current message complete so next text starts fresh
-          markMessageComplete();
-          return;
-        }
-        if (parsed.type === 'tool_call') {
-          console.log('[Chat] Tool call:', parsed.tool_name, parsed.tool_id);
-          // Add tool_use block to current streaming message
-          const currentMessages = useAppStore.getState().messages;
-          const streamingId = useAppStore.getState().streamingMessageId;
-          
-          if (streamingId) {
-            // Add tool_use block to existing streaming message
-            const updated = currentMessages.map((msg) => {
-              if (msg.id !== streamingId) return msg;
-              return {
-                ...msg,
-                contentBlocks: [
-                  ...msg.contentBlocks,
-                  {
-                    type: 'tool_use' as const,
-                    id: parsed.tool_id,
-                    name: parsed.tool_name,
-                    input: parsed.tool_input,
-                    status: 'running' as const,
-                  },
-                ],
-              };
-            });
-            useAppStore.setState({ messages: updated });
-          } else {
-            // Create new message with tool_use block
-            const newId = `assistant-${Date.now()}`;
-            addMessage({
-              id: newId,
-              role: 'assistant',
-              contentBlocks: [{
-                type: 'tool_use',
-                id: parsed.tool_id,
-                name: parsed.tool_name,
-                input: parsed.tool_input,
-                status: 'running',
-              }],
-              timestamp: new Date(),
-            });
-          }
-          setIsThinking(false);
-          return;
-        }
-        if (parsed.type === 'tool_result') {
-          console.log('[Chat] Tool result:', parsed.tool_name, parsed.tool_id);
-          updateToolMessage(parsed.tool_id, {
-            result: parsed.result,
-            status: 'complete',
-          });
-          return;
-        }
-        if (parsed.type === 'crm_approval_result') {
-          console.log('[Chat] CRM approval result:', parsed.operation_id, parsed.status);
-          setCrmApprovals((prev) => {
-            const newMap = new Map(prev);
-            const existing = newMap.get(parsed.operation_id);
-            if (existing) {
-              newMap.set(parsed.operation_id, {
-                ...existing,
-                isProcessing: false,
-                result: parsed,
-              });
-            }
-            return newMap;
-          });
-          return;
-        }
-      }
-    } catch {
-      // Not JSON, treat as text chunk
-    }
-
-    // Text chunk from assistant
-    console.log('[Chat] Received text chunk:', message.substring(0, 30) + '...');
-    
-    // Get current streaming state from store
-    const currentStreamingId = useAppStore.getState().streamingMessageId;
-    
-    if (currentStreamingId) {
-      // Append to existing streaming message
-      appendToStreamingMessage(message);
-    } else {
-      // First chunk - create new assistant message
-      const newId = `assistant-${Date.now()}`;
-      console.log('[Chat] Starting streaming message:', newId);
-      startStreamingMessage(newId, message);
-    }
-  }, [addMessage, appendToStreamingMessage, startStreamingMessage, markMessageComplete, setChatTitle, setIsThinking, setConversationId, addConversation, updateToolMessage]);
-
-  const { sendMessage, isConnected, connectionState } = useWebSocket(
-    `/ws/chat/${userId}`,
-    { onMessage: handleWebSocketMessage }
-  );
+  // Combined messages and thinking state (conversation + pending for new chats)
+  const messages = pendingMessages.length > 0 ? [...pendingMessages, ...conversationMessages] : conversationMessages;
+  const isThinking = pendingThinking || conversationThinking;
 
   // Handle CRM approval
   const handleCrmApprove = useCallback((operationId: string, skipDuplicates: boolean) => {
@@ -271,16 +117,15 @@ export function Chat({ userId, organizationId: _organizationId, chatId }: ChatPr
       });
       return newMap;
     });
-    // Include conversation_id so backend can send errors back to the agent
-    const currentConversationId = conversationId || chatId;
-    sendMessage(JSON.stringify({
+    const currentConversationId = localConversationId || chatId;
+    sendMessage({
       type: 'crm_approval',
       operation_id: operationId,
       approved: true,
       skip_duplicates: skipDuplicates,
       conversation_id: currentConversationId,
-    }));
-  }, [sendMessage, conversationId, chatId]);
+    });
+  }, [sendMessage, localConversationId, chatId]);
 
   // Handle CRM cancel
   const handleCrmCancel = useCallback((operationId: string) => {
@@ -294,28 +139,69 @@ export function Chat({ userId, organizationId: _organizationId, chatId }: ChatPr
       });
       return newMap;
     });
-    const currentConversationId = conversationId || chatId;
-    sendMessage(JSON.stringify({
+    const currentConversationId = localConversationId || chatId;
+    sendMessage({
       type: 'crm_approval',
       operation_id: operationId,
       approved: false,
       conversation_id: currentConversationId,
-    }));
-  }, [sendMessage, conversationId, chatId]);
+    });
+  }, [sendMessage, localConversationId, chatId]);
 
-  // Reset state when chatId becomes null (New Chat clicked)
+  // Sync CRM approval results from parent
   useEffect(() => {
-    if (chatId === null) {
-      console.log('[Chat] New chat started, clearing state');
-      clearChat();
-      notifiedConversationRef.current = null;
+    crmApprovalResults.forEach((result, operationId) => {
+      setCrmApprovals((prev) => {
+        const existing = prev.get(operationId);
+        if (existing?.isProcessing) {
+          const newMap = new Map(prev);
+          newMap.set(operationId, {
+            ...existing,
+            isProcessing: false,
+            result: result as WsCrmApprovalResult,
+          });
+          return newMap;
+        }
+        return prev;
+      });
+    });
+  }, [crmApprovalResults]);
+
+  // Reset local state when chatId changes
+  useEffect(() => {
+    setLocalConversationId(chatId ?? null);
+    // Only clear pending messages if we're switching to an EXISTING chat
+    // (i.e., when we have no pending messages to move to the new conversation)
+    // If pendingMessages exist, the next effect will move them instead
+    if (chatId && pendingMessagesRef.current.length === 0) {
+      setPendingMessages([]);
+      setPendingThinking(false);
     }
-  }, [chatId, clearChat]);
+  }, [chatId]);
+
+  // When a new conversation is created, move pending messages to it
+  useEffect(() => {
+    if (localConversationId && pendingMessages.length > 0) {
+      console.log('[Chat] Moving pending messages to conversation:', localConversationId);
+      // Add pending messages to the new conversation
+      for (const msg of pendingMessages) {
+        addConversationMessage(localConversationId, msg);
+      }
+      if (pendingThinking) {
+        setConversationThinking(localConversationId, true);
+      }
+      // Clear pending state
+      setPendingMessages([]);
+      setPendingThinking(false);
+    }
+  }, [localConversationId, pendingMessages, pendingThinking, addConversationMessage, setConversationThinking]);
+
+  // Listen for conversation_created in parent and update localConversationId
+  // This happens via the store update from AppLayout
 
   // Auto-focus input when on a new empty chat
   useEffect(() => {
     if (chatId === null && messages.length === 0 && !isLoading && isConnected) {
-      // Small delay to ensure component is fully rendered
       const timer = setTimeout(() => {
         inputRef.current?.focus();
       }, 100);
@@ -331,9 +217,28 @@ export function Chat({ userId, organizationId: _organizationId, chatId }: ChatPr
       return;
     }
 
-    // If chatId matches our current conversation, don't reload
-    if (chatId === conversationId) {
-      console.log('[Chat] Skipping load - already loaded this conversation');
+    // If we have pending messages, we're creating a new conversation - don't load from API
+    // The pending messages will be moved to this conversation by another effect
+    // Use ref to avoid re-running effect when pendingMessages changes
+    if (pendingMessagesRef.current.length > 0) {
+      console.log('[Chat] Skipping load - have pending messages to move');
+      setIsLoading(false);
+      return;
+    }
+
+    // If there's an active task for this conversation, don't load from API yet
+    // The task will populate the state via WebSocket updates
+    const activeTasks = useAppStore.getState().activeTasksByConversation;
+    if (chatId in activeTasks) {
+      console.log('[Chat] Skipping load - active task in progress');
+      setIsLoading(false);
+      return;
+    }
+
+    // If we already have messages for this conversation in state, don't reload
+    const existingState = useAppStore.getState().conversations[chatId];
+    if (existingState && existingState.messages.length > 0) {
+      console.log('[Chat] Using existing state for conversation:', chatId);
       setIsLoading(false);
       return;
     }
@@ -353,10 +258,6 @@ export function Chat({ userId, organizationId: _organizationId, chatId }: ChatPr
         }
 
         if (data && !error) {
-          setConversationId(chatId);
-          setChatTitle(data.title ?? 'New Chat');
-          notifiedConversationRef.current = chatId;
-          
           // Convert API messages to store format (content_blocks)
           const loadedMessages: ChatMessage[] = data.messages.map((msg) => ({
             id: msg.id,
@@ -365,22 +266,20 @@ export function Chat({ userId, organizationId: _organizationId, chatId }: ChatPr
             timestamp: new Date(msg.created_at),
           }));
           
-          setMessages(loadedMessages);
+          // Set conversation state
+          setConversationMessages(chatId, loadedMessages);
+          setConversationTitle(chatId, data.title ?? 'New Chat');
           console.log('[Chat] Loaded', loadedMessages.length, 'messages');
           
-          // Scroll to bottom immediately after loading (use timeout to ensure DOM updated)
+          // Scroll to bottom immediately after loading
           setTimeout(() => {
             messagesEndRef.current?.scrollIntoView({ behavior: 'instant' });
           }, 50);
         } else {
           console.error('[Chat] Failed to load conversation:', error);
-          clearChat();
         }
       } catch (err) {
         console.error('[Chat] Exception loading conversation:', err);
-        if (!cancelled) {
-          clearChat();
-        }
       } finally {
         if (!cancelled) {
           setIsLoading(false);
@@ -393,7 +292,7 @@ export function Chat({ userId, organizationId: _organizationId, chatId }: ChatPr
     return () => {
       cancelled = true;
     };
-  }, [chatId, userId, conversationId, setConversationId, setChatTitle, setMessages, clearChat]);
+  }, [chatId, userId, setConversationMessages, setConversationTitle]);
 
   // Auto-scroll to bottom
   useEffect(() => {
@@ -415,33 +314,38 @@ export function Chat({ userId, organizationId: _organizationId, chatId }: ChatPr
       timestamp: new Date(),
     };
 
-    // If this is a new conversation, store the title for when conversation_created arrives
-    const currentConvId = useAppStore.getState().conversationId;
-    if (!currentConvId) {
+    // Get current conversation ID
+    const currentConvId = localConversationId || chatId;
+    
+    if (currentConvId) {
+      // Add message to existing conversation
+      addConversationMessage(currentConvId, userMessage);
+      setConversationThinking(currentConvId, true);
+    } else {
+      // New conversation - store in pending state
       pendingTitleRef.current = generateTitle(input);
+      setPendingMessages(prev => [...prev, userMessage]);
+      setPendingThinking(true);
     }
-
-    addMessage(userMessage);
-    setIsThinking(true);
 
     // Send message with conversation context and timezone info
     const now = new Date();
-    const payload = JSON.stringify({
+    sendMessage({
+      type: 'send_message',
       message: input,
       conversation_id: currentConvId,
       local_time: now.toISOString(),
       timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-      timezone_offset_minutes: now.getTimezoneOffset(),
     });
-    console.log('[Chat] Sending to WebSocket:', payload);
-    sendMessage(payload);
+    
+    console.log('[Chat] Sent to WebSocket');
     setInput('');
     
     // Reset textarea height to default
     if (inputRef.current) {
       inputRef.current.style.height = 'auto';
     }
-  }, [input, isConnected, sendMessage, addMessage, setIsThinking]);
+  }, [input, isConnected, sendMessage, localConversationId, chatId, addConversationMessage, setConversationThinking]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>): void => {
     if (e.key === 'Enter' && !e.shiftKey) {

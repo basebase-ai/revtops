@@ -7,9 +7,12 @@
  * - Data Sources tab with badge
  * - Chats tab with recent conversations
  * - Organization & Profile sections at bottom
+ * 
+ * Also manages global WebSocket connection for background task updates.
+ * Tasks continue running server-side even when browser tabs are closed.
  */
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { Sidebar } from './Sidebar';
 import { DataSources } from './DataSources';
@@ -18,11 +21,65 @@ import { Chat } from './Chat';
 import { AdminPanel } from './AdminPanel';
 import { OrganizationPanel } from './OrganizationPanel';
 import { ProfilePanel } from './ProfilePanel';
-import { useAppStore } from '../store';
-import { useIntegrations, useTeamMembers } from '../hooks';
+import { useAppStore, type ActiveTask } from '../store';
+import { useIntegrations, useTeamMembers, useWebSocket } from '../hooks';
 
 // Re-export types from store for backwards compatibility
 export type { UserProfile, OrganizationInfo, ChatSummary, View } from '../store';
+
+// WebSocket message types
+interface WsActiveTasks {
+  type: 'active_tasks';
+  tasks: ActiveTask[];
+}
+
+interface WsTaskStarted {
+  type: 'task_started';
+  task_id: string;
+  conversation_id: string;
+}
+
+interface WsTaskChunk {
+  type: 'task_chunk';
+  task_id: string;
+  conversation_id: string;
+  chunk: {
+    index: number;
+    type: string;
+    data: unknown;
+    timestamp: string;
+  };
+}
+
+interface WsTaskComplete {
+  type: 'task_complete';
+  task_id: string;
+  conversation_id: string;
+  status: string;
+  error?: string;
+}
+
+interface WsConversationCreated {
+  type: 'conversation_created';
+  conversation_id: string;
+  title?: string;
+}
+
+interface WsCatchup {
+  type: 'catchup';
+  task_id: string;
+  chunks: Array<{ index: number; type: string; data: unknown; timestamp: string }>;
+  task_status: string;
+}
+
+interface WsCrmApprovalResult {
+  type: 'crm_approval_result';
+  operation_id: string;
+  status: string;
+  [key: string]: unknown;
+}
+
+type WsMessage = WsActiveTasks | WsTaskStarted | WsTaskChunk | WsTaskComplete | WsConversationCreated | WsCatchup | WsCrmApprovalResult;
 
 // Props
 interface AppLayoutProps {
@@ -70,10 +127,173 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
   const fetchConversations = useAppStore((state) => state.fetchConversations);
   const deleteConversation = useAppStore((state) => state.deleteConversation);
   const setUser = useAppStore((state) => state.setUser);
+  const setActiveTasks = useAppStore((state) => state.setActiveTasks);
+  const setConversationActiveTask = useAppStore((state) => state.setConversationActiveTask);
+  const addConversation = useAppStore((state) => state.addConversation);
+  const addConversationMessage = useAppStore((state) => state.addConversationMessage);
+  const appendToConversationStreaming = useAppStore((state) => state.appendToConversationStreaming);
+  const startConversationStreaming = useAppStore((state) => state.startConversationStreaming);
+  const markConversationMessageComplete = useAppStore((state) => state.markConversationMessageComplete);
+  const setConversationThinking = useAppStore((state) => state.setConversationThinking);
+  const updateConversationToolMessage = useAppStore((state) => state.updateConversationToolMessage);
   
   // Panels
   const [showOrgPanel, setShowOrgPanel] = useState(false);
   const [showProfilePanel, setShowProfilePanel] = useState(false);
+
+  // CRM approval results (shared across chats)
+  const crmApprovalResultsRef = useRef<Map<string, unknown>>(new Map());
+
+  // Handle WebSocket messages
+  const handleWebSocketMessage = useCallback((message: string) => {
+    try {
+      const parsed = JSON.parse(message) as WsMessage;
+      
+      switch (parsed.type) {
+        case 'active_tasks': {
+          console.log('[AppLayout] Received active tasks:', parsed.tasks.length);
+          setActiveTasks(parsed.tasks);
+          break;
+        }
+        
+        case 'task_started': {
+          console.log('[AppLayout] Task started:', parsed.task_id, 'for conversation:', parsed.conversation_id);
+          setConversationActiveTask(parsed.conversation_id, parsed.task_id);
+          setConversationThinking(parsed.conversation_id, true);
+          break;
+        }
+        
+        case 'task_chunk': {
+          const { conversation_id, chunk } = parsed;
+          const chunkData = chunk.data;
+          
+          // Route chunk to appropriate conversation
+          if (chunk.type === 'text_delta' && typeof chunkData === 'string') {
+            // Text chunk - append to streaming message
+            const state = useAppStore.getState();
+            const convState = state.conversations[conversation_id];
+            if (convState?.streamingMessageId) {
+              appendToConversationStreaming(conversation_id, chunkData);
+            } else {
+              // Start new streaming message
+              const msgId = `assistant-${Date.now()}`;
+              startConversationStreaming(conversation_id, msgId, chunkData);
+            }
+          } else if (typeof chunkData === 'object' && chunkData !== null) {
+            const data = chunkData as Record<string, unknown>;
+            
+            if (data.type === 'tool_call') {
+              // Tool call starting
+              const state = useAppStore.getState();
+              const convState = state.conversations[conversation_id];
+              
+              if (convState?.streamingMessageId) {
+                // Add tool_use block to existing streaming message
+                const updated = convState.messages.map((msg) => {
+                  if (msg.id !== convState.streamingMessageId) return msg;
+                  return {
+                    ...msg,
+                    contentBlocks: [
+                      ...msg.contentBlocks,
+                      {
+                        type: 'tool_use' as const,
+                        id: data.tool_id as string,
+                        name: data.tool_name as string,
+                        input: data.tool_input as Record<string, unknown>,
+                        status: 'running' as const,
+                      },
+                    ],
+                  };
+                });
+                useAppStore.setState({
+                  conversations: {
+                    ...state.conversations,
+                    [conversation_id]: { ...convState, messages: updated },
+                  },
+                });
+              } else {
+                // Create new message with tool_use block
+                addConversationMessage(conversation_id, {
+                  id: `assistant-${Date.now()}`,
+                  role: 'assistant',
+                  contentBlocks: [{
+                    type: 'tool_use',
+                    id: data.tool_id as string,
+                    name: data.tool_name as string,
+                    input: data.tool_input as Record<string, unknown>,
+                    status: 'running',
+                  }],
+                  timestamp: new Date(),
+                });
+              }
+            } else if (data.type === 'tool_result') {
+              // Tool result received
+              updateConversationToolMessage(conversation_id, data.tool_id as string, {
+                result: data.result as Record<string, unknown>,
+                status: 'complete',
+              });
+            } else if (data.type === 'text_block_complete') {
+              // Text block complete, tools incoming
+              markConversationMessageComplete(conversation_id);
+            } else if (data.type === 'crm_approval_result') {
+              // Store CRM approval result
+              crmApprovalResultsRef.current.set(data.operation_id as string, data);
+            }
+          }
+          break;
+        }
+        
+        case 'task_complete': {
+          console.log('[AppLayout] Task complete:', parsed.task_id, 'status:', parsed.status);
+          setConversationActiveTask(parsed.conversation_id, null);
+          setConversationThinking(parsed.conversation_id, false);
+          markConversationMessageComplete(parsed.conversation_id);
+          break;
+        }
+        
+        case 'conversation_created': {
+          const title = parsed.title || 'New Chat';
+          console.log('[AppLayout] Conversation created:', parsed.conversation_id, 'title:', title);
+          addConversation(parsed.conversation_id, title);
+          // Update currentChatId so Chat component knows about the new conversation
+          setCurrentChatId(parsed.conversation_id);
+          break;
+        }
+        
+        case 'catchup': {
+          console.log('[AppLayout] Catchup for task:', parsed.task_id, 'chunks:', parsed.chunks.length);
+          // Process catchup chunks - they're already ordered by index
+          // For now, just mark task as complete if it's done
+          if (parsed.task_status !== 'running') {
+            // Task is complete, no need to process chunks
+          }
+          break;
+        }
+        
+        case 'crm_approval_result': {
+          console.log('[AppLayout] CRM approval result:', parsed.operation_id);
+          crmApprovalResultsRef.current.set(parsed.operation_id, parsed);
+          break;
+        }
+      }
+    } catch {
+      // Not JSON, ignore
+    }
+  }, [
+    setActiveTasks, setConversationActiveTask, setConversationThinking,
+    addConversation, addConversationMessage, appendToConversationStreaming,
+    startConversationStreaming, markConversationMessageComplete, updateConversationToolMessage
+  ]);
+
+  // Global WebSocket connection
+  const { sendJson, isConnected, connectionState } = useWebSocket(
+    user ? `/ws/chat/${user.id}` : '',
+    {
+      onMessage: handleWebSocketMessage,
+      onConnect: () => console.log('[AppLayout] WebSocket connected'),
+      onDisconnect: () => console.log('[AppLayout] WebSocket disconnected'),
+    }
+  );
 
   // Fetch conversations on mount
   useEffect(() => {
@@ -127,6 +347,10 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
             userId={user.id}
             organizationId={organization.id}
             chatId={currentChatId}
+            sendMessage={sendJson}
+            isConnected={isConnected}
+            connectionState={connectionState}
+            crmApprovalResults={crmApprovalResultsRef.current}
           />
         )}
         {currentView === 'data-sources' && (
