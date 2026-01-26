@@ -80,6 +80,8 @@ export function Chat({
   const setConversationMessages = useAppStore((s) => s.setConversationMessages);
   const setConversationTitle = useAppStore((s) => s.setConversationTitle);
   const setConversationThinking = useAppStore((s) => s.setConversationThinking);
+  const pendingChatInput = useAppStore((s) => s.pendingChatInput);
+  const setPendingChatInput = useAppStore((s) => s.setPendingChatInput);
   
   // Local state
   const [input, setInput] = useState<string>('');
@@ -208,6 +210,18 @@ export function Chat({
       return () => clearTimeout(timer);
     }
   }, [chatId, messages.length, isLoading, isConnected]);
+
+  // Consume pending chat input (from Search "Ask about" button)
+  useEffect(() => {
+    if (pendingChatInput && chatId === null) {
+      setInput(pendingChatInput);
+      setPendingChatInput(null);
+      // Focus the input so user can see the pre-filled text
+      setTimeout(() => {
+        inputRef.current?.focus();
+      }, 100);
+    }
+  }, [pendingChatInput, chatId, setPendingChatInput]);
 
   // Load conversation when selecting an existing chat from sidebar
   useEffect(() => {
@@ -359,6 +373,42 @@ export function Chat({
     inputRef.current?.focus();
   };
 
+  // Copy conversation to clipboard
+  const [copySuccess, setCopySuccess] = useState(false);
+  const handleCopyConversation = useCallback(async () => {
+    const lines: string[] = [];
+    
+    for (const msg of messages) {
+      const role = msg.role === 'user' ? 'User' : 'Assistant';
+      lines.push(`--- ${role} ---`);
+      
+      for (const block of msg.contentBlocks) {
+        if (block.type === 'text') {
+          lines.push(block.text);
+        } else if (block.type === 'tool_use') {
+          lines.push(`[Tool: ${block.name}]`);
+          lines.push(`Input: ${JSON.stringify(block.input, null, 2)}`);
+          if (block.result) {
+            lines.push(`Result: ${JSON.stringify(block.result, null, 2)}`);
+          }
+          if (block.status) {
+            lines.push(`Status: ${block.status}`);
+          }
+        }
+      }
+      lines.push('');
+    }
+    
+    const text = lines.join('\n');
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopySuccess(true);
+      setTimeout(() => setCopySuccess(false), 2000);
+    } catch (err) {
+      console.error('Failed to copy:', err);
+    }
+  }, [messages]);
+
   if (isLoading) {
     return (
       <div className="flex-1 flex items-center justify-center min-h-0 overflow-hidden">
@@ -378,6 +428,23 @@ export function Chat({
           <h1 className="text-lg font-semibold text-surface-100 truncate max-w-md">
             {chatTitle}
           </h1>
+          {messages.length > 0 && (
+            <button
+              onClick={() => void handleCopyConversation()}
+              className="p-1.5 rounded-md text-surface-400 hover:text-surface-200 hover:bg-surface-800 transition-colors"
+              title="Copy conversation"
+            >
+              {copySuccess ? (
+                <svg className="w-4 h-4 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                </svg>
+              ) : (
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                </svg>
+              )}
+            </button>
+          )}
         </div>
         <ConnectionStatus state={connectionState} />
       </header>

@@ -151,19 +151,19 @@ export function Sidebar({
           {!collapsed && <span>Data Sources</span>}
         </button>
 
-        {/* Chats */}
+        {/* Search */}
         <button
-          onClick={() => onViewChange('chats-list')}
+          onClick={() => onViewChange('search')}
           className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${
-            currentView === 'chats-list'
+            currentView === 'search'
               ? 'bg-surface-800 text-surface-100'
               : 'text-surface-400 hover:text-surface-200 hover:bg-surface-800/50'
           } ${collapsed ? 'justify-center' : ''}`}
         >
           <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
           </svg>
-          {!collapsed && <span>Chats</span>}
+          {!collapsed && <span>Search</span>}
         </button>
 
         {/* Admin - only visible to global admins */}

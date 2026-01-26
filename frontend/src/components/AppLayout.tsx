@@ -16,7 +16,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { Sidebar } from './Sidebar';
 import { DataSources } from './DataSources';
-import { ChatsList } from './ChatsList';
+import { Search } from './Search';
 import { Chat } from './Chat';
 import { AdminPanel } from './AdminPanel';
 import { OrganizationPanel } from './OrganizationPanel';
@@ -356,12 +356,8 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
         {currentView === 'data-sources' && (
           <DataSources />
         )}
-        {currentView === 'chats-list' && (
-          <ChatsList
-            chats={recentChats}
-            onSelectChat={handleSelectChat}
-            onNewChat={startNewChat}
-          />
+        {currentView === 'search' && (
+          <Search organizationId={organization.id} />
         )}
         {currentView === 'admin' && (
           <AdminPanel />
