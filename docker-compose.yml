@@ -47,6 +47,40 @@ services:
     env_file:
       - .env
 
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.worker
+    volumes:
+      - ./backend:/app
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/revenue_copilot
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - .env
+
+  beat:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.beat
+    volumes:
+      - ./backend:/app
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/revenue_copilot
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - .env
+
   frontend:
     build:
       context: ./frontend

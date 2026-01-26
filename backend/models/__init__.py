@@ -13,6 +13,7 @@ from models.chat_message import ChatMessage
 from models.integration import Integration
 from models.crm_operation import CrmOperation
 from models.agent_task import AgentTask
+from models.workflow import Workflow, WorkflowRun
 
 __all__ = [
     "Base",
@@ -32,4 +33,6 @@ __all__ = [
     "Integration",
     "CrmOperation",
     "AgentTask",
+    "Workflow",
+    "WorkflowRun",
 ]

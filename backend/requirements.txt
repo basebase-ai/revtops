@@ -38,6 +38,13 @@ python-jose[cryptography]==3.3.0
 # Utilities
 structlog==24.1.0
 
+# Task Queue (Celery)
+celery[redis]==5.3.6
+kombu==5.3.5
+croniter==2.0.1
+
 # Testing
 pytest>=7.0.0,<8.0.0
 pytest-asyncio==0.23.4
+
+# The end
