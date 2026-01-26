@@ -50,12 +50,14 @@ services:
   worker:
     build:
       context: ./backend
-      dockerfile: Dockerfile.worker
+      dockerfile: Dockerfile
+    command: python -m celery -A workers.celery_app worker --loglevel=info -Q default,sync,workflows
     volumes:
       - ./backend:/app
     environment:
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/revenue_copilot
       - REDIS_URL=redis://redis:6379
+      - PYTHONPATH=/app
     depends_on:
       postgres:
         condition: service_healthy
@@ -67,15 +69,14 @@ services:
   beat:
     build:
       context: ./backend
-      dockerfile: Dockerfile.beat
+      dockerfile: Dockerfile
+    command: python -m celery -A workers.celery_app beat --loglevel=info
     volumes:
       - ./backend:/app
     environment:
-      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/revenue_copilot
       - REDIS_URL=redis://redis:6379
+      - PYTHONPATH=/app
     depends_on:
-      postgres:
-        condition: service_healthy
       redis:
         condition: service_healthy
     env_file:
