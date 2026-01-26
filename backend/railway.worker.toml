@@ -1,7 +1,8 @@
 [build]
 builder = "dockerfile"
-dockerfilePath = "Dockerfile.worker"
+dockerfilePath = "Dockerfile"
 
 [deploy]
+startCommand = "python -m celery -A workers.celery_app worker --loglevel=info -Q default,sync,workflows"
 restartPolicyType = "on_failure"
 restartPolicyMaxRetries = 5
