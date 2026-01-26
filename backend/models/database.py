@@ -42,12 +42,20 @@ def get_engine() -> AsyncEngine:
         # This lets the external pooler manage all connections
         is_production = settings.ENVIRONMENT == "production"
         
+        # Disable prepared statement cache for pgbouncer/Supabase compatibility
+        # pgbouncer in transaction mode doesn't support prepared statements
+        connect_args = {
+            "statement_cache_size": 0,
+            "prepared_statement_cache_size": 0,
+        }
+        
         if is_production:
             _engine = create_async_engine(
                 _db_url,
                 echo=False,
                 future=True,
                 poolclass=NullPool,  # No local pooling - external pooler handles it
+                connect_args=connect_args,
             )
             logger.info("Database engine created with NullPool (external pooler manages connections)")
         else:
@@ -56,6 +64,7 @@ def get_engine() -> AsyncEngine:
                 echo=True,
                 future=True,
                 poolclass=NullPool,  # NullPool since using Supabase session pooler
+                connect_args=connect_args,
             )
             logger.info("Database engine created with NullPool")
     return _engine
