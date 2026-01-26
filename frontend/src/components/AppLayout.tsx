@@ -15,6 +15,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { Sidebar } from './Sidebar';
+import { Home } from './Home';
 import { DataSources } from './DataSources';
 import { Search } from './Search';
 import { Chat } from './Chat';
@@ -350,6 +351,9 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
 
       {/* Main Content */}
       <main className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden">
+        {currentView === 'home' && (
+          <Home />
+        )}
         {currentView === 'chat' && (
           <Chat
             userId={user.id}

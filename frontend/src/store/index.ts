@@ -73,7 +73,7 @@ export interface ChatMessage {
   isStreaming?: boolean;
 }
 
-export type View = "chat" | "data-sources" | "search" | "admin";
+export type View = "home" | "chat" | "data-sources" | "search" | "admin";
 
 // Per-conversation state
 export interface ConversationState {
@@ -198,7 +198,7 @@ export const useAppStore = create<AppState>()(
       organization: null,
       isAuthenticated: false,
       sidebarCollapsed: false,
-      currentView: "chat",
+      currentView: "home",
       currentChatId: null,
       recentChats: [],
       pendingChatInput: null,

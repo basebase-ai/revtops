@@ -19,7 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from api.websockets import websocket_endpoint
-from api.routes import auth, chat, search, sync, waitlist
+from api.routes import auth, chat, deals, search, sync, waitlist
 from models.database import init_db, close_db, get_pool_status
 
 # Configure logging
@@ -94,6 +94,7 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
 # Routes
 app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
 app.include_router(chat.router, prefix="/api/chat", tags=["chat"])
+app.include_router(deals.router, prefix="/api/deals", tags=["deals"])
 app.include_router(sync.router, prefix="/api/sync", tags=["sync"])
 app.include_router(waitlist.router, prefix="/api/waitlist", tags=["waitlist"])
 app.include_router(search.router, prefix="/api/search", tags=["search"])

@@ -138,6 +138,21 @@ export function Sidebar({
 
       {/* Navigation Tabs */}
       <nav className="px-3 space-y-1">
+        {/* Home */}
+        <button
+          onClick={() => onViewChange('home')}
+          className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${
+            currentView === 'home'
+              ? 'bg-surface-800 text-surface-100'
+              : 'text-surface-400 hover:text-surface-200 hover:bg-surface-800/50'
+          } ${collapsed ? 'justify-center' : ''}`}
+        >
+          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" />
+          </svg>
+          {!collapsed && <span>Home</span>}
+        </button>
+
         {/* Data Sources */}
         <button
           onClick={() => onViewChange('data-sources')}
