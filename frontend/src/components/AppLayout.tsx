@@ -12,7 +12,7 @@
  * Tasks continue running server-side even when browser tabs are closed.
  */
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { Sidebar } from './Sidebar';
 import { DataSources } from './DataSources';
@@ -141,8 +141,8 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
   const [showOrgPanel, setShowOrgPanel] = useState(false);
   const [showProfilePanel, setShowProfilePanel] = useState(false);
 
-  // CRM approval results (shared across chats)
-  const crmApprovalResultsRef = useRef<Map<string, unknown>>(new Map());
+  // CRM approval results (shared across chats) - use state to trigger re-renders
+  const [crmApprovalResults, setCrmApprovalResults] = useState<Map<string, unknown>>(() => new Map());
 
   // Handle WebSocket messages
   const handleWebSocketMessage = useCallback((message: string) => {
@@ -236,8 +236,12 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
               // Text block complete, tools incoming
               markConversationMessageComplete(conversation_id);
             } else if (data.type === 'crm_approval_result') {
-              // Store CRM approval result
-              crmApprovalResultsRef.current.set(data.operation_id as string, data);
+              // Store CRM approval result - create new Map to trigger re-render
+              setCrmApprovalResults((prev) => {
+                const next = new Map(prev);
+                next.set(data.operation_id as string, data);
+                return next;
+              });
             }
           }
           break;
@@ -272,7 +276,11 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
         
         case 'crm_approval_result': {
           console.log('[AppLayout] CRM approval result:', parsed.operation_id);
-          crmApprovalResultsRef.current.set(parsed.operation_id, parsed);
+          setCrmApprovalResults((prev) => {
+            const next = new Map(prev);
+            next.set(parsed.operation_id, parsed);
+            return next;
+          });
           break;
         }
       }
@@ -350,7 +358,7 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
             sendMessage={sendJson}
             isConnected={isConnected}
             connectionState={connectionState}
-            crmApprovalResults={crmApprovalResultsRef.current}
+            crmApprovalResults={crmApprovalResults}
           />
         )}
         {currentView === 'data-sources' && (

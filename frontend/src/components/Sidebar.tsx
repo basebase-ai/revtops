@@ -82,36 +82,45 @@ export function Sidebar({
       className={`${sidebarWidth} bg-surface-900 border-r border-surface-800 flex flex-col transition-all duration-200 ease-in-out`}
     >
       {/* Header with logo and collapse toggle */}
-      <div className="h-14 flex items-center justify-between px-3 border-b border-surface-800">
+      <div className={`border-b border-surface-800 ${collapsed ? 'py-3' : 'h-14 flex items-center justify-between px-3'}`}>
         {!collapsed && (
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-primary-500 to-primary-700 flex items-center justify-center">
-              <img src="/logo.svg" alt="Revtops" className="w-5 h-5 invert" />
+          <>
+            <div className="flex items-center gap-2">
+              <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-primary-500 to-primary-700 flex items-center justify-center">
+                <img src="/logo.svg" alt="Revtops" className="w-5 h-5 invert" />
+              </div>
+              <span className="font-semibold text-surface-100">Revtops</span>
+              <span className="px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide bg-primary-500/20 text-primary-400 rounded">
+                Beta
+              </span>
             </div>
-            <span className="font-semibold text-surface-100">Revtops</span>
-            <span className="px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide bg-primary-500/20 text-primary-400 rounded">
-              Beta
-            </span>
-          </div>
+            <button
+              onClick={onToggleCollapse}
+              className="p-1.5 rounded-md text-surface-400 hover:text-surface-200 hover:bg-surface-800 transition-colors"
+              title="Collapse sidebar"
+            >
+              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 19l-7-7 7-7m8 14l-7-7 7-7" />
+              </svg>
+            </button>
+          </>
         )}
         {collapsed && (
-          <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-primary-500 to-primary-700 flex items-center justify-center mx-auto">
-            <img src="/logo.svg" alt="Revtops" className="w-6 h-6 invert" />
+          <div className="flex flex-col items-center gap-2">
+            <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-primary-500 to-primary-700 flex items-center justify-center">
+              <img src="/logo.svg" alt="Revtops" className="w-6 h-6 invert" />
+            </div>
+            <button
+              onClick={onToggleCollapse}
+              className="p-1.5 rounded-md text-surface-400 hover:text-surface-200 hover:bg-surface-800 transition-colors"
+              title="Expand sidebar"
+            >
+              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 5l7 7-7 7M5 5l7 7-7 7" />
+              </svg>
+            </button>
           </div>
         )}
-        <button
-          onClick={onToggleCollapse}
-          className={`p-1.5 rounded-md text-surface-400 hover:text-surface-200 hover:bg-surface-800 transition-colors ${collapsed ? 'mx-auto mt-2' : ''}`}
-          title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-        >
-          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            {collapsed ? (
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 5l7 7-7 7M5 5l7 7-7 7" />
-            ) : (
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 19l-7-7 7-7m8 14l-7-7 7-7" />
-            )}
-          </svg>
-        </button>
       </div>
 
       {/* New Chat Button */}

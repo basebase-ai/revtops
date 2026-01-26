@@ -60,6 +60,15 @@ class BaseConnector(ABC):
         """Fetch single deal on-demand."""
         pass
 
+    async def sync_pipelines(self) -> int:
+        """
+        Fetch and normalize pipelines, return count synced.
+
+        Override in subclasses that support pipelines (HubSpot, Salesforce).
+        Default implementation returns 0.
+        """
+        return 0
+
     async def sync_all(self) -> dict[str, int]:
         """
         Run all sync operations.
@@ -67,17 +76,25 @@ class BaseConnector(ABC):
         Returns:
             Dictionary with counts of synced records by type
         """
+        # Sync pipelines first so deals can reference them
+        pipelines_count = await self.sync_pipelines()
         accounts_count = await self.sync_accounts()
         deals_count = await self.sync_deals()
         contacts_count = await self.sync_contacts()
         activities_count = await self.sync_activities()
 
-        return {
+        result: dict[str, int] = {
             "accounts": accounts_count,
             "deals": deals_count,
             "contacts": contacts_count,
             "activities": activities_count,
         }
+
+        # Only include pipelines if synced (not all connectors have them)
+        if pipelines_count > 0:
+            result["pipelines"] = pipelines_count
+
+        return result
 
     async def get_oauth_token(self) -> tuple[str, str]:
         """

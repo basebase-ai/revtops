@@ -74,6 +74,7 @@ export function Chat({
   const conversationMessages = conversationState?.messages ?? [];
   const chatTitle = conversationState?.title ?? 'New Chat';
   const conversationThinking = conversationState?.isThinking ?? false;
+  const activeTaskId = conversationState?.activeTaskId ?? null;
   
   // Get actions from Zustand (stable references)
   const addConversationMessage = useAppStore((s) => s.addConversationMessage);
@@ -368,6 +369,27 @@ export function Chat({
     }
   };
 
+  const handleStop = useCallback((): void => {
+    if (!activeTaskId) {
+      console.log('[Chat] handleStop blocked - no active task');
+      return;
+    }
+    
+    console.log('[Chat] Stopping task:', activeTaskId);
+    sendMessage({
+      type: 'cancel',
+      task_id: activeTaskId,
+    });
+    
+    // Clear thinking state immediately for responsiveness
+    const currentConvId = localConversationId || chatId;
+    if (currentConvId) {
+      setConversationThinking(currentConvId, false);
+    } else {
+      setPendingThinking(false);
+    }
+  }, [activeTaskId, sendMessage, localConversationId, chatId, setConversationThinking]);
+
   const handleSuggestionClick = (text: string): void => {
     setInput(text);
     inputRef.current?.focus();
@@ -530,24 +552,36 @@ export function Chat({
                 e.target.style.height = `${Math.min(e.target.scrollHeight, 240)}px`; // 240px ≈ 10 lines
               }}
               onKeyDown={handleKeyDown}
-              placeholder="Ask about your pipeline..."
-              className="flex-1 resize-none bg-surface-900 text-surface-100 rounded-2xl border border-surface-700 px-4 py-2 text-sm placeholder-surface-500 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all duration-150 leading-5 scrollbar-none"
+              placeholder={isThinking ? 'Thinking...' : 'Ask about your pipeline...'}
+              className="flex-1 resize-none bg-surface-900 text-surface-100 rounded-2xl border border-surface-700 px-4 py-2 text-sm placeholder-surface-500 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all duration-150 leading-5 scrollbar-none disabled:opacity-50 disabled:cursor-not-allowed"
               style={{ minHeight: '36px', maxHeight: '240px' }}
               rows={1}
-              disabled={!isConnected}
+              disabled={!isConnected || isThinking}
               autoFocus={chatId === null}
             />
             
-            {/* Send button - circle with up arrow */}
-            <button
-              onClick={handleSend}
-              disabled={!input.trim() || !isConnected}
-              className="flex-shrink-0 w-8 h-8 mb-0.5 rounded-full bg-primary-600 text-white hover:bg-primary-500 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center transition-colors"
-            >
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 10l7-7m0 0l7 7m-7-7v18" />
-              </svg>
-            </button>
+            {/* Send/Stop button */}
+            {isThinking ? (
+              <button
+                onClick={handleStop}
+                className="flex-shrink-0 w-8 h-8 mb-0.5 rounded-full bg-red-600 text-white hover:bg-red-500 flex items-center justify-center transition-colors"
+                title="Stop"
+              >
+                <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24">
+                  <rect x="6" y="6" width="12" height="12" rx="1" />
+                </svg>
+              </button>
+            ) : (
+              <button
+                onClick={handleSend}
+                disabled={!input.trim() || !isConnected}
+                className="flex-shrink-0 w-8 h-8 mb-0.5 rounded-full bg-primary-600 text-white hover:bg-primary-500 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center transition-colors"
+              >
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 10l7-7m0 0l7 7m-7-7v18" />
+                </svg>
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -815,10 +849,13 @@ function getToolStatusText(
       // Extract table names from the SQL query for a more descriptive message
       const query = typeof input?.query === 'string' ? input.query.toLowerCase() : '';
       const tableNames: string[] = [];
-      const knownTables = ['deals', 'accounts', 'contacts', 'activities', 'integrations', 'users'];
+      const knownTables = [
+        'deals', 'accounts', 'contacts', 'activities', 'integrations', 
+        'users', 'organizations', 'pipelines', 'pipeline_stages'
+      ];
       for (const table of knownTables) {
         if (query.includes(table)) {
-          tableNames.push(table);
+          tableNames.push(table === 'pipeline_stages' ? 'stages' : table);
         }
       }
       const tableDesc = tableNames.length > 0 

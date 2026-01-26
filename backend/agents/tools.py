@@ -14,15 +14,18 @@ import logging
 import re
 from datetime import datetime
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import httpx
 from sqlalchemy import select, text
 
 from config import settings
+from models.account import Account
 from models.artifact import Artifact
+from models.contact import Contact
 from models.crm_operation import CrmOperation
 from models.database import get_session
+from models.deal import Deal
 from models.integration import Integration
 
 logger = logging.getLogger(__name__)
@@ -30,7 +33,8 @@ logger = logging.getLogger(__name__)
 # Tables that are allowed to be queried (synced data only - no internal admin tables)
 # Note: Row-Level Security (RLS) handles organization filtering at the database level
 ALLOWED_TABLES: set[str] = {
-    "deals", "accounts", "contacts", "activities", "integrations", "users", "organizations"
+    "deals", "accounts", "contacts", "activities", "integrations", "users", "organizations",
+    "pipelines", "pipeline_stages"
 }
 
 
@@ -45,7 +49,9 @@ Use this for any data analysis: filtering, joins, aggregations, date comparisons
 The query is automatically scoped to the user's organization for multi-tenant tables.
 
 Available tables:
-- deals: Sales opportunities (name, amount, stage, close_date, owner_id, account_id, probability, custom_fields)
+- deals: Sales opportunities (name, amount, stage, close_date, owner_id, account_id, pipeline_id, probability, custom_fields)
+- pipelines: Sales pipelines/processes (name, display_order, is_default, source_system)
+- pipeline_stages: Stages within pipelines (pipeline_id, name, display_order, probability, is_closed_won, is_closed_lost)
 - accounts: Companies/organizations in CRM - your customers/prospects (name, domain, industry, employee_count, annual_revenue, owner_id)
 - contacts: People at customer accounts (name, email, title, phone, account_id)
 - activities: Emails, meetings, calls, notes (type, subject, description, activity_date, source_system)
@@ -58,6 +64,8 @@ Examples:
 - SELECT stage, COUNT(*), SUM(amount) FROM deals GROUP BY stage
 - SELECT d.name, a.name as account FROM deals d LEFT JOIN accounts a ON d.account_id = a.id
 - SELECT * FROM deals WHERE close_date BETWEEN '2026-01-01' AND '2026-01-31'
+- SELECT p.name as pipeline, COUNT(*) as deal_count FROM deals d JOIN pipelines p ON d.pipeline_id = p.id GROUP BY p.name
+- SELECT p.name as pipeline, ps.name as stage, ps.probability FROM pipelines p JOIN pipeline_stages ps ON ps.pipeline_id = p.id ORDER BY p.display_order, ps.display_order
 - SELECT provider, last_sync_at, last_error FROM integrations WHERE is_active = true
 - SELECT name, email, role FROM users
 - SELECT name FROM organizations -- user's own company name
@@ -913,6 +921,25 @@ async def _execute_hubspot_operation(
     
     skipped_count = len(crm_op.validated_records) - len(records_to_process)
     
+    # Incremental sync: upsert created records to local database immediately
+    # This avoids needing a full re-sync for user to see their new records
+    synced_count = 0
+    if created:
+        try:
+            synced_count = await _sync_created_records_to_db(
+                crm_op.record_type, created, crm_op.organization_id
+            )
+            logger.info(
+                "[Tools._execute_hubspot_operation] Synced %d new %s(s) to local DB",
+                synced_count, crm_op.record_type
+            )
+        except Exception as sync_err:
+            # Don't fail the operation if sync fails - records are in HubSpot
+            logger.warning(
+                "[Tools._execute_hubspot_operation] Failed to sync to local DB: %s",
+                str(sync_err)
+            )
+    
     # Use appropriate verb based on operation type
     operation_verb = "Updated" if crm_op.operation == "update" else "Created"
     
@@ -922,9 +949,114 @@ async def _execute_hubspot_operation(
         "success_count": len(created),
         "failure_count": len(errors),
         "skipped_count": skipped_count,
+        "synced_to_local": synced_count,
         "created": created,
         "errors": errors if errors else None,
     }
+
+
+async def _sync_created_records_to_db(
+    record_type: str,
+    created_records: list[dict[str, Any]],
+    organization_id: UUID,
+) -> int:
+    """
+    Sync newly created CRM records to local database (incremental sync).
+    
+    This allows users to immediately see records they just created without
+    waiting for a full sync cycle.
+    
+    Args:
+        record_type: Type of record (contact, company, deal)
+        created_records: List of records returned from HubSpot API
+        organization_id: Organization UUID
+        
+    Returns:
+        Number of records synced
+    """
+    synced = 0
+    
+    async with get_session() as session:
+        for hs_record in created_records:
+            hs_id = hs_record.get("id", "")
+            properties = hs_record.get("properties", {})
+            
+            if not hs_id:
+                continue
+            
+            try:
+                if record_type == "contact":
+                    # Build contact from HubSpot response
+                    first_name = properties.get("firstname") or ""
+                    last_name = properties.get("lastname") or ""
+                    full_name = f"{first_name} {last_name}".strip()
+                    if not full_name:
+                        full_name = properties.get("email") or f"Contact {hs_id}"
+                    
+                    contact = Contact(
+                        id=uuid4(),
+                        organization_id=organization_id,
+                        source_system="hubspot",
+                        source_id=hs_id,
+                        name=full_name,
+                        email=properties.get("email"),
+                        title=properties.get("jobtitle"),
+                        phone=properties.get("phone"),
+                    )
+                    await session.merge(contact)
+                    synced += 1
+                    
+                elif record_type == "company":
+                    # Build account from HubSpot response
+                    name = properties.get("name")
+                    if not name:
+                        name = properties.get("domain") or f"Company {hs_id}"
+                    
+                    account = Account(
+                        id=uuid4(),
+                        organization_id=organization_id,
+                        source_system="hubspot",
+                        source_id=hs_id,
+                        name=name,
+                        domain=properties.get("domain"),
+                        industry=properties.get("industry"),
+                    )
+                    await session.merge(account)
+                    synced += 1
+                    
+                elif record_type == "deal":
+                    # Build deal from HubSpot response
+                    from decimal import Decimal
+                    
+                    amount = None
+                    if properties.get("amount"):
+                        try:
+                            amount = Decimal(str(properties["amount"]))
+                        except (ValueError, TypeError):
+                            pass
+                    
+                    deal = Deal(
+                        id=uuid4(),
+                        organization_id=organization_id,
+                        source_system="hubspot",
+                        source_id=hs_id,
+                        name=properties.get("dealname") or "Untitled Deal",
+                        amount=amount,
+                        stage=properties.get("dealstage"),
+                    )
+                    await session.merge(deal)
+                    synced += 1
+                    
+            except Exception as e:
+                logger.warning(
+                    "[Tools._sync_created_records_to_db] Failed to sync %s %s: %s",
+                    record_type, hs_id, str(e)
+                )
+                continue
+        
+        await session.commit()
+    
+    return synced
 
 
 async def cancel_crm_operation(operation_id: str) -> dict[str, Any]:

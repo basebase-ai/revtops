@@ -2,6 +2,7 @@
 from models.database import Base, get_session, init_db, close_db, get_pool_status, get_engine
 from models.user import User
 from models.organization import Organization
+from models.pipeline import Pipeline, PipelineStage
 from models.deal import Deal
 from models.account import Account
 from models.contact import Contact
@@ -19,6 +20,8 @@ __all__ = [
     "init_db",
     "User",
     "Organization",
+    "Pipeline",
+    "PipelineStage",
     "Deal",
     "Account",
     "Contact",
