@@ -13,6 +13,7 @@
     "@nangohq/frontend": "^0.69.22",
     "@supabase/supabase-js": "^2.39.0",
     "@tailwindcss/typography": "^0.5.19",
+    "@tanstack/react-query": "^5.90.20",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-icons": "^5.5.0",

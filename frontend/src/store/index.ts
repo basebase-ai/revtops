@@ -4,8 +4,10 @@
  * Centralizes:
  * - User authentication state
  * - Organization data
- * - Connected integrations
  * - UI state (sidebar, current view)
+ * - Per-conversation chat state (messages, streaming, active tasks)
+ * 
+ * Note: Integrations are managed via React Query (see hooks/useIntegrations.ts)
  */
 
 import { create } from "zustand";
@@ -28,32 +30,6 @@ export interface OrganizationInfo {
   id: string;
   name: string;
   logoUrl: string | null;
-  memberCount: number;
-}
-
-export interface TeamConnection {
-  userId: string;
-  userName: string;
-}
-
-export interface Integration {
-  id: string;
-  provider: string;
-  name: string;
-  description: string;
-  connected: boolean;
-  lastSyncAt: string | null;
-  lastError: string | null;
-  icon: string; // Icon identifier, not JSX
-  color: string;
-  // Scope: 'organization' (shared) or 'user' (per-user)
-  scope: "organization" | "user";
-  // For user-scoped integrations
-  currentUserConnected: boolean;
-  teamConnections: TeamConnection[];
-  teamTotal: number;
-  // For org-scoped integrations
-  connectedBy: string | null;
 }
 
 export interface ChatSummary {
@@ -63,6 +39,24 @@ export interface ChatSummary {
   previewText: string;
 }
 
+// Content block types (matches API)
+export interface TextBlock {
+  type: 'text';
+  text: string;
+}
+
+export interface ToolUseBlock {
+  type: 'tool_use';
+  id: string;
+  name: string;
+  input: Record<string, unknown>;
+  result?: Record<string, unknown>;
+  status?: 'pending' | 'running' | 'complete';
+}
+
+export type ContentBlock = TextBlock | ToolUseBlock;
+
+// Legacy type for streaming compatibility
 export interface ToolCallData {
   toolName: string;
   toolId: string;
@@ -73,15 +67,31 @@ export interface ToolCallData {
 
 export interface ChatMessage {
   id: string;
-  role: "user" | "assistant" | "tool";
-  content: string;
+  role: "user" | "assistant";
+  contentBlocks: ContentBlock[];
   timestamp: Date;
   isStreaming?: boolean;
-  toolName?: string;
-  toolCall?: ToolCallData;
 }
 
 export type View = "chat" | "data-sources" | "chats-list" | "admin";
+
+// Per-conversation state
+export interface ConversationState {
+  messages: ChatMessage[];
+  title: string;
+  isThinking: boolean;
+  streamingMessageId: string | null;
+  activeTaskId: string | null;
+  lastChunkIndex: number;
+}
+
+// Task state from backend
+export interface ActiveTask {
+  id: string;
+  conversation_id: string;
+  status: string;
+  output_chunks: Array<{ index: number; type: string; data: unknown; timestamp: string }>;
+}
 
 // =============================================================================
 // Store Interface
@@ -93,34 +103,29 @@ interface AppState {
   organization: OrganizationInfo | null;
   isAuthenticated: boolean;
 
-  // Integrations
-  integrations: Integration[];
-  integrationsLoading: boolean;
-
   // UI State
   sidebarCollapsed: boolean;
   currentView: View;
   currentChatId: string | null;
   recentChats: ChatSummary[];
 
-  // Chat State
+  // Per-conversation state (keyed by conversation ID)
+  conversations: Record<string, ConversationState>;
+  
+  // Active task tracking (for quick lookups)
+  activeTasksByConversation: Record<string, string>; // conversation_id -> task_id
+
+  // Legacy global state (for backwards compatibility during migration)
   messages: ChatMessage[];
   chatTitle: string;
   isThinking: boolean;
   streamingMessageId: string | null;
   conversationId: string | null;
 
-  // Computed
-  connectedIntegrationsCount: number;
-
   // Actions - Auth
   setUser: (user: UserProfile | null) => void;
   setOrganization: (org: OrganizationInfo | null) => void;
   logout: () => void;
-
-  // Actions - Integrations
-  fetchIntegrations: () => Promise<void>;
-  setIntegrations: (integrations: Integration[]) => void;
 
   // Actions - UI
   setSidebarCollapsed: (collapsed: boolean) => void;
@@ -133,7 +138,24 @@ interface AppState {
   fetchConversations: () => Promise<void>;
   deleteConversation: (id: string) => Promise<void>;
 
-  // Actions - Chat Messages
+  // Actions - Per-conversation state
+  getConversationState: (conversationId: string) => ConversationState;
+  setConversationMessages: (conversationId: string, messages: ChatMessage[]) => void;
+  addConversationMessage: (conversationId: string, message: ChatMessage) => void;
+  appendToConversationStreaming: (conversationId: string, content: string) => void;
+  startConversationStreaming: (conversationId: string, messageId: string, initialContent: string) => void;
+  markConversationMessageComplete: (conversationId: string) => void;
+  setConversationTitle: (conversationId: string, title: string) => void;
+  setConversationThinking: (conversationId: string, thinking: boolean) => void;
+  setConversationActiveTask: (conversationId: string, taskId: string | null) => void;
+  updateConversationToolMessage: (conversationId: string, toolId: string, updates: Partial<ToolCallData>) => void;
+  clearConversation: (conversationId: string) => void;
+  
+  // Actions - Active tasks
+  setActiveTasks: (tasks: ActiveTask[]) => void;
+  hasActiveTask: (conversationId: string) => boolean;
+
+  // Actions - Legacy chat messages (for backwards compatibility)
   setMessages: (messages: ChatMessage[]) => void;
   addMessage: (message: ChatMessage) => void;
   appendToStreamingMessage: (content: string) => void;
@@ -150,86 +172,17 @@ interface AppState {
 }
 
 // =============================================================================
-// Available Integrations (static config)
+// Helper: Default conversation state
 // =============================================================================
 
-// Static config type - excludes runtime fields
-type IntegrationConfig = Omit<
-  Integration,
-  | "connected"
-  | "lastSyncAt"
-  | "lastError"
-  | "currentUserConnected"
-  | "teamConnections"
-  | "teamTotal"
-  | "connectedBy"
->;
-
-const AVAILABLE_INTEGRATIONS: IntegrationConfig[] = [
-  {
-    id: "hubspot",
-    provider: "hubspot",
-    name: "HubSpot",
-    description: "CRM data including deals, contacts, and companies",
-    icon: "hubspot",
-    color: "from-orange-500 to-orange-600",
-    scope: "organization",
-  },
-  {
-    id: "salesforce",
-    provider: "salesforce",
-    name: "Salesforce",
-    description: "Opportunities, accounts, contacts, and activities",
-    icon: "salesforce",
-    color: "from-blue-500 to-blue-600",
-    scope: "organization",
-  },
-  {
-    id: "slack",
-    provider: "slack",
-    name: "Slack",
-    description: "Team messages and communication history",
-    icon: "slack",
-    color: "from-purple-500 to-purple-600",
-    scope: "organization",
-  },
-  {
-    id: "google-calendar",
-    provider: "google_calendar",
-    name: "Google Calendar",
-    description: "Meetings, events, and scheduling data",
-    icon: "google-calendar",
-    color: "from-green-500 to-green-600",
-    scope: "user",
-  },
-  {
-    id: "gmail",
-    provider: "gmail",
-    name: "Gmail",
-    description: "Google email communications",
-    icon: "gmail",
-    color: "from-red-500 to-red-600",
-    scope: "user",
-  },
-  {
-    id: "microsoft_calendar",
-    provider: "microsoft_calendar",
-    name: "Microsoft Calendar",
-    description: "Outlook calendar events and meetings",
-    icon: "microsoft_calendar",
-    color: "from-sky-500 to-sky-600",
-    scope: "user",
-  },
-  {
-    id: "microsoft_mail",
-    provider: "microsoft_mail",
-    name: "Microsoft Mail",
-    description: "Outlook emails and communications",
-    icon: "microsoft_mail",
-    color: "from-blue-500 to-blue-600",
-    scope: "user",
-  },
-];
+const defaultConversationState: ConversationState = {
+  messages: [],
+  title: "New Chat",
+  isThinking: false,
+  streamingMessageId: null,
+  activeTaskId: null,
+  lastChunkIndex: 0,
+};
 
 // =============================================================================
 // Store Implementation
@@ -242,15 +195,16 @@ export const useAppStore = create<AppState>()(
       user: null,
       organization: null,
       isAuthenticated: false,
-      integrations: [],
-      integrationsLoading: false,
       sidebarCollapsed: false,
       currentView: "chat",
       currentChatId: null,
       recentChats: [],
-      connectedIntegrationsCount: 0,
 
-      // Chat state
+      // Per-conversation state
+      conversations: {},
+      activeTasksByConversation: {},
+
+      // Legacy chat state (for backwards compatibility)
       messages: [],
       chatTitle: "New Chat",
       isThinking: false,
@@ -271,126 +225,16 @@ export const useAppStore = create<AppState>()(
           user: null,
           organization: null,
           isAuthenticated: false,
-          integrations: [],
           currentChatId: null,
           recentChats: [],
-          connectedIntegrationsCount: 0,
-          // Clear chat state
+          conversations: {},
+          activeTasksByConversation: {},
+          // Clear legacy chat state
           messages: [],
           chatTitle: "New Chat",
           isThinking: false,
           streamingMessageId: null,
           conversationId: null,
-        }),
-
-      // Integrations actions
-      fetchIntegrations: async () => {
-        const { organization, user } = get();
-        if (!organization) {
-          console.log("[Store] No organization, skipping integrations fetch");
-          return;
-        }
-
-        set({ integrationsLoading: true });
-
-        try {
-          console.log(
-            "[Store] Fetching integrations for org:",
-            organization.id,
-          );
-          // Include user_id for user-scoped integration support
-          const url = user
-            ? `${API_BASE}/auth/integrations?organization_id=${organization.id}&user_id=${user.id}`
-            : `${API_BASE}/auth/integrations?organization_id=${organization.id}`;
-          const response = await fetch(url);
-
-          if (!response.ok) {
-            console.error(
-              "[Store] Failed to fetch integrations:",
-              response.status,
-            );
-            set({ integrationsLoading: false });
-            return;
-          }
-
-          // New response shape includes scope, team_connections, etc.
-          interface ApiIntegration {
-            provider: string;
-            scope: "organization" | "user";
-            last_sync_at: string | null;
-            last_error: string | null;
-            connected_by: string | null;
-            current_user_connected: boolean;
-            team_connections: Array<{ user_id: string; user_name: string }>;
-            team_total: number;
-          }
-
-          const data = (await response.json()) as {
-            integrations: ApiIntegration[];
-          };
-
-          console.log("[Store] Integrations response:", data);
-
-          // Build map from API response
-          const apiMap: Record<string, ApiIntegration> = {};
-          for (const integration of data.integrations || []) {
-            apiMap[integration.provider] = integration;
-          }
-
-          // Merge with available integrations config
-          const integrations: Integration[] = AVAILABLE_INTEGRATIONS.map(
-            (config) => {
-              const apiData = apiMap[config.provider];
-              const isOrgScoped = config.scope === "organization";
-
-              // For org-scoped: connected if we have API data for it
-              // For user-scoped: use current_user_connected from API
-              const connected = apiData
-                ? isOrgScoped
-                  ? true
-                  : apiData.current_user_connected
-                : false;
-
-              return {
-                ...config,
-                connected,
-                lastSyncAt: apiData?.last_sync_at ?? null,
-                lastError: apiData?.last_error ?? null,
-                currentUserConnected: apiData?.current_user_connected ?? false,
-                teamConnections: (apiData?.team_connections ?? []).map(
-                  (tc) => ({
-                    userId: tc.user_id,
-                    userName: tc.user_name,
-                  }),
-                ),
-                teamTotal: apiData?.team_total ?? 0,
-                connectedBy: apiData?.connected_by ?? null,
-              };
-            },
-          );
-
-          // Count connected integrations
-          // For org-scoped: count if any connection exists
-          // For user-scoped: count if current user is connected
-          const connectedCount = integrations.filter((i) => i.connected).length;
-          console.log("[Store] Connected count:", connectedCount);
-
-          set({
-            integrations,
-            integrationsLoading: false,
-            connectedIntegrationsCount: connectedCount,
-          });
-        } catch (error) {
-          console.error("[Store] Error fetching integrations:", error);
-          set({ integrationsLoading: false });
-        }
-      },
-
-      setIntegrations: (integrations) =>
-        set({
-          integrations,
-          connectedIntegrationsCount: integrations.filter((i) => i.connected)
-            .length,
         }),
 
       // UI actions
@@ -402,16 +246,11 @@ export const useAppStore = create<AppState>()(
       // Conversation actions
       addConversation: (id, title) => {
         const { recentChats } = get();
-        // Avoid duplicates
         if (recentChats.some((chat) => chat.id === id)) {
           console.log("[Store] Conversation already exists:", id);
           return;
         }
         console.log("[Store] Adding conversation:", id, title);
-        // Only update recentChats - don't change currentChatId
-        // The Chat component tracks the conversation internally via conversationIdRef
-        // Changing currentChatId mid-stream can cause the chatId prop to change
-        // and trigger unwanted re-renders/effects
         set({
           recentChats: [
             { id, title, lastMessageAt: new Date(), previewText: "" },
@@ -471,24 +310,23 @@ export const useAppStore = create<AppState>()(
       },
 
       deleteConversation: async (id) => {
-        const { user, recentChats, currentChatId, conversationId } = get();
+        const { user, recentChats, currentChatId, conversationId, conversations } = get();
         if (!user) return;
 
-        // Check if conversation exists in our list (prevent double-delete)
         if (!recentChats.some((chat) => chat.id === id)) {
-          console.log(
-            "[Store] Conversation already removed, skipping delete:",
-            id,
-          );
+          console.log("[Store] Conversation already removed, skipping delete:", id);
           return;
         }
 
-        // Optimistically remove from UI first
         const updated = recentChats.filter((chat) => chat.id !== id);
         const shouldClearChat = currentChatId === id || conversationId === id;
+        
+        // Remove from conversations state
+        const { [id]: _, ...remainingConversations } = conversations;
 
         set({
           recentChats: updated,
+          conversations: remainingConversations,
           ...(shouldClearChat
             ? {
                 currentChatId: null,
@@ -509,26 +347,230 @@ export const useAppStore = create<AppState>()(
           );
 
           if (!response.ok && response.status !== 404) {
-            // 404 is fine - already deleted
-            console.error(
-              "[Store] Failed to delete conversation:",
-              response.status,
-            );
-            // Could restore the chat here if needed, but usually not worth it
+            console.error("[Store] Failed to delete conversation:", response.status);
           }
-
           console.log("[Store] Conversation deleted");
         } catch (error) {
           console.error("[Store] Error deleting conversation:", error);
         }
       },
 
-      // Chat message actions
+      // Per-conversation state actions
+      getConversationState: (conversationId) => {
+        const { conversations } = get();
+        return conversations[conversationId] ?? { ...defaultConversationState };
+      },
+
+      setConversationMessages: (conversationId, messages) => {
+        const { conversations } = get();
+        const current = conversations[conversationId] ?? { ...defaultConversationState };
+        set({
+          conversations: {
+            ...conversations,
+            [conversationId]: { ...current, messages },
+          },
+        });
+      },
+
+      addConversationMessage: (conversationId, message) => {
+        const { conversations } = get();
+        const current = conversations[conversationId] ?? { ...defaultConversationState };
+        console.log("[Store] Adding message to conversation:", conversationId, message.role);
+        set({
+          conversations: {
+            ...conversations,
+            [conversationId]: {
+              ...current,
+              messages: [...current.messages, message],
+            },
+          },
+        });
+      },
+
+      appendToConversationStreaming: (conversationId, content) => {
+        const { conversations } = get();
+        const current = conversations[conversationId];
+        if (!current?.streamingMessageId) {
+          console.warn("[Store] No streaming message for conversation:", conversationId);
+          return;
+        }
+        const updated = current.messages.map((msg) => {
+          if (msg.id !== current.streamingMessageId) return msg;
+          const blocks = [...(msg.contentBlocks ?? [])];
+          const lastBlock = blocks[blocks.length - 1];
+          if (lastBlock && lastBlock.type === 'text') {
+            blocks[blocks.length - 1] = { ...lastBlock, text: lastBlock.text + content };
+          } else {
+            blocks.push({ type: 'text', text: content });
+          }
+          return { ...msg, contentBlocks: blocks };
+        });
+        set({
+          conversations: {
+            ...conversations,
+            [conversationId]: { ...current, messages: updated },
+          },
+        });
+      },
+
+      startConversationStreaming: (conversationId, messageId, initialContent) => {
+        const { conversations } = get();
+        const current = conversations[conversationId] ?? { ...defaultConversationState };
+        console.log("[Store] Starting streaming for conversation:", conversationId, messageId);
+        const newMessage: ChatMessage = {
+          id: messageId,
+          role: "assistant",
+          contentBlocks: initialContent ? [{ type: 'text', text: initialContent }] : [],
+          timestamp: new Date(),
+          isStreaming: true,
+        };
+        set({
+          conversations: {
+            ...conversations,
+            [conversationId]: {
+              ...current,
+              messages: [...current.messages, newMessage],
+              streamingMessageId: messageId,
+              isThinking: false,
+            },
+          },
+        });
+      },
+
+      markConversationMessageComplete: (conversationId) => {
+        const { conversations } = get();
+        const current = conversations[conversationId];
+        if (!current?.streamingMessageId) return;
+        console.log("[Store] Marking complete for conversation:", conversationId);
+        const updated = current.messages.map((msg) =>
+          msg.id === current.streamingMessageId ? { ...msg, isStreaming: false } : msg
+        );
+        set({
+          conversations: {
+            ...conversations,
+            [conversationId]: { ...current, messages: updated, streamingMessageId: null },
+          },
+        });
+      },
+
+      setConversationTitle: (conversationId, title) => {
+        const { conversations } = get();
+        const current = conversations[conversationId] ?? { ...defaultConversationState };
+        set({
+          conversations: {
+            ...conversations,
+            [conversationId]: { ...current, title },
+          },
+        });
+      },
+
+      setConversationThinking: (conversationId, thinking) => {
+        const { conversations } = get();
+        const current = conversations[conversationId] ?? { ...defaultConversationState };
+        set({
+          conversations: {
+            ...conversations,
+            [conversationId]: { ...current, isThinking: thinking },
+          },
+        });
+      },
+
+      setConversationActiveTask: (conversationId, taskId) => {
+        const { conversations, activeTasksByConversation } = get();
+        const current = conversations[conversationId] ?? { ...defaultConversationState };
+        
+        const updatedActiveTasks = { ...activeTasksByConversation };
+        if (taskId) {
+          updatedActiveTasks[conversationId] = taskId;
+        } else {
+          delete updatedActiveTasks[conversationId];
+        }
+        
+        set({
+          conversations: {
+            ...conversations,
+            [conversationId]: { ...current, activeTaskId: taskId },
+          },
+          activeTasksByConversation: updatedActiveTasks,
+        });
+      },
+
+      updateConversationToolMessage: (conversationId, toolId, updates) => {
+        const { conversations } = get();
+        const current = conversations[conversationId];
+        if (!current) return;
+        
+        const updated = current.messages.map((msg) => {
+          const blocks = msg.contentBlocks ?? [];
+          const hasMatchingTool = blocks.some(
+            (block) => block.type === 'tool_use' && block.id === toolId
+          );
+          if (!hasMatchingTool) return msg;
+          
+          const updatedBlocks = blocks.map((block) => {
+            if (block.type === 'tool_use' && block.id === toolId) {
+              return {
+                ...block,
+                result: updates.result ?? block.result,
+                status: updates.status as 'pending' | 'running' | 'complete' | undefined ?? block.status,
+              };
+            }
+            return block;
+          });
+          return { ...msg, contentBlocks: updatedBlocks };
+        });
+        set({
+          conversations: {
+            ...conversations,
+            [conversationId]: { ...current, messages: updated },
+          },
+        });
+      },
+
+      clearConversation: (conversationId) => {
+        const { conversations, activeTasksByConversation } = get();
+        const { [conversationId]: _, ...remaining } = conversations;
+        const { [conversationId]: __, ...remainingTasks } = activeTasksByConversation;
+        set({
+          conversations: remaining,
+          activeTasksByConversation: remainingTasks,
+        });
+      },
+
+      // Active tasks actions
+      setActiveTasks: (tasks) => {
+        const { conversations } = get();
+        const activeTasksByConversation: Record<string, string> = {};
+        const updatedConversations: Record<string, ConversationState> = { ...conversations };
+        
+        for (const task of tasks) {
+          if (task.status === 'running') {
+            activeTasksByConversation[task.conversation_id] = task.id;
+            
+            // Initialize conversation state if needed
+            const existing = updatedConversations[task.conversation_id] ?? { ...defaultConversationState };
+            updatedConversations[task.conversation_id] = {
+              ...existing,
+              activeTaskId: task.id,
+            };
+          }
+        }
+        
+        console.log("[Store] Set active tasks:", Object.keys(activeTasksByConversation).length);
+        set({ activeTasksByConversation, conversations: updatedConversations });
+      },
+
+      hasActiveTask: (conversationId) => {
+        const { activeTasksByConversation } = get();
+        return conversationId in activeTasksByConversation;
+      },
+
+      // Legacy chat message actions (for backwards compatibility)
       setMessages: (messages) => set({ messages }),
 
       addMessage: (message) => {
         const { messages } = get();
-        console.log("[Store] Adding message:", message.role, message.id);
+        console.log("[Store] Adding message (legacy):", message.role, message.id);
         set({ messages: [...messages, message] });
       },
 
@@ -538,21 +580,27 @@ export const useAppStore = create<AppState>()(
           console.warn("[Store] No streaming message to append to");
           return;
         }
-        const updated = messages.map((msg) =>
-          msg.id === streamingMessageId
-            ? { ...msg, content: msg.content + content }
-            : msg,
-        );
+        const updated = messages.map((msg) => {
+          if (msg.id !== streamingMessageId) return msg;
+          const blocks = [...(msg.contentBlocks ?? [])];
+          const lastBlock = blocks[blocks.length - 1];
+          if (lastBlock && lastBlock.type === 'text') {
+            blocks[blocks.length - 1] = { ...lastBlock, text: lastBlock.text + content };
+          } else {
+            blocks.push({ type: 'text', text: content });
+          }
+          return { ...msg, contentBlocks: blocks };
+        });
         set({ messages: updated });
       },
 
       startStreamingMessage: (id, initialContent) => {
         const { messages } = get();
-        console.log("[Store] Starting streaming message:", id);
+        console.log("[Store] Starting streaming message (legacy):", id);
         const newMessage: ChatMessage = {
           id,
           role: "assistant",
-          content: initialContent,
+          contentBlocks: initialContent ? [{ type: 'text', text: initialContent }] : [],
           timestamp: new Date(),
           isStreaming: true,
         };
@@ -565,7 +613,7 @@ export const useAppStore = create<AppState>()(
 
       markMessageComplete: () => {
         const { messages, streamingMessageId } = get();
-        console.log("[Store] Marking message complete:", streamingMessageId);
+        console.log("[Store] Marking message complete (legacy):", streamingMessageId);
         if (!streamingMessageId) return;
         const updated = messages.map((msg) =>
           msg.id === streamingMessageId ? { ...msg, isStreaming: false } : msg,
@@ -589,29 +637,34 @@ export const useAppStore = create<AppState>()(
       updateToolMessage: (toolId, updates) => {
         const { messages } = get();
         const updated = messages.map((msg) => {
-          if (msg.toolCall?.toolId === toolId) {
-            return {
-              ...msg,
-              toolCall: { ...msg.toolCall, ...updates },
-            };
-          }
-          return msg;
+          const blocks = msg.contentBlocks ?? [];
+          const hasMatchingTool = blocks.some(
+            (block) => block.type === 'tool_use' && block.id === toolId
+          );
+          if (!hasMatchingTool) return msg;
+          
+          const updatedBlocks = blocks.map((block) => {
+            if (block.type === 'tool_use' && block.id === toolId) {
+              return {
+                ...block,
+                result: updates.result ?? block.result,
+                status: updates.status as 'pending' | 'running' | 'complete' | undefined ?? block.status,
+              };
+            }
+            return block;
+          });
+          return { ...msg, contentBlocks: updatedBlocks };
         });
         set({ messages: updated });
       },
 
-      // Sync user to backend - returns user status ('waitlist', 'invited', 'active') or error string
+      // Sync user to backend
       syncUserToBackend: async (): Promise<string | null> => {
         const { user, organization, setUser } = get();
         if (!user) return null;
 
         try {
-          console.log(
-            "[Store] Syncing user to backend:",
-            user.id,
-            user.email,
-            organization?.id,
-          );
+          console.log("[Store] Syncing user to backend:", user.id, user.email, organization?.id);
           const response = await fetch(`${API_BASE}/auth/users/sync`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -625,37 +678,50 @@ export const useAppStore = create<AppState>()(
           });
 
           if (!response.ok) {
-            // 403 means user needs to join waitlist first
             if (response.status === 403) {
               console.log("[Store] User not on waitlist");
               return "not_registered";
             }
-            const errorData = (await response.json().catch(() => ({}))) as {
-              detail?: string;
-            };
+            const errorData = (await response.json().catch(() => ({}))) as { detail?: string };
             throw new Error(errorData.detail ?? `HTTP ${response.status}`);
           }
 
           const data = (await response.json()) as {
+            id: string;
             status: string;
             avatar_url: string | null;
             name: string | null;
             roles: string[];
+            organization: {
+              id: string;
+              name: string;
+              logo_url: string | null;
+            } | null;
           };
           console.log("[Store] User synced successfully, status:", data.status);
 
-          // Update user with data from backend (authoritative source)
           const newRoles = data.roles ?? [];
           if (
+            data.id !== user.id ||
             data.avatar_url !== user.avatarUrl ||
             data.name !== user.name ||
             JSON.stringify(newRoles) !== JSON.stringify(user.roles)
           ) {
             setUser({
               ...user,
+              id: data.id,
               name: data.name ?? user.name,
               avatarUrl: data.avatar_url ?? user.avatarUrl,
               roles: newRoles,
+            });
+          }
+
+          if (data.organization) {
+            const { setOrganization } = get();
+            setOrganization({
+              id: data.organization.id,
+              name: data.organization.name,
+              logoUrl: data.organization.logo_url,
             });
           }
 
@@ -668,7 +734,6 @@ export const useAppStore = create<AppState>()(
     }),
     {
       name: "revtops-store",
-      // Persist user/org and UI state to survive tab switches
       partialize: (state) => ({
         user: state.user,
         organization: state.organization,
@@ -687,18 +752,31 @@ export const useUser = () => useAppStore((state) => state.user);
 export const useOrganization = () => useAppStore((state) => state.organization);
 export const useIsAuthenticated = () =>
   useAppStore((state) => state.isAuthenticated);
-export const useIntegrations = () => useAppStore((state) => state.integrations);
-export const useConnectedCount = () =>
-  useAppStore((state) => state.connectedIntegrationsCount);
 export const useSidebarCollapsed = () =>
   useAppStore((state) => state.sidebarCollapsed);
 export const useCurrentView = () => useAppStore((state) => state.currentView);
 export const useIsGlobalAdmin = () =>
   useAppStore((state) => state.user?.roles?.includes("global_admin") ?? false);
 
-// Chat selectors
+// Legacy chat selectors (for backwards compatibility)
 export const useMessages = () => useAppStore((state) => state.messages);
 export const useChatTitle = () => useAppStore((state) => state.chatTitle);
 export const useIsThinking = () => useAppStore((state) => state.isThinking);
 export const useConversationId = () =>
   useAppStore((state) => state.conversationId);
+
+// Per-conversation selectors
+export const useConversationState = (conversationId: string | null) =>
+  useAppStore((state) => 
+    conversationId ? state.conversations[conversationId] ?? null : null
+  );
+export const useConversationMessages = (conversationId: string | null) =>
+  useAppStore((state) => 
+    conversationId ? state.conversations[conversationId]?.messages ?? [] : []
+  );
+export const useActiveTasksByConversation = () =>
+  useAppStore((state) => state.activeTasksByConversation);
+export const useHasActiveTask = (conversationId: string | null) =>
+  useAppStore((state) => 
+    conversationId ? conversationId in state.activeTasksByConversation : false
+  );

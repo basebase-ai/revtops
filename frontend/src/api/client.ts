@@ -14,18 +14,29 @@ export type { ApiResponse };
 // Chat Types
 // =============================================================================
 
+// Content block types following Anthropic API pattern
+export interface TextBlock {
+  type: 'text';
+  text: string;
+}
+
+export interface ToolUseBlock {
+  type: 'tool_use';
+  id: string;
+  name: string;
+  input: Record<string, unknown>;
+  result?: Record<string, unknown>;
+  status?: 'pending' | 'running' | 'complete';
+}
+
+export type ContentBlock = TextBlock | ToolUseBlock;
+
 export interface ChatMessage {
   id: string;
   conversation_id: string | null;
   role: 'user' | 'assistant';
-  content: string;
+  content_blocks: ContentBlock[];
   created_at: string;
-  tool_calls?: Array<{
-    name: string;
-    id: string;
-    input: Record<string, unknown>;
-    result?: Record<string, unknown>;
-  }>;
 }
 
 export interface ConversationSummary {

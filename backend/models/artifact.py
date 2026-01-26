@@ -60,6 +60,6 @@ class Artifact(Base):
             "config": self.config,
             "snapshot_data": self.snapshot_data,
             "is_live": self.is_live,
-            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "created_at": f"{self.created_at.isoformat()}Z" if self.created_at else None,
             "user_id": str(self.user_id),
         }

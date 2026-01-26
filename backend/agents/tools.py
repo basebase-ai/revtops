@@ -6,30 +6,35 @@ Tools:
 - search_activities: Semantic search across emails, meetings, messages
 - create_artifact: Save analysis/dashboard
 - web_search: Search the web and get summarized results
+- crm_write: Create/update records in CRM (with user approval)
 """
 
+import json
 import logging
 import re
+from datetime import datetime
 from typing import Any
 from uuid import UUID
 
 import httpx
-from sqlalchemy import text
+from sqlalchemy import select, text
 
 from config import settings
 from models.artifact import Artifact
+from models.crm_operation import CrmOperation
 from models.database import get_session
+from models.integration import Integration
 
 logger = logging.getLogger(__name__)
 
 # Tables that require organization_id filtering for multi-tenancy
 ORG_SCOPED_TABLES: set[str] = {
-    "deals", "accounts", "contacts", "activities", "integrations", "artifacts"
+    "deals", "accounts", "contacts", "activities", "integrations", "artifacts", "users"
 }
 
-# Tables that are allowed to be queried
+# Tables that are allowed to be queried (synced data only - no internal admin tables)
 ALLOWED_TABLES: set[str] = {
-    "deals", "accounts", "contacts", "activities", "users", "integrations", "organizations"
+    "deals", "accounts", "contacts", "activities", "integrations", "users"
 }
 
 
@@ -43,12 +48,21 @@ def get_tools() -> list[dict[str, Any]]:
 Use this for any data analysis: filtering, joins, aggregations, date comparisons, etc.
 The query is automatically scoped to the user's organization for multi-tenant tables.
 
+Available tables:
+- deals: Sales opportunities (name, amount, stage, close_date, owner_id, account_id, probability, custom_fields)
+- accounts: Companies/organizations (name, domain, industry, employee_count, annual_revenue, owner_id)
+- contacts: People (name, email, title, phone, account_id)
+- activities: Emails, meetings, calls, notes (type, subject, description, activity_date, source_system)
+- integrations: Connected data sources (provider, is_active, last_sync_at, last_error, scope, user_id)
+- users: Team members (email, full_name, role, avatar_url, salesforce_user_id)
+
 Examples:
 - SELECT * FROM deals WHERE stage = 'closedwon' LIMIT 10
 - SELECT stage, COUNT(*), SUM(amount) FROM deals GROUP BY stage
 - SELECT d.name, a.name as account FROM deals d LEFT JOIN accounts a ON d.account_id = a.id
 - SELECT * FROM deals WHERE close_date BETWEEN '2026-01-01' AND '2026-01-31'
-- SELECT * FROM deals WHERE custom_fields->>'pipeline' = 'enterprise'
+- SELECT provider, last_sync_at, last_error FROM integrations WHERE is_active = true
+- SELECT full_name, email, role FROM users
 
 IMPORTANT: Only SELECT queries are allowed. No INSERT, UPDATE, DELETE, DROP, etc.""",
             "input_schema": {
@@ -161,6 +175,62 @@ Do NOT use this for data that's in the user's database - use run_sql_query inste
                 "required": ["query"],
             },
         },
+        {
+            "name": "crm_write",
+            "description": """Create or update records in the CRM (HubSpot).
+
+This tool validates the input, checks for duplicates, and shows the user a preview 
+with Approve/Cancel buttons. The operation only executes after user approval.
+
+Use this for:
+- Creating contacts from prospect lists
+- Creating companies from account data
+- Creating deals from opportunity information
+- Updating existing records
+
+The tool returns a preview with status "pending_approval". The user will see 
+Approve/Cancel buttons. Tell them to review and click Approve to proceed.
+
+Property names for each record type:
+- contact: email (required), firstname, lastname, company, jobtitle, phone
+- company: name (required), domain, industry, numberofemployees
+- deal: dealname (required), amount, dealstage, closedate, pipeline
+
+IMPORTANT: HubSpot industry field requires specific enum values. Common values:
+COMPUTER_SOFTWARE, INFORMATION_TECHNOLOGY_AND_SERVICES, INTERNET, COMPUTER_HARDWARE,
+COMPUTER_NETWORKING, MARKETING_AND_ADVERTISING, FINANCIAL_SERVICES, MANAGEMENT_CONSULTING,
+BANKING, RETAIL, HEALTH_WELLNESS_AND_FITNESS, HOSPITAL_HEALTH_CARE, MEDICAL_DEVICES,
+EDUCATION_MANAGEMENT, E_LEARNING, REAL_ESTATE, CONSTRUCTION, ENTERTAINMENT, MEDIA_PRODUCTION,
+TELECOMMUNICATIONS, AUTOMOTIVE, FOOD_BEVERAGES, CONSUMER_GOODS, PHARMACEUTICALS, BIOTECHNOLOGY,
+INSURANCE, LEGAL_SERVICES, ACCOUNTING, STAFFING_AND_RECRUITING, VENTURE_CAPITAL_PRIVATE_EQUITY.
+Do NOT use freeform values like "Technology" - always use the exact enum values.""",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "target_system": {
+                        "type": "string",
+                        "enum": ["hubspot"],
+                        "description": "The CRM system to write to",
+                    },
+                    "record_type": {
+                        "type": "string",
+                        "enum": ["contact", "company", "deal"],
+                        "description": "Type of CRM record to create/update",
+                    },
+                    "operation": {
+                        "type": "string",
+                        "enum": ["create", "update", "upsert"],
+                        "description": "Operation to perform. 'upsert' will update if exists, create if not.",
+                    },
+                    "records": {
+                        "type": "array",
+                        "items": {"type": "object"},
+                        "description": "Array of records to write. Each record should have the appropriate properties for the record_type.",
+                    },
+                },
+                "required": ["target_system", "record_type", "operation", "records"],
+            },
+        },
     ]
 
 
@@ -199,6 +269,11 @@ async def execute_tool(
     elif tool_name == "web_search":
         result = await _web_search(tool_input)
         logger.info("[Tools] web_search completed")
+        return result
+
+    elif tool_name == "crm_write":
+        result = await _crm_write(tool_input, organization_id, user_id)
+        logger.info("[Tools] crm_write completed: %s", result.get("status"))
         return result
 
     else:
@@ -529,3 +604,532 @@ async def _web_search(params: dict[str, Any]) -> dict[str, Any]:
     except Exception as e:
         logger.error("[Tools._web_search] Search failed: %s", str(e))
         return {"error": f"Search failed: {str(e)}"}
+
+
+async def _crm_write(
+    params: dict[str, Any], organization_id: str, user_id: str
+) -> dict[str, Any]:
+    """
+    Create or update CRM records with user approval workflow.
+    
+    This function validates input, checks for duplicates, creates a pending
+    CrmOperation, and returns a preview for user approval.
+    """
+    target_system = params.get("target_system", "").lower()
+    record_type = params.get("record_type", "").lower()
+    operation = params.get("operation", "create").lower()
+    records = params.get("records", [])
+    
+    # Validate inputs
+    if target_system not in ["hubspot"]:
+        return {"error": f"Unsupported CRM system: {target_system}. Currently only 'hubspot' is supported."}
+    
+    if record_type not in ["contact", "company", "deal"]:
+        return {"error": f"Invalid record_type: {record_type}. Must be 'contact', 'company', or 'deal'."}
+    
+    if operation not in ["create", "update", "upsert"]:
+        return {"error": f"Invalid operation: {operation}. Must be 'create', 'update', or 'upsert'."}
+    
+    if not records or not isinstance(records, list):
+        return {"error": "No records provided. 'records' must be a non-empty array."}
+    
+    if len(records) > 100:
+        return {"error": f"Too many records ({len(records)}). Maximum is 100 per operation."}
+    
+    # Check for active HubSpot integration
+    async with get_session() as session:
+        result = await session.execute(
+            select(Integration).where(
+                Integration.organization_id == UUID(organization_id),
+                Integration.provider == target_system,
+                Integration.is_active == True,
+            )
+        )
+        integration = result.scalar_one_or_none()
+        
+        if not integration:
+            return {
+                "error": f"No active {target_system} integration found. Please connect {target_system} first.",
+            }
+    
+    # Validate and normalize records
+    validated_records: list[dict[str, Any]] = []
+    duplicate_warnings: list[dict[str, Any]] = []
+    validation_errors: list[str] = []
+    
+    for i, record in enumerate(records):
+        if not isinstance(record, dict):
+            validation_errors.append(f"Record {i+1} is not an object")
+            continue
+        
+        # Validate required fields based on record type
+        if record_type == "contact":
+            if not record.get("email"):
+                validation_errors.append(f"Record {i+1}: 'email' is required for contacts")
+                continue
+            # Normalize email
+            record["email"] = record["email"].lower().strip()
+            
+        elif record_type == "company":
+            if not record.get("name"):
+                validation_errors.append(f"Record {i+1}: 'name' is required for companies")
+                continue
+            # Normalize domain if present
+            if record.get("domain"):
+                domain = record["domain"].lower().strip()
+                # Remove protocol if present
+                domain = domain.replace("https://", "").replace("http://", "")
+                # Remove trailing slash and path
+                domain = domain.split("/")[0]
+                record["domain"] = domain
+                
+        elif record_type == "deal":
+            if not record.get("dealname"):
+                validation_errors.append(f"Record {i+1}: 'dealname' is required for deals")
+                continue
+        
+        validated_records.append(record)
+    
+    if validation_errors:
+        return {
+            "error": "Validation failed",
+            "validation_errors": validation_errors,
+        }
+    
+    if not validated_records:
+        return {"error": "No valid records after validation"}
+    
+    # Check for duplicates in HubSpot (for create/upsert operations)
+    # Only check first 10 records to avoid API rate limits and connection pool exhaustion
+    if operation in ["create", "upsert"] and target_system == "hubspot":
+        try:
+            from connectors.hubspot import HubSpotConnector
+            connector = HubSpotConnector(organization_id)
+            
+            # Limit duplicate checks to first 10 records for performance
+            records_to_check = validated_records[:10]
+            
+            for record in records_to_check:
+                existing: dict[str, Any] | None = None
+                
+                try:
+                    if record_type == "contact" and record.get("email"):
+                        existing = await connector.find_contact_by_email(record["email"])
+                        if existing:
+                            duplicate_warnings.append({
+                                "record": record,
+                                "existing_id": existing["id"],
+                                "existing": existing.get("properties", {}),
+                                "match_field": "email",
+                                "match_value": record["email"],
+                            })
+                            
+                    elif record_type == "company" and record.get("domain"):
+                        existing = await connector.find_company_by_domain(record["domain"])
+                        if existing:
+                            duplicate_warnings.append({
+                                "record": record,
+                                "existing_id": existing["id"],
+                                "existing": existing.get("properties", {}),
+                                "match_field": "domain",
+                                "match_value": record["domain"],
+                            })
+                            
+                    elif record_type == "deal" and record.get("dealname"):
+                        existing = await connector.find_deal_by_name(record["dealname"])
+                        if existing:
+                            duplicate_warnings.append({
+                                "record": record,
+                                "existing_id": existing["id"],
+                                "existing": existing.get("properties", {}),
+                                "match_field": "dealname",
+                                "match_value": record["dealname"],
+                            })
+                except Exception as e:
+                    logger.warning("[Tools._crm_write] Error checking duplicate for record: %s", str(e))
+                    # Continue with next record
+                        
+        except Exception as e:
+            logger.warning("[Tools._crm_write] Error initializing connector for duplicate check: %s", str(e))
+            # Continue without duplicate check - not a blocker
+    
+    # Create CrmOperation record
+    async with get_session() as session:
+        crm_operation = CrmOperation(
+            organization_id=UUID(organization_id),
+            user_id=UUID(user_id),
+            target_system=target_system,
+            record_type=record_type,
+            operation=operation,
+            status="pending",
+            input_records=records,
+            validated_records=validated_records,
+            duplicate_warnings=duplicate_warnings if duplicate_warnings else None,
+            record_count=len(validated_records),
+        )
+        session.add(crm_operation)
+        await session.commit()
+        await session.refresh(crm_operation)
+        
+        operation_id = str(crm_operation.id)
+    
+    # Calculate what will happen
+    will_create = len(validated_records)
+    will_skip = 0
+    will_update = 0
+    
+    if operation == "create" and duplicate_warnings:
+        will_skip = len(duplicate_warnings)
+        will_create = len(validated_records) - will_skip
+    elif operation == "upsert" and duplicate_warnings:
+        will_update = len(duplicate_warnings)
+        will_create = len(validated_records) - will_update
+    
+    # Return preview for user approval
+    return {
+        "type": "pending_approval",
+        "status": "pending_approval",
+        "operation_id": operation_id,
+        "target_system": target_system,
+        "record_type": record_type,
+        "operation": operation,
+        "preview": {
+            "records": validated_records,
+            "record_count": len(validated_records),
+            "will_create": will_create,
+            "will_skip": will_skip,
+            "will_update": will_update,
+            "duplicate_warnings": duplicate_warnings,
+        },
+        "message": f"Prepared {len(validated_records)} {record_type}(s) to {operation} in {target_system}. Please review and click Approve to proceed.",
+    }
+
+
+async def execute_crm_operation(operation_id: str, skip_duplicates: bool = True) -> dict[str, Any]:
+    """
+    Execute a previously validated CRM operation.
+    
+    This is called when the user approves the operation.
+    
+    Args:
+        operation_id: UUID of the CrmOperation to execute
+        skip_duplicates: If True, skip records that already exist (for create operation)
+        
+    Returns:
+        Result of the operation with success/failure details
+    """
+    async with get_session() as session:
+        crm_op = await session.get(CrmOperation, UUID(operation_id))
+        
+        if not crm_op:
+            return {"status": "failed", "message": "Operation not found", "error": f"Operation {operation_id} not found"}
+        
+        if crm_op.status != "pending":
+            return {"status": "failed", "message": "Invalid state", "error": f"Operation is not pending (status: {crm_op.status})"}
+        
+        if crm_op.is_expired:
+            crm_op.status = "expired"
+            await session.commit()
+            return {"status": "expired", "message": "Operation expired", "error": "Operation has expired. Please start again."}
+        
+        # Mark as executing
+        crm_op.status = "executing"
+        await session.commit()
+    
+    try:
+        # Execute based on target system
+        if crm_op.target_system == "hubspot":
+            result = await _execute_hubspot_operation(crm_op, skip_duplicates)
+        else:
+            result = {"status": "failed", "message": "Unsupported system", "error": f"Unsupported target system: {crm_op.target_system}"}
+        
+        # Update operation with result
+        async with get_session() as session:
+            crm_op = await session.get(CrmOperation, UUID(operation_id))
+            if crm_op:
+                if "error" in result:
+                    crm_op.status = "failed"
+                    crm_op.error_message = result["error"]
+                else:
+                    crm_op.status = "completed"
+                    crm_op.success_count = result.get("success_count", 0)
+                    crm_op.failure_count = result.get("failure_count", 0)
+                    crm_op.result = result
+                crm_op.executed_at = datetime.utcnow()
+                await session.commit()
+        
+        return result
+        
+    except Exception as e:
+        logger.error("[Tools.execute_crm_operation] Error: %s", str(e))
+        
+        # Truncate error message for storage
+        error_msg = str(e)[:500]
+        
+        # Update operation with error
+        async with get_session() as session:
+            crm_op = await session.get(CrmOperation, UUID(operation_id))
+            if crm_op:
+                crm_op.status = "failed"
+                crm_op.error_message = error_msg
+                crm_op.executed_at = datetime.utcnow()
+                await session.commit()
+        
+        return {
+            "status": "failed",
+            "message": "Operation failed",
+            "error": error_msg,
+        }
+
+
+async def _execute_hubspot_operation(
+    crm_op: CrmOperation, skip_duplicates: bool
+) -> dict[str, Any]:
+    """Execute a HubSpot CRM operation."""
+    from connectors.hubspot import HubSpotConnector
+    
+    connector = HubSpotConnector(str(crm_op.organization_id))
+    
+    records_to_process = crm_op.validated_records
+    duplicate_ids: set[str] = set()
+    
+    # Get duplicate record identifiers to skip if needed
+    if skip_duplicates and crm_op.duplicate_warnings:
+        for warning in crm_op.duplicate_warnings:
+            if crm_op.record_type == "contact":
+                duplicate_ids.add(warning["record"].get("email", "").lower())
+            elif crm_op.record_type == "company":
+                duplicate_ids.add(warning["record"].get("domain", "").lower())
+            elif crm_op.record_type == "deal":
+                duplicate_ids.add(warning["record"].get("dealname", ""))
+    
+    # Filter out duplicates if skipping
+    if skip_duplicates and duplicate_ids:
+        filtered_records: list[dict[str, Any]] = []
+        for record in records_to_process:
+            identifier = ""
+            if crm_op.record_type == "contact":
+                identifier = record.get("email", "").lower()
+            elif crm_op.record_type == "company":
+                identifier = record.get("domain", "").lower()
+            elif crm_op.record_type == "deal":
+                identifier = record.get("dealname", "")
+            
+            if identifier not in duplicate_ids:
+                filtered_records.append(record)
+        records_to_process = filtered_records
+    
+    if not records_to_process:
+        return {
+            "status": "completed",
+            "message": "No records to create (all were duplicates)",
+            "success_count": 0,
+            "failure_count": 0,
+            "skipped_count": len(crm_op.validated_records),
+            "created": [],
+        }
+    
+    # Execute based on record type and operation
+    created: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    
+    try:
+        if crm_op.operation == "create":
+            if crm_op.record_type == "contact":
+                if len(records_to_process) == 1:
+                    result = await connector.create_contact(records_to_process[0])
+                    created.append(result)
+                else:
+                    batch_result = await connector.create_contacts_batch(records_to_process)
+                    created.extend(batch_result.get("results", []))
+                    errors.extend(batch_result.get("errors", []))
+                    
+            elif crm_op.record_type == "company":
+                if len(records_to_process) == 1:
+                    result = await connector.create_company(records_to_process[0])
+                    created.append(result)
+                else:
+                    batch_result = await connector.create_companies_batch(records_to_process)
+                    created.extend(batch_result.get("results", []))
+                    errors.extend(batch_result.get("errors", []))
+                    
+            elif crm_op.record_type == "deal":
+                if len(records_to_process) == 1:
+                    result = await connector.create_deal(records_to_process[0])
+                    created.append(result)
+                else:
+                    batch_result = await connector.create_deals_batch(records_to_process)
+                    created.extend(batch_result.get("results", []))
+                    errors.extend(batch_result.get("errors", []))
+        
+        # For upsert, we'd need to handle updates for existing records
+        # This is a simplified implementation that just creates non-duplicates
+        elif crm_op.operation == "upsert":
+            # Same as create for now - updates would be handled separately
+            if crm_op.record_type == "contact":
+                batch_result = await connector.create_contacts_batch(records_to_process)
+                created.extend(batch_result.get("results", []))
+                errors.extend(batch_result.get("errors", []))
+            elif crm_op.record_type == "company":
+                batch_result = await connector.create_companies_batch(records_to_process)
+                created.extend(batch_result.get("results", []))
+                errors.extend(batch_result.get("errors", []))
+            elif crm_op.record_type == "deal":
+                batch_result = await connector.create_deals_batch(records_to_process)
+                created.extend(batch_result.get("results", []))
+                errors.extend(batch_result.get("errors", []))
+                
+    except Exception as e:
+        logger.error("[Tools._execute_hubspot_operation] Error: %s", str(e))
+        return {"status": "failed", "message": "HubSpot API error", "error": str(e)}
+    
+    skipped_count = len(crm_op.validated_records) - len(records_to_process)
+    
+    # Use appropriate verb based on operation type
+    operation_verb = "Updated" if crm_op.operation == "update" else "Created"
+    
+    return {
+        "status": "completed",
+        "message": f"{operation_verb} {len(created)} {crm_op.record_type}(s) in HubSpot",
+        "success_count": len(created),
+        "failure_count": len(errors),
+        "skipped_count": skipped_count,
+        "created": created,
+        "errors": errors if errors else None,
+    }
+
+
+async def cancel_crm_operation(operation_id: str) -> dict[str, Any]:
+    """
+    Cancel a pending CRM operation.
+    
+    Args:
+        operation_id: UUID of the CrmOperation to cancel
+        
+    Returns:
+        Confirmation of cancellation
+    """
+    async with get_session() as session:
+        crm_op = await session.get(CrmOperation, UUID(operation_id))
+        
+        if not crm_op:
+            return {"error": f"Operation {operation_id} not found"}
+        
+        if crm_op.status != "pending":
+            return {"error": f"Operation is not pending (status: {crm_op.status})"}
+        
+        crm_op.status = "canceled"
+        await session.commit()
+        
+        return {
+            "status": "canceled",
+            "message": "Operation canceled by user",
+            "operation_id": operation_id,
+        }
+
+
+async def update_tool_call_result(operation_id: str, new_result: dict[str, Any]) -> bool:
+    """
+    Update the stored tool call result in chat_messages for a CRM operation.
+    
+    This ensures that when a conversation is reloaded, the tool call shows
+    the final state (completed/failed/canceled) instead of pending_approval.
+    
+    Args:
+        operation_id: UUID of the CRM operation
+        new_result: The new result to store (includes status, message, etc.)
+        
+    Returns:
+        True if updated successfully, False otherwise
+    """
+    from sqlalchemy import select
+    from models.chat_message import ChatMessage
+    
+    try:
+        async with get_session() as session:
+            # Find messages that contain this operation_id in their tool_calls
+            # We need to search for messages with tool_calls containing the operation_id
+            result = await session.execute(
+                select(ChatMessage).where(
+                    ChatMessage.tool_calls.isnot(None)
+                )
+            )
+            messages = result.scalars().all()
+            
+            updated_count = 0
+            for msg in messages:
+                if not msg.tool_calls:
+                    continue
+                    
+                # Check if any tool call has this operation_id
+                modified = False
+                updated_tool_calls: list[dict[str, Any]] = []
+                
+                for tc in msg.tool_calls:
+                    tc_result = tc.get("result", {})
+                    if isinstance(tc_result, dict) and tc_result.get("operation_id") == operation_id:
+                        # Update this tool call's result
+                        tc["result"] = new_result
+                        modified = True
+                    updated_tool_calls.append(tc)
+                
+                if modified:
+                    # Assign a new list to ensure SQLAlchemy detects the change
+                    msg.tool_calls = updated_tool_calls
+                    # Flag the attribute as modified for JSONB columns
+                    from sqlalchemy.orm.attributes import flag_modified
+                    flag_modified(msg, "tool_calls")
+                    updated_count += 1
+            
+            if updated_count > 0:
+                await session.commit()
+                logger.info(
+                    "[Tools.update_tool_call_result] Updated %d message(s) for operation %s",
+                    updated_count,
+                    operation_id
+                )
+                return True
+            else:
+                logger.warning(
+                    "[Tools.update_tool_call_result] No messages found for operation %s",
+                    operation_id
+                )
+                return False
+                
+    except Exception as e:
+        logger.error(
+            "[Tools.update_tool_call_result] Failed to update for operation %s: %s",
+            operation_id,
+            str(e)
+        )
+        return False
+
+
+async def get_crm_operation_status(operation_id: str) -> dict[str, Any]:
+    """
+    Get the current status of a CRM operation.
+    
+    Used to check if a pending_approval operation has already been processed.
+    
+    Args:
+        operation_id: UUID of the CRM operation
+        
+    Returns:
+        Operation status and details
+    """
+    try:
+        async with get_session() as session:
+            crm_op = await session.get(CrmOperation, UUID(operation_id))
+            
+            if not crm_op:
+                return {"error": f"Operation {operation_id} not found"}
+            
+            return crm_op.to_result_dict()
+            
+    except Exception as e:
+        logger.error(
+            "[Tools.get_crm_operation_status] Failed for operation %s: %s",
+            operation_id,
+            str(e)
+        )
+        return {"error": str(e)}

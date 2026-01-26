@@ -11,9 +11,10 @@ import demoConversation from '../data/demoConversation.json';
 
 interface LandingProps {
   onGetStarted: () => void;
+  onNavigateToBlog: () => void;
 }
 
-export function Landing({ onGetStarted }: LandingProps): JSX.Element {
+export function Landing({ onGetStarted, onNavigateToBlog }: LandingProps): JSX.Element {
   const [isVisible, setIsVisible] = useState<boolean>(false);
   const [showWaitlistForm, setShowWaitlistForm] = useState<boolean>(false);
   const [showWaitlistSuccess, setShowWaitlistSuccess] = useState<boolean>(false);
@@ -39,18 +40,24 @@ export function Landing({ onGetStarted }: LandingProps): JSX.Element {
       <nav className="relative z-10 flex items-center justify-between px-6 py-4 max-w-7xl mx-auto">
         <div className="flex items-center gap-2">
           <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-primary-500 to-primary-700 flex items-center justify-center">
-            <svg className="w-5 h-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
-            </svg>
+            <img src="/logo.svg" alt="Revtops" className="w-5 h-5 invert" />
           </div>
           <span className="text-xl font-bold text-surface-50">Revtops</span>
         </div>
-        <button
-          onClick={onGetStarted}
-          className="px-4 py-2 text-sm font-medium text-surface-300 hover:text-white transition-colors"
-        >
-          Sign In
-        </button>
+        <div className="flex items-center gap-6">
+          <button
+            onClick={onNavigateToBlog}
+            className="px-3 py-2 text-sm font-medium text-surface-300 hover:text-white transition-colors"
+          >
+            Blog
+          </button>
+          <button
+            onClick={onGetStarted}
+            className="px-4 py-2 text-sm font-medium text-surface-300 hover:text-white transition-colors"
+          >
+            Sign In
+          </button>
+        </div>
       </nav>
 
       {/* Hero Section */}
@@ -229,9 +236,7 @@ export function Landing({ onGetStarted }: LandingProps): JSX.Element {
         <div className="max-w-7xl mx-auto px-6 flex flex-col md:flex-row items-center justify-between gap-4">
           <div className="flex items-center gap-2">
             <div className="w-6 h-6 rounded bg-gradient-to-br from-primary-500 to-primary-700 flex items-center justify-center">
-              <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
-              </svg>
+              <img src="/logo.svg" alt="Revtops" className="w-3.5 h-3.5 invert" />
             </div>
             <span className="text-surface-400 text-sm">© 2026 Revtops. All rights reserved.</span>
           </div>

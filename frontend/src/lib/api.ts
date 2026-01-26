@@ -5,7 +5,7 @@
  */
 
 // Backend URL for production
-const PRODUCTION_BACKEND = 'https://revtops-backend-production.up.railway.app';
+const PRODUCTION_BACKEND = 'https://api.revtops.com';
 
 // Determine if we're in production (Railway)
 export const isProduction: boolean = typeof window !== 'undefined' && 

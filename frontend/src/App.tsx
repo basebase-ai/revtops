@@ -2,10 +2,12 @@
  * Main application component.
  *
  * Handles:
- * - Authentication flow (landing → auth → onboarding → app)
+ * - Authentication flow (auth → onboarding → app)
  * - Work email validation
  * - Company setup for new organizations
  * - Main app layout routing
+ * 
+ * Note: Public landing page and blog are now served from www.revtops.com
  */
 
 import { useEffect, useState } from 'react';
@@ -13,7 +15,6 @@ import { supabase } from './lib/supabase';
 import { getEmailDomain, isPersonalEmail } from './lib/email';
 import { API_BASE } from './lib/api';
 import { useAppStore } from './store';
-import { Landing } from './components/Landing';
 import { Auth } from './components/Auth';
 import { CompanySetup } from './components/CompanySetup';
 import { Onboarding } from './components/Onboarding';
@@ -22,13 +23,15 @@ import { OAuthCallback } from './components/OAuthCallback';
 import { AdminWaitlist } from './components/AdminWaitlist';
 import type { User, AuthChangeEvent, Session } from '@supabase/supabase-js';
 
-type Screen = 'landing' | 'auth' | 'blocked-email' | 'not-registered' | 'waitlist' | 'company-setup' | 'onboarding' | 'app';
+type Screen = 'auth' | 'blocked-email' | 'not-registered' | 'waitlist' | 'company-setup' | 'onboarding' | 'app';
+
+// URL for public website (landing, blog, waitlist form)
+const WWW_URL = import.meta.env.VITE_WWW_URL ?? 'https://www.revtops.com';
 
 // Simple in-memory store for companies (MVP - in production, use API)
 interface StoredCompany {
   id: string; // UUID
   name: string;
-  memberCount: number;
 }
 
 function generateUUID(): string {
@@ -51,7 +54,6 @@ function getStoredCompanies(): Record<string, StoredCompany> {
     const company = companies[domain];
     if (company && !company.id) {
       company.id = generateUUID();
-      company.memberCount = company.memberCount ?? 1;
       needsMigration = true;
     }
   }
@@ -68,7 +70,6 @@ function storeCompany(domain: string, name: string): StoredCompany {
   const company: StoredCompany = {
     id: generateUUID(),
     name,
-    memberCount: 1,
   };
   companies[domain] = company;
   localStorage.setItem('revtops_companies', JSON.stringify(companies));
@@ -81,7 +82,7 @@ function getCompanyByDomain(domain: string): StoredCompany | null {
 }
 
 function App(): JSX.Element {
-  const [screen, setScreen] = useState<Screen>('landing');
+  const [screen, setScreen] = useState<Screen>('auth');
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [emailDomain, setEmailDomain] = useState<string>('');
   
@@ -93,7 +94,6 @@ function App(): JSX.Element {
     setOrganization, 
     logout: storeLogout,
     syncUserToBackend,
-    fetchIntegrations,
   } = useAppStore();
 
   // Check auth status on mount
@@ -131,7 +131,6 @@ function App(): JSX.Element {
               id: 'example.com',
               name: 'Example Company',
               logoUrl: null,
-              memberCount: 1,
             });
             setScreen('app');
           }
@@ -161,7 +160,8 @@ function App(): JSX.Element {
           setIsLoading(false);
         } else if (event === 'SIGNED_OUT') {
           storeLogout();
-          setScreen('landing');
+          // Redirect to public website on sign out
+          window.location.href = WWW_URL;
         }
       }
     );
@@ -242,6 +242,7 @@ function App(): JSX.Element {
 
       if (syncResponse.ok) {
         const userData = await syncResponse.json() as { 
+          id: string;  // Database user ID (may differ from Supabase ID for waitlist users)
           status: string; 
           avatar_url: string | null;
           name: string | null;
@@ -249,8 +250,9 @@ function App(): JSX.Element {
         };
         
         // Update user with data from backend (authoritative source)
+        // Use the database ID from backend - this may differ from Supabase ID for waitlist users
         setUser({
-          id: supabaseUser.id,
+          id: userData.id,
           email,
           name: userData.name ?? name,
           avatarUrl: userData.avatar_url ?? avatarUrl,
@@ -280,7 +282,6 @@ function App(): JSX.Element {
           existingCompany = {
             id: backendOrg.id,
             name: backendOrg.name,
-            memberCount: 1,
           };
           // Update localStorage
           const companies = getStoredCompanies();
@@ -302,7 +303,6 @@ function App(): JSX.Element {
       id: existingCompany.id,
       name: existingCompany.name,
       logoUrl: null,
-      memberCount: existingCompany.memberCount,
     });
 
     // Sync user with organization to backend
@@ -323,13 +323,24 @@ function App(): JSX.Element {
       console.error('Failed to sync organization to backend:', error);
     }
 
-    // Fetch integrations after org is set
-    await fetchIntegrations();
-
     // Check if user has completed onboarding OR already has connected integrations
     const completedOnboarding = localStorage.getItem(`onboarding_${supabaseUser.id}`);
-    const currentIntegrations = useAppStore.getState().integrations;
-    const hasConnectedIntegrations = currentIntegrations.some((i) => i.connected);
+    
+    // Fetch integrations directly to check for connected ones
+    let hasConnectedIntegrations = false;
+    try {
+      const integrationsResponse = await fetch(
+        `${API_BASE}/auth/integrations?organization_id=${existingCompany.id}&user_id=${supabaseUser.id}`
+      );
+      if (integrationsResponse.ok) {
+        const integrationsData = await integrationsResponse.json() as { 
+          integrations: Array<{ provider: string; current_user_connected?: boolean }> 
+        };
+        hasConnectedIntegrations = integrationsData.integrations.length > 0;
+      }
+    } catch (error) {
+      console.error('Failed to check integrations:', error);
+    }
     
     if (completedOnboarding || hasConnectedIntegrations) {
       // Mark onboarding as complete if they have integrations (for future logins)
@@ -353,7 +364,6 @@ function App(): JSX.Element {
       id: company.id,
       name: company.name,
       logoUrl: null,
-      memberCount: 1,
     });
 
     // Create organization in backend database
@@ -385,7 +395,8 @@ function App(): JSX.Element {
     await supabase.auth.signOut();
     localStorage.removeItem('user_id');
     storeLogout();
-    setScreen('landing');
+    // Redirect to public website
+    window.location.href = WWW_URL;
   };
 
   const handleOnboardingComplete = (): void => {
@@ -432,9 +443,7 @@ function App(): JSX.Element {
       <div className="min-h-screen flex items-center justify-center">
         <div className="flex flex-col items-center gap-4">
           <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-primary-500 to-primary-700 flex items-center justify-center animate-pulse">
-            <svg className="w-5 h-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
-            </svg>
+            <img src="/logo.svg" alt="Loading" className="w-5 h-5 invert" />
           </div>
           <p className="text-surface-400">Loading...</p>
         </div>
@@ -444,13 +453,10 @@ function App(): JSX.Element {
 
   // Render based on current screen
   switch (screen) {
-    case 'landing':
-      return <Landing onGetStarted={() => setScreen('auth')} />;
-
     case 'auth':
       return (
         <Auth
-          onBack={() => setScreen('landing')}
+          onBack={() => { window.location.href = WWW_URL; }}
           onSuccess={() => {
             // Auth component handles redirect via onAuthStateChange
           }}
@@ -492,7 +498,10 @@ function App(): JSX.Element {
               We're currently invite-only. Join the waitlist on our homepage and we'll let you know when it's your turn.
             </p>
             <div className="flex gap-3 justify-center">
-              <button onClick={() => void handleLogout()} className="btn-primary">
+              <button 
+                onClick={() => { window.location.href = WWW_URL; }} 
+                className="btn-primary"
+              >
                 Back to homepage
               </button>
             </div>
@@ -541,7 +550,13 @@ function App(): JSX.Element {
 
     case 'app': {
       if (!user || !organization) {
-        return <Landing onGetStarted={() => setScreen('auth')} />;
+        // If no user, go to auth
+        return (
+          <Auth
+            onBack={() => { window.location.href = WWW_URL; }}
+            onSuccess={() => {}}
+          />
+        );
       }
 
       return (
@@ -552,7 +567,12 @@ function App(): JSX.Element {
     }
 
     default:
-      return <Landing onGetStarted={() => setScreen('auth')} />;
+      return (
+        <Auth
+          onBack={() => { window.location.href = WWW_URL; }}
+          onSuccess={() => {}}
+        />
+      );
   }
 }
 

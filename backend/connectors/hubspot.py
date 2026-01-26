@@ -33,6 +33,12 @@ class HubSpotConnector(BaseConnector):
 
     source_system = "hubspot"
 
+    def __init__(self, organization_id: str) -> None:
+        """Initialize connector with owner cache."""
+        super().__init__(organization_id)
+        # Cache for HubSpot owner ID -> internal user ID mapping
+        self._owner_cache: dict[str, Optional[uuid.UUID]] = {}
+
     async def _get_headers(self) -> dict[str, str]:
         """Get authorization headers for HubSpot API."""
         token, _ = await self.get_oauth_token()
@@ -61,7 +67,26 @@ class HubSpotConnector(BaseConnector):
                 json=json_data,
                 timeout=30.0,
             )
-            response.raise_for_status()
+            
+            # If error, try to get detailed error message from HubSpot
+            if response.status_code >= 400:
+                error_detail = ""
+                try:
+                    error_body = response.json()
+                    # HubSpot error format: {"message": "...", "errors": [...]}
+                    error_detail = error_body.get("message", "")
+                    if error_body.get("errors"):
+                        error_details = [e.get("message", str(e)) for e in error_body["errors"]]
+                        error_detail = f"{error_detail}: {'; '.join(error_details)}"
+                except Exception:
+                    error_detail = response.text[:500] if response.text else ""
+                
+                raise httpx.HTTPStatusError(
+                    f"HubSpot API error ({response.status_code}): {error_detail}",
+                    request=response.request,
+                    response=response,
+                )
+            
             return response.json()
 
     async def _paginate_results(
@@ -69,6 +94,7 @@ class HubSpotConnector(BaseConnector):
         endpoint: str,
         properties: list[str],
         limit: int = 100,
+        associations: Optional[list[str]] = None,
     ) -> list[dict[str, Any]]:
         """Paginate through HubSpot API results."""
         all_results: list[dict[str, Any]] = []
@@ -79,6 +105,8 @@ class HubSpotConnector(BaseConnector):
                 "limit": limit,
                 "properties": ",".join(properties),
             }
+            if associations:
+                params["associations"] = ",".join(associations)
             if after:
                 params["after"] = after
 
@@ -304,14 +332,41 @@ class HubSpotConnector(BaseConnector):
             "hs_lastmodifieddate",
         ]
 
+        # Fetch contacts with company associations
         raw_contacts = await self._paginate_results(
-            "/crm/v3/objects/contacts", properties=properties
+            "/crm/v3/objects/contacts",
+            properties=properties,
+            associations=["companies"],
         )
+
+        # Build a map of HubSpot company IDs to internal account IDs
+        hs_company_id_to_account_id: dict[str, uuid.UUID] = {}
+        async with get_session() as session:
+            result = await session.execute(
+                select(Account).where(
+                    Account.organization_id == uuid.UUID(self.organization_id),
+                    Account.source_system == self.source_system,
+                )
+            )
+            accounts = result.scalars().all()
+            for account in accounts:
+                hs_company_id_to_account_id[account.source_id] = account.id
 
         async with get_session() as session:
             count = 0
             for raw_contact in raw_contacts:
                 hs_id = raw_contact.get("id", "")
+                
+                # Extract associated company ID from associations
+                account_id: Optional[uuid.UUID] = None
+                associations = raw_contact.get("associations", {})
+                companies_assoc = associations.get("companies", {})
+                company_results = companies_assoc.get("results", [])
+                if company_results:
+                    # Take the first (primary) company association
+                    hs_company_id = company_results[0].get("id")
+                    if hs_company_id:
+                        account_id = hs_company_id_to_account_id.get(hs_company_id)
                 
                 # Check if contact already exists
                 result = await session.execute(
@@ -323,7 +378,11 @@ class HubSpotConnector(BaseConnector):
                 )
                 existing = result.scalar_one_or_none()
                 
-                contact = self._normalize_contact(raw_contact, existing_id=existing.id if existing else None)
+                contact = self._normalize_contact(
+                    raw_contact,
+                    existing_id=existing.id if existing else None,
+                    account_id=account_id,
+                )
                 await session.merge(contact)
                 count += 1
             await session.commit()
@@ -331,7 +390,10 @@ class HubSpotConnector(BaseConnector):
         return count
 
     def _normalize_contact(
-        self, hs_contact: dict[str, Any], existing_id: Optional[uuid.UUID] = None
+        self,
+        hs_contact: dict[str, Any],
+        existing_id: Optional[uuid.UUID] = None,
+        account_id: Optional[uuid.UUID] = None,
     ) -> Contact:
         """Transform HubSpot Contact to our Contact model."""
         props = hs_contact.get("properties", {})
@@ -355,6 +417,7 @@ class HubSpotConnector(BaseConnector):
             email=props.get("email"),
             title=props.get("jobtitle"),
             phone=props.get("phone"),
+            account_id=account_id,
         )
 
     async def sync_activities(self) -> int:
@@ -446,20 +509,68 @@ class HubSpotConnector(BaseConnector):
     async def _map_hs_owner_to_user(
         self, hs_owner_id: Optional[str]
     ) -> Optional[uuid.UUID]:
-        """Map HubSpot owner ID to our internal user ID."""
+        """
+        Map HubSpot owner ID to our internal user ID by fetching owner email.
+        
+        If no matching user exists, creates a stub user with status='crm_only'
+        that can be upgraded when the person signs up for Revtops.
+        """
         if not hs_owner_id:
             return None
 
-        async with get_session() as session:
-            # Look for user with matching HubSpot ID in custom_fields or a dedicated field
-            result = await session.execute(
-                select(User).where(
-                    User.organization_id == uuid.UUID(self.organization_id),
-                )
+        # Check cache first
+        if hs_owner_id in self._owner_cache:
+            return self._owner_cache[hs_owner_id]
+
+        # Fetch owner details from HubSpot to get their email and name
+        try:
+            owner_data = await self._make_request(
+                "GET", f"/crm/v3/owners/{hs_owner_id}"
             )
-            # For MVP, return first user; in production, match by HubSpot owner ID
-            user = result.scalars().first()
-            return user.id if user else None
+            owner_email: Optional[str] = owner_data.get("email")
+            if not owner_email:
+                self._owner_cache[hs_owner_id] = None
+                return None
+            
+            # Build owner name from firstName/lastName
+            first_name: str = owner_data.get("firstName") or ""
+            last_name: str = owner_data.get("lastName") or ""
+            owner_name: Optional[str] = f"{first_name} {last_name}".strip() or None
+        except httpx.HTTPStatusError:
+            # If we can't fetch owner, fall back to None
+            self._owner_cache[hs_owner_id] = None
+            return None
+
+        # Look up user by email (email is globally unique, not per-org)
+        async with get_session() as session:
+            result = await session.execute(
+                select(User).where(User.email == owner_email)
+            )
+            user = result.scalar_one_or_none()
+            
+            if user:
+                # User exists - check if they belong to this organization
+                if user.organization_id == uuid.UUID(self.organization_id):
+                    self._owner_cache[hs_owner_id] = user.id
+                    return user.id
+                else:
+                    # User exists but in different org - can't assign cross-org ownership
+                    self._owner_cache[hs_owner_id] = None
+                    return None
+            
+            # No user with this email exists - create a stub user for this CRM owner
+            stub_user = User(
+                id=uuid.uuid4(),
+                email=owner_email,
+                name=owner_name,
+                organization_id=uuid.UUID(self.organization_id),
+                status="crm_only",  # Stub user from CRM sync, not yet signed up
+            )
+            session.add(stub_user)
+            await session.commit()
+            
+            self._owner_cache[hs_owner_id] = stub_user.id
+            return stub_user.id
 
     async def fetch_deal(self, deal_id: str) -> dict[str, Any]:
         """Fetch single deal on-demand."""
@@ -478,3 +589,301 @@ class HubSpotConnector(BaseConnector):
         )
         deal = await self._normalize_deal(data)
         return deal.to_dict()
+
+    # =========================================================================
+    # Write Operations
+    # =========================================================================
+
+    async def create_contact(self, properties: dict[str, Any]) -> dict[str, Any]:
+        """
+        Create a single contact in HubSpot.
+
+        Args:
+            properties: Contact properties (email, firstname, lastname, company, jobtitle, phone)
+
+        Returns:
+            Created contact data with HubSpot ID
+        """
+        data = await self._make_request(
+            "POST",
+            "/crm/v3/objects/contacts",
+            json_data={"properties": properties},
+        )
+        return {
+            "id": data.get("id"),
+            "properties": data.get("properties", {}),
+        }
+
+    async def create_company(self, properties: dict[str, Any]) -> dict[str, Any]:
+        """
+        Create a single company in HubSpot.
+
+        Args:
+            properties: Company properties (name, domain, industry, etc.)
+
+        Returns:
+            Created company data with HubSpot ID
+        """
+        data = await self._make_request(
+            "POST",
+            "/crm/v3/objects/companies",
+            json_data={"properties": properties},
+        )
+        return {
+            "id": data.get("id"),
+            "properties": data.get("properties", {}),
+        }
+
+    async def create_deal(self, properties: dict[str, Any]) -> dict[str, Any]:
+        """
+        Create a single deal in HubSpot.
+
+        Args:
+            properties: Deal properties (dealname, amount, dealstage, closedate, pipeline)
+
+        Returns:
+            Created deal data with HubSpot ID
+        """
+        data = await self._make_request(
+            "POST",
+            "/crm/v3/objects/deals",
+            json_data={"properties": properties},
+        )
+        return {
+            "id": data.get("id"),
+            "properties": data.get("properties", {}),
+        }
+
+    async def update_contact(
+        self, contact_id: str, properties: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Update an existing contact in HubSpot."""
+        data = await self._make_request(
+            "PATCH",
+            f"/crm/v3/objects/contacts/{contact_id}",
+            json_data={"properties": properties},
+        )
+        return {
+            "id": data.get("id"),
+            "properties": data.get("properties", {}),
+        }
+
+    async def update_company(
+        self, company_id: str, properties: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Update an existing company in HubSpot."""
+        data = await self._make_request(
+            "PATCH",
+            f"/crm/v3/objects/companies/{company_id}",
+            json_data={"properties": properties},
+        )
+        return {
+            "id": data.get("id"),
+            "properties": data.get("properties", {}),
+        }
+
+    async def update_deal(
+        self, deal_id: str, properties: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Update an existing deal in HubSpot."""
+        data = await self._make_request(
+            "PATCH",
+            f"/crm/v3/objects/deals/{deal_id}",
+            json_data={"properties": properties},
+        )
+        return {
+            "id": data.get("id"),
+            "properties": data.get("properties", {}),
+        }
+
+    async def create_contacts_batch(
+        self, contacts: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        """
+        Batch create contacts in HubSpot (up to 100 per call).
+
+        Args:
+            contacts: List of contact property dicts
+
+        Returns:
+            Batch result with created contacts and any errors
+        """
+        if len(contacts) > 100:
+            raise ValueError("HubSpot batch limit is 100 records per call")
+
+        inputs = [{"properties": c} for c in contacts]
+        data = await self._make_request(
+            "POST",
+            "/crm/v3/objects/contacts/batch/create",
+            json_data={"inputs": inputs},
+        )
+        return {
+            "status": data.get("status", "COMPLETE"),
+            "results": [
+                {"id": r.get("id"), "properties": r.get("properties", {})}
+                for r in data.get("results", [])
+            ],
+            "errors": data.get("errors", []),
+        }
+
+    async def create_companies_batch(
+        self, companies: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        """Batch create companies in HubSpot (up to 100 per call)."""
+        if len(companies) > 100:
+            raise ValueError("HubSpot batch limit is 100 records per call")
+
+        inputs = [{"properties": c} for c in companies]
+        data = await self._make_request(
+            "POST",
+            "/crm/v3/objects/companies/batch/create",
+            json_data={"inputs": inputs},
+        )
+        return {
+            "status": data.get("status", "COMPLETE"),
+            "results": [
+                {"id": r.get("id"), "properties": r.get("properties", {})}
+                for r in data.get("results", [])
+            ],
+            "errors": data.get("errors", []),
+        }
+
+    async def create_deals_batch(self, deals: list[dict[str, Any]]) -> dict[str, Any]:
+        """Batch create deals in HubSpot (up to 100 per call)."""
+        if len(deals) > 100:
+            raise ValueError("HubSpot batch limit is 100 records per call")
+
+        inputs = [{"properties": d} for d in deals]
+        data = await self._make_request(
+            "POST",
+            "/crm/v3/objects/deals/batch/create",
+            json_data={"inputs": inputs},
+        )
+        return {
+            "status": data.get("status", "COMPLETE"),
+            "results": [
+                {"id": r.get("id"), "properties": r.get("properties", {})}
+                for r in data.get("results", [])
+            ],
+            "errors": data.get("errors", []),
+        }
+
+    async def find_contact_by_email(self, email: str) -> dict[str, Any] | None:
+        """
+        Search for a contact by email address.
+
+        Args:
+            email: Email address to search for
+
+        Returns:
+            Contact data if found, None otherwise
+        """
+        try:
+            data = await self._make_request(
+                "POST",
+                "/crm/v3/objects/contacts/search",
+                json_data={
+                    "filterGroups": [
+                        {
+                            "filters": [
+                                {
+                                    "propertyName": "email",
+                                    "operator": "EQ",
+                                    "value": email,
+                                }
+                            ]
+                        }
+                    ],
+                    "properties": ["email", "firstname", "lastname", "company"],
+                    "limit": 1,
+                },
+            )
+            results = data.get("results", [])
+            if results:
+                return {
+                    "id": results[0].get("id"),
+                    "properties": results[0].get("properties", {}),
+                }
+            return None
+        except httpx.HTTPStatusError:
+            return None
+
+    async def find_company_by_domain(self, domain: str) -> dict[str, Any] | None:
+        """
+        Search for a company by domain.
+
+        Args:
+            domain: Company domain to search for
+
+        Returns:
+            Company data if found, None otherwise
+        """
+        try:
+            data = await self._make_request(
+                "POST",
+                "/crm/v3/objects/companies/search",
+                json_data={
+                    "filterGroups": [
+                        {
+                            "filters": [
+                                {
+                                    "propertyName": "domain",
+                                    "operator": "EQ",
+                                    "value": domain,
+                                }
+                            ]
+                        }
+                    ],
+                    "properties": ["name", "domain", "industry"],
+                    "limit": 1,
+                },
+            )
+            results = data.get("results", [])
+            if results:
+                return {
+                    "id": results[0].get("id"),
+                    "properties": results[0].get("properties", {}),
+                }
+            return None
+        except httpx.HTTPStatusError:
+            return None
+
+    async def find_deal_by_name(self, name: str) -> dict[str, Any] | None:
+        """
+        Search for a deal by name.
+
+        Args:
+            name: Deal name to search for
+
+        Returns:
+            Deal data if found, None otherwise
+        """
+        try:
+            data = await self._make_request(
+                "POST",
+                "/crm/v3/objects/deals/search",
+                json_data={
+                    "filterGroups": [
+                        {
+                            "filters": [
+                                {
+                                    "propertyName": "dealname",
+                                    "operator": "EQ",
+                                    "value": name,
+                                }
+                            ]
+                        }
+                    ],
+                    "properties": ["dealname", "amount", "dealstage"],
+                    "limit": 1,
+                },
+            )
+            results = data.get("results", [])
+            if results:
+                return {
+                    "id": results[0].get("id"),
+                    "properties": results[0].get("properties", {}),
+                }
+            return None
+        except httpx.HTTPStatusError:
+            return None

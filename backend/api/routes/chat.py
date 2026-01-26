@@ -64,9 +64,8 @@ class ChatMessageResponse(BaseModel):
     id: str
     conversation_id: Optional[str]
     role: str
-    content: str
+    content_blocks: list[dict]
     created_at: str
-    tool_calls: Optional[list[dict]] = None
 
 
 class ConversationDetailResponse(BaseModel):
@@ -157,8 +156,8 @@ async def list_conversations(
                 user_id=str(conv.user_id),
                 title=conv.title,
                 summary=conv.summary,
-                created_at=conv.created_at.isoformat() if conv.created_at else "",
-                updated_at=conv.updated_at.isoformat() if conv.updated_at else "",
+                created_at=f"{conv.created_at.isoformat()}Z" if conv.created_at else "",
+                updated_at=f"{conv.updated_at.isoformat()}Z" if conv.updated_at else "",
                 message_count=msg_count,
                 last_message_preview=last_msg.content[:100] if last_msg else None,
             ))
@@ -191,8 +190,8 @@ async def create_conversation(request: ConversationCreate) -> ConversationRespon
             user_id=str(conversation.user_id),
             title=conversation.title,
             summary=conversation.summary,
-            created_at=conversation.created_at.isoformat() if conversation.created_at else "",
-            updated_at=conversation.updated_at.isoformat() if conversation.updated_at else "",
+            created_at=f"{conversation.created_at.isoformat()}Z" if conversation.created_at else "",
+            updated_at=f"{conversation.updated_at.isoformat()}Z" if conversation.updated_at else "",
             message_count=0,
             last_message_preview=None,
         )
@@ -234,17 +233,10 @@ async def get_conversation(
             user_id=str(conversation.user_id),
             title=conversation.title,
             summary=conversation.summary,
-            created_at=conversation.created_at.isoformat() if conversation.created_at else "",
-            updated_at=conversation.updated_at.isoformat() if conversation.updated_at else "",
+            created_at=f"{conversation.created_at.isoformat()}Z" if conversation.created_at else "",
+            updated_at=f"{conversation.updated_at.isoformat()}Z" if conversation.updated_at else "",
             messages=[
-                ChatMessageResponse(
-                    id=str(msg.id),
-                    conversation_id=str(msg.conversation_id) if msg.conversation_id else None,
-                    role=msg.role,
-                    content=msg.content,
-                    created_at=msg.created_at.isoformat() if msg.created_at else "",
-                    tool_calls=msg.tool_calls,
-                )
+                ChatMessageResponse(**msg.to_dict())
                 for msg in messages
             ],
         )
@@ -287,8 +279,8 @@ async def update_conversation(
             user_id=str(conversation.user_id),
             title=conversation.title,
             summary=conversation.summary,
-            created_at=conversation.created_at.isoformat() if conversation.created_at else "",
-            updated_at=conversation.updated_at.isoformat() if conversation.updated_at else "",
+            created_at=f"{conversation.created_at.isoformat()}Z" if conversation.created_at else "",
+            updated_at=f"{conversation.updated_at.isoformat()}Z" if conversation.updated_at else "",
             message_count=0,
             last_message_preview=None,
         )
@@ -359,7 +351,7 @@ async def get_chat_history(
                     conversation_id=str(msg.conversation_id) if msg.conversation_id else None,
                     role=msg.role,
                     content=msg.content,
-                    created_at=msg.created_at.isoformat() if msg.created_at else "",
+                    created_at=f"{msg.created_at.isoformat()}Z" if msg.created_at else "",
                 )
                 for msg in reversed(messages)
             ]

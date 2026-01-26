@@ -6,18 +6,15 @@
  * - Invite new members
  * - Manage subscription/billing
  * - Organization settings
+ * 
+ * Uses React Query for server state (team members, org updates).
  */
 
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import type { OrganizationInfo, UserProfile } from './AppLayout';
-
-interface TeamMember {
-  id: string;
-  name: string;
-  email: string;
-  role: 'admin' | 'member';
-  avatarUrl: string | null;
-}
+import { supabase } from '../lib/supabase';
+import { useAppStore } from '../store';
+import { useTeamMembers, useUpdateOrganization } from '../hooks';
 
 interface OrganizationPanelProps {
   organization: OrganizationInfo;
@@ -26,20 +23,24 @@ interface OrganizationPanelProps {
 }
 
 export function OrganizationPanel({ organization, currentUser, onClose }: OrganizationPanelProps): JSX.Element {
+  const setOrganization = useAppStore((state) => state.setOrganization);
   const [activeTab, setActiveTab] = useState<'team' | 'billing' | 'settings'>('team');
   const [inviteEmail, setInviteEmail] = useState('');
   const [isInviting, setIsInviting] = useState(false);
+  const [orgName, setOrgName] = useState(organization.name);
+  const [logoUrl, setLogoUrl] = useState(organization.logoUrl);
+  const [settingsSaved, setSettingsSaved] = useState(false);
+  const [isUploadingLogo, setIsUploadingLogo] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Current user as first team member (TODO: fetch full team from API)
-  const teamMembers: TeamMember[] = [
-    {
-      id: currentUser.id,
-      name: currentUser.name ?? 'You',
-      email: currentUser.email,
-      role: 'admin',
-      avatarUrl: currentUser.avatarUrl,
-    },
-  ];
+  // React Query: Fetch team members with automatic caching and refetch
+  const { 
+    data: teamMembers = [], 
+    isLoading: isLoadingMembers 
+  } = useTeamMembers(organization.id, currentUser.id);
+
+  // React Query: Mutation for updating organization
+  const updateOrgMutation = useUpdateOrganization();
 
   const handleInvite = async (): Promise<void> => {
     if (!inviteEmail.trim()) return;
@@ -57,6 +58,89 @@ export function OrganizationPanel({ organization, currentUser, onClose }: Organi
     }
   };
 
+  const handleSaveSettings = async (): Promise<void> => {
+    if (!orgName.trim() || orgName === organization.name) return;
+
+    try {
+      await updateOrgMutation.mutateAsync({
+        orgId: organization.id,
+        userId: currentUser.id,
+        name: orgName,
+      });
+      
+      setSettingsSaved(true);
+      // Update Zustand store so sidebar reflects the change immediately
+      setOrganization({ ...organization, name: orgName });
+      setTimeout(() => setSettingsSaved(false), 2000);
+    } catch (error) {
+      alert(`Failed to save: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  };
+
+  const hasUnsavedChanges = orgName !== organization.name;
+
+  const handleLogoUpload = async (event: React.ChangeEvent<HTMLInputElement>): Promise<void> => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    // Validate file type
+    if (!file.type.startsWith('image/')) {
+      alert('Please select an image file');
+      return;
+    }
+
+    // Validate file size (max 2MB)
+    if (file.size > 2 * 1024 * 1024) {
+      alert('Image must be less than 2MB');
+      return;
+    }
+
+    setIsUploadingLogo(true);
+    try {
+      // Generate unique filename
+      const fileExt = file.name.split('.').pop() ?? 'png';
+      const fileName = `${organization.id}/logo-${Date.now()}.${fileExt}`;
+
+      // Upload to Supabase Storage
+      const { error: uploadError } = await supabase.storage
+        .from('org-logos')
+        .upload(fileName, file, { upsert: true });
+
+      if (uploadError) {
+        console.error('Upload error:', uploadError);
+        alert(`Failed to upload: ${uploadError.message}`);
+        return;
+      }
+
+      // Get public URL
+      const { data: urlData } = supabase.storage
+        .from('org-logos')
+        .getPublicUrl(fileName);
+
+      const newLogoUrl = urlData.publicUrl;
+
+      // Update organization with new logo URL using React Query mutation
+      await updateOrgMutation.mutateAsync({
+        orgId: organization.id,
+        userId: currentUser.id,
+        logoUrl: newLogoUrl,
+      });
+
+      setLogoUrl(newLogoUrl);
+      // Update Zustand store so sidebar reflects the change immediately
+      setOrganization({ ...organization, logoUrl: newLogoUrl });
+    } catch (error) {
+      console.error('Failed to upload logo:', error);
+      alert('Failed to upload logo');
+    } finally {
+      setIsUploadingLogo(false);
+      // Reset file input
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+    }
+  };
+
   return (
     <>
       {/* Backdrop */}
@@ -70,9 +154,9 @@ export function OrganizationPanel({ organization, currentUser, onClose }: Organi
         {/* Header */}
         <header className="flex items-center justify-between px-6 py-4 border-b border-surface-800">
           <div className="flex items-center gap-3">
-            {organization.logoUrl ? (
+            {logoUrl ? (
               <img
-                src={organization.logoUrl}
+                src={logoUrl}
                 alt={organization.name}
                 className="w-10 h-10 rounded-lg object-cover"
               />
@@ -143,39 +227,49 @@ export function OrganizationPanel({ organization, currentUser, onClose }: Organi
                 <h3 className="text-sm font-medium text-surface-200 mb-3">
                   Team members ({teamMembers.length})
                 </h3>
-                <div className="space-y-2">
-                  {teamMembers.map((member) => (
-                    <div
-                      key={member.id}
-                      className="flex items-center gap-3 p-3 rounded-lg bg-surface-800/50"
-                    >
-                      {member.avatarUrl ? (
-                        <img
-                          src={member.avatarUrl}
-                          alt={member.name}
-                          className="w-10 h-10 rounded-full object-cover"
-                        />
-                      ) : (
-                        <div className="w-10 h-10 rounded-full bg-primary-600 flex items-center justify-center text-white font-medium">
-                          {member.name.charAt(0).toUpperCase()}
-                        </div>
-                      )}
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2">
-                          <span className="font-medium text-surface-100 truncate">
-                            {member.name}
-                          </span>
-                          {member.role === 'admin' && (
-                            <span className="px-2 py-0.5 text-xs font-medium bg-primary-500/20 text-primary-400 rounded-full">
-                              Admin
-                            </span>
+                {isLoadingMembers ? (
+                  <div className="flex items-center justify-center py-8">
+                    <div className="animate-spin w-6 h-6 border-2 border-primary-500 border-t-transparent rounded-full" />
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {teamMembers.map((member) => {
+                      const displayName = member.name ?? member.email.split('@')[0] ?? 'Unknown';
+                      const isAdmin = member.role === 'admin' || member.id === currentUser.id;
+                      return (
+                        <div
+                          key={member.id}
+                          className="flex items-center gap-3 p-3 rounded-lg bg-surface-800/50"
+                        >
+                          {member.avatarUrl ? (
+                            <img
+                              src={member.avatarUrl}
+                              alt={displayName}
+                              className="w-10 h-10 rounded-full object-cover"
+                            />
+                          ) : (
+                            <div className="w-10 h-10 rounded-full bg-primary-600 flex items-center justify-center text-white font-medium">
+                              {displayName.charAt(0).toUpperCase()}
+                            </div>
                           )}
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2">
+                              <span className="font-medium text-surface-100 truncate">
+                                {displayName}
+                              </span>
+                              {isAdmin && (
+                                <span className="px-2 py-0.5 text-xs font-medium bg-primary-500/20 text-primary-400 rounded-full">
+                                  Admin
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-sm text-surface-400 truncate">{member.email}</p>
+                          </div>
                         </div>
-                        <p className="text-sm text-surface-400 truncate">{member.email}</p>
-                      </div>
-                    </div>
-                  ))}
-                </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             </div>
           )}
@@ -252,7 +346,8 @@ export function OrganizationPanel({ organization, currentUser, onClose }: Organi
                 </label>
                 <input
                   type="text"
-                  defaultValue={organization.name}
+                  value={orgName}
+                  onChange={(e) => setOrgName(e.target.value)}
                   className="input-field"
                 />
               </div>
@@ -263,9 +358,9 @@ export function OrganizationPanel({ organization, currentUser, onClose }: Organi
                   Logo
                 </label>
                 <div className="flex items-center gap-4">
-                  {organization.logoUrl ? (
+                  {logoUrl ? (
                     <img
-                      src={organization.logoUrl}
+                      src={logoUrl}
                       alt={organization.name}
                       className="w-16 h-16 rounded-xl object-cover"
                     />
@@ -274,10 +369,40 @@ export function OrganizationPanel({ organization, currentUser, onClose }: Organi
                       {organization.name.charAt(0).toUpperCase()}
                     </div>
                   )}
-                  <button className="px-4 py-2 text-sm font-medium text-surface-200 bg-surface-800 hover:bg-surface-700 rounded-lg transition-colors">
-                    Upload logo
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept="image/*"
+                    onChange={(e) => void handleLogoUpload(e)}
+                    className="hidden"
+                  />
+                  <button
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={isUploadingLogo}
+                    className="px-4 py-2 text-sm font-medium text-surface-200 bg-surface-800 hover:bg-surface-700 rounded-lg transition-colors disabled:opacity-50"
+                  >
+                    {isUploadingLogo ? 'Uploading...' : 'Upload logo'}
                   </button>
                 </div>
+              </div>
+
+              {/* Save Button */}
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => void handleSaveSettings()}
+                  disabled={updateOrgMutation.isPending || !hasUnsavedChanges}
+                  className="btn-primary disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {updateOrgMutation.isPending ? 'Saving...' : 'Save Changes'}
+                </button>
+                {settingsSaved && (
+                  <span className="text-sm text-green-400 flex items-center gap-1">
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                    </svg>
+                    Saved
+                  </span>
+                )}
               </div>
 
               {/* Danger Zone */}

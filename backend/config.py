@@ -1,8 +1,28 @@
 """Configuration management using Pydantic settings."""
 
+from datetime import date, datetime
 from pathlib import Path
-from pydantic_settings import BaseSettings
 from typing import Optional
+
+from pydantic_settings import BaseSettings
+
+
+def to_iso8601(dt: datetime | date | None) -> str | None:
+    """
+    Format datetime/date to ISO8601 string for JSON responses.
+    
+    All datetimes are assumed to be UTC and get 'Z' suffix.
+    Date-only values get no timezone suffix.
+    
+    Usage:
+        "created_at": to_iso8601(self.created_at)
+    """
+    if dt is None:
+        return None
+    if isinstance(dt, datetime):
+        return f"{dt.isoformat()}Z"
+    # date only - no timezone
+    return dt.isoformat()
 
 # Find .env file - check current dir, then parent (for when running from backend/)
 _env_file = Path(".env")

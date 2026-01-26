@@ -1,0 +1,49 @@
+name: Generate Blog Index
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'frontend/public/blog/posts/*.md'
+      - 'scripts/generate-blog-index.js'
+  workflow_dispatch: # Allow manual trigger
+
+jobs:
+  generate-index:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write # Needed to commit changes
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Generate blog index
+        run: node scripts/generate-blog-index.js
+
+      - name: Check for changes
+        id: check_changes
+        run: |
+          if git diff --quiet frontend/public/blog/index.json; then
+            echo "changed=false" >> $GITHUB_OUTPUT
+          else
+            echo "changed=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Commit and push if changed
+        if: steps.check_changes.outputs.changed == 'true'
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add frontend/public/blog/index.json
+          git commit -m "chore: auto-generate blog index [skip ci]"
+          git push

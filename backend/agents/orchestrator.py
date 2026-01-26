@@ -31,6 +31,15 @@ SYSTEM_PROMPT = """You are Revtops, an AI assistant for sales and revenue operat
 
 You help users understand their sales pipeline, analyze deals, and get insights from their CRM data.
 
+## Communication Style
+
+**IMPORTANT: Always explain what you're doing before using tools.** When you need to call a tool, first write a brief message explaining your approach. For example:
+- "Let me check your recent deal activity..." (before running a SQL query)
+- "I'll search for emails related to that topic..." (before semantic search)
+- "Let me look that up for you..." (before web search)
+
+This helps users understand what you're thinking and what to expect.
+
 ## Available Tools
 
 You have access to powerful tools:
@@ -38,11 +47,40 @@ You have access to powerful tools:
 - **search_activities**: Semantic search across emails, meetings, and messages. Use this when users want to find activities by meaning/concept rather than exact text (e.g., "find emails about pricing discussions").
 - **create_artifact**: Save dashboards, reports, or analyses for the user.
 - **web_search**: Search the web for external information not in the user's data. Use this for industry benchmarks, company research, market trends, news, and sales methodologies.
+- **crm_write**: Create or update records in the CRM (HubSpot). This shows a preview and requires user approval before executing.
 
 ### When to use which tool:
 - **search_activities**: For conceptual/semantic queries like "emails about contract renewal", "meetings discussing budget"
 - **run_sql_query with ILIKE**: For exact patterns like "emails from @acmecorp.com", "meetings with John Smith"
 - **web_search**: For external context like "typical enterprise SaaS close rates", "what does Acme Corp do", "MEDDIC qualification framework"
+- **crm_write**: When the user wants to create contacts, companies, or deals in their CRM from prospect lists or other data
+
+### CRM Write Operations
+
+When users want to create or update CRM records, use the **crm_write** tool. This tool:
+1. Validates the input data
+2. Checks for duplicates in the CRM
+3. Shows the user a preview with Approve/Cancel buttons
+4. Only executes after user approval
+
+**IMPORTANT: Always explain what you're going to create BEFORE calling the crm_write tool.**
+
+Follow this sequence:
+1. First, write a brief message explaining what records you'll create (e.g., "I'll create a contact for John Smith and a company for Acme Corp in HubSpot.")
+2. Then call the crm_write tool(s)
+3. The tool will show the user an approval card - they'll click Approve or Cancel
+
+Example usage:
+- User provides a list of prospects → explain what you'll create → then call crm_write
+- User wants to create a company → explain → then call crm_write with company record_type
+- User wants to create deals → explain → then call crm_write with deal record_type
+
+Property names for each record type:
+- **contact**: email (required), firstname, lastname, company, jobtitle, phone
+- **company**: name (required), domain, industry, numberofemployees
+- **deal**: dealname (required), amount, dealstage, closedate, pipeline
+
+The tool returns a "pending_approval" status. Do NOT add any text after the tool call - just let the approval card speak for itself.
 
 ## Database Schema
 
@@ -122,34 +160,6 @@ searchable_text (TEXT, nullable) -- combined text used for semantic search
 synced_at (TIMESTAMP)
 ```
 
-### users
-Users of the Revtops platform.
-```
-id (UUID, PK)
-email (VARCHAR, unique)
-name (VARCHAR, nullable)
-organization_id (UUID, FK -> organizations, nullable)
-salesforce_user_id (VARCHAR, nullable)
-role (VARCHAR, nullable) -- 'ae', 'sales_manager', 'cro', 'admin'
-created_at (TIMESTAMP)
-last_login (TIMESTAMP, nullable)
-```
-
-### integrations
-Connected integrations (HubSpot, Slack, etc.).
-```
-id (UUID, PK)
-organization_id (UUID, FK -> organizations)
-provider (VARCHAR) -- 'hubspot', 'slack', 'google_calendar', 'gmail', 'microsoft_calendar', 'microsoft_mail', 'salesforce'
-nango_connection_id (VARCHAR, nullable)
-connected_by_user_id (UUID, FK -> users, nullable)
-is_active (BOOLEAN)
-last_sync_at (TIMESTAMP, nullable)
-last_error (TEXT, nullable)
-extra_data (JSONB, nullable)
-created_at (TIMESTAMP)
-updated_at (TIMESTAMP)
-```
 
 ## Calendar Data
 
@@ -215,6 +225,8 @@ class ChatOrchestrator:
         user_id: str,
         organization_id: str | None,
         conversation_id: str | None = None,
+        local_time: str | None = None,
+        timezone: str | None = None,
     ) -> None:
         """
         Initialize the orchestrator.
@@ -223,14 +235,18 @@ class ChatOrchestrator:
             user_id: UUID of the authenticated user
             organization_id: UUID of the user's organization (may be None for new users)
             conversation_id: UUID of the conversation (may be None for new conversations)
+            local_time: ISO timestamp of user's local time
+            timezone: User's timezone (e.g., "America/New_York")
         """
         self.user_id = user_id
         self.organization_id = organization_id
         self.conversation_id = conversation_id
+        self.local_time = local_time
+        self.timezone = timezone
         self.client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
 
     async def process_message(
-        self, user_message: str
+        self, user_message: str, save_user_message: bool = True
     ) -> AsyncGenerator[str, None]:
         """
         Process a user message and stream Claude's response.
@@ -247,6 +263,7 @@ class ChatOrchestrator:
 
         Args:
             user_message: The user's message text
+            save_user_message: If False, don't save user_message to DB (for internal system messages)
 
         Yields:
             String chunks of the assistant's response
@@ -255,23 +272,38 @@ class ChatOrchestrator:
         if not self.conversation_id:
             self.conversation_id = await self._create_conversation()
 
+        # Save user message immediately (so it's visible even if response fails/is interrupted)
+        if save_user_message:
+            await self._save_user_message(user_message)
+
         # Load conversation history (only from this conversation)
         history = await self._load_history(limit=20)
 
-        # Add user message
+        # Add user message to context for Claude
         messages: list[dict[str, Any]] = history + [
             {"role": "user", "content": user_message}
         ]
 
-        # Keep track of full response for saving
-        assistant_message = ""
-        tool_calls_made: list[dict[str, Any]] = []
+        # Keep track of content blocks for saving (preserves interleaving order)
+        content_blocks: list[dict[str, Any]] = []
+        current_text = ""  # Buffer for current text block
+
+        # Build system prompt with time context
+        system_prompt = SYSTEM_PROMPT
+        if self.local_time or self.timezone:
+            time_context = "\n\n## Current Time Context\n"
+            if self.local_time:
+                time_context += f"- User's local time: {self.local_time}\n"
+            if self.timezone:
+                time_context += f"- User's timezone: {self.timezone}\n"
+            time_context += "\nUse this to provide relative time references (e.g., '3 hours ago', 'yesterday') when discussing sync times, activity dates, etc."
+            system_prompt = SYSTEM_PROMPT + time_context
 
         # Initial Claude call
         response = self.client.messages.create(
             model="claude-opus-4-5",
             max_tokens=4096,
-            system=SYSTEM_PROMPT,
+            system=system_prompt,
             tools=get_tools(),
             messages=messages,
         )
@@ -284,7 +316,7 @@ class ChatOrchestrator:
             for content_block in response.content:
                 if content_block.type == "text":
                     text = content_block.text
-                    assistant_message += text
+                    current_text += text
                     yield text
                 elif content_block.type == "tool_use":
                     tool_uses.append(content_block)
@@ -292,6 +324,11 @@ class ChatOrchestrator:
             # If no tool calls, we're done
             if not tool_uses:
                 break
+            
+            # Flush current text to content_blocks before processing tools
+            if current_text.strip():
+                content_blocks.append({"type": "text", "text": current_text})
+                current_text = ""
             
             # Signal frontend to complete current text block before showing tools
             yield json.dumps({"type": "text_block_complete"})
@@ -332,12 +369,14 @@ class ChatOrchestrator:
                     tool_result,
                 )
 
-                # Save tool call with result for persistence
-                tool_calls_made.append({
+                # Add tool_use block with result to content_blocks
+                content_blocks.append({
+                    "type": "tool_use",
+                    "id": tool_id,
                     "name": tool_name,
                     "input": tool_input,
-                    "id": tool_id,
                     "result": tool_result,
+                    "status": "complete",
                 })
 
                 # Send tool result for frontend
@@ -363,16 +402,24 @@ class ChatOrchestrator:
             response = self.client.messages.create(
                 model="claude-opus-4-5",
                 max_tokens=4096,
-                system=SYSTEM_PROMPT,
+                system=system_prompt,
                 tools=get_tools(),
                 messages=messages,
             )
 
-        # Save conversation
+        # Flush any remaining text to content_blocks
+        if current_text.strip():
+            content_blocks.append({"type": "text", "text": current_text})
+        
+        # Save conversation (user message was already saved at the start)
         is_first_message = len(history) == 0
-        await self._save_messages(
-            user_message, assistant_message, tool_calls_made if tool_calls_made else None
-        )
+        
+        # Debug: log content_blocks order
+        logger.info("[Orchestrator] Saving content_blocks: %s", 
+                    [(b.get("type"), b.get("name") if b.get("type") == "tool_use" else b.get("text", "")[:50]) 
+                     for b in content_blocks])
+        
+        await self._save_assistant_message(content_blocks)
 
         # Update conversation title if first message
         if is_first_message:
@@ -394,9 +441,10 @@ class ChatOrchestrator:
     async def _load_history(self, limit: int = 20) -> list[dict[str, Any]]:
         """Load recent chat history from the current conversation.
         
-        Reconstructs proper Claude message format including tool calls:
-        - Assistant messages with tool_use blocks
-        - User messages with tool_result blocks
+        Reconstructs proper Claude message format:
+        - User messages with text content
+        - Assistant messages with text + tool_use blocks
+        - User messages with tool_result blocks (after tool_use)
         """
         if not self.conversation_id:
             return []
@@ -412,70 +460,125 @@ class ChatOrchestrator:
 
             history: list[dict[str, Any]] = []
             for msg in reversed(messages):
+                # Get content blocks (new format or convert from legacy)
+                blocks = msg.content_blocks if msg.content_blocks else msg._legacy_to_blocks()
+                
                 if msg.role == "user":
-                    history.append({"role": "user", "content": msg.content})
+                    # User messages: extract text content
+                    text_content = ""
+                    for block in blocks:
+                        if block.get("type") == "text":
+                            text_content += block.get("text", "")
+                    if text_content:
+                        history.append({"role": "user", "content": text_content})
+                
                 elif msg.role == "assistant":
-                    # Check if this assistant message had tool calls
-                    if msg.tool_calls and len(msg.tool_calls) > 0:
-                        # Build content blocks: text (if any) + tool_use blocks
-                        content_blocks: list[dict[str, Any]] = []
+                    # Check if there are tool_use blocks
+                    tool_uses = [b for b in blocks if b.get("type") == "tool_use"]
+                    
+                    if tool_uses:
+                        # Need to reconstruct the conversation properly:
+                        # 1. assistant: [pre-tool text + tool_use]
+                        # 2. user: [tool_result]
+                        # 3. assistant: [post-tool text] (if any)
                         
-                        if msg.content and msg.content.strip():
-                            content_blocks.append({"type": "text", "text": msg.content})
-                        
-                        for tc in msg.tool_calls:
-                            content_blocks.append({
-                                "type": "tool_use",
-                                "id": tc.get("id", f"tool_{len(content_blocks)}"),
-                                "name": tc.get("name", "unknown"),
-                                "input": tc.get("input", {}),
-                            })
-                        
-                        history.append({"role": "assistant", "content": content_blocks})
-                        
-                        # Add corresponding tool_result in a user message
+                        # Collect blocks before and after tool use
+                        pre_tool_text: list[str] = []
+                        post_tool_text: list[str] = []
+                        current_tool_uses: list[dict[str, Any]] = []
                         tool_results: list[dict[str, Any]] = []
-                        for tc in msg.tool_calls:
-                            tool_results.append({
-                                "type": "tool_result",
-                                "tool_use_id": tc.get("id", f"tool_{len(tool_results)}"),
-                                "content": json.dumps(tc.get("result", {})),
-                            })
-                        history.append({"role": "user", "content": tool_results})
+                        seen_tool = False
+                        
+                        for block in blocks:
+                            if block.get("type") == "text":
+                                text = block.get("text", "").strip()
+                                if text:
+                                    if not seen_tool:
+                                        pre_tool_text.append(text)
+                                    else:
+                                        post_tool_text.append(text)
+                            elif block.get("type") == "tool_use":
+                                seen_tool = True
+                                tool_id = block.get("id", f"tool_{len(current_tool_uses)}")
+                                current_tool_uses.append({
+                                    "type": "tool_use",
+                                    "id": tool_id,
+                                    "name": block.get("name", "unknown"),
+                                    "input": block.get("input", {}),
+                                })
+                                tool_results.append({
+                                    "type": "tool_result",
+                                    "tool_use_id": tool_id,
+                                    "content": json.dumps(block.get("result", {})),
+                                })
+                        
+                        # Build assistant message with pre-tool text + tool_use
+                        claude_blocks: list[dict[str, Any]] = []
+                        for text in pre_tool_text:
+                            claude_blocks.append({"type": "text", "text": text})
+                        claude_blocks.extend(current_tool_uses)
+                        
+                        if claude_blocks:
+                            history.append({"role": "assistant", "content": claude_blocks})
+                        
+                        # Add tool_result as user message
+                        if tool_results:
+                            history.append({"role": "user", "content": tool_results})
+                        
+                        # Add post-tool text as assistant continuation
+                        # Must have an assistant message after tool_result to avoid consecutive user messages
+                        if post_tool_text:
+                            history.append({"role": "assistant", "content": " ".join(post_tool_text)})
+                        else:
+                            # Minimal placeholder to prevent consecutive user messages
+                            history.append({"role": "assistant", "content": "I've processed the tool results."})
                     else:
-                        # Simple text response
-                        history.append({"role": "assistant", "content": msg.content})
+                        # Simple text response - extract text from blocks
+                        text_content = ""
+                        for block in blocks:
+                            if block.get("type") == "text":
+                                text_content += block.get("text", "")
+                        if text_content:
+                            history.append({"role": "assistant", "content": text_content})
             
             return history
 
-    async def _save_messages(
-        self,
-        user_msg: str,
-        assistant_msg: str,
-        tool_calls: list[dict[str, Any]] | None = None,
-    ) -> None:
-        """Save conversation to database."""
+    async def _save_user_message(self, user_msg: str) -> None:
+        """Save user message to database immediately."""
         conv_uuid = UUID(self.conversation_id) if self.conversation_id else None
 
         async with get_session() as session:
-            # Save user message
             session.add(
                 ChatMessage(
                     conversation_id=conv_uuid,
                     user_id=UUID(self.user_id),
                     role="user",
-                    content=user_msg,
+                    content_blocks=[{"type": "text", "text": user_msg}],
                 )
             )
 
-            # Save assistant message
+            # Update conversation's updated_at
+            if conv_uuid:
+                await session.execute(
+                    update(Conversation)
+                    .where(Conversation.id == conv_uuid)
+                    .values(updated_at=datetime.utcnow())
+                )
+
+            await session.commit()
+            logger.info("[Orchestrator] Saved user message to conversation %s", self.conversation_id)
+
+    async def _save_assistant_message(self, assistant_blocks: list[dict[str, Any]]) -> None:
+        """Save assistant message to database."""
+        conv_uuid = UUID(self.conversation_id) if self.conversation_id else None
+
+        async with get_session() as session:
             session.add(
                 ChatMessage(
                     conversation_id=conv_uuid,
                     user_id=UUID(self.user_id),
                     role="assistant",
-                    content=assistant_msg,
-                    tool_calls=tool_calls,
+                    content_blocks=assistant_blocks,
                 )
             )
 

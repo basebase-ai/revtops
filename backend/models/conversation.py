@@ -50,8 +50,8 @@ class Conversation(Base):
             "user_id": str(self.user_id),
             "title": self.title,
             "summary": self.summary,
-            "created_at": self.created_at.isoformat() if self.created_at else None,
-            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+            "created_at": f"{self.created_at.isoformat()}Z" if self.created_at else None,
+            "updated_at": f"{self.updated_at.isoformat()}Z" if self.updated_at else None,
         }
 
 

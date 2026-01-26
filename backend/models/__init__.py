@@ -1,5 +1,5 @@
 """Database models package."""
-from models.database import Base, get_session, init_db
+from models.database import Base, get_session, init_db, close_db, get_pool_status, get_engine
 from models.user import User
 from models.organization import Organization
 from models.deal import Deal
@@ -10,6 +10,8 @@ from models.artifact import Artifact
 from models.conversation import Conversation
 from models.chat_message import ChatMessage
 from models.integration import Integration
+from models.crm_operation import CrmOperation
+from models.agent_task import AgentTask
 
 __all__ = [
     "Base",
@@ -25,4 +27,6 @@ __all__ = [
     "Conversation",
     "ChatMessage",
     "Integration",
+    "CrmOperation",
+    "AgentTask",
 ]

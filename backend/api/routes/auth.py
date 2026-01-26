@@ -197,6 +197,7 @@ class OrganizationResponse(BaseModel):
     id: str
     name: str
     email_domain: Optional[str]
+    logo_url: Optional[str] = None
 
 
 class SyncUserRequest(BaseModel):
@@ -209,6 +210,14 @@ class SyncUserRequest(BaseModel):
     organization_id: Optional[str] = None
 
 
+class SyncOrganizationData(BaseModel):
+    """Organization data included in sync response."""
+
+    id: str
+    name: str
+    logo_url: Optional[str] = None
+
+
 class SyncUserResponse(BaseModel):
     """Response model for synced user."""
 
@@ -217,6 +226,7 @@ class SyncUserResponse(BaseModel):
     name: Optional[str]
     avatar_url: Optional[str]
     organization_id: Optional[str]
+    organization: Optional[SyncOrganizationData] = None
     status: str  # 'waitlist', 'invited', 'active'
     roles: list[str]  # Global roles like ['global_admin']
 
@@ -241,34 +251,54 @@ async def sync_user(request: SyncUserRequest) -> SyncUserResponse:
             raise HTTPException(status_code=400, detail="Invalid organization ID")
 
     async with get_session() as session:
-        # Check if user already exists
+        # Check if user already exists by ID
         existing = await session.get(User, user_uuid)
+        
+        # Also check by email (handles waitlist users who have a different DB ID than Supabase ID)
+        # This happens when someone joins waitlist (creates user with auto-UUID) then later signs in via OAuth
+        if not existing:
+            result = await session.execute(
+                select(User).where(User.email == request.email)
+            )
+            existing = result.scalar_one_or_none()
+        
         if existing:
-            needs_commit = False
+            # Always update last_login on sync (user just logged in)
+            existing.last_login = datetime.utcnow()
             
             # Update organization if provided and different
             if org_uuid and existing.organization_id != org_uuid:
                 existing.organization_id = org_uuid
-                needs_commit = True
             
-            # If user was invited, upgrade to active on signin
-            if existing.status == "invited":
+            # If user was invited or a CRM stub, upgrade to active on signin
+            if existing.status in ("invited", "crm_only"):
                 existing.status = "active"
-                needs_commit = True
             
             # Update avatar_url if a new one is provided (don't overwrite with null)
             if request.avatar_url and existing.avatar_url != request.avatar_url:
                 existing.avatar_url = request.avatar_url
-                needs_commit = True
             
             # Update name if provided and different
             if request.name and existing.name != request.name:
                 existing.name = request.name
-                needs_commit = True
             
-            if needs_commit:
-                await session.commit()
-                await session.refresh(existing)
+            # Update email if user had a placeholder email
+            if existing.email.endswith("@placeholder.local") and request.email:
+                existing.email = request.email
+            
+            await session.commit()
+            await session.refresh(existing)
+            
+            # Load organization data if user has one
+            org_data: Optional[SyncOrganizationData] = None
+            if existing.organization_id:
+                org = await session.get(Organization, existing.organization_id)
+                if org:
+                    org_data = SyncOrganizationData(
+                        id=str(org.id),
+                        name=org.name,
+                        logo_url=org.logo_url,
+                    )
             
             return SyncUserResponse(
                 id=str(existing.id),
@@ -276,6 +306,7 @@ async def sync_user(request: SyncUserRequest) -> SyncUserResponse:
                 name=existing.name,
                 avatar_url=existing.avatar_url,
                 organization_id=str(existing.organization_id) if existing.organization_id else None,
+                organization=org_data,
                 status=existing.status,
                 roles=existing.roles or [],
             )
@@ -300,10 +331,18 @@ async def sync_user(request: SyncUserRequest) -> SyncUserResponse:
                     organization_id=existing_org.id,
                     status="active",
                     role="member",
+                    last_login=datetime.utcnow(),
                 )
                 session.add(new_user)
                 await session.commit()
                 await session.refresh(new_user)
+                
+                # Include organization data for new user
+                org_data = SyncOrganizationData(
+                    id=str(existing_org.id),
+                    name=existing_org.name,
+                    logo_url=existing_org.logo_url,
+                )
                 
                 return SyncUserResponse(
                     id=str(new_user.id),
@@ -311,6 +350,7 @@ async def sync_user(request: SyncUserRequest) -> SyncUserResponse:
                     name=new_user.name,
                     avatar_url=new_user.avatar_url,
                     organization_id=str(new_user.organization_id),
+                    organization=org_data,
                     status=new_user.status,
                     roles=new_user.roles or [],
                 )
@@ -341,6 +381,7 @@ async def get_organization_by_domain(email_domain: str) -> OrganizationResponse:
             id=str(org.id),
             name=org.name,
             email_domain=org.email_domain,
+            logo_url=org.logo_url,
         )
 
 
@@ -363,6 +404,7 @@ async def create_organization(request: CreateOrganizationRequest) -> Organizatio
                 id=str(existing.id),
                 name=existing.name,
                 email_domain=existing.email_domain,
+                logo_url=existing.logo_url,
             )
         
         # Check if organization exists for this email domain (different browser scenario)
@@ -375,6 +417,7 @@ async def create_organization(request: CreateOrganizationRequest) -> Organizatio
                 id=str(existing_by_domain.id),
                 name=existing_by_domain.name,
                 email_domain=existing_by_domain.email_domain,
+                logo_url=existing_by_domain.logo_url,
             )
 
         # Create new organization
@@ -391,6 +434,121 @@ async def create_organization(request: CreateOrganizationRequest) -> Organizatio
             id=str(new_org.id),
             name=new_org.name,
             email_domain=new_org.email_domain,
+            logo_url=new_org.logo_url,
+        )
+
+
+class TeamMemberResponse(BaseModel):
+    """Response model for a team member."""
+
+    id: str
+    name: Optional[str]
+    email: str
+    role: Optional[str]
+    avatar_url: Optional[str]
+
+
+class TeamMembersListResponse(BaseModel):
+    """Response model for list of team members."""
+
+    members: list[TeamMemberResponse]
+
+
+@router.get("/organizations/{org_id}/members", response_model=TeamMembersListResponse)
+async def get_organization_members(
+    org_id: str,
+    user_id: Optional[str] = None,
+) -> TeamMembersListResponse:
+    """Get all team members for an organization.
+    
+    Only accessible by members of that organization.
+    """
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        org_uuid = UUID(org_id)
+        user_uuid = UUID(user_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid ID format")
+
+    async with get_session() as session:
+        # Verify requesting user belongs to this organization
+        requesting_user = await session.get(User, user_uuid)
+        if not requesting_user or requesting_user.organization_id != org_uuid:
+            raise HTTPException(status_code=403, detail="Not authorized to view this organization's members")
+
+        # Fetch all users in the organization
+        result = await session.execute(
+            select(User).where(User.organization_id == org_uuid)
+        )
+        users = result.scalars().all()
+
+        return TeamMembersListResponse(
+            members=[
+                TeamMemberResponse(
+                    id=str(u.id),
+                    name=u.name,
+                    email=u.email,
+                    role=u.role,
+                    avatar_url=u.avatar_url,
+                )
+                for u in users
+            ]
+        )
+
+
+class UpdateOrganizationRequest(BaseModel):
+    """Request model for updating organization settings."""
+
+    name: Optional[str] = None
+    logo_url: Optional[str] = None
+
+
+@router.patch("/organizations/{org_id}", response_model=OrganizationResponse)
+async def update_organization(
+    org_id: str,
+    request: UpdateOrganizationRequest,
+    user_id: Optional[str] = None,
+) -> OrganizationResponse:
+    """Update organization settings.
+    
+    Only accessible by admin members of that organization.
+    """
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        org_uuid = UUID(org_id)
+        user_uuid = UUID(user_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid ID format")
+
+    async with get_session() as session:
+        # Verify requesting user belongs to this organization
+        requesting_user = await session.get(User, user_uuid)
+        if not requesting_user or requesting_user.organization_id != org_uuid:
+            raise HTTPException(status_code=403, detail="Not authorized to update this organization")
+
+        # Fetch and update organization
+        org = await session.get(Organization, org_uuid)
+        if not org:
+            raise HTTPException(status_code=404, detail="Organization not found")
+
+        # Update fields if provided
+        if request.name is not None:
+            org.name = request.name
+        if request.logo_url is not None:
+            org.logo_url = request.logo_url
+
+        await session.commit()
+        await session.refresh(org)
+
+        return OrganizationResponse(
+            id=str(org.id),
+            name=org.name,
+            email_domain=org.email_domain,
+            logo_url=org.logo_url,
         )
 
 
@@ -813,9 +971,9 @@ async def list_integrations(
                 provider=integration.provider,
                 scope="organization",
                 is_active=integration.is_active,
-                last_sync_at=integration.last_sync_at.isoformat() if integration.last_sync_at else None,
+                last_sync_at=f"{integration.last_sync_at.isoformat()}Z" if integration.last_sync_at else None,
                 last_error=integration.last_error,
-                connected_at=integration.created_at.isoformat() if integration.created_at else None,
+                connected_at=f"{integration.created_at.isoformat()}Z" if integration.created_at else None,
                 connected_by=connected_by_name,
                 current_user_connected=True,  # Org-scoped is shared, so always "connected" for UI
                 team_connections=[],
@@ -857,9 +1015,9 @@ async def list_integrations(
                 provider=provider,
                 scope="user",
                 is_active=ref_integration.is_active if ref_integration else False,
-                last_sync_at=ref_integration.last_sync_at.isoformat() if ref_integration and ref_integration.last_sync_at else None,
+                last_sync_at=f"{ref_integration.last_sync_at.isoformat()}Z" if ref_integration and ref_integration.last_sync_at else None,
                 last_error=ref_integration.last_error if ref_integration else None,
-                connected_at=ref_integration.created_at.isoformat() if ref_integration and ref_integration.created_at else None,
+                connected_at=f"{ref_integration.created_at.isoformat()}Z" if ref_integration and ref_integration.created_at else None,
                 connected_by=None,
                 current_user_connected=current_user_integration is not None,
                 team_connections=team_connections,

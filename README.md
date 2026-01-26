@@ -2,9 +2,11 @@
 
 AI-powered revenue operations assistant that connects to HubSpot, Slack, Google Calendar (and Salesforce), normalizes data, and enables natural language querying and analysis through a chat interface.
 
+> **Note:** This repository contains the authenticated app experience only. The public-facing website (landing page, blog, waitlist) is now served from a separate repository at [www.revtops.com](https://www.revtops.com).
+
 ## Tech Stack
 
-- **Frontend**: React + TypeScript + Tailwind CSS + Vite + Zustand
+- **Frontend**: React + TypeScript + Tailwind CSS + Vite + React Query + Zustand
 - **Backend**: Python 3.11 + FastAPI + SQLAlchemy
 - **Database**: PostgreSQL 15 with JSONB support
 - **Cache**: Redis
@@ -64,11 +66,11 @@ alembic upgrade head
 **Backend:**
 
 ```bash
-cd backend
-python3 -m venv venv
-source venv/bin/activate  # or `venv\Scripts\activate` on Windows
-pip install -r requirements.txt
-uvicorn api.main:app --reload
+cd backend                        # Navigate into the backend directory
+python3 -m venv venv              # Create an isolated Python environment called "venv"
+source venv/bin/activate          # Activate the virtual environment (use `venv\Scripts\activate` on Windows)
+pip install -r requirements.txt   # Install all required Python packages listed in requirements.txt
+uvicorn api.main:app --reload     # Start the FastAPI server with auto-reload on code changes
 ```
 
 **Frontend:**
@@ -92,12 +94,96 @@ revtops/
 │   └── db/                # Database migrations and queries
 ├── frontend/
 │   └── src/
-│       ├── components/    # React components
-│       ├── hooks/         # Custom React hooks (WebSocket)
-│       ├── api/           # API client
+│       ├── components/    # React components (app views, auth, onboarding)
+│       ├── hooks/         # React Query hooks (server state) + WebSocket
+│       ├── api/           # API client utilities
 │       ├── lib/           # Supabase client, utilities
-│       └── store/         # Zustand state management
+│       └── store/         # Zustand store (UI/client state only)
 └── docker-compose.yml
+```
+
+## State Management
+
+We use **two separate systems** for state management to keep data fresh and avoid stale UI:
+
+### Server State → React Query (`src/hooks/`)
+
+**Use React Query for any data that comes from the backend API.**
+
+```typescript
+// ✅ Good: Use React Query hooks for server data
+const { data: teamMembers, isLoading } = useTeamMembers(orgId, userId);
+const { data: integrations } = useIntegrations(orgId, userId);
+
+// ✅ Good: Use mutations for updates (auto-invalidates cache)
+const updateOrg = useUpdateOrganization();
+await updateOrg.mutateAsync({ orgId, userId, name: 'New Name' });
+```
+
+**Benefits:**
+- Automatic caching with smart invalidation
+- Refetches on window focus (data stays fresh)
+- Loading/error states built-in
+- No manual syncing between components
+
+**Available hooks:**
+| Hook | Purpose |
+|------|---------|
+| `useTeamMembers(orgId, userId)` | Fetch organization members |
+| `useUpdateOrganization()` | Update org name/logo (mutation) |
+| `useIntegrations(orgId, userId)` | Fetch connected integrations |
+| `useInvalidateIntegrations()` | Force refetch after connect/disconnect |
+
+### Client State → Zustand (`src/store/`)
+
+**Use Zustand only for UI state that doesn't come from the server.**
+
+```typescript
+// ✅ Good: UI-only state in Zustand
+const sidebarCollapsed = useAppStore((s) => s.sidebarCollapsed);
+const currentView = useAppStore((s) => s.currentView);
+const messages = useAppStore((s) => s.messages); // Chat streaming state
+
+// ❌ Bad: Don't put server data in Zustand
+const integrations = useAppStore((s) => s.integrations); // NO! Use React Query
+```
+
+**What belongs in Zustand:**
+- `user` / `organization` - Auth session (set once on login)
+- `sidebarCollapsed` - UI preference
+- `currentView` / `currentChatId` - Navigation state
+- `messages` / `isThinking` - WebSocket streaming state
+- `recentChats` - Chat list (could be migrated to React Query)
+
+### Adding New Server Data
+
+When you need to fetch new data from the backend:
+
+1. **Create a hook in `src/hooks/`:**
+```typescript
+// src/hooks/useDeals.ts
+export function useDeals(orgId: string | null) {
+  return useQuery({
+    queryKey: ['deals', orgId],
+    queryFn: () => fetchDeals(orgId!),
+    enabled: Boolean(orgId),
+  });
+}
+```
+
+2. **Use it in components:**
+```typescript
+const { data: deals, isLoading } = useDeals(organization?.id ?? null);
+```
+
+3. **For mutations, invalidate related queries:**
+```typescript
+const createDeal = useMutation({
+  mutationFn: createDealApi,
+  onSuccess: () => {
+    queryClient.invalidateQueries({ queryKey: ['deals'] });
+  },
+});
 ```
 
 ## Nango Integration
@@ -147,6 +233,13 @@ We use [Nango](https://nango.dev) to handle all OAuth complexity:
 | `/api/chat/history` | GET | Get chat history |
 | `/ws/chat/{user_id}` | WebSocket | Chat connection |
 
+### Waitlist (used by public website)
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/waitlist` | POST | Submit waitlist application |
+| `/api/admin/waitlist` | GET | List waitlist entries (admin key required) |
+| `/api/admin/waitlist/{user_id}/invite` | POST | Invite user from waitlist |
+
 ## Environment Variables
 
 ### Backend
@@ -171,6 +264,7 @@ We use [Nango](https://nango.dev) to handle all OAuth complexity:
 | `VITE_SUPABASE_URL` | Supabase project URL |
 | `VITE_SUPABASE_ANON_KEY` | Supabase anonymous key |
 | `VITE_NANGO_PUBLIC_KEY` | Nango public key for frontend SDK |
+| `VITE_WWW_URL` | Public website URL for redirects (default: `https://www.revtops.com`) |
 
 ### Integration IDs (Optional - defaults provided)
 | Variable | Default | Description |
@@ -228,7 +322,7 @@ The frontend (`Chat.tsx`) has no tool logic—it just detects the `*Querying...*
 
 ## Features
 
-- **Google OAuth via Supabase**: Simple sign-in with Google accounts
+- **Google OAuth via Supabase**: Simple sign-in with Google accounts (work email required)
 - **Multi-Integration Support**: Connect HubSpot, Slack, Google Calendar, Salesforce
 - **Unified OAuth via Nango**: Secure, automatic token management for integrations
 - **Natural Language Queries**: Ask questions about your pipeline in plain English
@@ -236,6 +330,7 @@ The frontend (`Chat.tsx`) has no tool logic—it just detects the `*Querying...*
 - **Multiple Conversations**: Create and switch between chat threads
 - **Data Normalization**: All CRM data normalized to a common schema
 - **Activity Tracking**: Slack messages and calendar events as activities
+- **Waitlist Integration**: Users join via public website, backend manages access control
 
 ## License
 
