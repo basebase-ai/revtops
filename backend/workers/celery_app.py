@@ -69,10 +69,10 @@ celery_app.conf.update(
 
 # Beat schedule for periodic tasks
 celery_app.conf.beat_schedule = {
-    # Nightly sync of all integrations (2 AM UTC = 6 PM PT)
+    # Scheduled sync - TEST: 2:45 PM PT = 22:45 UTC
     "nightly-sync-all-organizations": {
         "task": "workers.tasks.sync.sync_all_organizations",
-        "schedule": crontab(hour=2, minute=0),
+        "schedule": crontab(hour=22, minute=45),
         "options": {"queue": "sync"},
     },
     
