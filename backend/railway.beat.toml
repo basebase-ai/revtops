@@ -1,8 +1,0 @@
-[build]
-builder = "dockerfile"
-dockerfilePath = "Dockerfile"
-
-[deploy]
-startCommand = "python -m celery -A workers.celery_app beat --loglevel=info"
-restartPolicyType = "on_failure"
-restartPolicyMaxRetries = 5
