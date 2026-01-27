@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 # Note: Row-Level Security (RLS) handles organization filtering at the database level
 ALLOWED_TABLES: set[str] = {
     "deals", "accounts", "contacts", "activities", "integrations", "users", "organizations",
-    "pipelines", "pipeline_stages"
+    "pipelines", "pipeline_stages", "workflows", "workflow_runs"
 }
 
 
@@ -237,6 +237,115 @@ Do NOT use freeform values like "Technology" - always use the exact enum values.
                 "required": ["target_system", "record_type", "operation", "records"],
             },
         },
+        {
+            "name": "create_workflow",
+            "description": """Create a workflow automation that runs on a schedule or in response to events.
+
+Use this when users want to automate recurring tasks like:
+- "Every morning, send me a summary of stale deals to Slack"
+- "When a sync completes, analyze new data and email me insights"
+- "Daily at 9am, check for deals without activity in 30 days"
+
+## Trigger Types
+- **schedule**: Runs on a cron schedule (e.g., "0 9 * * *" = 9am daily)
+- **event**: Runs when an event occurs (e.g., "sync.completed")
+- **manual**: Only runs when triggered manually
+
+## Available Actions
+
+Each workflow has a list of steps that execute in sequence:
+
+1. **run_query**: Execute SQL to fetch data
+   - params: { "sql": "SELECT ... WHERE organization_id = :org_id ..." }
+   - IMPORTANT: Always include organization_id = :org_id in WHERE clause
+   
+2. **llm**: Process data with AI
+   - params: { "prompt": "Summarize this data: {step_0_output}" }
+   - Use {step_N_output} to reference output from step N
+   
+3. **send_slack**: Post to a Slack channel
+   - params: { "channel": "#channel-name", "message": "..." }
+   
+4. **send_system_email**: Send email from Revtops system
+   - params: { "to": "email@example.com", "subject": "...", "body": "..." }
+   
+5. **send_system_sms**: Send SMS (requires Twilio config)
+   - params: { "to": "+14155551234", "body": "..." }
+   
+6. **send_email_from**: Send from user's connected Gmail/Outlook
+   - params: { "provider": "gmail", "to": "...", "subject": "...", "body": "..." }
+   
+7. **sync**: Trigger a data sync
+   - params: { "provider": "hubspot" }
+
+## Example Workflow
+
+Name: "Daily Stale Deals Alert"
+Trigger: schedule, cron "0 9 * * 1-5" (weekdays at 9am)
+Steps:
+1. run_query: Find deals without activity in 30 days
+2. llm: Summarize and suggest actions
+3. send_slack: Post to #sales-alerts
+
+The workflow is saved and will run automatically. Users can view/manage it in the Automations tab.""",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Human-readable name for the workflow",
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "Description of what the workflow does",
+                    },
+                    "trigger_type": {
+                        "type": "string",
+                        "enum": ["schedule", "event", "manual"],
+                        "description": "What triggers this workflow",
+                    },
+                    "trigger_config": {
+                        "type": "object",
+                        "description": "Trigger configuration. For schedule: {cron: '0 9 * * *'}. For event: {event: 'sync.completed'}",
+                    },
+                    "steps": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "action": {
+                                    "type": "string",
+                                    "enum": ["run_query", "llm", "send_slack", "send_system_email", "send_system_sms", "send_email_from", "sync"],
+                                },
+                                "params": {"type": "object"},
+                            },
+                            "required": ["action", "params"],
+                        },
+                        "description": "List of steps to execute in order",
+                    },
+                },
+                "required": ["name", "trigger_type", "trigger_config", "steps"],
+            },
+        },
+        {
+            "name": "trigger_workflow",
+            "description": """Manually trigger a workflow to test it or run it on-demand.
+
+Use this after creating a workflow to test that it works correctly.
+Returns the task_id which can be used to check status.
+
+The workflow runs asynchronously - results will appear in the Automations tab.""",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "workflow_id": {
+                        "type": "string",
+                        "description": "UUID of the workflow to trigger",
+                    },
+                },
+                "required": ["workflow_id"],
+            },
+        },
     ]
 
 
@@ -280,6 +389,16 @@ async def execute_tool(
     elif tool_name == "crm_write":
         result = await _crm_write(tool_input, organization_id, user_id)
         logger.info("[Tools] crm_write completed: %s", result.get("status"))
+        return result
+
+    elif tool_name == "create_workflow":
+        result = await _create_workflow(tool_input, organization_id, user_id)
+        logger.info("[Tools] create_workflow completed: %s", result)
+        return result
+
+    elif tool_name == "trigger_workflow":
+        result = await _trigger_workflow(tool_input, organization_id)
+        logger.info("[Tools] trigger_workflow completed: %s", result)
         return result
 
     else:
@@ -1193,3 +1312,155 @@ async def get_crm_operation_status(operation_id: str) -> dict[str, Any]:
             str(e)
         )
         return {"error": str(e)}
+
+
+async def _create_workflow(
+    params: dict[str, Any], organization_id: str, user_id: str
+) -> dict[str, Any]:
+    """
+    Create a new workflow automation.
+    
+    Args:
+        params: Workflow definition (name, trigger_type, trigger_config, steps)
+        organization_id: Organization UUID
+        user_id: User UUID (creator)
+        
+    Returns:
+        Created workflow details
+    """
+    from models.workflow import Workflow
+    
+    name = params.get("name", "").strip()
+    description = params.get("description", "")
+    trigger_type = params.get("trigger_type", "manual")
+    trigger_config = params.get("trigger_config", {})
+    steps = params.get("steps", [])
+    
+    # Validate inputs
+    if not name:
+        return {"error": "Workflow name is required"}
+    
+    if trigger_type not in ("schedule", "event", "manual"):
+        return {"error": f"Invalid trigger_type: {trigger_type}. Must be 'schedule', 'event', or 'manual'."}
+    
+    if trigger_type == "schedule" and not trigger_config.get("cron"):
+        return {"error": "Schedule triggers require a cron expression in trigger_config.cron"}
+    
+    if trigger_type == "event" and not trigger_config.get("event"):
+        return {"error": "Event triggers require an event type in trigger_config.event"}
+    
+    if not steps or not isinstance(steps, list):
+        return {"error": "Workflow must have at least one step"}
+    
+    # Validate cron expression if provided
+    if trigger_config.get("cron"):
+        try:
+            from croniter import croniter
+            croniter(trigger_config["cron"])
+        except Exception as e:
+            return {"error": f"Invalid cron expression: {e}"}
+    
+    # Validate steps
+    valid_actions = {"run_query", "llm", "send_slack", "send_system_email", "send_system_sms", "send_email_from", "sync", "query"}
+    for i, step in enumerate(steps):
+        if not isinstance(step, dict):
+            return {"error": f"Step {i+1} is not a valid object"}
+        
+        action = step.get("action")
+        if not action:
+            return {"error": f"Step {i+1} is missing 'action'"}
+        
+        if action not in valid_actions:
+            return {"error": f"Step {i+1} has invalid action '{action}'. Valid actions: {', '.join(valid_actions)}"}
+    
+    try:
+        async with get_session() as session:
+            workflow = Workflow(
+                organization_id=UUID(organization_id),
+                created_by_user_id=UUID(user_id),
+                name=name,
+                description=description or None,
+                trigger_type=trigger_type,
+                trigger_config=trigger_config,
+                steps=steps,
+                is_enabled=True,
+            )
+            session.add(workflow)
+            await session.commit()
+            await session.refresh(workflow)
+            
+            # Build trigger description
+            trigger_desc = ""
+            if trigger_type == "schedule":
+                trigger_desc = f"Scheduled with cron: {trigger_config.get('cron')}"
+            elif trigger_type == "event":
+                trigger_desc = f"Triggered by event: {trigger_config.get('event')}"
+            else:
+                trigger_desc = "Manual trigger only"
+            
+            return {
+                "success": True,
+                "workflow_id": str(workflow.id),
+                "name": name,
+                "trigger": trigger_desc,
+                "steps_count": len(steps),
+                "message": f"Workflow '{name}' created successfully. You can view and manage it in the Automations tab.",
+            }
+            
+    except Exception as e:
+        logger.error("[Tools._create_workflow] Failed: %s", str(e))
+        return {"error": f"Failed to create workflow: {str(e)}"}
+
+
+async def _trigger_workflow(
+    params: dict[str, Any], organization_id: str
+) -> dict[str, Any]:
+    """
+    Manually trigger a workflow execution.
+    
+    Args:
+        params: Contains workflow_id
+        organization_id: Organization UUID
+        
+    Returns:
+        Task ID and status
+    """
+    from models.workflow import Workflow
+    
+    workflow_id = params.get("workflow_id", "").strip()
+    
+    if not workflow_id:
+        return {"error": "workflow_id is required"}
+    
+    try:
+        # Verify workflow exists and belongs to org
+        async with get_session() as session:
+            result = await session.execute(
+                select(Workflow).where(
+                    Workflow.id == UUID(workflow_id),
+                    Workflow.organization_id == UUID(organization_id),
+                )
+            )
+            workflow = result.scalar_one_or_none()
+            
+            if not workflow:
+                return {"error": f"Workflow {workflow_id} not found"}
+            
+            if not workflow.is_enabled:
+                return {"error": "Workflow is disabled. Enable it first in the Automations tab."}
+        
+        # Queue execution via Celery
+        from workers.tasks.workflows import execute_workflow
+        task = execute_workflow.delay(workflow_id, "manual")
+        
+        return {
+            "success": True,
+            "task_id": task.id,
+            "workflow_id": workflow_id,
+            "workflow_name": workflow.name,
+            "message": f"Workflow '{workflow.name}' triggered. Check the Automations tab for results.",
+        }
+        
+    except Exception as e:
+        logger.error("[Tools._trigger_workflow] Failed: %s", str(e))
+        return {"error": f"Failed to trigger workflow: {str(e)}"}

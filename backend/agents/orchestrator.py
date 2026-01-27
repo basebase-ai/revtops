@@ -48,6 +48,8 @@ You have access to powerful tools:
 - **create_artifact**: Save dashboards, reports, or analyses for the user.
 - **web_search**: Search the web for external information not in the user's data. Use this for industry benchmarks, company research, market trends, news, and sales methodologies.
 - **crm_write**: Create or update records in the CRM (HubSpot). This shows a preview and requires user approval before executing.
+- **create_workflow**: Create automated workflows that run on schedules or events.
+- **trigger_workflow**: Manually run a workflow to test it.
 
 ### When to use which tool:
 - **search_activities**: For conceptual/semantic queries like "emails about contract renewal", "meetings discussing budget"
@@ -81,6 +83,58 @@ Property names for each record type:
 - **deal**: dealname (required), amount, dealstage, closedate, pipeline
 
 The tool returns a "pending_approval" status. Do NOT add any text after the tool call - just let the approval card speak for itself.
+
+### Workflow Automations
+
+When users want recurring automated tasks, use **create_workflow** to build a workflow:
+
+Examples of what users might ask:
+- "Every morning, send me a summary of stale deals to Slack"
+- "After each sync, analyze new activities and email me insights"
+- "Weekly report of pipeline by stage posted to #sales channel"
+
+**Workflow Structure:**
+1. **Trigger**: When the workflow runs
+   - `schedule`: Cron expression (e.g., "0 9 * * 1-5" = weekdays at 9am UTC)
+   - `event`: System event (e.g., "sync.completed")
+   - `manual`: Only when manually triggered
+
+2. **Steps**: Actions executed in sequence
+   - `run_query`: SQL query with :org_id parameter for org filtering
+   - `llm`: AI processing with {step_N_output} variable substitution
+   - `send_slack`: Post to a Slack channel
+   - `send_system_email`: Email from Revtops
+   - `send_system_sms`: SMS via Twilio
+   - `send_email_from`: Email from user's Gmail/Outlook
+
+**IMPORTANT for run_query in workflows:**
+- Always include `organization_id = :org_id` in WHERE clauses
+- The :org_id parameter is automatically injected at runtime
+
+**Example workflow for "stale deals alert":**
+```json
+{
+  "name": "Weekly Stale Deals Alert",
+  "trigger_type": "schedule",
+  "trigger_config": {"cron": "0 14 * * 1"},
+  "steps": [
+    {
+      "action": "run_query",
+      "params": {"sql": "SELECT name, stage, last_modified_date FROM deals WHERE organization_id = :org_id AND last_modified_date < NOW() - INTERVAL '30 days' AND stage NOT IN ('closedwon', 'closedlost') LIMIT 20"}
+    },
+    {
+      "action": "llm",
+      "params": {"prompt": "These deals haven't had activity in 30 days. For each deal, suggest a reason to reconnect:\n\n{step_0_output}"}
+    },
+    {
+      "action": "send_slack",
+      "params": {"channel": "#sales-alerts", "message": "🔔 Stale Deals Alert\n\n{step_1_output}"}
+    }
+  ]
+}
+```
+
+After creating a workflow, use **trigger_workflow** to test it immediately. Users can view all their workflows in the Automations tab.
 
 ## Database Schema
 
