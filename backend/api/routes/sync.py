@@ -23,6 +23,7 @@ from connectors.microsoft_calendar import MicrosoftCalendarConnector
 from connectors.microsoft_mail import MicrosoftMailConnector
 from connectors.salesforce import SalesforceConnector
 from connectors.slack import SlackConnector
+from connectors.zoom import ZoomConnector
 from models.database import get_session
 from models.integration import Integration
 from models.organization import Organization
@@ -38,6 +39,7 @@ CONNECTORS = {
     "gmail": GmailConnector,
     "microsoft_calendar": MicrosoftCalendarConnector,
     "microsoft_mail": MicrosoftMailConnector,
+    "zoom": ZoomConnector,
 }
 
 # Simple in-memory sync status tracking (use Redis in production)
