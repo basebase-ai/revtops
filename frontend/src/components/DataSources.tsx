@@ -10,7 +10,7 @@
  * Uses React Query for server state (integrations list).
  */
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import Nango from '@nangohq/frontend';
 import type { IconType } from 'react-icons';
 import {
@@ -20,10 +20,31 @@ import {
   SiGooglecalendar,
   SiGmail,
 } from 'react-icons/si';
-import { HiOutlineCalendar, HiOutlineMail, HiGlobeAlt, HiUserGroup, HiExclamation } from 'react-icons/hi';
+import { HiOutlineCalendar, HiOutlineMail, HiGlobeAlt, HiUserGroup, HiExclamation, HiDeviceMobile } from 'react-icons/hi';
 import { API_BASE } from '../lib/api';
 import { useAppStore } from '../store';
 import { useIntegrations, useInvalidateIntegrations, type Integration } from '../hooks';
+
+// Detect if user is on a mobile device
+function useIsMobile(): boolean {
+  const [isMobile, setIsMobile] = useState(false);
+  
+  useEffect(() => {
+    const checkMobile = (): void => {
+      const userAgent = navigator.userAgent || navigator.vendor;
+      const mobileRegex = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i;
+      const isMobileDevice = mobileRegex.test(userAgent);
+      const isSmallScreen = window.innerWidth < 768;
+      setIsMobile(isMobileDevice || isSmallScreen);
+    };
+    
+    checkMobile();
+    window.addEventListener('resize', checkMobile);
+    return () => window.removeEventListener('resize', checkMobile);
+  }, []);
+  
+  return isMobile;
+}
 
 // Icon map for integration providers
 const ICON_MAP: Record<string, IconType> = {
@@ -62,6 +83,9 @@ interface DisplayIntegration extends Integration {
 export function DataSources(): JSX.Element {
   // Get user/org from Zustand (auth state)
   const { user, organization } = useAppStore();
+  
+  // Check if on mobile device
+  const isMobile = useIsMobile();
 
   // React Query: Fetch integrations with automatic caching and refetch
   const { 
@@ -349,25 +373,32 @@ export function DataSources(): JSX.Element {
     const badge = badgeConfig[state];
 
     // Button config by state
-    const getButtonConfig = (): { text: string; className: string; action: () => void } => {
+    const getButtonConfig = (): { text: string; className: string; action: () => void; disabled: boolean } => {
       if (state === 'connected') {
         return {
           text: isSyncing ? 'Syncing...' : 'Sync',
           className: 'px-4 py-2 text-sm font-medium text-surface-200 bg-surface-800 hover:bg-surface-700 disabled:opacity-50 rounded-lg transition-colors',
           action: () => void handleSync(integration.provider),
+          disabled: isSyncing,
         };
       }
       if (state === 'action-required') {
         return {
-          text: isConnecting ? 'Connecting...' : `Connect Your ${integration.name}`,
-          className: 'px-4 py-2 text-sm font-medium text-amber-400 border border-amber-500/30 hover:bg-amber-500/10 disabled:opacity-50 rounded-lg transition-colors',
-          action: () => void handleConnect(integration.provider, integration.scope),
+          text: isMobile ? 'Use desktop to connect' : (isConnecting ? 'Connecting...' : `Connect Your ${integration.name}`),
+          className: isMobile 
+            ? 'px-4 py-2 text-sm font-medium text-surface-500 border border-surface-700 rounded-lg cursor-not-allowed'
+            : 'px-4 py-2 text-sm font-medium text-amber-400 border border-amber-500/30 hover:bg-amber-500/10 disabled:opacity-50 rounded-lg transition-colors',
+          action: () => { if (!isMobile) void handleConnect(integration.provider, integration.scope); },
+          disabled: isMobile || isConnecting,
         };
       }
       return {
-        text: isConnecting ? 'Connecting...' : (integration.scope === 'user' ? 'Connect your account' : 'Connect'),
-        className: 'px-4 py-2 text-sm font-medium text-primary-400 border border-primary-500/30 hover:bg-primary-500/10 disabled:opacity-50 rounded-lg transition-colors',
-        action: () => void handleConnect(integration.provider, integration.scope),
+        text: isMobile ? 'Use desktop to connect' : (isConnecting ? 'Connecting...' : (integration.scope === 'user' ? 'Connect your account' : 'Connect')),
+        className: isMobile
+          ? 'px-4 py-2 text-sm font-medium text-surface-500 border border-surface-700 rounded-lg cursor-not-allowed'
+          : 'px-4 py-2 text-sm font-medium text-primary-400 border border-primary-500/30 hover:bg-primary-500/10 disabled:opacity-50 rounded-lg transition-colors',
+        action: () => { if (!isMobile) void handleConnect(integration.provider, integration.scope); },
+        disabled: isMobile || isConnecting,
       };
     };
     const buttonConfig = getButtonConfig();
@@ -440,10 +471,10 @@ export function DataSources(): JSX.Element {
           <div className="flex items-center gap-2">
             <button
               onClick={buttonConfig.action}
-              disabled={isConnecting || isSyncing}
+              disabled={buttonConfig.disabled}
               className={`${buttonConfig.className} flex items-center gap-2`}
             >
-              {(isConnecting || isSyncing) && (
+              {(isConnecting || isSyncing) && !isMobile && (
                 <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
                   <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                   <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
@@ -487,6 +518,21 @@ export function DataSources(): JSX.Element {
       </header>
 
       <div className="max-w-4xl mx-auto px-8 py-8 space-y-10">
+        {/* Mobile notice banner */}
+        {isMobile && (
+          <div className="bg-surface-800/50 border border-surface-700 rounded-xl p-4 flex items-start gap-3">
+            <div className="flex-shrink-0 w-10 h-10 rounded-lg bg-primary-500/20 flex items-center justify-center">
+              <HiDeviceMobile className="w-5 h-5 text-primary-400" />
+            </div>
+            <div>
+              <h3 className="font-medium text-surface-100">Connect from your computer</h3>
+              <p className="text-sm text-surface-400 mt-1">
+                For the best experience connecting data sources, please visit this page from a desktop or laptop computer. 
+                OAuth sign-in works more reliably on larger screens.
+              </p>
+            </div>
+          </div>
+        )}
         {/* Action Required - User-scoped integrations where current user hasn't connected */}
         {actionRequiredIntegrations.length > 0 && (
           <section>
