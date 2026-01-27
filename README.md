@@ -34,6 +34,7 @@ AI-powered revenue operations assistant that connects to HubSpot, Slack, Google 
 ```bash
 cp env.example .env
 # Edit .env with your credentials
+# Should all be in the .env or in Slack
 ```
 
 2. **Configure Nango integrations:**
