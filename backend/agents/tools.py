@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 # Tables that are allowed to be queried (synced data only - no internal admin tables)
 # Note: Row-Level Security (RLS) handles organization filtering at the database level
 ALLOWED_TABLES: set[str] = {
-    "deals", "accounts", "contacts", "activities", "integrations", "users", "organizations",
+    "deals", "accounts", "contacts", "activities", "meetings", "integrations", "users", "organizations",
     "pipelines", "pipeline_stages", "workflows", "workflow_runs"
 }
 
@@ -49,26 +49,29 @@ Use this for any data analysis: filtering, joins, aggregations, date comparisons
 The query is automatically scoped to the user's organization for multi-tenant tables.
 
 Available tables:
-- deals: Sales opportunities (name, amount, stage, close_date, owner_id, account_id, pipeline_id, probability, custom_fields)
-- pipelines: Sales pipelines/processes (name, display_order, is_default, source_system)
-- pipeline_stages: Stages within pipelines (pipeline_id, name, display_order, probability, is_closed_won, is_closed_lost)
-- accounts: Companies/organizations in CRM - your customers/prospects (name, domain, industry, employee_count, annual_revenue, owner_id)
-- contacts: People at customer accounts (name, email, title, phone, account_id)
-- activities: Emails, meetings, calls, notes (type, subject, description, activity_date, source_system)
-- integrations: Connected data sources (provider, is_active, last_sync_at, last_error, scope, user_id)
-- users: Team members (email, name, role, avatar_url, salesforce_user_id)
-- organizations: The user's own company info (name, logo_url, created_at)
+- meetings: Canonical meeting entities - deduplicated across all sources (title, scheduled_start, participants, summary, action_items, key_topics)
+- deals: Sales opportunities (name, amount, stage, close_date, owner_id, account_id, pipeline_id)
+- accounts: Companies/customers (name, domain, industry, employee_count, annual_revenue)
+- contacts: People at accounts (name, email, title, phone, account_id)
+- activities: Raw activity records - query by TYPE not source (type, subject, description, activity_date, meeting_id)
+- pipelines: Sales pipelines (name, display_order, is_default)
+- pipeline_stages: Stages in pipelines (pipeline_id, name, probability, is_closed_won)
+- integrations: Connected data sources (provider, is_active, last_sync_at)
+- users: Team members (email, name, role)
+- organizations: User's company info (name, logo_url)
+
+IMPORTANT: Query activities by TYPE, not source_system:
+- type = 'email' for all emails
+- type = 'meeting' for calendar events
+- type = 'meeting_transcript' for transcripts
+- type = 'slack_message' for messages
 
 Examples:
-- SELECT * FROM deals WHERE stage = 'closedwon' LIMIT 10
+- SELECT title, scheduled_start, summary, action_items FROM meetings ORDER BY scheduled_start DESC LIMIT 10
+- SELECT * FROM meetings WHERE scheduled_start >= CURRENT_DATE AND scheduled_start < CURRENT_DATE + interval '7 days'
+- SELECT * FROM activities WHERE type = 'email' ORDER BY activity_date DESC LIMIT 20
 - SELECT stage, COUNT(*), SUM(amount) FROM deals GROUP BY stage
 - SELECT d.name, a.name as account FROM deals d LEFT JOIN accounts a ON d.account_id = a.id
-- SELECT * FROM deals WHERE close_date BETWEEN '2026-01-01' AND '2026-01-31'
-- SELECT p.name as pipeline, COUNT(*) as deal_count FROM deals d JOIN pipelines p ON d.pipeline_id = p.id GROUP BY p.name
-- SELECT p.name as pipeline, ps.name as stage, ps.probability FROM pipelines p JOIN pipeline_stages ps ON ps.pipeline_id = p.id ORDER BY p.display_order, ps.display_order
-- SELECT provider, last_sync_at, last_error FROM integrations WHERE is_active = true
-- SELECT name, email, role FROM users
-- SELECT name FROM organizations -- user's own company name
 
 IMPORTANT: Only SELECT queries are allowed. No INSERT, UPDATE, DELETE, DROP, etc.""",
             "input_schema": {
@@ -84,17 +87,18 @@ IMPORTANT: Only SELECT queries are allowed. No INSERT, UPDATE, DELETE, DROP, etc
         },
         {
             "name": "search_activities",
-            "description": """Semantic search across emails, meetings, slack messages, and other activities.
+            "description": """Semantic search across emails, meetings, messages, and other activities.
 
 Use this when the user wants to find activities by meaning/concept rather than exact text.
-This searches the content of emails, meeting subjects, slack messages, etc.
+This searches the content of emails, meeting transcripts, messages, etc.
 
 Examples:
 - "Find emails about pricing negotiations"
-- "Search for meetings discussing the Q4 roadmap"
+- "Search for meeting discussions about the Q4 roadmap"
 - "Look for communications about contract renewal"
 
-For exact text matching (e.g., emails from a specific domain), use run_sql_query instead.""",
+For exact text matching (e.g., emails from a specific domain), use run_sql_query instead.
+For meeting information (participants, schedule, summaries), query the meetings table directly.""",
             "input_schema": {
                 "type": "object",
                 "properties": {
@@ -105,12 +109,7 @@ For exact text matching (e.g., emails from a specific domain), use run_sql_query
                     "types": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Optional filter by activity type: 'email', 'meeting', 'call', etc.",
-                    },
-                    "sources": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Optional filter by source: 'gmail', 'microsoft_mail', 'google_calendar', 'microsoft_calendar', 'slack'",
+                        "description": "Filter by activity type: 'email', 'meeting', 'meeting_transcript', 'slack_message', 'call'",
                     },
                     "limit": {
                         "type": "integer",
@@ -534,7 +533,6 @@ async def _search_activities(
         return {"error": "No search query provided"}
     
     activity_types = params.get("types")
-    source_systems = params.get("sources")
     limit = min(params.get("limit", 10), 50)  # Cap at 50
     
     try:
@@ -545,7 +543,6 @@ async def _search_activities(
             query_text=query,
             limit=limit,
             activity_types=activity_types,
-            source_systems=source_systems,
         )
         
         if not results:

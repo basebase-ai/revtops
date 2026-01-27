@@ -16,6 +16,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
 
+from connectors.fireflies import FirefliesConnector
 from connectors.gmail import GmailConnector
 from connectors.google_calendar import GoogleCalendarConnector
 from connectors.hubspot import HubSpotConnector
@@ -34,6 +35,7 @@ CONNECTORS = {
     "salesforce": SalesforceConnector,
     "hubspot": HubSpotConnector,
     "slack": SlackConnector,
+    "fireflies": FirefliesConnector,
     "google_calendar": GoogleCalendarConnector,
     "gmail": GmailConnector,
     "microsoft_calendar": MicrosoftCalendarConnector,
@@ -243,9 +245,11 @@ async def sync_integration_data(organization_id: str, provider: str) -> None:
         return
 
     try:
+        print(f"[Sync] Starting sync for {provider} in org {organization_id}")
         connector = connector_class(organization_id)
         counts = await connector.sync_all()
         await connector.update_last_sync()
+        print(f"[Sync] Completed sync for {provider}: {counts}")
 
         _sync_status[status_key]["status"] = "completed"
         _sync_status[status_key]["completed_at"] = datetime.utcnow()
@@ -279,7 +283,12 @@ async def sync_integration_data(organization_id: str, provider: str) -> None:
             print(f"Warning: Event emission failed: {event_err}")
 
     except Exception as e:
+        import traceback
         error_msg = str(e)
+        full_traceback = traceback.format_exc()
+        print(f"[Sync] ERROR syncing {provider} for org {organization_id}: {error_msg}")
+        print(f"[Sync] Traceback:\n{full_traceback}")
+        
         _sync_status[status_key]["status"] = "failed"
         _sync_status[status_key]["error"] = error_msg
         _sync_status[status_key]["completed_at"] = datetime.utcnow()
@@ -288,8 +297,8 @@ async def sync_integration_data(organization_id: str, provider: str) -> None:
         try:
             connector = connector_class(organization_id)
             await connector.record_error(error_msg)
-        except Exception:
-            pass  # Ignore errors recording the error
+        except Exception as record_err:
+            print(f"[Sync] Failed to record error to DB: {record_err}")
 
         # Emit sync failed event
         try:

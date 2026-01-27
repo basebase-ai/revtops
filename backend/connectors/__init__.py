@@ -1,5 +1,6 @@
 """Data connectors package."""
 from connectors.base import BaseConnector
+from connectors.fireflies import FirefliesConnector
 from connectors.gmail import GmailConnector
 from connectors.google_calendar import GoogleCalendarConnector
 from connectors.hubspot import HubSpotConnector
@@ -10,6 +11,7 @@ from connectors.slack import SlackConnector
 
 __all__ = [
     "BaseConnector",
+    "FirefliesConnector",
     "GmailConnector",
     "GoogleCalendarConnector",
     "HubSpotConnector",
