@@ -150,14 +150,15 @@ export function DataSources(): JSX.Element {
         throw new Error('Failed to get session token');
       }
 
-      const data: { session_token: string } = await response.json();
+      const data: { session_token: string; connection_id: string } = await response.json();
+      const { session_token, connection_id } = data;
 
       // Initialize Nango and open connect UI in popup
       const nango = new Nango();
       
       nango.openConnectUI({
-        sessionToken: data.session_token,
-        onEvent: (event) => {
+        sessionToken: session_token,
+        onEvent: async (event) => {
           console.log('Nango event:', event);
           
           // Handle different possible event types from Nango
@@ -167,8 +168,30 @@ export function DataSources(): JSX.Element {
             eventType === 'connection-created' ||
             eventType === 'success'
           ) {
-            // Connection successful - invalidate cache to refetch integrations
-            console.log('Connection successful, invalidating integrations cache');
+            // Connection successful - confirm and create integration record
+            console.log('Connection successful, confirming integration');
+            try {
+              const confirmResponse = await fetch(`${API_BASE}/auth/integrations/confirm`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  provider,
+                  connection_id,
+                  organization_id: organizationId,
+                  user_id: scope === 'user' ? userId : undefined,
+                }),
+              });
+              
+              if (!confirmResponse.ok) {
+                console.error('Failed to confirm integration:', await confirmResponse.text());
+              } else {
+                console.log('Integration confirmed successfully');
+              }
+            } catch (confirmError) {
+              console.error('Error confirming integration:', confirmError);
+            }
+            
+            // Invalidate cache to refetch integrations
             invalidateIntegrations(organizationId);
             setConnectingProvider(null);
           } else if (eventType === 'close' || eventType === 'closed') {
