@@ -289,11 +289,16 @@ function WorkflowDetail({
                     {run.steps_completed && run.steps_completed.length > 0 && (
                       <div className="mt-2 text-xs text-surface-400">
                         {run.steps_completed.length} step{run.steps_completed.length !== 1 ? 's' : ''} completed
-                        {run.status === 'completed' && run.steps_completed[run.steps_completed.length - 1]?.result?.output && (
-                          <div className="mt-1 p-2 bg-surface-900 rounded text-surface-300 max-h-24 overflow-y-auto">
-                            {String(run.steps_completed[run.steps_completed.length - 1]?.result?.output ?? '').slice(0, 300)}
-                          </div>
-                        )}
+                        {run.status === 'completed' && (() => {
+                          const lastStep = run.steps_completed?.[run.steps_completed.length - 1];
+                          const output = lastStep?.result?.output;
+                          if (!output) return null;
+                          return (
+                            <div className="mt-1 p-2 bg-surface-900 rounded text-surface-300 max-h-24 overflow-y-auto">
+                              {String(output).slice(0, 300)}
+                            </div>
+                          );
+                        })()}
                       </div>
                     )}
                   </div>
