@@ -73,7 +73,7 @@ export interface ChatMessage {
   isStreaming?: boolean;
 }
 
-export type View = "home" | "chat" | "data-sources" | "search" | "admin";
+export type View = "home" | "chat" | "data-sources" | "search" | "automations" | "admin";
 
 // Per-conversation state
 export interface ConversationState {

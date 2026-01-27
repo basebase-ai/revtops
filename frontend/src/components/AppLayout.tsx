@@ -19,6 +19,7 @@ import { Home } from './Home';
 import { DataSources } from './DataSources';
 import { Search } from './Search';
 import { Chat } from './Chat';
+import { Automations } from './Automations';
 import { AdminPanel } from './AdminPanel';
 import { OrganizationPanel } from './OrganizationPanel';
 import { ProfilePanel } from './ProfilePanel';
@@ -370,6 +371,9 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
         )}
         {currentView === 'search' && (
           <Search organizationId={organization.id} />
+        )}
+        {currentView === 'automations' && (
+          <Automations />
         )}
         {currentView === 'admin' && (
           <AdminPanel />
