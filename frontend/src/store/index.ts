@@ -194,6 +194,15 @@ const AVAILABLE_INTEGRATIONS: IntegrationConfig[] = [
     scope: "organization",
   },
   {
+    id: "zoom",
+    provider: "zoom",
+    name: "Zoom",
+    description: "Meeting recordings and transcripts",
+    icon: "zoom",
+    color: "from-blue-500 to-blue-600",
+    scope: "user",
+  },
+  {
     id: "google-calendar",
     provider: "google_calendar",
     name: "Google Calendar",

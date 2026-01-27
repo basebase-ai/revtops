@@ -411,6 +411,7 @@ async def get_available_integrations() -> AvailableIntegrationsResponse:
             {"id": "microsoft_calendar", "name": "Microsoft Calendar", "description": "Outlook calendar events and meetings"},
             {"id": "microsoft_mail", "name": "Microsoft Mail", "description": "Outlook emails and communications"},
             {"id": "salesforce", "name": "Salesforce", "description": "CRM - Opportunities, Accounts"},
+            {"id": "zoom", "name": "Zoom", "description": "Meeting recordings and transcripts"},
         ]
     )
 
@@ -1046,6 +1047,7 @@ async def run_initial_sync(organization_id: str, provider: str) -> None:
     from connectors.gmail import GmailConnector
     from connectors.microsoft_calendar import MicrosoftCalendarConnector
     from connectors.microsoft_mail import MicrosoftMailConnector
+    from connectors.zoom import ZoomConnector
 
     connectors = {
         "hubspot": HubSpotConnector,
@@ -1055,6 +1057,7 @@ async def run_initial_sync(organization_id: str, provider: str) -> None:
         "gmail": GmailConnector,
         "microsoft_calendar": MicrosoftCalendarConnector,
         "microsoft_mail": MicrosoftMailConnector,
+        "zoom": ZoomConnector,
     }
 
     connector_class = connectors.get(provider)

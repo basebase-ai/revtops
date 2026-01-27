@@ -15,6 +15,7 @@ import {
   SiSalesforce,
   SiHubspot,
   SiSlack,
+  SiZoom,
   SiGooglecalendar,
   SiGmail,
 } from 'react-icons/si';
@@ -27,6 +28,7 @@ const ICON_MAP: Record<string, IconType> = {
   hubspot: SiHubspot,
   salesforce: SiSalesforce,
   slack: SiSlack,
+  zoom: SiZoom,
   'google-calendar': SiGooglecalendar,
   google_calendar: SiGooglecalendar,
   gmail: SiGmail,
