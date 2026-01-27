@@ -24,6 +24,8 @@ AI-powered revenue operations assistant that connects to HubSpot, Slack, Google 
 - [Supabase project](https://supabase.com) with Google OAuth configured
 - [Nango account](https://app.nango.dev) with integrations configured
 - Anthropic API key
+- Python 3.10+ (brew or venv)
+- Alembic (brew or venv)
 
 ### Setup
 
