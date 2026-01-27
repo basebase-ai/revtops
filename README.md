@@ -25,7 +25,7 @@ AI-powered revenue operations assistant that connects to HubSpot, Slack, Google 
 - [Nango account](https://app.nango.dev) with integrations configured
 - Anthropic API key
 - Python 3.10+ (brew or venv; op-ed: use pyenv to force this globally)
-- Alembic (brew or venv)
+- Dependencies - python -m pip install -r requirements.txt (from the backend directory; again, be env mindful) 
 
 ### Setup
 
