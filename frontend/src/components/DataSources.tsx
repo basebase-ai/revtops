@@ -10,7 +10,7 @@
  * Uses React Query for server state (integrations list).
  */
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import Nango from '@nangohq/frontend';
 import type { IconType } from 'react-icons';
 import {
@@ -20,10 +20,31 @@ import {
   SiGooglecalendar,
   SiGmail,
 } from 'react-icons/si';
-import { HiOutlineCalendar, HiOutlineMail, HiGlobeAlt, HiUserGroup, HiExclamation } from 'react-icons/hi';
+import { HiOutlineCalendar, HiOutlineMail, HiGlobeAlt, HiUserGroup, HiExclamation, HiDeviceMobile } from 'react-icons/hi';
 import { API_BASE } from '../lib/api';
 import { useAppStore } from '../store';
 import { useIntegrations, useInvalidateIntegrations, type Integration } from '../hooks';
+
+// Detect if user is on a mobile device
+function useIsMobile(): boolean {
+  const [isMobile, setIsMobile] = useState(false);
+  
+  useEffect(() => {
+    const checkMobile = (): void => {
+      const userAgent = navigator.userAgent || navigator.vendor;
+      const mobileRegex = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i;
+      const isMobileDevice = mobileRegex.test(userAgent);
+      const isSmallScreen = window.innerWidth < 768;
+      setIsMobile(isMobileDevice || isSmallScreen);
+    };
+    
+    checkMobile();
+    window.addEventListener('resize', checkMobile);
+    return () => window.removeEventListener('resize', checkMobile);
+  }, []);
+  
+  return isMobile;
+}
 
 // Icon map for integration providers
 const ICON_MAP: Record<string, IconType> = {
@@ -62,6 +83,9 @@ interface DisplayIntegration extends Integration {
 export function DataSources(): JSX.Element {
   // Get user/org from Zustand (auth state)
   const { user, organization } = useAppStore();
+  
+  // Check if on mobile device
+  const isMobile = useIsMobile();
 
   // React Query: Fetch integrations with automatic caching and refetch
   const { 
@@ -150,14 +174,15 @@ export function DataSources(): JSX.Element {
         throw new Error('Failed to get session token');
       }
 
-      const data: { session_token: string } = await response.json();
+      const data: { session_token: string; connection_id: string } = await response.json();
+      const { session_token, connection_id } = data;
 
       // Initialize Nango and open connect UI in popup
       const nango = new Nango();
       
       nango.openConnectUI({
-        sessionToken: data.session_token,
-        onEvent: (event) => {
+        sessionToken: session_token,
+        onEvent: async (event) => {
           console.log('Nango event:', event);
           
           // Handle different possible event types from Nango
@@ -167,8 +192,30 @@ export function DataSources(): JSX.Element {
             eventType === 'connection-created' ||
             eventType === 'success'
           ) {
-            // Connection successful - invalidate cache to refetch integrations
-            console.log('Connection successful, invalidating integrations cache');
+            // Connection successful - confirm and create integration record
+            console.log('Connection successful, confirming integration');
+            try {
+              const confirmResponse = await fetch(`${API_BASE}/auth/integrations/confirm`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  provider,
+                  connection_id,
+                  organization_id: organizationId,
+                  user_id: scope === 'user' ? userId : undefined,
+                }),
+              });
+              
+              if (!confirmResponse.ok) {
+                console.error('Failed to confirm integration:', await confirmResponse.text());
+              } else {
+                console.log('Integration confirmed successfully');
+              }
+            } catch (confirmError) {
+              console.error('Error confirming integration:', confirmError);
+            }
+            
+            // Invalidate cache to refetch integrations
             invalidateIntegrations(organizationId);
             setConnectingProvider(null);
           } else if (eventType === 'close' || eventType === 'closed') {
@@ -326,25 +373,32 @@ export function DataSources(): JSX.Element {
     const badge = badgeConfig[state];
 
     // Button config by state
-    const getButtonConfig = (): { text: string; className: string; action: () => void } => {
+    const getButtonConfig = (): { text: string; className: string; action: () => void; disabled: boolean } => {
       if (state === 'connected') {
         return {
           text: isSyncing ? 'Syncing...' : 'Sync',
           className: 'px-4 py-2 text-sm font-medium text-surface-200 bg-surface-800 hover:bg-surface-700 disabled:opacity-50 rounded-lg transition-colors',
           action: () => void handleSync(integration.provider),
+          disabled: isSyncing,
         };
       }
       if (state === 'action-required') {
         return {
-          text: isConnecting ? 'Connecting...' : `Connect Your ${integration.name}`,
-          className: 'px-4 py-2 text-sm font-medium text-amber-400 border border-amber-500/30 hover:bg-amber-500/10 disabled:opacity-50 rounded-lg transition-colors',
-          action: () => void handleConnect(integration.provider, integration.scope),
+          text: isMobile ? 'Use desktop to connect' : (isConnecting ? 'Connecting...' : `Connect Your ${integration.name}`),
+          className: isMobile 
+            ? 'px-4 py-2 text-sm font-medium text-surface-500 border border-surface-700 rounded-lg cursor-not-allowed'
+            : 'px-4 py-2 text-sm font-medium text-amber-400 border border-amber-500/30 hover:bg-amber-500/10 disabled:opacity-50 rounded-lg transition-colors',
+          action: () => { if (!isMobile) void handleConnect(integration.provider, integration.scope); },
+          disabled: isMobile || isConnecting,
         };
       }
       return {
-        text: isConnecting ? 'Connecting...' : (integration.scope === 'user' ? 'Connect your account' : 'Connect'),
-        className: 'px-4 py-2 text-sm font-medium text-primary-400 border border-primary-500/30 hover:bg-primary-500/10 disabled:opacity-50 rounded-lg transition-colors',
-        action: () => void handleConnect(integration.provider, integration.scope),
+        text: isMobile ? 'Use desktop to connect' : (isConnecting ? 'Connecting...' : (integration.scope === 'user' ? 'Connect your account' : 'Connect')),
+        className: isMobile
+          ? 'px-4 py-2 text-sm font-medium text-surface-500 border border-surface-700 rounded-lg cursor-not-allowed'
+          : 'px-4 py-2 text-sm font-medium text-primary-400 border border-primary-500/30 hover:bg-primary-500/10 disabled:opacity-50 rounded-lg transition-colors',
+        action: () => { if (!isMobile) void handleConnect(integration.provider, integration.scope); },
+        disabled: isMobile || isConnecting,
       };
     };
     const buttonConfig = getButtonConfig();
@@ -376,51 +430,53 @@ export function DataSources(): JSX.Element {
 
     return (
       <div key={integration.id} className={cardClass}>
-        <div className="flex items-center gap-4">
-          {/* Icon */}
-          <div className={`${getColorClass(integration.color)} p-3 rounded-xl text-white ${iconOpacity} relative`}>
-            {renderIcon(integration.icon)}
-            {state === 'action-required' && (
-              <div className="absolute -top-1 -right-1 w-5 h-5 bg-amber-500 rounded-full flex items-center justify-center">
-                <HiExclamation className="w-3 h-3 text-white" />
-              </div>
-            )}
-          </div>
-
-          {/* Content */}
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2 flex-wrap">
-              <h3 className="font-medium text-surface-100">{integration.name}</h3>
-              {badge && (
-                <span className={`px-2 py-0.5 text-xs font-medium rounded-full ${badge.className}`}>
-                  {badge.text}
-                </span>
+        <div className="flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-4">
+          {/* Icon and name row on mobile */}
+          <div className="flex items-center gap-3 sm:gap-4">
+            <div className={`${getColorClass(integration.color)} p-2.5 sm:p-3 rounded-xl text-white ${iconOpacity} relative flex-shrink-0`}>
+              {renderIcon(integration.icon)}
+              {state === 'action-required' && (
+                <div className="absolute -top-1 -right-1 w-5 h-5 bg-amber-500 rounded-full flex items-center justify-center">
+                  <HiExclamation className="w-3 h-3 text-white" />
+                </div>
               )}
             </div>
-            <p className="text-sm text-surface-400 mt-0.5">{integration.description}</p>
-            {state === 'connected' && integration.lastSyncAt && (
-              <p className="text-xs text-surface-500 mt-1">
-                Last synced: {new Date(integration.lastSyncAt).toLocaleString()}
-              </p>
-            )}
-            {state === 'connected' && integration.lastError && (
-              <p className="text-xs text-red-400 mt-1">Error: {integration.lastError}</p>
-            )}
-            {state === 'action-required' && (
-              <p className="text-xs text-amber-400 mt-1">
-                Connect yours to include your data in team insights.
-              </p>
-            )}
+
+            {/* Content */}
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2 flex-wrap">
+                <h3 className="font-medium text-surface-100">{integration.name}</h3>
+                {badge && (
+                  <span className={`px-2 py-0.5 text-xs font-medium rounded-full ${badge.className}`}>
+                    {badge.text}
+                  </span>
+                )}
+              </div>
+              <p className="text-sm text-surface-400 mt-0.5 hidden sm:block">{integration.description}</p>
+              {state === 'connected' && integration.lastSyncAt && (
+                <p className="text-xs text-surface-500 mt-1 hidden sm:block">
+                  Last synced: {new Date(integration.lastSyncAt).toLocaleString()}
+                </p>
+              )}
+              {state === 'connected' && integration.lastError && (
+                <p className="text-xs text-red-400 mt-1">Error: {integration.lastError}</p>
+              )}
+              {state === 'action-required' && (
+                <p className="text-xs text-amber-400 mt-1 hidden sm:block">
+                  Connect yours to include your data in team insights.
+                </p>
+              )}
+            </div>
           </div>
 
-          {/* Actions */}
-          <div className="flex items-center gap-2">
+          {/* Actions - full width on mobile */}
+          <div className="flex items-center gap-2 sm:flex-shrink-0">
             <button
               onClick={buttonConfig.action}
-              disabled={isConnecting || isSyncing}
-              className={`${buttonConfig.className} flex items-center gap-2`}
+              disabled={buttonConfig.disabled}
+              className={`${buttonConfig.className} flex items-center justify-center gap-2 flex-1 sm:flex-initial`}
             >
-              {(isConnecting || isSyncing) && (
+              {(isConnecting || isSyncing) && !isMobile && (
                 <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
                   <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                   <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
@@ -431,7 +487,7 @@ export function DataSources(): JSX.Element {
             {state === 'connected' && (
               <button
                 onClick={() => void handleDisconnect(integration.provider, integration.scope)}
-                className="px-4 py-2 text-sm font-medium text-red-400 hover:text-red-300 hover:bg-red-500/10 rounded-lg transition-colors"
+                className="px-3 sm:px-4 py-2 text-sm font-medium text-red-400 hover:text-red-300 hover:bg-red-500/10 rounded-lg transition-colors"
               >
                 Disconnect
               </button>
@@ -454,16 +510,31 @@ export function DataSources(): JSX.Element {
   }
 
   return (
-    <div className="flex-1 overflow-y-auto">
-      {/* Header */}
-      <header className="sticky top-0 bg-surface-950 border-b border-surface-800 px-8 py-6">
-        <h1 className="text-2xl font-bold text-surface-50">Data Sources</h1>
-        <p className="text-surface-400 mt-1">
+    <div className="flex-1 overflow-y-auto overflow-x-hidden">
+      {/* Header - hidden on mobile since AppLayout has mobile header */}
+      <header className="hidden md:block sticky top-0 bg-surface-950 border-b border-surface-800 px-4 md:px-8 py-4 md:py-6">
+        <h1 className="text-xl md:text-2xl font-bold text-surface-50">Data Sources</h1>
+        <p className="text-surface-400 mt-1 text-sm md:text-base">
           Connect your sales tools to unlock AI-powered insights
         </p>
       </header>
 
-      <div className="max-w-4xl mx-auto px-8 py-8 space-y-10">
+      <div className="max-w-4xl mx-auto px-4 md:px-8 py-4 md:py-8 space-y-6 md:space-y-10">
+        {/* Mobile notice banner */}
+        {isMobile && (
+          <div className="bg-surface-800/50 border border-surface-700 rounded-xl p-4 flex items-start gap-3">
+            <div className="flex-shrink-0 w-10 h-10 rounded-lg bg-primary-500/20 flex items-center justify-center">
+              <HiDeviceMobile className="w-5 h-5 text-primary-400" />
+            </div>
+            <div>
+              <h3 className="font-medium text-surface-100">Connect from your computer</h3>
+              <p className="text-sm text-surface-400 mt-1">
+                For the best experience connecting data sources, please visit this page from a desktop or laptop computer. 
+                OAuth sign-in works more reliably on larger screens.
+              </p>
+            </div>
+          </div>
+        )}
         {/* Action Required - User-scoped integrations where current user hasn't connected */}
         {actionRequiredIntegrations.length > 0 && (
           <section>

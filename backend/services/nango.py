@@ -240,7 +240,7 @@ class NangoClient:
 
         Args:
             integration_id: The Nango integration ID
-            connection_id: The unique connection identifier (organization_id)
+            connection_id: The unique connection identifier (e.g., "{org_id}:user:{user_id}")
 
         Returns:
             Dict with token and other session info

@@ -21,7 +21,7 @@ from uuid import UUID
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Response
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from config import settings, get_nango_integration_id, get_provider_scope
 from models.database import get_session
@@ -93,6 +93,7 @@ class ConnectSessionResponse(BaseModel):
     session_token: str
     provider: str
     expires_at: Optional[str]
+    connection_id: str
 
 
 class AvailableIntegrationsResponse(BaseModel):
@@ -708,7 +709,102 @@ async def get_connect_session(
         session_token=session_data["token"],
         provider=provider,
         expires_at=session_data.get("expires_at"),
+        connection_id=connection_id,
     )
+
+
+class ConfirmConnectionRequest(BaseModel):
+    """Request model for confirming a connection after OAuth."""
+    provider: str
+    connection_id: str
+    organization_id: str
+    user_id: Optional[str] = None
+
+
+@router.post("/integrations/confirm")
+async def confirm_integration(
+    request: ConfirmConnectionRequest,
+    background_tasks: BackgroundTasks,
+) -> dict[str, str]:
+    """
+    Confirm and create an integration record after successful OAuth.
+    
+    Called by the frontend after receiving a success event from Nango.
+    Creates the integration record directly without querying Nango.
+    """
+    try:
+        org_uuid = UUID(request.organization_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid organization ID")
+    
+    user_uuid: Optional[UUID] = None
+    if request.user_id:
+        try:
+            user_uuid = UUID(request.user_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid user ID")
+    
+    scope = get_provider_scope(request.provider)
+    
+    # For user-scoped integrations, user_id is required
+    if scope == "user" and not user_uuid:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{request.provider} is a user-scoped integration. user_id is required."
+        )
+    
+    async with get_session() as session:
+        # Set RLS context
+        await session.execute(
+            text("SELECT set_config('app.current_org_id', :org_id, true)"),
+            {"org_id": str(org_uuid)}
+        )
+        
+        # Check for existing integration
+        if scope == "user":
+            result = await session.execute(
+                select(Integration).where(
+                    Integration.organization_id == org_uuid,
+                    Integration.provider == request.provider,
+                    Integration.user_id == user_uuid,
+                )
+            )
+        else:
+            result = await session.execute(
+                select(Integration).where(
+                    Integration.organization_id == org_uuid,
+                    Integration.provider == request.provider,
+                    Integration.user_id.is_(None),
+                )
+            )
+        
+        existing = result.scalar_one_or_none()
+        
+        if existing:
+            # Update existing integration
+            existing.nango_connection_id = request.connection_id
+            existing.is_active = True
+            existing.last_error = None
+            existing.updated_at = datetime.utcnow()
+        else:
+            # Create new integration
+            new_integration = Integration(
+                organization_id=org_uuid,
+                provider=request.provider,
+                scope=scope,
+                user_id=user_uuid if scope == "user" else None,
+                nango_connection_id=request.connection_id,
+                connected_by_user_id=user_uuid,
+                is_active=True,
+            )
+            session.add(new_integration)
+        
+        await session.commit()
+    
+    # Trigger initial sync in the background
+    background_tasks.add_task(run_initial_sync, str(org_uuid), request.provider)
+    
+    return {"status": "confirmed", "provider": request.provider}
 
 
 @router.get("/connect/{provider}/redirect")
@@ -760,6 +856,12 @@ async def nango_callback(
 
     # Record integration in our database
     async with get_session() as session:
+        # Set RLS context so queries/inserts work for this organization
+        await session.execute(
+            text("SELECT set_config('app.current_org_id', :org_id, true)"),
+            {"org_id": str(org_uuid)}
+        )
+        
         # Verify user
         user = await session.get(User, user_uuid)
         if not user or user.organization_id != org_uuid:
@@ -835,15 +937,24 @@ async def list_integrations(
         raise HTTPException(status_code=400, detail="Either user_id or organization_id required")
 
     # Check Nango for connections and sync to our database
-    nango = get_nango_client()
+    nango_connections: list[dict] = []
     try:
+        nango = get_nango_client()
         nango_connections = await nango.list_connections(end_user_id=str(org_uuid))
         print(f"Found {len(nango_connections)} Nango connections for org {org_uuid}")
+    except ValueError as e:
+        # Nango not configured - just use database integrations
+        print(f"Nango not configured, skipping sync: {e}")
     except Exception as e:
         print(f"Failed to fetch Nango connections: {e}")
-        nango_connections = []
 
     async with get_session() as db_session:
+        # Set RLS context so queries/inserts work for this organization
+        await db_session.execute(
+            text("SELECT set_config('app.current_org_id', :org_id, true)"),
+            {"org_id": str(org_uuid)}
+        )
+        
         # Ensure organization exists before inserting integrations
         if nango_connections:
             existing_org = await db_session.get(Organization, org_uuid)
@@ -1071,6 +1182,12 @@ async def disconnect_integration(
         )
 
     async with get_session() as db_session:
+        # Set RLS context so queries/deletes work for this organization
+        await db_session.execute(
+            text("SELECT set_config('app.current_org_id', :org_id, true)"),
+            {"org_id": str(org_uuid)}
+        )
+        
         # Find integration based on scope
         if scope == "user":
             # Find this user's integration

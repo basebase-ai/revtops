@@ -5,11 +5,87 @@ Uses Resend for email delivery. Set RESEND_API_KEY in environment.
 """
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 
 import httpx
 
 from config import settings
+
+
+async def send_email(
+    to: str | list[str],
+    subject: str,
+    body: str,
+    html: Optional[str] = None,
+    from_address: Optional[str] = None,
+    reply_to: Optional[str] = None,
+) -> bool:
+    """
+    Send an email via Resend (system email).
+    
+    Args:
+        to: Recipient email address(es)
+        subject: Email subject
+        body: Plain text body
+        html: Optional HTML body (will be generated from body if not provided)
+        from_address: Optional from address (defaults to system default)
+        reply_to: Optional reply-to address
+        
+    Returns:
+        True if email sent successfully, False otherwise
+    """
+    if not settings.RESEND_API_KEY:
+        print(f"[Email] RESEND_API_KEY not set, skipping email to {to}")
+        return False
+
+    # Ensure to is a list
+    to_list = [to] if isinstance(to, str) else to
+    
+    # Generate simple HTML if not provided
+    if not html:
+        html = f"""
+        <!DOCTYPE html>
+        <html>
+        <head><meta charset="utf-8"></head>
+        <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
+            {body.replace(chr(10), '<br>')}
+        </body>
+        </html>
+        """
+
+    payload: dict[str, Any] = {
+        "from": from_address or settings.EMAIL_FROM or "Revtops <hello@revtops.com>",
+        "to": to_list,
+        "subject": subject,
+        "html": html,
+        "text": body,
+    }
+    
+    if reply_to:
+        payload["reply_to"] = reply_to
+
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.post(
+                "https://api.resend.com/emails",
+                headers={
+                    "Authorization": f"Bearer {settings.RESEND_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+                timeout=10.0,
+            )
+            
+            if response.status_code == 200:
+                print(f"[Email] Sent to {to_list}")
+                return True
+            else:
+                print(f"[Email] Failed to send: {response.status_code} {response.text}")
+                return False
+                
+        except Exception as e:
+            print(f"[Email] Error sending: {e}")
+            return False
 
 
 async def send_waitlist_notification(
