@@ -312,6 +312,18 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
     }
   }, [user, fetchConversations]);
 
+  // Listen for navigation events from child components (e.g., Home banner)
+  useEffect(() => {
+    const handleNavigate = (event: Event): void => {
+      const customEvent = event as CustomEvent<string>;
+      if (customEvent.detail) {
+        setCurrentView(customEvent.detail as 'home' | 'chat' | 'data-sources' | 'search' | 'automations' | 'admin');
+      }
+    };
+    window.addEventListener('navigate', handleNavigate);
+    return () => window.removeEventListener('navigate', handleNavigate);
+  }, [setCurrentView]);
+
   const handleSelectChat = useCallback((chatId: string): void => {
     setCurrentChatId(chatId);
     setCurrentView('chat');

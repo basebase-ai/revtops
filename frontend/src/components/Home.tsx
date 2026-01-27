@@ -1,10 +1,12 @@
 /**
  * Home view - shows deals in the default pipeline.
+ * Shows a prominent banner to connect data sources if none are connected.
  */
 
 import { useEffect, useState } from 'react';
 import { API_BASE } from '../lib/api';
 import { useAppStore } from '../store';
+import { useIntegrations } from '../hooks/useIntegrations';
 
 interface Deal {
   id: string;
@@ -45,10 +47,15 @@ interface PipelinesApiResponse {
 
 export function Home(): JSX.Element {
   const organization = useAppStore((state) => state.organization);
+  const user = useAppStore((state) => state.user);
   const [deals, setDeals] = useState<Deal[]>([]);
   const [pipeline, setPipeline] = useState<Pipeline | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  
+  // Check if the organization has any connected data sources
+  const { data: integrations } = useIntegrations(organization?.id ?? null, user?.id ?? null);
+  const hasConnectedSources = integrations?.some((i) => i.isActive) ?? false;
 
   useEffect(() => {
     if (!organization?.id) return;
@@ -154,6 +161,39 @@ export function Home(): JSX.Element {
 
       {/* Content */}
       <div className="flex-1 overflow-auto p-6">
+        {/* Connect data sources banner - only shown when no sources connected */}
+        {!hasConnectedSources && (
+          <div className="mb-6 bg-gradient-to-r from-primary-500/20 to-primary-600/10 border border-primary-500/30 rounded-xl p-5">
+            <div className="flex items-start gap-4">
+              <div className="flex-shrink-0 w-10 h-10 rounded-lg bg-primary-500/20 flex items-center justify-center">
+                <svg className="w-5 h-5 text-primary-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                </svg>
+              </div>
+              <div className="flex-1">
+                <h3 className="text-lg font-semibold text-surface-100 mb-1">
+                  Connect your data sources to get started
+                </h3>
+                <p className="text-surface-400 text-sm mb-4">
+                  Link your CRM, calendar, and email to unlock AI-powered insights about your revenue pipeline.
+                </p>
+                <button
+                  onClick={() => {
+                    // Navigate to data sources - dispatch a custom event that Sidebar listens to
+                    window.dispatchEvent(new CustomEvent('navigate', { detail: 'data-sources' }));
+                  }}
+                  className="inline-flex items-center gap-2 px-4 py-2 bg-primary-500 hover:bg-primary-600 text-white text-sm font-medium rounded-lg transition-colors"
+                >
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                  </svg>
+                  Connect Data Sources
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {deals.length === 0 ? (
           <div className="text-center py-12">
             <svg className="w-12 h-12 text-surface-600 mx-auto mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">

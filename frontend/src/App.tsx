@@ -2,7 +2,7 @@
  * Main application component.
  *
  * Handles:
- * - Authentication flow (auth → onboarding → app)
+ * - Authentication flow (auth → app)
  * - Work email validation
  * - Company setup for new organizations
  * - Main app layout routing
@@ -17,13 +17,12 @@ import { API_BASE } from './lib/api';
 import { useAppStore } from './store';
 import { Auth } from './components/Auth';
 import { CompanySetup } from './components/CompanySetup';
-import { Onboarding } from './components/Onboarding';
 import { AppLayout } from './components/AppLayout';
 import { OAuthCallback } from './components/OAuthCallback';
 import { AdminWaitlist } from './components/AdminWaitlist';
 import type { User, AuthChangeEvent, Session } from '@supabase/supabase-js';
 
-type Screen = 'auth' | 'blocked-email' | 'not-registered' | 'waitlist' | 'company-setup' | 'onboarding' | 'app';
+type Screen = 'auth' | 'blocked-email' | 'not-registered' | 'waitlist' | 'company-setup' | 'app';
 
 // URL for public website (landing, blog, waitlist form)
 const WWW_URL = import.meta.env.VITE_WWW_URL ?? 'https://www.revtops.com';
@@ -323,35 +322,8 @@ function App(): JSX.Element {
       console.error('Failed to sync organization to backend:', error);
     }
 
-    // Check if user has completed onboarding OR already has connected integrations
-    const completedOnboarding = localStorage.getItem(`onboarding_${supabaseUser.id}`);
-    
-    // Fetch integrations directly to check for connected ones
-    let hasConnectedIntegrations = false;
-    try {
-      const integrationsResponse = await fetch(
-        `${API_BASE}/auth/integrations?organization_id=${existingCompany.id}&user_id=${supabaseUser.id}`
-      );
-      if (integrationsResponse.ok) {
-        const integrationsData = await integrationsResponse.json() as { 
-          integrations: Array<{ provider: string; is_active: boolean; current_user_connected?: boolean }> 
-        };
-        // Check if any integration is actually active (connected), not just present in the list
-        hasConnectedIntegrations = integrationsData.integrations.some((i) => i.is_active);
-      }
-    } catch (error) {
-      console.error('Failed to check integrations:', error);
-    }
-    
-    if (completedOnboarding || hasConnectedIntegrations) {
-      // Mark onboarding as complete if they have integrations (for future logins)
-      if (hasConnectedIntegrations && !completedOnboarding) {
-        localStorage.setItem(`onboarding_${supabaseUser.id}`, 'true');
-      }
-      setScreen('app');
-    } else {
-      setScreen('onboarding');
-    }
+    // Go directly to app - Home screen shows data source prompt if needed
+    setScreen('app');
   };
 
   const handleCompanySetup = async (companyName: string): Promise<void> => {
@@ -389,7 +361,8 @@ function App(): JSX.Element {
     // Sync user to backend now that we have an org
     await syncUserToBackend();
 
-    setScreen('onboarding');
+    // Go directly to app - Home screen shows data source prompt if needed
+    setScreen('app');
   };
 
   const handleLogout = async (): Promise<void> => {
@@ -398,20 +371,6 @@ function App(): JSX.Element {
     storeLogout();
     // Redirect to public website
     window.location.href = WWW_URL;
-  };
-
-  const handleOnboardingComplete = (): void => {
-    if (user) {
-      localStorage.setItem(`onboarding_${user.id}`, 'true');
-    }
-    setScreen('app');
-  };
-
-  const handleOnboardingSkip = (): void => {
-    if (user) {
-      localStorage.setItem(`onboarding_${user.id}`, 'true');
-    }
-    setScreen('app');
   };
 
   // Handle OAuth callback route
@@ -538,14 +497,6 @@ function App(): JSX.Element {
           emailDomain={emailDomain}
           onComplete={(name) => void handleCompanySetup(name)}
           onBack={() => void handleLogout()}
-        />
-      );
-
-    case 'onboarding':
-      return (
-        <Onboarding
-          onComplete={handleOnboardingComplete}
-          onSkip={handleOnboardingSkip}
         />
       );
 

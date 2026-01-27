@@ -937,13 +937,16 @@ async def list_integrations(
         raise HTTPException(status_code=400, detail="Either user_id or organization_id required")
 
     # Check Nango for connections and sync to our database
-    nango = get_nango_client()
+    nango_connections: list[dict] = []
     try:
+        nango = get_nango_client()
         nango_connections = await nango.list_connections(end_user_id=str(org_uuid))
         print(f"Found {len(nango_connections)} Nango connections for org {org_uuid}")
+    except ValueError as e:
+        # Nango not configured - just use database integrations
+        print(f"Nango not configured, skipping sync: {e}")
     except Exception as e:
         print(f"Failed to fetch Nango connections: {e}")
-        nango_connections = []
 
     async with get_session() as db_session:
         # Set RLS context so queries/inserts work for this organization
