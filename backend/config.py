@@ -73,6 +73,11 @@ class Settings(BaseSettings):
     # Email (Resend)
     RESEND_API_KEY: Optional[str] = None
     EMAIL_FROM: str = "Revtops <hello@revtops.com>"
+    
+    # SMS (Twilio)
+    TWILIO_ACCOUNT_SID: Optional[str] = None
+    TWILIO_AUTH_TOKEN: Optional[str] = None
+    TWILIO_PHONE_NUMBER: Optional[str] = None  # E.164 format, e.g., +14155551234
 
     class Config:
         env_file = str(_env_file)

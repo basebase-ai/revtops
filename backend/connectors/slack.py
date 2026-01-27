@@ -275,3 +275,42 @@ class SlackConnector(BaseConnector):
             "online": data.get("online", False),
             "auto_away": data.get("auto_away", False),
         }
+
+    async def post_message(
+        self,
+        channel: str,
+        text: str,
+        thread_ts: Optional[str] = None,
+        blocks: Optional[list[dict[str, Any]]] = None,
+    ) -> dict[str, Any]:
+        """
+        Post a message to a Slack channel.
+        
+        Args:
+            channel: Channel ID or name (e.g., "#general" or "C1234567890")
+            text: Message text (used as fallback if blocks provided)
+            thread_ts: Optional thread timestamp to reply in thread
+            blocks: Optional Block Kit blocks for rich formatting
+        
+        Returns:
+            Response with channel, ts (timestamp), and message details
+        """
+        payload: dict[str, Any] = {
+            "channel": channel,
+            "text": text,
+        }
+        
+        if thread_ts:
+            payload["thread_ts"] = thread_ts
+        
+        if blocks:
+            payload["blocks"] = blocks
+        
+        data = await self._make_request("POST", "chat.postMessage", json_data=payload)
+        
+        return {
+            "ok": data.get("ok"),
+            "channel": data.get("channel"),
+            "ts": data.get("ts"),
+            "message": data.get("message"),
+        }

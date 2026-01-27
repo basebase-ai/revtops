@@ -251,3 +251,105 @@ class MicrosoftMailConnector(BaseConnector):
     async def fetch_deal(self, deal_id: str) -> dict[str, Any]:
         """Microsoft Mail doesn't have deals."""
         return {"error": "Microsoft Mail does not support deals"}
+
+    async def send_email(
+        self,
+        to: str | list[str],
+        subject: str,
+        body: str,
+        cc: Optional[list[str]] = None,
+        bcc: Optional[list[str]] = None,
+        reply_to: Optional[str] = None,
+        save_to_sent: bool = True,
+    ) -> dict[str, Any]:
+        """
+        Send an email via the user's Microsoft/Outlook account.
+        
+        Args:
+            to: Recipient email address(es)
+            subject: Email subject
+            body: Email body (plain text)
+            cc: Optional CC recipients
+            bcc: Optional BCC recipients
+            reply_to: Optional reply-to address
+            save_to_sent: Whether to save to Sent Items (default True)
+            
+        Returns:
+            Dict with success status and message details
+        """
+        # Build recipients list
+        to_list = [to] if isinstance(to, str) else to
+        
+        # Build recipient objects
+        to_recipients = [
+            {"emailAddress": {"address": addr}} for addr in to_list
+        ]
+        
+        cc_recipients = []
+        if cc:
+            cc_recipients = [{"emailAddress": {"address": addr}} for addr in cc]
+        
+        bcc_recipients = []
+        if bcc:
+            bcc_recipients = [{"emailAddress": {"address": addr}} for addr in bcc]
+        
+        # Build message payload
+        message_payload: dict[str, Any] = {
+            "message": {
+                "subject": subject,
+                "body": {
+                    "contentType": "Text",
+                    "content": body,
+                },
+                "toRecipients": to_recipients,
+            },
+            "saveToSentItems": save_to_sent,
+        }
+        
+        if cc_recipients:
+            message_payload["message"]["ccRecipients"] = cc_recipients
+        if bcc_recipients:
+            message_payload["message"]["bccRecipients"] = bcc_recipients
+        if reply_to:
+            message_payload["message"]["replyTo"] = [
+                {"emailAddress": {"address": reply_to}}
+            ]
+        
+        headers = await self._get_headers()
+        url = f"{MICROSOFT_GRAPH_API_BASE}/me/sendMail"
+        
+        async with httpx.AsyncClient() as client:
+            try:
+                response = await client.post(
+                    url,
+                    headers=headers,
+                    json=message_payload,
+                    timeout=30.0,
+                )
+                
+                # Microsoft returns 202 Accepted on success (no body)
+                if response.status_code == 202:
+                    return {
+                        "success": True,
+                        "status": "sent",
+                        "to": to_list,
+                    }
+                
+                response.raise_for_status()
+                return {
+                    "success": True,
+                    "status": "sent",
+                    "to": to_list,
+                }
+                
+            except httpx.HTTPStatusError as e:
+                error_msg = e.response.text if e.response else str(e)
+                return {
+                    "success": False,
+                    "error": f"Microsoft Graph API error: {error_msg}",
+                }
+            except Exception as e:
+                return {
+                    "success": False,
+                    "error": str(e),
+                }

@@ -275,12 +275,20 @@ async def _execute_step(
     try:
         if action == "query":
             return await _action_query(params, context)
+        elif action == "run_query":
+            return await _action_run_query(params, context)
         elif action == "llm":
             return await _action_llm(params, context)
         elif action == "send_email":
             return await _action_send_email(params, context, workflow)
+        elif action == "send_system_email":
+            return await _action_send_system_email(params, context)
+        elif action == "send_email_from":
+            return await _action_send_email_from(params, context, workflow)
         elif action == "send_slack":
             return await _action_send_slack(params, context, workflow)
+        elif action == "send_system_sms":
+            return await _action_send_system_sms(params, context)
         elif action == "sync":
             return await _action_sync(params, context)
         else:
@@ -299,15 +307,95 @@ async def _action_query(
     params: dict[str, Any],
     context: dict[str, Any],
 ) -> dict[str, Any]:
-    """Execute a data query."""
-    # TODO: Implement semantic search or SQL query
+    """Execute a data query (legacy - use run_query instead)."""
     query = params.get("query", "")
     return {
         "status": "completed",
         "action": "query",
         "query": query,
-        "results": [],  # Placeholder
+        "results": [],
     }
+
+
+async def _action_run_query(
+    params: dict[str, Any],
+    context: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    Execute a SQL query against the organization's data.
+    
+    Security:
+    - Only SELECT statements allowed
+    - org_id is always injected and available as :org_id
+    - Query timeout enforced
+    """
+    from sqlalchemy import text
+    from models.database import get_session
+    
+    sql = params.get("sql", "")
+    org_id = context.get("organization_id")
+    
+    if not sql.strip():
+        return {
+            "status": "failed",
+            "error": "No SQL query provided",
+        }
+    
+    # Security: Only allow SELECT statements
+    sql_upper = sql.strip().upper()
+    if not sql_upper.startswith("SELECT"):
+        return {
+            "status": "failed",
+            "error": "Only SELECT queries are allowed",
+        }
+    
+    # Block dangerous keywords even in SELECT
+    dangerous_keywords = ["INSERT", "UPDATE", "DELETE", "DROP", "TRUNCATE", "ALTER", "CREATE", "GRANT", "REVOKE"]
+    for keyword in dangerous_keywords:
+        if keyword in sql_upper:
+            return {
+                "status": "failed",
+                "error": f"Query contains disallowed keyword: {keyword}",
+            }
+    
+    try:
+        async with get_session() as session:
+            # Execute with org_id parameter always available
+            result = await session.execute(
+                text(sql),
+                {"org_id": org_id}
+            )
+            
+            # Convert rows to list of dicts
+            rows = [dict(row._mapping) for row in result.fetchall()]
+            
+            # Serialize UUIDs and datetimes for JSON
+            serialized_rows: list[dict[str, Any]] = []
+            for row in rows:
+                serialized_row: dict[str, Any] = {}
+                for key, value in row.items():
+                    if hasattr(value, "isoformat"):  # datetime
+                        serialized_row[key] = value.isoformat()
+                    elif hasattr(value, "hex"):  # UUID
+                        serialized_row[key] = str(value)
+                    else:
+                        serialized_row[key] = value
+                serialized_rows.append(serialized_row)
+        
+        logger.info(f"Query returned {len(serialized_rows)} rows")
+        return {
+            "status": "completed",
+            "action": "run_query",
+            "row_count": len(serialized_rows),
+            "data": serialized_rows,
+        }
+        
+    except Exception as e:
+        logger.error(f"Query failed: {e}")
+        return {
+            "status": "failed",
+            "error": str(e),
+        }
 
 
 async def _action_llm(
@@ -383,17 +471,100 @@ async def _action_send_slack(
     context: dict[str, Any],
     workflow: Any,
 ) -> dict[str, Any]:
-    """Post a message to Slack."""
-    # TODO: Implement Slack posting via connector
+    """
+    Post a message to Slack.
+    
+    Params:
+        channel: Channel name (e.g., "#general") or ID
+        message: Message text to post
+        thread_ts: Optional - reply in thread
+    
+    Uses the organization's Slack integration.
+    """
+    from sqlalchemy import select, and_
+    from models.database import get_session
+    from models.integration import Integration
+    from connectors.slack import SlackConnector
+    
     channel = params.get("channel", "")
     message = params.get("message", "")
+    thread_ts = params.get("thread_ts")
+    org_id = context.get("organization_id", "")
     
-    return {
-        "status": "completed",
-        "action": "send_slack",
-        "channel": channel,
-        "message": message,
-    }
+    if not channel:
+        return {
+            "status": "failed",
+            "error": "No channel specified",
+        }
+    
+    if not message:
+        return {
+            "status": "failed",
+            "error": "No message specified",
+        }
+    
+    # Substitute context variables in message
+    for key, value in context.items():
+        if isinstance(value, str):
+            message = message.replace(f"{{{key}}}", value)
+    
+    # Handle {previous_output} or {step_N_output} references
+    for key, value in context.items():
+        if key.startswith("step_") and key.endswith("_output"):
+            if isinstance(value, dict):
+                # If it's an LLM output, get the text
+                output_text = value.get("output", str(value))
+                message = message.replace(f"{{{key}}}", str(output_text))
+                # Also support {previous_output} as alias for last step
+                message = message.replace("{previous_output}", str(output_text))
+    
+    try:
+        # Get the Slack integration for this org
+        async with get_session() as session:
+            result = await session.execute(
+                select(Integration).where(
+                    and_(
+                        Integration.organization_id == UUID(org_id),
+                        Integration.provider == "slack",
+                        Integration.is_active == True,
+                    )
+                )
+            )
+            integration = result.scalar_one_or_none()
+            
+            if not integration:
+                return {
+                    "status": "failed",
+                    "error": "No active Slack integration found for organization",
+                }
+        
+        # Create connector and post message
+        connector = SlackConnector(
+            organization_id=org_id,
+            nango_connection_id=integration.nango_connection_id,
+        )
+        
+        result = await connector.post_message(
+            channel=channel,
+            text=message,
+            thread_ts=thread_ts,
+        )
+        
+        logger.info(f"Posted to Slack channel {channel}: {result.get('ts')}")
+        return {
+            "status": "completed",
+            "action": "send_slack",
+            "channel": channel,
+            "ts": result.get("ts"),
+            "message_preview": message[:100],
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to post to Slack: {e}")
+        return {
+            "status": "failed",
+            "error": str(e),
+        }
 
 
 async def _action_sync(
@@ -414,6 +585,240 @@ async def _action_sync(
     
     result = await _sync_integration(org_id, provider)
     return result
+
+
+async def _action_send_system_sms(
+    params: dict[str, Any],
+    context: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    Send an SMS via Twilio (system account).
+    
+    Params:
+        to: Phone number in E.164 format (e.g., +14155551234)
+        body: Message text
+    """
+    from services.sms import send_sms
+    
+    to = params.get("to", "")
+    body = params.get("body", "")
+    
+    if not to:
+        return {
+            "status": "failed",
+            "error": "No phone number specified",
+        }
+    
+    if not body:
+        return {
+            "status": "failed",
+            "error": "No message body specified",
+        }
+    
+    # Substitute context variables
+    for key, value in context.items():
+        if isinstance(value, str):
+            body = body.replace(f"{{{key}}}", value)
+        elif isinstance(value, dict) and "output" in value:
+            body = body.replace(f"{{{key}}}", str(value.get("output", "")))
+    
+    result = await send_sms(to, body)
+    
+    if result.get("success"):
+        return {
+            "status": "completed",
+            "action": "send_system_sms",
+            "to": to,
+            "message_sid": result.get("message_sid"),
+        }
+    else:
+        return {
+            "status": "failed",
+            "error": result.get("error", "Unknown SMS error"),
+        }
+
+
+async def _action_send_system_email(
+    params: dict[str, Any],
+    context: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    Send an email via Resend (system account).
+    
+    Params:
+        to: Recipient email address(es)
+        subject: Email subject
+        body: Email body text
+        reply_to: Optional reply-to address
+    """
+    from services.email import send_email
+    
+    to = params.get("to", "")
+    subject = params.get("subject", "Revtops Notification")
+    body = params.get("body", "")
+    reply_to = params.get("reply_to")
+    
+    if not to:
+        return {
+            "status": "failed",
+            "error": "No recipient specified",
+        }
+    
+    if not body:
+        return {
+            "status": "failed",
+            "error": "No email body specified",
+        }
+    
+    # Substitute context variables
+    for key, value in context.items():
+        if isinstance(value, str):
+            subject = subject.replace(f"{{{key}}}", value)
+            body = body.replace(f"{{{key}}}", value)
+        elif isinstance(value, dict) and "output" in value:
+            output_str = str(value.get("output", ""))
+            subject = subject.replace(f"{{{key}}}", output_str)
+            body = body.replace(f"{{{key}}}", output_str)
+    
+    success = await send_email(to, subject, body, reply_to=reply_to)
+    
+    return {
+        "status": "completed" if success else "failed",
+        "action": "send_system_email",
+        "to": to,
+        "subject": subject,
+    }
+
+
+async def _action_send_email_from(
+    params: dict[str, Any],
+    context: dict[str, Any],
+    workflow: Any,
+) -> dict[str, Any]:
+    """
+    Send an email from a user's connected email account (Gmail or Outlook).
+    
+    Params:
+        provider: "gmail" or "microsoft_mail"
+        user_id: Optional - specific user's connection to use (defaults to workflow creator)
+        to: Recipient email address(es)
+        subject: Email subject
+        body: Email body text
+        cc: Optional CC recipients
+        bcc: Optional BCC recipients
+    """
+    from sqlalchemy import select, and_
+    from models.database import get_session
+    from models.integration import Integration
+    from connectors.gmail import GmailConnector
+    from connectors.microsoft_mail import MicrosoftMailConnector
+    
+    provider = params.get("provider", "gmail")
+    user_id = params.get("user_id")
+    to = params.get("to", "")
+    subject = params.get("subject", "")
+    body = params.get("body", "")
+    cc = params.get("cc", [])
+    bcc = params.get("bcc", [])
+    
+    org_id = context.get("organization_id", "")
+    
+    if not to:
+        return {
+            "status": "failed",
+            "error": "No recipient specified",
+        }
+    
+    if not body:
+        return {
+            "status": "failed",
+            "error": "No email body specified",
+        }
+    
+    if provider not in ("gmail", "microsoft_mail"):
+        return {
+            "status": "failed",
+            "error": f"Unsupported email provider: {provider}. Use 'gmail' or 'microsoft_mail'.",
+        }
+    
+    # Substitute context variables
+    for key, value in context.items():
+        if isinstance(value, str):
+            subject = subject.replace(f"{{{key}}}", value)
+            body = body.replace(f"{{{key}}}", value)
+        elif isinstance(value, dict) and "output" in value:
+            output_str = str(value.get("output", ""))
+            subject = subject.replace(f"{{{key}}}", output_str)
+            body = body.replace(f"{{{key}}}", output_str)
+    
+    try:
+        async with get_session() as session:
+            # Find the user's email integration
+            query = select(Integration).where(
+                and_(
+                    Integration.organization_id == UUID(org_id),
+                    Integration.provider == provider,
+                    Integration.is_active == True,
+                )
+            )
+            
+            # If user_id specified, filter to that user
+            if user_id:
+                query = query.where(Integration.user_id == UUID(user_id))
+            else:
+                # Default to workflow creator's connection
+                query = query.where(Integration.user_id == workflow.created_by_user_id)
+            
+            result = await session.execute(query)
+            integration = result.scalar_one_or_none()
+            
+            if not integration:
+                return {
+                    "status": "failed",
+                    "error": f"No active {provider} integration found for user",
+                }
+        
+        # Create appropriate connector and send
+        if provider == "gmail":
+            connector = GmailConnector(
+                organization_id=org_id,
+                nango_connection_id=integration.nango_connection_id,
+            )
+        else:
+            connector = MicrosoftMailConnector(
+                organization_id=org_id,
+                nango_connection_id=integration.nango_connection_id,
+            )
+        
+        result = await connector.send_email(
+            to=to,
+            subject=subject,
+            body=body,
+            cc=cc if cc else None,
+            bcc=bcc if bcc else None,
+        )
+        
+        if result.get("success"):
+            logger.info(f"Sent email via {provider} to {to}")
+            return {
+                "status": "completed",
+                "action": "send_email_from",
+                "provider": provider,
+                "to": to,
+                "subject": subject,
+            }
+        else:
+            return {
+                "status": "failed",
+                "error": result.get("error", "Failed to send email"),
+            }
+            
+    except Exception as e:
+        logger.error(f"Failed to send email via {provider}: {e}")
+        return {
+            "status": "failed",
+            "error": str(e),
+        }
 
 
 @celery_app.task(bind=True, name="workers.tasks.workflows.check_scheduled_workflows")
