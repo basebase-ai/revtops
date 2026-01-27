@@ -144,8 +144,8 @@ export function Home(): JSX.Element {
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
-      {/* Header */}
-      <header className="h-14 border-b border-surface-800 flex items-center px-6">
+      {/* Header - hidden on mobile since AppLayout has mobile header */}
+      <header className="hidden md:flex h-14 border-b border-surface-800 items-center px-4 md:px-6">
         <div className="flex items-center gap-3">
           <svg className="w-5 h-5 text-surface-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" />
@@ -160,21 +160,21 @@ export function Home(): JSX.Element {
       </header>
 
       {/* Content */}
-      <div className="flex-1 overflow-auto p-6">
+      <div className="flex-1 overflow-auto p-4 md:p-6">
         {/* Connect data sources banner - only shown when no sources connected */}
         {!hasConnectedSources && (
-          <div className="mb-6 bg-gradient-to-r from-primary-500/20 to-primary-600/10 border border-primary-500/30 rounded-xl p-5">
-            <div className="flex items-start gap-4">
+          <div className="mb-4 md:mb-6 bg-gradient-to-r from-primary-500/20 to-primary-600/10 border border-primary-500/30 rounded-xl p-4 md:p-5">
+            <div className="flex flex-col sm:flex-row items-start gap-3 md:gap-4">
               <div className="flex-shrink-0 w-10 h-10 rounded-lg bg-primary-500/20 flex items-center justify-center">
                 <svg className="w-5 h-5 text-primary-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
                 </svg>
               </div>
-              <div className="flex-1">
-                <h3 className="text-lg font-semibold text-surface-100 mb-1">
+              <div className="flex-1 min-w-0">
+                <h3 className="text-base md:text-lg font-semibold text-surface-100 mb-1">
                   Connect your data sources to get started
                 </h3>
-                <p className="text-surface-400 text-sm mb-4">
+                <p className="text-surface-400 text-sm mb-3 md:mb-4">
                   Link your CRM, calendar, and email to unlock AI-powered insights about your revenue pipeline.
                 </p>
                 <button
@@ -206,48 +206,50 @@ export function Home(): JSX.Element {
           </div>
         ) : (
           <div className="bg-surface-900 border border-surface-800 rounded-xl overflow-hidden">
-            <table className="w-full">
-              <thead>
-                <tr className="border-b border-surface-800">
-                  <th className="text-left px-4 py-3 text-xs font-medium text-surface-500 uppercase tracking-wider">
-                    Deal Name
-                  </th>
-                  <th className="text-left px-4 py-3 text-xs font-medium text-surface-500 uppercase tracking-wider">
-                    Stage
-                  </th>
-                  <th className="text-right px-4 py-3 text-xs font-medium text-surface-500 uppercase tracking-wider">
-                    Amount
-                  </th>
-                  <th className="text-right px-4 py-3 text-xs font-medium text-surface-500 uppercase tracking-wider">
-                    Close Date
-                  </th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-surface-800">
-                {deals.map((deal) => (
-                  <tr key={deal.id} className="hover:bg-surface-800/50 transition-colors">
-                    <td className="px-4 py-3">
-                      <div className="font-medium text-surface-200">{deal.name}</div>
-                    </td>
-                    <td className="px-4 py-3">
-                      {deal.stage ? (
-                        <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-primary-500/20 text-primary-400">
-                          {deal.stage}
-                        </span>
-                      ) : (
-                        <span className="text-surface-500">—</span>
-                      )}
-                    </td>
-                    <td className="px-4 py-3 text-right text-surface-300 tabular-nums">
-                      {formatCurrency(deal.amount)}
-                    </td>
-                    <td className="px-4 py-3 text-right text-surface-400 text-sm">
-                      {formatDate(deal.close_date)}
-                    </td>
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[400px]">
+                <thead>
+                  <tr className="border-b border-surface-800">
+                    <th className="text-left px-3 md:px-4 py-3 text-xs font-medium text-surface-500 uppercase tracking-wider">
+                      Deal Name
+                    </th>
+                    <th className="text-left px-3 md:px-4 py-3 text-xs font-medium text-surface-500 uppercase tracking-wider hidden sm:table-cell">
+                      Stage
+                    </th>
+                    <th className="text-right px-3 md:px-4 py-3 text-xs font-medium text-surface-500 uppercase tracking-wider">
+                      Amount
+                    </th>
+                    <th className="text-right px-3 md:px-4 py-3 text-xs font-medium text-surface-500 uppercase tracking-wider hidden sm:table-cell">
+                      Close Date
+                    </th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody className="divide-y divide-surface-800">
+                  {deals.map((deal) => (
+                    <tr key={deal.id} className="hover:bg-surface-800/50 transition-colors">
+                      <td className="px-3 md:px-4 py-3">
+                        <div className="font-medium text-surface-200 truncate max-w-[200px] md:max-w-none">{deal.name}</div>
+                      </td>
+                      <td className="px-3 md:px-4 py-3 hidden sm:table-cell">
+                        {deal.stage ? (
+                          <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-primary-500/20 text-primary-400">
+                            {deal.stage}
+                          </span>
+                        ) : (
+                          <span className="text-surface-500">—</span>
+                        )}
+                      </td>
+                      <td className="px-3 md:px-4 py-3 text-right text-surface-300 tabular-nums">
+                        {formatCurrency(deal.amount)}
+                      </td>
+                      <td className="px-3 md:px-4 py-3 text-right text-surface-400 text-sm hidden sm:table-cell">
+                        {formatDate(deal.close_date)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
         )}
       </div>

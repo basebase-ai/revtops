@@ -444,10 +444,10 @@ export function Chat({
 
   return (
     <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
-      {/* Header */}
-      <header className="h-14 border-b border-surface-800 flex items-center justify-between px-6 flex-shrink-0">
-        <div className="flex items-center gap-3">
-          <h1 className="text-lg font-semibold text-surface-100 truncate max-w-md">
+      {/* Header - hidden on mobile since AppLayout has mobile header */}
+      <header className="hidden md:flex h-14 border-b border-surface-800 items-center justify-between px-4 md:px-6 flex-shrink-0">
+        <div className="flex items-center gap-3 min-w-0">
+          <h1 className="text-lg font-semibold text-surface-100 truncate max-w-[200px] md:max-w-md">
             {chatTitle}
           </h1>
           {messages.length > 0 && (
@@ -474,7 +474,7 @@ export function Chat({
       {/* Content area with messages and optional artifact sidebar */}
       <div className="flex-1 flex overflow-hidden">
         {/* Messages */}
-        <div className="flex-1 overflow-y-auto p-6">
+        <div className="flex-1 overflow-y-auto overflow-x-hidden p-3 md:p-6">
           {messages.length === 0 && !isThinking ? (
             <EmptyState onSuggestionClick={handleSuggestionClick} />
           ) : (
@@ -505,35 +505,42 @@ export function Chat({
           )}
         </div>
 
-        {/* Artifact sidebar */}
+        {/* Artifact sidebar - overlay on mobile, sidebar on desktop */}
         {currentArtifact && (
-          <div className="w-96 border-l border-surface-800 bg-surface-900 p-4 overflow-y-auto">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-semibold text-surface-100">
-                {currentArtifact.title}
-              </h2>
-              <button
-                onClick={() => setCurrentArtifact(null)}
-                className="text-surface-400 hover:text-surface-200"
-              >
-                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              </button>
+          <>
+            {/* Mobile backdrop */}
+            <div 
+              className="fixed inset-0 bg-black/50 z-40 md:hidden"
+              onClick={() => setCurrentArtifact(null)}
+            />
+            <div className="fixed inset-y-0 right-0 w-full max-w-md z-50 md:relative md:w-96 md:z-auto border-l border-surface-800 bg-surface-900 p-4 overflow-y-auto">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-lg font-semibold text-surface-100 truncate">
+                  {currentArtifact.title}
+                </h2>
+                <button
+                  onClick={() => setCurrentArtifact(null)}
+                  className="text-surface-400 hover:text-surface-200 p-1"
+                >
+                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+              <ArtifactViewer artifact={currentArtifact} />
             </div>
-            <ArtifactViewer artifact={currentArtifact} />
-          </div>
+          </>
         )}
       </div>
 
       {/* Input */}
-      <div className="border-t border-surface-800 p-3">
+      <div className="border-t border-surface-800 p-2 md:p-3">
         <div className="max-w-3xl mx-auto">
           <div className="flex items-end gap-2">
-            {/* Attach button */}
+            {/* Attach button - hidden on very small screens */}
             <button
               type="button"
-              className="flex-shrink-0 w-8 h-8 mb-0.5 rounded-full border border-surface-600 text-surface-400 hover:text-surface-200 hover:border-surface-500 flex items-center justify-center transition-colors"
+              className="hidden sm:flex flex-shrink-0 w-8 h-8 mb-0.5 rounded-full border border-surface-600 text-surface-400 hover:text-surface-200 hover:border-surface-500 items-center justify-center transition-colors"
               title="Attach file"
             >
               <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -1052,20 +1059,20 @@ function EmptyState({ onSuggestionClick }: EmptyStateProps): JSX.Element {
   ];
 
   return (
-    <div className="h-full flex items-center justify-center">
+    <div className="h-full flex items-center justify-center px-4">
       <div className="text-center max-w-lg">
-        <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-primary-500/20 to-primary-700/20 flex items-center justify-center mx-auto mb-6">
+        <div className="w-16 h-16 md:w-20 md:h-20 rounded-2xl bg-gradient-to-br from-primary-500/20 to-primary-700/20 flex items-center justify-center mx-auto mb-4 md:mb-6">
           <img 
             src="/logo.svg" 
             alt="Revtops" 
-            className="w-10 h-10" 
+            className="w-8 h-8 md:w-10 md:h-10" 
             style={{ filter: 'invert(67%) sepia(51%) saturate(439%) hue-rotate(108deg) brightness(92%) contrast(88%)' }} 
           />
         </div>
-        <h2 className="text-2xl font-bold text-surface-50 mb-2">
+        <h2 className="text-xl md:text-2xl font-bold text-surface-50 mb-2">
           Ask anything about your revenue
         </h2>
-        <p className="text-surface-400 mb-8">
+        <p className="text-surface-400 mb-6 md:mb-8 text-sm md:text-base">
           Get instant insights from your connected data sources
         </p>
         <div className="flex flex-wrap gap-2 justify-center">
@@ -1073,7 +1080,7 @@ function EmptyState({ onSuggestionClick }: EmptyStateProps): JSX.Element {
             <button
               key={text}
               onClick={() => onSuggestionClick(text)}
-              className="px-4 py-2 rounded-full bg-surface-800 hover:bg-surface-700 text-surface-300 text-sm transition-colors border border-surface-700"
+              className="px-3 md:px-4 py-1.5 md:py-2 rounded-full bg-surface-800 hover:bg-surface-700 text-surface-300 text-xs md:text-sm transition-colors border border-surface-700"
             >
               {text}
             </button>

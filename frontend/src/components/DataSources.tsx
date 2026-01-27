@@ -430,49 +430,51 @@ export function DataSources(): JSX.Element {
 
     return (
       <div key={integration.id} className={cardClass}>
-        <div className="flex items-center gap-4">
-          {/* Icon */}
-          <div className={`${getColorClass(integration.color)} p-3 rounded-xl text-white ${iconOpacity} relative`}>
-            {renderIcon(integration.icon)}
-            {state === 'action-required' && (
-              <div className="absolute -top-1 -right-1 w-5 h-5 bg-amber-500 rounded-full flex items-center justify-center">
-                <HiExclamation className="w-3 h-3 text-white" />
-              </div>
-            )}
-          </div>
-
-          {/* Content */}
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2 flex-wrap">
-              <h3 className="font-medium text-surface-100">{integration.name}</h3>
-              {badge && (
-                <span className={`px-2 py-0.5 text-xs font-medium rounded-full ${badge.className}`}>
-                  {badge.text}
-                </span>
+        <div className="flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-4">
+          {/* Icon and name row on mobile */}
+          <div className="flex items-center gap-3 sm:gap-4">
+            <div className={`${getColorClass(integration.color)} p-2.5 sm:p-3 rounded-xl text-white ${iconOpacity} relative flex-shrink-0`}>
+              {renderIcon(integration.icon)}
+              {state === 'action-required' && (
+                <div className="absolute -top-1 -right-1 w-5 h-5 bg-amber-500 rounded-full flex items-center justify-center">
+                  <HiExclamation className="w-3 h-3 text-white" />
+                </div>
               )}
             </div>
-            <p className="text-sm text-surface-400 mt-0.5">{integration.description}</p>
-            {state === 'connected' && integration.lastSyncAt && (
-              <p className="text-xs text-surface-500 mt-1">
-                Last synced: {new Date(integration.lastSyncAt).toLocaleString()}
-              </p>
-            )}
-            {state === 'connected' && integration.lastError && (
-              <p className="text-xs text-red-400 mt-1">Error: {integration.lastError}</p>
-            )}
-            {state === 'action-required' && (
-              <p className="text-xs text-amber-400 mt-1">
-                Connect yours to include your data in team insights.
-              </p>
-            )}
+
+            {/* Content */}
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2 flex-wrap">
+                <h3 className="font-medium text-surface-100">{integration.name}</h3>
+                {badge && (
+                  <span className={`px-2 py-0.5 text-xs font-medium rounded-full ${badge.className}`}>
+                    {badge.text}
+                  </span>
+                )}
+              </div>
+              <p className="text-sm text-surface-400 mt-0.5 hidden sm:block">{integration.description}</p>
+              {state === 'connected' && integration.lastSyncAt && (
+                <p className="text-xs text-surface-500 mt-1 hidden sm:block">
+                  Last synced: {new Date(integration.lastSyncAt).toLocaleString()}
+                </p>
+              )}
+              {state === 'connected' && integration.lastError && (
+                <p className="text-xs text-red-400 mt-1">Error: {integration.lastError}</p>
+              )}
+              {state === 'action-required' && (
+                <p className="text-xs text-amber-400 mt-1 hidden sm:block">
+                  Connect yours to include your data in team insights.
+                </p>
+              )}
+            </div>
           </div>
 
-          {/* Actions */}
-          <div className="flex items-center gap-2">
+          {/* Actions - full width on mobile */}
+          <div className="flex items-center gap-2 sm:flex-shrink-0">
             <button
               onClick={buttonConfig.action}
               disabled={buttonConfig.disabled}
-              className={`${buttonConfig.className} flex items-center gap-2`}
+              className={`${buttonConfig.className} flex items-center justify-center gap-2 flex-1 sm:flex-initial`}
             >
               {(isConnecting || isSyncing) && !isMobile && (
                 <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
@@ -485,7 +487,7 @@ export function DataSources(): JSX.Element {
             {state === 'connected' && (
               <button
                 onClick={() => void handleDisconnect(integration.provider, integration.scope)}
-                className="px-4 py-2 text-sm font-medium text-red-400 hover:text-red-300 hover:bg-red-500/10 rounded-lg transition-colors"
+                className="px-3 sm:px-4 py-2 text-sm font-medium text-red-400 hover:text-red-300 hover:bg-red-500/10 rounded-lg transition-colors"
               >
                 Disconnect
               </button>
@@ -508,16 +510,16 @@ export function DataSources(): JSX.Element {
   }
 
   return (
-    <div className="flex-1 overflow-y-auto">
-      {/* Header */}
-      <header className="sticky top-0 bg-surface-950 border-b border-surface-800 px-8 py-6">
-        <h1 className="text-2xl font-bold text-surface-50">Data Sources</h1>
-        <p className="text-surface-400 mt-1">
+    <div className="flex-1 overflow-y-auto overflow-x-hidden">
+      {/* Header - hidden on mobile since AppLayout has mobile header */}
+      <header className="hidden md:block sticky top-0 bg-surface-950 border-b border-surface-800 px-4 md:px-8 py-4 md:py-6">
+        <h1 className="text-xl md:text-2xl font-bold text-surface-50">Data Sources</h1>
+        <p className="text-surface-400 mt-1 text-sm md:text-base">
           Connect your sales tools to unlock AI-powered insights
         </p>
       </header>
 
-      <div className="max-w-4xl mx-auto px-8 py-8 space-y-10">
+      <div className="max-w-4xl mx-auto px-4 md:px-8 py-4 md:py-8 space-y-6 md:space-y-10">
         {/* Mobile notice banner */}
         {isMobile && (
           <div className="bg-surface-800/50 border border-surface-700 rounded-xl p-4 flex items-start gap-3">

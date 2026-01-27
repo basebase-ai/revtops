@@ -3,6 +3,7 @@
  * 
  * Modeled after Claude's UX with:
  * - Collapsible left sidebar (icons when collapsed)
+ * - Slide-out drawer on mobile
  * - New Chat button
  * - Data Sources tab with badge
  * - Chats tab with recent conversations
@@ -13,6 +14,23 @@
  */
 
 import { useState, useEffect, useCallback } from 'react';
+
+// Hook to detect mobile viewport
+function useIsMobile(): boolean {
+  const [isMobile, setIsMobile] = useState(false);
+  
+  useEffect(() => {
+    const checkMobile = (): void => {
+      setIsMobile(window.innerWidth < 768);
+    };
+    
+    checkMobile();
+    window.addEventListener('resize', checkMobile);
+    return () => window.removeEventListener('resize', checkMobile);
+  }, []);
+  
+  return isMobile;
+}
 import { useShallow } from 'zustand/react/shallow';
 import { Sidebar } from './Sidebar';
 import { Home } from './Home';
@@ -138,6 +156,17 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
   const markConversationMessageComplete = useAppStore((state) => state.markConversationMessageComplete);
   const setConversationThinking = useAppStore((state) => state.setConversationThinking);
   const updateConversationToolMessage = useAppStore((state) => state.updateConversationToolMessage);
+  
+  // Mobile responsive state
+  const isMobile = useIsMobile();
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  
+  // Close mobile sidebar when view changes
+  useEffect(() => {
+    if (isMobile) {
+      setMobileSidebarOpen(false);
+    }
+  }, [currentView, currentChatId, isMobile]);
   
   // Panels
   const [showOrgPanel, setShowOrgPanel] = useState(false);
@@ -342,25 +371,82 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
     );
   }
 
+  // Get current view title for mobile header
+  const viewTitles: Record<string, string> = {
+    home: 'Home',
+    chat: 'Chat',
+    'data-sources': 'Data Sources',
+    search: 'Search',
+    automations: 'Automations',
+    admin: 'Admin',
+  };
+
   return (
-    <div className="h-screen flex bg-surface-950 overflow-hidden">
-      {/* Sidebar */}
-      <Sidebar
-        collapsed={sidebarCollapsed}
-        onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
-        currentView={currentView}
-        onViewChange={setCurrentView}
-        connectedSourcesCount={connectedIntegrationsCount}
-        recentChats={recentChats.slice(0, 10)}
-        onSelectChat={handleSelectChat}
-        onDeleteChat={handleDeleteChat}
-        currentChatId={currentChatId}
-        onNewChat={startNewChat}
-        organization={organization}
-        memberCount={teamMembers.length}
-        onOpenOrgPanel={() => setShowOrgPanel(true)}
-        onOpenProfilePanel={() => setShowProfilePanel(true)}
-      />
+    <div className="h-screen flex flex-col md:flex-row bg-surface-950 overflow-hidden">
+      {/* Mobile Header */}
+      {isMobile && (
+        <header className="h-14 bg-surface-900 border-b border-surface-800 flex items-center justify-between px-4 flex-shrink-0">
+          <button
+            onClick={() => setMobileSidebarOpen(true)}
+            className="p-2 -ml-2 rounded-lg text-surface-400 hover:text-surface-200 hover:bg-surface-800 transition-colors"
+            aria-label="Open menu"
+          >
+            <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+            </svg>
+          </button>
+          <div className="flex items-center gap-2">
+            <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-primary-500 to-primary-700 flex items-center justify-center">
+              <img src="/logo.svg" alt="Revtops" className="w-4 h-4 invert" />
+            </div>
+            <span className="font-semibold text-surface-100">{viewTitles[currentView] || 'Revtops'}</span>
+          </div>
+          <button
+            onClick={startNewChat}
+            className="p-2 -mr-2 rounded-lg text-surface-400 hover:text-surface-200 hover:bg-surface-800 transition-colors"
+            aria-label="New chat"
+          >
+            <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+            </svg>
+          </button>
+        </header>
+      )}
+
+      {/* Mobile Sidebar Backdrop */}
+      {isMobile && mobileSidebarOpen && (
+        <div 
+          className="fixed inset-0 bg-black/50 z-40 transition-opacity"
+          onClick={() => setMobileSidebarOpen(false)}
+        />
+      )}
+
+      {/* Sidebar - hidden on mobile, shown as overlay when open */}
+      <div className={`
+        ${isMobile 
+          ? `fixed inset-y-0 left-0 z-50 transform transition-transform duration-300 ease-in-out ${mobileSidebarOpen ? 'translate-x-0' : '-translate-x-full'}`
+          : ''
+        }
+      `}>
+        <Sidebar
+          collapsed={isMobile ? false : sidebarCollapsed}
+          onToggleCollapse={() => isMobile ? setMobileSidebarOpen(false) : setSidebarCollapsed(!sidebarCollapsed)}
+          currentView={currentView}
+          onViewChange={setCurrentView}
+          connectedSourcesCount={connectedIntegrationsCount}
+          recentChats={recentChats.slice(0, 10)}
+          onSelectChat={handleSelectChat}
+          onDeleteChat={handleDeleteChat}
+          currentChatId={currentChatId}
+          onNewChat={startNewChat}
+          organization={organization}
+          memberCount={teamMembers.length}
+          onOpenOrgPanel={() => setShowOrgPanel(true)}
+          onOpenProfilePanel={() => setShowProfilePanel(true)}
+          isMobile={isMobile}
+          onCloseMobile={() => setMobileSidebarOpen(false)}
+        />
+      </div>
 
       {/* Main Content */}
       <main className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden">
