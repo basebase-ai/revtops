@@ -66,6 +66,7 @@ class TaskManager:
         user_id: str,
         organization_id: str,
         user_message: str,
+        user_email: str | None = None,
         local_time: str | None = None,
         timezone: str | None = None,
     ) -> str:
@@ -80,6 +81,7 @@ class TaskManager:
             user_id: UUID of the user
             organization_id: UUID of the organization
             user_message: The user's message to process
+            user_email: User's email address
             local_time: User's local time (ISO format)
             timezone: User's timezone
             
@@ -115,6 +117,7 @@ class TaskManager:
                 user_id=user_id,
                 organization_id=organization_id,
                 user_message=user_message,
+                user_email=user_email,
                 local_time=local_time,
                 timezone=timezone,
             )
@@ -131,6 +134,7 @@ class TaskManager:
         user_id: str,
         organization_id: str,
         user_message: str,
+        user_email: str | None,
         local_time: str | None,
         timezone: str | None,
     ) -> None:
@@ -145,6 +149,7 @@ class TaskManager:
                 user_id=user_id,
                 organization_id=organization_id,
                 conversation_id=conversation_id,
+                user_email=user_email,
                 local_time=local_time,
                 timezone=timezone,
             )

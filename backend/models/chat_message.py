@@ -35,6 +35,9 @@ class ChatMessage(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True
     )
+    organization_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=True, index=True
+    )
     role: Mapped[str] = mapped_column(
         String(20), nullable=False
     )  # 'user' or 'assistant'

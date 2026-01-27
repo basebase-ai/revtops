@@ -225,6 +225,7 @@ class ChatOrchestrator:
         user_id: str,
         organization_id: str | None,
         conversation_id: str | None = None,
+        user_email: str | None = None,
         local_time: str | None = None,
         timezone: str | None = None,
     ) -> None:
@@ -235,12 +236,14 @@ class ChatOrchestrator:
             user_id: UUID of the authenticated user
             organization_id: UUID of the user's organization (may be None for new users)
             conversation_id: UUID of the conversation (may be None for new conversations)
+            user_email: Email of the authenticated user
             local_time: ISO timestamp of user's local time
             timezone: User's timezone (e.g., "America/New_York")
         """
         self.user_id = user_id
         self.organization_id = organization_id
         self.conversation_id = conversation_id
+        self.user_email = user_email
         self.local_time = local_time
         self.timezone = timezone
         self.client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
@@ -288,8 +291,18 @@ class ChatOrchestrator:
         content_blocks: list[dict[str, Any]] = []
         current_text = ""  # Buffer for current text block
 
-        # Build system prompt with time context
+        # Build system prompt with user and time context
         system_prompt = SYSTEM_PROMPT
+        
+        # Add user context so the agent knows who "me" is
+        if self.user_email:
+            user_context = f"\n\n## Current User\n"
+            user_context += f"- Email: {self.user_email}\n"
+            user_context += f"- User ID: {self.user_id}\n"
+            user_context += "\nWhen the user asks about 'my' data, use this email to filter queries. "
+            user_context += "For example, to find the user's company, join the users table (filter by email) to the organizations table."
+            system_prompt += user_context
+        
         if self.local_time or self.timezone:
             time_context = "\n\n## Current Time Context\n"
             if self.local_time:
@@ -297,7 +310,7 @@ class ChatOrchestrator:
             if self.timezone:
                 time_context += f"- User's timezone: {self.timezone}\n"
             time_context += "\nUse this to provide relative time references (e.g., '3 hours ago', 'yesterday') when discussing sync times, activity dates, etc."
-            system_prompt = SYSTEM_PROMPT + time_context
+            system_prompt += time_context
 
         # Initial Claude call
         response = self.client.messages.create(
@@ -431,6 +444,7 @@ class ChatOrchestrator:
         async with get_session() as session:
             conversation = Conversation(
                 user_id=UUID(self.user_id),
+                organization_id=UUID(self.organization_id) if self.organization_id else None,
                 title=None,
             )
             session.add(conversation)
@@ -552,6 +566,7 @@ class ChatOrchestrator:
                 ChatMessage(
                     conversation_id=conv_uuid,
                     user_id=UUID(self.user_id),
+                    organization_id=UUID(self.organization_id) if self.organization_id else None,
                     role="user",
                     content_blocks=[{"type": "text", "text": user_msg}],
                 )
@@ -577,6 +592,7 @@ class ChatOrchestrator:
                 ChatMessage(
                     conversation_id=conv_uuid,
                     user_id=UUID(self.user_id),
+                    organization_id=UUID(self.organization_id) if self.organization_id else None,
                     role="assistant",
                     content_blocks=assistant_blocks,
                 )

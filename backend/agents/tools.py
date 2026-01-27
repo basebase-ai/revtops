@@ -14,27 +14,27 @@ import logging
 import re
 from datetime import datetime
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import httpx
 from sqlalchemy import select, text
 
 from config import settings
+from models.account import Account
 from models.artifact import Artifact
+from models.contact import Contact
 from models.crm_operation import CrmOperation
 from models.database import get_session
+from models.deal import Deal
 from models.integration import Integration
 
 logger = logging.getLogger(__name__)
 
-# Tables that require organization_id filtering for multi-tenancy
-ORG_SCOPED_TABLES: set[str] = {
-    "deals", "accounts", "contacts", "activities", "integrations", "artifacts", "users"
-}
-
 # Tables that are allowed to be queried (synced data only - no internal admin tables)
+# Note: Row-Level Security (RLS) handles organization filtering at the database level
 ALLOWED_TABLES: set[str] = {
-    "deals", "accounts", "contacts", "activities", "integrations", "users"
+    "deals", "accounts", "contacts", "activities", "integrations", "users", "organizations",
+    "pipelines", "pipeline_stages"
 }
 
 
@@ -49,20 +49,26 @@ Use this for any data analysis: filtering, joins, aggregations, date comparisons
 The query is automatically scoped to the user's organization for multi-tenant tables.
 
 Available tables:
-- deals: Sales opportunities (name, amount, stage, close_date, owner_id, account_id, probability, custom_fields)
-- accounts: Companies/organizations (name, domain, industry, employee_count, annual_revenue, owner_id)
-- contacts: People (name, email, title, phone, account_id)
+- deals: Sales opportunities (name, amount, stage, close_date, owner_id, account_id, pipeline_id, probability, custom_fields)
+- pipelines: Sales pipelines/processes (name, display_order, is_default, source_system)
+- pipeline_stages: Stages within pipelines (pipeline_id, name, display_order, probability, is_closed_won, is_closed_lost)
+- accounts: Companies/organizations in CRM - your customers/prospects (name, domain, industry, employee_count, annual_revenue, owner_id)
+- contacts: People at customer accounts (name, email, title, phone, account_id)
 - activities: Emails, meetings, calls, notes (type, subject, description, activity_date, source_system)
 - integrations: Connected data sources (provider, is_active, last_sync_at, last_error, scope, user_id)
-- users: Team members (email, full_name, role, avatar_url, salesforce_user_id)
+- users: Team members (email, name, role, avatar_url, salesforce_user_id)
+- organizations: The user's own company info (name, logo_url, created_at)
 
 Examples:
 - SELECT * FROM deals WHERE stage = 'closedwon' LIMIT 10
 - SELECT stage, COUNT(*), SUM(amount) FROM deals GROUP BY stage
 - SELECT d.name, a.name as account FROM deals d LEFT JOIN accounts a ON d.account_id = a.id
 - SELECT * FROM deals WHERE close_date BETWEEN '2026-01-01' AND '2026-01-31'
+- SELECT p.name as pipeline, COUNT(*) as deal_count FROM deals d JOIN pipelines p ON d.pipeline_id = p.id GROUP BY p.name
+- SELECT p.name as pipeline, ps.name as stage, ps.probability FROM pipelines p JOIN pipeline_stages ps ON ps.pipeline_id = p.id ORDER BY p.display_order, ps.display_order
 - SELECT provider, last_sync_at, last_error FROM integrations WHERE is_active = true
-- SELECT full_name, email, role FROM users
+- SELECT name, email, role FROM users
+- SELECT name FROM organizations -- user's own company name
 
 IMPORTANT: Only SELECT queries are allowed. No INSERT, UPDATE, DELETE, DROP, etc.""",
             "input_schema": {
@@ -309,10 +315,8 @@ def _validate_sql_query(query: str) -> tuple[bool, str | None]:
 def _extract_tables_from_query(query: str) -> set[str]:
     """Extract table names from a SQL query (best effort)."""
     tables: set[str] = set()
-    query_upper = query.upper()
     
     # Match FROM and JOIN clauses
-    # This is a simplified parser - handles common cases
     patterns = [
         r'\bFROM\s+([a-zA-Z_][a-zA-Z0-9_]*)',
         r'\bJOIN\s+([a-zA-Z_][a-zA-Z0-9_]*)',
@@ -325,104 +329,30 @@ def _extract_tables_from_query(query: str) -> set[str]:
     return tables
 
 
-def _inject_org_filter(query: str, organization_id: str, tables: set[str]) -> str:
-    """
-    Inject organization_id filter into the query for multi-tenant tables.
-    This is a simplified approach - wraps the query as a CTE and adds filters.
-    """
-    org_tables = tables & ORG_SCOPED_TABLES
-    
-    if not org_tables:
-        return query
-    
-    # Build WHERE conditions for org-scoped tables
-    # We wrap the original query and add a filter
-    # This approach works for simple queries; complex queries may need adjustment
-    
-    # For single-table queries, we can inject directly
-    if len(tables) == 1 and len(org_tables) == 1:
-        table = list(org_tables)[0]
-        # Check if WHERE already exists
-        if re.search(r'\bWHERE\b', query, re.IGNORECASE):
-            # Add to existing WHERE
-            query = re.sub(
-                r'\bWHERE\b',
-                f"WHERE {table}.organization_id = '{organization_id}' AND ",
-                query,
-                count=1,
-                flags=re.IGNORECASE
-            )
-        else:
-            # Find position to insert WHERE (before GROUP BY, ORDER BY, LIMIT, or end)
-            insert_patterns = [
-                (r'\bGROUP\s+BY\b', 'GROUP BY'),
-                (r'\bORDER\s+BY\b', 'ORDER BY'),
-                (r'\bLIMIT\b', 'LIMIT'),
-                (r'\bHAVING\b', 'HAVING'),
-            ]
-            
-            insert_pos = len(query)
-            for pattern, _ in insert_patterns:
-                match = re.search(pattern, query, re.IGNORECASE)
-                if match and match.start() < insert_pos:
-                    insert_pos = match.start()
-            
-            where_clause = f" WHERE {table}.organization_id = '{organization_id}' "
-            query = query[:insert_pos] + where_clause + query[insert_pos:]
-    else:
-        # For multi-table queries, wrap in CTE with filter
-        # This is safer but may not work for all query types
-        filter_conditions = " AND ".join(
-            f"{t}.organization_id = '{organization_id}'" for t in org_tables
-        )
-        
-        if re.search(r'\bWHERE\b', query, re.IGNORECASE):
-            query = re.sub(
-                r'\bWHERE\b',
-                f"WHERE ({filter_conditions}) AND ",
-                query,
-                count=1,
-                flags=re.IGNORECASE
-            )
-        else:
-            # Find the right place to insert
-            insert_patterns = [
-                (r'\bGROUP\s+BY\b', 'GROUP BY'),
-                (r'\bORDER\s+BY\b', 'ORDER BY'),
-                (r'\bLIMIT\b', 'LIMIT'),
-                (r'\bHAVING\b', 'HAVING'),
-            ]
-            
-            insert_pos = len(query)
-            for pattern, _ in insert_patterns:
-                match = re.search(pattern, query, re.IGNORECASE)
-                if match and match.start() < insert_pos:
-                    insert_pos = match.start()
-            
-            where_clause = f" WHERE {filter_conditions} "
-            query = query[:insert_pos] + where_clause + query[insert_pos:]
-    
-    return query
-
-
 async def _run_sql_query(
     params: dict[str, Any], organization_id: str, user_id: str
 ) -> dict[str, Any]:
-    """Execute a read-only SQL query with organization scoping."""
+    """
+    Execute a read-only SQL query with Row-Level Security (RLS).
+    
+    RLS is enforced at the database level via policies that check 
+    `app.current_org_id` session variable. This handles all query patterns
+    automatically (JOINs, subqueries, CTEs, etc.) without fragile SQL parsing.
+    """
     query = params.get("query", "").strip()
     
     if not query:
         return {"error": "No query provided"}
     
-    logger.info("[Tools._run_sql_query] Original query: %s", query)
+    logger.info("[Tools._run_sql_query] Query: %s", query)
     
-    # Validate query is safe
+    # Validate query is safe (SELECT only, no dangerous keywords)
     is_valid, error = _validate_sql_query(query)
     if not is_valid:
         logger.warning("[Tools._run_sql_query] Query validation failed: %s", error)
         return {"error": error}
     
-    # Extract tables and validate they're allowed
+    # Extract tables and validate they're in the allowed list
     tables = _extract_tables_from_query(query)
     logger.debug("[Tools._run_sql_query] Detected tables: %s", tables)
     
@@ -430,17 +360,23 @@ async def _run_sql_query(
     if disallowed:
         return {"error": f"Access to tables not allowed: {disallowed}"}
     
-    # Inject organization filter for multi-tenant tables
-    filtered_query = _inject_org_filter(query, organization_id, tables)
-    logger.info("[Tools._run_sql_query] Filtered query: %s", filtered_query)
-    
     # Add LIMIT if not present to prevent huge result sets
-    if not re.search(r'\bLIMIT\b', filtered_query, re.IGNORECASE):
-        filtered_query = filtered_query.rstrip(';') + " LIMIT 100"
+    final_query = query
+    if not re.search(r'\bLIMIT\b', final_query, re.IGNORECASE):
+        final_query = final_query.rstrip(';') + " LIMIT 100"
     
     try:
         async with get_session() as session:
-            result = await session.execute(text(filtered_query))
+            # Set the organization context for Row-Level Security
+            # This session variable is checked by RLS policies on all tables
+            # Use set_config() instead of SET LOCAL for asyncpg compatibility
+            await session.execute(
+                text("SELECT set_config('app.current_org_id', :org_id, true)"),
+                {"org_id": organization_id}
+            )
+            
+            # Execute the query - RLS automatically filters by organization
+            result = await session.execute(text(final_query))
             rows = result.fetchall()
             columns = list(result.keys())
             
@@ -985,6 +921,25 @@ async def _execute_hubspot_operation(
     
     skipped_count = len(crm_op.validated_records) - len(records_to_process)
     
+    # Incremental sync: upsert created records to local database immediately
+    # This avoids needing a full re-sync for user to see their new records
+    synced_count = 0
+    if created:
+        try:
+            synced_count = await _sync_created_records_to_db(
+                crm_op.record_type, created, crm_op.organization_id
+            )
+            logger.info(
+                "[Tools._execute_hubspot_operation] Synced %d new %s(s) to local DB",
+                synced_count, crm_op.record_type
+            )
+        except Exception as sync_err:
+            # Don't fail the operation if sync fails - records are in HubSpot
+            logger.warning(
+                "[Tools._execute_hubspot_operation] Failed to sync to local DB: %s",
+                str(sync_err)
+            )
+    
     # Use appropriate verb based on operation type
     operation_verb = "Updated" if crm_op.operation == "update" else "Created"
     
@@ -994,9 +949,114 @@ async def _execute_hubspot_operation(
         "success_count": len(created),
         "failure_count": len(errors),
         "skipped_count": skipped_count,
+        "synced_to_local": synced_count,
         "created": created,
         "errors": errors if errors else None,
     }
+
+
+async def _sync_created_records_to_db(
+    record_type: str,
+    created_records: list[dict[str, Any]],
+    organization_id: UUID,
+) -> int:
+    """
+    Sync newly created CRM records to local database (incremental sync).
+    
+    This allows users to immediately see records they just created without
+    waiting for a full sync cycle.
+    
+    Args:
+        record_type: Type of record (contact, company, deal)
+        created_records: List of records returned from HubSpot API
+        organization_id: Organization UUID
+        
+    Returns:
+        Number of records synced
+    """
+    synced = 0
+    
+    async with get_session() as session:
+        for hs_record in created_records:
+            hs_id = hs_record.get("id", "")
+            properties = hs_record.get("properties", {})
+            
+            if not hs_id:
+                continue
+            
+            try:
+                if record_type == "contact":
+                    # Build contact from HubSpot response
+                    first_name = properties.get("firstname") or ""
+                    last_name = properties.get("lastname") or ""
+                    full_name = f"{first_name} {last_name}".strip()
+                    if not full_name:
+                        full_name = properties.get("email") or f"Contact {hs_id}"
+                    
+                    contact = Contact(
+                        id=uuid4(),
+                        organization_id=organization_id,
+                        source_system="hubspot",
+                        source_id=hs_id,
+                        name=full_name,
+                        email=properties.get("email"),
+                        title=properties.get("jobtitle"),
+                        phone=properties.get("phone"),
+                    )
+                    await session.merge(contact)
+                    synced += 1
+                    
+                elif record_type == "company":
+                    # Build account from HubSpot response
+                    name = properties.get("name")
+                    if not name:
+                        name = properties.get("domain") or f"Company {hs_id}"
+                    
+                    account = Account(
+                        id=uuid4(),
+                        organization_id=organization_id,
+                        source_system="hubspot",
+                        source_id=hs_id,
+                        name=name,
+                        domain=properties.get("domain"),
+                        industry=properties.get("industry"),
+                    )
+                    await session.merge(account)
+                    synced += 1
+                    
+                elif record_type == "deal":
+                    # Build deal from HubSpot response
+                    from decimal import Decimal
+                    
+                    amount = None
+                    if properties.get("amount"):
+                        try:
+                            amount = Decimal(str(properties["amount"]))
+                        except (ValueError, TypeError):
+                            pass
+                    
+                    deal = Deal(
+                        id=uuid4(),
+                        organization_id=organization_id,
+                        source_system="hubspot",
+                        source_id=hs_id,
+                        name=properties.get("dealname") or "Untitled Deal",
+                        amount=amount,
+                        stage=properties.get("dealstage"),
+                    )
+                    await session.merge(deal)
+                    synced += 1
+                    
+            except Exception as e:
+                logger.warning(
+                    "[Tools._sync_created_records_to_db] Failed to sync %s %s: %s",
+                    record_type, hs_id, str(e)
+                )
+                continue
+        
+        await session.commit()
+    
+    return synced
 
 
 async def cancel_crm_operation(operation_id: str) -> dict[str, Any]:

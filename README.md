@@ -24,6 +24,8 @@ AI-powered revenue operations assistant that connects to HubSpot, Slack, Google 
 - [Supabase project](https://supabase.com) with Google OAuth configured
 - [Nango account](https://app.nango.dev) with integrations configured
 - Anthropic API key
+- Python 3.10+ (brew or venv; op-ed: use pyenv to force this globally)
+- Dependencies - python -m pip install -r requirements.txt (from the backend directory; again, be env mindful) 
 
 ### Setup
 
@@ -80,6 +82,81 @@ cd frontend
 npm install
 npm run dev
 ```
+
+## Railway Deployment
+
+This monorepo deploys to Railway as **6 services** from a single GitHub repo:
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│  Railway Project                                                         │
+│                                                                          │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐                  │
+│  │ revtops-www  │  │ Revtops APP  │  │   Backend    │                  │
+│  │ (website)    │  │ (frontend)   │  │   (API)      │                  │
+│  └──────────────┘  └──────────────┘  └──────┬───────┘                  │
+│                                              │                          │
+│  ┌──────────────┐  ┌──────────────┐         │                          │
+│  │    Beat      │  │    Worker    │         │                          │
+│  │ (scheduler)  │  │ (executor)   │         │                          │
+│  └──────┬───────┘  └──────┬───────┘         │                          │
+│         │                 │                  │                          │
+│         └─────────────────┼──────────────────┘                          │
+│                           ▼                                              │
+│                    ┌─────────────┐                                       │
+│                    │    Redis    │                                       │
+│                    └─────────────┘                                       │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Service Configuration
+
+| Service | Root Directory | Start Command | Healthcheck |
+|---------|---------------|---------------|-------------|
+| **revtops-www** | `frontend` | (default) | None |
+| **Revtops APP** | `frontend` | (default) | None |
+| **Backend (API)** | `backend` | (default - uses Dockerfile CMD) | `/health` |
+| **Beat** | `backend` | `python -m celery -A workers.celery_app beat --loglevel=info` | None |
+| **Worker** | `backend` | `python -m celery -A workers.celery_app worker --loglevel=info -Q default,sync,workflows` | None |
+| **Redis** | — | Railway Redis template | — |
+
+### Setup Steps
+
+1. **Create Redis service:**
+   - New → Database → Redis
+   - Railway auto-creates `REDIS_URL`
+
+2. **Create each app service:**
+   - New → GitHub Repo → select this repo
+   - Set **Root Directory** in Settings → Source
+   - Set **Custom Start Command** in Settings → Deploy (for beat/worker only)
+   - Remove healthcheck for beat/worker (they don't serve HTTP)
+
+3. **Share environment variables:**
+   - Backend, Beat, Worker all need: `DATABASE_URL`, `REDIS_URL`, `ANTHROPIC_API_KEY`, `NANGO_SECRET_KEY`, etc.
+   - Use Railway's variable references to share `REDIS_URL` from the Redis service
+
+4. **Add healthcheck for API only:**
+   - Backend (API) → Settings → Deploy → Healthcheck Path: `/health`
+
+### Scaling Workers
+
+Workers can be horizontally scaled - just duplicate the worker service. All workers pull from the same Redis queue, tasks are automatically distributed.
+
+**Important:** Never run more than one Beat instance (causes duplicate scheduled tasks).
+
+### Environment Variables by Service
+
+| Variable | Backend | Beat | Worker |
+|----------|---------|------|--------|
+| `DATABASE_URL` | ✅ | ❌ | ✅ |
+| `REDIS_URL` | ✅ | ✅ | ✅ |
+| `ANTHROPIC_API_KEY` | ✅ | ❌ | ✅ |
+| `OPENAI_API_KEY` | ✅ | ❌ | ✅ |
+| `NANGO_SECRET_KEY` | ✅ | ❌ | ✅ |
+| Other API keys | ✅ | ❌ | ✅ |
+
+Beat only needs `REDIS_URL` to schedule tasks. Workers need full access to execute them.
 
 ## Project Structure
 

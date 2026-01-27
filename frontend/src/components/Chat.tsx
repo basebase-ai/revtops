@@ -74,12 +74,15 @@ export function Chat({
   const conversationMessages = conversationState?.messages ?? [];
   const chatTitle = conversationState?.title ?? 'New Chat';
   const conversationThinking = conversationState?.isThinking ?? false;
+  const activeTaskId = conversationState?.activeTaskId ?? null;
   
   // Get actions from Zustand (stable references)
   const addConversationMessage = useAppStore((s) => s.addConversationMessage);
   const setConversationMessages = useAppStore((s) => s.setConversationMessages);
   const setConversationTitle = useAppStore((s) => s.setConversationTitle);
   const setConversationThinking = useAppStore((s) => s.setConversationThinking);
+  const pendingChatInput = useAppStore((s) => s.pendingChatInput);
+  const setPendingChatInput = useAppStore((s) => s.setPendingChatInput);
   
   // Local state
   const [input, setInput] = useState<string>('');
@@ -208,6 +211,18 @@ export function Chat({
       return () => clearTimeout(timer);
     }
   }, [chatId, messages.length, isLoading, isConnected]);
+
+  // Consume pending chat input (from Search "Ask about" button)
+  useEffect(() => {
+    if (pendingChatInput && chatId === null) {
+      setInput(pendingChatInput);
+      setPendingChatInput(null);
+      // Focus the input so user can see the pre-filled text
+      setTimeout(() => {
+        inputRef.current?.focus();
+      }, 100);
+    }
+  }, [pendingChatInput, chatId, setPendingChatInput]);
 
   // Load conversation when selecting an existing chat from sidebar
   useEffect(() => {
@@ -354,10 +369,67 @@ export function Chat({
     }
   };
 
+  const handleStop = useCallback((): void => {
+    if (!activeTaskId) {
+      console.log('[Chat] handleStop blocked - no active task');
+      return;
+    }
+    
+    console.log('[Chat] Stopping task:', activeTaskId);
+    sendMessage({
+      type: 'cancel',
+      task_id: activeTaskId,
+    });
+    
+    // Clear thinking state immediately for responsiveness
+    const currentConvId = localConversationId || chatId;
+    if (currentConvId) {
+      setConversationThinking(currentConvId, false);
+    } else {
+      setPendingThinking(false);
+    }
+  }, [activeTaskId, sendMessage, localConversationId, chatId, setConversationThinking]);
+
   const handleSuggestionClick = (text: string): void => {
     setInput(text);
     inputRef.current?.focus();
   };
+
+  // Copy conversation to clipboard
+  const [copySuccess, setCopySuccess] = useState(false);
+  const handleCopyConversation = useCallback(async () => {
+    const lines: string[] = [];
+    
+    for (const msg of messages) {
+      const role = msg.role === 'user' ? 'User' : 'Assistant';
+      lines.push(`--- ${role} ---`);
+      
+      for (const block of msg.contentBlocks) {
+        if (block.type === 'text') {
+          lines.push(block.text);
+        } else if (block.type === 'tool_use') {
+          lines.push(`[Tool: ${block.name}]`);
+          lines.push(`Input: ${JSON.stringify(block.input, null, 2)}`);
+          if (block.result) {
+            lines.push(`Result: ${JSON.stringify(block.result, null, 2)}`);
+          }
+          if (block.status) {
+            lines.push(`Status: ${block.status}`);
+          }
+        }
+      }
+      lines.push('');
+    }
+    
+    const text = lines.join('\n');
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopySuccess(true);
+      setTimeout(() => setCopySuccess(false), 2000);
+    } catch (err) {
+      console.error('Failed to copy:', err);
+    }
+  }, [messages]);
 
   if (isLoading) {
     return (
@@ -378,6 +450,23 @@ export function Chat({
           <h1 className="text-lg font-semibold text-surface-100 truncate max-w-md">
             {chatTitle}
           </h1>
+          {messages.length > 0 && (
+            <button
+              onClick={() => void handleCopyConversation()}
+              className="p-1.5 rounded-md text-surface-400 hover:text-surface-200 hover:bg-surface-800 transition-colors"
+              title="Copy conversation"
+            >
+              {copySuccess ? (
+                <svg className="w-4 h-4 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                </svg>
+              ) : (
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                </svg>
+              )}
+            </button>
+          )}
         </div>
         <ConnectionStatus state={connectionState} />
       </header>
@@ -463,24 +552,36 @@ export function Chat({
                 e.target.style.height = `${Math.min(e.target.scrollHeight, 240)}px`; // 240px ≈ 10 lines
               }}
               onKeyDown={handleKeyDown}
-              placeholder="Ask about your pipeline..."
-              className="flex-1 resize-none bg-surface-900 text-surface-100 rounded-2xl border border-surface-700 px-4 py-2 text-sm placeholder-surface-500 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all duration-150 leading-5 scrollbar-none"
+              placeholder={isThinking ? 'Thinking...' : 'Ask about your pipeline...'}
+              className="flex-1 resize-none bg-surface-900 text-surface-100 rounded-2xl border border-surface-700 px-4 py-2 text-sm placeholder-surface-500 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all duration-150 leading-5 scrollbar-none disabled:opacity-50 disabled:cursor-not-allowed"
               style={{ minHeight: '36px', maxHeight: '240px' }}
               rows={1}
-              disabled={!isConnected}
+              disabled={!isConnected || isThinking}
               autoFocus={chatId === null}
             />
             
-            {/* Send button - circle with up arrow */}
-            <button
-              onClick={handleSend}
-              disabled={!input.trim() || !isConnected}
-              className="flex-shrink-0 w-8 h-8 mb-0.5 rounded-full bg-primary-600 text-white hover:bg-primary-500 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center transition-colors"
-            >
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 10l7-7m0 0l7 7m-7-7v18" />
-              </svg>
-            </button>
+            {/* Send/Stop button */}
+            {isThinking ? (
+              <button
+                onClick={handleStop}
+                className="flex-shrink-0 w-8 h-8 mb-0.5 rounded-full bg-red-600 text-white hover:bg-red-500 flex items-center justify-center transition-colors"
+                title="Stop"
+              >
+                <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24">
+                  <rect x="6" y="6" width="12" height="12" rx="1" />
+                </svg>
+              </button>
+            ) : (
+              <button
+                onClick={handleSend}
+                disabled={!input.trim() || !isConnected}
+                className="flex-shrink-0 w-8 h-8 mb-0.5 rounded-full bg-primary-600 text-white hover:bg-primary-500 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center transition-colors"
+              >
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 10l7-7m0 0l7 7m-7-7v18" />
+                </svg>
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -748,10 +849,13 @@ function getToolStatusText(
       // Extract table names from the SQL query for a more descriptive message
       const query = typeof input?.query === 'string' ? input.query.toLowerCase() : '';
       const tableNames: string[] = [];
-      const knownTables = ['deals', 'accounts', 'contacts', 'activities', 'integrations', 'users'];
+      const knownTables = [
+        'deals', 'accounts', 'contacts', 'activities', 'integrations', 
+        'users', 'organizations', 'pipelines', 'pipeline_stages'
+      ];
       for (const table of knownTables) {
         if (query.includes(table)) {
-          tableNames.push(table);
+          tableNames.push(table === 'pipeline_stages' ? 'stages' : table);
         }
       }
       const tableDesc = tableNames.length > 0 

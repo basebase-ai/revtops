@@ -17,6 +17,7 @@ from models.database import Base
 if TYPE_CHECKING:
     from models.account import Account
     from models.activity import Activity
+    from models.pipeline import Pipeline
     from models.user import User
 
 
@@ -43,6 +44,9 @@ class Deal(Base):
     )
     owner_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id"), nullable=True
+    )
+    pipeline_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("pipelines.id"), nullable=True
     )
     amount: Mapped[Optional[Decimal]] = mapped_column(Numeric(15, 2), nullable=True)
     stage: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
@@ -71,6 +75,9 @@ class Deal(Base):
         "Account", back_populates="deals"
     )
     owner: Mapped[Optional["User"]] = relationship("User", back_populates="deals")
+    pipeline: Mapped[Optional["Pipeline"]] = relationship(
+        "Pipeline", back_populates="deals"
+    )
     activities: Mapped[list["Activity"]] = relationship(
         "Activity", back_populates="deal"
     )
@@ -86,6 +93,7 @@ class Deal(Base):
             "close_date": self.close_date.isoformat() if self.close_date else None,
             "account_id": str(self.account_id) if self.account_id else None,
             "owner_id": str(self.owner_id) if self.owner_id else None,
+            "pipeline_id": str(self.pipeline_id) if self.pipeline_id else None,
             "custom_fields": self.custom_fields,
             "source_id": self.source_id,
             "source_system": self.source_system,

@@ -89,6 +89,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str) -> None:
 
         organization_id = str(user.organization_id) if user.organization_id else None
         user_id_str = str(user.id)
+        user_email = user.email
 
     try:
         # Send active tasks on connect for client catchup
@@ -128,7 +129,11 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str) -> None:
                     title = _generate_title(user_message)
                     
                     async with get_session() as session:
-                        conversation = Conversation(user_id=UUID(user_id_str), title=title)
+                        conversation = Conversation(
+                            user_id=UUID(user_id_str), 
+                            organization_id=UUID(organization_id) if organization_id else None,
+                            title=title,
+                        )
                         session.add(conversation)
                         await session.commit()
                         await session.refresh(conversation)
@@ -153,6 +158,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str) -> None:
                     user_id=user_id_str,
                     organization_id=organization_id,
                     user_message=user_message,
+                    user_email=user_email,
                     local_time=local_time,
                     timezone=timezone,
                 )

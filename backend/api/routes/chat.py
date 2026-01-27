@@ -22,6 +22,7 @@ from sqlalchemy import select, update
 from models.database import get_session
 from models.chat_message import ChatMessage
 from models.conversation import Conversation
+from models.user import User
 
 router = APIRouter()
 
@@ -177,8 +178,14 @@ async def create_conversation(request: ConversationCreate) -> ConversationRespon
         raise HTTPException(status_code=400, detail="Invalid user ID")
 
     async with get_session() as session:
+        # Get user's organization_id
+        user = await session.get(User, user_uuid)
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
         conversation = Conversation(
             user_id=user_uuid,
+            organization_id=user.organization_id,
             title=request.title,
         )
         session.add(conversation)
@@ -383,6 +390,7 @@ async def send_message(request: SendMessageRequest) -> SendMessageResponse:
         if not conv_uuid:
             conversation = Conversation(
                 user_id=user_uuid,
+                organization_id=user.organization_id,
                 title=None,  # Will be set after first message
             )
             session.add(conversation)

@@ -263,6 +263,21 @@ async def sync_integration_data(organization_id: str, provider: str) -> None:
             # Don't fail sync if embedding generation fails
             print(f"Warning: Embedding generation failed: {embed_err}")
 
+        # Emit sync completed event for workflow triggers
+        try:
+            from workers.events import emit_event
+            await emit_event(
+                event_type="sync.completed",
+                organization_id=organization_id,
+                data={
+                    "provider": provider,
+                    "counts": counts,
+                    "completed_at": datetime.utcnow().isoformat(),
+                },
+            )
+        except Exception as event_err:
+            print(f"Warning: Event emission failed: {event_err}")
+
     except Exception as e:
         error_msg = str(e)
         _sync_status[status_key]["status"] = "failed"
@@ -276,6 +291,21 @@ async def sync_integration_data(organization_id: str, provider: str) -> None:
         except Exception:
             pass  # Ignore errors recording the error
 
+        # Emit sync failed event
+        try:
+            from workers.events import emit_event
+            await emit_event(
+                event_type="sync.failed",
+                organization_id=organization_id,
+                data={
+                    "provider": provider,
+                    "error": error_msg,
+                    "failed_at": datetime.utcnow().isoformat(),
+                },
+            )
+        except Exception:
+            pass
+
 
 # Legacy endpoint for backwards compatibility
 @router.post("/{organization_id}")
@@ -284,3 +314,99 @@ async def trigger_sync_legacy(
 ) -> SyncAllResponse:
     """Legacy endpoint - triggers sync for all integrations."""
     return await trigger_sync_all(organization_id, background_tasks)
+
+
+# ============================================================================
+# Celery-based sync endpoints (queued execution)
+# ============================================================================
+
+
+class QueuedSyncResponse(BaseModel):
+    """Response model for queued sync."""
+
+    status: str
+    task_id: str
+    organization_id: str
+    provider: Optional[str] = None
+
+
+@router.post("/{organization_id}/{provider}/queue", response_model=QueuedSyncResponse)
+async def queue_sync(organization_id: str, provider: str) -> QueuedSyncResponse:
+    """
+    Queue a sync for execution via Celery worker.
+    
+    This is the preferred method for scheduled syncs as it:
+    - Handles retries automatically
+    - Doesn't block the API server
+    - Can be monitored via task_id
+    """
+    try:
+        customer_uuid = UUID(organization_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid customer ID")
+
+    if provider not in CONNECTORS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown provider: {provider}. Available: {list(CONNECTORS.keys())}",
+        )
+
+    # Verify integration exists
+    async with get_session() as session:
+        result = await session.execute(
+            select(Integration).where(
+                Integration.organization_id == customer_uuid,
+                Integration.provider == provider,
+                Integration.is_active == True,
+            )
+        )
+        integration = result.scalar_one_or_none()
+
+        if not integration:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No active {provider} integration found",
+            )
+
+    # Queue task via Celery
+    from workers.tasks.sync import sync_integration
+    task = sync_integration.delay(organization_id, provider)
+
+    return QueuedSyncResponse(
+        status="queued",
+        task_id=task.id,
+        organization_id=organization_id,
+        provider=provider,
+    )
+
+
+@router.post("/{organization_id}/all/queue", response_model=QueuedSyncResponse)
+async def queue_sync_all(organization_id: str) -> QueuedSyncResponse:
+    """Queue sync for all integrations via Celery worker."""
+    try:
+        customer_uuid = UUID(organization_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid customer ID")
+
+    # Verify org has integrations
+    async with get_session() as session:
+        result = await session.execute(
+            select(Integration).where(
+                Integration.organization_id == customer_uuid,
+                Integration.is_active == True,
+            )
+        )
+        integrations = result.scalars().all()
+
+    if not integrations:
+        raise HTTPException(status_code=404, detail="No active integrations found")
+
+    # Queue task via Celery
+    from workers.tasks.sync import sync_organization
+    task = sync_organization.delay(organization_id)
+
+    return QueuedSyncResponse(
+        status="queued",
+        task_id=task.id,
+        organization_id=organization_id,
+    )

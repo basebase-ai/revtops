@@ -23,6 +23,7 @@ from models.activity import Activity
 from models.contact import Contact
 from models.database import get_session
 from models.deal import Deal
+from models.pipeline import Pipeline, PipelineStage
 from models.user import User
 
 HUBSPOT_API_BASE = "https://api.hubapi.com"
@@ -34,10 +35,12 @@ class HubSpotConnector(BaseConnector):
     source_system = "hubspot"
 
     def __init__(self, organization_id: str) -> None:
-        """Initialize connector with owner cache."""
+        """Initialize connector with owner and pipeline caches."""
         super().__init__(organization_id)
         # Cache for HubSpot owner ID -> internal user ID mapping
         self._owner_cache: dict[str, Optional[uuid.UUID]] = {}
+        # Cache for HubSpot pipeline ID -> internal pipeline ID mapping
+        self._pipeline_cache: dict[str, uuid.UUID] = {}
 
     async def _get_headers(self) -> dict[str, str]:
         """Get authorization headers for HubSpot API."""
@@ -124,6 +127,105 @@ class HubSpotConnector(BaseConnector):
 
         return all_results
 
+    async def sync_pipelines(self) -> int:
+        """
+        Sync all deal pipelines and stages from HubSpot.
+
+        Should be called before sync_deals to ensure pipeline_id can be set.
+        Populates self._pipeline_cache for use by sync_deals.
+        """
+        pipelines_data = await self.get_pipelines()
+
+        async with get_session() as session:
+            count = 0
+            for hs_pipeline in pipelines_data:
+                hs_pipeline_id = hs_pipeline.get("id", "")
+
+                # Check if pipeline already exists
+                result = await session.execute(
+                    select(Pipeline).where(
+                        Pipeline.organization_id == uuid.UUID(self.organization_id),
+                        Pipeline.source_system == self.source_system,
+                        Pipeline.source_id == hs_pipeline_id,
+                    )
+                )
+                existing = result.scalar_one_or_none()
+
+                pipeline = Pipeline(
+                    id=existing.id if existing else uuid.uuid4(),
+                    organization_id=uuid.UUID(self.organization_id),
+                    source_system=self.source_system,
+                    source_id=hs_pipeline_id,
+                    name=hs_pipeline.get("label") or "Unnamed Pipeline",
+                    display_order=hs_pipeline.get("display_order"),
+                    is_default=(hs_pipeline_id == "default"),
+                    synced_at=datetime.utcnow(),
+                )
+                await session.merge(pipeline)
+
+                # Cache the mapping for sync_deals
+                self._pipeline_cache[hs_pipeline_id] = pipeline.id
+
+                # Sync stages for this pipeline
+                for hs_stage in hs_pipeline.get("stages", []):
+                    hs_stage_id = hs_stage.get("id", "")
+
+                    # Check if stage already exists
+                    stage_result = await session.execute(
+                        select(PipelineStage).where(
+                            PipelineStage.pipeline_id == pipeline.id,
+                            PipelineStage.source_id == hs_stage_id,
+                        )
+                    )
+                    existing_stage = stage_result.scalar_one_or_none()
+
+                    # Parse metadata for closed won/lost flags
+                    metadata = hs_stage.get("metadata", {})
+                    is_closed_won = metadata.get("isClosed") == "true" and metadata.get("probability") == "1.0"
+                    is_closed_lost = metadata.get("isClosed") == "true" and metadata.get("probability") == "0.0"
+
+                    # Parse probability
+                    probability: Optional[int] = None
+                    if metadata.get("probability"):
+                        try:
+                            probability = int(float(metadata["probability"]) * 100)
+                        except (ValueError, TypeError):
+                            pass
+
+                    stage = PipelineStage(
+                        id=existing_stage.id if existing_stage else uuid.uuid4(),
+                        pipeline_id=pipeline.id,
+                        source_id=hs_stage_id,
+                        name=hs_stage.get("label") or "Unnamed Stage",
+                        display_order=hs_stage.get("display_order"),
+                        probability=probability,
+                        is_closed_won=is_closed_won,
+                        is_closed_lost=is_closed_lost,
+                        synced_at=datetime.utcnow(),
+                    )
+                    await session.merge(stage)
+
+                count += 1
+            await session.commit()
+
+        return count
+
+    async def _ensure_pipeline_cache(self) -> None:
+        """Load pipeline cache from database if not already loaded."""
+        if self._pipeline_cache:
+            return
+
+        async with get_session() as session:
+            result = await session.execute(
+                select(Pipeline).where(
+                    Pipeline.organization_id == uuid.UUID(self.organization_id),
+                    Pipeline.source_system == self.source_system,
+                )
+            )
+            pipelines = result.scalars().all()
+            for pipeline in pipelines:
+                self._pipeline_cache[pipeline.source_id] = pipeline.id
+
     async def sync_deals(self) -> int:
         """
         Sync all deals from HubSpot.
@@ -179,6 +281,13 @@ class HubSpotConnector(BaseConnector):
         # Map HubSpot owner to our user
         owner_id = await self._map_hs_owner_to_user(props.get("hubspot_owner_id"))
 
+        # Map HubSpot pipeline to our pipeline
+        await self._ensure_pipeline_cache()
+        hs_pipeline_id = props.get("pipeline")
+        pipeline_id: Optional[uuid.UUID] = None
+        if hs_pipeline_id:
+            pipeline_id = self._pipeline_cache.get(hs_pipeline_id)
+
         # Parse amount
         amount: Optional[Decimal] = None
         if props.get("amount"):
@@ -228,12 +337,13 @@ class HubSpotConnector(BaseConnector):
             name=props.get("dealname") or "Untitled Deal",
             amount=amount,
             stage=props.get("dealstage"),
+            pipeline_id=pipeline_id,
             close_date=close_date,
             created_date=created_date,
             last_modified_date=last_modified,
             owner_id=owner_id,
             visible_to_user_ids=[owner_id] if owner_id else [],
-            custom_fields={"pipeline": props.get("pipeline")},
+            custom_fields={"pipeline": hs_pipeline_id},  # Keep source ID for reference
         )
 
     async def sync_accounts(self) -> int:
@@ -887,3 +997,33 @@ class HubSpotConnector(BaseConnector):
             return None
         except httpx.HTTPStatusError:
             return None
+
+    async def get_pipelines(self) -> list[dict[str, Any]]:
+        """
+        Fetch all deal pipelines from HubSpot.
+
+        Returns:
+            List of pipelines with their stages
+        """
+        data = await self._make_request("GET", "/crm/v3/pipelines/deals")
+        results = data.get("results", [])
+
+        pipelines: list[dict[str, Any]] = []
+        for pipeline in results:
+            stages: list[dict[str, Any]] = []
+            for stage in pipeline.get("stages", []):
+                stages.append({
+                    "id": stage.get("id"),
+                    "label": stage.get("label"),
+                    "display_order": stage.get("displayOrder"),
+                    "metadata": stage.get("metadata", {}),
+                })
+
+            pipelines.append({
+                "id": pipeline.get("id"),
+                "label": pipeline.get("label"),
+                "display_order": pipeline.get("displayOrder"),
+                "stages": stages,
+            })
+
+        return pipelines

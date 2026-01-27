@@ -73,7 +73,7 @@ export interface ChatMessage {
   isStreaming?: boolean;
 }
 
-export type View = "chat" | "data-sources" | "chats-list" | "admin";
+export type View = "home" | "chat" | "data-sources" | "search" | "admin";
 
 // Per-conversation state
 export interface ConversationState {
@@ -108,6 +108,7 @@ interface AppState {
   currentView: View;
   currentChatId: string | null;
   recentChats: ChatSummary[];
+  pendingChatInput: string | null; // Pre-filled input for new chats
 
   // Per-conversation state (keyed by conversation ID)
   conversations: Record<string, ConversationState>;
@@ -132,6 +133,7 @@ interface AppState {
   setCurrentView: (view: View) => void;
   setCurrentChatId: (id: string | null) => void;
   startNewChat: () => void;
+  setPendingChatInput: (input: string | null) => void;
 
   // Actions - Conversations
   addConversation: (id: string, title: string) => void;
@@ -196,9 +198,10 @@ export const useAppStore = create<AppState>()(
       organization: null,
       isAuthenticated: false,
       sidebarCollapsed: false,
-      currentView: "chat",
+      currentView: "home",
       currentChatId: null,
       recentChats: [],
+      pendingChatInput: null,
 
       // Per-conversation state
       conversations: {},
@@ -242,6 +245,7 @@ export const useAppStore = create<AppState>()(
       setCurrentView: (currentView) => set({ currentView }),
       setCurrentChatId: (currentChatId) => set({ currentChatId }),
       startNewChat: () => set({ currentChatId: null, currentView: "chat" }),
+      setPendingChatInput: (pendingChatInput) => set({ pendingChatInput }),
 
       // Conversation actions
       addConversation: (id, title) => {

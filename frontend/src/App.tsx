@@ -334,9 +334,10 @@ function App(): JSX.Element {
       );
       if (integrationsResponse.ok) {
         const integrationsData = await integrationsResponse.json() as { 
-          integrations: Array<{ provider: string; current_user_connected?: boolean }> 
+          integrations: Array<{ provider: string; is_active: boolean; current_user_connected?: boolean }> 
         };
-        hasConnectedIntegrations = integrationsData.integrations.length > 0;
+        // Check if any integration is actually active (connected), not just present in the list
+        hasConnectedIntegrations = integrationsData.integrations.some((i) => i.is_active);
       }
     } catch (error) {
       console.error('Failed to check integrations:', error);
