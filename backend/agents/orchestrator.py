@@ -360,7 +360,21 @@ class ChatOrchestrator:
                 time_context += f"- User's local time: {self.local_time}\n"
             if self.timezone:
                 time_context += f"- User's timezone: {self.timezone}\n"
-            time_context += "\nUse this to provide relative time references (e.g., '3 hours ago', 'yesterday') when discussing sync times, activity dates, etc."
+            time_context += """
+**IMPORTANT**: All database timestamps are stored in UTC. When the user asks about "today", "this morning", "yesterday", etc., you must convert their local date to UTC for accurate queries.
+
+For date-based queries, use the user's timezone to calculate the correct UTC range:
+- Extract the user's local date from their local_time
+- Use that date in your WHERE clauses, NOT CURRENT_DATE (which is UTC and may differ)
+- Example: If user's local time is 2026-01-27T20:00:00 in America/Los_Angeles, "today" means Jan 27 local time, even though CURRENT_DATE in UTC might be Jan 28
+
+When querying for "today" or "this morning", use explicit date literals based on the user's local date:
+```sql
+-- Instead of: WHERE scheduled_start >= CURRENT_DATE
+-- Use: WHERE scheduled_start >= '2026-01-27'::date AND scheduled_start < '2026-01-28'::date
+```
+
+Use the user's local time to provide relative references (e.g., '3 hours ago', 'yesterday') when discussing results."""
             system_prompt += time_context
 
         # Initial Claude call
