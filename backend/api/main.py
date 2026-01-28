@@ -120,9 +120,17 @@ async def shutdown() -> None:
     logging.info("Database connections closed")
 
 
+@app.get("/")
+async def root_health_check() -> dict[str, str]:
+    """Root endpoint exposing the health check payload."""
+    logging.info("Root health check requested")
+    return await health_check()
+
+
 @app.get("/health")
 async def health_check() -> dict[str, str]:
     """Health check endpoint."""
+    logging.info("Health check requested")
     return {"status": "ok"}
 
 

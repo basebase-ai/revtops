@@ -1321,6 +1321,8 @@ async def run_initial_sync(organization_id: str, provider: str) -> None:
     from connectors.gmail import GmailConnector
     from connectors.microsoft_calendar import MicrosoftCalendarConnector
     from connectors.microsoft_mail import MicrosoftMailConnector
+    from connectors.fireflies import FirefliesConnector
+    from connectors.zoom import ZoomConnector
 
     connectors = {
         "hubspot": HubSpotConnector,
@@ -1330,6 +1332,8 @@ async def run_initial_sync(organization_id: str, provider: str) -> None:
         "gmail": GmailConnector,
         "microsoft_calendar": MicrosoftCalendarConnector,
         "microsoft_mail": MicrosoftMailConnector,
+        "fireflies": FirefliesConnector,
+        "zoom": ZoomConnector,
     }
 
     connector_class = connectors.get(provider)

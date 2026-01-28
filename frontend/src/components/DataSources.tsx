@@ -17,10 +17,11 @@ import {
   SiSalesforce,
   SiHubspot,
   SiSlack,
+  SiZoom,
   SiGooglecalendar,
   SiGmail,
 } from 'react-icons/si';
-import { HiOutlineCalendar, HiOutlineMail, HiGlobeAlt, HiUserGroup, HiExclamation, HiDeviceMobile } from 'react-icons/hi';
+import { HiOutlineCalendar, HiOutlineMail, HiGlobeAlt, HiUserGroup, HiExclamation, HiDeviceMobile, HiMicrophone, HiVideoCamera } from 'react-icons/hi';
 import { API_BASE } from '../lib/api';
 import { useAppStore } from '../store';
 import { useIntegrations, useInvalidateIntegrations, type Integration } from '../hooks';
@@ -51,6 +52,7 @@ const ICON_MAP: Record<string, IconType> = {
   hubspot: SiHubspot,
   salesforce: SiSalesforce,
   slack: SiSlack,
+  zoom: SiZoom,
   'google-calendar': SiGooglecalendar,
   google_calendar: SiGooglecalendar,
   gmail: SiGmail,
@@ -58,6 +60,8 @@ const ICON_MAP: Record<string, IconType> = {
   microsoft_calendar: HiOutlineCalendar,
   'microsoft-mail': HiOutlineMail,
   microsoft_mail: HiOutlineMail,
+  fireflies: HiMicrophone,
+  zoom: HiVideoCamera,
 };
 
 // Integration display config (colors, icons, descriptions)
@@ -65,10 +69,13 @@ const INTEGRATION_CONFIG: Record<string, { name: string; description: string; ic
   hubspot: { name: 'HubSpot', description: 'CRM data including deals, contacts, and companies', icon: 'hubspot', color: 'from-orange-500 to-orange-600' },
   salesforce: { name: 'Salesforce', description: 'CRM - Opportunities, Accounts', icon: 'salesforce', color: 'from-blue-500 to-blue-600' },
   slack: { name: 'Slack', description: 'Team messages and communication history', icon: 'slack', color: 'from-purple-500 to-purple-600' },
+  zoom: { name: 'Zoom', description: 'Meeting transcripts and cloud recording insights', icon: 'zoom', color: 'from-blue-400 to-blue-500' },
   google_calendar: { name: 'Google Calendar', description: 'Meetings, events, and scheduling data', icon: 'google_calendar', color: 'from-green-500 to-green-600' },
   gmail: { name: 'Gmail', description: 'Google email communications', icon: 'gmail', color: 'from-red-500 to-red-600' },
   microsoft_calendar: { name: 'Microsoft Calendar', description: 'Outlook calendar events and meetings', icon: 'microsoft_calendar', color: 'from-sky-500 to-sky-600' },
   microsoft_mail: { name: 'Microsoft Mail', description: 'Outlook emails and communications', icon: 'microsoft_mail', color: 'from-sky-500 to-sky-600' },
+  fireflies: { name: 'Fireflies', description: 'Meeting transcriptions and notes', icon: 'fireflies', color: 'from-violet-500 to-violet-600' },
+  zoom: { name: 'Zoom', description: 'Video meeting recordings and transcripts', icon: 'zoom', color: 'from-blue-400 to-blue-500' },
 };
 
 // Extended integration type with display info
@@ -128,7 +135,7 @@ export function DataSources(): JSX.Element {
     .filter((provider) => INTEGRATION_CONFIG[provider] !== undefined)
     .map((provider) => {
       const config = INTEGRATION_CONFIG[provider]!;
-      const scope = ['gmail', 'google_calendar', 'microsoft_calendar', 'microsoft_mail'].includes(provider) 
+      const scope = ['gmail', 'google_calendar', 'microsoft_calendar', 'microsoft_mail', 'zoom'].includes(provider) 
         ? 'user' as const 
         : 'organization' as const;
       return {
@@ -338,10 +345,12 @@ export function DataSources(): JSX.Element {
     const colorMap: Record<string, string> = {
       'from-orange-500 to-orange-600': 'bg-orange-500',
       'from-blue-500 to-blue-600': 'bg-blue-500',
+      'from-blue-400 to-blue-500': 'bg-blue-400',
       'from-purple-500 to-purple-600': 'bg-purple-500',
       'from-green-500 to-green-600': 'bg-green-500',
       'from-sky-500 to-sky-600': 'bg-sky-500',
       'from-red-500 to-red-600': 'bg-red-500',
+      'from-violet-500 to-violet-600': 'bg-violet-500',
     };
     return colorMap[color] ?? 'bg-surface-600';
   };

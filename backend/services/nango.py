@@ -8,13 +8,16 @@ Nango handles:
 - Connection management
 """
 
+import logging
 from typing import Any, Optional
 
 import httpx
 
 from config import settings
 
-NANGO_API_BASE = "https://api.nango.dev"
+NANGO_API_BASE = settings.NANGO_HOST
+
+logger = logging.getLogger(__name__)
 
 
 class NangoClient:
@@ -44,6 +47,84 @@ class NangoClient:
             "Content-Type": "application/json",
         }
 
+    async def _fetch_connection(
+        self,
+        integration_id: str,
+        connection_id: str,
+    ) -> httpx.Response:
+        async with httpx.AsyncClient() as client:
+            return await client.get(
+                f"{NANGO_API_BASE}/connection/{connection_id}",
+                headers=self._get_headers(),
+                params={"provider_config_key": integration_id},
+                timeout=30.0,
+            )
+
+    async def _resolve_connection(
+        self,
+        integration_id: str,
+        connection_id: str,
+    ) -> Optional[dict[str, Any]]:
+        candidate_end_user_ids = [connection_id]
+        if ":user:" in connection_id:
+            candidate_end_user_ids.append(connection_id.split(":user:")[0])
+
+        for end_user_id in candidate_end_user_ids:
+            try:
+                connections = await self.list_connections(end_user_id=end_user_id)
+            except Exception as exc:
+                logger.warning(
+                    "Nango fallback list_connections failed",
+                    extra={
+                        "integration_id": integration_id,
+                        "end_user_id": end_user_id,
+                        "error": str(exc),
+                    },
+                )
+                continue
+
+            matching = [
+                conn
+                for conn in connections
+                if (conn.get("provider_config_key") or conn.get("provider")) == integration_id
+            ]
+            if not matching:
+                continue
+
+            exact_match = next(
+                (conn for conn in matching if conn.get("connection_id") == connection_id),
+                None,
+            )
+            candidate = exact_match or matching[0]
+
+            candidate_id = candidate.get("connection_id") or candidate.get("id")
+            if candidate_id:
+                logger.info(
+                    "Resolved Nango connection via fallback lookup",
+                    extra={
+                        "integration_id": integration_id,
+                        "requested_connection_id": connection_id,
+                        "resolved_connection_id": candidate_id,
+                        "end_user_id": end_user_id,
+                    },
+                )
+                response = await self._fetch_connection(integration_id, candidate_id)
+                if response.status_code == 200:
+                    return response.json()
+
+            if "credentials" in candidate:
+                logger.info(
+                    "Using credentials from Nango connections list fallback",
+                    extra={
+                        "integration_id": integration_id,
+                        "requested_connection_id": connection_id,
+                        "end_user_id": end_user_id,
+                    },
+                )
+                return candidate
+
+        return None
+
     async def get_connection(
         self,
         integration_id: str,
@@ -59,15 +140,20 @@ class NangoClient:
         Returns:
             Connection details including credentials
         """
-        async with httpx.AsyncClient() as client:
-            response = await client.get(
-                f"{NANGO_API_BASE}/connection/{connection_id}",
-                headers=self._get_headers(),
-                params={"provider_config_key": integration_id},
-                timeout=30.0,
+        response = await self._fetch_connection(integration_id, connection_id)
+        if response.status_code == 404:
+            logger.warning(
+                "Nango connection not found, attempting fallback resolution",
+                extra={
+                    "integration_id": integration_id,
+                    "connection_id": connection_id,
+                },
             )
-            response.raise_for_status()
-            return response.json()
+            resolved = await self._resolve_connection(integration_id, connection_id)
+            if resolved is not None:
+                return resolved
+        response.raise_for_status()
+        return response.json()
 
     async def get_token(
         self,
@@ -89,12 +175,20 @@ class NangoClient:
         connection = await self.get_connection(integration_id, connection_id)
         credentials = connection.get("credentials", {})
 
+        # Debug: log what credentials Nango returned
+        print(f"[Nango] Credentials for {integration_id}:{connection_id}: {list(credentials.keys())}")
+
         # Handle different credential types
         if "access_token" in credentials:
             return credentials["access_token"]
         elif "api_key" in credentials:
             return credentials["api_key"]
+        elif "apiKey" in credentials:
+            return credentials["apiKey"]
+        elif "token" in credentials:
+            return credentials["token"]
         else:
+            print(f"[Nango] Full credentials object: {credentials}")
             raise ValueError(f"No token found for {integration_id}:{connection_id}")
 
     async def get_credentials(

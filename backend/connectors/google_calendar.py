@@ -5,9 +5,11 @@ Responsibilities:
 - Authenticate with Google using OAuth token
 - Fetch calendar events and meetings
 - Normalize Google Calendar data to activity records
+- Link events to canonical Meeting entities
 - Handle pagination
 """
 
+import logging
 import uuid
 from datetime import datetime, timedelta
 from typing import Any, Optional
@@ -17,6 +19,9 @@ import httpx
 from connectors.base import BaseConnector
 from models.activity import Activity
 from models.database import get_session
+from services.meeting_dedup import find_or_create_meeting
+
+logger = logging.getLogger(__name__)
 
 GOOGLE_CALENDAR_API_BASE = "https://www.googleapis.com/calendar/v3"
 
@@ -130,8 +135,10 @@ class GoogleCalendarConnector(BaseConnector):
         """
         Sync Google Calendar events as activities.
 
-        This captures meeting activity that can be correlated
-        with deals and accounts.
+        For each event:
+        1. Find or create the canonical Meeting entity
+        2. Create an Activity record for the calendar event
+        3. Link the Activity to the Meeting
         """
         # Get events from primary calendar for the last 30 days and next 30 days
         time_min = datetime.utcnow() - timedelta(days=30)
@@ -147,17 +154,66 @@ class GoogleCalendarConnector(BaseConnector):
         count = 0
         async with get_session() as session:
             for event in events:
-                activity = self._normalize_event(event)
-                if activity:
+                try:
+                    parsed = self._parse_event(event)
+                    if not parsed:
+                        continue
+                    
+                    # Find or create the canonical Meeting
+                    meeting = await find_or_create_meeting(
+                        organization_id=self.organization_id,
+                        scheduled_start=parsed["activity_date"],
+                        scheduled_end=parsed["end_time"],
+                        participants=parsed["participants_normalized"],
+                        title=parsed["summary"],
+                        duration_minutes=parsed["duration_minutes"],
+                        organizer_email=parsed["organizer_email"],
+                        status=parsed["meeting_status"],
+                    )
+                    
+                    # Create the Activity record linked to the Meeting
+                    activity = Activity(
+                        id=uuid.uuid4(),
+                        organization_id=uuid.UUID(self.organization_id),
+                        source_system=self.source_system,
+                        source_id=parsed["event_id"],
+                        meeting_id=meeting.id,
+                        type=parsed["meeting_type"],
+                        subject=parsed["summary"] or "Untitled Event",
+                        description=parsed["description"],
+                        activity_date=parsed["activity_date"],
+                        custom_fields={
+                            "calendar_id": parsed["calendar_id"],
+                            "location": parsed["location"],
+                            "attendee_count": parsed["attendee_count"],
+                            "attendee_emails": parsed["attendee_emails"],
+                            "duration_minutes": parsed["duration_minutes"],
+                            "is_recurring": parsed["is_recurring"],
+                            "conference_link": parsed["conference_link"],
+                            "status": parsed["event_status"],
+                            "visibility": parsed["visibility"],
+                        },
+                    )
+                    
                     await session.merge(activity)
                     count += 1
+                    
+                    logger.debug(
+                        "Synced calendar event %s linked to meeting %s",
+                        parsed["event_id"],
+                        meeting.id,
+                    )
+                    
+                except Exception as e:
+                    logger.error("Error syncing calendar event: %s", e)
+                    continue
 
             await session.commit()
 
         return count
 
-    def _normalize_event(self, gcal_event: dict[str, Any]) -> Optional[Activity]:
-        """Transform Google Calendar event to our Activity model."""
+    def _parse_event(self, gcal_event: dict[str, Any]) -> Optional[dict[str, Any]]:
+        """Parse Google Calendar event into normalized fields."""
         event_id = gcal_event.get("id", "")
         summary = gcal_event.get("summary", "")
         description = gcal_event.get("description", "")
@@ -172,17 +228,18 @@ class GoogleCalendarConnector(BaseConnector):
 
         if start.get("dateTime"):
             try:
-                # Handle timezone-aware datetime
                 dt_str = start["dateTime"]
                 activity_date = datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
             except (ValueError, TypeError):
                 pass
         elif start.get("date"):
             try:
-                # All-day event
                 activity_date = datetime.strptime(start["date"], "%Y-%m-%d")
             except (ValueError, TypeError):
                 pass
+
+        if not activity_date:
+            return None
 
         # Parse end time for duration calculation
         end = gcal_event.get("end", {})
@@ -202,9 +259,25 @@ class GoogleCalendarConnector(BaseConnector):
             duration_minutes = int(duration.total_seconds() / 60)
 
         # Extract attendees
-        attendees = gcal_event.get("attendees", [])
-        attendee_emails = [a.get("email") for a in attendees if a.get("email")]
-        attendee_count = len(attendees)
+        attendees_raw = gcal_event.get("attendees", [])
+        attendee_emails = [a.get("email") for a in attendees_raw if a.get("email")]
+        attendee_count = len(attendees_raw)
+
+        # Parse attendees into normalized format for Meeting
+        participants_normalized: list[dict[str, Any]] = []
+        for a in attendees_raw:
+            email = a.get("email", "")
+            if email:
+                participants_normalized.append({
+                    "email": email.lower(),
+                    "name": a.get("displayName", ""),
+                    "is_organizer": a.get("organizer", False),
+                    "rsvp_status": a.get("responseStatus", ""),
+                })
+
+        # Get organizer email
+        organizer = gcal_event.get("organizer", {})
+        organizer_email = organizer.get("email", "")
 
         # Determine meeting type
         meeting_type = "meeting"
@@ -215,30 +288,34 @@ class GoogleCalendarConnector(BaseConnector):
             elif "zoom" in conf_type.lower():
                 meeting_type = "zoom"
 
-        # Check if it's a recurring event
-        is_recurring = "recurringEventId" in gcal_event
+        # Determine meeting status
+        event_status = gcal_event.get("status", "confirmed")
+        if activity_date < datetime.utcnow():
+            meeting_status = "completed"
+        else:
+            meeting_status = "scheduled"
 
-        return Activity(
-            id=uuid.uuid4(),
-            organization_id=uuid.UUID(self.organization_id),
-            source_system=self.source_system,
-            source_id=event_id,
-            type=meeting_type,
-            subject=summary or "Untitled Event",
-            description=description[:2000] if description else None,
-            activity_date=activity_date,
-            custom_fields={
-                "calendar_id": gcal_event.get("organizer", {}).get("email"),
-                "location": gcal_event.get("location"),
-                "attendee_count": attendee_count,
-                "attendee_emails": attendee_emails[:10],  # Limit stored attendees
-                "duration_minutes": duration_minutes,
-                "is_recurring": is_recurring,
-                "conference_link": gcal_event.get("hangoutLink"),
-                "status": gcal_event.get("status"),
-                "visibility": gcal_event.get("visibility"),
-            },
-        )
+        return {
+            "event_id": event_id,
+            "summary": summary,
+            "description": description[:2000] if description else None,
+            "activity_date": activity_date,
+            "end_time": end_time,
+            "duration_minutes": duration_minutes,
+            "attendees_raw": attendees_raw,
+            "attendee_emails": attendee_emails[:10],
+            "attendee_count": attendee_count,
+            "participants_normalized": participants_normalized,
+            "organizer_email": organizer_email,
+            "meeting_type": meeting_type,
+            "meeting_status": meeting_status,
+            "event_status": event_status,
+            "is_recurring": "recurringEventId" in gcal_event,
+            "calendar_id": organizer_email,
+            "location": gcal_event.get("location"),
+            "conference_link": gcal_event.get("hangoutLink"),
+            "visibility": gcal_event.get("visibility"),
+        }
 
     async def sync_all(self) -> dict[str, int]:
         """Run all sync operations."""

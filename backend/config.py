@@ -61,6 +61,8 @@ class Settings(BaseSettings):
     NANGO_SALESFORCE_INTEGRATION_ID: str = "salesforce"
     NANGO_MICROSOFT_CALENDAR_INTEGRATION_ID: str = "microsoft"
     NANGO_MICROSOFT_MAIL_INTEGRATION_ID: str = "microsoft"
+    NANGO_FIREFLIES_INTEGRATION_ID: str = "fireflies"
+    NANGO_ZOOM_INTEGRATION_ID: str = "zoom"
 
     # App
     SECRET_KEY: str = "dev-secret-change-in-production"
@@ -97,6 +99,8 @@ NANGO_INTEGRATION_IDS: dict[str, str] = {
     "salesforce": settings.NANGO_SALESFORCE_INTEGRATION_ID,
     "microsoft_calendar": settings.NANGO_MICROSOFT_CALENDAR_INTEGRATION_ID,
     "microsoft_mail": settings.NANGO_MICROSOFT_MAIL_INTEGRATION_ID,
+    "fireflies": settings.NANGO_FIREFLIES_INTEGRATION_ID,
+    "zoom": settings.NANGO_ZOOM_INTEGRATION_ID,
 }
 
 # Provider scope mapping: which integrations are user-scoped vs org-scoped
@@ -110,6 +114,8 @@ PROVIDER_SCOPES: dict[str, str] = {
     "gmail": "user",
     "microsoft_calendar": "user",
     "microsoft_mail": "user",
+    "fireflies": "user",
+    "zoom": "user",
 }
 
 

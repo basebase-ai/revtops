@@ -140,135 +140,132 @@ After creating a workflow, use **trigger_workflow** to test it immediately. User
 
 All tables have `organization_id` for multi-tenancy. Your queries are automatically filtered to the user's organization.
 
+**IMPORTANT**: Data is normalized by semantic type, not by source system. Query by `type`, not by `source_system`.
+For example, to find emails query `WHERE type = 'email'`, NOT `WHERE source_system = 'gmail'`.
+
 ### deals
-Sales opportunities/deals from CRM.
+Sales opportunities from CRM.
 ```
-id (UUID, PK)
-organization_id (UUID, FK -> organizations)
-source_system (VARCHAR) -- 'hubspot', 'salesforce', etc.
-source_id (VARCHAR) -- ID in source system
-name (VARCHAR) -- deal name
-account_id (UUID, FK -> accounts, nullable)
-owner_id (UUID, FK -> users, nullable) -- sales rep
-amount (NUMERIC(15,2), nullable) -- deal value
-stage (VARCHAR, nullable) -- e.g. 'appointmentscheduled', 'qualifiedtobuy', 'closedwon'
-probability (INTEGER, nullable) -- win probability 0-100
-close_date (DATE, nullable)
-created_date (TIMESTAMP)
-last_modified_date (TIMESTAMP)
-visible_to_user_ids (UUID[], nullable) -- permission control
-custom_fields (JSONB, nullable) -- e.g. {"pipeline": "default"}
-synced_at (TIMESTAMP)
+id, organization_id, name, account_id, owner_id, amount, stage, probability, close_date, 
+created_date, last_modified_date, custom_fields, synced_at
 ```
 
 ### accounts
-Companies/organizations in the CRM.
+Companies/organizations - your customers and prospects.
 ```
-id (UUID, PK)
-organization_id (UUID, FK -> organizations)
-source_system (VARCHAR)
-source_id (VARCHAR)
-name (VARCHAR)
-domain (VARCHAR, nullable) -- company website domain
-industry (VARCHAR, nullable)
-employee_count (INTEGER, nullable)
-annual_revenue (NUMERIC(15,2), nullable)
-owner_id (UUID, FK -> users, nullable)
-custom_fields (JSONB, nullable)
-synced_at (TIMESTAMP)
+id, organization_id, name, domain, industry, employee_count, annual_revenue, owner_id, custom_fields
 ```
 
 ### contacts
 People associated with accounts.
 ```
+id, organization_id, account_id, name, email, title, phone, custom_fields
+```
+
+### meetings (canonical meeting entity)
+Real-world meetings - deduplicated across all calendar and transcript sources.
+This is the primary table for meeting data. Each row represents ONE real-world meeting,
+regardless of how many calendar entries or transcripts exist for it.
+```
 id (UUID, PK)
-organization_id (UUID, FK -> organizations)
-source_system (VARCHAR)
-source_id (VARCHAR)
-account_id (UUID, FK -> accounts, nullable)
-name (VARCHAR, nullable)
-email (VARCHAR, nullable)
-title (VARCHAR, nullable) -- job title
-phone (VARCHAR, nullable)
-custom_fields (JSONB, nullable)
-synced_at (TIMESTAMP)
+organization_id (UUID)
+title (VARCHAR) -- meeting title
+scheduled_start (TIMESTAMP) -- meeting start time
+scheduled_end (TIMESTAMP)
+duration_minutes (INTEGER)
+participants (JSONB) -- [{email, name, is_organizer, rsvp_status}]
+organizer_email (VARCHAR)
+participant_count (INTEGER)
+status (VARCHAR) -- 'scheduled', 'completed', 'cancelled'
+summary (TEXT) -- aggregated from transcripts
+action_items (JSONB) -- [{text, assignee}]
+key_topics (JSONB) -- keywords/topics discussed
+transcript (TEXT) -- full transcript if available
+account_id (UUID, FK -> accounts)
+deal_id (UUID, FK -> deals)
+created_at, updated_at (TIMESTAMP)
+```
+
+Example queries for meetings:
+```sql
+-- Upcoming meetings this week
+SELECT title, scheduled_start, duration_minutes, participant_count, status
+FROM meetings
+WHERE scheduled_start >= CURRENT_DATE
+  AND scheduled_start < CURRENT_DATE + interval '7 days'
+ORDER BY scheduled_start
+
+-- Meetings with transcripts/summaries
+SELECT title, scheduled_start, summary, action_items
+FROM meetings
+WHERE summary IS NOT NULL
+ORDER BY scheduled_start DESC
+LIMIT 10
+
+-- Meetings with a specific person
+SELECT title, scheduled_start, participants
+FROM meetings
+WHERE participants @> '[{"email": "john@example.com"}]'
 ```
 
 ### activities
-CRM activities: calls, emails, meetings, notes, calendar events.
+Raw activity records (emails, calendar events, transcripts, messages).
+Activities are linked to canonical entities via meeting_id, deal_id, account_id.
+
+Query activities by TYPE, not source:
+- `type = 'email'` for all emails (Gmail, Outlook, etc.)
+- `type = 'meeting'` for calendar events
+- `type = 'meeting_transcript'` for transcripts
+- `type = 'slack_message'` for team messages
+
 ```
 id (UUID, PK)
-organization_id (UUID, FK -> organizations)
-source_system (VARCHAR) -- 'gmail', 'microsoft_mail', 'google_calendar', 'microsoft_calendar', 'slack', 'hubspot', 'salesforce'
-source_id (VARCHAR, nullable)
-deal_id (UUID, FK -> deals, nullable)
-account_id (UUID, FK -> accounts, nullable)
-contact_id (UUID, FK -> contacts, nullable)
-type (VARCHAR, nullable) -- 'call', 'email', 'meeting', 'note', 'teams_meeting', 'google_meet'
-subject (TEXT, nullable)
-description (TEXT, nullable)
-activity_date (TIMESTAMP, nullable)
-created_by_id (UUID, FK -> users, nullable)
-custom_fields (JSONB, nullable) -- varies by source, includes from_email, to_emails, attendees, etc.
-searchable_text (TEXT, nullable) -- combined text used for semantic search
-synced_at (TIMESTAMP)
+organization_id (UUID)
+meeting_id (UUID, FK -> meetings, nullable) -- links to canonical meeting
+deal_id, account_id, contact_id (UUID, nullable)
+type (VARCHAR) -- 'email', 'meeting', 'meeting_transcript', 'slack_message', 'call', 'note'
+subject (TEXT)
+description (TEXT)
+activity_date (TIMESTAMP)
+custom_fields (JSONB)
 ```
 
+## Data Types
 
-## Calendar Data
+### Emails (type = 'email')
+All email communications, regardless of provider.
+- subject, description (body preview), activity_date
+- custom_fields: from_email, from_name, to_emails, cc_emails, has_attachments
 
-Calendar events from Google Calendar and Microsoft Calendar (Outlook) are stored in the **activities** table with:
-- `source_system = 'google_calendar'` or `source_system = 'microsoft_calendar'`
-- `type` = 'meeting', 'google_meet', 'teams_meeting', 'zoom', or 'online_meeting'
-- `subject` = meeting title
-- `activity_date` = meeting start time
-- `custom_fields` contains: duration_minutes, attendee_count, attendee_emails, conference_link, is_recurring, location
-
-Example query for upcoming meetings:
 ```sql
-SELECT subject, activity_date, type, custom_fields->>'duration_minutes' as duration
-FROM activities 
-WHERE source_system IN ('google_calendar', 'microsoft_calendar')
-  AND activity_date >= CURRENT_TIMESTAMP
-ORDER BY activity_date
-LIMIT 10
+SELECT subject, activity_date, custom_fields->>'from_email' as sender
+FROM activities WHERE type = 'email'
+ORDER BY activity_date DESC LIMIT 20
 ```
 
-## Email Data
+### Calendar Events (type = 'meeting')
+Individual calendar entries - linked to canonical meetings via meeting_id.
+- subject, activity_date, custom_fields: duration_minutes, attendee_emails, location, conference_link
 
-Emails from Gmail and Microsoft Mail (Outlook) are stored in the **activities** table with:
-- `source_system = 'gmail'` or `source_system = 'microsoft_mail'`
-- `type = 'email'`
-- `subject` = email subject
-- `description` = email body preview/snippet
-- `activity_date` = received timestamp
-- `custom_fields` contains: from_email, from_name, to_emails, cc_emails, recipient_count, has_attachments
+### Meeting Transcripts (type = 'meeting_transcript')  
+Transcripts and notes - linked to canonical meetings via meeting_id.
+- subject, description (summary), activity_date
+- custom_fields: duration_minutes, participants, keywords, has_action_items
 
-Gmail-specific custom_fields: is_unread, is_sent, labels, thread_id
-Microsoft Mail custom_fields: importance, is_read, conversation_id
-
-Example query for recent emails:
-```sql
-SELECT subject, activity_date, source_system,
-       custom_fields->>'from_email' as from_email,
-       custom_fields->>'from_name' as from_name,
-       custom_fields->'to_emails' as to_emails
-FROM activities 
-WHERE source_system IN ('gmail', 'microsoft_mail')
-ORDER BY activity_date DESC
-LIMIT 20
-```
+### Messages (type = 'slack_message')
+Team chat messages from Slack and similar tools.
+- subject (channel name), description (message text), activity_date
 
 ## Guidelines
 
-1. **Use SQL for complex queries**: The run_sql_query tool is powerful - use it for JOINs, aggregations, date filtering, etc.
-2. **Be precise with dates**: Use PostgreSQL date functions. Current date: use CURRENT_DATE.
-3. **Handle NULLs**: Many fields are nullable. Use COALESCE or IS NOT NULL as needed.
-4. **JSONB queries**: Use -> for objects, ->> for text. E.g. `custom_fields->>'pipeline'`
-5. **Limit results**: For large queries, use LIMIT to avoid overwhelming responses.
-6. **Explain your analysis**: Don't just show data - provide insights and recommendations.
+1. **Query meetings table for meeting info** - it's the canonical, deduplicated source.
+2. **Query activities by type, not source_system** - use `type = 'email'` not `source_system = 'gmail'`.
+3. **Use SQL for complex queries** - JOINs, aggregations, date filtering.
+4. **JSONB queries**: Use -> for objects, ->> for text. E.g. `custom_fields->>'from_email'`
+5. **Limit results**: Use LIMIT to avoid overwhelming responses.
+6. **Explain your analysis**: Provide insights and recommendations, not just data.
 
-You have access to the user's HubSpot, Slack, Google Calendar, Salesforce, and other enterprise revenue operations data that has been synced to the system."""
+You have access to the user's CRM data, emails, calendar, meeting transcripts, and team messages - all normalized and deduplicated."""
 
 
 class ChatOrchestrator:
