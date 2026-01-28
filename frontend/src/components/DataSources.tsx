@@ -20,7 +20,7 @@ import {
   SiGooglecalendar,
   SiGmail,
 } from 'react-icons/si';
-import { HiOutlineCalendar, HiOutlineMail, HiGlobeAlt, HiUserGroup, HiExclamation, HiDeviceMobile, HiMicrophone } from 'react-icons/hi';
+import { HiOutlineCalendar, HiOutlineMail, HiGlobeAlt, HiUserGroup, HiExclamation, HiDeviceMobile, HiMicrophone, HiVideoCamera } from 'react-icons/hi';
 import { API_BASE } from '../lib/api';
 import { useAppStore } from '../store';
 import { useIntegrations, useInvalidateIntegrations, type Integration } from '../hooks';
@@ -59,6 +59,7 @@ const ICON_MAP: Record<string, IconType> = {
   'microsoft-mail': HiOutlineMail,
   microsoft_mail: HiOutlineMail,
   fireflies: HiMicrophone,
+  zoom: HiVideoCamera,
 };
 
 // Integration display config (colors, icons, descriptions)
@@ -71,6 +72,7 @@ const INTEGRATION_CONFIG: Record<string, { name: string; description: string; ic
   microsoft_calendar: { name: 'Microsoft Calendar', description: 'Outlook calendar events and meetings', icon: 'microsoft_calendar', color: 'from-sky-500 to-sky-600' },
   microsoft_mail: { name: 'Microsoft Mail', description: 'Outlook emails and communications', icon: 'microsoft_mail', color: 'from-sky-500 to-sky-600' },
   fireflies: { name: 'Fireflies', description: 'Meeting transcriptions and notes', icon: 'fireflies', color: 'from-violet-500 to-violet-600' },
+  zoom: { name: 'Zoom', description: 'Video meeting recordings and transcripts', icon: 'zoom', color: 'from-blue-400 to-blue-500' },
 };
 
 // Extended integration type with display info
@@ -340,6 +342,7 @@ export function DataSources(): JSX.Element {
     const colorMap: Record<string, string> = {
       'from-orange-500 to-orange-600': 'bg-orange-500',
       'from-blue-500 to-blue-600': 'bg-blue-500',
+      'from-blue-400 to-blue-500': 'bg-blue-400',
       'from-purple-500 to-purple-600': 'bg-purple-500',
       'from-green-500 to-green-600': 'bg-green-500',
       'from-sky-500 to-sky-600': 'bg-sky-500',
