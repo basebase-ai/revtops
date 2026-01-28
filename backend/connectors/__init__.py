@@ -8,6 +8,7 @@ from connectors.microsoft_calendar import MicrosoftCalendarConnector
 from connectors.microsoft_mail import MicrosoftMailConnector
 from connectors.salesforce import SalesforceConnector
 from connectors.slack import SlackConnector
+from connectors.zoom import ZoomConnector
 
 __all__ = [
     "BaseConnector",
@@ -19,4 +20,5 @@ __all__ = [
     "MicrosoftMailConnector",
     "SalesforceConnector",
     "SlackConnector",
+    "ZoomConnector",
 ]
