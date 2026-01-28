@@ -121,7 +121,6 @@ async def search_activities_by_embedding(
     query_text: str,
     limit: int = 10,
     activity_types: Optional[list[str]] = None,
-    source_systems: Optional[list[str]] = None,
     embedding_service: Optional[EmbeddingService] = None,
 ) -> list[dict]:
     """
@@ -131,8 +130,7 @@ async def search_activities_by_embedding(
         organization_id: The organization to search within
         query_text: The search query
         limit: Max number of results
-        activity_types: Optional filter by type (email, meeting, etc.)
-        source_systems: Optional filter by source (gmail, microsoft_mail, etc.)
+        activity_types: Optional filter by type (email, meeting, meeting_transcript, etc.)
         embedding_service: Optional embedding service instance
 
     Returns:
@@ -153,15 +151,11 @@ async def search_activities_by_embedding(
             types_str = ", ".join(f"'{t}'" for t in activity_types)
             type_filter = f"AND type IN ({types_str})"
 
-        source_filter = ""
-        if source_systems:
-            sources_str = ", ".join(f"'{s}'" for s in source_systems)
-            source_filter = f"AND source_system IN ({sources_str})"
-
         # Use raw SQL for vector similarity search
         sql = text(f"""
             SELECT 
                 id,
+                meeting_id,
                 source_system,
                 source_id,
                 type,
@@ -175,7 +169,6 @@ async def search_activities_by_embedding(
             WHERE organization_id = :org_id
               AND embedding IS NOT NULL
               {type_filter}
-              {source_filter}
             ORDER BY embedding::vector(1536) <=> :query_embedding::vector(1536)
             LIMIT :limit
         """)
@@ -194,8 +187,7 @@ async def search_activities_by_embedding(
         return [
             {
                 "id": str(row.id),
-                "source_system": row.source_system,
-                "source_id": row.source_id,
+                "meeting_id": str(row.meeting_id) if row.meeting_id else None,
                 "type": row.type,
                 "subject": row.subject,
                 "description": row.description[:500] if row.description else None,

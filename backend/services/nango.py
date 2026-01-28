@@ -175,12 +175,20 @@ class NangoClient:
         connection = await self.get_connection(integration_id, connection_id)
         credentials = connection.get("credentials", {})
 
+        # Debug: log what credentials Nango returned
+        print(f"[Nango] Credentials for {integration_id}:{connection_id}: {list(credentials.keys())}")
+
         # Handle different credential types
         if "access_token" in credentials:
             return credentials["access_token"]
         elif "api_key" in credentials:
             return credentials["api_key"]
+        elif "apiKey" in credentials:
+            return credentials["apiKey"]
+        elif "token" in credentials:
+            return credentials["token"]
         else:
+            print(f"[Nango] Full credentials object: {credentials}")
             raise ValueError(f"No token found for {integration_id}:{connection_id}")
 
     async def get_credentials(

@@ -33,6 +33,7 @@ async def _sync_integration(organization_id: str, provider: str) -> dict[str, An
     
     Returns sync results including counts and any errors.
     """
+    from connectors.fireflies import FirefliesConnector
     from connectors.gmail import GmailConnector
     from connectors.google_calendar import GoogleCalendarConnector
     from connectors.hubspot import HubSpotConnector
@@ -47,6 +48,7 @@ async def _sync_integration(organization_id: str, provider: str) -> dict[str, An
         "salesforce": SalesforceConnector,
         "hubspot": HubSpotConnector,
         "slack": SlackConnector,
+        "fireflies": FirefliesConnector,
         "google_calendar": GoogleCalendarConnector,
         "gmail": GmailConnector,
         "microsoft_calendar": MicrosoftCalendarConnector,
@@ -216,12 +218,12 @@ def sync_all_organizations(self: Any) -> dict[str, Any]:
     """
     Celery task to sync all integrations for all organizations.
     
-    This is the nightly sync task that runs via Beat schedule.
+    This is the hourly sync task that runs via Beat schedule.
     
     Returns:
         Dict with summary of all sync operations
     """
-    logger.info(f"Task {self.request.id}: Starting nightly sync for all organizations")
+    logger.info(f"Task {self.request.id}: Starting hourly sync for all organizations")
     
     async def _sync_all() -> dict[str, Any]:
         integrations = await _get_all_active_integrations()
@@ -257,7 +259,7 @@ def sync_all_organizations(self: Any) -> dict[str, Any]:
         }
         
         logger.info(
-            f"Nightly sync complete: {total_synced} succeeded, {total_failed} failed"
+            f"Hourly sync complete: {total_synced} succeeded, {total_failed} failed"
         )
         return summary
     

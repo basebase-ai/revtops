@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     from models.account import Account
     from models.contact import Contact
     from models.deal import Deal
+    from models.meeting import Meeting
     from models.user import User
 
 
@@ -45,6 +46,9 @@ class Activity(Base):
     contact_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True), ForeignKey("contacts.id"), nullable=True
     )
+    meeting_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("meetings.id"), nullable=True
+    )
 
     type: Mapped[Optional[str]] = mapped_column(
         String(50), nullable=True
@@ -69,6 +73,7 @@ class Activity(Base):
     deal: Mapped[Optional["Deal"]] = relationship("Deal", back_populates="activities")
     account: Mapped[Optional["Account"]] = relationship("Account")
     contact: Mapped[Optional["Contact"]] = relationship("Contact")
+    meeting: Mapped[Optional["Meeting"]] = relationship("Meeting", back_populates="activities")
     created_by: Mapped[Optional["User"]] = relationship("User")
 
     def to_dict(self) -> dict[str, Any]:
