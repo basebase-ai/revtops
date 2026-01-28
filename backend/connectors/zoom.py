@@ -18,6 +18,7 @@ import httpx
 from connectors.base import BaseConnector
 from models.activity import Activity
 from models.database import get_session
+from services.meeting_dedup import find_or_create_meeting
 
 ZOOM_API_BASE = "https://api.zoom.us/v2"
 TRANSCRIPT_FILE_TYPES = {"TRANSCRIPT", "VTT"}
@@ -164,6 +165,8 @@ class ZoomConnector(BaseConnector):
                     meeting_uuid = meeting.get("uuid")
                     topic = meeting.get("topic") or "Zoom Meeting"
                     start_time = self._parse_datetime(meeting.get("start_time"))
+                    duration_minutes = meeting.get("duration")
+                    host_email = meeting.get("host_email") or meeting.get("host_id")
 
                     recording_files = meeting.get("recording_files", [])
                     transcript_files = [
@@ -177,6 +180,46 @@ class ZoomConnector(BaseConnector):
                             extra={"meeting_id": meeting_id, "meeting_uuid": meeting_uuid},
                         )
                         continue
+                    if not start_time:
+                        logger.warning(
+                            "Zoom meeting missing start_time; skipping",
+                            extra={"meeting_id": meeting_id, "meeting_uuid": meeting_uuid},
+                        )
+                        continue
+
+                    participants: list[dict[str, Any]] = []
+                    if host_email:
+                        participants.append(
+                            {
+                                "email": host_email,
+                                "name": host_email.split("@")[0]
+                                if isinstance(host_email, str) and "@" in host_email
+                                else str(host_email),
+                                "is_organizer": True,
+                            }
+                        )
+
+                    meeting_record = await find_or_create_meeting(
+                        organization_id=self.organization_id,
+                        scheduled_start=start_time,
+                        scheduled_end=(
+                            start_time + timedelta(minutes=duration_minutes)
+                            if isinstance(duration_minutes, int)
+                            else None
+                        ),
+                        duration_minutes=duration_minutes if isinstance(duration_minutes, int) else None,
+                        participants=participants or None,
+                        organizer_email=host_email if isinstance(host_email, str) else None,
+                        title=topic,
+                        summary=None,
+                        action_items=None,
+                        key_topics=None,
+                        status="completed",
+                    )
+                    logger.info(
+                        "Matched Zoom recording to meeting",
+                        extra={"meeting_id": meeting_record.id, "zoom_meeting_id": meeting_id},
+                    )
 
                     for transcript_file in transcript_files:
                         download_url = transcript_file.get("download_url")
@@ -210,6 +253,7 @@ class ZoomConnector(BaseConnector):
                             organization_id=uuid.UUID(self.organization_id),
                             source_system=self.source_system,
                             source_id=source_id,
+                            meeting_id=meeting_record.id,
                             type="zoom_transcript",
                             subject=topic,
                             description=transcript_text[:MAX_TRANSCRIPT_LENGTH],
