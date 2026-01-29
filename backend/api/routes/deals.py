@@ -67,6 +67,7 @@ async def list_deals(
     organization_id: str = Query(..., description="Organization ID"),
     pipeline_id: Optional[str] = Query(None, description="Filter by pipeline ID"),
     default_only: bool = Query(False, description="Only return deals in the default pipeline"),
+    open_only: bool = Query(False, description="Only return open deals (excludes closed won/lost)"),
     limit: int = Query(50, ge=1, le=200, description="Max results"),
 ) -> DealListResponse:
     """List deals for an organization, optionally filtered by pipeline."""
@@ -107,6 +108,24 @@ async def list_deals(
                 raise HTTPException(status_code=400, detail="Invalid pipeline ID")
         elif default_only:
             query = query.where(Pipeline.is_default == True)
+
+        # Filter to only open deals (exclude closed won/lost stages)
+        if open_only:
+            # Subquery to find closed stage names for each pipeline
+            closed_stages_subquery = (
+                select(PipelineStage.name, PipelineStage.pipeline_id)
+                .where(
+                    (PipelineStage.is_closed_won == True) | 
+                    (PipelineStage.is_closed_lost == True)
+                )
+            ).subquery()
+            
+            # Exclude deals where stage matches a closed stage in the same pipeline
+            query = query.outerjoin(
+                closed_stages_subquery,
+                (Deal.pipeline_id == closed_stages_subquery.c.pipeline_id) &
+                (Deal.stage == closed_stages_subquery.c.name)
+            ).where(closed_stages_subquery.c.name.is_(None))
 
         result = await session.execute(query)
         rows = result.fetchall()

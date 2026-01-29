@@ -1,5 +1,6 @@
 /**
- * Home view - shows all pipelines with their deals.
+ * Home view - shows all pipelines with their open deals.
+ * Excludes deals that are closed won or closed lost.
  * Shows a prominent banner to connect data sources if none are connected.
  */
 
@@ -82,9 +83,9 @@ export function Home(): JSX.Element {
           setPipelines(pipelinesData.pipelines);
         }
 
-        // Fetch all deals (not just default pipeline)
+        // Fetch all open deals (not just default pipeline, exclude closed won/lost)
         const dealsRes = await fetch(
-          `${API_BASE}/deals?organization_id=${organization.id}&limit=200`,
+          `${API_BASE}/deals?organization_id=${organization.id}&limit=200&open_only=true`,
           { credentials: 'include' }
         );
 
@@ -174,7 +175,7 @@ export function Home(): JSX.Element {
             Pipelines
           </h1>
           <span className="px-2 py-0.5 text-xs font-medium bg-surface-800 text-surface-400 rounded-full">
-            {totalDeals} deal{totalDeals !== 1 ? 's' : ''}
+            {totalDeals} open deal{totalDeals !== 1 ? 's' : ''}
           </span>
         </div>
       </header>
