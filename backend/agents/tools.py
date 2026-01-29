@@ -1030,6 +1030,30 @@ async def _execute_hubspot_operation(
                 batch_result = await connector.create_deals_batch(records_to_process)
                 created.extend(batch_result.get("results", []))
                 errors.extend(batch_result.get("errors", []))
+        
+        elif crm_op.operation == "update":
+            # Update existing records - each record must have an 'id' field
+            for record in records_to_process:
+                record_id = record.get("id")
+                if not record_id:
+                    errors.append({"record": record, "error": "Missing record ID for update"})
+                    continue
+                
+                # Extract properties to update (everything except 'id')
+                properties = {k: v for k, v in record.items() if k != "id"}
+                
+                try:
+                    if crm_op.record_type == "contact":
+                        result = await connector.update_contact(record_id, properties)
+                        created.append(result)
+                    elif crm_op.record_type == "company":
+                        result = await connector.update_company(record_id, properties)
+                        created.append(result)
+                    elif crm_op.record_type == "deal":
+                        result = await connector.update_deal(record_id, properties)
+                        created.append(result)
+                except Exception as update_err:
+                    errors.append({"record": record, "error": str(update_err)})
                 
     except Exception as e:
         logger.error("[Tools._execute_hubspot_operation] Error: %s", str(e))
