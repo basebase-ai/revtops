@@ -114,10 +114,23 @@ export function Home(): JSX.Element {
       return a.name.localeCompare(b.name);
     });
 
-    return sortedPipelines.map((pipeline) => ({
+    const pipelineIds = new Set(pipelines.map((p) => p.id));
+    
+    const result: PipelineWithDeals[] = sortedPipelines.map((pipeline) => ({
       pipeline,
       deals: deals.filter((deal) => deal.pipeline_id === pipeline.id),
     }));
+
+    // Add orphaned deals (deals with no matching pipeline) to an "Unassigned" section
+    const orphanedDeals = deals.filter((deal) => !deal.pipeline_id || !pipelineIds.has(deal.pipeline_id));
+    if (orphanedDeals.length > 0) {
+      result.push({
+        pipeline: { id: '__unassigned__', name: 'Unassigned', is_default: false },
+        deals: orphanedDeals,
+      });
+    }
+
+    return result;
   }, [pipelines, deals]);
 
   const totalDeals = deals.length;

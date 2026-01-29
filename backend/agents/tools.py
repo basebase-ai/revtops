@@ -934,6 +934,31 @@ async def execute_crm_operation(operation_id: str, skip_duplicates: bool = True)
         }
 
 
+def _validate_deal_required_fields(deals: list[dict[str, Any]]) -> str | None:
+    """
+    Validate that all deals have required pipeline and dealstage fields.
+    
+    Returns None if all deals are valid, or an error message describing the issues.
+    """
+    invalid_deals: list[str] = []
+    
+    for i, deal in enumerate(deals):
+        missing: list[str] = []
+        if not deal.get("pipeline"):
+            missing.append("pipeline")
+        if not deal.get("dealstage"):
+            missing.append("dealstage")
+        
+        if missing:
+            deal_name = deal.get("dealname", f"Deal #{i + 1}")
+            invalid_deals.append(f"'{deal_name}' is missing: {', '.join(missing)}")
+    
+    if invalid_deals:
+        return "Issues found: " + "; ".join(invalid_deals[:5])  # Limit to first 5 errors
+    
+    return None
+
+
 async def _execute_hubspot_operation(
     crm_op: CrmOperation, skip_duplicates: bool
 ) -> dict[str, Any]:
@@ -1006,6 +1031,16 @@ async def _execute_hubspot_operation(
                     errors.extend(batch_result.get("errors", []))
                     
             elif crm_op.record_type == "deal":
+                # Validate that all deals have required pipeline and dealstage fields
+                missing_fields_errors = _validate_deal_required_fields(records_to_process)
+                if missing_fields_errors:
+                    return {
+                        "status": "failed",
+                        "message": "Deal creation failed: missing required fields",
+                        "error": "Each deal must have both 'pipeline' and 'dealstage' specified. "
+                                 + missing_fields_errors,
+                    }
+                
                 if len(records_to_process) == 1:
                     result = await connector.create_deal(records_to_process[0])
                     created.append(result)
@@ -1027,6 +1062,16 @@ async def _execute_hubspot_operation(
                 created.extend(batch_result.get("results", []))
                 errors.extend(batch_result.get("errors", []))
             elif crm_op.record_type == "deal":
+                # Validate that all deals have required pipeline and dealstage fields
+                missing_fields_errors = _validate_deal_required_fields(records_to_process)
+                if missing_fields_errors:
+                    return {
+                        "status": "failed",
+                        "message": "Deal creation failed: missing required fields",
+                        "error": "Each deal must have both 'pipeline' and 'dealstage' specified. "
+                                 + missing_fields_errors,
+                    }
+                
                 batch_result = await connector.create_deals_batch(records_to_process)
                 created.extend(batch_result.get("results", []))
                 errors.extend(batch_result.get("errors", []))
