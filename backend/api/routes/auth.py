@@ -1023,12 +1023,8 @@ async def list_integrations(
     except Exception as e:
         print(f"Failed to fetch Nango connections: {e}")
 
-    async with get_session() as db_session:
-        # Set RLS context so queries/inserts work for this organization
-        await db_session.execute(
-            text("SELECT set_config('app.current_org_id', :org_id, true)"),
-            {"org_id": str(org_uuid)}
-        )
+    async with get_session(organization_id=str(org_uuid)) as db_session:
+        # RLS context is set by get_session()
         
         # Ensure organization exists before inserting integrations
         if nango_connections:
@@ -1143,7 +1139,8 @@ async def list_integrations(
         
         # Add org-scoped integrations
         for provider, integration in org_scoped_integrations.items():
-            await db_session.refresh(integration)
+            # Note: don't call refresh() - the data is already loaded and refresh
+            # can fail due to RLS/session state changes after commits
             
             # Get connected_by user name
             connected_by_name: Optional[str] = None

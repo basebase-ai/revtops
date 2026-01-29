@@ -506,16 +506,17 @@ Use the user's local time to provide relative references (e.g., '3 hours ago', '
 
     async def _create_conversation(self) -> str:
         """Create a new conversation and return its ID."""
-        async with get_session() as session:
+        async with get_session(organization_id=self.organization_id) as session:
             conversation = Conversation(
                 user_id=UUID(self.user_id),
                 organization_id=UUID(self.organization_id) if self.organization_id else None,
                 title=None,
             )
             session.add(conversation)
+            # Capture ID before commit (UUID is generated on model instantiation)
+            conv_id = str(conversation.id)
             await session.commit()
-            await session.refresh(conversation)
-            return str(conversation.id)
+            return conv_id
 
     async def _load_history(self, limit: int = 20) -> list[dict[str, Any]]:
         """Load recent chat history from the current conversation.
@@ -528,7 +529,7 @@ Use the user's local time to provide relative references (e.g., '3 hours ago', '
         if not self.conversation_id:
             return []
 
-        async with get_session() as session:
+        async with get_session(organization_id=self.organization_id) as session:
             result = await session.execute(
                 select(ChatMessage)
                 .where(ChatMessage.conversation_id == UUID(self.conversation_id))
@@ -626,7 +627,7 @@ Use the user's local time to provide relative references (e.g., '3 hours ago', '
         """Save user message to database immediately."""
         conv_uuid = UUID(self.conversation_id) if self.conversation_id else None
 
-        async with get_session() as session:
+        async with get_session(organization_id=self.organization_id) as session:
             session.add(
                 ChatMessage(
                     conversation_id=conv_uuid,
@@ -656,7 +657,7 @@ Use the user's local time to provide relative references (e.g., '3 hours ago', '
         """Save assistant message to database."""
         conv_uuid = UUID(self.conversation_id) if self.conversation_id else None
 
-        async with get_session() as session:
+        async with get_session(organization_id=self.organization_id) as session:
             session.add(
                 ChatMessage(
                     conversation_id=conv_uuid,
@@ -693,7 +694,7 @@ Use the user's local time to provide relative references (e.g., '3 hours ago', '
         if not self.conversation_id:
             return
 
-        async with get_session() as session:
+        async with get_session(organization_id=self.organization_id) as session:
             await session.execute(
                 update(Conversation)
                 .where(Conversation.id == UUID(self.conversation_id))

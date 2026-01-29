@@ -485,19 +485,16 @@ async def _run_sql_query(
     
     try:
         async with get_session() as session:
-            # IMPORTANT: Use explicit transaction to ensure set_config persists
-            # The 'true' parameter makes set_config local to the transaction,
-            # so both statements MUST be in the same transaction for RLS to work.
-            async with session.begin():
-                # Set the organization context for Row-Level Security
-                # This session variable is checked by RLS policies on all tables
-                await session.execute(
-                    text("SELECT set_config('app.current_org_id', :org_id, true)"),
-                    {"org_id": organization_id}
-                )
-                
-                # Execute the query - RLS automatically filters by organization
-                result = await session.execute(text(final_query))
+            # IMPORTANT: Set org context BEFORE any query for RLS to work.
+            # Using false for is_local makes it session-level (persists for connection lifetime).
+            # With NullPool, each request gets a fresh connection so this is safe.
+            await session.execute(
+                text("SELECT set_config('app.current_org_id', :org_id, false)"),
+                {"org_id": organization_id}
+            )
+            
+            # Execute the query - RLS automatically filters by organization
+            result = await session.execute(text(final_query))
             rows = result.fetchall()
             columns = list(result.keys())
             
