@@ -13,6 +13,15 @@ export interface TeamConnection {
   userName: string;
 }
 
+// Sync statistics - counts of objects synced by type
+export interface SyncStats {
+  accounts?: number;
+  deals?: number;
+  contacts?: number;
+  activities?: number;
+  pipelines?: number;
+}
+
 export interface Integration {
   id: string;
   provider: string;
@@ -25,6 +34,7 @@ export interface Integration {
   currentUserConnected: boolean;
   teamConnections: TeamConnection[];
   teamTotal: number;
+  syncStats: SyncStats | null;
 }
 
 interface IntegrationApiResponse {
@@ -39,6 +49,7 @@ interface IntegrationApiResponse {
   current_user_connected: boolean;
   team_connections: Array<{ user_id: string; user_name: string }>;
   team_total: number;
+  sync_stats: SyncStats | null;
 }
 
 interface IntegrationsListResponse {
@@ -78,6 +89,7 @@ async function fetchIntegrations(orgId: string, userId: string): Promise<Integra
       userName: tc.user_name,
     })),
     teamTotal: i.team_total,
+    syncStats: i.sync_stats,
   }));
 }
 

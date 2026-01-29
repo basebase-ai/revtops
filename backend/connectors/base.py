@@ -177,8 +177,12 @@ class BaseConnector(ABC):
         )
         return self._credentials
 
-    async def update_last_sync(self) -> None:
-        """Update the last_sync_at timestamp for this integration."""
+    async def update_last_sync(self, counts: Optional[dict[str, int]] = None) -> None:
+        """Update the last_sync_at timestamp and sync stats for this integration.
+        
+        Args:
+            counts: Optional dictionary of object counts synced (e.g., {"accounts": 5, "deals": 10})
+        """
         from datetime import datetime
 
         if not self._integration:
@@ -200,6 +204,8 @@ class BaseConnector(ABC):
             if integration:
                 integration.last_sync_at = datetime.utcnow()
                 integration.last_error = None
+                if counts is not None:
+                    integration.sync_stats = counts
                 await session.commit()
 
     async def record_error(self, error: str) -> None:

@@ -68,7 +68,7 @@ async def _sync_integration(organization_id: str, provider: str) -> dict[str, An
         logger.info(f"Starting sync for {provider} in org {organization_id}")
         connector = connector_class(organization_id)
         counts = await connector.sync_all()
-        await connector.update_last_sync()
+        await connector.update_last_sync(counts)
 
         # Generate embeddings for newly synced activities
         try:

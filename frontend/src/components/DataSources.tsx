@@ -21,10 +21,11 @@ import {
   SiGooglecalendar,
   SiGmail,
 } from 'react-icons/si';
-import { HiOutlineCalendar, HiOutlineMail, HiGlobeAlt, HiUserGroup, HiExclamation, HiDeviceMobile, HiMicrophone, HiVideoCamera } from 'react-icons/hi';
+import { HiOutlineCalendar, HiOutlineMail, HiGlobeAlt, HiUserGroup, HiExclamation, HiDeviceMobile, HiMicrophone } from 'react-icons/hi';
 import { API_BASE } from '../lib/api';
 import { useAppStore } from '../store';
 import { useIntegrations, useInvalidateIntegrations, type Integration } from '../hooks';
+import type { SyncStats } from '../hooks/useIntegrations';
 
 // Detect if user is on a mobile device
 function useIsMobile(): boolean {
@@ -61,7 +62,6 @@ const ICON_MAP: Record<string, IconType> = {
   'microsoft-mail': HiOutlineMail,
   microsoft_mail: HiOutlineMail,
   fireflies: HiMicrophone,
-  zoom: HiVideoCamera,
 };
 
 // Integration display config (colors, icons, descriptions)
@@ -75,7 +75,6 @@ const INTEGRATION_CONFIG: Record<string, { name: string; description: string; ic
   microsoft_calendar: { name: 'Microsoft Calendar', description: 'Outlook calendar events and meetings', icon: 'microsoft_calendar', color: 'from-sky-500 to-sky-600' },
   microsoft_mail: { name: 'Microsoft Mail', description: 'Outlook emails and communications', icon: 'microsoft_mail', color: 'from-sky-500 to-sky-600' },
   fireflies: { name: 'Fireflies', description: 'Meeting transcriptions and notes', icon: 'fireflies', color: 'from-violet-500 to-violet-600' },
-  zoom: { name: 'Zoom', description: 'Video meeting recordings and transcripts', icon: 'zoom', color: 'from-blue-400 to-blue-500' },
 };
 
 // Extended integration type with display info
@@ -85,6 +84,60 @@ interface DisplayIntegration extends Integration {
   icon: string;
   color: string;
   connected: boolean;
+}
+
+/**
+ * Format sync stats into a human-readable summary string.
+ * Shows counts for different object types synced.
+ */
+function formatSyncStats(stats: SyncStats | null, provider: string): string | null {
+  if (!stats) return null;
+
+  const parts: string[] = [];
+
+  // CRM-specific stats
+  if (stats.contacts && stats.contacts > 0) {
+    parts.push(`${stats.contacts.toLocaleString()} contacts`);
+  }
+  if (stats.accounts && stats.accounts > 0) {
+    parts.push(`${stats.accounts.toLocaleString()} accounts`);
+  }
+  if (stats.deals && stats.deals > 0) {
+    parts.push(`${stats.deals.toLocaleString()} deals`);
+  }
+
+  // Activity-based connectors (email, calendar, meetings)
+  if (stats.activities && stats.activities > 0) {
+    // Use provider-specific labels for activities
+    const activityLabel = getActivityLabel(provider, stats.activities);
+    parts.push(activityLabel);
+  }
+
+  if (parts.length === 0) return null;
+
+  return parts.join(', ');
+}
+
+/**
+ * Get a provider-specific label for activities count.
+ */
+function getActivityLabel(provider: string, count: number): string {
+  const formatted = count.toLocaleString();
+  switch (provider) {
+    case 'gmail':
+    case 'microsoft_mail':
+      return `${formatted} emails`;
+    case 'google_calendar':
+    case 'microsoft_calendar':
+      return `${formatted} meetings`;
+    case 'slack':
+      return `${formatted} messages`;
+    case 'fireflies':
+    case 'zoom':
+      return `${formatted} recordings`;
+    default:
+      return `${formatted} activities`;
+  }
 }
 
 export function DataSources(): JSX.Element {
@@ -150,6 +203,7 @@ export function DataSources(): JSX.Element {
         currentUserConnected: false,
         teamConnections: [],
         teamTotal: 0,
+        syncStats: null,
         name: config.name,
         description: config.description,
         icon: config.icon,
@@ -465,6 +519,11 @@ export function DataSources(): JSX.Element {
               {state === 'connected' && integration.lastSyncAt && (
                 <p className="text-xs text-surface-500 mt-1 hidden sm:block">
                   Last synced: {new Date(integration.lastSyncAt).toLocaleString()}
+                </p>
+              )}
+              {state === 'connected' && integration.syncStats && (
+                <p className="text-xs text-surface-400 mt-1 hidden sm:block">
+                  {formatSyncStats(integration.syncStats, integration.provider)}
                 </p>
               )}
               {state === 'connected' && integration.lastError && (

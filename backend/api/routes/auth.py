@@ -72,6 +72,8 @@ class IntegrationResponse(BaseModel):
     current_user_connected: bool = False
     team_connections: list[TeamConnection] = []
     team_total: int = 0
+    # Sync statistics - counts of objects synced
+    sync_stats: Optional[dict[str, int]] = None
 
 
 class IntegrationsListResponse(BaseModel):
@@ -1162,6 +1164,7 @@ async def list_integrations(
                 current_user_connected=True,  # Org-scoped is shared, so always "connected" for UI
                 team_connections=[],
                 team_total=team_total,
+                sync_stats=integration.sync_stats,
             ))
         
         # Add user-scoped integrations (aggregated by provider)
@@ -1206,6 +1209,7 @@ async def list_integrations(
                 current_user_connected=current_user_integration is not None,
                 team_connections=team_connections,
                 team_total=team_total,
+                sync_stats=ref_integration.sync_stats if ref_integration else None,
             ))
 
         return IntegrationsListResponse(integrations=response_integrations)
@@ -1418,7 +1422,7 @@ async def run_initial_sync(organization_id: str, provider: str) -> None:
         print(f"Starting initial sync for {provider} (org: {organization_id})")
         connector = connector_class(organization_id)
         counts = await connector.sync_all()
-        await connector.update_last_sync()
+        await connector.update_last_sync(counts)
         print(f"Initial sync complete for {provider}: {counts}")
     except Exception as e:
         print(f"Initial sync failed for {provider}: {str(e)}")
