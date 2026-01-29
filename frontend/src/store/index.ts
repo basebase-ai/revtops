@@ -26,6 +26,14 @@ export interface UserProfile {
   roles: string[]; // Global roles like ['global_admin']
 }
 
+// Masquerade state for admin impersonation
+export interface MasqueradeState {
+  originalUser: UserProfile;
+  originalOrganization: OrganizationInfo | null;
+  masqueradingAs: UserProfile;
+  masqueradeOrganization: OrganizationInfo | null;
+}
+
 export interface OrganizationInfo {
   id: string;
   name: string;
@@ -102,6 +110,9 @@ interface AppState {
   user: UserProfile | null;
   organization: OrganizationInfo | null;
   isAuthenticated: boolean;
+  
+  // Masquerade (admin impersonation)
+  masquerade: MasqueradeState | null;
 
   // UI State
   sidebarCollapsed: boolean;
@@ -127,6 +138,10 @@ interface AppState {
   setUser: (user: UserProfile | null) => void;
   setOrganization: (org: OrganizationInfo | null) => void;
   logout: () => void;
+  
+  // Actions - Masquerade
+  startMasquerade: (targetUser: UserProfile, targetOrg: OrganizationInfo | null) => void;
+  exitMasquerade: () => void;
 
   // Actions - UI
   setSidebarCollapsed: (collapsed: boolean) => void;
@@ -197,6 +212,7 @@ export const useAppStore = create<AppState>()(
       user: null,
       organization: null,
       isAuthenticated: false,
+      masquerade: null,
       sidebarCollapsed: false,
       currentView: "home",
       currentChatId: null,
@@ -228,6 +244,7 @@ export const useAppStore = create<AppState>()(
           user: null,
           organization: null,
           isAuthenticated: false,
+          masquerade: null,
           currentChatId: null,
           recentChats: [],
           conversations: {},
@@ -239,6 +256,46 @@ export const useAppStore = create<AppState>()(
           streamingMessageId: null,
           conversationId: null,
         }),
+
+      // Masquerade actions
+      startMasquerade: (targetUser, targetOrg) => {
+        const { user, organization } = get();
+        if (!user) return;
+        
+        console.log("[Store] Starting masquerade as:", targetUser.email);
+        set({
+          masquerade: {
+            originalUser: user,
+            originalOrganization: organization,
+            masqueradingAs: targetUser,
+            masqueradeOrganization: targetOrg,
+          },
+          user: targetUser,
+          organization: targetOrg,
+          // Clear chat state when switching users
+          currentChatId: null,
+          recentChats: [],
+          conversations: {},
+          activeTasksByConversation: {},
+        });
+      },
+
+      exitMasquerade: () => {
+        const { masquerade } = get();
+        if (!masquerade) return;
+        
+        console.log("[Store] Exiting masquerade, returning to:", masquerade.originalUser.email);
+        set({
+          user: masquerade.originalUser,
+          organization: masquerade.originalOrganization,
+          masquerade: null,
+          // Clear chat state when switching back
+          currentChatId: null,
+          recentChats: [],
+          conversations: {},
+          activeTasksByConversation: {},
+        });
+      },
 
       // UI actions
       setSidebarCollapsed: (sidebarCollapsed) => set({ sidebarCollapsed }),
@@ -743,6 +800,7 @@ export const useAppStore = create<AppState>()(
         organization: state.organization,
         isAuthenticated: state.isAuthenticated,
         sidebarCollapsed: state.sidebarCollapsed,
+        masquerade: state.masquerade, // Persist masquerade state so admin can exit after reload
       }),
     },
   ),
@@ -761,6 +819,13 @@ export const useSidebarCollapsed = () =>
 export const useCurrentView = () => useAppStore((state) => state.currentView);
 export const useIsGlobalAdmin = () =>
   useAppStore((state) => state.user?.roles?.includes("global_admin") ?? false);
+export const useMasquerade = () => useAppStore((state) => state.masquerade);
+export const useIsMasquerading = () => useAppStore((state) => state.masquerade !== null);
+// Get the real admin user ID when masquerading (for API headers)
+export const getAdminUserId = (): string | null => {
+  const state = useAppStore.getState();
+  return state.masquerade?.originalUser.id ?? null;
+};
 
 // Legacy chat selectors (for backwards compatibility)
 export const useMessages = () => useAppStore((state) => state.messages);

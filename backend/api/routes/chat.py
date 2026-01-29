@@ -17,7 +17,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import select, update
+from sqlalchemy import select, update, func
 
 from models.database import get_session
 from models.chat_message import ChatMessage
@@ -117,40 +117,23 @@ async def list_conversations(
         raise HTTPException(status_code=400, detail="Invalid user ID")
 
     async with get_session() as session:
-        # Get total count
-        count_result = await session.execute(
-            select(Conversation)
-            .where(Conversation.user_id == user_uuid)
-        )
-        total = len(count_result.scalars().all())
-
-        # Get conversations with pagination
+        # Simple query - message_count and last_message_preview are cached on the conversation
         result = await session.execute(
-            select(Conversation)
+            select(Conversation, func.count(Conversation.id).over().label("total_count"))
             .where(Conversation.user_id == user_uuid)
             .order_by(Conversation.updated_at.desc())
             .offset(offset)
             .limit(limit)
         )
-        conversations = result.scalars().all()
+        rows = result.all()
 
-        # Build response with message counts and previews
+        # Extract total from first row (window function returns same value for all rows)
+        total: int = rows[0][1] if rows else 0
+
+        # Build response using cached fields
         response_items: list[ConversationResponse] = []
-        for conv in conversations:
-            # Get message count and last message
-            msg_result = await session.execute(
-                select(ChatMessage)
-                .where(ChatMessage.conversation_id == conv.id)
-                .order_by(ChatMessage.created_at.desc())
-                .limit(1)
-            )
-            last_msg = msg_result.scalar_one_or_none()
-            
-            count_result = await session.execute(
-                select(ChatMessage)
-                .where(ChatMessage.conversation_id == conv.id)
-            )
-            msg_count = len(count_result.scalars().all())
+        for row in rows:
+            conv: Conversation = row[0]
 
             response_items.append(ConversationResponse(
                 id=str(conv.id),
@@ -159,8 +142,8 @@ async def list_conversations(
                 summary=conv.summary,
                 created_at=f"{conv.created_at.isoformat()}Z" if conv.created_at else "",
                 updated_at=f"{conv.updated_at.isoformat()}Z" if conv.updated_at else "",
-                message_count=msg_count,
-                last_message_preview=last_msg.content[:100] if last_msg else None,
+                message_count=conv.message_count,
+                last_message_preview=conv.last_message_preview[:100] if conv.last_message_preview else None,
             ))
 
         return ConversationListResponse(

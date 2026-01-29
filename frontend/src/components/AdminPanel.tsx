@@ -8,7 +8,7 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import { API_BASE } from '../lib/api';
-import { useAppStore } from '../store';
+import { useAppStore, type UserProfile, type OrganizationInfo } from '../store';
 
 type AdminTab = 'waitlist' | 'users' | 'organizations';
 
@@ -52,7 +52,10 @@ interface AdminOrganization {
 
 export function AdminPanel(): JSX.Element {
   const user = useAppStore((state) => state.user);
+  const startMasquerade = useAppStore((state) => state.startMasquerade);
+  const setCurrentView = useAppStore((state) => state.setCurrentView);
   const [activeTab, setActiveTab] = useState<AdminTab>('waitlist');
+  const [masquerading, setMasquerading] = useState<string | null>(null);
   const [entries, setEntries] = useState<WaitlistEntry[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
@@ -196,6 +199,58 @@ export function AdminPanel(): JSX.Element {
       console.error('Failed to invite:', err);
     } finally {
       setInviting(null);
+    }
+  };
+
+  const handleMasquerade = async (targetUserId: string): Promise<void> => {
+    if (!user) return;
+    
+    setMasquerading(targetUserId);
+
+    try {
+      const response = await fetch(
+        `${API_BASE}/auth/masquerade/${targetUserId}?admin_user_id=${user.id}`
+      );
+
+      if (!response.ok) {
+        const data = await response.json() as { detail?: string };
+        throw new Error(data.detail ?? 'Failed to masquerade');
+      }
+
+      const data = await response.json() as {
+        id: string;
+        email: string;
+        name: string | null;
+        avatar_url: string | null;
+        roles: string[];
+        organization: { id: string; name: string; logo_url: string | null } | null;
+      };
+
+      // Build user profile for masquerade
+      const targetUser: UserProfile = {
+        id: data.id,
+        email: data.email,
+        name: data.name,
+        avatarUrl: data.avatar_url,
+        roles: data.roles,
+      };
+
+      const targetOrg: OrganizationInfo | null = data.organization
+        ? {
+            id: data.organization.id,
+            name: data.organization.name,
+            logoUrl: data.organization.logo_url,
+          }
+        : null;
+
+      // Start masquerade and navigate to home
+      startMasquerade(targetUser, targetOrg);
+      setCurrentView('home');
+    } catch (err) {
+      console.error('Failed to masquerade:', err);
+      alert('Failed to masquerade: ' + (err instanceof Error ? err.message : 'Unknown error'));
+    } finally {
+      setMasquerading(null);
     }
   };
 
@@ -509,6 +564,7 @@ export function AdminPanel(): JSX.Element {
                       <th className="px-4 py-3 text-sm font-medium text-surface-400">Status</th>
                       <th className="px-4 py-3 text-sm font-medium text-surface-400">Last Login</th>
                       <th className="px-4 py-3 text-sm font-medium text-surface-400">Joined</th>
+                      <th className="px-4 py-3 text-sm font-medium text-surface-400">Action</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-surface-800">
@@ -533,6 +589,18 @@ export function AdminPanel(): JSX.Element {
                         </td>
                         <td className="px-4 py-3 text-sm text-surface-400">
                           {formatDate(u.created_at)}
+                        </td>
+                        <td className="px-4 py-3">
+                          {u.id !== user?.id && u.status === 'active' && (
+                            <button
+                              onClick={() => void handleMasquerade(u.id)}
+                              disabled={masquerading === u.id}
+                              className="px-3 py-1.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-400 border border-amber-500/30 text-sm font-medium transition-colors disabled:opacity-50"
+                              title="View as this user"
+                            >
+                              {masquerading === u.id ? 'Loading...' : 'Masquerade'}
+                            </button>
+                          )}
                         </td>
                       </tr>
                     ))}

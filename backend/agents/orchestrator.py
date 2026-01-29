@@ -637,12 +637,16 @@ Use the user's local time to provide relative references (e.g., '3 hours ago', '
                 )
             )
 
-            # Update conversation's updated_at
+            # Update conversation's cached fields
             if conv_uuid:
                 await session.execute(
                     update(Conversation)
                     .where(Conversation.id == conv_uuid)
-                    .values(updated_at=datetime.utcnow())
+                    .values(
+                        updated_at=datetime.utcnow(),
+                        message_count=Conversation.message_count + 1,
+                        last_message_preview=user_msg[:200] if user_msg else None,
+                    )
                 )
 
             await session.commit()
@@ -663,12 +667,23 @@ Use the user's local time to provide relative references (e.g., '3 hours ago', '
                 )
             )
 
-            # Update conversation's updated_at
+            # Update conversation's cached fields
             if conv_uuid:
+                # Extract text preview from content blocks
+                preview_text: str | None = None
+                for block in assistant_blocks:
+                    if block.get("type") == "text" and block.get("text"):
+                        preview_text = block["text"][:200]
+                        break
+
                 await session.execute(
                     update(Conversation)
                     .where(Conversation.id == conv_uuid)
-                    .values(updated_at=datetime.utcnow())
+                    .values(
+                        updated_at=datetime.utcnow(),
+                        message_count=Conversation.message_count + 1,
+                        last_message_preview=preview_text,
+                    )
                 )
 
             await session.commit()

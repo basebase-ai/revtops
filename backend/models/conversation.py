@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Optional
 
-from sqlalchemy import DateTime, ForeignKey, String, Text
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -39,6 +39,14 @@ class Conversation(Base):
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
+    )
+
+    # Cached fields for fast list queries (denormalized)
+    message_count: Mapped[int] = mapped_column(
+        Integer, default=0, nullable=False
+    )
+    last_message_preview: Mapped[Optional[str]] = mapped_column(
+        String(200), nullable=True
     )
 
     # Relationships

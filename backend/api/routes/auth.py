@@ -554,6 +554,79 @@ async def update_organization(
 
 
 # =============================================================================
+# Masquerade (Admin Impersonation) Endpoints
+# =============================================================================
+
+
+class MasqueradeUserResponse(BaseModel):
+    """Response model for masquerade user info."""
+
+    id: str
+    email: str
+    name: Optional[str]
+    avatar_url: Optional[str]
+    roles: list[str]
+    organization: Optional[SyncOrganizationData]
+
+
+@router.get("/masquerade/{target_user_id}", response_model=MasqueradeUserResponse)
+async def get_masquerade_user(
+    target_user_id: str,
+    admin_user_id: Optional[str] = None,
+) -> MasqueradeUserResponse:
+    """Get user info for masquerade/impersonation.
+    
+    Only accessible by global admins. Returns the target user's full profile
+    including organization data so the admin can impersonate them.
+    """
+    if not admin_user_id:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        admin_uuid = UUID(admin_user_id)
+        target_uuid = UUID(target_user_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid user ID format")
+
+    async with get_session() as session:
+        # Verify admin has global_admin role
+        admin_user = await session.get(User, admin_uuid)
+        if not admin_user:
+            raise HTTPException(status_code=404, detail="Admin user not found")
+        
+        if "global_admin" not in (admin_user.roles or []):
+            raise HTTPException(
+                status_code=403, 
+                detail="Only global admins can masquerade as other users"
+            )
+        
+        # Fetch target user
+        target_user = await session.get(User, target_uuid)
+        if not target_user:
+            raise HTTPException(status_code=404, detail="Target user not found")
+        
+        # Fetch target user's organization if they have one
+        org_data: Optional[SyncOrganizationData] = None
+        if target_user.organization_id:
+            org = await session.get(Organization, target_user.organization_id)
+            if org:
+                org_data = SyncOrganizationData(
+                    id=str(org.id),
+                    name=org.name,
+                    logo_url=org.logo_url,
+                )
+        
+        return MasqueradeUserResponse(
+            id=str(target_user.id),
+            email=target_user.email,
+            name=target_user.name,
+            avatar_url=target_user.avatar_url,
+            roles=target_user.roles or [],
+            organization=org_data,
+        )
+
+
+# =============================================================================
 # Nango Integration Endpoints
 # =============================================================================
 

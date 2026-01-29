@@ -2,7 +2,10 @@
  * Centralized API configuration.
  * 
  * Single source of truth for API URLs and common request helpers.
+ * Includes masquerade support for admin impersonation.
  */
+
+import { getAdminUserId } from '../store';
 
 // Backend URL for production
 const PRODUCTION_BACKEND = 'https://api.revtops.com';
@@ -31,7 +34,8 @@ export interface ApiResponse<T> {
 }
 
 /**
- * Make an API request with standard error handling
+ * Make an API request with standard error handling.
+ * Automatically includes X-Admin-User-Id header when masquerading.
  */
 export async function apiRequest<T>(
   endpoint: string,
@@ -41,6 +45,12 @@ export async function apiRequest<T>(
     'Content-Type': 'application/json',
     ...options.headers,
   };
+  
+  // Add admin user ID header when masquerading
+  const adminUserId = getAdminUserId();
+  if (adminUserId) {
+    (headers as Record<string, string>)['X-Admin-User-Id'] = adminUserId;
+  }
 
   try {
     const response = await fetch(`${API_BASE}${endpoint}`, {
