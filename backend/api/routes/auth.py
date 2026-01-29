@@ -1266,8 +1266,10 @@ async def disconnect_integration(
         )
         
         # Find integration based on scope
+        integration: Optional[Integration] = None
+        
         if scope == "user":
-            # Find this user's integration
+            # First try to find by user_id
             result = await db_session.execute(
                 select(Integration).where(
                     Integration.organization_id == org_uuid,
@@ -1275,6 +1277,24 @@ async def disconnect_integration(
                     Integration.user_id == current_user_uuid,
                 )
             )
+            integration = result.scalar_one_or_none()
+            
+            # Fallback: check by nango_connection_id for old records where user_id wasn't set
+            if not integration:
+                expected_conn_id = f"{org_uuid}:user:{current_user_uuid}"
+                result = await db_session.execute(
+                    select(Integration).where(
+                        Integration.organization_id == org_uuid,
+                        Integration.provider == provider,
+                        Integration.nango_connection_id == expected_conn_id,
+                    )
+                )
+                integration = result.scalar_one_or_none()
+                
+                # If found via connection_id, update the user_id field for future queries
+                if integration and integration.user_id is None:
+                    print(f"Disconnect: Fixing missing user_id on integration {integration.id}")
+                    integration.user_id = current_user_uuid
         else:
             # Find org-level integration
             result = await db_session.execute(
@@ -1284,8 +1304,7 @@ async def disconnect_integration(
                     Integration.user_id.is_(None),
                 )
             )
-        
-        integration = result.scalar_one_or_none()
+            integration = result.scalar_one_or_none()
 
         if not integration:
             print(f"Disconnect: Integration not found for org={org_uuid}, provider={provider}, user={current_user_uuid}")

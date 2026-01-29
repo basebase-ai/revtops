@@ -64,6 +64,16 @@ const ICON_MAP: Record<string, IconType> = {
   fireflies: HiMicrophone,
 };
 
+// User-scoped providers (each user connects individually vs org-wide connection)
+const USER_SCOPED_PROVIDERS = new Set([
+  'gmail',
+  'google_calendar',
+  'microsoft_calendar',
+  'microsoft_mail',
+  'zoom',
+  'fireflies',
+]);
+
 // Integration display config (colors, icons, descriptions)
 const INTEGRATION_CONFIG: Record<string, { name: string; description: string; icon: string; color: string }> = {
   hubspot: { name: 'HubSpot', description: 'CRM data including deals, contacts, and companies', icon: 'hubspot', color: 'from-orange-500 to-orange-600' },
@@ -188,9 +198,7 @@ export function DataSources(): JSX.Element {
     .filter((provider) => INTEGRATION_CONFIG[provider] !== undefined)
     .map((provider) => {
       const config = INTEGRATION_CONFIG[provider]!;
-      const scope = ['gmail', 'google_calendar', 'microsoft_calendar', 'microsoft_mail', 'zoom'].includes(provider) 
-        ? 'user' as const 
-        : 'organization' as const;
+      const scope = USER_SCOPED_PROVIDERS.has(provider) ? 'user' as const : 'organization' as const;
       return {
         id: provider,
         provider,
@@ -291,15 +299,22 @@ export function DataSources(): JSX.Element {
     }
   };
 
-  const handleDisconnect = async (provider: string, scope: 'organization' | 'user'): Promise<void> => {
+  const handleDisconnect = async (provider: string): Promise<void> => {
     if (!organizationId) return;
+    
+    // Derive scope from provider (source of truth) rather than trusting passed value
+    const isUserScoped = USER_SCOPED_PROVIDERS.has(provider);
+    
     // User-scoped integrations require user_id
-    if (scope === 'user' && !userId) return;
+    if (isUserScoped && !userId) {
+      alert('Unable to disconnect: user session not found. Please refresh the page.');
+      return;
+    }
     
     if (!confirm(`Are you sure you want to disconnect ${provider}?`)) return;
 
     const params = new URLSearchParams({ organization_id: organizationId });
-    if (scope === 'user' && userId) {
+    if (isUserScoped && userId) {
       params.set('user_id', userId);
     }
     const url = `${API_BASE}/auth/integrations/${provider}?${params.toString()}`;
@@ -554,7 +569,7 @@ export function DataSources(): JSX.Element {
             </button>
             {state === 'connected' && (
               <button
-                onClick={() => void handleDisconnect(integration.provider, integration.scope)}
+                onClick={() => void handleDisconnect(integration.provider)}
                 className="px-3 sm:px-4 py-2 text-sm font-medium text-red-400 hover:text-red-300 hover:bg-red-500/10 rounded-lg transition-colors"
               >
                 Disconnect
