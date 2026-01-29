@@ -16,7 +16,7 @@ from datetime import datetime
 from typing import Any, AsyncGenerator
 from uuid import UUID
 
-import anthropic
+from anthropic import AsyncAnthropic
 from sqlalchemy import select, update
 
 from agents.tools import execute_tool, get_tools
@@ -297,7 +297,7 @@ class ChatOrchestrator:
         self.user_email = user_email
         self.local_time = local_time
         self.timezone = timezone
-        self.client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
+        self.client = AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
 
     async def process_message(
         self, user_message: str, save_user_message: bool = True
@@ -377,8 +377,8 @@ When querying for "today" or "this morning", use explicit date literals based on
 Use the user's local time to provide relative references (e.g., '3 hours ago', 'yesterday') when discussing results."""
             system_prompt += time_context
 
-        # Initial Claude call
-        response = self.client.messages.create(
+        # Initial Claude call (async)
+        response = await self.client.messages.create(
             model="claude-opus-4-5",
             max_tokens=4096,
             system=system_prompt,
@@ -476,8 +476,8 @@ Use the user's local time to provide relative references (e.g., '3 hours ago', '
             messages.append({"role": "assistant", "content": response.content})
             messages.append({"role": "user", "content": tool_results})
 
-            # Get Claude's response to all tool results
-            response = self.client.messages.create(
+            # Get Claude's response to all tool results (async)
+            response = await self.client.messages.create(
                 model="claude-opus-4-5",
                 max_tokens=4096,
                 system=system_prompt,
