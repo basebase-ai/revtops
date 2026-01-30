@@ -19,6 +19,7 @@ export {
   integrationKeys,
   type Integration,
   type TeamConnection,
+  type SyncStats,
 } from './useIntegrations';
 
 // Other hooks

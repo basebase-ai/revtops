@@ -16,7 +16,7 @@ from datetime import datetime
 from typing import Any, AsyncGenerator
 from uuid import UUID
 
-import anthropic
+from anthropic import AsyncAnthropic
 from sqlalchemy import select, update
 
 from agents.tools import execute_tool, get_tools
@@ -297,7 +297,7 @@ class ChatOrchestrator:
         self.user_email = user_email
         self.local_time = local_time
         self.timezone = timezone
-        self.client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
+        self.client = AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
 
     async def process_message(
         self, user_message: str, save_user_message: bool = True
@@ -360,11 +360,25 @@ class ChatOrchestrator:
                 time_context += f"- User's local time: {self.local_time}\n"
             if self.timezone:
                 time_context += f"- User's timezone: {self.timezone}\n"
-            time_context += "\nUse this to provide relative time references (e.g., '3 hours ago', 'yesterday') when discussing sync times, activity dates, etc."
+            time_context += """
+**IMPORTANT**: All database timestamps are stored in UTC. When the user asks about "today", "this morning", "yesterday", etc., you must convert their local date to UTC for accurate queries.
+
+For date-based queries, use the user's timezone to calculate the correct UTC range:
+- Extract the user's local date from their local_time
+- Use that date in your WHERE clauses, NOT CURRENT_DATE (which is UTC and may differ)
+- Example: If user's local time is 2026-01-27T20:00:00 in America/Los_Angeles, "today" means Jan 27 local time, even though CURRENT_DATE in UTC might be Jan 28
+
+When querying for "today" or "this morning", use explicit date literals based on the user's local date:
+```sql
+-- Instead of: WHERE scheduled_start >= CURRENT_DATE
+-- Use: WHERE scheduled_start >= '2026-01-27'::date AND scheduled_start < '2026-01-28'::date
+```
+
+Use the user's local time to provide relative references (e.g., '3 hours ago', 'yesterday') when discussing results."""
             system_prompt += time_context
 
-        # Initial Claude call
-        response = self.client.messages.create(
+        # Initial Claude call (async)
+        response = await self.client.messages.create(
             model="claude-opus-4-5",
             max_tokens=4096,
             system=system_prompt,
@@ -462,8 +476,8 @@ class ChatOrchestrator:
             messages.append({"role": "assistant", "content": response.content})
             messages.append({"role": "user", "content": tool_results})
 
-            # Get Claude's response to all tool results
-            response = self.client.messages.create(
+            # Get Claude's response to all tool results (async)
+            response = await self.client.messages.create(
                 model="claude-opus-4-5",
                 max_tokens=4096,
                 system=system_prompt,
@@ -492,16 +506,17 @@ class ChatOrchestrator:
 
     async def _create_conversation(self) -> str:
         """Create a new conversation and return its ID."""
-        async with get_session() as session:
+        async with get_session(organization_id=self.organization_id) as session:
             conversation = Conversation(
                 user_id=UUID(self.user_id),
                 organization_id=UUID(self.organization_id) if self.organization_id else None,
                 title=None,
             )
             session.add(conversation)
+            # Capture ID before commit (UUID is generated on model instantiation)
+            conv_id = str(conversation.id)
             await session.commit()
-            await session.refresh(conversation)
-            return str(conversation.id)
+            return conv_id
 
     async def _load_history(self, limit: int = 20) -> list[dict[str, Any]]:
         """Load recent chat history from the current conversation.
@@ -514,7 +529,7 @@ class ChatOrchestrator:
         if not self.conversation_id:
             return []
 
-        async with get_session() as session:
+        async with get_session(organization_id=self.organization_id) as session:
             result = await session.execute(
                 select(ChatMessage)
                 .where(ChatMessage.conversation_id == UUID(self.conversation_id))
@@ -612,7 +627,7 @@ class ChatOrchestrator:
         """Save user message to database immediately."""
         conv_uuid = UUID(self.conversation_id) if self.conversation_id else None
 
-        async with get_session() as session:
+        async with get_session(organization_id=self.organization_id) as session:
             session.add(
                 ChatMessage(
                     conversation_id=conv_uuid,
@@ -623,12 +638,16 @@ class ChatOrchestrator:
                 )
             )
 
-            # Update conversation's updated_at
+            # Update conversation's cached fields
             if conv_uuid:
                 await session.execute(
                     update(Conversation)
                     .where(Conversation.id == conv_uuid)
-                    .values(updated_at=datetime.utcnow())
+                    .values(
+                        updated_at=datetime.utcnow(),
+                        message_count=Conversation.message_count + 1,
+                        last_message_preview=user_msg[:200] if user_msg else None,
+                    )
                 )
 
             await session.commit()
@@ -638,7 +657,7 @@ class ChatOrchestrator:
         """Save assistant message to database."""
         conv_uuid = UUID(self.conversation_id) if self.conversation_id else None
 
-        async with get_session() as session:
+        async with get_session(organization_id=self.organization_id) as session:
             session.add(
                 ChatMessage(
                     conversation_id=conv_uuid,
@@ -649,12 +668,23 @@ class ChatOrchestrator:
                 )
             )
 
-            # Update conversation's updated_at
+            # Update conversation's cached fields
             if conv_uuid:
+                # Extract text preview from content blocks
+                preview_text: str | None = None
+                for block in assistant_blocks:
+                    if block.get("type") == "text" and block.get("text"):
+                        preview_text = block["text"][:200]
+                        break
+
                 await session.execute(
                     update(Conversation)
                     .where(Conversation.id == conv_uuid)
-                    .values(updated_at=datetime.utcnow())
+                    .values(
+                        updated_at=datetime.utcnow(),
+                        message_count=Conversation.message_count + 1,
+                        last_message_preview=preview_text,
+                    )
                 )
 
             await session.commit()
@@ -664,7 +694,7 @@ class ChatOrchestrator:
         if not self.conversation_id:
             return
 
-        async with get_session() as session:
+        async with get_session(organization_id=self.organization_id) as session:
             await session.execute(
                 update(Conversation)
                 .where(Conversation.id == UUID(self.conversation_id))

@@ -485,11 +485,11 @@ async def _run_sql_query(
     
     try:
         async with get_session() as session:
-            # Set the organization context for Row-Level Security
-            # This session variable is checked by RLS policies on all tables
-            # Use set_config() instead of SET LOCAL for asyncpg compatibility
+            # IMPORTANT: Set org context BEFORE any query for RLS to work.
+            # Using false for is_local makes it session-level (persists for connection lifetime).
+            # With NullPool, each request gets a fresh connection so this is safe.
             await session.execute(
-                text("SELECT set_config('app.current_org_id', :org_id, true)"),
+                text("SELECT set_config('app.current_org_id', :org_id, false)"),
                 {"org_id": organization_id}
             )
             
@@ -934,6 +934,31 @@ async def execute_crm_operation(operation_id: str, skip_duplicates: bool = True)
         }
 
 
+def _validate_deal_required_fields(deals: list[dict[str, Any]]) -> str | None:
+    """
+    Validate that all deals have required pipeline and dealstage fields.
+    
+    Returns None if all deals are valid, or an error message describing the issues.
+    """
+    invalid_deals: list[str] = []
+    
+    for i, deal in enumerate(deals):
+        missing: list[str] = []
+        if not deal.get("pipeline"):
+            missing.append("pipeline")
+        if not deal.get("dealstage"):
+            missing.append("dealstage")
+        
+        if missing:
+            deal_name = deal.get("dealname", f"Deal #{i + 1}")
+            invalid_deals.append(f"'{deal_name}' is missing: {', '.join(missing)}")
+    
+    if invalid_deals:
+        return "Issues found: " + "; ".join(invalid_deals[:5])  # Limit to first 5 errors
+    
+    return None
+
+
 async def _execute_hubspot_operation(
     crm_op: CrmOperation, skip_duplicates: bool
 ) -> dict[str, Any]:
@@ -1006,6 +1031,16 @@ async def _execute_hubspot_operation(
                     errors.extend(batch_result.get("errors", []))
                     
             elif crm_op.record_type == "deal":
+                # Validate that all deals have required pipeline and dealstage fields
+                missing_fields_errors = _validate_deal_required_fields(records_to_process)
+                if missing_fields_errors:
+                    return {
+                        "status": "failed",
+                        "message": "Deal creation failed: missing required fields",
+                        "error": "Each deal must have both 'pipeline' and 'dealstage' specified. "
+                                 + missing_fields_errors,
+                    }
+                
                 if len(records_to_process) == 1:
                     result = await connector.create_deal(records_to_process[0])
                     created.append(result)
@@ -1027,9 +1062,43 @@ async def _execute_hubspot_operation(
                 created.extend(batch_result.get("results", []))
                 errors.extend(batch_result.get("errors", []))
             elif crm_op.record_type == "deal":
+                # Validate that all deals have required pipeline and dealstage fields
+                missing_fields_errors = _validate_deal_required_fields(records_to_process)
+                if missing_fields_errors:
+                    return {
+                        "status": "failed",
+                        "message": "Deal creation failed: missing required fields",
+                        "error": "Each deal must have both 'pipeline' and 'dealstage' specified. "
+                                 + missing_fields_errors,
+                    }
+                
                 batch_result = await connector.create_deals_batch(records_to_process)
                 created.extend(batch_result.get("results", []))
                 errors.extend(batch_result.get("errors", []))
+        
+        elif crm_op.operation == "update":
+            # Update existing records - each record must have an 'id' field
+            for record in records_to_process:
+                record_id = record.get("id")
+                if not record_id:
+                    errors.append({"record": record, "error": "Missing record ID for update"})
+                    continue
+                
+                # Extract properties to update (everything except 'id')
+                properties = {k: v for k, v in record.items() if k != "id"}
+                
+                try:
+                    if crm_op.record_type == "contact":
+                        result = await connector.update_contact(record_id, properties)
+                        created.append(result)
+                    elif crm_op.record_type == "company":
+                        result = await connector.update_company(record_id, properties)
+                        created.append(result)
+                    elif crm_op.record_type == "deal":
+                        result = await connector.update_deal(record_id, properties)
+                        created.append(result)
+                except Exception as update_err:
+                    errors.append({"record": record, "error": str(update_err)})
                 
     except Exception as e:
         logger.error("[Tools._execute_hubspot_operation] Error: %s", str(e))

@@ -250,7 +250,7 @@ async def sync_integration_data(organization_id: str, provider: str) -> None:
         print(f"[Sync] Starting sync for {provider} in org {organization_id}")
         connector = connector_class(organization_id)
         counts = await connector.sync_all()
-        await connector.update_last_sync()
+        await connector.update_last_sync(counts)
         print(f"[Sync] Completed sync for {provider}: {counts}")
 
         _sync_status[status_key]["status"] = "completed"

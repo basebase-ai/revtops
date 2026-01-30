@@ -51,6 +51,9 @@ class TaskManager:
         # Active asyncio tasks by task_id
         self._running_tasks: dict[str, asyncio.Task[None]] = {}
         
+        # Organization ID per task (for RLS context)
+        self._task_org_ids: dict[str, str] = {}
+        
         # WebSocket subscriptions: task_id -> set of websockets
         self._subscriptions: dict[str, set[WebSocket]] = {}
         
@@ -90,8 +93,8 @@ class TaskManager:
         """
         task_id = str(uuid4())
         
-        # Create database record
-        async with get_session() as session:
+        # Create database record (with RLS context)
+        async with get_session(organization_id=organization_id) as session:
             agent_task = AgentTask(
                 id=UUID(task_id),
                 conversation_id=UUID(conversation_id),
@@ -124,6 +127,7 @@ class TaskManager:
         )
         
         self._running_tasks[task_id] = asyncio_task
+        self._task_org_ids[task_id] = organization_id
         
         return task_id
     
@@ -223,10 +227,12 @@ class TaskManager:
         finally:
             # Clean up
             self._running_tasks.pop(task_id, None)
+            self._task_org_ids.pop(task_id, None)
     
     async def _append_chunk(self, task_id: str, chunk: dict[str, Any]) -> None:
         """Append a chunk to the task's output_chunks in the database."""
-        async with get_session() as session:
+        org_id = self._task_org_ids.get(task_id)
+        async with get_session(organization_id=org_id) as session:
             # Use raw SQL for atomic append to JSONB array
             await session.execute(
                 update(AgentTask)
@@ -245,7 +251,8 @@ class TaskManager:
         error_message: str | None = None,
     ) -> None:
         """Mark a task as completed/failed/cancelled in the database."""
-        async with get_session() as session:
+        org_id = self._task_org_ids.get(task_id)
+        async with get_session(organization_id=org_id) as session:
             values: dict[str, Any] = {
                 "status": status,
                 "completed_at": datetime.utcnow(),
@@ -345,17 +352,18 @@ class TaskManager:
             return True
         return False
     
-    async def get_active_tasks(self, user_id: str) -> list[dict[str, Any]]:
+    async def get_active_tasks(self, user_id: str, organization_id: str | None = None) -> list[dict[str, Any]]:
         """
         Get all active (running) tasks for a user.
         
         Args:
             user_id: UUID of the user
+            organization_id: Optional org ID for RLS context
             
         Returns:
             List of task state dictionaries
         """
-        async with get_session() as session:
+        async with get_session(organization_id=organization_id) as session:
             result = await session.execute(
                 select(AgentTask)
                 .where(AgentTask.user_id == UUID(user_id))
@@ -365,17 +373,20 @@ class TaskManager:
             tasks = result.scalars().all()
             return [task.to_state_dict() for task in tasks]
     
-    async def get_task(self, task_id: str) -> dict[str, Any] | None:
+    async def get_task(self, task_id: str, organization_id: str | None = None) -> dict[str, Any] | None:
         """
         Get a task by ID including all output chunks.
         
         Args:
             task_id: The task ID
+            organization_id: Optional org ID for RLS context (uses cached if not provided)
             
         Returns:
             Task state dictionary or None if not found
         """
-        async with get_session() as session:
+        # Use cached org_id if not provided
+        org_id = organization_id or self._task_org_ids.get(task_id)
+        async with get_session(organization_id=org_id) as session:
             task = await session.get(AgentTask, UUID(task_id))
             if task:
                 return task.to_state_dict()
@@ -385,6 +396,7 @@ class TaskManager:
         self,
         task_id: str,
         since_index: int = 0,
+        organization_id: str | None = None,
     ) -> list[dict[str, Any]]:
         """
         Get output chunks for a task since a given index.
@@ -394,11 +406,14 @@ class TaskManager:
         Args:
             task_id: The task ID
             since_index: Return chunks with index >= this value
+            organization_id: Optional org ID for RLS context (uses cached if not provided)
             
         Returns:
             List of chunk dictionaries
         """
-        async with get_session() as session:
+        # Use cached org_id if not provided
+        org_id = organization_id or self._task_org_ids.get(task_id)
+        async with get_session(organization_id=org_id) as session:
             task = await session.get(AgentTask, UUID(task_id))
             if not task or not task.output_chunks:
                 return []

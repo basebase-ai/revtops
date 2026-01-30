@@ -17,7 +17,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import select, update
+from sqlalchemy import select, update, func
 
 from models.database import get_session
 from models.chat_message import ChatMessage
@@ -116,41 +116,31 @@ async def list_conversations(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid user ID")
 
+    # First get user's org_id (users table has RLS disabled)
     async with get_session() as session:
-        # Get total count
-        count_result = await session.execute(
-            select(Conversation)
-            .where(Conversation.user_id == user_uuid)
-        )
-        total = len(count_result.scalars().all())
+        user = await session.get(User, user_uuid)
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        org_id = str(user.organization_id) if user.organization_id else None
 
-        # Get conversations with pagination
+    async with get_session(organization_id=org_id) as session:
+        # Simple query - message_count and last_message_preview are cached on the conversation
         result = await session.execute(
-            select(Conversation)
+            select(Conversation, func.count(Conversation.id).over().label("total_count"))
             .where(Conversation.user_id == user_uuid)
             .order_by(Conversation.updated_at.desc())
             .offset(offset)
             .limit(limit)
         )
-        conversations = result.scalars().all()
+        rows = result.all()
 
-        # Build response with message counts and previews
+        # Extract total from first row (window function returns same value for all rows)
+        total: int = rows[0][1] if rows else 0
+
+        # Build response using cached fields
         response_items: list[ConversationResponse] = []
-        for conv in conversations:
-            # Get message count and last message
-            msg_result = await session.execute(
-                select(ChatMessage)
-                .where(ChatMessage.conversation_id == conv.id)
-                .order_by(ChatMessage.created_at.desc())
-                .limit(1)
-            )
-            last_msg = msg_result.scalar_one_or_none()
-            
-            count_result = await session.execute(
-                select(ChatMessage)
-                .where(ChatMessage.conversation_id == conv.id)
-            )
-            msg_count = len(count_result.scalars().all())
+        for row in rows:
+            conv: Conversation = row[0]
 
             response_items.append(ConversationResponse(
                 id=str(conv.id),
@@ -159,8 +149,8 @@ async def list_conversations(
                 summary=conv.summary,
                 created_at=f"{conv.created_at.isoformat()}Z" if conv.created_at else "",
                 updated_at=f"{conv.updated_at.isoformat()}Z" if conv.updated_at else "",
-                message_count=msg_count,
-                last_message_preview=last_msg.content[:100] if last_msg else None,
+                message_count=conv.message_count,
+                last_message_preview=conv.last_message_preview[:100] if conv.last_message_preview else None,
             ))
 
         return ConversationListResponse(
@@ -177,28 +167,36 @@ async def create_conversation(request: ConversationCreate) -> ConversationRespon
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid user ID")
 
+    # First get user's org_id (users table has RLS disabled)
     async with get_session() as session:
-        # Get user's organization_id
         user = await session.get(User, user_uuid)
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
-        
+        org_id = str(user.organization_id) if user.organization_id else None
+
+    async with get_session(organization_id=org_id) as session:
         conversation = Conversation(
             user_id=user_uuid,
-            organization_id=user.organization_id,
+            organization_id=UUID(org_id) if org_id else None,
             title=request.title,
         )
         session.add(conversation)
+        # Capture values before commit (model defaults are set on instantiation)
+        conv_id = str(conversation.id)
+        conv_title = conversation.title
+        conv_summary = conversation.summary
+        conv_created_at = conversation.created_at
+        conv_updated_at = conversation.updated_at
         await session.commit()
-        await session.refresh(conversation)
+        # Note: don't call refresh() - it can fail due to RLS after commit
 
         return ConversationResponse(
-            id=str(conversation.id),
-            user_id=str(conversation.user_id),
-            title=conversation.title,
-            summary=conversation.summary,
-            created_at=f"{conversation.created_at.isoformat()}Z" if conversation.created_at else "",
-            updated_at=f"{conversation.updated_at.isoformat()}Z" if conversation.updated_at else "",
+            id=conv_id,
+            user_id=str(user_uuid),
+            title=conv_title,
+            summary=conv_summary,
+            created_at=f"{conv_created_at.isoformat()}Z" if conv_created_at else "",
+            updated_at=f"{conv_updated_at.isoformat()}Z" if conv_updated_at else "",
             message_count=0,
             last_message_preview=None,
         )
@@ -216,7 +214,14 @@ async def get_conversation(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid ID format")
 
+    # First get user's org_id (users table has RLS disabled)
     async with get_session() as session:
+        user = await session.get(User, user_uuid)
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        org_id = str(user.organization_id) if user.organization_id else None
+
+    async with get_session(organization_id=org_id) as session:
         result = await session.execute(
             select(Conversation)
             .where(Conversation.id == conv_uuid)
@@ -262,7 +267,14 @@ async def update_conversation(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid ID format")
 
+    # First get user's org_id (users table has RLS disabled)
     async with get_session() as session:
+        user = await session.get(User, user_uuid)
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        org_id = str(user.organization_id) if user.organization_id else None
+
+    async with get_session(organization_id=org_id) as session:
         result = await session.execute(
             select(Conversation)
             .where(Conversation.id == conv_uuid)
@@ -277,17 +289,25 @@ async def update_conversation(
         if request.title is not None:
             conversation.title = request.title
         conversation.updated_at = datetime.utcnow()
+        
+        # Capture values before commit
+        conv_id = str(conversation.id)
+        conv_user_id = str(conversation.user_id)
+        conv_title = conversation.title
+        conv_summary = conversation.summary
+        conv_created_at = conversation.created_at
+        conv_updated_at = conversation.updated_at
 
         await session.commit()
-        await session.refresh(conversation)
+        # Note: don't call refresh() - it can fail due to RLS after commit
 
         return ConversationResponse(
-            id=str(conversation.id),
-            user_id=str(conversation.user_id),
-            title=conversation.title,
-            summary=conversation.summary,
-            created_at=f"{conversation.created_at.isoformat()}Z" if conversation.created_at else "",
-            updated_at=f"{conversation.updated_at.isoformat()}Z" if conversation.updated_at else "",
+            id=conv_id,
+            user_id=conv_user_id,
+            title=conv_title,
+            summary=conv_summary,
+            created_at=f"{conv_created_at.isoformat()}Z" if conv_created_at else "",
+            updated_at=f"{conv_updated_at.isoformat()}Z" if conv_updated_at else "",
             message_count=0,
             last_message_preview=None,
         )
@@ -305,7 +325,14 @@ async def delete_conversation(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid ID format")
 
+    # First get user's org_id (users table has RLS disabled)
     async with get_session() as session:
+        user = await session.get(User, user_uuid)
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        org_id = str(user.organization_id) if user.organization_id else None
+
+    async with get_session(organization_id=org_id) as session:
         result = await session.execute(
             select(Conversation)
             .where(Conversation.id == conv_uuid)
@@ -340,7 +367,14 @@ async def get_chat_history(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid ID format")
 
+    # First get user's org_id (users table has RLS disabled)
     async with get_session() as session:
+        user = await session.get(User, user_uuid)
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        org_id = str(user.organization_id) if user.organization_id else None
+
+    async with get_session(organization_id=org_id) as session:
         query = select(ChatMessage).where(ChatMessage.user_id == user_uuid)
         
         if conv_uuid:
@@ -373,7 +407,6 @@ async def send_message(request: SendMessageRequest) -> SendMessageResponse:
     For streaming responses, use the WebSocket endpoint.
     """
     from agents.orchestrator import ChatOrchestrator
-    from models.user import User
 
     try:
         user_uuid = UUID(request.user_id)
@@ -381,27 +414,31 @@ async def send_message(request: SendMessageRequest) -> SendMessageResponse:
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid ID format")
 
+    # First get user info (users table has RLS disabled)
     async with get_session() as session:
         user = await session.get(User, user_uuid)
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
+        org_id = str(user.organization_id) if user.organization_id else None
 
+    async with get_session(organization_id=org_id) as session:
         # Create conversation if not provided
         if not conv_uuid:
             conversation = Conversation(
                 user_id=user_uuid,
-                organization_id=user.organization_id,
+                organization_id=UUID(org_id) if org_id else None,
                 title=None,  # Will be set after first message
             )
             session.add(conversation)
-            await session.commit()
-            await session.refresh(conversation)
+            # Get ID before commit (UUID is generated on model instantiation)
             conv_uuid = conversation.id
+            await session.commit()
+            # Note: don't call refresh() - it can fail due to RLS after commit
 
         # Allow users without organization to chat with limited functionality
         orchestrator = ChatOrchestrator(
-            user_id=str(user.id),
-            organization_id=str(user.organization_id) if user.organization_id else None,
+            user_id=str(user_uuid),
+            organization_id=org_id,
             conversation_id=str(conv_uuid),
         )
 

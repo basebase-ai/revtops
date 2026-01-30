@@ -85,6 +85,9 @@ class Integration(Base):
     # Additional provider-specific data
     extra_data: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB, nullable=True)
 
+    # Sync statistics - counts of objects synced (e.g., {"accounts": 5, "deals": 10})
+    sync_stats: Mapped[Optional[dict[str, int]]] = mapped_column(JSONB, nullable=True)
+
     # Timestamps
     created_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime, default=datetime.utcnow, nullable=True
@@ -103,4 +106,5 @@ class Integration(Base):
             "last_sync_at": f"{self.last_sync_at.isoformat()}Z" if self.last_sync_at else None,
             "last_error": self.last_error,
             "created_at": f"{self.created_at.isoformat()}Z" if self.created_at else None,
+            "sync_stats": self.sync_stats,
         }

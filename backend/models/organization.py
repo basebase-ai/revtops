@@ -15,6 +15,7 @@ from models.database import Base
 
 if TYPE_CHECKING:
     from models.user import User
+    from models.sheet_import import SheetImport
 
 
 class Organization(Base):
@@ -58,6 +59,9 @@ class Organization(Base):
     )
     token_owner: Mapped[Optional["User"]] = relationship(
         "User", foreign_keys=[token_owner_user_id]
+    )
+    sheet_imports: Mapped[list["SheetImport"]] = relationship(
+        "SheetImport", back_populates="organization", cascade="all, delete-orphan"
     )
 
     def to_dict(self) -> dict[str, Optional[str]]:

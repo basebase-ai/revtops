@@ -224,10 +224,15 @@ export async function getConnectUrl(
  */
 export async function disconnectIntegration(
   provider: string,
-  organizationId: string
+  organizationId: string,
+  userId?: string
 ): Promise<ApiResponse<{ success: boolean }>> {
+  const params = new URLSearchParams({ organization_id: organizationId });
+  if (userId) {
+    params.set('user_id', userId);
+  }
   return apiRequest<{ success: boolean }>(
-    `/auth/integrations/${provider}?organization_id=${organizationId}`,
+    `/auth/integrations/${provider}?${params.toString()}`,
     { method: 'DELETE' }
   );
 }

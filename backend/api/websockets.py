@@ -93,7 +93,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str) -> None:
 
     try:
         # Send active tasks on connect for client catchup
-        active_tasks = await task_manager.get_active_tasks(user_id_str)
+        active_tasks = await task_manager.get_active_tasks(user_id_str, organization_id)
         await websocket.send_text(json.dumps({
             "type": "active_tasks",
             "tasks": active_tasks,
@@ -128,16 +128,17 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str) -> None:
                     # Generate title from first message
                     title = _generate_title(user_message)
                     
-                    async with get_session() as session:
+                    async with get_session(organization_id=organization_id) as session:
                         conversation = Conversation(
                             user_id=UUID(user_id_str), 
                             organization_id=UUID(organization_id) if organization_id else None,
                             title=title,
                         )
                         session.add(conversation)
-                        await session.commit()
-                        await session.refresh(conversation)
+                        # Get ID before commit (UUID is generated on model instantiation)
                         conversation_id = str(conversation.id)
+                        await session.commit()
+                        # Note: don't call refresh() - it can fail due to RLS after commit
 
                     await websocket.send_text(json.dumps({
                         "type": "conversation_created",

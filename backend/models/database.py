@@ -85,7 +85,7 @@ def get_session_factory() -> async_sessionmaker[AsyncSession]:
 
 
 @asynccontextmanager
-async def get_session() -> AsyncGenerator[AsyncSession, None]:
+async def get_session(organization_id: Optional[str] = None) -> AsyncGenerator[AsyncSession, None]:
     """
     Yield an async database session that uses a pooled connection.
     
@@ -94,17 +94,29 @@ async def get_session() -> AsyncGenerator[AsyncSession, None]:
     - When session closes, connection returns to pool (NOT destroyed)
     - Next request reuses the same connection from the pool
     
+    Args:
+        organization_id: If provided, sets the RLS context for row-level security.
+                        All queries will be filtered to this organization.
+    
     Usage:
-        async with get_session() as session:
+        async with get_session(organization_id="...") as session:
             result = await session.execute(query)
             await session.commit()  # Explicit commit if needed
     
     The session is automatically closed when the context exits.
     Any uncommitted changes are rolled back on error.
     """
+    from sqlalchemy import text
+    
     factory = get_session_factory()
     session: AsyncSession = factory()
     try:
+        # Set RLS context if organization_id provided
+        if organization_id:
+            await session.execute(
+                text("SELECT set_config('app.current_org_id', :org_id, false)"),
+                {"org_id": str(organization_id)}
+            )
         yield session
     except Exception:
         await session.rollback()

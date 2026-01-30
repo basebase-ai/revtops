@@ -16,6 +16,7 @@ from models.database import Base
 if TYPE_CHECKING:
     from models.organization import Organization
     from models.deal import Deal
+    from models.sheet_import import SheetImport
 
 
 class User(Base):
@@ -62,6 +63,9 @@ class User(Base):
         "Organization", back_populates="users", foreign_keys=[organization_id]
     )
     deals: Mapped[list["Deal"]] = relationship("Deal", back_populates="owner")
+    sheet_imports: Mapped[list["SheetImport"]] = relationship(
+        "SheetImport", back_populates="user"
+    )
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for API responses."""

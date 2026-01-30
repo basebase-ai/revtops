@@ -67,6 +67,7 @@ async def list_deals(
     organization_id: str = Query(..., description="Organization ID"),
     pipeline_id: Optional[str] = Query(None, description="Filter by pipeline ID"),
     default_only: bool = Query(False, description="Only return deals in the default pipeline"),
+    open_only: bool = Query(False, description="Only return open deals (excludes closed won/lost)"),
     limit: int = Query(50, ge=1, le=200, description="Max results"),
 ) -> DealListResponse:
     """List deals for an organization, optionally filtered by pipeline."""
@@ -82,18 +83,33 @@ async def list_deals(
             {"org_id": organization_id}
         )
 
-        # Build query
+        # Subquery to get stage names by matching source_id within the same pipeline
+        stage_name_subquery = (
+            select(
+                PipelineStage.source_id,
+                PipelineStage.pipeline_id,
+                PipelineStage.name.label("stage_name"),
+            )
+        ).subquery()
+
+        # Build query - join with pipeline_stages to get human-readable stage name
         query = (
             select(
                 Deal.id,
                 Deal.name,
                 Deal.amount,
                 Deal.stage,
+                stage_name_subquery.c.stage_name,
                 Deal.close_date,
                 Deal.pipeline_id,
                 Pipeline.name.label("pipeline_name"),
             )
             .outerjoin(Pipeline, Deal.pipeline_id == Pipeline.id)
+            .outerjoin(
+                stage_name_subquery,
+                (Deal.pipeline_id == stage_name_subquery.c.pipeline_id) &
+                (Deal.stage == stage_name_subquery.c.source_id)
+            )
             .where(Deal.organization_id == org_uuid)
             .order_by(Deal.close_date.asc().nullslast(), Deal.name)
             .limit(limit)
@@ -108,6 +124,25 @@ async def list_deals(
         elif default_only:
             query = query.where(Pipeline.is_default == True)
 
+        # Filter to only open deals (exclude closed won/lost stages)
+        if open_only:
+            # Subquery to find closed stage source_ids for each pipeline
+            # Note: Deal.stage stores the source_id, not the stage name
+            closed_stages_subquery = (
+                select(PipelineStage.source_id, PipelineStage.pipeline_id)
+                .where(
+                    (PipelineStage.is_closed_won == True) | 
+                    (PipelineStage.is_closed_lost == True)
+                )
+            ).subquery()
+            
+            # Exclude deals where stage matches a closed stage source_id in the same pipeline
+            query = query.outerjoin(
+                closed_stages_subquery,
+                (Deal.pipeline_id == closed_stages_subquery.c.pipeline_id) &
+                (Deal.stage == closed_stages_subquery.c.source_id)
+            ).where(closed_stages_subquery.c.source_id.is_(None))
+
         result = await session.execute(query)
         rows = result.fetchall()
 
@@ -116,7 +151,7 @@ async def list_deals(
                 id=str(row.id),
                 name=row.name,
                 amount=float(row.amount) if row.amount else None,
-                stage=row.stage,
+                stage=row.stage_name or row.stage,  # Use human-readable name, fallback to source_id
                 close_date=row.close_date.isoformat() if row.close_date else None,
                 pipeline_id=str(row.pipeline_id) if row.pipeline_id else None,
                 pipeline_name=row.pipeline_name,

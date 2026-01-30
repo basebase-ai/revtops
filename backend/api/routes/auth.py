@@ -72,6 +72,8 @@ class IntegrationResponse(BaseModel):
     current_user_connected: bool = False
     team_connections: list[TeamConnection] = []
     team_total: int = 0
+    # Sync statistics - counts of objects synced
+    sync_stats: Optional[dict[str, int]] = None
 
 
 class IntegrationsListResponse(BaseModel):
@@ -554,6 +556,79 @@ async def update_organization(
 
 
 # =============================================================================
+# Masquerade (Admin Impersonation) Endpoints
+# =============================================================================
+
+
+class MasqueradeUserResponse(BaseModel):
+    """Response model for masquerade user info."""
+
+    id: str
+    email: str
+    name: Optional[str]
+    avatar_url: Optional[str]
+    roles: list[str]
+    organization: Optional[SyncOrganizationData]
+
+
+@router.get("/masquerade/{target_user_id}", response_model=MasqueradeUserResponse)
+async def get_masquerade_user(
+    target_user_id: str,
+    admin_user_id: Optional[str] = None,
+) -> MasqueradeUserResponse:
+    """Get user info for masquerade/impersonation.
+    
+    Only accessible by global admins. Returns the target user's full profile
+    including organization data so the admin can impersonate them.
+    """
+    if not admin_user_id:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        admin_uuid = UUID(admin_user_id)
+        target_uuid = UUID(target_user_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid user ID format")
+
+    async with get_session() as session:
+        # Verify admin has global_admin role
+        admin_user = await session.get(User, admin_uuid)
+        if not admin_user:
+            raise HTTPException(status_code=404, detail="Admin user not found")
+        
+        if "global_admin" not in (admin_user.roles or []):
+            raise HTTPException(
+                status_code=403, 
+                detail="Only global admins can masquerade as other users"
+            )
+        
+        # Fetch target user
+        target_user = await session.get(User, target_uuid)
+        if not target_user:
+            raise HTTPException(status_code=404, detail="Target user not found")
+        
+        # Fetch target user's organization if they have one
+        org_data: Optional[SyncOrganizationData] = None
+        if target_user.organization_id:
+            org = await session.get(Organization, target_user.organization_id)
+            if org:
+                org_data = SyncOrganizationData(
+                    id=str(org.id),
+                    name=org.name,
+                    logo_url=org.logo_url,
+                )
+        
+        return MasqueradeUserResponse(
+            id=str(target_user.id),
+            email=target_user.email,
+            name=target_user.name,
+            avatar_url=target_user.avatar_url,
+            roles=target_user.roles or [],
+            organization=org_data,
+        )
+
+
+# =============================================================================
 # Nango Integration Endpoints
 # =============================================================================
 
@@ -570,6 +645,7 @@ async def get_available_integrations() -> AvailableIntegrationsResponse:
             {"id": "microsoft_calendar", "name": "Microsoft Calendar", "description": "Outlook calendar events and meetings"},
             {"id": "microsoft_mail", "name": "Microsoft Mail", "description": "Outlook emails and communications"},
             {"id": "salesforce", "name": "Salesforce", "description": "CRM - Opportunities, Accounts"},
+            {"id": "google_sheets", "name": "Google Sheets", "description": "Import contacts, accounts, deals from spreadsheets"},
         ]
     )
 
@@ -948,12 +1024,8 @@ async def list_integrations(
     except Exception as e:
         print(f"Failed to fetch Nango connections: {e}")
 
-    async with get_session() as db_session:
-        # Set RLS context so queries/inserts work for this organization
-        await db_session.execute(
-            text("SELECT set_config('app.current_org_id', :org_id, true)"),
-            {"org_id": str(org_uuid)}
-        )
+    async with get_session(organization_id=str(org_uuid)) as db_session:
+        # RLS context is set by get_session()
         
         # Ensure organization exists before inserting integrations
         if nango_connections:
@@ -1068,7 +1140,8 @@ async def list_integrations(
         
         # Add org-scoped integrations
         for provider, integration in org_scoped_integrations.items():
-            await db_session.refresh(integration)
+            # Note: don't call refresh() - the data is already loaded and refresh
+            # can fail due to RLS/session state changes after commits
             
             # Get connected_by user name
             connected_by_name: Optional[str] = None
@@ -1089,6 +1162,7 @@ async def list_integrations(
                 current_user_connected=True,  # Org-scoped is shared, so always "connected" for UI
                 team_connections=[],
                 team_total=team_total,
+                sync_stats=integration.sync_stats,
             ))
         
         # Add user-scoped integrations (aggregated by provider)
@@ -1133,6 +1207,7 @@ async def list_integrations(
                 current_user_connected=current_user_integration is not None,
                 team_connections=team_connections,
                 team_total=team_total,
+                sync_stats=ref_integration.sync_stats if ref_integration else None,
             ))
 
         return IntegrationsListResponse(integrations=response_integrations)
@@ -1189,8 +1264,10 @@ async def disconnect_integration(
         )
         
         # Find integration based on scope
+        integration: Optional[Integration] = None
+        
         if scope == "user":
-            # Find this user's integration
+            # First try to find by user_id
             result = await db_session.execute(
                 select(Integration).where(
                     Integration.organization_id == org_uuid,
@@ -1198,6 +1275,24 @@ async def disconnect_integration(
                     Integration.user_id == current_user_uuid,
                 )
             )
+            integration = result.scalar_one_or_none()
+            
+            # Fallback: check by nango_connection_id for old records where user_id wasn't set
+            if not integration:
+                expected_conn_id = f"{org_uuid}:user:{current_user_uuid}"
+                result = await db_session.execute(
+                    select(Integration).where(
+                        Integration.organization_id == org_uuid,
+                        Integration.provider == provider,
+                        Integration.nango_connection_id == expected_conn_id,
+                    )
+                )
+                integration = result.scalar_one_or_none()
+                
+                # If found via connection_id, update the user_id field for future queries
+                if integration and integration.user_id is None:
+                    print(f"Disconnect: Fixing missing user_id on integration {integration.id}")
+                    integration.user_id = current_user_uuid
         else:
             # Find org-level integration
             result = await db_session.execute(
@@ -1207,8 +1302,7 @@ async def disconnect_integration(
                     Integration.user_id.is_(None),
                 )
             )
-        
-        integration = result.scalar_one_or_none()
+            integration = result.scalar_one_or_none()
 
         if not integration:
             print(f"Disconnect: Integration not found for org={org_uuid}, provider={provider}, user={current_user_uuid}")
@@ -1345,7 +1439,7 @@ async def run_initial_sync(organization_id: str, provider: str) -> None:
         print(f"Starting initial sync for {provider} (org: {organization_id})")
         connector = connector_class(organization_id)
         counts = await connector.sync_all()
-        await connector.update_last_sync()
+        await connector.update_last_sync(counts)
         print(f"Initial sync complete for {provider}: {counts}")
     except Exception as e:
         print(f"Initial sync failed for {provider}: {str(e)}")

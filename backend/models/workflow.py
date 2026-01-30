@@ -93,7 +93,8 @@ class Workflow(Base):
 
     # Relationships
     runs: Mapped[list["WorkflowRun"]] = relationship(
-        "WorkflowRun", back_populates="workflow", lazy="dynamic"
+        "WorkflowRun", back_populates="workflow", lazy="dynamic",
+        cascade="all, delete-orphan", passive_deletes=True
     )
 
     def to_dict(self) -> dict[str, Any]:
@@ -137,7 +138,7 @@ class WorkflowRun(Base):
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
     workflow_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("workflows.id"), nullable=False
+        UUID(as_uuid=True), ForeignKey("workflows.id", ondelete="CASCADE"), nullable=False
     )
     organization_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False

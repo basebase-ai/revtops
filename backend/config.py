@@ -63,6 +63,7 @@ class Settings(BaseSettings):
     NANGO_MICROSOFT_MAIL_INTEGRATION_ID: str = "microsoft"
     NANGO_FIREFLIES_INTEGRATION_ID: str = "fireflies"
     NANGO_ZOOM_INTEGRATION_ID: str = "zoom"
+    NANGO_GOOGLE_SHEETS_INTEGRATION_ID: str = "google-sheet"
 
     # App
     SECRET_KEY: str = "dev-secret-change-in-production"
@@ -101,6 +102,7 @@ NANGO_INTEGRATION_IDS: dict[str, str] = {
     "microsoft_mail": settings.NANGO_MICROSOFT_MAIL_INTEGRATION_ID,
     "fireflies": settings.NANGO_FIREFLIES_INTEGRATION_ID,
     "zoom": settings.NANGO_ZOOM_INTEGRATION_ID,
+    "google_sheets": settings.NANGO_GOOGLE_SHEETS_INTEGRATION_ID,
 }
 
 # Provider scope mapping: which integrations are user-scoped vs org-scoped
@@ -116,6 +118,7 @@ PROVIDER_SCOPES: dict[str, str] = {
     "microsoft_mail": "user",
     "fireflies": "user",
     "zoom": "user",
+    "google_sheets": "user",
 }
 
 

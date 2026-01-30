@@ -20,11 +20,14 @@ import {
   SiZoom,
   SiGooglecalendar,
   SiGmail,
+  SiGooglesheets,
 } from 'react-icons/si';
-import { HiOutlineCalendar, HiOutlineMail, HiGlobeAlt, HiUserGroup, HiExclamation, HiDeviceMobile, HiMicrophone, HiVideoCamera } from 'react-icons/hi';
+import { HiOutlineCalendar, HiOutlineMail, HiGlobeAlt, HiUserGroup, HiExclamation, HiDeviceMobile, HiMicrophone, HiUpload } from 'react-icons/hi';
+import { SheetImporter } from './SheetImporter';
 import { API_BASE } from '../lib/api';
 import { useAppStore } from '../store';
 import { useIntegrations, useInvalidateIntegrations, type Integration } from '../hooks';
+import type { SyncStats } from '../hooks/useIntegrations';
 
 // Detect if user is on a mobile device
 function useIsMobile(): boolean {
@@ -61,8 +64,19 @@ const ICON_MAP: Record<string, IconType> = {
   'microsoft-mail': HiOutlineMail,
   microsoft_mail: HiOutlineMail,
   fireflies: HiMicrophone,
-  zoom: HiVideoCamera,
+  google_sheets: SiGooglesheets,
 };
+
+// User-scoped providers (each user connects individually vs org-wide connection)
+const USER_SCOPED_PROVIDERS = new Set([
+  'gmail',
+  'google_calendar',
+  'microsoft_calendar',
+  'microsoft_mail',
+  'zoom',
+  'fireflies',
+  'google_sheets',
+]);
 
 // Integration display config (colors, icons, descriptions)
 const INTEGRATION_CONFIG: Record<string, { name: string; description: string; icon: string; color: string }> = {
@@ -75,7 +89,7 @@ const INTEGRATION_CONFIG: Record<string, { name: string; description: string; ic
   microsoft_calendar: { name: 'Microsoft Calendar', description: 'Outlook calendar events and meetings', icon: 'microsoft_calendar', color: 'from-sky-500 to-sky-600' },
   microsoft_mail: { name: 'Microsoft Mail', description: 'Outlook emails and communications', icon: 'microsoft_mail', color: 'from-sky-500 to-sky-600' },
   fireflies: { name: 'Fireflies', description: 'Meeting transcriptions and notes', icon: 'fireflies', color: 'from-violet-500 to-violet-600' },
-  zoom: { name: 'Zoom', description: 'Video meeting recordings and transcripts', icon: 'zoom', color: 'from-blue-400 to-blue-500' },
+  google_sheets: { name: 'Google Sheets', description: 'Import contacts, accounts, deals from spreadsheets', icon: 'google_sheets', color: 'from-emerald-500 to-emerald-600' },
 };
 
 // Extended integration type with display info
@@ -85,6 +99,60 @@ interface DisplayIntegration extends Integration {
   icon: string;
   color: string;
   connected: boolean;
+}
+
+/**
+ * Format sync stats into a human-readable summary string.
+ * Shows counts for different object types synced.
+ */
+function formatSyncStats(stats: SyncStats | null, provider: string): string | null {
+  if (!stats) return null;
+
+  const parts: string[] = [];
+
+  // CRM-specific stats
+  if (stats.contacts && stats.contacts > 0) {
+    parts.push(`${stats.contacts.toLocaleString()} contacts`);
+  }
+  if (stats.accounts && stats.accounts > 0) {
+    parts.push(`${stats.accounts.toLocaleString()} accounts`);
+  }
+  if (stats.deals && stats.deals > 0) {
+    parts.push(`${stats.deals.toLocaleString()} deals`);
+  }
+
+  // Activity-based connectors (email, calendar, meetings)
+  if (stats.activities && stats.activities > 0) {
+    // Use provider-specific labels for activities
+    const activityLabel = getActivityLabel(provider, stats.activities);
+    parts.push(activityLabel);
+  }
+
+  if (parts.length === 0) return null;
+
+  return parts.join(', ');
+}
+
+/**
+ * Get a provider-specific label for activities count.
+ */
+function getActivityLabel(provider: string, count: number): string {
+  const formatted = count.toLocaleString();
+  switch (provider) {
+    case 'gmail':
+    case 'microsoft_mail':
+      return `${formatted} emails`;
+    case 'google_calendar':
+    case 'microsoft_calendar':
+      return `${formatted} meetings`;
+    case 'slack':
+      return `${formatted} messages`;
+    case 'fireflies':
+    case 'zoom':
+      return `${formatted} recordings`;
+    default:
+      return `${formatted} activities`;
+  }
 }
 
 export function DataSources(): JSX.Element {
@@ -105,6 +173,7 @@ export function DataSources(): JSX.Element {
 
   const [syncingProviders, setSyncingProviders] = useState<Set<string>>(new Set());
   const [connectingProvider, setConnectingProvider] = useState<string | null>(null);
+  const [showSheetImporter, setShowSheetImporter] = useState(false);
 
   const organizationId = organization?.id ?? '';
   const userId = user?.id ?? '';
@@ -135,9 +204,7 @@ export function DataSources(): JSX.Element {
     .filter((provider) => INTEGRATION_CONFIG[provider] !== undefined)
     .map((provider) => {
       const config = INTEGRATION_CONFIG[provider]!;
-      const scope = ['gmail', 'google_calendar', 'microsoft_calendar', 'microsoft_mail', 'zoom'].includes(provider) 
-        ? 'user' as const 
-        : 'organization' as const;
+      const scope = USER_SCOPED_PROVIDERS.has(provider) ? 'user' as const : 'organization' as const;
       return {
         id: provider,
         provider,
@@ -150,6 +217,7 @@ export function DataSources(): JSX.Element {
         currentUserConnected: false,
         teamConnections: [],
         teamTotal: 0,
+        syncStats: null,
         name: config.name,
         description: config.description,
         icon: config.icon,
@@ -237,15 +305,22 @@ export function DataSources(): JSX.Element {
     }
   };
 
-  const handleDisconnect = async (provider: string, scope: 'organization' | 'user'): Promise<void> => {
+  const handleDisconnect = async (provider: string): Promise<void> => {
     if (!organizationId) return;
+    
+    // Derive scope from provider (source of truth) rather than trusting passed value
+    const isUserScoped = USER_SCOPED_PROVIDERS.has(provider);
+    
     // User-scoped integrations require user_id
-    if (scope === 'user' && !userId) return;
+    if (isUserScoped && !userId) {
+      alert('Unable to disconnect: user session not found. Please refresh the page.');
+      return;
+    }
     
     if (!confirm(`Are you sure you want to disconnect ${provider}?`)) return;
 
     const params = new URLSearchParams({ organization_id: organizationId });
-    if (scope === 'user' && userId) {
+    if (isUserScoped && userId) {
       params.set('user_id', userId);
     }
     const url = `${API_BASE}/auth/integrations/${provider}?${params.toString()}`;
@@ -351,6 +426,7 @@ export function DataSources(): JSX.Element {
       'from-sky-500 to-sky-600': 'bg-sky-500',
       'from-red-500 to-red-600': 'bg-red-500',
       'from-violet-500 to-violet-600': 'bg-violet-500',
+      'from-emerald-500 to-emerald-600': 'bg-emerald-500',
     };
     return colorMap[color] ?? 'bg-surface-600';
   };
@@ -382,8 +458,18 @@ export function DataSources(): JSX.Element {
     const badge = badgeConfig[state];
 
     // Button config by state
-    const getButtonConfig = (): { text: string; className: string; action: () => void; disabled: boolean } => {
+    const getButtonConfig = (): { text: string; className: string; action: () => void; disabled: boolean; hidden?: boolean } => {
       if (state === 'connected') {
+        // Google Sheets uses on-demand import, not continuous sync
+        if (integration.provider === 'google_sheets') {
+          return {
+            text: '',
+            className: '',
+            action: () => {},
+            disabled: true,
+            hidden: true,
+          };
+        }
         return {
           text: isSyncing ? 'Syncing...' : 'Sync',
           className: 'px-4 py-2 text-sm font-medium text-surface-200 bg-surface-800 hover:bg-surface-700 disabled:opacity-50 rounded-lg transition-colors',
@@ -467,6 +553,11 @@ export function DataSources(): JSX.Element {
                   Last synced: {new Date(integration.lastSyncAt).toLocaleString()}
                 </p>
               )}
+              {state === 'connected' && integration.syncStats && (
+                <p className="text-xs text-surface-400 mt-1 hidden sm:block">
+                  {formatSyncStats(integration.syncStats, integration.provider)}
+                </p>
+              )}
               {state === 'connected' && integration.lastError && (
                 <p className="text-xs text-red-400 mt-1">Error: {integration.lastError}</p>
               )}
@@ -480,22 +571,33 @@ export function DataSources(): JSX.Element {
 
           {/* Actions - full width on mobile */}
           <div className="flex items-center gap-2 sm:flex-shrink-0">
-            <button
-              onClick={buttonConfig.action}
-              disabled={buttonConfig.disabled}
-              className={`${buttonConfig.className} flex items-center justify-center gap-2 flex-1 sm:flex-initial`}
-            >
-              {(isConnecting || isSyncing) && !isMobile && (
-                <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                </svg>
-              )}
-              {buttonConfig.text}
-            </button>
+            {!buttonConfig.hidden && (
+              <button
+                onClick={buttonConfig.action}
+                disabled={buttonConfig.disabled}
+                className={`${buttonConfig.className} flex items-center justify-center gap-2 flex-1 sm:flex-initial`}
+              >
+                {(isConnecting || isSyncing) && !isMobile && (
+                  <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                  </svg>
+                )}
+                {buttonConfig.text}
+              </button>
+            )}
+            {state === 'connected' && integration.provider === 'google_sheets' && (
+              <button
+                onClick={() => setShowSheetImporter(true)}
+                className="px-3 sm:px-4 py-2 text-sm font-medium text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/10 rounded-lg transition-colors flex items-center gap-2"
+              >
+                <HiUpload className="w-4 h-4" />
+                Import
+              </button>
+            )}
             {state === 'connected' && (
               <button
-                onClick={() => void handleDisconnect(integration.provider, integration.scope)}
+                onClick={() => void handleDisconnect(integration.provider)}
                 className="px-3 sm:px-4 py-2 text-sm font-medium text-red-400 hover:text-red-300 hover:bg-red-500/10 rounded-lg transition-colors"
               >
                 Disconnect
@@ -593,6 +695,11 @@ export function DataSources(): JSX.Element {
           </div>
         </section>
       </div>
+
+      {/* Sheet Importer Modal */}
+      {showSheetImporter && (
+        <SheetImporter onClose={() => setShowSheetImporter(false)} />
+      )}
     </div>
   );
 }
