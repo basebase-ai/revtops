@@ -365,7 +365,7 @@ export function SheetImporter({ onClose }: SheetImporterProps): JSX.Element {
 
         {/* Tab mappings */}
         <div className="space-y-6">
-          {mappings.map((mapping, idx) => {
+          {mappings.map((mapping) => {
             const tab = preview.tabs.find((t) => t.tab_name === mapping.tab_name);
             if (!tab) return null;
 
@@ -442,7 +442,7 @@ export function SheetImporter({ onClose }: SheetImporterProps): JSX.Element {
                             className="flex-1 bg-surface-800 border border-surface-700 rounded px-2 py-1 text-sm text-surface-200"
                           >
                             <option value="">— Skip —</option>
-                            {Object.entries(schema).map(([field, description]) => (
+                            {Object.entries(schema).map(([field]) => (
                               <option key={field} value={field}>
                                 {field}
                               </option>
@@ -554,8 +554,8 @@ export function SheetImporter({ onClose }: SheetImporterProps): JSX.Element {
               Errors ({importResult.errors.length})
             </h4>
             <div className="space-y-2 max-h-48 overflow-y-auto text-sm">
-              {importResult.errors.slice(0, 10).map((err, idx) => (
-                <div key={idx} className="flex items-start gap-2 text-surface-400">
+              {importResult.errors.slice(0, 10).map((err, errIdx) => (
+                <div key={errIdx} className="flex items-start gap-2 text-surface-400">
                   <span className="text-surface-500">{err.tab}</span>
                   {err.row && <span className="text-surface-500">Row {err.row}:</span>}
                   <span className="text-red-400">{err.error}</span>
