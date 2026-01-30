@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Optional
 
-from sqlalchemy import DateTime, ForeignKey, LargeBinary, String, Text
+from sqlalchemy import DateTime, ForeignKey, Index, LargeBinary, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -25,6 +25,16 @@ class Activity(Base):
     """Activity model representing CRM activities like calls, emails, meetings."""
 
     __tablename__ = "activities"
+    __table_args__ = (
+        Index("idx_activities_organization", "organization_id"),
+        Index("idx_activities_deal", "deal_id"),
+        Index("idx_activities_date", "activity_date"),
+        Index("ix_activities_meeting_id", "meeting_id"),
+        Index("ix_activities_source_system", "source_system"),
+        Index("ix_activities_org_source_system", "organization_id", "source_system"),
+        Index("ix_activities_org_type", "organization_id", "type"),
+        Index("ix_activities_org_source_id", "organization_id", "source_system", "source_id"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4

@@ -20,8 +20,10 @@ import {
   SiZoom,
   SiGooglecalendar,
   SiGmail,
+  SiGooglesheets,
 } from 'react-icons/si';
-import { HiOutlineCalendar, HiOutlineMail, HiGlobeAlt, HiUserGroup, HiExclamation, HiDeviceMobile, HiMicrophone } from 'react-icons/hi';
+import { HiOutlineCalendar, HiOutlineMail, HiGlobeAlt, HiUserGroup, HiExclamation, HiDeviceMobile, HiMicrophone, HiUpload } from 'react-icons/hi';
+import { SheetImporter } from './SheetImporter';
 import { API_BASE } from '../lib/api';
 import { useAppStore } from '../store';
 import { useIntegrations, useInvalidateIntegrations, type Integration } from '../hooks';
@@ -62,6 +64,7 @@ const ICON_MAP: Record<string, IconType> = {
   'microsoft-mail': HiOutlineMail,
   microsoft_mail: HiOutlineMail,
   fireflies: HiMicrophone,
+  google_sheets: SiGooglesheets,
 };
 
 // User-scoped providers (each user connects individually vs org-wide connection)
@@ -72,6 +75,7 @@ const USER_SCOPED_PROVIDERS = new Set([
   'microsoft_mail',
   'zoom',
   'fireflies',
+  'google_sheets',
 ]);
 
 // Integration display config (colors, icons, descriptions)
@@ -85,6 +89,7 @@ const INTEGRATION_CONFIG: Record<string, { name: string; description: string; ic
   microsoft_calendar: { name: 'Microsoft Calendar', description: 'Outlook calendar events and meetings', icon: 'microsoft_calendar', color: 'from-sky-500 to-sky-600' },
   microsoft_mail: { name: 'Microsoft Mail', description: 'Outlook emails and communications', icon: 'microsoft_mail', color: 'from-sky-500 to-sky-600' },
   fireflies: { name: 'Fireflies', description: 'Meeting transcriptions and notes', icon: 'fireflies', color: 'from-violet-500 to-violet-600' },
+  google_sheets: { name: 'Google Sheets', description: 'Import contacts, accounts, deals from spreadsheets', icon: 'google_sheets', color: 'from-emerald-500 to-emerald-600' },
 };
 
 // Extended integration type with display info
@@ -168,6 +173,7 @@ export function DataSources(): JSX.Element {
 
   const [syncingProviders, setSyncingProviders] = useState<Set<string>>(new Set());
   const [connectingProvider, setConnectingProvider] = useState<string | null>(null);
+  const [showSheetImporter, setShowSheetImporter] = useState(false);
 
   const organizationId = organization?.id ?? '';
   const userId = user?.id ?? '';
@@ -420,6 +426,7 @@ export function DataSources(): JSX.Element {
       'from-sky-500 to-sky-600': 'bg-sky-500',
       'from-red-500 to-red-600': 'bg-red-500',
       'from-violet-500 to-violet-600': 'bg-violet-500',
+      'from-emerald-500 to-emerald-600': 'bg-emerald-500',
     };
     return colorMap[color] ?? 'bg-surface-600';
   };
@@ -451,8 +458,18 @@ export function DataSources(): JSX.Element {
     const badge = badgeConfig[state];
 
     // Button config by state
-    const getButtonConfig = (): { text: string; className: string; action: () => void; disabled: boolean } => {
+    const getButtonConfig = (): { text: string; className: string; action: () => void; disabled: boolean; hidden?: boolean } => {
       if (state === 'connected') {
+        // Google Sheets uses on-demand import, not continuous sync
+        if (integration.provider === 'google_sheets') {
+          return {
+            text: '',
+            className: '',
+            action: () => {},
+            disabled: true,
+            hidden: true,
+          };
+        }
         return {
           text: isSyncing ? 'Syncing...' : 'Sync',
           className: 'px-4 py-2 text-sm font-medium text-surface-200 bg-surface-800 hover:bg-surface-700 disabled:opacity-50 rounded-lg transition-colors',
@@ -554,19 +571,30 @@ export function DataSources(): JSX.Element {
 
           {/* Actions - full width on mobile */}
           <div className="flex items-center gap-2 sm:flex-shrink-0">
-            <button
-              onClick={buttonConfig.action}
-              disabled={buttonConfig.disabled}
-              className={`${buttonConfig.className} flex items-center justify-center gap-2 flex-1 sm:flex-initial`}
-            >
-              {(isConnecting || isSyncing) && !isMobile && (
-                <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                </svg>
-              )}
-              {buttonConfig.text}
-            </button>
+            {!buttonConfig.hidden && (
+              <button
+                onClick={buttonConfig.action}
+                disabled={buttonConfig.disabled}
+                className={`${buttonConfig.className} flex items-center justify-center gap-2 flex-1 sm:flex-initial`}
+              >
+                {(isConnecting || isSyncing) && !isMobile && (
+                  <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                  </svg>
+                )}
+                {buttonConfig.text}
+              </button>
+            )}
+            {state === 'connected' && integration.provider === 'google_sheets' && (
+              <button
+                onClick={() => setShowSheetImporter(true)}
+                className="px-3 sm:px-4 py-2 text-sm font-medium text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/10 rounded-lg transition-colors flex items-center gap-2"
+              >
+                <HiUpload className="w-4 h-4" />
+                Import
+              </button>
+            )}
             {state === 'connected' && (
               <button
                 onClick={() => void handleDisconnect(integration.provider)}
@@ -667,6 +695,11 @@ export function DataSources(): JSX.Element {
           </div>
         </section>
       </div>
+
+      {/* Sheet Importer Modal */}
+      {showSheetImporter && (
+        <SheetImporter onClose={() => setShowSheetImporter(false)} />
+      )}
     </div>
   );
 }
