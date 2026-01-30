@@ -70,7 +70,6 @@ export function Chat({
 }: ChatProps): JSX.Element {
   // Get per-conversation state from Zustand
   const conversationState = useConversationState(chatId ?? null);
-  const conversationMessages = conversationState?.messages ?? [];
   const chatTitle = conversationState?.title ?? 'New Chat';
   const conversationThinking = conversationState?.isThinking ?? false;
   const activeTaskId = conversationState?.activeTaskId ?? null;
@@ -104,10 +103,12 @@ export function Chat({
   pendingMessagesRef.current = pendingMessages;
 
   // Combined messages and thinking state (conversation + pending for new chats)
-  const messages = useMemo(
-    () => (pendingMessages.length > 0 ? [...pendingMessages, ...conversationMessages] : conversationMessages),
-    [pendingMessages, conversationMessages]
-  );
+  const messages = useMemo(() => {
+    const conversationMessages = conversationState?.messages ?? [];
+    return pendingMessages.length > 0
+      ? [...pendingMessages, ...conversationMessages]
+      : conversationMessages;
+  }, [pendingMessages, conversationState?.messages]);
   const isThinking = pendingThinking || conversationThinking;
 
   // Handle CRM approval
