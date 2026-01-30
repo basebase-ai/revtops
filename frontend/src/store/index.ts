@@ -383,7 +383,8 @@ export const useAppStore = create<AppState>()(
         const shouldClearChat = currentChatId === id || conversationId === id;
         
         // Remove from conversations state
-        const { [id]: _, ...remainingConversations } = conversations;
+        const remainingConversations = { ...conversations };
+        delete remainingConversations[id];
 
         set({
           recentChats: updated,
@@ -590,8 +591,10 @@ export const useAppStore = create<AppState>()(
 
       clearConversation: (conversationId) => {
         const { conversations, activeTasksByConversation } = get();
-        const { [conversationId]: _, ...remaining } = conversations;
-        const { [conversationId]: __, ...remainingTasks } = activeTasksByConversation;
+        const remaining = { ...conversations };
+        delete remaining[conversationId];
+        const remainingTasks = { ...activeTasksByConversation };
+        delete remainingTasks[conversationId];
         set({
           conversations: remaining,
           activeTasksByConversation: remainingTasks,
