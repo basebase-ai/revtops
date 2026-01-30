@@ -8,7 +8,7 @@
  * 4. Execute import and show results
  */
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { SiGooglesheets } from 'react-icons/si';
 import { HiChevronLeft, HiChevronRight, HiCheck, HiX, HiRefresh, HiExclamation, HiInformationCircle } from 'react-icons/hi';
 import { API_BASE } from '../lib/api';
@@ -80,14 +80,7 @@ export function SheetImporter({ onClose }: SheetImporterProps): JSX.Element {
   const organizationId = organization?.id ?? '';
   const userId = user?.id ?? '';
 
-  // Load spreadsheets on mount
-  useEffect(() => {
-    if (step === 'select' && spreadsheets.length === 0) {
-      void loadSpreadsheets();
-    }
-  }, [step]);
-
-  const loadSpreadsheets = async (): Promise<void> => {
+  const loadSpreadsheets = useCallback(async (): Promise<void> => {
     setLoading(true);
     setError(null);
 
@@ -108,7 +101,14 @@ export function SheetImporter({ onClose }: SheetImporterProps): JSX.Element {
     } finally {
       setLoading(false);
     }
-  };
+  }, [organizationId, userId]);
+
+  // Load spreadsheets on mount
+  useEffect(() => {
+    if (step === 'select' && spreadsheets.length === 0) {
+      void loadSpreadsheets();
+    }
+  }, [step, loadSpreadsheets, spreadsheets.length]);
 
   const loadPreview = async (spreadsheetId: string): Promise<void> => {
     setLoading(true);
