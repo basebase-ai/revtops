@@ -17,7 +17,7 @@ Architecture:
 
 import json
 import logging
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import WebSocket, WebSocketDisconnect
 
@@ -128,17 +128,20 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str) -> None:
                     # Generate title from first message
                     title = _generate_title(user_message)
                     
+                    # Generate UUID upfront - SQLAlchemy default isn't populated until flush
+                    conv_uuid = uuid4()
+                    
                     async with get_session(organization_id=organization_id) as session:
                         conversation = Conversation(
+                            id=conv_uuid,
                             user_id=UUID(user_id_str), 
                             organization_id=UUID(organization_id) if organization_id else None,
                             title=title,
                         )
                         session.add(conversation)
-                        # Get ID before commit (UUID is generated on model instantiation)
-                        conversation_id = str(conversation.id)
                         await session.commit()
-                        # Note: don't call refresh() - it can fail due to RLS after commit
+
+                    conversation_id = str(conv_uuid)
 
                     await websocket.send_text(json.dumps({
                         "type": "conversation_created",
