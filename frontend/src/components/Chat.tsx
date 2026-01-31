@@ -80,6 +80,7 @@ export function Chat({
   const setConversationTitle = useAppStore((s) => s.setConversationTitle);
   const setConversationThinking = useAppStore((s) => s.setConversationThinking);
   const pendingChatInput = useAppStore((s) => s.pendingChatInput);
+  const pendingChatAutoSend = useAppStore((s) => s.pendingChatAutoSend);
   const setPendingChatInput = useAppStore((s) => s.setPendingChatInput);
   
   // Local state
@@ -218,14 +219,28 @@ export function Chat({
   // Consume pending chat input (from Search "Ask about" button)
   useEffect(() => {
     if (pendingChatInput && chatId === null) {
+      const autoSend = pendingChatAutoSend;
       setInput(pendingChatInput);
       setPendingChatInput(null);
+      console.log('[Chat] Prefilled pending chat input', {
+        autoSend,
+        preview: pendingChatInput.slice(0, 60),
+      });
+      if (autoSend) {
+        if (isConnected) {
+          console.log('[Chat] Auto-sending pending chat input');
+          sendChatMessage(pendingChatInput, 'auto');
+        } else {
+          console.warn('[Chat] Auto-send skipped - not connected');
+        }
+        return;
+      }
       // Focus the input so user can see the pre-filled text
       setTimeout(() => {
         inputRef.current?.focus();
       }, 100);
     }
-  }, [pendingChatInput, chatId, setPendingChatInput]);
+  }, [pendingChatInput, pendingChatAutoSend, chatId, isConnected, sendChatMessage, setPendingChatInput]);
 
   // Load conversation when selecting an existing chat from sidebar
   useEffect(() => {
@@ -317,7 +332,7 @@ export function Chat({
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, isThinking]);
 
-  const sendChatMessage = useCallback((message: string, source: 'input' | 'suggestion'): void => {
+  const sendChatMessage = useCallback((message: string, source: 'input' | 'suggestion' | 'auto'): void => {
     if (!message.trim() || !isConnected) {
       console.log(`[Chat] sendChatMessage blocked (${source}) - empty or not connected`);
       return;

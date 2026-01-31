@@ -161,7 +161,7 @@ export function Home(): JSX.Element {
       dealName: deal.name,
       pipelineName: deal.pipeline_name,
     });
-    setPendingChatInput(question);
+    setPendingChatInput(question, { autoSend: true });
     startNewChat();
     setCurrentView('chat');
   }, [setPendingChatInput, setCurrentView, startNewChat]);
