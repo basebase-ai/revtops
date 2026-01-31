@@ -623,7 +623,7 @@ export function DataSources(): JSX.Element {
   return (
     <div className="flex-1 overflow-y-auto overflow-x-hidden">
       {/* Header - hidden on mobile since AppLayout has mobile header */}
-      <header className="hidden md:block sticky top-0 bg-surface-950 border-b border-surface-800 px-4 md:px-8 py-4 md:py-6">
+      <header className="hidden md:block sticky top-0 z-20 bg-surface-950 border-b border-surface-800 px-4 md:px-8 py-4 md:py-6">
         <h1 className="text-xl md:text-2xl font-bold text-surface-50">Data Sources</h1>
         <p className="text-surface-400 mt-1 text-sm md:text-base">
           Connect your sales tools to unlock AI-powered insights
