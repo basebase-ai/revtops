@@ -100,6 +100,7 @@ export function Chat({
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const pendingTitleRef = useRef<string | null>(null);
   const pendingMessagesRef = useRef<ChatMessage[]>([]);
+  const pendingAutoSendRef = useRef<string | null>(null);
   
   // Keep ref in sync with state
   pendingMessagesRef.current = pendingMessages;
@@ -364,7 +365,15 @@ export function Chat({
 
   // Consume pending chat input (from Search "Ask about" button or pipeline deal click)
   useEffect(() => {
-    if (!pendingChatInput || chatId !== null) {
+    if (!pendingChatInput) {
+      if (pendingAutoSendRef.current !== null) {
+        console.log('[Chat] Clearing pending auto-send guard');
+      }
+      pendingAutoSendRef.current = null;
+      return;
+    }
+
+    if (chatId !== null) {
       return;
     }
 
@@ -375,8 +384,14 @@ export function Chat({
     });
 
     if (pendingChatAutoSend) {
+      if (pendingAutoSendRef.current === pendingChatInput) {
+        console.log('[Chat] Pending chat input already auto-sent, skipping duplicate send');
+        return;
+      }
+
       if (isConnected) {
         console.log('[Chat] Auto-sending pending chat input');
+        pendingAutoSendRef.current = pendingChatInput;
         sendChatMessage(pendingChatInput, 'auto');
         setPendingChatInput(null);
         setPendingChatAutoSend(false);
