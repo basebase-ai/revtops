@@ -120,7 +120,6 @@ interface AppState {
   currentChatId: string | null;
   recentChats: ChatSummary[];
   pendingChatInput: string | null; // Pre-filled input for new chats
-  pendingChatAutoSend: boolean;
 
   // Per-conversation state (keyed by conversation ID)
   conversations: Record<string, ConversationState>;
@@ -150,7 +149,6 @@ interface AppState {
   setCurrentChatId: (id: string | null) => void;
   startNewChat: () => void;
   setPendingChatInput: (input: string | null) => void;
-  setPendingChatAutoSend: (autoSend: boolean) => void;
 
   // Actions - Conversations
   addConversation: (id: string, title: string) => void;
@@ -220,7 +218,6 @@ export const useAppStore = create<AppState>()(
       currentChatId: null,
       recentChats: [],
       pendingChatInput: null,
-      pendingChatAutoSend: false,
 
       // Per-conversation state
       conversations: {},
@@ -306,7 +303,6 @@ export const useAppStore = create<AppState>()(
       setCurrentChatId: (currentChatId) => set({ currentChatId }),
       startNewChat: () => set({ currentChatId: null, currentView: "chat" }),
       setPendingChatInput: (pendingChatInput) => set({ pendingChatInput }),
-      setPendingChatAutoSend: (pendingChatAutoSend) => set({ pendingChatAutoSend }),
 
       // Conversation actions
       addConversation: (id, title) => {

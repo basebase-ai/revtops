@@ -28,7 +28,6 @@ export function Search({ organizationId }: SearchProps): JSX.Element {
   const setCurrentView = useAppStore((state) => state.setCurrentView);
   const startNewChat = useAppStore((state) => state.startNewChat);
   const setPendingChatInput = useAppStore((state) => state.setPendingChatInput);
-  const setPendingChatAutoSend = useAppStore((state) => state.setPendingChatAutoSend);
 
   // Focus input on mount
   useEffect(() => {
@@ -93,18 +92,16 @@ export function Search({ organizationId }: SearchProps): JSX.Element {
   const handleAskAboutDeal = useCallback((deal: DealSearchResult) => {
     const question = `Tell me about the "${deal.name}" deal${deal.account_name ? ` with ${deal.account_name}` : ''}. What's the current status and any recent activity?`;
     setPendingChatInput(question);
-    setPendingChatAutoSend(false);
     startNewChat();
     setCurrentView('chat');
-  }, [startNewChat, setCurrentView, setPendingChatAutoSend, setPendingChatInput]);
+  }, [startNewChat, setCurrentView, setPendingChatInput]);
 
   const handleAskAboutAccount = useCallback((account: AccountSearchResult) => {
     const question = `Tell me about ${account.name}${account.domain ? ` (${account.domain})` : ''}. What deals do we have with them and what's been happening recently?`;
     setPendingChatInput(question);
-    setPendingChatAutoSend(false);
     startNewChat();
     setCurrentView('chat');
-  }, [startNewChat, setCurrentView, setPendingChatAutoSend, setPendingChatInput]);
+  }, [startNewChat, setCurrentView, setPendingChatInput]);
 
   const formatCurrency = (amount: number | null): string => {
     if (amount === null) return '—';
