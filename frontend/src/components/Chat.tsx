@@ -81,6 +81,8 @@ export function Chat({
   const setConversationThinking = useAppStore((s) => s.setConversationThinking);
   const pendingChatInput = useAppStore((s) => s.pendingChatInput);
   const setPendingChatInput = useAppStore((s) => s.setPendingChatInput);
+  const pendingChatAutoSend = useAppStore((s) => s.pendingChatAutoSend);
+  const setPendingChatAutoSend = useAppStore((s) => s.setPendingChatAutoSend);
   
   // Local state
   const [input, setInput] = useState<string>('');
@@ -98,6 +100,7 @@ export function Chat({
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const pendingTitleRef = useRef<string | null>(null);
   const pendingMessagesRef = useRef<ChatMessage[]>([]);
+  const pendingAutoSendRef = useRef<string | null>(null);
   
   // Keep ref in sync with state
   pendingMessagesRef.current = pendingMessages;
@@ -215,18 +218,6 @@ export function Chat({
     }
   }, [chatId, messages.length, isLoading, isConnected]);
 
-  // Consume pending chat input (from Search "Ask about" button)
-  useEffect(() => {
-    if (pendingChatInput && chatId === null) {
-      setInput(pendingChatInput);
-      setPendingChatInput(null);
-      // Focus the input so user can see the pre-filled text
-      setTimeout(() => {
-        inputRef.current?.focus();
-      }, 100);
-    }
-  }, [pendingChatInput, chatId, setPendingChatInput]);
-
   // Load conversation when selecting an existing chat from sidebar
   useEffect(() => {
     // If no chatId, this is a new chat
@@ -317,7 +308,7 @@ export function Chat({
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, isThinking]);
 
-  const sendChatMessage = useCallback((message: string, source: 'input' | 'suggestion'): void => {
+  const sendChatMessage = useCallback((message: string, source: 'input' | 'suggestion' | 'auto'): void => {
     if (!message.trim() || !isConnected) {
       console.log(`[Chat] sendChatMessage blocked (${source}) - empty or not connected`);
       return;
@@ -370,6 +361,62 @@ export function Chat({
     chatId,
     addConversationMessage,
     setConversationThinking,
+  ]);
+
+  // Consume pending chat input (from Search "Ask about" button or pipeline deal click)
+  useEffect(() => {
+    if (!pendingChatInput) {
+      if (pendingAutoSendRef.current !== null) {
+        console.log('[Chat] Clearing pending auto-send guard');
+      }
+      pendingAutoSendRef.current = null;
+      return;
+    }
+
+    if (chatId !== null) {
+      return;
+    }
+
+    setInput(pendingChatInput);
+    console.log('[Chat] Pending chat input received', {
+      autoSend: pendingChatAutoSend,
+      connected: isConnected,
+    });
+
+    if (pendingChatAutoSend) {
+      if (pendingAutoSendRef.current === pendingChatInput) {
+        console.log('[Chat] Pending chat input already auto-sent, skipping duplicate send');
+        return;
+      }
+
+      if (isConnected) {
+        console.log('[Chat] Auto-sending pending chat input');
+        pendingAutoSendRef.current = pendingChatInput;
+        sendChatMessage(pendingChatInput, 'auto');
+        setPendingChatInput(null);
+        setPendingChatAutoSend(false);
+      } else {
+        console.warn('[Chat] Auto-send requested but socket not connected yet');
+      }
+      return;
+    }
+
+    {
+      // Focus the input so user can see the pre-filled text
+      setTimeout(() => {
+        inputRef.current?.focus();
+      }, 100);
+    }
+    setPendingChatInput(null);
+    setPendingChatAutoSend(false);
+  }, [
+    pendingChatInput,
+    pendingChatAutoSend,
+    chatId,
+    isConnected,
+    sendChatMessage,
+    setPendingChatInput,
+    setPendingChatAutoSend,
   ]);
 
   const handleSend = useCallback((): void => {
