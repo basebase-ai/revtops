@@ -317,31 +317,31 @@ export function Chat({
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, isThinking]);
 
-  const handleSend = useCallback((): void => {
-    if (!input.trim() || !isConnected) {
-      console.log('[Chat] handleSend blocked - input empty or not connected');
+  const sendChatMessage = useCallback((message: string, source: 'input' | 'suggestion'): void => {
+    if (!message.trim() || !isConnected) {
+      console.log(`[Chat] sendChatMessage blocked (${source}) - empty or not connected`);
       return;
     }
 
-    console.log('[Chat] Sending message:', input.substring(0, 30) + '...');
+    console.log(`[Chat] Sending message (${source}):`, message.substring(0, 30) + '...');
 
     const userMessage: ChatMessage = {
       id: `user-${Date.now()}`,
       role: 'user',
-      contentBlocks: [{ type: 'text', text: input }],
+      contentBlocks: [{ type: 'text', text: message }],
       timestamp: new Date(),
     };
 
     // Get current conversation ID
     const currentConvId = localConversationId || chatId;
-    
+
     if (currentConvId) {
       // Add message to existing conversation
       addConversationMessage(currentConvId, userMessage);
       setConversationThinking(currentConvId, true);
     } else {
       // New conversation - store in pending state
-      pendingTitleRef.current = generateTitle(input);
+      pendingTitleRef.current = generateTitle(message);
       setPendingMessages(prev => [...prev, userMessage]);
       setPendingThinking(true);
     }
@@ -350,20 +350,31 @@ export function Chat({
     const now = new Date();
     sendMessage({
       type: 'send_message',
-      message: input,
+      message,
       conversation_id: currentConvId,
       local_time: now.toISOString(),
       timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     });
-    
-    console.log('[Chat] Sent to WebSocket');
+
+    console.log(`[Chat] Sent to WebSocket (${source})`);
     setInput('');
-    
+
     // Reset textarea height to default
     if (inputRef.current) {
       inputRef.current.style.height = 'auto';
     }
-  }, [input, isConnected, sendMessage, localConversationId, chatId, addConversationMessage, setConversationThinking]);
+  }, [
+    isConnected,
+    sendMessage,
+    localConversationId,
+    chatId,
+    addConversationMessage,
+    setConversationThinking,
+  ]);
+
+  const handleSend = useCallback((): void => {
+    sendChatMessage(input, 'input');
+  }, [input, sendChatMessage]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>): void => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -394,8 +405,10 @@ export function Chat({
   }, [activeTaskId, sendMessage, localConversationId, chatId, setConversationThinking]);
 
   const handleSuggestionClick = (text: string): void => {
+    console.log('[Chat] Suggestion clicked - sending immediately');
     setInput(text);
     inputRef.current?.focus();
+    sendChatMessage(text, 'suggestion');
   };
 
   // Copy conversation to clipboard
