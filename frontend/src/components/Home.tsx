@@ -4,7 +4,7 @@
  * Shows a prominent banner to connect data sources if none are connected.
  */
 
-import { useEffect, useState, useMemo } from 'react';
+import { useEffect, useState, useMemo, useCallback } from 'react';
 import { API_BASE } from '../lib/api';
 import { useAppStore } from '../store';
 import { useIntegrations } from '../hooks/useIntegrations';
@@ -55,6 +55,9 @@ interface PipelineWithDeals {
 export function Home(): JSX.Element {
   const organization = useAppStore((state) => state.organization);
   const user = useAppStore((state) => state.user);
+  const startNewChat = useAppStore((state) => state.startNewChat);
+  const setPendingChatInput = useAppStore((state) => state.setPendingChatInput);
+  const setCurrentView = useAppStore((state) => state.setCurrentView);
   const [deals, setDeals] = useState<Deal[]>([]);
   const [pipelines, setPipelines] = useState<Pipeline[]>([]);
   const [loading, setLoading] = useState(true);
@@ -150,6 +153,18 @@ export function Home(): JSX.Element {
     const date = new Date(dateStr);
     return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
   };
+
+  const handleDealClick = useCallback((deal: Deal) => {
+    const question = `Summarize the "${deal.name}" deal${deal.pipeline_name ? ` in the ${deal.pipeline_name} pipeline` : ''}. Include current stage, next steps, and recent activity.`;
+    console.log('[Home] Starting deal summary chat for:', {
+      dealId: deal.id,
+      dealName: deal.name,
+      pipelineName: deal.pipeline_name,
+    });
+    setPendingChatInput(question);
+    startNewChat();
+    setCurrentView('chat');
+  }, [setPendingChatInput, setCurrentView, startNewChat]);
 
   if (loading) {
     return (
@@ -282,7 +297,19 @@ export function Home(): JSX.Element {
                       </thead>
                       <tbody className="divide-y divide-surface-800">
                         {pipelineDeals.map((deal) => (
-                          <tr key={deal.id} className="hover:bg-surface-800/50 transition-colors">
+                          <tr
+                            key={deal.id}
+                            className="hover:bg-surface-800/50 transition-colors cursor-pointer"
+                            onClick={() => handleDealClick(deal)}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter' || event.key === ' ') {
+                                event.preventDefault();
+                                handleDealClick(deal);
+                              }
+                            }}
+                            role="button"
+                            tabIndex={0}
+                          >
                             <td className="px-3 md:px-4 py-3">
                               <div className="font-medium text-surface-200 truncate max-w-[200px] md:max-w-none">{deal.name}</div>
                             </td>
