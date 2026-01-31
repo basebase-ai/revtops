@@ -57,6 +57,7 @@ export function Home(): JSX.Element {
   const user = useAppStore((state) => state.user);
   const startNewChat = useAppStore((state) => state.startNewChat);
   const setPendingChatInput = useAppStore((state) => state.setPendingChatInput);
+  const setPendingChatAutoSend = useAppStore((state) => state.setPendingChatAutoSend);
   const setCurrentView = useAppStore((state) => state.setCurrentView);
   const [deals, setDeals] = useState<Deal[]>([]);
   const [pipelines, setPipelines] = useState<Pipeline[]>([]);
@@ -162,9 +163,10 @@ export function Home(): JSX.Element {
       pipelineName: deal.pipeline_name,
     });
     setPendingChatInput(question);
+    setPendingChatAutoSend(true);
     startNewChat();
     setCurrentView('chat');
-  }, [setPendingChatInput, setCurrentView, startNewChat]);
+  }, [setPendingChatInput, setPendingChatAutoSend, setCurrentView, startNewChat]);
 
   if (loading) {
     return (
