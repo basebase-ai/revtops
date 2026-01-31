@@ -80,7 +80,9 @@ export function Chat({
   const setConversationTitle = useAppStore((s) => s.setConversationTitle);
   const setConversationThinking = useAppStore((s) => s.setConversationThinking);
   const pendingChatInput = useAppStore((s) => s.pendingChatInput);
+  const pendingChatAutoSend = useAppStore((s) => s.pendingChatAutoSend);
   const setPendingChatInput = useAppStore((s) => s.setPendingChatInput);
+  const setPendingChatAutoSend = useAppStore((s) => s.setPendingChatAutoSend);
   
   // Local state
   const [input, setInput] = useState<string>('');
@@ -217,15 +219,39 @@ export function Chat({
 
   // Consume pending chat input (from Search "Ask about" button)
   useEffect(() => {
-    if (pendingChatInput && chatId === null) {
-      setInput(pendingChatInput);
-      setPendingChatInput(null);
-      // Focus the input so user can see the pre-filled text
-      setTimeout(() => {
-        inputRef.current?.focus();
-      }, 100);
+    if (!pendingChatInput || chatId !== null) {
+      return;
     }
-  }, [pendingChatInput, chatId, setPendingChatInput]);
+
+    if (pendingChatAutoSend) {
+      if (!isConnected) {
+        console.log('[Chat] Waiting to auto-send pending input until connected');
+        return;
+      }
+      console.log('[Chat] Auto-sending pending input');
+      sendChatMessage(pendingChatInput, 'auto');
+      setPendingChatInput(null);
+      setPendingChatAutoSend(false);
+      return;
+    }
+
+    console.log('[Chat] Applying pending input to composer');
+    setInput(pendingChatInput);
+    setPendingChatInput(null);
+    setPendingChatAutoSend(false);
+    // Focus the input so user can see the pre-filled text
+    setTimeout(() => {
+      inputRef.current?.focus();
+    }, 100);
+  }, [
+    pendingChatInput,
+    pendingChatAutoSend,
+    chatId,
+    isConnected,
+    sendChatMessage,
+    setPendingChatInput,
+    setPendingChatAutoSend,
+  ]);
 
   // Load conversation when selecting an existing chat from sidebar
   useEffect(() => {
@@ -317,7 +343,7 @@ export function Chat({
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, isThinking]);
 
-  const sendChatMessage = useCallback((message: string, source: 'input' | 'suggestion'): void => {
+  const sendChatMessage = useCallback((message: string, source: 'input' | 'suggestion' | 'auto'): void => {
     if (!message.trim() || !isConnected) {
       console.log(`[Chat] sendChatMessage blocked (${source}) - empty or not connected`);
       return;
