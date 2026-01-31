@@ -325,7 +325,8 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
   }, [
     setActiveTasks, setConversationActiveTask, setConversationThinking,
     addConversation, addConversationMessage, appendToConversationStreaming,
-    startConversationStreaming, markConversationMessageComplete, updateConversationToolMessage
+    startConversationStreaming, markConversationMessageComplete, updateConversationToolMessage,
+    setCurrentChatId
   ]);
 
   // Global WebSocket connection

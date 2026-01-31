@@ -16,6 +16,9 @@ export function OAuthCallback(): JSX.Element {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    if (state !== 'processing') {
+      return;
+    }
     const handleCallback = async (): Promise<void> => {
       try {
         // Check URL for error params (OAuth errors)
@@ -76,7 +79,7 @@ export function OAuthCallback(): JSX.Element {
     };
 
     void handleCallback();
-  }, []);
+  }, [state]);
 
   return (
     <div className="min-h-screen flex items-center justify-center p-4">

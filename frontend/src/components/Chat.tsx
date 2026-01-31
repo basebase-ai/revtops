@@ -9,7 +9,7 @@
  * - Artifact viewer for dashboards/reports
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Message } from './Message';
@@ -62,7 +62,6 @@ interface CrmApprovalState {
 
 export function Chat({ 
   userId, 
-  organizationId: _organizationId, 
   chatId, 
   sendMessage,
   isConnected,
@@ -71,7 +70,6 @@ export function Chat({
 }: ChatProps): JSX.Element {
   // Get per-conversation state from Zustand
   const conversationState = useConversationState(chatId ?? null);
-  const conversationMessages = conversationState?.messages ?? [];
   const chatTitle = conversationState?.title ?? 'New Chat';
   const conversationThinking = conversationState?.isThinking ?? false;
   const activeTaskId = conversationState?.activeTaskId ?? null;
@@ -105,7 +103,12 @@ export function Chat({
   pendingMessagesRef.current = pendingMessages;
 
   // Combined messages and thinking state (conversation + pending for new chats)
-  const messages = pendingMessages.length > 0 ? [...pendingMessages, ...conversationMessages] : conversationMessages;
+  const messages = useMemo(() => {
+    const conversationMessages = conversationState?.messages ?? [];
+    return pendingMessages.length > 0
+      ? [...pendingMessages, ...conversationMessages]
+      : conversationMessages;
+  }, [pendingMessages, conversationState?.messages]);
   const isThinking = pendingThinking || conversationThinking;
 
   // Handle CRM approval
@@ -736,7 +739,6 @@ function MessageWithBlocks({
                 <AssistantTextBlock 
                   text={block.text} 
                   isStreaming={isLast && message.isStreaming}
-                  onArtifactClick={onArtifactClick}
                 />
               </div>
             );
@@ -768,11 +770,9 @@ function MessageWithBlocks({
 function AssistantTextBlock({
   text,
   isStreaming,
-  onArtifactClick: _onArtifactClick,
 }: {
   text: string;
   isStreaming?: boolean;
-  onArtifactClick?: (artifact: { id: string; type: string; title: string; data: Record<string, unknown> }) => void;
 }): JSX.Element {
   return (
     <div className="inline-block px-3 py-2 rounded-xl rounded-tl-sm bg-surface-800/80 text-surface-200 text-[13px] leading-relaxed">
