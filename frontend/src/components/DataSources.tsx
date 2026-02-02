@@ -104,26 +104,39 @@ interface DisplayIntegration extends Integration {
 /**
  * Format sync stats into a human-readable summary string.
  * Shows counts for different object types synced.
+ * Always shows stats for CRM providers (even zeros) for trust/debugging.
  */
 function formatSyncStats(stats: SyncStats | null, provider: string): string | null {
   if (!stats) return null;
 
   const parts: string[] = [];
 
-  // CRM-specific stats
-  if (stats.contacts && stats.contacts > 0) {
-    parts.push(`${stats.contacts.toLocaleString()} contacts`);
-  }
-  if (stats.accounts && stats.accounts > 0) {
-    parts.push(`${stats.accounts.toLocaleString()} accounts`);
-  }
-  if (stats.deals && stats.deals > 0) {
-    parts.push(`${stats.deals.toLocaleString()} deals`);
+  // CRM providers always show contact/account/deal counts (even if 0)
+  const isCrmProvider = provider === 'hubspot' || provider === 'salesforce';
+  
+  if (isCrmProvider) {
+    // Always show CRM stats for trust and debugging
+    const contacts = stats.contacts ?? 0;
+    const accounts = stats.accounts ?? 0;
+    const deals = stats.deals ?? 0;
+    parts.push(`${contacts.toLocaleString()} contacts`);
+    parts.push(`${accounts.toLocaleString()} accounts`);
+    parts.push(`${deals.toLocaleString()} deals`);
+  } else {
+    // Non-CRM: only show if > 0
+    if (stats.contacts && stats.contacts > 0) {
+      parts.push(`${stats.contacts.toLocaleString()} contacts`);
+    }
+    if (stats.accounts && stats.accounts > 0) {
+      parts.push(`${stats.accounts.toLocaleString()} accounts`);
+    }
+    if (stats.deals && stats.deals > 0) {
+      parts.push(`${stats.deals.toLocaleString()} deals`);
+    }
   }
 
   // Activity-based connectors (email, calendar, meetings)
-  if (stats.activities && stats.activities > 0) {
-    // Use provider-specific labels for activities
+  if (stats.activities !== undefined) {
     const activityLabel = getActivityLabel(provider, stats.activities);
     parts.push(activityLabel);
   }

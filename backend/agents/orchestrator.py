@@ -303,24 +303,23 @@ class ChatOrchestrator:
         self, user_message: str, save_user_message: bool = True
     ) -> AsyncGenerator[str, None]:
         """
-        Process a user message and stream Claude's response.
+        Process a user message and stream Claude's response with true streaming.
 
         Flow:
         1. Create conversation if needed
         2. Load conversation history
         3. Add user message
-        4. Call Claude with tools
+        4. Stream Claude's response (yields text immediately as tokens arrive)
         5. Handle tool calls if any
-        6. Stream response
-        7. Save to database
-        8. Update conversation title if first message
+        6. Save to database
+        7. Update conversation title if first message
 
         Args:
             user_message: The user's message text
             save_user_message: If False, don't save user_message to DB (for internal system messages)
 
         Yields:
-            String chunks of the assistant's response
+            String chunks of the assistant's response (text streams immediately)
         """
         # Create conversation if needed
         if not self.conversation_id:
@@ -340,7 +339,6 @@ class ChatOrchestrator:
 
         # Keep track of content blocks for saving (preserves interleaving order)
         content_blocks: list[dict[str, Any]] = []
-        current_text = ""  # Buffer for current text block
 
         # Build system prompt with user and time context
         system_prompt = SYSTEM_PROMPT
@@ -377,36 +375,103 @@ When querying for "today" or "this morning", use explicit date literals based on
 Use the user's local time to provide relative references (e.g., '3 hours ago', 'yesterday') when discussing results."""
             system_prompt += time_context
 
-        # Initial Claude call (async)
-        response = await self.client.messages.create(
-            model="claude-opus-4-5",
-            max_tokens=4096,
-            system=system_prompt,
-            tools=get_tools(),
-            messages=messages,
-        )
+        # Stream responses with tool handling loop
+        async for chunk in self._stream_with_tools(messages, system_prompt, content_blocks):
+            yield chunk
+        
+        # Save conversation (user message was already saved at the start)
+        is_first_message = len(history) == 0
+        
+        # Debug: log content_blocks order
+        logger.info("[Orchestrator] Saving content_blocks: %s", 
+                    [(b.get("type"), b.get("name") if b.get("type") == "tool_use" else b.get("text", "")[:50]) 
+                     for b in content_blocks])
+        
+        await self._save_assistant_message(content_blocks)
 
-        # Process response - handle tool calls in a loop until no more tool use
+        # Update conversation title if first message
+        if is_first_message:
+            title = self._generate_title(user_message)
+            await self._update_conversation_title(title)
+
+    async def _stream_with_tools(
+        self,
+        messages: list[dict[str, Any]],
+        system_prompt: str,
+        content_blocks: list[dict[str, Any]],
+    ) -> AsyncGenerator[str, None]:
+        """
+        Stream Claude's response, handling tool calls in a loop.
+        
+        Uses true streaming - text is yielded immediately as tokens arrive.
+        Tool calls are accumulated and executed when complete.
+        """
         while True:
-            # Extract text and tool_use blocks from response
-            tool_uses: list[Any] = []
+            # Track state for this streaming response
+            current_text = ""
+            tool_uses: list[dict[str, Any]] = []
+            current_tool: dict[str, Any] | None = None
+            current_tool_input_json = ""
             
-            for content_block in response.content:
-                if content_block.type == "text":
-                    text = content_block.text
-                    current_text += text
-                    yield text
-                elif content_block.type == "tool_use":
-                    tool_uses.append(content_block)
+            # Stream the response
+            async with self.client.messages.stream(
+                model="claude-opus-4-5",
+                max_tokens=4096,
+                system=system_prompt,
+                tools=get_tools(),
+                messages=messages,
+            ) as stream:
+                async for event in stream:
+                    # Handle different event types
+                    if event.type == "content_block_start":
+                        if event.content_block.type == "text":
+                            # Text block starting - nothing to do yet
+                            pass
+                        elif event.content_block.type == "tool_use":
+                            # Tool use block starting - capture id and name
+                            current_tool = {
+                                "id": event.content_block.id,
+                                "name": event.content_block.name,
+                                "input": {},
+                            }
+                            current_tool_input_json = ""
+                    
+                    elif event.type == "content_block_delta":
+                        if event.delta.type == "text_delta":
+                            # Stream text immediately!
+                            text = event.delta.text
+                            current_text += text
+                            yield text
+                        elif event.delta.type == "input_json_delta":
+                            # Accumulate tool input JSON
+                            current_tool_input_json += event.delta.partial_json
+                    
+                    elif event.type == "content_block_stop":
+                        if current_tool is not None:
+                            # Parse the accumulated JSON for tool input
+                            try:
+                                current_tool["input"] = json.loads(current_tool_input_json) if current_tool_input_json else {}
+                            except json.JSONDecodeError:
+                                logger.warning("[Orchestrator] Failed to parse tool input JSON: %s", current_tool_input_json)
+                                current_tool["input"] = {}
+                            
+                            tool_uses.append(current_tool)
+                            current_tool = None
+                            current_tool_input_json = ""
+                
+                # Get the final message for conversation history
+                final_message = await stream.get_final_message()
             
             # If no tool calls, we're done
             if not tool_uses:
+                # Save text to content_blocks
+                if current_text.strip():
+                    content_blocks.append({"type": "text", "text": current_text})
                 break
             
             # Flush current text to content_blocks before processing tools
             if current_text.strip():
                 content_blocks.append({"type": "text", "text": current_text})
-                current_text = ""
             
             # Signal frontend to complete current text block before showing tools
             yield json.dumps({"type": "text_block_complete"})
@@ -415,9 +480,9 @@ Use the user's local time to provide relative references (e.g., '3 hours ago', '
             tool_results: list[dict[str, Any]] = []
             
             for tool_use in tool_uses:
-                tool_name = tool_use.name
-                tool_input = tool_use.input
-                tool_id = tool_use.id
+                tool_name: str = tool_use["name"]
+                tool_input: dict[str, Any] = tool_use["input"]
+                tool_id: str = tool_use["id"]
 
                 logger.info(
                     "[Orchestrator] Tool call: %s | input=%s | org_id=%s | user_id=%s",
@@ -473,36 +538,8 @@ Use the user's local time to provide relative references (e.g., '3 hours ago', '
                 })
             
             # Add assistant message with all tool uses, then user message with all results
-            messages.append({"role": "assistant", "content": response.content})
+            messages.append({"role": "assistant", "content": final_message.content})
             messages.append({"role": "user", "content": tool_results})
-
-            # Get Claude's response to all tool results (async)
-            response = await self.client.messages.create(
-                model="claude-opus-4-5",
-                max_tokens=4096,
-                system=system_prompt,
-                tools=get_tools(),
-                messages=messages,
-            )
-
-        # Flush any remaining text to content_blocks
-        if current_text.strip():
-            content_blocks.append({"type": "text", "text": current_text})
-        
-        # Save conversation (user message was already saved at the start)
-        is_first_message = len(history) == 0
-        
-        # Debug: log content_blocks order
-        logger.info("[Orchestrator] Saving content_blocks: %s", 
-                    [(b.get("type"), b.get("name") if b.get("type") == "tool_use" else b.get("text", "")[:50]) 
-                     for b in content_blocks])
-        
-        await self._save_assistant_message(content_blocks)
-
-        # Update conversation title if first message
-        if is_first_message:
-            title = self._generate_title(user_message)
-            await self._update_conversation_title(title)
 
     async def _create_conversation(self) -> str:
         """Create a new conversation and return its ID."""

@@ -176,10 +176,12 @@ class TaskManager:
                     chunk_data["type"] = "text_delta"
                     chunk_data["data"] = chunk
                 
-                # Persist chunk to database
-                await self._append_chunk(task_id, chunk_data)
+                # Only persist important events to database (tool calls/results)
+                # Text deltas are ephemeral - the full message is saved at the end by orchestrator
+                if chunk_data["type"] != "text_delta":
+                    await self._append_chunk(task_id, chunk_data)
                 
-                # Broadcast to subscribers
+                # Broadcast ALL chunks to subscribers (including text deltas for live streaming)
                 await self._broadcast(task_id, {
                     "type": "task_chunk",
                     "task_id": task_id,

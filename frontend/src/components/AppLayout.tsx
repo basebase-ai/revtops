@@ -35,6 +35,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { Sidebar } from './Sidebar';
 import { Home } from './Home';
 import { DataSources } from './DataSources';
+import { Data } from './Data';
 import { Search } from './Search';
 import { Chat } from './Chat';
 import { Automations } from './Automations';
@@ -497,6 +498,9 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
         )}
         {currentView === 'data-sources' && (
           <DataSources />
+        )}
+        {currentView === 'data' && (
+          <Data />
         )}
         {currentView === 'search' && (
           <Search organizationId={organization.id} />

@@ -197,16 +197,22 @@ class BaseConnector(ABC):
                 self._integration = result.scalar_one_or_none()
 
         if not self._integration:
+            print(f"[Sync] WARNING: No integration found for {self.source_system} in org {self.organization_id}")
             return
 
         async with get_session() as session:
+            from sqlalchemy.orm.attributes import flag_modified
             integration = await session.get(Integration, self._integration.id)
             if integration:
                 integration.last_sync_at = datetime.utcnow()
                 integration.last_error = None
                 if counts is not None:
                     integration.sync_stats = counts
+                    # JSONB columns need explicit flag for SQLAlchemy to detect changes
+                    flag_modified(integration, "sync_stats")
+                    print(f"[Sync] Saving sync_stats={counts} to integration {integration.id}")
                 await session.commit()
+                print(f"[Sync] Committed update_last_sync for {self.source_system}")
 
     async def record_error(self, error: str) -> None:
         """Record an error for this integration."""

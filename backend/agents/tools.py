@@ -345,6 +345,98 @@ The workflow runs asynchronously - results will appear in the Automations tab.""
                 "required": ["workflow_id"],
             },
         },
+        {
+            "name": "enrich_contacts_with_apollo",
+            "description": """Enrich contacts using Apollo.io's database to get current job titles, companies, and contact info.
+
+Use this when users want to:
+- Update outdated job titles and companies for contacts
+- Fill in missing information like email, phone, LinkedIn
+- Verify and refresh contact data quality
+- Get company information for contacts
+
+This tool reads contacts from your database, enriches them via Apollo, and returns 
+the enriched data. The results can then be used with crm_write to update records.
+
+IMPORTANT: This requires Apollo.io integration to be connected. Apollo charges 
+credits for each enrichment, so the user should be aware of credit usage.
+
+The tool enriches contacts in batches of 10 (Apollo's limit). For large numbers 
+of contacts (1000+), this may take several minutes and consume many credits.
+
+Input can be either:
+1. A list of contact objects with identifying info (email, name, company domain)
+2. A query to fetch contacts from the database first
+
+Returned enrichment includes:
+- Current job title and company
+- Work email and personal emails  
+- Phone numbers
+- LinkedIn, Twitter, GitHub URLs
+- Company details (industry, size, domain)""",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "contacts": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "email": {"type": "string", "description": "Contact's email (best identifier)"},
+                                "first_name": {"type": "string", "description": "First name"},
+                                "last_name": {"type": "string", "description": "Last name"},
+                                "domain": {"type": "string", "description": "Company domain (e.g., 'acme.com')"},
+                                "linkedin_url": {"type": "string", "description": "LinkedIn profile URL"},
+                                "organization_name": {"type": "string", "description": "Company name"},
+                            },
+                        },
+                        "description": "List of contacts to enrich. Provide at least email or (name + domain/company) for matching.",
+                    },
+                    "reveal_personal_emails": {
+                        "type": "boolean",
+                        "description": "Request personal email addresses (uses additional credits)",
+                        "default": False,
+                    },
+                    "reveal_phone_numbers": {
+                        "type": "boolean",
+                        "description": "Request phone numbers (uses additional credits)",
+                        "default": False,
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of contacts to enrich (default 50, max 500)",
+                        "default": 50,
+                    },
+                },
+                "required": ["contacts"],
+            },
+        },
+        {
+            "name": "enrich_company_with_apollo",
+            "description": """Enrich a company/organization using Apollo.io's database.
+
+Use this to get detailed company information like:
+- Industry and sub-industry
+- Employee count and revenue estimates
+- Technologies used
+- Company description and keywords
+- Social media links
+- Address and contact info
+
+Requires company domain (e.g., "acme.com") to look up.
+
+IMPORTANT: Requires Apollo.io integration to be connected.""",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "domain": {
+                        "type": "string",
+                        "description": "Company domain to enrich (e.g., 'acme.com')",
+                    },
+                },
+                "required": ["domain"],
+            },
+        },
     ]
 
 
@@ -398,6 +490,16 @@ async def execute_tool(
     elif tool_name == "trigger_workflow":
         result = await _trigger_workflow(tool_input, organization_id)
         logger.info("[Tools] trigger_workflow completed: %s", result)
+        return result
+
+    elif tool_name == "enrich_contacts_with_apollo":
+        result = await _enrich_contacts_with_apollo(tool_input, organization_id)
+        logger.info("[Tools] enrich_contacts_with_apollo completed: %d results", len(result.get("enriched", [])))
+        return result
+
+    elif tool_name == "enrich_company_with_apollo":
+        result = await _enrich_company_with_apollo(tool_input, organization_id)
+        logger.info("[Tools] enrich_company_with_apollo completed")
         return result
 
     else:
@@ -1530,3 +1632,163 @@ async def _trigger_workflow(
     except Exception as e:
         logger.error("[Tools._trigger_workflow] Failed: %s", str(e))
         return {"error": f"Failed to trigger workflow: {str(e)}"}
+
+
+async def _enrich_contacts_with_apollo(
+    params: dict[str, Any], organization_id: str
+) -> dict[str, Any]:
+    """
+    Enrich contacts using Apollo.io's database.
+    
+    Args:
+        params: Contains contacts list, reveal_personal_emails, reveal_phone_numbers, limit
+        organization_id: Organization UUID
+        
+    Returns:
+        Enriched contact data
+    """
+    from connectors.apollo import ApolloConnector
+    
+    contacts = params.get("contacts", [])
+    reveal_personal_emails = params.get("reveal_personal_emails", False)
+    reveal_phone_numbers = params.get("reveal_phone_numbers", False)
+    limit = min(params.get("limit", 50), 500)  # Cap at 500
+    
+    if not contacts:
+        return {"error": "No contacts provided. 'contacts' must be a non-empty array."}
+    
+    if not isinstance(contacts, list):
+        return {"error": "'contacts' must be an array of contact objects."}
+    
+    # Limit contacts
+    contacts = contacts[:limit]
+    
+    # Check for active Apollo integration
+    async with get_session() as session:
+        result = await session.execute(
+            select(Integration).where(
+                Integration.organization_id == UUID(organization_id),
+                Integration.provider == "apollo",
+                Integration.is_active == True,
+            )
+        )
+        integration = result.scalar_one_or_none()
+        
+        if not integration:
+            return {
+                "error": "No active Apollo.io integration found. Please connect Apollo first in Data Sources.",
+                "suggestion": "Go to Data Sources and connect your Apollo.io API key.",
+            }
+    
+    try:
+        connector = ApolloConnector(organization_id)
+        
+        # Enrich contacts in bulk
+        enriched_results = await connector.bulk_enrich_people(
+            people=contacts,
+            reveal_personal_emails=reveal_personal_emails,
+            reveal_phone_number=reveal_phone_numbers,
+        )
+        
+        # Pair original contacts with enrichment results
+        enriched_contacts: list[dict[str, Any]] = []
+        match_count = 0
+        no_match_count = 0
+        
+        for i, enrichment in enumerate(enriched_results):
+            original = contacts[i] if i < len(contacts) else {}
+            
+            if enrichment and enrichment.get("name"):
+                match_count += 1
+                enriched_contacts.append({
+                    "original": original,
+                    "enriched": enrichment,
+                    "matched": True,
+                })
+            else:
+                no_match_count += 1
+                enriched_contacts.append({
+                    "original": original,
+                    "enriched": None,
+                    "matched": False,
+                })
+        
+        return {
+            "success": True,
+            "total": len(contacts),
+            "matched": match_count,
+            "not_matched": no_match_count,
+            "enriched": enriched_contacts,
+            "message": f"Enriched {match_count} of {len(contacts)} contacts. "
+                       f"{'Use crm_write to update these contacts in your CRM.' if match_count > 0 else 'No matches found - try providing more identifying info (email, domain).'}",
+        }
+        
+    except Exception as e:
+        logger.error("[Tools._enrich_contacts_with_apollo] Failed: %s", str(e))
+        return {"error": f"Apollo enrichment failed: {str(e)}"}
+
+
+async def _enrich_company_with_apollo(
+    params: dict[str, Any], organization_id: str
+) -> dict[str, Any]:
+    """
+    Enrich a company using Apollo.io's database.
+    
+    Args:
+        params: Contains domain
+        organization_id: Organization UUID
+        
+    Returns:
+        Enriched company data
+    """
+    from connectors.apollo import ApolloConnector
+    
+    domain = params.get("domain", "").strip().lower()
+    
+    if not domain:
+        return {"error": "Company domain is required."}
+    
+    # Clean up domain
+    domain = domain.replace("https://", "").replace("http://", "")
+    domain = domain.split("/")[0]  # Remove path
+    
+    # Check for active Apollo integration
+    async with get_session() as session:
+        result = await session.execute(
+            select(Integration).where(
+                Integration.organization_id == UUID(organization_id),
+                Integration.provider == "apollo",
+                Integration.is_active == True,
+            )
+        )
+        integration = result.scalar_one_or_none()
+        
+        if not integration:
+            return {
+                "error": "No active Apollo.io integration found. Please connect Apollo first in Data Sources.",
+                "suggestion": "Go to Data Sources and connect your Apollo.io API key.",
+            }
+    
+    try:
+        connector = ApolloConnector(organization_id)
+        
+        enriched = await connector.enrich_organization(domain)
+        
+        if enriched:
+            return {
+                "success": True,
+                "domain": domain,
+                "company": enriched,
+                "message": f"Found company data for {domain}: {enriched.get('name', 'Unknown')}",
+            }
+        else:
+            return {
+                "success": False,
+                "domain": domain,
+                "company": None,
+                "message": f"No company data found for domain '{domain}' in Apollo's database.",
+            }
+        
+    except Exception as e:
+        logger.error("[Tools._enrich_company_with_apollo] Failed: %s", str(e))
+        return {"error": f"Apollo company enrichment failed: {str(e)}"}

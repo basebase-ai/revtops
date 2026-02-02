@@ -102,6 +102,7 @@ class HubSpotConnector(BaseConnector):
         """Paginate through HubSpot API results."""
         all_results: list[dict[str, Any]] = []
         after: Optional[str] = None
+        page_count = 0
 
         while True:
             params: dict[str, Any] = {
@@ -116,6 +117,18 @@ class HubSpotConnector(BaseConnector):
             data = await self._make_request("GET", endpoint, params=params)
             results = data.get("results", [])
             all_results.extend(results)
+            page_count += 1
+            
+            # Log first page for debugging - include raw response keys on empty
+            if page_count == 1:
+                print(f"[HubSpot] {endpoint}: first page returned {len(results)} results")
+                if len(results) == 0:
+                    print(f"[HubSpot] {endpoint}: empty response, keys in data: {list(data.keys())}")
+                    # Check if there's an error or message field
+                    if "message" in data:
+                        print(f"[HubSpot] {endpoint}: message: {data.get('message')}")
+                    if "status" in data:
+                        print(f"[HubSpot] {endpoint}: status: {data.get('status')}")
 
             # Check for pagination
             paging = data.get("paging", {})
@@ -124,6 +137,9 @@ class HubSpotConnector(BaseConnector):
 
             if not after:
                 break
+        
+        if page_count > 1:
+            print(f"[HubSpot] {endpoint}: fetched {page_count} pages, {len(all_results)} total results")
 
         return all_results
 
@@ -430,24 +446,31 @@ class HubSpotConnector(BaseConnector):
 
     async def sync_contacts(self) -> int:
         """Sync all contacts from HubSpot."""
+        # Only request standard properties that exist in all HubSpot instances
+        # Removed 'company' as it's a custom/optional text field
         properties = [
             "firstname",
             "lastname",
             "email",
             "jobtitle",
             "phone",
-            "company",
             "hubspot_owner_id",
             "createdate",
             "hs_lastmodifieddate",
         ]
 
         # Fetch contacts with company associations
-        raw_contacts = await self._paginate_results(
-            "/crm/v3/objects/contacts",
-            properties=properties,
-            associations=["companies"],
-        )
+        print(f"[HubSpot] Fetching contacts for org {self.organization_id}...")
+        try:
+            raw_contacts = await self._paginate_results(
+                "/crm/v3/objects/contacts",
+                properties=properties,
+                associations=["companies"],
+            )
+            print(f"[HubSpot] Fetched {len(raw_contacts)} contacts from API")
+        except Exception as e:
+            print(f"[HubSpot] ERROR fetching contacts: {e}")
+            raise
 
         # Build a map of HubSpot company IDs to internal account IDs
         hs_company_id_to_account_id: dict[str, uuid.UUID] = {}

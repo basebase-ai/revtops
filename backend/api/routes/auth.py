@@ -646,6 +646,7 @@ async def get_available_integrations() -> AvailableIntegrationsResponse:
             {"id": "microsoft_mail", "name": "Microsoft Mail", "description": "Outlook emails and communications"},
             {"id": "salesforce", "name": "Salesforce", "description": "CRM - Opportunities, Accounts"},
             {"id": "google_sheets", "name": "Google Sheets", "description": "Import contacts, accounts, deals from spreadsheets"},
+            {"id": "apollo", "name": "Apollo.io", "description": "Data enrichment - Update contact job titles, companies, emails"},
         ]
     )
 

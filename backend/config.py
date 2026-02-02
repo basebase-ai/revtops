@@ -64,6 +64,7 @@ class Settings(BaseSettings):
     NANGO_FIREFLIES_INTEGRATION_ID: str = "fireflies"
     NANGO_ZOOM_INTEGRATION_ID: str = "zoom"
     NANGO_GOOGLE_SHEETS_INTEGRATION_ID: str = "google-sheet"
+    NANGO_APOLLO_INTEGRATION_ID: str = "apollo"
 
     # App
     SECRET_KEY: str = "dev-secret-change-in-production"
@@ -103,6 +104,7 @@ NANGO_INTEGRATION_IDS: dict[str, str] = {
     "fireflies": settings.NANGO_FIREFLIES_INTEGRATION_ID,
     "zoom": settings.NANGO_ZOOM_INTEGRATION_ID,
     "google_sheets": settings.NANGO_GOOGLE_SHEETS_INTEGRATION_ID,
+    "apollo": settings.NANGO_APOLLO_INTEGRATION_ID,
 }
 
 # Provider scope mapping: which integrations are user-scoped vs org-scoped
@@ -119,6 +121,7 @@ PROVIDER_SCOPES: dict[str, str] = {
     "fireflies": "user",
     "zoom": "user",
     "google_sheets": "user",
+    "apollo": "organization",
 }
 
 
