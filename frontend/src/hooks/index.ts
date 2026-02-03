@@ -1,26 +1,20 @@
 /**
  * Custom React hooks.
- * 
+ *
  * Re-exports all hooks from a single location.
  */
 
-// React Query hooks for server state
+// React Query hooks for organization mutations
 export {
   useTeamMembers,
   useUpdateOrganization,
   organizationKeys,
   type Organization,
   type TeamMember,
-} from './useOrganization';
+} from "./useOrganization";
 
-export {
-  useIntegrations,
-  useInvalidateIntegrations,
-  integrationKeys,
-  type Integration,
-  type TeamConnection,
-  type SyncStats,
-} from './useIntegrations';
+// Integrations are now in Zustand store - re-export types for convenience
+export type { Integration, TeamConnection, SyncStats } from "../store";
 
 // Other hooks
-export { useWebSocket } from './useWebSocket';
+export { useWebSocket } from "./useWebSocket";

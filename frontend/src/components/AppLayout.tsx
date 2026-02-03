@@ -44,8 +44,8 @@ import { Workflows } from './Workflows';
 import { AdminPanel } from './AdminPanel';
 import { OrganizationPanel } from './OrganizationPanel';
 import { ProfilePanel } from './ProfilePanel';
-import { useAppStore, useMasquerade, type ActiveTask } from '../store';
-import { useIntegrations, useTeamMembers, useWebSocket } from '../hooks';
+import { useAppStore, useMasquerade, useIntegrations, type ActiveTask } from '../store';
+import { useTeamMembers, useWebSocket } from '../hooks';
 
 // Re-export types from store for backwards compatibility
 export type { UserProfile, OrganizationInfo, ChatSummary, View } from '../store';
@@ -136,12 +136,17 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
     }))
   );
 
-  // React Query: Get integrations for connected count badge
-  const { data: integrations = [] } = useIntegrations(
-    organization?.id ?? null, 
-    user?.id ?? null
-  );
+  // Zustand: Get integrations for connected count badge
+  const integrations = useIntegrations();
+  const fetchIntegrations = useAppStore((state) => state.fetchIntegrations);
   const connectedIntegrationsCount = integrations.filter((i) => i.isActive).length;
+  
+  // Fetch integrations on mount and when org changes
+  useEffect(() => {
+    if (organization?.id && user?.id) {
+      void fetchIntegrations();
+    }
+  }, [organization?.id, user?.id, fetchIntegrations]);
 
   // React Query: Get workflows for count badge
   const { data: workflows = [] } = useQuery({
@@ -155,7 +160,7 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
     },
     enabled: !!organization?.id,
   });
-  const activeWorkflowCount = workflows.filter((w: { is_enabled: boolean }) => w.is_enabled).length;
+  const workflowCount = workflows.length;
 
   // React Query: Get team members for member count (single source of truth)
   const { data: teamMembers = [] } = useTeamMembers(
@@ -545,7 +550,7 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
           currentView={currentView}
           onViewChange={setCurrentView}
           connectedSourcesCount={connectedIntegrationsCount}
-          workflowCount={activeWorkflowCount}
+          workflowCount={workflowCount}
           recentChats={recentChats.slice(0, 10)}
           onSelectChat={handleSelectChat}
           onDeleteChat={handleDeleteChat}

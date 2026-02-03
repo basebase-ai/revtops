@@ -25,9 +25,7 @@ import {
 import { HiOutlineCalendar, HiOutlineMail, HiGlobeAlt, HiUserGroup, HiExclamation, HiDeviceMobile, HiMicrophone, HiUpload } from 'react-icons/hi';
 import { SheetImporter } from './SheetImporter';
 import { API_BASE } from '../lib/api';
-import { useAppStore } from '../store';
-import { useIntegrations, useInvalidateIntegrations, type Integration } from '../hooks';
-import type { SyncStats } from '../hooks/useIntegrations';
+import { useAppStore, useIntegrations, useIntegrationsLoading, type Integration, type SyncStats } from '../store';
 
 // Detect if user is on a mobile device
 function useIsMobile(): boolean {
@@ -175,14 +173,17 @@ export function DataSources(): JSX.Element {
   // Check if on mobile device
   const isMobile = useIsMobile();
 
-  // React Query: Fetch integrations with automatic caching and refetch
-  const { 
-    data: rawIntegrations = [], 
-    isLoading: integrationsLoading,
-  } = useIntegrations(organization?.id ?? null, user?.id ?? null);
+  // Zustand: Get integrations state
+  const rawIntegrations = useIntegrations();
+  const integrationsLoading = useIntegrationsLoading();
+  const fetchIntegrations = useAppStore((state) => state.fetchIntegrations);
 
-  // Get invalidation function for manual refetch after connect/disconnect
-  const invalidateIntegrations = useInvalidateIntegrations();
+  // Fetch integrations when component mounts or user/org changes
+  useEffect(() => {
+    if (organization?.id && user?.id) {
+      void fetchIntegrations();
+    }
+  }, [organization?.id, user?.id, fetchIntegrations]);
 
   const [syncingProviders, setSyncingProviders] = useState<Set<string>>(new Set());
   const [connectingProvider, setConnectingProvider] = useState<string | null>(null);
@@ -304,7 +305,7 @@ export function DataSources(): JSX.Element {
             }
             
             // Invalidate cache to refetch integrations
-            invalidateIntegrations(organizationId);
+            void fetchIntegrations();
             setConnectingProvider(null);
           } else if (eventType === 'close' || eventType === 'closed') {
             // User closed the popup
@@ -357,7 +358,7 @@ export function DataSources(): JSX.Element {
 
       console.log('Disconnect successful, invalidating integrations cache...');
       // Invalidate cache to refetch integrations
-      invalidateIntegrations(organizationId);
+      void fetchIntegrations();
     } catch (error) {
       console.error('Failed to disconnect:', error);
       alert(`Failed to disconnect: ${error instanceof Error ? error.message : 'Unknown error'}`);
@@ -391,7 +392,7 @@ export function DataSources(): JSX.Element {
 
           // Invalidate cache to get updated sync status
           if (status.status === 'completed' || status.status === 'failed') {
-            invalidateIntegrations(organizationId);
+            void fetchIntegrations();
           }
         } else {
           attempts++;

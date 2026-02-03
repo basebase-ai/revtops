@@ -4,10 +4,12 @@
  * Centralizes:
  * - User authentication state
  * - Organization data
+ * - Integrations (data sources)
  * - UI state (sidebar, current view)
  * - Per-conversation chat state (messages, streaming, active tasks)
  *
- * Note: Integrations are managed via React Query (see hooks/useIntegrations.ts)
+ * Architecture: All server data lives in Zustand, updated via WebSocket events
+ * or explicit fetch calls. No polling - event-driven updates only.
  */
 
 import { create } from "zustand";
@@ -38,6 +40,35 @@ export interface OrganizationInfo {
   id: string;
   name: string;
   logoUrl: string | null;
+}
+
+// Integration types (data sources)
+export interface TeamConnection {
+  userId: string;
+  userName: string;
+}
+
+export interface SyncStats {
+  accounts?: number;
+  deals?: number;
+  contacts?: number;
+  activities?: number;
+  pipelines?: number;
+}
+
+export interface Integration {
+  id: string;
+  provider: string;
+  scope: "organization" | "user";
+  isActive: boolean;
+  lastSyncAt: string | null;
+  lastError: string | null;
+  connectedAt: string | null;
+  connectedBy: string | null;
+  currentUserConnected: boolean;
+  teamConnections: TeamConnection[];
+  teamTotal: number;
+  syncStats: SyncStats | null;
 }
 
 export interface ChatSummary {
@@ -142,6 +173,11 @@ interface AppState {
   // Active task tracking (for quick lookups)
   activeTasksByConversation: Record<string, string>; // conversation_id -> task_id
 
+  // Integrations (data sources)
+  integrations: Integration[];
+  integrationsLoading: boolean;
+  integrationsError: string | null;
+
   // Legacy global state (for backwards compatibility during migration)
   messages: ChatMessage[];
   chatTitle: string;
@@ -160,6 +196,11 @@ interface AppState {
     targetOrg: OrganizationInfo | null,
   ) => void;
   exitMasquerade: () => void;
+
+  // Actions - Integrations
+  fetchIntegrations: () => Promise<void>;
+  setIntegrations: (integrations: Integration[]) => void;
+  updateIntegration: (id: string, updates: Partial<Integration>) => void;
 
   // Actions - UI
   setSidebarCollapsed: (collapsed: boolean) => void;
@@ -263,6 +304,11 @@ export const useAppStore = create<AppState>()(
       conversations: {},
       activeTasksByConversation: {},
 
+      // Integrations
+      integrations: [],
+      integrationsLoading: false,
+      integrationsError: null,
+
       // Legacy chat state (for backwards compatibility)
       messages: [],
       chatTitle: "New Chat",
@@ -289,6 +335,9 @@ export const useAppStore = create<AppState>()(
           recentChats: [],
           conversations: {},
           activeTasksByConversation: {},
+          integrations: [],
+          integrationsLoading: false,
+          integrationsError: null,
           pendingChatInput: null,
           pendingChatAutoSend: false,
           // Clear legacy chat state
@@ -339,6 +388,89 @@ export const useAppStore = create<AppState>()(
           recentChats: [],
           conversations: {},
           activeTasksByConversation: {},
+        });
+      },
+
+      // Integrations actions
+      fetchIntegrations: async () => {
+        const { user, organization } = get();
+        if (!user || !organization) {
+          console.log("[Store] No user/org, skipping integrations fetch");
+          return;
+        }
+
+        set({ integrationsLoading: true, integrationsError: null });
+
+        try {
+          console.log(
+            "[Store] Fetching integrations for org:",
+            organization.id,
+          );
+          const response = await fetch(
+            `${API_BASE}/auth/integrations?organization_id=${organization.id}&user_id=${user.id}`,
+          );
+
+          if (!response.ok) {
+            throw new Error(`Failed to fetch integrations: ${response.status}`);
+          }
+
+          interface IntegrationApiResponse {
+            id: string;
+            provider: string;
+            scope: string;
+            is_active: boolean;
+            last_sync_at: string | null;
+            last_error: string | null;
+            connected_at: string | null;
+            connected_by: string | null;
+            current_user_connected: boolean;
+            team_connections: Array<{ user_id: string; user_name: string }>;
+            team_total: number;
+            sync_stats: SyncStats | null;
+          }
+
+          const data = (await response.json()) as {
+            integrations: IntegrationApiResponse[];
+          };
+
+          const integrations: Integration[] = data.integrations.map((i) => ({
+            id: i.id,
+            provider: i.provider,
+            scope: i.scope as "organization" | "user",
+            isActive: i.is_active,
+            lastSyncAt: i.last_sync_at,
+            lastError: i.last_error,
+            connectedAt: i.connected_at,
+            connectedBy: i.connected_by,
+            currentUserConnected: i.current_user_connected,
+            teamConnections: i.team_connections.map((tc) => ({
+              userId: tc.user_id,
+              userName: tc.user_name,
+            })),
+            teamTotal: i.team_total,
+            syncStats: i.sync_stats,
+          }));
+
+          console.log("[Store] Fetched", integrations.length, "integrations");
+          set({ integrations, integrationsLoading: false });
+        } catch (error) {
+          console.error("[Store] Error fetching integrations:", error);
+          set({
+            integrationsError:
+              error instanceof Error ? error.message : "Unknown error",
+            integrationsLoading: false,
+          });
+        }
+      },
+
+      setIntegrations: (integrations) => set({ integrations }),
+
+      updateIntegration: (id, updates) => {
+        const { integrations } = get();
+        set({
+          integrations: integrations.map((i) =>
+            i.id === id ? { ...i, ...updates } : i,
+          ),
         });
       },
 
@@ -1006,3 +1138,16 @@ export const useHasActiveTask = (conversationId: string | null) =>
   useAppStore((state) =>
     conversationId ? conversationId in state.activeTasksByConversation : false,
   );
+
+// Integration selectors
+export const useIntegrations = () => useAppStore((state) => state.integrations);
+export const useIntegrationsLoading = () =>
+  useAppStore((state) => state.integrationsLoading);
+export const useIntegrationsError = () =>
+  useAppStore((state) => state.integrationsError);
+export const useIntegration = (provider: string) =>
+  useAppStore(
+    (state) => state.integrations.find((i) => i.provider === provider) ?? null,
+  );
+export const useConnectedIntegrations = () =>
+  useAppStore((state) => state.integrations.filter((i) => i.isActive));
