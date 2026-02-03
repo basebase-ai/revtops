@@ -75,6 +75,9 @@ class Conversation(Base):
     workflow: Mapped[Optional["Workflow"]] = relationship(
         "Workflow", back_populates="conversations"
     )
+    change_sessions: Mapped[list["ChangeSession"]] = relationship(
+        "ChangeSession", back_populates="conversation"
+    )
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for API responses."""
@@ -102,3 +105,4 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from models.chat_message import ChatMessage
     from models.workflow import Workflow
+    from models.change_session import ChangeSession

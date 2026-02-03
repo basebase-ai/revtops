@@ -17,6 +17,8 @@ from models.agent_task import AgentTask
 from models.workflow import Workflow, WorkflowRun
 from models.sheet_import import SheetImport
 from models.user_tool_setting import UserToolSetting
+from models.change_session import ChangeSession
+from models.record_snapshot import RecordSnapshot
 
 __all__ = [
     "Base",
@@ -41,4 +43,6 @@ __all__ = [
     "WorkflowRun",
     "SheetImport",
     "UserToolSetting",
+    "ChangeSession",
+    "RecordSnapshot",
 ]

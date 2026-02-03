@@ -19,7 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from api.websockets import websocket_endpoint
-from api.routes import auth, chat, data, deals, search, sheets, sync, tool_settings, waitlist, workflows
+from api.routes import auth, change_sessions, chat, data, deals, search, sheets, sync, tool_settings, waitlist, workflows
 from models.database import init_db, close_db, get_pool_status
 
 # Configure logging
@@ -102,6 +102,7 @@ app.include_router(workflows.router, prefix="/api/workflows", tags=["workflows"]
 app.include_router(sheets.router, prefix="/api/sheets", tags=["sheets"])
 app.include_router(data.router, prefix="/api/data", tags=["data"])
 app.include_router(tool_settings.router, prefix="/api", tags=["tools"])
+app.include_router(change_sessions.router, prefix="/api", tags=["change-sessions"])
 
 # WebSocket
 app.add_api_websocket_route("/ws/chat/{user_id}", websocket_endpoint)

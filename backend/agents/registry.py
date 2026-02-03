@@ -319,8 +319,9 @@ register_tool(
     name="crm_write",
     description="""Create or update records in the CRM (HubSpot).
 
-This tool validates the input, checks for duplicates, and shows the user a preview
-with Approve/Cancel buttons. The operation only executes after user approval.
+Records are created locally first (like editing files). The user can then:
+- Click "Commit All" to sync to HubSpot
+- Click "Undo All" to discard the local changes
 
 Use this for:
 - Creating contacts from prospect lists
@@ -358,8 +359,8 @@ Property names for each record type:
         },
         "required": ["target_system", "record_type", "operation", "records"],
     },
-    category=ToolCategory.EXTERNAL_WRITE,
-    default_requires_approval=True,
+    category=ToolCategory.LOCAL_WRITE,  # Now local-first, commit later
+    default_requires_approval=False,  # No approval needed - use bottom panel to commit/undo
 )
 
 

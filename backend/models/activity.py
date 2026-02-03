@@ -78,13 +78,21 @@ class Activity(Base):
     # Semantic search fields
     searchable_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     embedding: Mapped[Optional[bytes]] = mapped_column(LargeBinary, nullable=True)
+    
+    # Change tracking columns (for local modifications)
+    updated_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    updated_by: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
 
     # Relationships
     deal: Mapped[Optional["Deal"]] = relationship("Deal", back_populates="activities")
     account: Mapped[Optional["Account"]] = relationship("Account")
     contact: Mapped[Optional["Contact"]] = relationship("Contact")
     meeting: Mapped[Optional["Meeting"]] = relationship("Meeting", back_populates="activities")
-    created_by: Mapped[Optional["User"]] = relationship("User")
+    created_by: Mapped[Optional["User"]] = relationship("User", foreign_keys=[created_by_id])
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for API responses."""

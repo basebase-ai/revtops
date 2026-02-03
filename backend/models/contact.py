@@ -15,6 +15,7 @@ from models.database import Base
 
 if TYPE_CHECKING:
     from models.account import Account
+    from models.user import User
 
 
 class Contact(Base):
@@ -45,6 +46,19 @@ class Contact(Base):
     synced_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime, default=datetime.utcnow, nullable=True
     )
+    
+    # Sync status: 'pending' (local only), 'synced' (in CRM), 'failed' (sync error)
+    sync_status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="synced"
+    )
+    
+    # Change tracking columns (for local modifications)
+    updated_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    updated_by: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
 
     # Relationships
     account: Mapped[Optional["Account"]] = relationship(
@@ -62,4 +76,5 @@ class Contact(Base):
             "account_id": str(self.account_id) if self.account_id else None,
             "source_id": self.source_id,
             "source_system": self.source_system,
+            "sync_status": self.sync_status,
         }
