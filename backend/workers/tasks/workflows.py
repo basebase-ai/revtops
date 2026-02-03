@@ -298,6 +298,10 @@ async def _execute_workflow_via_agent(
         session.add(conversation)
         await session.flush()
     
+    # IMPORTANT: Commit the conversation so the orchestrator's separate session can see it
+    # The orchestrator uses its own sessions for saving messages, which won't see uncommitted data
+    await session.commit()
+    
     logger.info(
         f"[Workflow] Starting agent execution for workflow {workflow.id} "
         f"conversation {conversation.id}"
