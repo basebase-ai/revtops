@@ -23,6 +23,7 @@ import {
   type ChatMessage,
   type ToolCallData,
   type ToolUseBlock,
+  type ErrorBlock,
 } from '../store';
 
 interface Artifact {
@@ -902,6 +903,13 @@ function MessageWithBlocks({
               </div>
             );
           }
+          if (block.type === 'error') {
+            return (
+              <div key={`error-${index}`} className="my-0.5">
+                <ErrorBlockIndicator block={block} />
+              </div>
+            );
+          }
           return null;
         })}
         
@@ -975,6 +983,54 @@ function ToolBlockIndicator({
       </svg>
     </button>
   );
+}
+
+/**
+ * Error block indicator - shows errors in a compact, non-intrusive style
+ */
+function ErrorBlockIndicator({
+  block,
+}: {
+  block: ErrorBlock;
+}): JSX.Element {
+  // Parse the error message to extract a user-friendly summary
+  const errorSummary = getErrorSummary(block.message);
+
+  return (
+    <div className="flex items-center gap-1.5 py-0.5 text-xs text-red-400/80">
+      <svg className="w-3.5 h-3.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+      </svg>
+      <span className="italic">{errorSummary}</span>
+    </div>
+  );
+}
+
+/**
+ * Extract a user-friendly error summary from error messages
+ */
+function getErrorSummary(errorMessage: string): string {
+  // Check for common error patterns
+  if (errorMessage.includes('overloaded_error') || errorMessage.includes('Overloaded')) {
+    return 'Service temporarily unavailable. Please try again.';
+  }
+  if (errorMessage.includes('rate_limit')) {
+    return 'Rate limit reached. Please wait a moment and try again.';
+  }
+  if (errorMessage.includes('timeout') || errorMessage.includes('Timeout')) {
+    return 'Request timed out. Please try again.';
+  }
+  if (errorMessage.includes('connection') || errorMessage.includes('network')) {
+    return 'Connection error. Please check your network and try again.';
+  }
+  
+  // For other errors, truncate if too long
+  const maxLength = 80;
+  if (errorMessage.length > maxLength) {
+    return errorMessage.slice(0, maxLength) + '...';
+  }
+  
+  return errorMessage || 'An error occurred. Please try again.';
 }
 
 /**

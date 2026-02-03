@@ -8,6 +8,7 @@ Nango handles all OAuth complexity:
 
 Endpoints:
 - GET /api/auth/connect/{provider} - Get Nango connect URL
+- GET /api/auth/oauth/callback - Redirect to Nango OAuth callback (preserves query params)
 - POST /api/auth/callback - Handle Nango OAuth callback
 - GET /api/auth/integrations - List connected integrations
 - DELETE /api/auth/integrations/{provider} - Disconnect integration
@@ -18,7 +19,7 @@ from datetime import datetime
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Response
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 from sqlalchemy import select, text
@@ -898,6 +899,26 @@ async def connect_redirect(
     """
     response = await get_connect_url(provider, user_id=user_id, organization_id=organization_id)
     return RedirectResponse(url=response.connect_url)
+
+
+@router.get("/oauth/callback")
+async def nango_oauth_callback_redirect(request: Request) -> RedirectResponse:
+    """
+    Redirect to Nango's OAuth callback URL.
+
+    This route can be used as the callback URL for any Nango integration.
+    It preserves all query parameters and redirects to Nango's callback endpoint.
+    """
+    nango_callback_url = "https://api.nango.dev/oauth/callback"
+    
+    # Preserve all query parameters from the incoming request
+    query_string = request.url.query
+    if query_string:
+        redirect_url = f"{nango_callback_url}?{query_string}"
+    else:
+        redirect_url = nango_callback_url
+    
+    return RedirectResponse(url=redirect_url, status_code=302)
 
 
 @router.post("/callback")

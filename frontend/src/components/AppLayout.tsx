@@ -330,25 +330,29 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
           setConversationThinking(taskComplete.conversation_id, false);
           markConversationMessageComplete(taskComplete.conversation_id);
           
-          // If task failed, add an error message to the conversation
+          // If task failed, add an error block to the conversation
           if (taskComplete.status === 'failed' && taskComplete.error) {
             console.error('[AppLayout] Task failed with error:', taskComplete.error);
-            // Append error to the last assistant message or create a new one
+            // Append error block to the last assistant message or create a new one
             const state = useAppStore.getState();
             const convState = state.conversations[taskComplete.conversation_id];
             if (convState) {
               const messages = [...convState.messages];
               const lastMsg = messages[messages.length - 1];
+              
+              // Create error block with structured data
+              const errorBlock = {
+                type: 'error' as const,
+                message: taskComplete.error,
+              };
+              
               if (lastMsg && lastMsg.role === 'assistant') {
-                // Append error to existing assistant message
+                // Append error block to existing assistant message
                 messages[messages.length - 1] = {
                   ...lastMsg,
                   contentBlocks: [
                     ...lastMsg.contentBlocks,
-                    {
-                      type: 'text',
-                      text: `\n\n---\n\n**Error:** ${taskComplete.error}\n\nThe request could not be completed. Please try again.`,
-                    },
+                    errorBlock,
                   ],
                 };
               } else {
@@ -356,10 +360,7 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
                 messages.push({
                   id: `error-${Date.now()}`,
                   role: 'assistant',
-                  contentBlocks: [{
-                    type: 'text',
-                    text: `**Error:** ${taskComplete.error}\n\nThe request could not be completed. Please try again.`,
-                  }],
+                  contentBlocks: [errorBlock],
                   timestamp: new Date(),
                 });
               }

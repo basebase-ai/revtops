@@ -95,7 +95,12 @@ export interface ToolUseBlock {
   status?: "pending" | "running" | "complete";
 }
 
-export type ContentBlock = TextBlock | ToolUseBlock;
+export interface ErrorBlock {
+  type: "error";
+  message: string;
+}
+
+export type ContentBlock = TextBlock | ToolUseBlock | ErrorBlock;
 
 // Legacy type for streaming compatibility
 export interface ToolCallData {

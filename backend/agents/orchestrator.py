@@ -10,13 +10,14 @@ Responsibilities:
 - Save conversation to database
 """
 
+import asyncio
 import json
 import logging
 from datetime import datetime
 from typing import Any, AsyncGenerator
 from uuid import UUID
 
-from anthropic import AsyncAnthropic
+from anthropic import APIStatusError, AsyncAnthropic
 from sqlalchemy import select, update
 
 from agents.tools import execute_tool, get_tools
@@ -441,62 +442,105 @@ Use the user's local time to provide relative references (e.g., '3 hours ago', '
         
         Uses true streaming - text is yielded immediately as tokens arrive.
         Tool calls are accumulated and executed when complete.
+        Includes retry logic for transient API errors (overloaded, rate limits).
         """
+        # Retry configuration
+        max_retries = 3
+        base_delay = 1.0  # seconds
+        
         while True:
             # Track state for this streaming response
             current_text = ""
             tool_uses: list[dict[str, Any]] = []
             current_tool: dict[str, Any] | None = None
             current_tool_input_json = ""
+            final_message = None
             
-            # Stream the response
-            async with self.client.messages.stream(
-                model="claude-opus-4-5",
-                max_tokens=4096,
-                system=system_prompt,
-                tools=get_tools(),
-                messages=messages,
-            ) as stream:
-                async for event in stream:
-                    # Handle different event types
-                    if event.type == "content_block_start":
-                        if event.content_block.type == "text":
-                            # Text block starting - nothing to do yet
-                            pass
-                        elif event.content_block.type == "tool_use":
-                            # Tool use block starting - capture id and name
-                            current_tool = {
-                                "id": event.content_block.id,
-                                "name": event.content_block.name,
-                                "input": {},
-                            }
-                            current_tool_input_json = ""
+            # Retry loop for transient API errors
+            last_error: Exception | None = None
+            for attempt in range(max_retries):
+                try:
+                    # Reset state on retry (in case partial data was received)
+                    current_text = ""
+                    tool_uses = []
+                    current_tool = None
+                    current_tool_input_json = ""
                     
-                    elif event.type == "content_block_delta":
-                        if event.delta.type == "text_delta":
-                            # Stream text immediately!
-                            text = event.delta.text
-                            current_text += text
-                            yield text
-                        elif event.delta.type == "input_json_delta":
-                            # Accumulate tool input JSON
-                            current_tool_input_json += event.delta.partial_json
-                    
-                    elif event.type == "content_block_stop":
-                        if current_tool is not None:
-                            # Parse the accumulated JSON for tool input
-                            try:
-                                current_tool["input"] = json.loads(current_tool_input_json) if current_tool_input_json else {}
-                            except json.JSONDecodeError:
-                                logger.warning("[Orchestrator] Failed to parse tool input JSON: %s", current_tool_input_json)
-                                current_tool["input"] = {}
+                    # Stream the response
+                    async with self.client.messages.stream(
+                        model="claude-opus-4-5",
+                        max_tokens=4096,
+                        system=system_prompt,
+                        tools=get_tools(),
+                        messages=messages,
+                    ) as stream:
+                        async for event in stream:
+                            # Handle different event types
+                            if event.type == "content_block_start":
+                                if event.content_block.type == "text":
+                                    # Text block starting - nothing to do yet
+                                    pass
+                                elif event.content_block.type == "tool_use":
+                                    # Tool use block starting - capture id and name
+                                    current_tool = {
+                                        "id": event.content_block.id,
+                                        "name": event.content_block.name,
+                                        "input": {},
+                                    }
+                                    current_tool_input_json = ""
                             
-                            tool_uses.append(current_tool)
-                            current_tool = None
-                            current_tool_input_json = ""
-                
-                # Get the final message for conversation history
-                final_message = await stream.get_final_message()
+                            elif event.type == "content_block_delta":
+                                if event.delta.type == "text_delta":
+                                    # Stream text immediately!
+                                    text = event.delta.text
+                                    current_text += text
+                                    yield text
+                                elif event.delta.type == "input_json_delta":
+                                    # Accumulate tool input JSON
+                                    current_tool_input_json += event.delta.partial_json
+                            
+                            elif event.type == "content_block_stop":
+                                if current_tool is not None:
+                                    # Parse the accumulated JSON for tool input
+                                    try:
+                                        current_tool["input"] = json.loads(current_tool_input_json) if current_tool_input_json else {}
+                                    except json.JSONDecodeError:
+                                        logger.warning("[Orchestrator] Failed to parse tool input JSON: %s", current_tool_input_json)
+                                        current_tool["input"] = {}
+                                    
+                                    tool_uses.append(current_tool)
+                                    current_tool = None
+                                    current_tool_input_json = ""
+                        
+                        # Get the final message for conversation history
+                        final_message = await stream.get_final_message()
+                    
+                    # Success - break out of retry loop
+                    break
+                    
+                except APIStatusError as e:
+                    last_error = e
+                    error_type = getattr(e, "body", {}).get("error", {}).get("type", "") if isinstance(getattr(e, "body", None), dict) else ""
+                    
+                    # Check if this is a retryable error
+                    is_retryable = error_type in ("overloaded_error", "rate_limit_error") or e.status_code in (429, 529, 503)
+                    
+                    if is_retryable and attempt < max_retries - 1:
+                        delay = base_delay * (2 ** attempt)  # Exponential backoff: 1s, 2s, 4s
+                        logger.warning(
+                            "[Orchestrator] Retryable API error (attempt %d/%d): %s. Retrying in %.1fs...",
+                            attempt + 1, max_retries, error_type or e.status_code, delay
+                        )
+                        await asyncio.sleep(delay)
+                        continue
+                    else:
+                        # Non-retryable error or max retries exceeded
+                        logger.error("[Orchestrator] API error after %d attempts: %s", attempt + 1, e)
+                        raise
+            
+            # If we exhausted retries without success, raise the last error
+            if final_message is None and last_error is not None:
+                raise last_error
             
             # If no tool calls, we're done
             if not tool_uses:
