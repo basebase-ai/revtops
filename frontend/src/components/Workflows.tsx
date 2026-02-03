@@ -237,6 +237,8 @@ function WorkflowDetail({
   onDelete,
   onToggle,
   onEdit,
+  isToggling,
+  isTriggering,
 }: {
   workflow: Workflow;
   onClose: () => void;
@@ -244,6 +246,8 @@ function WorkflowDetail({
   onDelete: () => void;
   onToggle: (enabled: boolean) => void;
   onEdit: () => void;
+  isToggling: boolean;
+  isTriggering: boolean;
 }): JSX.Element {
   const organization = useAppStore((state) => state.organization);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
@@ -294,9 +298,10 @@ function WorkflowDetail({
               <span className="text-sm text-surface-400">Active</span>
               <button
                 onClick={() => onToggle(!workflow.is_enabled)}
+                disabled={isToggling}
                 className={`relative w-10 h-6 rounded-full transition-colors ${
                   workflow.is_enabled ? 'bg-primary-600' : 'bg-surface-700'
-                }`}
+                } ${isToggling ? 'opacity-50' : ''}`}
               >
                 <span
                   className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-transform ${
@@ -447,10 +452,16 @@ function WorkflowDetail({
             </button>
             <button
               onClick={onTrigger}
-              disabled={!workflow.is_enabled}
-              className="px-4 py-2 bg-primary-600 hover:bg-primary-700 disabled:bg-surface-700 disabled:text-surface-500 text-white rounded-lg text-sm font-medium transition-colors"
+              disabled={!workflow.is_enabled || isTriggering}
+              className="px-4 py-2 bg-primary-600 hover:bg-primary-700 disabled:bg-surface-700 disabled:text-surface-500 text-white rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
             >
-              Run Now
+              {isTriggering && (
+                <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                </svg>
+              )}
+              {isTriggering ? 'Running...' : 'Run Now'}
             </button>
           </div>
         </div>
@@ -747,8 +758,18 @@ export function Workflows(): JSX.Element {
   const toggleMutation = useMutation({
     mutationFn: ({ workflowId, enabled }: { workflowId: string; enabled: boolean }) =>
       toggleWorkflow(organization?.id ?? '', workflowId, enabled),
-    onSuccess: () => {
+    onSuccess: (updatedWorkflow) => {
       void queryClient.invalidateQueries({ queryKey: ['workflows'] });
+      // Update selectedWorkflow if we were viewing it
+      if (selectedWorkflow?.id === updatedWorkflow.id) {
+        setSelectedWorkflow(updatedWorkflow);
+      }
+    },
+    onError: (_error, variables) => {
+      // Roll back optimistic update on error
+      if (selectedWorkflow?.id === variables.workflowId) {
+        setSelectedWorkflow({ ...selectedWorkflow, is_enabled: !variables.enabled });
+      }
     },
   });
 
@@ -903,10 +924,14 @@ export function Workflows(): JSX.Element {
           onClose={() => setSelectedWorkflow(null)}
           onTrigger={() => triggerMutation.mutate({ workflowId: selectedWorkflow.id })}
           onDelete={() => deleteMutation.mutate({ workflowId: selectedWorkflow.id })}
-          onToggle={(enabled) =>
-            toggleMutation.mutate({ workflowId: selectedWorkflow.id, enabled })
-          }
+          onToggle={(enabled) => {
+            // Optimistic update: immediately show new state
+            setSelectedWorkflow({ ...selectedWorkflow, is_enabled: enabled });
+            toggleMutation.mutate({ workflowId: selectedWorkflow.id, enabled });
+          }}
           onEdit={() => openEditModal(selectedWorkflow)}
+          isToggling={toggleMutation.isPending}
+          isTriggering={triggerMutation.isPending}
         />
       )}
 
