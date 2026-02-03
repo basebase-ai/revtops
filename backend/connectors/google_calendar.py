@@ -152,7 +152,7 @@ class GoogleCalendarConnector(BaseConnector):
         )
 
         count = 0
-        async with get_session() as session:
+        async with get_session(organization_id=self.organization_id) as session:
             for event in events:
                 try:
                     parsed = self._parse_event(event)

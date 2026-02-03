@@ -22,9 +22,8 @@ from sqlalchemy import select, text
 
 from config import settings
 from models.account import Account
-from models.artifact import Artifact
 from models.contact import Contact
-from models.crm_operation import CrmOperation
+from models.pending_operation import PendingOperation, CrmOperation  # CrmOperation is alias
 from models.database import get_session
 from models.deal import Deal
 from models.integration import Integration
@@ -177,29 +176,19 @@ async def execute_tool(
         logger.info("[Tools] run_sql_query returned %d rows", result.get("row_count", 0))
         return result
 
+    elif tool_name == "run_sql_write":
+        result = await _run_sql_write(tool_input, organization_id, user_id)
+        logger.info("[Tools] run_sql_write completed: %s", result)
+        return result
+
     elif tool_name == "search_activities":
         result = await _search_activities(tool_input, organization_id, user_id)
         logger.info("[Tools] search_activities returned %d results", len(result.get("results", [])))
         return result
 
-    elif tool_name == "create_artifact":
-        result = await _create_artifact(tool_input, organization_id, user_id)
-        logger.info("[Tools] create_artifact result: %s", result)
-        return result
-
     elif tool_name == "web_search":
         result = await _web_search(tool_input)
         logger.info("[Tools] web_search completed")
-        return result
-
-    elif tool_name == "crm_write":
-        result = await _crm_write(tool_input, organization_id, user_id, skip_approval)
-        logger.info("[Tools] crm_write completed: %s", result.get("status"))
-        return result
-
-    elif tool_name == "create_workflow":
-        result = await _create_workflow(tool_input, organization_id, user_id)
-        logger.info("[Tools] create_workflow completed: %s", result)
         return result
 
     elif tool_name == "trigger_workflow":
@@ -316,16 +305,9 @@ async def _run_sql_query(
         final_query = final_query.rstrip(';') + " LIMIT 100"
     
     try:
-        async with get_session() as session:
-            # IMPORTANT: Set org context BEFORE any query for RLS to work.
-            # Using false for is_local makes it session-level (persists for connection lifetime).
-            # With NullPool, each request gets a fresh connection so this is safe.
-            await session.execute(
-                text("SELECT set_config('app.current_org_id', :org_id, false)"),
-                {"org_id": organization_id}
-            )
-            
+        async with get_session(organization_id=organization_id) as session:
             # Execute the query - RLS automatically filters by organization
+            # (organization_id context is already set by get_session)
             result = await session.execute(text(final_query))
             rows = result.fetchall()
             columns = list(result.keys())
@@ -353,6 +335,531 @@ async def _run_sql_query(
     except Exception as e:
         logger.error("[Tools._run_sql_query] Query execution failed: %s", str(e))
         return {"error": f"Query execution failed: {str(e)}"}
+
+
+# Tables that can be written to via run_sql_write
+WRITABLE_TABLES: set[str] = {
+    "workflows",
+    "artifacts", 
+    "contacts",
+    "deals",
+    "accounts",
+}
+
+# CRM tables that go through pending operations (review before commit)
+CRM_TABLES: set[str] = {
+    "contacts",
+    "deals", 
+    "accounts",
+}
+
+# Tables that are completely off-limits for writes
+PROTECTED_TABLES: set[str] = {
+    "users",
+    "organizations", 
+    "integrations",
+    "activities",
+    "user_tool_settings",
+    "pending_operations",
+    "change_sessions",
+    "record_snapshots",
+    "conversations",
+    "chat_messages",
+}
+
+
+def _validate_sql_write(query: str) -> tuple[bool, str | None, str | None]:
+    """
+    Validate that a write query is safe to execute.
+    Returns (is_valid, error_message, operation_type).
+    """
+    query_upper = query.upper().strip()
+    
+    # Determine operation type
+    operation: str | None = None
+    if query_upper.startswith("INSERT"):
+        operation = "INSERT"
+    elif query_upper.startswith("UPDATE"):
+        operation = "UPDATE"
+    elif query_upper.startswith("DELETE"):
+        operation = "DELETE"
+    else:
+        return False, "Only INSERT, UPDATE, or DELETE queries are allowed", None
+    
+    # Block dangerous statement types (check if query STARTS with these)
+    # We don't check for keywords anywhere in the query because they could
+    # appear in string literals (e.g., "Create a summary..." in prompt text)
+    dangerous_start_keywords: list[str] = [
+        "DROP", "TRUNCATE", "ALTER", "CREATE", "GRANT", "REVOKE",
+    ]
+    for keyword in dangerous_start_keywords:
+        if query_upper.startswith(keyword):
+            return False, f"'{keyword}' statements are not allowed", None
+    
+    # Block dangerous functions/commands that could appear anywhere
+    # These are SQL injection vectors, not natural language words
+    dangerous_patterns: list[str] = [
+        r'\bEXECUTE\s*\(',  # EXECUTE() function
+        r'\bEXEC\s+',       # EXEC statement  
+        r'\bINTO\s+OUTFILE\b',
+        r'\bINTO\s+DUMPFILE\b',
+        r'\bLOAD_FILE\s*\(',
+    ]
+    for pattern in dangerous_patterns:
+        if re.search(pattern, query_upper):
+            return False, "Query contains disallowed SQL functions", None
+    
+    # UPDATE and DELETE must have WHERE clause
+    if operation in ("UPDATE", "DELETE"):
+        if not re.search(r'\bWHERE\b', query_upper):
+            return False, f"{operation} queries must include a WHERE clause for safety", None
+    
+    return True, None, operation
+
+
+def _extract_table_from_write(query: str) -> str | None:
+    """Extract the target table name from a write query."""
+    query_upper = query.upper().strip()
+    
+    # INSERT INTO table_name
+    insert_match = re.match(r'INSERT\s+INTO\s+([a-zA-Z_][a-zA-Z0-9_]*)', query, re.IGNORECASE)
+    if insert_match:
+        return insert_match.group(1).lower()
+    
+    # UPDATE table_name
+    update_match = re.match(r'UPDATE\s+([a-zA-Z_][a-zA-Z0-9_]*)', query, re.IGNORECASE)
+    if update_match:
+        return update_match.group(1).lower()
+    
+    # DELETE FROM table_name
+    delete_match = re.match(r'DELETE\s+FROM\s+([a-zA-Z_][a-zA-Z0-9_]*)', query, re.IGNORECASE)
+    if delete_match:
+        return delete_match.group(1).lower()
+
+
+def _find_matching_paren(s: str, start: int) -> int:
+    """Find the index of the closing paren that matches the opening paren at start."""
+    depth = 0
+    in_string = False
+    string_char: str | None = None
+    i = start
+    
+    while i < len(s):
+        char = s[i]
+        
+        # Handle string literals
+        if char in ("'", '"') and not in_string:
+            in_string = True
+            string_char = char
+        elif char == string_char and in_string:
+            # Check for escaped quote (doubled)
+            if i + 1 < len(s) and s[i + 1] == string_char:
+                i += 1  # Skip escaped quote
+            else:
+                in_string = False
+                string_char = None
+        elif not in_string:
+            if char == '(':
+                depth += 1
+            elif char == ')':
+                depth -= 1
+                if depth == 0:
+                    return i
+        i += 1
+    
+    return -1  # No matching paren found
+
+
+def _parse_insert_for_injection(query: str) -> tuple[str, str, str] | None:
+    """
+    Parse INSERT INTO table (cols) VALUES (vals) handling nested parens/quotes.
+    Returns (table_name, columns_str, values_str) or None if parsing fails.
+    """
+    # Match: INSERT INTO table_name
+    table_match = re.match(r'INSERT\s+INTO\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*', query, re.IGNORECASE)
+    if not table_match:
+        return None
+    
+    table_name = table_match.group(1)
+    rest = query[table_match.end():]
+    
+    # Find columns: (col1, col2, ...)
+    if not rest.startswith('('):
+        return None
+    
+    cols_end = _find_matching_paren(rest, 0)
+    if cols_end == -1:
+        return None
+    
+    columns = rest[1:cols_end]  # Content between parens
+    rest = rest[cols_end + 1:].strip()
+    
+    # Match VALUES keyword
+    values_match = re.match(r'VALUES\s*', rest, re.IGNORECASE)
+    if not values_match:
+        return None
+    
+    rest = rest[values_match.end():]
+    
+    # Find values: (val1, val2, ...)
+    if not rest.startswith('('):
+        return None
+    
+    vals_end = _find_matching_paren(rest, 0)
+    if vals_end == -1:
+        return None
+    
+    values = rest[1:vals_end]  # Content between parens
+    
+    return (table_name, columns.strip(), values.strip())
+    
+    return None
+
+
+def _parse_insert_values(query: str) -> dict[str, Any] | None:
+    """
+    Parse an INSERT query to extract column names and values.
+    Returns a dict of {column: value} or None if parsing fails.
+    """
+    # Match: INSERT INTO table (col1, col2, ...) VALUES (val1, val2, ...)
+    match = re.match(
+        r"INSERT\s+INTO\s+\w+\s*\(([^)]+)\)\s*VALUES\s*\(([^)]+)\)",
+        query,
+        re.IGNORECASE
+    )
+    if not match:
+        return None
+    
+    columns_str, values_str = match.groups()
+    columns = [c.strip() for c in columns_str.split(",")]
+    
+    # Simple value parsing - handles strings, numbers, nulls
+    # This is basic; production would use proper SQL parsing
+    values: list[Any] = []
+    current_value = ""
+    in_string = False
+    string_char = None
+    
+    for char in values_str + ",":
+        if char in ("'", '"') and not in_string:
+            in_string = True
+            string_char = char
+        elif char == string_char and in_string:
+            in_string = False
+            string_char = None
+        elif char == "," and not in_string:
+            val = current_value.strip()
+            # Convert to appropriate type
+            if val.upper() == "NULL":
+                values.append(None)
+            elif val.startswith("'") and val.endswith("'"):
+                values.append(val[1:-1])
+            elif val.startswith('"') and val.endswith('"'):
+                values.append(val[1:-1])
+            else:
+                try:
+                    if "." in val:
+                        values.append(float(val))
+                    else:
+                        values.append(int(val))
+                except ValueError:
+                    values.append(val)
+            current_value = ""
+            continue
+        current_value += char
+    
+    if len(columns) != len(values):
+        return None
+    
+    return dict(zip(columns, values))
+
+
+def _parse_update_values(query: str) -> tuple[dict[str, Any], str] | None:
+    """
+    Parse an UPDATE query to extract SET values and WHERE clause.
+    Returns (updates_dict, where_clause) or None if parsing fails.
+    """
+    # Match: UPDATE table SET col1 = val1, col2 = val2 WHERE ...
+    match = re.match(
+        r"UPDATE\s+\w+\s+SET\s+(.+?)\s+WHERE\s+(.+)",
+        query,
+        re.IGNORECASE | re.DOTALL
+    )
+    if not match:
+        return None
+    
+    set_clause, where_clause = match.groups()
+    
+    # Parse SET clause - simple approach for col = 'value' pairs
+    updates: dict[str, Any] = {}
+    # Split on comma but not inside quotes
+    parts: list[str] = []
+    current = ""
+    in_string = False
+    for char in set_clause:
+        if char in ("'", '"') and not in_string:
+            in_string = True
+        elif char in ("'", '"') and in_string:
+            in_string = False
+        elif char == "," and not in_string:
+            parts.append(current.strip())
+            current = ""
+            continue
+        current += char
+    if current.strip():
+        parts.append(current.strip())
+    
+    for part in parts:
+        if "=" not in part:
+            continue
+        col, val = part.split("=", 1)
+        col = col.strip()
+        val = val.strip()
+        
+        if val.upper() == "NULL":
+            updates[col] = None
+        elif val.startswith("'") and val.endswith("'"):
+            updates[col] = val[1:-1]
+        elif val.startswith('"') and val.endswith('"'):
+            updates[col] = val[1:-1]
+        else:
+            try:
+                if "." in val:
+                    updates[col] = float(val)
+                else:
+                    updates[col] = int(val)
+            except ValueError:
+                updates[col] = val
+    
+    return updates, where_clause.strip()
+
+
+async def _run_sql_write(
+    params: dict[str, Any], organization_id: str, user_id: str
+) -> dict[str, Any]:
+    """
+    Execute a write SQL query (INSERT, UPDATE, DELETE) with safety rails.
+    
+    Routing:
+    - CRM tables (contacts, deals, accounts) → Creates PendingOperation for review
+    - Other tables (workflows, artifacts) → Direct execution
+    
+    Safety features:
+    - Only whitelisted tables can be written to
+    - UPDATE/DELETE require WHERE clauses
+    - organization_id is auto-injected for RLS
+    """
+    query = params.get("query", "").strip()
+    
+    if not query:
+        return {"error": "No query provided"}
+    
+    logger.info("[Tools._run_sql_write] Query: %s", query)
+    
+    # Validate query structure
+    is_valid, error, operation = _validate_sql_write(query)
+    if not is_valid:
+        logger.warning("[Tools._run_sql_write] Validation failed: %s", error)
+        return {"error": error}
+    
+    # Extract and validate target table
+    table = _extract_table_from_write(query)
+    if not table:
+        return {"error": "Could not determine target table from query"}
+    
+    logger.debug("[Tools._run_sql_write] Target table: %s, operation: %s", table, operation)
+    
+    if table in PROTECTED_TABLES:
+        return {"error": f"Table '{table}' is protected and cannot be modified via SQL."}
+    
+    if table not in WRITABLE_TABLES:
+        return {"error": f"Table '{table}' is not in the writable list. Allowed tables: {', '.join(sorted(WRITABLE_TABLES))}"}
+    
+    # ==========================================================================
+    # CRM Tables: Route through PendingOperation for review/commit workflow
+    # ==========================================================================
+    if table in CRM_TABLES:
+        return await _handle_crm_write_from_sql(
+            query=query,
+            table=table,
+            operation=operation,
+            organization_id=organization_id,
+            user_id=user_id,
+        )
+    
+    # ==========================================================================
+    # Non-CRM Tables: Direct execution
+    # ==========================================================================
+    try:
+        async with get_session(organization_id=organization_id) as session:
+            
+            # For INSERT, inject required columns
+            final_query = query
+            if operation == "INSERT":
+                # Parse INSERT INTO table (cols) VALUES (vals)
+                # Need to handle nested parens, quotes, and functions properly
+                parsed = _parse_insert_for_injection(query)
+                if parsed is None:
+                    return {"error": "INSERT query format not recognized. Use: INSERT INTO table (columns) VALUES (values)"}
+                
+                table_part, columns, values = parsed
+                columns_lower = columns.lower()
+                
+                # Build lists of extra columns and values to inject
+                extra_cols: list[str] = []
+                extra_vals: list[str] = []
+                
+                # Always inject organization_id and created_by_user_id
+                if "organization_id" not in columns_lower:
+                    extra_cols.append("organization_id")
+                    extra_vals.append(f"'{organization_id}'")
+                if "created_by_user_id" not in columns_lower:
+                    extra_cols.append("created_by_user_id")
+                    extra_vals.append(f"'{user_id}'")
+                
+                # Workflow-specific defaults
+                if table == "workflows":
+                    if "id" not in columns_lower:
+                        extra_cols.append("id")
+                        extra_vals.append("gen_random_uuid()")
+                    if "steps" not in columns_lower:
+                        extra_cols.append("steps")
+                        extra_vals.append("'[]'::jsonb")
+                    if "auto_approve_tools" not in columns_lower:
+                        extra_cols.append("auto_approve_tools")
+                        extra_vals.append("'[]'::jsonb")
+                    if "is_enabled" not in columns_lower:
+                        extra_cols.append("is_enabled")
+                        extra_vals.append("true")
+                
+                # Artifacts-specific defaults
+                if table == "artifacts":
+                    if "id" not in columns_lower:
+                        extra_cols.append("id")
+                        extra_vals.append("gen_random_uuid()")
+                
+                # Reconstruct the query
+                if extra_cols:
+                    new_cols = f"{columns}, {', '.join(extra_cols)}"
+                    new_vals = f"{values}, {', '.join(extra_vals)}"
+                    final_query = f"INSERT INTO {table_part} ({new_cols}) VALUES ({new_vals})"
+                else:
+                    final_query = query
+            
+            # Execute the query
+            result = await session.execute(text(final_query))
+            await session.commit()
+            
+            rows_affected = result.rowcount
+            
+            logger.info("[Tools._run_sql_write] %s completed, %d rows affected", operation, rows_affected)
+            
+            return {
+                "success": True,
+                "operation": operation,
+                "table": table,
+                "rows_affected": rows_affected,
+                "message": f"{operation} completed successfully. {rows_affected} row(s) affected.",
+            }
+            
+    except Exception as e:
+        logger.error("[Tools._run_sql_write] Query execution failed: %s", str(e))
+        return {"error": f"Query execution failed: {str(e)}"}
+
+
+async def _handle_crm_write_from_sql(
+    query: str,
+    table: str,
+    operation: str | None,
+    organization_id: str,
+    user_id: str,
+) -> dict[str, Any]:
+    """
+    Handle CRM table writes by creating PendingOperations for review.
+    Parses SQL and converts to structured pending operation.
+    """
+    # Map table name to record type
+    table_to_record_type: dict[str, str] = {
+        "contacts": "contact",
+        "deals": "deal",
+        "accounts": "company",  # accounts table = company record type
+    }
+    record_type = table_to_record_type.get(table, table)
+    
+    # Map SQL operation to CRM operation type
+    op_mapping: dict[str, str] = {
+        "INSERT": "create",
+        "UPDATE": "update",
+        "DELETE": "delete",
+    }
+    crm_operation = op_mapping.get(operation or "", "create")
+    
+    # Parse the SQL to extract data
+    records: list[dict[str, Any]] = []
+    
+    if operation == "INSERT":
+        parsed = _parse_insert_values(query)
+        if not parsed:
+            return {"error": "Could not parse INSERT query. Use format: INSERT INTO table (col1, col2) VALUES (val1, val2)"}
+        records = [parsed]
+        
+    elif operation == "UPDATE":
+        parsed = _parse_update_values(query)
+        if not parsed:
+            return {"error": "Could not parse UPDATE query. Use format: UPDATE table SET col1 = val1 WHERE id = '...'"}
+        updates, where_clause = parsed
+        # Try to extract ID from WHERE clause
+        id_match = re.search(r"id\s*=\s*'([^']+)'", where_clause, re.IGNORECASE)
+        if id_match:
+            updates["id"] = id_match.group(1)
+        records = [updates]
+        
+    elif operation == "DELETE":
+        # For DELETE, we just need the ID from WHERE clause
+        id_match = re.search(r"id\s*=\s*'([^']+)'", query, re.IGNORECASE)
+        if not id_match:
+            return {"error": "DELETE requires WHERE id = '...' clause"}
+        records = [{"id": id_match.group(1)}]
+    
+    # Create PendingOperation
+    try:
+        async with get_session(organization_id=organization_id) as session:
+            pending_op = PendingOperation(
+                organization_id=UUID(organization_id),
+                user_id=UUID(user_id),
+                tool_name="run_sql_write",
+                tool_params={"query": query, "table": table},
+                target_system="hubspot",  # Default to HubSpot
+                record_type=record_type,
+                operation=crm_operation,
+                input_records=records,
+                validated_records=records,  # No validation for SQL-based writes
+                status="pending",
+            )
+            session.add(pending_op)
+            await session.commit()
+            await session.refresh(pending_op)
+            
+            logger.info(
+                "[Tools._handle_crm_write_from_sql] Created pending operation %s for %s %s",
+                pending_op.id,
+                crm_operation,
+                record_type
+            )
+            
+            return {
+                "status": "pending_review",
+                "operation_id": str(pending_op.id),
+                "operation": crm_operation,
+                "record_type": record_type,
+                "records_count": len(records),
+                "message": f"CRM {crm_operation} queued for review. User can commit or undo via the bottom panel.",
+                "preview": records[:3],  # Show first 3 records
+            }
+            
+    except Exception as e:
+        logger.error("[Tools._handle_crm_write_from_sql] Failed: %s", str(e))
+        return {"error": f"Failed to create pending operation: {str(e)}"}
 
 
 async def _search_activities(
@@ -399,31 +906,6 @@ async def _search_activities(
     except Exception as e:
         logger.error("[Tools._search_activities] Search failed: %s", str(e))
         return {"error": f"Search failed: {str(e)}"}
-
-
-async def _create_artifact(
-    data: dict[str, Any], organization_id: str, user_id: str
-) -> dict[str, Any]:
-    """Save an artifact."""
-    async with get_session() as session:
-        artifact = Artifact(
-            user_id=UUID(user_id),
-            organization_id=UUID(organization_id),
-            type=data["type"],
-            title=data["title"],
-            description=data.get("description"),
-            snapshot_data=data["data"],
-            is_live=data.get("is_live", False),
-        )
-        session.add(artifact)
-        await session.commit()
-        await session.refresh(artifact)
-
-        return {
-            "success": True,
-            "artifact_id": str(artifact.id),
-            "url": f"/artifacts/{artifact.id}",
-        }
 
 
 async def _web_search(params: dict[str, Any]) -> dict[str, Any]:
@@ -528,7 +1010,7 @@ async def _crm_write(
         return {"error": f"Too many records ({len(records)}). Maximum is 100 per operation."}
     
     # Check for active HubSpot integration
-    async with get_session() as session:
+    async with get_session(organization_id=organization_id) as session:
         result = await session.execute(
             select(Integration).where(
                 Integration.organization_id == UUID(organization_id),
@@ -645,7 +1127,7 @@ async def _crm_write(
             # Continue without duplicate check - not a blocker
     
     # Create CrmOperation record
-    async with get_session() as session:
+    async with get_session(organization_id=organization_id) as session:
         crm_operation = CrmOperation(
             organization_id=UUID(organization_id),
             user_id=UUID(user_id),
@@ -679,11 +1161,15 @@ async def _crm_write(
     # Local-first: Execute immediately, creates records locally with sync_status='pending'
     # User can then use the bottom panel to "Commit All" to HubSpot or "Undo All" to discard
     logger.info("[Tools._crm_write] Executing local-first CRM operation")
-    result = await execute_crm_operation(operation_id, skip_duplicates=True)
+    result = await execute_crm_operation(operation_id, skip_duplicates=True, organization_id=organization_id)
     return result
 
 
-async def execute_crm_operation(operation_id: str, skip_duplicates: bool = True) -> dict[str, Any]:
+async def execute_crm_operation(
+    operation_id: str, 
+    skip_duplicates: bool = True,
+    organization_id: str | None = None,
+) -> dict[str, Any]:
     """
     Execute a previously validated CRM operation (LOCAL-FIRST).
     
@@ -693,13 +1179,14 @@ async def execute_crm_operation(operation_id: str, skip_duplicates: bool = True)
     Args:
         operation_id: UUID of the CrmOperation to execute
         skip_duplicates: If True, skip records that already exist (for create operation)
+        organization_id: Organization ID for RLS context (optional, loaded from operation if not provided)
         
     Returns:
         Result of the operation with success/failure details
     """
     from services.change_session import start_change_session
     
-    async with get_session() as session:
+    async with get_session(organization_id=organization_id) as session:
         crm_op = await session.get(CrmOperation, UUID(operation_id))
         
         if not crm_op:
@@ -754,7 +1241,7 @@ async def execute_crm_operation(operation_id: str, skip_duplicates: bool = True)
         )
         
         # Update operation with result
-        async with get_session() as session:
+        async with get_session(organization_id=org_id) as session:
             crm_op = await session.get(CrmOperation, UUID(operation_id))
             if crm_op:
                 if "error" in result:
@@ -778,7 +1265,7 @@ async def execute_crm_operation(operation_id: str, skip_duplicates: bool = True)
         
         error_msg = str(e)[:500]
         
-        async with get_session() as session:
+        async with get_session(organization_id=org_id) as session:
             crm_op = await session.get(CrmOperation, UUID(operation_id))
             if crm_op:
                 crm_op.status = "failed"
@@ -863,7 +1350,7 @@ async def _create_local_pending_records(
     now = dt.now(tz.utc)
     user_uuid = UUID(user_id) if user_id else None
     
-    async with get_session() as session:
+    async with get_session(organization_id=str(organization_id)) as session:
         for record in records_to_process:
             try:
                 record_id = uuid4()
@@ -1245,7 +1732,7 @@ async def _sync_created_records_to_db(
     table_map = {"contact": "contacts", "company": "accounts", "deal": "deals"}
     table_name = table_map.get(record_type)
     
-    async with get_session() as session:
+    async with get_session(organization_id=str(organization_id)) as session:
         for hs_record in created_records:
             hs_id = hs_record.get("id", "")
             properties = hs_record.get("properties", {})
@@ -1366,17 +1853,18 @@ async def _sync_created_records_to_db(
     return synced
 
 
-async def cancel_crm_operation(operation_id: str) -> dict[str, Any]:
+async def cancel_crm_operation(operation_id: str, organization_id: str | None = None) -> dict[str, Any]:
     """
     Cancel a pending CRM operation.
     
     Args:
         operation_id: UUID of the CrmOperation to cancel
+        organization_id: Organization ID for RLS context (optional)
         
     Returns:
         Confirmation of cancellation
     """
-    async with get_session() as session:
+    async with get_session(organization_id=organization_id) as session:
         crm_op = await session.get(CrmOperation, UUID(operation_id))
         
         if not crm_op:
@@ -1395,7 +1883,11 @@ async def cancel_crm_operation(operation_id: str) -> dict[str, Any]:
         }
 
 
-async def commit_change_session(change_session_id: str, user_id: str) -> dict[str, Any]:
+async def commit_change_session(
+    change_session_id: str, 
+    user_id: str,
+    organization_id: str | None = None,
+) -> dict[str, Any]:
     """
     Commit a pending change session - push local records to external CRM.
     
@@ -1406,6 +1898,7 @@ async def commit_change_session(change_session_id: str, user_id: str) -> dict[st
     Args:
         change_session_id: UUID of the ChangeSession to commit
         user_id: User performing the commit (for audit)
+        organization_id: Organization ID for RLS context (optional)
         
     Returns:
         Result with success/failure details
@@ -1415,7 +1908,7 @@ async def commit_change_session(change_session_id: str, user_id: str) -> dict[st
     from services.change_session import approve_change_session
     from connectors.hubspot import HubSpotConnector
     
-    async with get_session() as session:
+    async with get_session(organization_id=organization_id) as session:
         change_session = await session.get(ChangeSession, UUID(change_session_id))
         
         if not change_session:
@@ -1487,7 +1980,7 @@ async def commit_change_session(change_session_id: str, user_id: str) -> dict[st
     synced_count = 0
     errors: list[dict[str, Any]] = []
     
-    async with get_session() as session:
+    async with get_session(organization_id=org_id) as session:
         # Sync contacts
         for local_id, input_data in contacts_to_sync:
             try:
@@ -1552,7 +2045,11 @@ async def commit_change_session(change_session_id: str, user_id: str) -> dict[st
     }
 
 
-async def discard_change_session(change_session_id: str, user_id: str) -> dict[str, Any]:
+async def discard_change_session(
+    change_session_id: str, 
+    user_id: str,
+    organization_id: str | None = None,
+) -> dict[str, Any]:
     """
     Discard a pending change session - delete local pending records.
     
@@ -1562,6 +2059,7 @@ async def discard_change_session(change_session_id: str, user_id: str) -> dict[s
     Args:
         change_session_id: UUID of the ChangeSession to discard
         user_id: User performing the discard (for audit)
+        organization_id: Organization ID for RLS context (optional)
         
     Returns:
         Result with details of discarded records
@@ -1570,7 +2068,7 @@ async def discard_change_session(change_session_id: str, user_id: str) -> dict[s
     from models.record_snapshot import RecordSnapshot
     from services.change_session import discard_change_session as service_discard
     
-    async with get_session() as session:
+    async with get_session(organization_id=organization_id) as session:
         change_session = await session.get(ChangeSession, UUID(change_session_id))
         
         if not change_session:
@@ -1628,7 +2126,11 @@ async def discard_change_session(change_session_id: str, user_id: str) -> dict[s
     }
 
 
-async def update_tool_call_result(operation_id: str, new_result: dict[str, Any]) -> bool:
+async def update_tool_call_result(
+    operation_id: str, 
+    new_result: dict[str, Any],
+    organization_id: str | None = None,
+) -> bool:
     """
     Update the stored tool call result in chat_messages for a CRM operation.
     
@@ -1638,6 +2140,7 @@ async def update_tool_call_result(operation_id: str, new_result: dict[str, Any])
     Args:
         operation_id: UUID of the CRM operation
         new_result: The new result to store (includes status, message, etc.)
+        organization_id: Organization ID for RLS context (optional)
         
     Returns:
         True if updated successfully, False otherwise
@@ -1646,7 +2149,7 @@ async def update_tool_call_result(operation_id: str, new_result: dict[str, Any])
     from models.chat_message import ChatMessage
     
     try:
-        async with get_session() as session:
+        async with get_session(organization_id=organization_id) as session:
             # Find messages that contain this operation_id in their tool_calls
             # We need to search for messages with tool_calls containing the operation_id
             result = await session.execute(
@@ -1705,7 +2208,7 @@ async def update_tool_call_result(operation_id: str, new_result: dict[str, Any])
         return False
 
 
-async def get_crm_operation_status(operation_id: str) -> dict[str, Any]:
+async def get_crm_operation_status(operation_id: str, organization_id: str | None = None) -> dict[str, Any]:
     """
     Get the current status of a CRM operation.
     
@@ -1713,12 +2216,13 @@ async def get_crm_operation_status(operation_id: str) -> dict[str, Any]:
     
     Args:
         operation_id: UUID of the CRM operation
+        organization_id: Organization ID for RLS context (optional)
         
     Returns:
         Operation status and details
     """
     try:
-        async with get_session() as session:
+        async with get_session(organization_id=organization_id) as session:
             crm_op = await session.get(CrmOperation, UUID(operation_id))
             
             if not crm_op:
@@ -1733,104 +2237,6 @@ async def get_crm_operation_status(operation_id: str) -> dict[str, Any]:
             str(e)
         )
         return {"error": str(e)}
-
-
-async def _create_workflow(
-    params: dict[str, Any], organization_id: str, user_id: str
-) -> dict[str, Any]:
-    """
-    Create a new workflow automation.
-    
-    Args:
-        params: Workflow definition (name, trigger_type, trigger_config, steps)
-        organization_id: Organization UUID
-        user_id: User UUID (creator)
-        
-    Returns:
-        Created workflow details
-    """
-    from models.workflow import Workflow
-    
-    name = params.get("name", "").strip()
-    description = params.get("description", "")
-    trigger_type = params.get("trigger_type", "manual")
-    trigger_config = params.get("trigger_config", {})
-    steps = params.get("steps", [])
-    
-    # Validate inputs
-    if not name:
-        return {"error": "Workflow name is required"}
-    
-    if trigger_type not in ("schedule", "event", "manual"):
-        return {"error": f"Invalid trigger_type: {trigger_type}. Must be 'schedule', 'event', or 'manual'."}
-    
-    if trigger_type == "schedule" and not trigger_config.get("cron"):
-        return {"error": "Schedule triggers require a cron expression in trigger_config.cron"}
-    
-    if trigger_type == "event" and not trigger_config.get("event"):
-        return {"error": "Event triggers require an event type in trigger_config.event"}
-    
-    if not steps or not isinstance(steps, list):
-        return {"error": "Workflow must have at least one step"}
-    
-    # Validate cron expression if provided
-    if trigger_config.get("cron"):
-        try:
-            from croniter import croniter
-            croniter(trigger_config["cron"])
-        except Exception as e:
-            return {"error": f"Invalid cron expression: {e}"}
-    
-    # Validate steps
-    valid_actions = {"run_query", "llm", "send_slack", "send_system_email", "send_system_sms", "send_email_from", "sync", "query"}
-    for i, step in enumerate(steps):
-        if not isinstance(step, dict):
-            return {"error": f"Step {i+1} is not a valid object"}
-        
-        action = step.get("action")
-        if not action:
-            return {"error": f"Step {i+1} is missing 'action'"}
-        
-        if action not in valid_actions:
-            return {"error": f"Step {i+1} has invalid action '{action}'. Valid actions: {', '.join(valid_actions)}"}
-    
-    try:
-        async with get_session() as session:
-            workflow = Workflow(
-                organization_id=UUID(organization_id),
-                created_by_user_id=UUID(user_id),
-                name=name,
-                description=description or None,
-                trigger_type=trigger_type,
-                trigger_config=trigger_config,
-                steps=steps,
-                is_enabled=True,
-            )
-            session.add(workflow)
-            await session.commit()
-            await session.refresh(workflow)
-            
-            # Build trigger description
-            trigger_desc = ""
-            if trigger_type == "schedule":
-                trigger_desc = f"Scheduled with cron: {trigger_config.get('cron')}"
-            elif trigger_type == "event":
-                trigger_desc = f"Triggered by event: {trigger_config.get('event')}"
-            else:
-                trigger_desc = "Manual trigger only"
-            
-            return {
-                "success": True,
-                "workflow_id": str(workflow.id),
-                "name": name,
-                "trigger": trigger_desc,
-                "steps_count": len(steps),
-                "message": f"Workflow '{name}' created successfully. You can view and manage it in the Automations tab.",
-            }
-            
-    except Exception as e:
-        logger.error("[Tools._create_workflow] Failed: %s", str(e))
-        return {"error": f"Failed to create workflow: {str(e)}"}
 
 
 async def _trigger_workflow(
@@ -1855,7 +2261,7 @@ async def _trigger_workflow(
     
     try:
         # Verify workflow exists and belongs to org
-        async with get_session() as session:
+        async with get_session(organization_id=organization_id) as session:
             result = await session.execute(
                 select(Workflow).where(
                     Workflow.id == UUID(workflow_id),
@@ -1872,7 +2278,7 @@ async def _trigger_workflow(
         
         # Queue execution via Celery
         from workers.tasks.workflows import execute_workflow
-        task = execute_workflow.delay(workflow_id, "manual")
+        task = execute_workflow.delay(workflow_id, "manual", None, None, organization_id)
         
         return {
             "success": True,
@@ -1917,7 +2323,7 @@ async def _enrich_contacts_with_apollo(
     contacts = contacts[:limit]
     
     # Check for active Apollo integration
-    async with get_session() as session:
+    async with get_session(organization_id=organization_id) as session:
         result = await session.execute(
             select(Integration).where(
                 Integration.organization_id == UUID(organization_id),
@@ -2006,7 +2412,7 @@ async def _enrich_company_with_apollo(
     domain = domain.split("/")[0]  # Remove path
     
     # Check for active Apollo integration
-    async with get_session() as session:
+    async with get_session(organization_id=organization_id) as session:
         result = await session.execute(
             select(Integration).where(
                 Integration.organization_id == UUID(organization_id),
@@ -2081,7 +2487,7 @@ async def _send_email_from(
         return {"error": "Email body is required."}
     
     # Check for active email integration (Gmail or Microsoft)
-    async with get_session() as session:
+    async with get_session(organization_id=organization_id) as session:
         result = await session.execute(
             select(Integration).where(
                 Integration.organization_id == UUID(organization_id),
@@ -2156,7 +2562,7 @@ async def execute_send_email_from(
     bcc = params.get("bcc", [])
     
     # Get the user's email integration
-    async with get_session() as session:
+    async with get_session(organization_id=organization_id) as session:
         result = await session.execute(
             select(Integration).where(
                 Integration.organization_id == UUID(organization_id),
@@ -2246,7 +2652,18 @@ async def _send_slack(
         return {"error": "Message text is required."}
     
     # Check for active Slack integration
-    async with get_session() as session:
+    async with get_session(organization_id=organization_id) as session:
+        # Debug: Log what integrations exist for this org
+        all_integrations = await session.execute(
+            select(Integration).where(
+                Integration.organization_id == UUID(organization_id),
+            )
+        )
+        all_int_list = all_integrations.scalars().all()
+        logger.info(f"[send_slack] Found {len(all_int_list)} integrations for org {organization_id}")
+        for i in all_int_list:
+            logger.info(f"[send_slack]   - provider={i.provider}, is_active={i.is_active}")
+        
         result = await session.execute(
             select(Integration).where(
                 Integration.organization_id == UUID(organization_id),
@@ -2313,7 +2730,7 @@ async def execute_send_slack(
     thread_ts = params.get("thread_ts")
     
     # Get the Slack integration
-    async with get_session() as session:
+    async with get_session(organization_id=organization_id) as session:
         result = await session.execute(
             select(Integration).where(
                 Integration.organization_id == UUID(organization_id),
@@ -2330,9 +2747,9 @@ async def execute_send_slack(
             }
     
     try:
+        # SlackConnector inherits from BaseConnector which fetches credentials internally
         connector = SlackConnector(
             organization_id=organization_id,
-            nango_connection_id=integration.nango_connection_id,
         )
         
         result = await connector.post_message(
@@ -2378,7 +2795,7 @@ async def _trigger_sync(
         return {"error": "Provider is required (e.g., 'hubspot', 'gmail', 'salesforce')."}
     
     # Check for active integration
-    async with get_session() as session:
+    async with get_session(organization_id=organization_id) as session:
         result = await session.execute(
             select(Integration).where(
                 Integration.organization_id == UUID(organization_id),

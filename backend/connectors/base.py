@@ -111,7 +111,7 @@ class BaseConnector(ABC):
             return self._token, ""
 
         # Verify we have an active integration
-        async with get_session() as session:
+        async with get_session(organization_id=self.organization_id) as session:
             # Build base query
             conditions = [
                 Integration.organization_id == UUID(self.organization_id),
@@ -196,7 +196,7 @@ class BaseConnector(ABC):
 
         if not self._integration:
             # Try to load integration
-            async with get_session() as session:
+            async with get_session(organization_id=self.organization_id) as session:
                 result = await session.execute(
                     select(Integration).where(
                         Integration.organization_id == UUID(self.organization_id),
@@ -209,7 +209,7 @@ class BaseConnector(ABC):
             print(f"[Sync] WARNING: No integration found for {self.source_system} in org {self.organization_id}")
             return
 
-        async with get_session() as session:
+        async with get_session(organization_id=self.organization_id) as session:
             from sqlalchemy.orm.attributes import flag_modified
             integration = await session.get(Integration, self._integration.id)
             if integration:
@@ -228,7 +228,7 @@ class BaseConnector(ABC):
         if not self._integration:
             return
 
-        async with get_session() as session:
+        async with get_session(organization_id=self.organization_id) as session:
             integration = await session.get(Integration, self._integration.id)
             if integration:
                 integration.last_error = error[:500]  # Truncate long errors

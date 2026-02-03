@@ -152,7 +152,7 @@ class HubSpotConnector(BaseConnector):
         """
         pipelines_data = await self.get_pipelines()
 
-        async with get_session() as session:
+        async with get_session(organization_id=self.organization_id) as session:
             count = 0
             for hs_pipeline in pipelines_data:
                 hs_pipeline_id = hs_pipeline.get("id", "")
@@ -231,7 +231,7 @@ class HubSpotConnector(BaseConnector):
         if self._pipeline_cache:
             return
 
-        async with get_session() as session:
+        async with get_session(organization_id=self.organization_id) as session:
             result = await session.execute(
                 select(Pipeline).where(
                     Pipeline.organization_id == uuid.UUID(self.organization_id),
@@ -265,7 +265,7 @@ class HubSpotConnector(BaseConnector):
             "/crm/v3/objects/deals", properties=properties
         )
 
-        async with get_session() as session:
+        async with get_session(organization_id=self.organization_id) as session:
             count = 0
             for raw_deal in raw_deals:
                 hs_id = raw_deal.get("id", "")
@@ -379,7 +379,7 @@ class HubSpotConnector(BaseConnector):
             "/crm/v3/objects/companies", properties=properties
         )
 
-        async with get_session() as session:
+        async with get_session(organization_id=self.organization_id) as session:
             count = 0
             for raw_company in raw_companies:
                 hs_id = raw_company.get("id", "")
@@ -474,7 +474,7 @@ class HubSpotConnector(BaseConnector):
 
         # Build a map of HubSpot company IDs to internal account IDs
         hs_company_id_to_account_id: dict[str, uuid.UUID] = {}
-        async with get_session() as session:
+        async with get_session(organization_id=self.organization_id) as session:
             result = await session.execute(
                 select(Account).where(
                     Account.organization_id == uuid.UUID(self.organization_id),
@@ -485,7 +485,7 @@ class HubSpotConnector(BaseConnector):
             for account in accounts:
                 hs_company_id_to_account_id[account.source_id] = account.id
 
-        async with get_session() as session:
+        async with get_session(organization_id=self.organization_id) as session:
             count = 0
             for raw_contact in raw_contacts:
                 hs_id = raw_contact.get("id", "")
@@ -572,7 +572,7 @@ class HubSpotConnector(BaseConnector):
                     f"/crm/v3/objects/{engagement_type}", properties=properties
                 )
 
-                async with get_session() as session:
+                async with get_session(organization_id=self.organization_id) as session:
                     for raw_engagement in raw_engagements:
                         activity = self._normalize_engagement(
                             raw_engagement, engagement_type
@@ -675,7 +675,7 @@ class HubSpotConnector(BaseConnector):
             return None
 
         # Look up user by email (email is globally unique, not per-org)
-        async with get_session() as session:
+        async with get_session(organization_id=self.organization_id) as session:
             result = await session.execute(
                 select(User).where(User.email == owner_email)
             )

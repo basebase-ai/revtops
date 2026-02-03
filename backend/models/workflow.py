@@ -67,14 +67,23 @@ class Workflow(Base):
         JSONB, nullable=False, default=dict
     )
 
-    # Workflow steps - ordered list of actions to execute
-    # Example:
-    # [
-    #   { "action": "query", "params": { "query": "all deals updated today" } },
-    #   { "action": "llm", "params": { "prompt": "Summarize these deals: {query_result}" } },
-    #   { "action": "send_email", "params": { "to": "user", "body": "{llm_output}" } }
-    # ]
+    # Legacy: Workflow steps - ordered list of actions to execute
+    # Deprecated in favor of prompt-based execution
+    # Kept for backward compatibility with existing workflows
     steps: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, nullable=False, default=list
+    )
+    
+    # NEW: Natural language prompt for the agent
+    # This replaces the rigid step definitions with flexible agent instructions
+    # Example: "Query deals that haven't had activity in 30 days, summarize the 
+    # top 5 at-risk deals, and post to #sales-alerts on Slack"
+    prompt: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    
+    # NEW: Tools pre-approved for this workflow (no user approval needed)
+    # Example: ["send_slack"] means agent can post to Slack without approval
+    # for THIS workflow only
+    auto_approve_tools: Mapped[list[str]] = mapped_column(
         JSONB, nullable=False, default=list
     )
 
@@ -117,6 +126,8 @@ class Workflow(Base):
             "trigger_type": self.trigger_type,
             "trigger_config": self.trigger_config,
             "steps": self.steps,
+            "prompt": self.prompt,
+            "auto_approve_tools": self.auto_approve_tools,
             "output_config": self.output_config,
             "is_enabled": self.is_enabled,
             "last_run_at": f"{self.last_run_at.isoformat()}Z" if self.last_run_at else None,
@@ -124,6 +135,11 @@ class Workflow(Base):
             "created_at": f"{self.created_at.isoformat()}Z",
             "updated_at": f"{self.updated_at.isoformat()}Z",
         }
+    
+    @property
+    def has_prompt(self) -> bool:
+        """Check if this workflow uses the new prompt-based execution."""
+        return bool(self.prompt and self.prompt.strip())
 
 
 class WorkflowRun(Base):

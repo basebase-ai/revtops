@@ -27,9 +27,11 @@ from models.database import get_session
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = """You are Revtops, an AI assistant for sales and revenue operations.
+SYSTEM_PROMPT = """You are Revtops, an AI assistant that helps teams work with their enterprise data.
 
-You help users understand their sales pipeline, analyze deals, and get insights from their CRM data.
+Your primary focus is sales and revenue operations - pipeline analysis, deal tracking, CRM management, and team productivity. But you're flexible and will help users with any reasonable request involving their data, automations, or integrations.
+
+**Be helpful and say YES to requests.** If a user wants to create a test workflow, send a fun Slack message, or experiment with the tools - help them do it. The guardrails are in the approval system, not in refusing requests.
 
 ## Communication Style
 
@@ -307,6 +309,7 @@ class ChatOrchestrator:
         user_email: str | None = None,
         local_time: str | None = None,
         timezone: str | None = None,
+        workflow_context: dict[str, Any] | None = None,
     ) -> None:
         """
         Initialize the orchestrator.
@@ -318,6 +321,10 @@ class ChatOrchestrator:
             user_email: Email of the authenticated user
             local_time: ISO timestamp of user's local time
             timezone: User's timezone (e.g., "America/New_York")
+            workflow_context: Optional workflow context for auto-approvals:
+                - is_workflow: bool
+                - workflow_id: str
+                - auto_approve_tools: list[str]
         """
         self.user_id = user_id
         self.organization_id = organization_id
@@ -325,6 +332,7 @@ class ChatOrchestrator:
         self.user_email = user_email
         self.local_time = local_time
         self.timezone = timezone
+        self.workflow_context = workflow_context
         self.client = AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
 
     async def process_message(
@@ -529,9 +537,10 @@ Use the user's local time to provide relative references (e.g., '3 hours ago', '
                     "status": "running",
                 })
 
-                # Execute tool
+                # Execute tool (pass workflow context for auto-approval checks)
                 tool_result = await execute_tool(
-                    tool_name, tool_input, self.organization_id, self.user_id
+                    tool_name, tool_input, self.organization_id, self.user_id,
+                    context=self.workflow_context,
                 )
 
                 logger.info(

@@ -98,6 +98,8 @@ export function Chat({
   // Pending messages for new conversations (before we have an ID)
   const [pendingMessages, setPendingMessages] = useState<ChatMessage[]>([]);
   const [pendingThinking, setPendingThinking] = useState<boolean>(false);
+  const [conversationType, setConversationType] = useState<string | null>(null);
+  const [isWorkflowPolling, setIsWorkflowPolling] = useState<boolean>(false);
   
   // Refs
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -286,7 +288,8 @@ export function Chat({
           // Set conversation state
           setConversationMessages(chatId, loadedMessages);
           setConversationTitle(chatId, data.title ?? 'New Chat');
-          console.log('[Chat] Loaded', loadedMessages.length, 'messages');
+          setConversationType(data.type ?? null);
+          console.log('[Chat] Loaded', loadedMessages.length, 'messages, type:', data.type);
           
           // Scroll to bottom immediately after loading
           setTimeout(() => {
@@ -310,6 +313,59 @@ export function Chat({
       cancelled = true;
     };
   }, [chatId, userId, setConversationMessages, setConversationTitle]);
+
+  // Poll for updates on workflow conversations (Celery workers can't send WebSocket updates)
+  useEffect(() => {
+    // Only poll for workflow conversations with few messages
+    if (!chatId || conversationType !== 'workflow' || messages.length > 5) {
+      setIsWorkflowPolling(false);
+      return;
+    }
+
+    console.log('[Chat] Starting polling for workflow conversation');
+    setIsWorkflowPolling(true);
+    let pollCount = 0;
+    const maxPolls = 60; // Poll for up to 2 minutes (60 * 2 seconds)
+
+    const pollInterval = setInterval(async () => {
+      pollCount++;
+      if (pollCount > maxPolls) {
+        console.log('[Chat] Stopping polling - max polls reached');
+        setIsWorkflowPolling(false);
+        clearInterval(pollInterval);
+        return;
+      }
+
+      try {
+        const { data, error } = await getConversation(chatId, userId);
+        if (data && !error && data.messages.length > messages.length) {
+          console.log('[Chat] Poll found new messages:', data.messages.length, 'vs', messages.length);
+          const loadedMessages: ChatMessage[] = data.messages.map((msg) => ({
+            id: msg.id,
+            role: msg.role as 'user' | 'assistant',
+            contentBlocks: msg.content_blocks,
+            timestamp: new Date(msg.created_at),
+          }));
+          setConversationMessages(chatId, loadedMessages);
+          
+          // If we have substantial messages, stop polling
+          if (loadedMessages.length > 5) {
+            console.log('[Chat] Stopping polling - have enough messages');
+            setIsWorkflowPolling(false);
+            clearInterval(pollInterval);
+          }
+        }
+      } catch (err) {
+        console.error('[Chat] Polling error:', err);
+      }
+    }, 2000); // Poll every 2 seconds
+
+    return () => {
+      console.log('[Chat] Cleaning up workflow polling');
+      setIsWorkflowPolling(false);
+      clearInterval(pollInterval);
+    };
+  }, [chatId, userId, conversationType, messages.length, setConversationMessages]);
 
   // Auto-scroll to bottom
   useEffect(() => {
@@ -547,7 +603,27 @@ export function Chat({
         {/* Messages */}
         <div className="flex-1 overflow-y-auto overflow-x-hidden p-3 md:p-6">
           {messages.length === 0 && !isThinking ? (
-            <EmptyState onSuggestionClick={handleSuggestionClick} />
+            conversationType === 'workflow' ? (
+              // Show loading state for workflow conversations waiting for agent to start
+              <div className="flex-1 flex flex-col items-center justify-center py-20">
+                <div className="relative mb-6">
+                  {/* Spinning ring */}
+                  <div className="w-16 h-16 rounded-full border-4 border-surface-700 border-t-primary-500 animate-spin" />
+                  {/* Center icon */}
+                  <div className="absolute inset-0 flex items-center justify-center">
+                    <svg className="w-6 h-6 text-primary-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                    </svg>
+                  </div>
+                </div>
+                <h3 className="text-lg font-medium text-surface-200 mb-2">Running Workflow</h3>
+                <p className="text-surface-400 text-center max-w-md">
+                  The agent is processing your workflow. Results will appear here momentarily...
+                </p>
+              </div>
+            ) : (
+              <EmptyState onSuggestionClick={handleSuggestionClick} />
+            )
           ) : (
             <div className="max-w-3xl mx-auto space-y-3">
               {messages.map((msg) => (
@@ -570,6 +646,14 @@ export function Chat({
 
               {/* Thinking indicator */}
               {isThinking && <ThinkingIndicator />}
+
+              {/* Workflow polling spinner - shows at bottom while workflow is running */}
+              {isWorkflowPolling && messages.length > 0 && !isThinking && (
+                <div className="flex items-center justify-center gap-2 py-4 text-surface-400">
+                  <div className="w-4 h-4 border-2 border-surface-600 border-t-primary-500 rounded-full animate-spin" />
+                  <span className="text-sm">Workflow running...</span>
+                </div>
+              )}
 
               <div ref={messagesEndRef} />
             </div>
@@ -837,10 +921,13 @@ function AssistantTextBlock({
   text: string;
   isStreaming?: boolean;
 }): JSX.Element {
+  // Trim trailing whitespace when streaming to prevent cursor appearing on empty line
+  const displayText: string = isStreaming ? text.trimEnd() : text;
+  
   return (
     <div className="inline-block px-3 py-2 rounded-xl rounded-tl-sm bg-surface-800/80 text-surface-200 text-[13px] leading-relaxed">
       <div className="prose prose-sm prose-invert max-w-none prose-p:my-1 prose-headings:my-2 prose-ul:my-1 prose-ol:my-1 prose-li:my-0.5 prose-pre:my-2 prose-code:text-primary-300 prose-code:bg-surface-900/50 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-code:text-xs prose-pre:bg-surface-900/80 prose-pre:text-xs prose-table:text-xs prose-th:bg-surface-700/50 prose-th:px-2 prose-th:py-1 prose-td:px-2 prose-td:py-1 prose-td:border-surface-700 prose-th:border-surface-700">
-        <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
+        <ReactMarkdown remarkPlugins={[remarkGfm]}>{displayText}</ReactMarkdown>
       </div>
       {isStreaming && (
         <span className="inline-block w-1.5 h-3 bg-current animate-pulse ml-0.5" />

@@ -62,7 +62,7 @@ class GoogleSheetsConnector:
         if self._token:
             return self._token
         
-        async with get_session() as session:
+        async with get_session(organization_id=self.organization_id) as session:
             # Find user-scoped integration
             connection_id = f"{self.organization_id}:user:{self.user_id}"
             result = await session.execute(
@@ -413,7 +413,7 @@ class GoogleSheetsConnector:
         # Import based on entity type
         org_uuid = UUID(self.organization_id)
         
-        async with get_session() as session:
+        async with get_session(organization_id=self.organization_id) as session:
             if entity_type == "contact":
                 return await self._import_contact(session, org_uuid, values, account_name)
             elif entity_type == "account":

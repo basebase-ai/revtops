@@ -44,6 +44,7 @@ interface SidebarProps {
   currentView: View;
   onViewChange: (view: View) => void;
   connectedSourcesCount: number;
+  workflowCount: number;
   recentChats: ChatSummary[];
   onSelectChat: (id: string) => void;
   onDeleteChat: (id: string) => void;
@@ -63,6 +64,7 @@ export function Sidebar({
   currentView,
   onViewChange,
   connectedSourcesCount,
+  workflowCount,
   recentChats,
   onSelectChat,
   onDeleteChat,
@@ -221,19 +223,26 @@ export function Sidebar({
           {!collapsed && <span>Search</span>}
         </button>
 
-        {/* Automations */}
+        {/* Workflows */}
         <button
-          onClick={() => onViewChange('automations')}
+          onClick={() => onViewChange('workflows')}
           className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${
-            currentView === 'automations'
+            currentView === 'workflows'
               ? 'bg-surface-800 text-surface-100'
               : 'text-surface-400 hover:text-surface-200 hover:bg-surface-800/50'
           } ${collapsed ? 'justify-center' : ''}`}
         >
-          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-          </svg>
-          {!collapsed && <span>Automations</span>}
+          <div className="relative">
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+            </svg>
+            {workflowCount > 0 && (
+              <span className="absolute -top-1.5 -right-1.5 w-4 h-4 bg-primary-500 rounded-full text-[10px] font-bold text-white flex items-center justify-center">
+                {workflowCount}
+              </span>
+            )}
+          </div>
+          {!collapsed && <span>Workflows</span>}
         </button>
 
         {/* Admin - only visible to global admins */}
@@ -278,6 +287,12 @@ export function Sidebar({
                   onClick={() => onSelectChat(chat.id)}
                 >
                   <div className="flex items-center gap-1.5 pr-6">
+                    {/* Workflow icon for automated conversations */}
+                    {chat.type === 'workflow' && (
+                      <svg className="w-3.5 h-3.5 text-amber-500 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                      </svg>
+                    )}
                     <div className="truncate text-sm">{chat.title}</div>
                     {hasActiveTask && (
                       <svg className="w-3 h-3 text-primary-400 flex-shrink-0 animate-spin" fill="none" viewBox="0 0 24 24">

@@ -159,7 +159,7 @@ class ZoomConnector(BaseConnector):
         token, _ = await self.get_oauth_token()
 
         async with httpx.AsyncClient() as client:
-            async with get_session() as session:
+            async with get_session(organization_id=self.organization_id) as session:
                 for meeting in meetings:
                     meeting_id = meeting.get("id")
                     meeting_uuid = meeting.get("uuid")

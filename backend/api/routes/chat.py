@@ -77,6 +77,7 @@ class ConversationDetailResponse(BaseModel):
     summary: Optional[str]
     created_at: str
     updated_at: str
+    type: Optional[str]
     messages: list[ChatMessageResponse]
 
 
@@ -247,6 +248,7 @@ async def get_conversation(
             summary=conversation.summary,
             created_at=f"{conversation.created_at.isoformat()}Z" if conversation.created_at else "",
             updated_at=f"{conversation.updated_at.isoformat()}Z" if conversation.updated_at else "",
+            type=conversation.type,
             messages=[
                 ChatMessageResponse(**msg.to_dict())
                 for msg in messages

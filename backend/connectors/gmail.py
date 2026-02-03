@@ -151,7 +151,7 @@ class GmailConnector(BaseConnector):
         )
 
         count = 0
-        async with get_session() as session:
+        async with get_session(organization_id=self.organization_id) as session:
             for message in messages:
                 activity = self._normalize_message(message)
                 if activity:

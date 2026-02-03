@@ -12,7 +12,7 @@ from models.artifact import Artifact
 from models.conversation import Conversation
 from models.chat_message import ChatMessage
 from models.integration import Integration
-from models.crm_operation import CrmOperation
+from models.pending_operation import PendingOperation, CrmOperation  # CrmOperation is alias
 from models.agent_task import AgentTask
 from models.workflow import Workflow, WorkflowRun
 from models.sheet_import import SheetImport
@@ -37,7 +37,8 @@ __all__ = [
     "Conversation",
     "ChatMessage",
     "Integration",
-    "CrmOperation",
+    "PendingOperation",
+    "CrmOperation",  # Alias for PendingOperation (backward compat)
     "AgentTask",
     "Workflow",
     "WorkflowRun",

@@ -181,7 +181,7 @@ class FirefliesConnector(BaseConnector):
         print(f"[Fireflies] Got {len(transcripts)} transcripts")
 
         count = 0
-        async with get_session() as session:
+        async with get_session(organization_id=self.organization_id) as session:
             for transcript in transcripts:
                 try:
                     # Parse transcript data

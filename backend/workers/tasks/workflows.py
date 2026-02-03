@@ -8,6 +8,15 @@ These tasks handle:
 """
 from __future__ import annotations
 
+import os
+import sys
+from pathlib import Path
+
+# Ensure backend directory is in Python path for Celery forked workers
+_backend_dir = Path(__file__).resolve().parent.parent.parent
+if str(_backend_dir) not in sys.path:
+    sys.path.insert(0, str(_backend_dir))
+
 import asyncio
 import logging
 from datetime import datetime
@@ -37,14 +46,15 @@ async def _check_scheduled_workflows() -> dict[str, Any]:
     that are due to run.
     """
     from sqlalchemy import select, and_
-    from models.database import get_session
+    from models.database import get_admin_session
     from models.workflow import Workflow
     from croniter import croniter
     
     now = datetime.utcnow()
     triggered: list[str] = []
     
-    async with get_session() as session:
+    # Admin session: iterates across ALL organizations' workflows
+    async with get_admin_session() as session:
         # Get all enabled scheduled workflows
         result = await session.execute(
             select(Workflow).where(
@@ -69,7 +79,13 @@ async def _check_scheduled_workflows() -> dict[str, Any]:
                 
                 if next_run <= now:
                     # Queue workflow for execution
-                    execute_workflow.delay(str(workflow.id), "schedule")
+                    execute_workflow.delay(
+                        str(workflow.id), 
+                        "schedule", 
+                        None, 
+                        None, 
+                        str(workflow.organization_id)
+                    )
                     triggered.append(str(workflow.id))
                     
                     # Update last_run_at
@@ -92,7 +108,7 @@ async def _process_pending_events() -> dict[str, Any]:
     Process pending events and trigger matching workflows.
     """
     from sqlalchemy import select, and_
-    from models.database import get_session
+    from models.database import get_admin_session
     from models.workflow import Workflow
     from workers.events import get_pending_events
     
@@ -102,7 +118,8 @@ async def _process_pending_events() -> dict[str, Any]:
     
     triggered: list[dict[str, str]] = []
     
-    async with get_session() as session:
+    # Admin session: iterates across events from ALL organizations
+    async with get_admin_session() as session:
         for event in events:
             event_type = event["type"]
             org_id = event["organization_id"]
@@ -127,6 +144,8 @@ async def _process_pending_events() -> dict[str, Any]:
                         str(workflow.id),
                         f"event:{event_type}",
                         event["data"],
+                        None,  # conversation_id
+                        org_id,  # organization_id for RLS
                     )
                     triggered.append({
                         "workflow_id": str(workflow.id),
@@ -143,24 +162,30 @@ async def _execute_workflow(
     workflow_id: str,
     triggered_by: str,
     trigger_data: dict[str, Any] | None = None,
+    conversation_id: str | None = None,
+    organization_id: str | None = None,
 ) -> dict[str, Any]:
     """
-    Execute a workflow and its steps.
+    Execute a workflow by creating a conversation and sending the prompt to the agent.
     
-    This is the main workflow execution engine that:
-    1. Loads the workflow definition
-    2. Creates a WorkflowRun record
-    3. Executes each step in sequence
-    4. Records results and handles errors
+    NEW ARCHITECTURE (Phase 5): Workflows are "scheduled prompts to the agent".
+    Instead of a rigid step-by-step execution engine, workflows:
+    1. Create a conversation (type='workflow') - or use pre-created one
+    2. Send the workflow prompt to the agent
+    3. Agent uses tools to accomplish the task
+    4. If agent hits an approval-required tool, conversation pauses
+    5. Full execution is visible as a chat conversation
+    
+    For backward compatibility, workflows without a prompt fall back to legacy execution.
     """
     from sqlalchemy import select
     from models.database import get_session
+    from models.conversation import Conversation
     from models.workflow import Workflow, WorkflowRun
     
     started_at = datetime.utcnow()
-    steps_completed: list[dict[str, Any]] = []
     
-    async with get_session() as session:
+    async with get_session(organization_id=organization_id) as session:
         # Load workflow
         result = await session.execute(
             select(Workflow).where(Workflow.id == UUID(workflow_id))
@@ -192,64 +217,217 @@ async def _execute_workflow(
         await session.flush()
         run_id = run.id
         
-        try:
-            # Execute each step
-            context: dict[str, Any] = {
-                "trigger_data": trigger_data or {},
-                "organization_id": str(workflow.organization_id),
-                "workflow_id": workflow_id,
-            }
-            
-            for i, step in enumerate(workflow.steps):
-                step_result = await _execute_step(step, context, workflow)
-                steps_completed.append({
-                    "step_index": i,
-                    "action": step.get("action"),
-                    "result": step_result,
-                })
+        # Check if this workflow uses the new prompt-based execution
+        if workflow.prompt and workflow.prompt.strip():
+            # NEW: Execute via agent conversation
+            try:
+                result = await _execute_workflow_via_agent(
+                    workflow=workflow,
+                    run=run,
+                    triggered_by=triggered_by,
+                    trigger_data=trigger_data,
+                    session=session,
+                    existing_conversation_id=conversation_id,
+                )
+                return result
+            except Exception as e:
+                error_msg = str(e)
+                logger.error(f"Workflow {workflow_id} agent execution failed: {error_msg}")
                 
-                # Pass step output to next step
-                context[f"step_{i}_output"] = step_result
+                run.status = "failed"
+                run.error_message = error_msg
+                run.completed_at = datetime.utcnow()
+                await session.commit()
                 
-                if step_result.get("status") == "failed":
-                    raise Exception(step_result.get("error", "Step failed"))
+                return {
+                    "status": "failed",
+                    "workflow_id": workflow_id,
+                    "run_id": str(run_id),
+                    "error": error_msg,
+                }
+        
+        # LEGACY: Fall back to step-by-step execution for workflows without prompts
+        return await _execute_workflow_legacy(workflow, run, trigger_data, session)
+
+
+async def _execute_workflow_via_agent(
+    workflow: Any,
+    run: Any,
+    triggered_by: str,
+    trigger_data: dict[str, Any] | None,
+    session: Any,
+    existing_conversation_id: str | None = None,
+) -> dict[str, Any]:
+    """
+    Execute a workflow by sending its prompt to the agent.
+    
+    This creates a conversation visible in the chat UI, allowing users
+    to see exactly what the agent did and intervene if needed.
+    """
+    from sqlalchemy import select
+    from agents.orchestrator import ChatOrchestrator
+    from models.conversation import Conversation
+    
+    # Use existing conversation or create a new one
+    if existing_conversation_id:
+        # Load the pre-created conversation
+        result = await session.execute(
+            select(Conversation).where(Conversation.id == UUID(existing_conversation_id))
+        )
+        conversation = result.scalar_one_or_none()
+        if not conversation:
+            # Fallback to creating new if not found
+            conversation = Conversation(
+                user_id=workflow.created_by_user_id,
+                organization_id=workflow.organization_id,
+                type="workflow",
+                workflow_id=workflow.id,
+                title=f"Workflow: {workflow.name}",
+            )
+            session.add(conversation)
+            await session.flush()
+    else:
+        # Create a new workflow conversation
+        conversation = Conversation(
+            user_id=workflow.created_by_user_id,
+            organization_id=workflow.organization_id,
+            type="workflow",
+            workflow_id=workflow.id,
+            title=f"Workflow: {workflow.name}",
+        )
+        session.add(conversation)
+        await session.flush()
+    
+    logger.info(
+        f"[Workflow] Starting agent execution for workflow {workflow.id} "
+        f"conversation {conversation.id}"
+    )
+    
+    # Build the prompt with trigger context
+    prompt = workflow.prompt
+    if trigger_data:
+        prompt += f"\n\nTrigger data: {trigger_data}"
+    
+    # Create orchestrator with workflow context for auto-approvals
+    workflow_context: dict[str, Any] = {
+        "is_workflow": True,
+        "workflow_id": str(workflow.id),
+        "auto_approve_tools": workflow.auto_approve_tools or [],
+    }
+    
+    orchestrator = ChatOrchestrator(
+        user_id=str(workflow.created_by_user_id),
+        organization_id=str(workflow.organization_id),
+        conversation_id=str(conversation.id),
+        workflow_context=workflow_context,
+    )
+    
+    # Process the prompt (this streams through the agent)
+    # Since we're in a background worker, we consume the generator fully
+    response_text = ""
+    async for chunk in orchestrator.process_message(prompt, save_user_message=True):
+        # Collect text chunks (JSON chunks are tool events)
+        if not chunk.startswith("{"):
+            response_text += chunk
+    
+    # Update run record
+    run.status = "completed"
+    run.output = {
+        "conversation_id": str(conversation.id),
+        "response_preview": response_text[:500] if response_text else None,
+    }
+    run.completed_at = datetime.utcnow()
+    
+    # Update workflow last_run_at
+    workflow.last_run_at = datetime.utcnow()
+    
+    await session.commit()
+    
+    logger.info(f"[Workflow] Completed workflow {workflow.id} via agent")
+    
+    return {
+        "status": "completed",
+        "workflow_id": str(workflow.id),
+        "run_id": str(run.id),
+        "conversation_id": str(conversation.id),
+        "execution_type": "agent",
+    }
+
+
+async def _execute_workflow_legacy(
+    workflow: Any,
+    run: Any,
+    trigger_data: dict[str, Any] | None,
+    session: Any,
+) -> dict[str, Any]:
+    """
+    Legacy step-by-step workflow execution.
+    
+    This is kept for backward compatibility with existing workflows
+    that use the steps[] array instead of the new prompt field.
+    """
+    steps_completed: list[dict[str, Any]] = []
+    
+    try:
+        # Execute each step
+        context: dict[str, Any] = {
+            "trigger_data": trigger_data or {},
+            "organization_id": str(workflow.organization_id),
+            "workflow_id": str(workflow.id),
+        }
+        
+        for i, step in enumerate(workflow.steps):
+            step_result = await _execute_step(step, context, workflow)
+            steps_completed.append({
+                "step_index": i,
+                "action": step.get("action"),
+                "result": step_result,
+            })
             
-            # Update run as completed
-            run.status = "completed"
-            run.steps_completed = steps_completed
-            run.completed_at = datetime.utcnow()
+            # Pass step output to next step
+            context[f"step_{i}_output"] = step_result
             
-            # Update workflow last_run_at
-            workflow.last_run_at = datetime.utcnow()
-            
-            await session.commit()
-            
-            logger.info(f"Workflow {workflow_id} completed successfully")
-            return {
-                "status": "completed",
-                "workflow_id": workflow_id,
-                "run_id": str(run_id),
-                "steps_completed": len(steps_completed),
-            }
-            
-        except Exception as e:
-            error_msg = str(e)
-            logger.error(f"Workflow {workflow_id} failed: {error_msg}")
-            
-            run.status = "failed"
-            run.error_message = error_msg
-            run.steps_completed = steps_completed
-            run.completed_at = datetime.utcnow()
-            
-            await session.commit()
-            
-            return {
-                "status": "failed",
-                "workflow_id": workflow_id,
-                "run_id": str(run_id),
-                "error": error_msg,
-                "steps_completed": len(steps_completed),
-            }
+            if step_result.get("status") == "failed":
+                raise Exception(step_result.get("error", "Step failed"))
+        
+        # Update run as completed
+        run.status = "completed"
+        run.steps_completed = steps_completed
+        run.completed_at = datetime.utcnow()
+        
+        # Update workflow last_run_at
+        workflow.last_run_at = datetime.utcnow()
+        
+        await session.commit()
+        
+        logger.info(f"[Workflow] Completed legacy workflow {workflow.id}")
+        return {
+            "status": "completed",
+            "workflow_id": str(workflow.id),
+            "run_id": str(run.id),
+            "steps_completed": len(steps_completed),
+            "execution_type": "legacy",
+        }
+        
+    except Exception as e:
+        error_msg = str(e)
+        logger.error(f"[Workflow] Legacy workflow {workflow.id} failed: {error_msg}")
+        
+        run.status = "failed"
+        run.error_message = error_msg
+        run.steps_completed = steps_completed
+        run.completed_at = datetime.utcnow()
+        
+        await session.commit()
+        
+        return {
+            "status": "failed",
+            "workflow_id": str(workflow.id),
+            "run_id": str(run.id),
+            "error": error_msg,
+            "steps_completed": len(steps_completed),
+            "execution_type": "legacy",
+        }
 
 
 async def _execute_step(
@@ -260,6 +438,10 @@ async def _execute_step(
     """
     Execute a single workflow step.
     
+    DEPRECATED: This is the legacy step-by-step execution engine.
+    New workflows should use the prompt field for agent-based execution.
+    This function is kept for backward compatibility with existing workflows.
+    
     Supported actions:
     - query: Query data from the database
     - llm: Call an LLM for processing
@@ -267,6 +449,12 @@ async def _execute_step(
     - send_slack: Post to Slack
     - sync: Trigger a data sync
     """
+    import warnings
+    warnings.warn(
+        "Legacy workflow step execution is deprecated. "
+        "Use prompt-based workflows for new automations.",
+        DeprecationWarning,
+    )
     action = step.get("action")
     params = step.get("params", {})
     
@@ -359,7 +547,7 @@ async def _action_run_query(
             }
     
     try:
-        async with get_session() as session:
+        async with get_session(organization_id=org_id) as session:
             # Execute with org_id parameter always available
             result = await session.execute(
                 text(sql),
@@ -520,7 +708,7 @@ async def _action_send_slack(
     
     try:
         # Get the Slack integration for this org
-        async with get_session() as session:
+        async with get_session(organization_id=org_id) as session:
             result = await session.execute(
                 select(Integration).where(
                     and_(
@@ -752,7 +940,7 @@ async def _action_send_email_from(
             body = body.replace(f"{{{key}}}", output_str)
     
     try:
-        async with get_session() as session:
+        async with get_session(organization_id=org_id) as session:
             # Find the user's email integration
             query = select(Integration).where(
                 and_(
@@ -847,6 +1035,8 @@ def execute_workflow(
     workflow_id: str,
     triggered_by: str,
     trigger_data: dict[str, Any] | None = None,
+    conversation_id: str | None = None,
+    organization_id: str | None = None,
 ) -> dict[str, Any]:
     """
     Celery task to execute a workflow.
@@ -855,9 +1045,11 @@ def execute_workflow(
         workflow_id: UUID of the workflow to execute
         triggered_by: What triggered this execution (e.g., 'schedule', 'event:sync.completed')
         trigger_data: Optional data from the trigger event
+        conversation_id: Optional pre-created conversation ID (for immediate navigation)
+        organization_id: Organization ID for RLS context (required for proper security)
     
     Returns:
         Execution result with status and any errors
     """
     logger.info(f"Task {self.request.id}: Executing workflow {workflow_id}")
-    return run_async(_execute_workflow(workflow_id, triggered_by, trigger_data))
+    return run_async(_execute_workflow(workflow_id, triggered_by, trigger_data, conversation_id, organization_id))

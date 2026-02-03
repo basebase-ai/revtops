@@ -14,6 +14,8 @@
  */
 
 import { useState, useEffect, useCallback } from 'react';
+import { useQuery } from '@tanstack/react-query';
+import { API_BASE } from '../lib/api';
 
 // Hook to detect mobile viewport
 function useIsMobile(): boolean {
@@ -38,7 +40,7 @@ import { DataSources } from './DataSources';
 import { Data } from './Data';
 import { Search } from './Search';
 import { Chat } from './Chat';
-import { Automations } from './Automations';
+import { Workflows } from './Workflows';
 import { AdminPanel } from './AdminPanel';
 import { OrganizationPanel } from './OrganizationPanel';
 import { ProfilePanel } from './ProfilePanel';
@@ -140,6 +142,20 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
     user?.id ?? null
   );
   const connectedIntegrationsCount = integrations.filter((i) => i.isActive).length;
+
+  // React Query: Get workflows for count badge
+  const { data: workflows = [] } = useQuery({
+    queryKey: ['workflows', organization?.id],
+    queryFn: async () => {
+      if (!organization?.id) return [];
+      const response = await fetch(`${API_BASE}/workflows/${organization.id}`);
+      if (!response.ok) return [];
+      const data = await response.json() as { workflows: Array<{ is_enabled: boolean }> };
+      return data.workflows ?? [];
+    },
+    enabled: !!organization?.id,
+  });
+  const activeWorkflowCount = workflows.filter((w: { is_enabled: boolean }) => w.is_enabled).length;
 
   // React Query: Get team members for member count (single source of truth)
   const { data: teamMembers = [] } = useTeamMembers(
@@ -275,6 +291,12 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
                 result: data.result as Record<string, unknown>,
                 status: 'complete',
               });
+              
+              // If workflows table was modified, notify the Workflows component to refresh
+              const result = data.result as Record<string, unknown> | undefined;
+              if (result?.table === 'workflows' && result?.success) {
+                window.dispatchEvent(new Event('workflows-updated'));
+              }
             } else if (data.type === 'text_block_complete') {
               // Text block complete, tools incoming
               markConversationMessageComplete(conversation_id);
@@ -291,10 +313,53 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
         }
         
         case 'task_complete': {
-          console.log('[AppLayout] Task complete:', parsed.task_id, 'status:', parsed.status);
-          setConversationActiveTask(parsed.conversation_id, null);
-          setConversationThinking(parsed.conversation_id, false);
-          markConversationMessageComplete(parsed.conversation_id);
+          const taskComplete = parsed as WsTaskComplete;
+          console.log('[AppLayout] Task complete:', taskComplete.task_id, 'status:', taskComplete.status);
+          setConversationActiveTask(taskComplete.conversation_id, null);
+          setConversationThinking(taskComplete.conversation_id, false);
+          markConversationMessageComplete(taskComplete.conversation_id);
+          
+          // If task failed, add an error message to the conversation
+          if (taskComplete.status === 'failed' && taskComplete.error) {
+            console.error('[AppLayout] Task failed with error:', taskComplete.error);
+            // Append error to the last assistant message or create a new one
+            const state = useAppStore.getState();
+            const convState = state.conversations[taskComplete.conversation_id];
+            if (convState) {
+              const messages = [...convState.messages];
+              const lastMsg = messages[messages.length - 1];
+              if (lastMsg && lastMsg.role === 'assistant') {
+                // Append error to existing assistant message
+                messages[messages.length - 1] = {
+                  ...lastMsg,
+                  contentBlocks: [
+                    ...lastMsg.contentBlocks,
+                    {
+                      type: 'text',
+                      text: `\n\n---\n\n**Error:** ${taskComplete.error}\n\nThe request could not be completed. Please try again.`,
+                    },
+                  ],
+                };
+              } else {
+                // Create new error message
+                messages.push({
+                  id: `error-${Date.now()}`,
+                  role: 'assistant',
+                  contentBlocks: [{
+                    type: 'text',
+                    text: `**Error:** ${taskComplete.error}\n\nThe request could not be completed. Please try again.`,
+                  }],
+                  timestamp: new Date(),
+                });
+              }
+              useAppStore.setState({
+                conversations: {
+                  ...state.conversations,
+                  [taskComplete.conversation_id]: { ...convState, messages },
+                },
+              });
+            }
+          }
           break;
         }
         
@@ -360,7 +425,7 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
     const handleNavigate = (event: Event): void => {
       const customEvent = event as CustomEvent<string>;
       if (customEvent.detail) {
-        setCurrentView(customEvent.detail as 'home' | 'chat' | 'data-sources' | 'search' | 'automations' | 'admin');
+        setCurrentView(customEvent.detail as 'home' | 'chat' | 'data-sources' | 'search' | 'workflows' | 'admin');
       }
     };
     window.addEventListener('navigate', handleNavigate);
@@ -391,7 +456,7 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
     chat: 'Chat',
     'data-sources': 'Data Sources',
     search: 'Search',
-    automations: 'Automations',
+    workflows: 'Workflows',
     admin: 'Admin',
   };
 
@@ -474,6 +539,7 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
           currentView={currentView}
           onViewChange={setCurrentView}
           connectedSourcesCount={connectedIntegrationsCount}
+          workflowCount={activeWorkflowCount}
           recentChats={recentChats.slice(0, 10)}
           onSelectChat={handleSelectChat}
           onDeleteChat={handleDeleteChat}
@@ -513,8 +579,8 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
         {currentView === 'search' && (
           <Search organizationId={organization.id} />
         )}
-        {currentView === 'automations' && (
-          <Automations />
+        {currentView === 'workflows' && (
+          <Workflows />
         )}
         {currentView === 'admin' && (
           <AdminPanel />

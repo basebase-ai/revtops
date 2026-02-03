@@ -46,7 +46,9 @@ class CreateWorkflowRequest(BaseModel):
     description: Optional[str] = None
     trigger_type: str  # 'schedule', 'event', 'manual'
     trigger_config: TriggerConfig
-    steps: list[WorkflowStep]
+    steps: list[WorkflowStep] = []  # Optional for prompt-based workflows
+    prompt: Optional[str] = None  # Agent prompt for prompt-based workflows
+    auto_approve_tools: list[str] = []  # Tools that run without approval
     output_config: Optional[dict[str, Any]] = None
     is_enabled: bool = True
 
@@ -59,6 +61,8 @@ class UpdateWorkflowRequest(BaseModel):
     trigger_type: Optional[str] = None
     trigger_config: Optional[TriggerConfig] = None
     steps: Optional[list[WorkflowStep]] = None
+    prompt: Optional[str] = None
+    auto_approve_tools: Optional[list[str]] = None
     output_config: Optional[dict[str, Any]] = None
     is_enabled: Optional[bool] = None
 
@@ -74,6 +78,8 @@ class WorkflowResponse(BaseModel):
     trigger_type: str
     trigger_config: dict[str, Any]
     steps: list[dict[str, Any]]
+    prompt: Optional[str]  # New: Agent prompt for prompt-based workflows
+    auto_approve_tools: list[str]  # New: Tools that run without approval
     output_config: Optional[dict[str, Any]]
     is_enabled: bool
     last_run_at: Optional[str]
@@ -127,7 +133,7 @@ async def list_workflows(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid organization ID")
 
-    async with get_session() as session:
+    async with get_session(organization_id=organization_id) as session:
         query = select(Workflow).where(Workflow.organization_id == org_uuid)
         if enabled_only:
             query = query.where(Workflow.is_enabled == True)
@@ -151,7 +157,7 @@ async def get_workflow(organization_id: str, workflow_id: str) -> WorkflowRespon
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid ID format")
 
-    async with get_session() as session:
+    async with get_session(organization_id=organization_id) as session:
         result = await session.execute(
             select(Workflow).where(
                 and_(
@@ -211,7 +217,7 @@ async def create_workflow(
                 detail=f"Invalid cron expression: {e}",
             )
 
-    async with get_session() as session:
+    async with get_session(organization_id=organization_id) as session:
         workflow = Workflow(
             organization_id=org_uuid,
             created_by_user_id=user_uuid,
@@ -220,6 +226,8 @@ async def create_workflow(
             trigger_type=request.trigger_type,
             trigger_config=request.trigger_config.model_dump(exclude_none=True),
             steps=[s.model_dump() for s in request.steps],
+            prompt=request.prompt,
+            auto_approve_tools=request.auto_approve_tools,
             output_config=request.output_config,
             is_enabled=request.is_enabled,
         )
@@ -243,7 +251,7 @@ async def update_workflow(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid ID format")
 
-    async with get_session() as session:
+    async with get_session(organization_id=organization_id) as session:
         result = await session.execute(
             select(Workflow).where(
                 and_(
@@ -268,6 +276,10 @@ async def update_workflow(
             workflow.trigger_config = request.trigger_config.model_dump(exclude_none=True)
         if request.steps is not None:
             workflow.steps = [s.model_dump() for s in request.steps]
+        if request.prompt is not None:
+            workflow.prompt = request.prompt
+        if request.auto_approve_tools is not None:
+            workflow.auto_approve_tools = request.auto_approve_tools
         if request.output_config is not None:
             workflow.output_config = request.output_config
         if request.is_enabled is not None:
@@ -289,7 +301,7 @@ async def delete_workflow(organization_id: str, workflow_id: str) -> dict[str, s
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid ID format")
 
-    async with get_session() as session:
+    async with get_session(organization_id=organization_id) as session:
         result = await session.execute(
             select(Workflow).where(
                 and_(
@@ -309,19 +321,29 @@ async def delete_workflow(organization_id: str, workflow_id: str) -> dict[str, s
         return {"status": "deleted", "workflow_id": workflow_id}
 
 
-@router.post("/{organization_id}/{workflow_id}/trigger", response_model=TriggerWorkflowResponse)
+class TriggerWorkflowResponseV2(BaseModel):
+    """Response model for triggering a workflow (v2 with conversation)."""
+    status: str
+    task_id: str
+    workflow_id: str
+    conversation_id: Optional[str] = None  # New: conversation to navigate to
+
+
+@router.post("/{organization_id}/{workflow_id}/trigger", response_model=TriggerWorkflowResponseV2)
 async def trigger_workflow(
     organization_id: str,
     workflow_id: str,
-) -> TriggerWorkflowResponse:
+) -> TriggerWorkflowResponseV2:
     """Manually trigger a workflow execution."""
+    from models.conversation import Conversation
+    
     try:
         org_uuid = UUID(organization_id)
         wf_uuid = UUID(workflow_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid ID format")
 
-    async with get_session() as session:
+    async with get_session(organization_id=organization_id) as session:
         result = await session.execute(
             select(Workflow).where(
                 and_(
@@ -337,15 +359,31 @@ async def trigger_workflow(
 
         if not workflow.is_enabled:
             raise HTTPException(status_code=400, detail="Workflow is disabled")
+        
+        # For prompt-based workflows, create conversation upfront so we can return its ID
+        conversation_id: str | None = None
+        if workflow.prompt and workflow.prompt.strip():
+            conversation = Conversation(
+                user_id=workflow.created_by_user_id,
+                organization_id=workflow.organization_id,
+                type="workflow",
+                workflow_id=workflow.id,
+                title=f"Workflow: {workflow.name}",
+            )
+            session.add(conversation)
+            await session.commit()
+            await session.refresh(conversation)
+            conversation_id = str(conversation.id)
 
     # Queue execution via Celery
     from workers.tasks.workflows import execute_workflow
-    task = execute_workflow.delay(workflow_id, "manual")
+    task = execute_workflow.delay(workflow_id, "manual", None, conversation_id, organization_id)
 
-    return TriggerWorkflowResponse(
+    return TriggerWorkflowResponseV2(
         status="queued",
         task_id=task.id,
         workflow_id=workflow_id,
+        conversation_id=conversation_id,
     )
 
 
@@ -362,7 +400,7 @@ async def list_workflow_runs(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid ID format")
 
-    async with get_session() as session:
+    async with get_session(organization_id=organization_id) as session:
         result = await session.execute(
             select(WorkflowRun)
             .where(

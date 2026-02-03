@@ -71,7 +71,7 @@ async def _execute_tool_approval(
     Returns:
         Execution result dict with status, message, etc.
     """
-    from models.crm_operation import CrmOperation
+    from models.pending_operation import PendingOperation, CrmOperation
     from models.database import get_session
     from agents.tools import (
         get_pending_operation,

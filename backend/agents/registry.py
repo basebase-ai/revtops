@@ -163,40 +163,60 @@ For exact text matching, use run_sql_query with ILIKE instead.""",
 # -----------------------------------------------------------------------------
 
 register_tool(
-    name="create_artifact",
-    description="""Save an analysis, report, or dashboard for the user to view later.
+    name="run_sql_write",
+    description="""Execute an INSERT, UPDATE, or DELETE query against the database.
 
-Use this when you've created something the user might want to reference again:
-- A pipeline analysis dashboard
-- A quarterly report summary
-- A list of at-risk deals with recommendations""",
+Use this to create, modify, or delete records. The query is automatically scoped 
+to the user's organization - you cannot affect other organizations' data.
+
+**CRM Tables (contacts, deals, accounts):**
+These go through a review workflow - changes are queued as "pending" and the user 
+can commit to HubSpot or undo via the bottom panel.
+
+**Other Tables (workflows, artifacts):**
+These execute immediately since they're internal-only data.
+
+Writable tables:
+- contacts: (email, firstname, lastname, company, jobtitle, phone) → pending review
+- deals: (dealname, amount, dealstage, closedate) → pending review  
+- accounts: (name, domain, industry, numberofemployees) → pending review
+- workflows: See workflow format below → immediate
+- artifacts: (type, title, description, data) → immediate
+
+**WORKFLOW FORMAT (Important!):**
+Workflows are prompts sent to the agent on a schedule. Use these columns:
+- name: Human-readable name
+- prompt: Natural language instructions for what the agent should do
+- trigger_type: 'schedule', 'event', or 'manual'
+- trigger_config: JSON with cron expression, e.g. '{"cron": "0 9 * * *"}'
+- auto_approve_tools: JSON array of tools that run without approval, e.g. '["run_sql_query", "send_slack"]'
+
+DO NOT use the 'steps' column - it's deprecated. Use 'prompt' instead.
+
+Workflow example:
+INSERT INTO workflows (name, prompt, trigger_type, trigger_config, auto_approve_tools)
+VALUES (
+  'Daily Deal Summary',
+  'Query deals to get a summary of open opportunities. Include total count, value by stage, and top 5 deals by amount. Format a nice summary with emojis and post to #sales on Slack.',
+  'schedule',
+  '{"cron": "0 9 * * *"}',
+  '["run_sql_query", "send_slack"]'
+)
+
+Auto-managed columns (don't include):
+- id, organization_id, created_at, updated_at, created_by_user_id
+
+Rules:
+- UPDATE and DELETE require a WHERE clause with id = '...'""",
     input_schema={
         "type": "object",
         "properties": {
-            "type": {
+            "query": {
                 "type": "string",
-                "enum": ["dashboard", "report", "analysis"],
-                "description": "Type of artifact to create",
-            },
-            "title": {
-                "type": "string",
-                "description": "Title of the artifact",
-            },
-            "description": {
-                "type": "string",
-                "description": "Description of what this artifact contains",
-            },
-            "data": {
-                "type": "object",
-                "description": "The analysis data/content",
-            },
-            "is_live": {
-                "type": "boolean",
-                "description": "Whether to refresh data on load (true) or keep static (false)",
-                "default": False,
+                "description": "The SQL INSERT, UPDATE, or DELETE query to execute",
             },
         },
-        "required": ["type", "title", "data"],
+        "required": ["query"],
     },
     category=ToolCategory.LOCAL_WRITE,
     default_requires_approval=False,
@@ -316,55 +336,6 @@ Requires company domain (e.g., "acme.com") to look up.""",
 # -----------------------------------------------------------------------------
 
 register_tool(
-    name="crm_write",
-    description="""Create or update records in the CRM (HubSpot).
-
-Records are created locally first (like editing files). The user can then:
-- Click "Commit All" to sync to HubSpot
-- Click "Undo All" to discard the local changes
-
-Use this for:
-- Creating contacts from prospect lists
-- Creating companies from account data
-- Creating deals from opportunity information
-- Updating existing records
-
-Property names for each record type:
-- contact: email (required), firstname, lastname, company, jobtitle, phone
-- company: name (required), domain, industry, numberofemployees
-- deal: dealname (required), amount, dealstage, closedate, pipeline""",
-    input_schema={
-        "type": "object",
-        "properties": {
-            "target_system": {
-                "type": "string",
-                "enum": ["hubspot"],
-                "description": "The CRM system to write to",
-            },
-            "record_type": {
-                "type": "string",
-                "enum": ["contact", "company", "deal"],
-                "description": "Type of CRM record to create/update",
-            },
-            "operation": {
-                "type": "string",
-                "enum": ["create", "update", "upsert"],
-                "description": "Operation to perform",
-            },
-            "records": {
-                "type": "array",
-                "items": {"type": "object"},
-                "description": "Array of records to write",
-            },
-        },
-        "required": ["target_system", "record_type", "operation", "records"],
-    },
-    category=ToolCategory.LOCAL_WRITE,  # Now local-first, commit later
-    default_requires_approval=False,  # No approval needed - use bottom panel to commit/undo
-)
-
-
-register_tool(
     name="send_email_from",
     description="""Send an email from your connected Gmail or Outlook account.
 
@@ -466,58 +437,6 @@ The sync runs in the background and may take a few minutes to complete.""",
 # -----------------------------------------------------------------------------
 
 register_tool(
-    name="create_workflow",
-    description="""Create a workflow automation that runs on a schedule or in response to events.
-
-Workflows are prompts sent to the agent on a schedule. The agent will use tools to 
-accomplish the task. You can specify which tools the workflow can use without approval.
-
-Example workflow:
-- Name: "Daily Stale Deals Alert"
-- Prompt: "Find deals without activity in 30 days, summarize top 5, post to #sales-alerts"
-- Auto-approve: ["send_slack"]
-- Trigger: Schedule, "0 9 * * 1-5" (weekdays at 9am)
-
-If a tool requires approval and isn't in auto_approve_tools, the workflow will pause
-and wait for user approval (visible in the chat interface).""",
-    input_schema={
-        "type": "object",
-        "properties": {
-            "name": {
-                "type": "string",
-                "description": "Human-readable name for the workflow",
-            },
-            "description": {
-                "type": "string",
-                "description": "Description of what the workflow does",
-            },
-            "prompt": {
-                "type": "string",
-                "description": "Instructions for the agent to follow when the workflow runs",
-            },
-            "trigger_type": {
-                "type": "string",
-                "enum": ["schedule", "event", "manual"],
-                "description": "What triggers this workflow",
-            },
-            "trigger_config": {
-                "type": "object",
-                "description": "Trigger configuration. For schedule: {cron: '0 9 * * *'}. For event: {event: 'sync.completed'}",
-            },
-            "auto_approve_tools": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "Tools that can run without approval for this workflow",
-            },
-        },
-        "required": ["name", "prompt", "trigger_type", "trigger_config"],
-    },
-    category=ToolCategory.LOCAL_WRITE,
-    default_requires_approval=False,
-)
-
-
-register_tool(
     name="trigger_workflow",
     description="""Manually trigger a workflow to run now.
 
@@ -536,7 +455,6 @@ The workflow will create a new conversation that you can view in the chat list."
     category=ToolCategory.LOCAL_WRITE,
     default_requires_approval=False,
 )
-
 
 # =============================================================================
 # Helper Functions
