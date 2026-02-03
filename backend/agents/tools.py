@@ -2651,6 +2651,12 @@ async def _send_slack(
     if not message:
         return {"error": "Message text is required."}
     
+    # Check for markdown-style formatting (common mistake)
+    if "**" in message:
+        return {
+            "error": "Message contains **text** (Markdown bold). Slack uses *text* (single asterisks) for bold. Please reformat the message using Slack mrkdwn syntax.",
+        }
+    
     # Check for active Slack integration
     async with get_session(organization_id=organization_id) as session:
         # Debug: Log what integrations exist for this org

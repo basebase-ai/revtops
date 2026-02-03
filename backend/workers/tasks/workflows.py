@@ -710,6 +710,13 @@ async def _action_send_slack(
                 # Also support {previous_output} as alias for last step
                 message = message.replace("{previous_output}", str(output_text))
     
+    # Check for markdown-style formatting (Slack uses mrkdwn, not markdown)
+    if "**" in message:
+        return {
+            "status": "failed",
+            "error": "Message contains **text** (Markdown bold). Slack uses *text* (single asterisks) for bold. Update the workflow LLM prompt to specify Slack mrkdwn formatting.",
+        }
+    
     try:
         # Get the Slack integration for this org
         async with get_session(organization_id=org_id) as session:

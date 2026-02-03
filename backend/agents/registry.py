@@ -384,6 +384,14 @@ register_tool(
 Use this to send notifications, updates, or alerts to team channels.
 The message will appear as coming from the Revtops Slack app.
 
+IMPORTANT - Slack uses mrkdwn, NOT standard Markdown:
+- Bold: *text* (single asterisks, NOT **text**)
+- Italic: _text_ (underscores)
+- Strikethrough: ~text~
+- Code: `code`
+- Links: <https://url.com|link text>
+- Bullet lists: Start lines with - or •
+
 Examples:
 - Post deal alerts to #sales-alerts
 - Send weekly summaries to #revenue-team
@@ -397,7 +405,7 @@ Examples:
             },
             "message": {
                 "type": "string",
-                "description": "Message text to post",
+                "description": "Message text to post. Use Slack mrkdwn: *bold*, _italic_, ~strike~",
             },
             "thread_ts": {
                 "type": "string",
