@@ -575,7 +575,19 @@ Use the user's local time to provide relative references (e.g., '3 hours ago', '
                 })
             
             # Add assistant message with all tool uses, then user message with all results
-            messages.append({"role": "assistant", "content": final_message.content})
+            # Convert content blocks to plain dicts to avoid Pydantic serialization issues
+            assistant_content: list[dict[str, Any]] = []
+            for block in final_message.content:
+                if block.type == "text":
+                    assistant_content.append({"type": "text", "text": block.text})
+                elif block.type == "tool_use":
+                    assistant_content.append({
+                        "type": "tool_use",
+                        "id": block.id,
+                        "name": block.name,
+                        "input": block.input,
+                    })
+            messages.append({"role": "assistant", "content": assistant_content})
             messages.append({"role": "user", "content": tool_results})
 
     async def _create_conversation(self) -> str:
