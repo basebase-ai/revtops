@@ -16,6 +16,7 @@ from models.crm_operation import CrmOperation
 from models.agent_task import AgentTask
 from models.workflow import Workflow, WorkflowRun
 from models.sheet_import import SheetImport
+from models.user_tool_setting import UserToolSetting
 
 __all__ = [
     "Base",
@@ -39,4 +40,5 @@ __all__ = [
     "Workflow",
     "WorkflowRun",
     "SheetImport",
+    "UserToolSetting",
 ]

@@ -100,7 +100,14 @@ interface WsCrmApprovalResult {
   [key: string]: unknown;
 }
 
-type WsMessage = WsActiveTasks | WsTaskStarted | WsTaskChunk | WsTaskComplete | WsConversationCreated | WsCatchup | WsCrmApprovalResult;
+interface WsToolApprovalResult {
+  type: 'tool_approval_result';
+  operation_id: string;
+  status: string;
+  [key: string]: unknown;
+}
+
+type WsMessage = WsActiveTasks | WsTaskStarted | WsTaskChunk | WsTaskComplete | WsConversationCreated | WsCatchup | WsCrmApprovalResult | WsToolApprovalResult;
 
 // Props
 interface AppLayoutProps {
@@ -271,8 +278,8 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
             } else if (data.type === 'text_block_complete') {
               // Text block complete, tools incoming
               markConversationMessageComplete(conversation_id);
-            } else if (data.type === 'crm_approval_result') {
-              // Store CRM approval result - create new Map to trigger re-render
+            } else if (data.type === 'crm_approval_result' || data.type === 'tool_approval_result') {
+              // Store tool approval result - create new Map to trigger re-render
               setCrmApprovalResults((prev) => {
                 const next = new Map(prev);
                 next.set(data.operation_id as string, data);
@@ -310,8 +317,9 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
           break;
         }
         
-        case 'crm_approval_result': {
-          console.log('[AppLayout] CRM approval result:', parsed.operation_id);
+        case 'crm_approval_result':
+        case 'tool_approval_result': {
+          console.log('[AppLayout] Tool approval result:', parsed.operation_id, parsed.type);
           setCrmApprovalResults((prev) => {
             const next = new Map(prev);
             next.set(parsed.operation_id, parsed);

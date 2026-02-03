@@ -23,14 +23,16 @@ class BaseConnector(ABC):
     # Override in subclasses - must match our provider names
     source_system: str = "unknown"
 
-    def __init__(self, organization_id: str) -> None:
+    def __init__(self, organization_id: str, user_id: Optional[str] = None) -> None:
         """
         Initialize the connector.
 
         Args:
             organization_id: UUID of the organization to sync data for
+            user_id: Optional UUID of specific user (for per-user integrations like Gmail)
         """
         self.organization_id = organization_id
+        self.user_id = user_id
         self._token: Optional[str] = None
         self._credentials: Optional[dict[str, Any]] = None
         self._integration: Optional[Integration] = None
@@ -110,18 +112,25 @@ class BaseConnector(ABC):
 
         # Verify we have an active integration
         async with get_session() as session:
+            # Build base query
+            conditions = [
+                Integration.organization_id == UUID(self.organization_id),
+                Integration.provider == self.source_system,
+                Integration.is_active == True,
+            ]
+            # Add user_id filter for per-user integrations (Gmail, Outlook)
+            if self.user_id:
+                conditions.append(Integration.user_id == UUID(self.user_id))
+            
             result = await session.execute(
-                select(Integration).where(
-                    Integration.organization_id == UUID(self.organization_id),
-                    Integration.provider == self.source_system,
-                    Integration.is_active == True,
-                )
+                select(Integration).where(*conditions)
             )
             integration = result.scalar_one_or_none()
 
             if not integration:
+                user_msg = f" for user {self.user_id}" if self.user_id else ""
                 raise ValueError(
-                    f"No active {self.source_system} integration for organization: {self.organization_id}"
+                    f"No active {self.source_system} integration{user_msg} for organization: {self.organization_id}"
                 )
 
             self._integration = integration

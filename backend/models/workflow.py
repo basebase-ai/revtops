@@ -5,18 +5,24 @@ Workflows allow users to create automated actions that:
 - Run on a schedule (cron-based)
 - Trigger on events (sync completed, deal created, etc.)
 - Execute a series of steps (query, LLM, notify, etc.)
+
+In the unified architecture, workflows are "scheduled prompts to the agent"
+and their execution is visible as a conversation.
 """
 from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, Index, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from models.database import Base
+
+if TYPE_CHECKING:
+    from models.conversation import Conversation
 
 
 class Workflow(Base):
@@ -95,6 +101,9 @@ class Workflow(Base):
     runs: Mapped[list["WorkflowRun"]] = relationship(
         "WorkflowRun", back_populates="workflow", lazy="dynamic",
         cascade="all, delete-orphan", passive_deletes=True
+    )
+    conversations: Mapped[list["Conversation"]] = relationship(
+        "Conversation", back_populates="workflow", lazy="dynamic"
     )
 
     def to_dict(self) -> dict[str, Any]:

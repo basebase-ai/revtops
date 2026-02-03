@@ -157,9 +157,34 @@ id, organization_id, name, domain, industry, employee_count, annual_revenue, own
 ```
 
 ### contacts
-People associated with accounts.
+**External** people associated with accounts - your customers and prospects.
+Use this table when the user asks about contacts, leads, or people at customer/prospect companies.
 ```
 id, organization_id, account_id, name, email, title, phone, custom_fields
+```
+
+### users
+**Internal** team members - your colleagues and teammates who use Revtops.
+Use this table when the user asks about "my teammates", "our team", "sales reps", "AEs", or members of their organization.
+```
+id, organization_id, email, name, role, avatar_url, created_at, last_login
+```
+- `role`: Job role like 'ae', 'sales_manager', 'cro', 'admin'
+- Users are linked to organizations via organization_id
+
+Example queries for users:
+```sql
+-- List all teammates in the user's organization
+SELECT id, name, email, role FROM users WHERE organization_id = :org_id
+
+-- Find a specific teammate by name
+SELECT * FROM users WHERE name ILIKE '%john%'
+```
+
+### organizations
+Companies/tenants using the Revtops platform - the user's own company.
+```
+id, name, email_domain, logo_url, created_at, last_sync_at
 ```
 
 ### meetings (canonical meeting entity)
@@ -264,6 +289,9 @@ Team chat messages from Slack and similar tools.
 4. **JSONB queries**: Use -> for objects, ->> for text. E.g. `custom_fields->>'from_email'`
 5. **Limit results**: Use LIMIT to avoid overwhelming responses.
 6. **Explain your analysis**: Provide insights and recommendations, not just data.
+7. **Distinguish internal vs external people**:
+   - `users` = internal teammates (colleagues, sales reps, team members)
+   - `contacts` = external people (customers, prospects, leads at other companies)
 
 You have access to the user's CRM data, emails, calendar, meeting transcripts, and team messages - all normalized and deduplicated."""
 

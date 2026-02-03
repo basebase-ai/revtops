@@ -14,7 +14,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Message } from './Message';
 import { ArtifactViewer } from './ArtifactViewer';
-import { CrmApprovalCard } from './CrmApprovalCard';
+import { PendingApprovalCard, type ApprovalResult } from './PendingApprovalCard';
 import { getConversation } from '../api/client';
 import { 
   useAppStore,
@@ -41,10 +41,11 @@ interface ChatProps {
   crmApprovalResults: Map<string, unknown>;
 }
 
-// CRM approval result type (received via parent component)
-interface WsCrmApprovalResult {
-  type: 'crm_approval_result';
+// Tool approval result type (received via parent component)
+interface WsToolApprovalResult {
+  type: 'tool_approval_result';
   operation_id: string;
+  tool_name: string;
   status: string;
   message?: string;
   success_count?: number;
@@ -53,11 +54,12 @@ interface WsCrmApprovalResult {
   error?: string;
 }
 
-// CRM approval state tracking
-interface CrmApprovalState {
+// Tool approval state tracking (generic for all tools)
+interface ToolApprovalState {
   operationId: string;
+  toolName: string;
   isProcessing: boolean;
-  result: WsCrmApprovalResult | null;
+  result: WsToolApprovalResult | null;
 }
 
 export function Chat({ 
@@ -89,7 +91,7 @@ export function Chat({
   const [currentArtifact, setCurrentArtifact] = useState<Artifact | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [selectedToolCall, setSelectedToolCall] = useState<ToolCallData | null>(null);
-  const [crmApprovals, setCrmApprovals] = useState<Map<string, CrmApprovalState>>(new Map());
+  const [toolApprovals, setToolApprovals] = useState<Map<string, ToolApprovalState>>(new Map());
   const [localConversationId, setLocalConversationId] = useState<string | null>(chatId ?? null);
   // Pending messages for new conversations (before we have an ID)
   const [pendingMessages, setPendingMessages] = useState<ChatMessage[]>([]);
@@ -114,13 +116,15 @@ export function Chat({
   }, [pendingMessages, conversationState?.messages]);
   const isThinking = pendingThinking || conversationThinking;
 
-  // Handle CRM approval
-  const handleCrmApprove = useCallback((operationId: string, skipDuplicates: boolean) => {
-    console.log('[Chat] Approving CRM operation:', operationId);
-    setCrmApprovals((prev) => {
+  // Handle tool approval (generic for all tools)
+  const handleToolApprove = useCallback((operationId: string, options?: Record<string, unknown>) => {
+    console.log('[Chat] Approving tool operation:', operationId, options);
+    const existing = toolApprovals.get(operationId);
+    setToolApprovals((prev) => {
       const newMap = new Map(prev);
       newMap.set(operationId, {
         operationId,
+        toolName: existing?.toolName ?? 'unknown',
         isProcessing: true,
         result: null,
       });
@@ -128,21 +132,23 @@ export function Chat({
     });
     const currentConversationId = localConversationId || chatId;
     sendMessage({
-      type: 'crm_approval',
+      type: 'tool_approval',
       operation_id: operationId,
       approved: true,
-      skip_duplicates: skipDuplicates,
+      options: options ?? {},
       conversation_id: currentConversationId,
     });
-  }, [sendMessage, localConversationId, chatId]);
+  }, [sendMessage, localConversationId, chatId, toolApprovals]);
 
-  // Handle CRM cancel
-  const handleCrmCancel = useCallback((operationId: string) => {
-    console.log('[Chat] Canceling CRM operation:', operationId);
-    setCrmApprovals((prev) => {
+  // Handle tool cancel (generic for all tools)
+  const handleToolCancel = useCallback((operationId: string) => {
+    console.log('[Chat] Canceling tool operation:', operationId);
+    const existing = toolApprovals.get(operationId);
+    setToolApprovals((prev) => {
       const newMap = new Map(prev);
       newMap.set(operationId, {
         operationId,
+        toolName: existing?.toolName ?? 'unknown',
         isProcessing: true,
         result: null,
       });
@@ -150,24 +156,24 @@ export function Chat({
     });
     const currentConversationId = localConversationId || chatId;
     sendMessage({
-      type: 'crm_approval',
+      type: 'tool_approval',
       operation_id: operationId,
       approved: false,
       conversation_id: currentConversationId,
     });
-  }, [sendMessage, localConversationId, chatId]);
+  }, [sendMessage, localConversationId, chatId, toolApprovals]);
 
-  // Sync CRM approval results from parent
+  // Sync tool approval results from parent (handles both old crm_approval and new tool_approval)
   useEffect(() => {
     crmApprovalResults.forEach((result, operationId) => {
-      setCrmApprovals((prev) => {
+      setToolApprovals((prev) => {
         const existing = prev.get(operationId);
         if (existing?.isProcessing) {
           const newMap = new Map(prev);
           newMap.set(operationId, {
             ...existing,
             isProcessing: false,
-            result: result as WsCrmApprovalResult,
+            result: result as WsToolApprovalResult,
           });
           return newMap;
         }
@@ -546,10 +552,10 @@ export function Chat({
                 <MessageWithBlocks
                   key={msg.id}
                   message={msg}
-                  crmApprovals={crmApprovals}
+                  toolApprovals={toolApprovals}
                   onArtifactClick={setCurrentArtifact}
-                  onCrmApprove={handleCrmApprove}
-                  onCrmCancel={handleCrmCancel}
+                  onToolApprove={handleToolApprove}
+                  onToolCancel={handleToolCancel}
                   onToolClick={(block) => setSelectedToolCall({
                     toolName: block.name,
                     toolId: block.id,
@@ -672,17 +678,17 @@ export function Chat({
  */
 function MessageWithBlocks({
   message,
-  crmApprovals,
+  toolApprovals,
   onArtifactClick,
-  onCrmApprove,
-  onCrmCancel,
+  onToolApprove,
+  onToolCancel,
   onToolClick,
 }: {
   message: ChatMessage;
-  crmApprovals: Map<string, { operationId: string; isProcessing: boolean; result: unknown }>;
+  toolApprovals: Map<string, { operationId: string; toolName: string; isProcessing: boolean; result: unknown }>;
   onArtifactClick: (artifact: { id: string; type: string; title: string; data: Record<string, unknown> }) => void;
-  onCrmApprove: (operationId: string, skipDuplicates: boolean) => void;
-  onCrmCancel: (operationId: string) => void;
+  onToolApprove: (operationId: string, options?: Record<string, unknown>) => void;
+  onToolCancel: (operationId: string) => void;
   onToolClick: (block: ToolUseBlock) => void;
 }): JSX.Element {
   const blocks = message.contentBlocks ?? [];
@@ -720,52 +726,44 @@ function MessageWithBlocks({
     block.type === 'text' ? idx : lastIdx, -1);
 
   const renderToolBlock = (block: ToolUseBlock): JSX.Element => {
-    // CRM write gets special handling
-    if (block.name === 'crm_write' && block.result) {
-      const result = block.result as Record<string, unknown>;
+    // Check if this is a pending_approval response from any tool
+    const result = block.result as Record<string, unknown> | undefined;
+    const isPendingApproval = result?.type === 'pending_approval' || result?.status === 'pending_approval';
+    
+    if (isPendingApproval && result) {
       const operationId = result.operation_id as string;
-      const approvalState = crmApprovals.get(operationId);
+      const toolName = (result.tool_name as string) || block.name;
+      const approvalState = toolApprovals.get(operationId);
       
+      // Check if we have a final result stored (completed/failed/canceled)
       const storedStatus = result?.status as string | undefined;
       const isFinalState = storedStatus && ['completed', 'failed', 'canceled', 'expired'].includes(storedStatus);
       
       const finalResult = isFinalState
-        ? (result as { status: string; message?: string; success_count?: number; failure_count?: number; skipped_count?: number; error?: string })
-        : (approvalState?.result as { status: string; message?: string; success_count?: number; failure_count?: number; skipped_count?: number; error?: string } | null) ?? null;
+        ? (result as unknown as ApprovalResult)
+        : (approvalState?.result as ApprovalResult | null) ?? null;
 
-      if (result?.preview || finalResult) {
-        return (
-          <div key={block.id} className="my-1">
-            <CrmApprovalCard
-              data={result as {
-                operation_id: string;
-                target_system: string;
-                record_type: string;
-                operation: string;
-                preview: {
-                  records: Record<string, unknown>[];
-                  record_count: number;
-                  will_create: number;
-                  will_skip: number;
-                  will_update: number;
-                  duplicate_warnings: Array<{
-                    record: Record<string, unknown>;
-                    existing_id: string;
-                    existing: Record<string, unknown>;
-                    match_field: string;
-                    match_value: string;
-                  }>;
-                };
-                message: string;
-              }}
-              onApprove={onCrmApprove}
-              onCancel={onCrmCancel}
-              isProcessing={approvalState?.isProcessing ?? false}
-              result={finalResult}
-            />
-          </div>
-        );
-      }
+      return (
+        <div key={block.id} className="my-1">
+          <PendingApprovalCard
+            data={{
+              type: 'pending_approval',
+              status: (result.status as string) ?? 'pending_approval',
+              operation_id: operationId,
+              tool_name: toolName,
+              preview: (result.preview as Record<string, unknown>) ?? {},
+              message: (result.message as string) ?? '',
+              target_system: result.target_system as string | undefined,
+              record_type: result.record_type as string | undefined,
+              operation: result.operation as string | undefined,
+            }}
+            onApprove={onToolApprove}
+            onCancel={onToolCancel}
+            isProcessing={approvalState?.isProcessing ?? false}
+            result={finalResult}
+          />
+        </div>
+      );
     }
 
     return (

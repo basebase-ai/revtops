@@ -1,17 +1,24 @@
 """
 Conversation model for grouping chat messages.
+
+Conversations can be:
+- type='agent': Interactive user chat sessions
+- type='workflow': Automated workflow execution (visible as chat)
 """
 from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from sqlalchemy import DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from models.database import Base
+
+# Conversation types
+ConversationType = Literal["agent", "workflow"]
 
 
 class Conversation(Base):
@@ -28,6 +35,18 @@ class Conversation(Base):
     organization_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=True, index=True
     )
+    
+    # Conversation type: 'agent' for interactive, 'workflow' for automated
+    type: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="agent", index=True
+    )
+    
+    # For workflow conversations, link to the workflow that triggered it
+    workflow_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("workflows.id", ondelete="SET NULL"), 
+        nullable=True, index=True
+    )
+    
     title: Mapped[Optional[str]] = mapped_column(
         String(255), nullable=True
     )  # Auto-generated from first message
@@ -53,20 +72,33 @@ class Conversation(Base):
     messages: Mapped[list["ChatMessage"]] = relationship(
         "ChatMessage", back_populates="conversation", order_by="ChatMessage.created_at"
     )
+    workflow: Mapped[Optional["Workflow"]] = relationship(
+        "Workflow", back_populates="conversations"
+    )
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for API responses."""
-        return {
+        result: dict[str, Any] = {
             "id": str(self.id),
             "user_id": str(self.user_id),
+            "type": self.type,
             "title": self.title,
             "summary": self.summary,
             "created_at": f"{self.created_at.isoformat()}Z" if self.created_at else None,
             "updated_at": f"{self.updated_at.isoformat()}Z" if self.updated_at else None,
         }
+        if self.workflow_id:
+            result["workflow_id"] = str(self.workflow_id)
+        return result
+    
+    @property
+    def is_workflow(self) -> bool:
+        """Check if this is a workflow conversation."""
+        return self.type == "workflow"
 
 
-# Import ChatMessage for type hints (avoid circular import at runtime)
+# Import for type hints (avoid circular import at runtime)
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from models.chat_message import ChatMessage
+    from models.workflow import Workflow

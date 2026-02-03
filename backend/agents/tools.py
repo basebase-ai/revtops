@@ -1,12 +1,13 @@
 """
 Tool definitions and execution for Claude.
 
-Tools:
-- run_sql_query: Execute arbitrary SELECT queries (read-only)
-- search_activities: Semantic search across emails, meetings, messages
-- create_artifact: Save analysis/dashboard
-- web_search: Search the web and get summarized results
-- crm_write: Create/update records in CRM (with user approval)
+Tools are organized by category (see registry.py):
+- LOCAL_READ: run_sql_query, search_activities
+- LOCAL_WRITE: create_artifact, create_workflow, trigger_workflow
+- EXTERNAL_READ: web_search, enrich_contacts_with_apollo, enrich_company_with_apollo
+- EXTERNAL_WRITE: crm_write, send_email_from, send_slack, trigger_sync
+
+EXTERNAL_WRITE tools require user approval by default (can be overridden in settings).
 """
 
 import json
@@ -28,7 +29,56 @@ from models.database import get_session
 from models.deal import Deal
 from models.integration import Integration
 
+# Import the unified tool registry
+from agents.registry import get_tools_for_claude, get_tool, requires_approval
+
 logger = logging.getLogger(__name__)
+
+# =============================================================================
+# Pending Operations Store (temporary until Phase 6 PendingOperation table)
+# =============================================================================
+# This stores pending operation params in memory so they can be executed on approval
+# Key: operation_id, Value: {tool_name, params, organization_id, user_id, created_at}
+
+from datetime import datetime as dt
+from typing import TypedDict
+
+class PendingOperationData(TypedDict):
+    tool_name: str
+    params: dict[str, Any]
+    organization_id: str
+    user_id: str
+    created_at: str
+
+# In-memory store for pending operations (will be replaced by database in Phase 6)
+_pending_operations: dict[str, PendingOperationData] = {}
+
+def store_pending_operation(
+    operation_id: str,
+    tool_name: str,
+    params: dict[str, Any],
+    organization_id: str,
+    user_id: str,
+) -> None:
+    """Store a pending operation for later execution."""
+    _pending_operations[operation_id] = {
+        "tool_name": tool_name,
+        "params": params,
+        "organization_id": organization_id,
+        "user_id": user_id,
+        "created_at": dt.utcnow().isoformat(),
+    }
+    logger.info(f"[Tools] Stored pending operation {operation_id} for {tool_name}")
+
+def get_pending_operation(operation_id: str) -> PendingOperationData | None:
+    """Retrieve a pending operation by ID."""
+    return _pending_operations.get(operation_id)
+
+def remove_pending_operation(operation_id: str) -> None:
+    """Remove a pending operation after execution."""
+    if operation_id in _pending_operations:
+        del _pending_operations[operation_id]
+        logger.info(f"[Tools] Removed pending operation {operation_id}")
 
 # Tables that are allowed to be queried (synced data only - no internal admin tables)
 # Note: Row-Level Security (RLS) handles organization filtering at the database level
@@ -39,411 +89,73 @@ ALLOWED_TABLES: set[str] = {
 
 
 def get_tools() -> list[dict[str, Any]]:
-    """Return tool definitions for Claude."""
-    return [
-        {
-            "name": "run_sql_query",
-            "description": """Execute a read-only SQL SELECT query against the database.
-            
-Use this for any data analysis: filtering, joins, aggregations, date comparisons, etc.
-The query is automatically scoped to the user's organization for multi-tenant tables.
+    """Return tool definitions for Claude from the unified registry."""
+    return get_tools_for_claude()
 
-Available tables:
-- meetings: Canonical meeting entities - deduplicated across all sources (title, scheduled_start, participants, summary, action_items, key_topics)
-- deals: Sales opportunities (name, amount, stage, close_date, owner_id, account_id, pipeline_id)
-- accounts: Companies/customers (name, domain, industry, employee_count, annual_revenue)
-- contacts: People at accounts (name, email, title, phone, account_id)
-- activities: Raw activity records - query by TYPE not source (type, subject, description, activity_date, meeting_id)
-- pipelines: Sales pipelines (name, display_order, is_default)
-- pipeline_stages: Stages in pipelines (pipeline_id, name, probability, is_closed_won)
-- integrations: Connected data sources (provider, is_active, last_sync_at)
-- users: Team members (email, name, role)
-- organizations: User's company info (name, logo_url)
 
-IMPORTANT: Query activities by TYPE, not source_system:
-- type = 'email' for all emails
-- type = 'meeting' for calendar events
-- type = 'meeting_transcript' for transcripts
-- type = 'slack_message' for messages
-
-Examples:
-- SELECT title, scheduled_start, summary, action_items FROM meetings ORDER BY scheduled_start DESC LIMIT 10
-- SELECT * FROM meetings WHERE scheduled_start >= CURRENT_DATE AND scheduled_start < CURRENT_DATE + interval '7 days'
-- SELECT * FROM activities WHERE type = 'email' ORDER BY activity_date DESC LIMIT 20
-- SELECT stage, COUNT(*), SUM(amount) FROM deals GROUP BY stage
-- SELECT d.name, a.name as account FROM deals d LEFT JOIN accounts a ON d.account_id = a.id
-
-IMPORTANT: Only SELECT queries are allowed. No INSERT, UPDATE, DELETE, DROP, etc.""",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "The SQL SELECT query to execute",
-                    },
-                },
-                "required": ["query"],
-            },
-        },
-        {
-            "name": "search_activities",
-            "description": """Semantic search across emails, meetings, messages, and other activities.
-
-Use this when the user wants to find activities by meaning/concept rather than exact text.
-This searches the content of emails, meeting transcripts, messages, etc.
-
-Examples:
-- "Find emails about pricing negotiations"
-- "Search for meeting discussions about the Q4 roadmap"
-- "Look for communications about contract renewal"
-
-For exact text matching (e.g., emails from a specific domain), use run_sql_query instead.
-For meeting information (participants, schedule, summaries), query the meetings table directly.""",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "Natural language search query describing what to find",
-                    },
-                    "types": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Filter by activity type: 'email', 'meeting', 'meeting_transcript', 'slack_message', 'call'",
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "description": "Max results to return (default 10)",
-                        "default": 10,
-                    },
-                },
-                "required": ["query"],
-            },
-        },
-        {
-            "name": "create_artifact",
-            "description": "Save an analysis, report, or dashboard for the user to view later.",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "type": {
-                        "type": "string",
-                        "enum": ["dashboard", "report", "analysis"],
-                        "description": "Type of artifact to create",
-                    },
-                    "title": {
-                        "type": "string",
-                        "description": "Title of the artifact",
-                    },
-                    "description": {
-                        "type": "string",
-                        "description": "Description of what this artifact contains",
-                    },
-                    "data": {
-                        "type": "object",
-                        "description": "The analysis data/content",
-                    },
-                    "is_live": {
-                        "type": "boolean",
-                        "description": "Whether to refresh data on load (true) or keep static snapshot (false)",
-                        "default": False,
-                    },
-                },
-                "required": ["type", "title", "data"],
-            },
-        },
-        {
-            "name": "web_search",
-            "description": """Search the web for real-time information and get summarized results.
-
-Use this tool when you need external information not available in the user's data:
-- Industry benchmarks or best practices (e.g., "average SaaS close rates")
-- Company information not in the CRM (e.g., "what does Acme Corp do")
-- Market trends or competitor analysis
-- Current events or news about companies
-- Sales methodologies or frameworks (e.g., "MEDDIC qualification")
-
-Examples:
-- "What is the typical close rate for enterprise SaaS deals?"
-- "Latest news about TechCorp acquisition"
-- "BANT vs MEDDIC sales qualification frameworks"
-
-Do NOT use this for data that's in the user's database - use run_sql_query instead.""",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "The search query - be specific and include relevant context",
-                    },
-                },
-                "required": ["query"],
-            },
-        },
-        {
-            "name": "crm_write",
-            "description": """Create or update records in the CRM (HubSpot).
-
-This tool validates the input, checks for duplicates, and shows the user a preview 
-with Approve/Cancel buttons. The operation only executes after user approval.
-
-Use this for:
-- Creating contacts from prospect lists
-- Creating companies from account data
-- Creating deals from opportunity information
-- Updating existing records
-
-The tool returns a preview with status "pending_approval". The user will see 
-Approve/Cancel buttons. Tell them to review and click Approve to proceed.
-
-Property names for each record type:
-- contact: email (required), firstname, lastname, company, jobtitle, phone
-- company: name (required), domain, industry, numberofemployees
-- deal: dealname (required), amount, dealstage, closedate, pipeline
-
-IMPORTANT: HubSpot industry field requires specific enum values. Common values:
-COMPUTER_SOFTWARE, INFORMATION_TECHNOLOGY_AND_SERVICES, INTERNET, COMPUTER_HARDWARE,
-COMPUTER_NETWORKING, MARKETING_AND_ADVERTISING, FINANCIAL_SERVICES, MANAGEMENT_CONSULTING,
-BANKING, RETAIL, HEALTH_WELLNESS_AND_FITNESS, HOSPITAL_HEALTH_CARE, MEDICAL_DEVICES,
-EDUCATION_MANAGEMENT, E_LEARNING, REAL_ESTATE, CONSTRUCTION, ENTERTAINMENT, MEDIA_PRODUCTION,
-TELECOMMUNICATIONS, AUTOMOTIVE, FOOD_BEVERAGES, CONSUMER_GOODS, PHARMACEUTICALS, BIOTECHNOLOGY,
-INSURANCE, LEGAL_SERVICES, ACCOUNTING, STAFFING_AND_RECRUITING, VENTURE_CAPITAL_PRIVATE_EQUITY.
-Do NOT use freeform values like "Technology" - always use the exact enum values.""",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "target_system": {
-                        "type": "string",
-                        "enum": ["hubspot"],
-                        "description": "The CRM system to write to",
-                    },
-                    "record_type": {
-                        "type": "string",
-                        "enum": ["contact", "company", "deal"],
-                        "description": "Type of CRM record to create/update",
-                    },
-                    "operation": {
-                        "type": "string",
-                        "enum": ["create", "update", "upsert"],
-                        "description": "Operation to perform. 'upsert' will update if exists, create if not.",
-                    },
-                    "records": {
-                        "type": "array",
-                        "items": {"type": "object"},
-                        "description": "Array of records to write. Each record should have the appropriate properties for the record_type.",
-                    },
-                },
-                "required": ["target_system", "record_type", "operation", "records"],
-            },
-        },
-        {
-            "name": "create_workflow",
-            "description": """Create a workflow automation that runs on a schedule or in response to events.
-
-Use this when users want to automate recurring tasks like:
-- "Every morning, send me a summary of stale deals to Slack"
-- "When a sync completes, analyze new data and email me insights"
-- "Daily at 9am, check for deals without activity in 30 days"
-
-## Trigger Types
-- **schedule**: Runs on a cron schedule (e.g., "0 9 * * *" = 9am daily)
-- **event**: Runs when an event occurs (e.g., "sync.completed")
-- **manual**: Only runs when triggered manually
-
-## Available Actions
-
-Each workflow has a list of steps that execute in sequence:
-
-1. **run_query**: Execute SQL to fetch data
-   - params: { "sql": "SELECT ... WHERE organization_id = :org_id ..." }
-   - IMPORTANT: Always include organization_id = :org_id in WHERE clause
-   
-2. **llm**: Process data with AI
-   - params: { "prompt": "Summarize this data: {step_0_output}" }
-   - Use {step_N_output} to reference output from step N
-   
-3. **send_slack**: Post to a Slack channel
-   - params: { "channel": "#channel-name", "message": "..." }
-   
-4. **send_system_email**: Send email from Revtops system
-   - params: { "to": "email@example.com", "subject": "...", "body": "..." }
-   
-5. **send_system_sms**: Send SMS (requires Twilio config)
-   - params: { "to": "+14155551234", "body": "..." }
-   
-6. **send_email_from**: Send from user's connected Gmail/Outlook
-   - params: { "provider": "gmail", "to": "...", "subject": "...", "body": "..." }
-   
-7. **sync**: Trigger a data sync
-   - params: { "provider": "hubspot" }
-
-## Example Workflow
-
-Name: "Daily Stale Deals Alert"
-Trigger: schedule, cron "0 9 * * 1-5" (weekdays at 9am)
-Steps:
-1. run_query: Find deals without activity in 30 days
-2. llm: Summarize and suggest actions
-3. send_slack: Post to #sales-alerts
-
-The workflow is saved and will run automatically. Users can view/manage it in the Automations tab.""",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "name": {
-                        "type": "string",
-                        "description": "Human-readable name for the workflow",
-                    },
-                    "description": {
-                        "type": "string",
-                        "description": "Description of what the workflow does",
-                    },
-                    "trigger_type": {
-                        "type": "string",
-                        "enum": ["schedule", "event", "manual"],
-                        "description": "What triggers this workflow",
-                    },
-                    "trigger_config": {
-                        "type": "object",
-                        "description": "Trigger configuration. For schedule: {cron: '0 9 * * *'}. For event: {event: 'sync.completed'}",
-                    },
-                    "steps": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "action": {
-                                    "type": "string",
-                                    "enum": ["run_query", "llm", "send_slack", "send_system_email", "send_system_sms", "send_email_from", "sync"],
-                                },
-                                "params": {"type": "object"},
-                            },
-                            "required": ["action", "params"],
-                        },
-                        "description": "List of steps to execute in order",
-                    },
-                },
-                "required": ["name", "trigger_type", "trigger_config", "steps"],
-            },
-        },
-        {
-            "name": "trigger_workflow",
-            "description": """Manually trigger a workflow to test it or run it on-demand.
-
-Use this after creating a workflow to test that it works correctly.
-Returns the task_id which can be used to check status.
-
-The workflow runs asynchronously - results will appear in the Automations tab.""",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "workflow_id": {
-                        "type": "string",
-                        "description": "UUID of the workflow to trigger",
-                    },
-                },
-                "required": ["workflow_id"],
-            },
-        },
-        {
-            "name": "enrich_contacts_with_apollo",
-            "description": """Enrich contacts using Apollo.io's database to get current job titles, companies, and contact info.
-
-Use this when users want to:
-- Update outdated job titles and companies for contacts
-- Fill in missing information like email, phone, LinkedIn
-- Verify and refresh contact data quality
-- Get company information for contacts
-
-This tool reads contacts from your database, enriches them via Apollo, and returns 
-the enriched data. The results can then be used with crm_write to update records.
-
-IMPORTANT: This requires Apollo.io integration to be connected. Apollo charges 
-credits for each enrichment, so the user should be aware of credit usage.
-
-The tool enriches contacts in batches of 10 (Apollo's limit). For large numbers 
-of contacts (1000+), this may take several minutes and consume many credits.
-
-Input can be either:
-1. A list of contact objects with identifying info (email, name, company domain)
-2. A query to fetch contacts from the database first
-
-Returned enrichment includes:
-- Current job title and company
-- Work email and personal emails  
-- Phone numbers
-- LinkedIn, Twitter, GitHub URLs
-- Company details (industry, size, domain)""",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "contacts": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "email": {"type": "string", "description": "Contact's email (best identifier)"},
-                                "first_name": {"type": "string", "description": "First name"},
-                                "last_name": {"type": "string", "description": "Last name"},
-                                "domain": {"type": "string", "description": "Company domain (e.g., 'acme.com')"},
-                                "linkedin_url": {"type": "string", "description": "LinkedIn profile URL"},
-                                "organization_name": {"type": "string", "description": "Company name"},
-                            },
-                        },
-                        "description": "List of contacts to enrich. Provide at least email or (name + domain/company) for matching.",
-                    },
-                    "reveal_personal_emails": {
-                        "type": "boolean",
-                        "description": "Request personal email addresses (uses additional credits)",
-                        "default": False,
-                    },
-                    "reveal_phone_numbers": {
-                        "type": "boolean",
-                        "description": "Request phone numbers (uses additional credits)",
-                        "default": False,
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "description": "Maximum number of contacts to enrich (default 50, max 500)",
-                        "default": 50,
-                    },
-                },
-                "required": ["contacts"],
-            },
-        },
-        {
-            "name": "enrich_company_with_apollo",
-            "description": """Enrich a company/organization using Apollo.io's database.
-
-Use this to get detailed company information like:
-- Industry and sub-industry
-- Employee count and revenue estimates
-- Technologies used
-- Company description and keywords
-- Social media links
-- Address and contact info
-
-Requires company domain (e.g., "acme.com") to look up.
-
-IMPORTANT: Requires Apollo.io integration to be connected.""",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "domain": {
-                        "type": "string",
-                        "description": "Company domain to enrich (e.g., 'acme.com')",
-                    },
-                },
-                "required": ["domain"],
-            },
-        },
-    ]
+async def _should_skip_approval(
+    tool_name: str, 
+    user_id: str, 
+    context: dict[str, Any] | None
+) -> bool:
+    """
+    Check if approval should be skipped for this tool execution.
+    
+    Approval is skipped if:
+    1. The tool doesn't require approval by default, OR
+    2. The user has enabled auto_approve for this tool, OR
+    3. This is a workflow execution with this tool in auto_approve_tools
+    
+    Args:
+        tool_name: Name of the tool
+        user_id: User UUID
+        context: Execution context (may contain workflow auto_approve_tools)
+        
+    Returns:
+        True if approval should be skipped, False if approval required
+    """
+    # Check if tool requires approval by default
+    if not requires_approval(tool_name):
+        return True
+    
+    # Check workflow-specific auto-approve
+    if context and context.get("is_workflow"):
+        auto_approve_tools = context.get("auto_approve_tools", [])
+        if tool_name in auto_approve_tools:
+            logger.info(f"[Tools] Skipping approval for {tool_name} - workflow auto-approved")
+            return True
+    
+    # Check user's global settings
+    from api.routes.tool_settings import is_tool_auto_approved
+    if await is_tool_auto_approved(UUID(user_id), tool_name):
+        logger.info(f"[Tools] Skipping approval for {tool_name} - user auto-approved")
+        return True
+    
+    return False
 
 
 async def execute_tool(
-    tool_name: str, tool_input: dict[str, Any], organization_id: str | None, user_id: str
+    tool_name: str, 
+    tool_input: dict[str, Any], 
+    organization_id: str | None, 
+    user_id: str,
+    context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Execute a tool and return results."""
+    """
+    Execute a tool and return results.
+    
+    Args:
+        tool_name: Name of the tool to execute
+        tool_input: Input parameters for the tool
+        organization_id: Organization UUID (required for most tools)
+        user_id: User UUID executing the tool
+        context: Optional context containing:
+            - is_workflow: bool - Whether this is a workflow execution
+            - auto_approve_tools: list[str] - Tools auto-approved for this workflow
+            
+    Returns:
+        Tool execution result or pending_approval status
+    """
     logger.info(
         "[Tools] execute_tool called: %s | org_id=%s | user_id=%s | input=%s",
         tool_name,
@@ -456,7 +168,10 @@ async def execute_tool(
     if organization_id is None:
         logger.warning("[Tools] No organization_id - returning error")
         return {"error": "No organization associated with user. Please complete onboarding."}
-
+    
+    # Check if this tool should bypass approval (for auto-approved workflows)
+    skip_approval = await _should_skip_approval(tool_name, user_id, context)
+    
     if tool_name == "run_sql_query":
         result = await _run_sql_query(tool_input, organization_id, user_id)
         logger.info("[Tools] run_sql_query returned %d rows", result.get("row_count", 0))
@@ -478,7 +193,7 @@ async def execute_tool(
         return result
 
     elif tool_name == "crm_write":
-        result = await _crm_write(tool_input, organization_id, user_id)
+        result = await _crm_write(tool_input, organization_id, user_id, skip_approval)
         logger.info("[Tools] crm_write completed: %s", result.get("status"))
         return result
 
@@ -500,6 +215,21 @@ async def execute_tool(
     elif tool_name == "enrich_company_with_apollo":
         result = await _enrich_company_with_apollo(tool_input, organization_id)
         logger.info("[Tools] enrich_company_with_apollo completed")
+        return result
+
+    elif tool_name == "send_email_from":
+        result = await _send_email_from(tool_input, organization_id, user_id, skip_approval)
+        logger.info("[Tools] send_email_from completed: %s", result.get("status"))
+        return result
+
+    elif tool_name == "send_slack":
+        result = await _send_slack(tool_input, organization_id, user_id, skip_approval)
+        logger.info("[Tools] send_slack completed: %s", result.get("status"))
+        return result
+
+    elif tool_name == "trigger_sync":
+        result = await _trigger_sync(tool_input, organization_id)
+        logger.info("[Tools] trigger_sync completed: %s", result.get("status"))
         return result
 
     else:
@@ -761,13 +491,20 @@ async def _web_search(params: dict[str, Any]) -> dict[str, Any]:
 
 
 async def _crm_write(
-    params: dict[str, Any], organization_id: str, user_id: str
+    params: dict[str, Any], organization_id: str, user_id: str, skip_approval: bool = False
 ) -> dict[str, Any]:
     """
     Create or update CRM records with user approval workflow.
     
-    This function validates input, checks for duplicates, creates a pending
-    CrmOperation, and returns a preview for user approval.
+    This function validates input, checks for duplicates, and either:
+    - Creates a pending CrmOperation for user approval (default)
+    - Executes immediately if skip_approval is True (auto-approved user/workflow)
+    
+    Args:
+        params: CRM operation parameters
+        organization_id: Organization UUID
+        user_id: User UUID
+        skip_approval: If True, execute immediately without approval
     """
     target_system = params.get("target_system", "").lower()
     record_type = params.get("record_type", "").lower()
@@ -938,6 +675,12 @@ async def _crm_write(
     elif operation == "upsert" and duplicate_warnings:
         will_update = len(duplicate_warnings)
         will_create = len(validated_records) - will_update
+    
+    # If skip_approval is True, execute immediately
+    if skip_approval:
+        logger.info("[Tools._crm_write] Auto-approved, executing immediately")
+        result = await execute_crm_operation(operation_id, skip_duplicates=True)
+        return result
     
     # Return preview for user approval
     return {
@@ -1792,3 +1535,367 @@ async def _enrich_company_with_apollo(
     except Exception as e:
         logger.error("[Tools._enrich_company_with_apollo] Failed: %s", str(e))
         return {"error": f"Apollo company enrichment failed: {str(e)}"}
+
+
+async def _send_email_from(
+    params: dict[str, Any], organization_id: str, user_id: str, skip_approval: bool = False
+) -> dict[str, Any]:
+    """
+    Send an email from the user's connected Gmail or Outlook account.
+    
+    This requires approval by default. If skip_approval is True (user auto-approved
+    or workflow auto-approved), executes immediately.
+    
+    Args:
+        params: Contains to, subject, body, cc, bcc
+        organization_id: Organization UUID
+        user_id: User UUID (whose email account to use)
+        skip_approval: If True, send immediately without approval
+        
+    Returns:
+        Pending approval preview, or send result if skip_approval
+    """
+    to = params.get("to", "").strip()
+    subject = params.get("subject", "").strip()
+    body = params.get("body", "").strip()
+    cc = params.get("cc", [])
+    bcc = params.get("bcc", [])
+    
+    if not to:
+        return {"error": "Recipient email address (to) is required."}
+    
+    if not subject:
+        return {"error": "Email subject is required."}
+    
+    if not body:
+        return {"error": "Email body is required."}
+    
+    # Check for active email integration (Gmail or Microsoft)
+    async with get_session() as session:
+        result = await session.execute(
+            select(Integration).where(
+                Integration.organization_id == UUID(organization_id),
+                Integration.user_id == UUID(user_id),
+                Integration.provider.in_(["gmail", "microsoft_mail"]),
+                Integration.is_active == True,
+            )
+        )
+        integration = result.scalar_one_or_none()
+        
+        if not integration:
+            return {
+                "error": "No connected email account found. Please connect Gmail or Outlook in Data Sources.",
+                "suggestion": "Go to Data Sources and connect your Gmail or Outlook account.",
+            }
+    
+    # If skip_approval, execute immediately
+    if skip_approval:
+        logger.info("[Tools._send_email_from] Auto-approved, sending immediately")
+        return await execute_send_email_from(params, organization_id, user_id)
+    
+    # Create pending operation for approval
+    operation_id = str(uuid4())
+    
+    # Store the full params for later execution (temp solution until Phase 6)
+    store_pending_operation(
+        operation_id=operation_id,
+        tool_name="send_email_from",
+        params=params,
+        organization_id=organization_id,
+        user_id=user_id,
+    )
+    
+    return {
+        "type": "pending_approval",
+        "status": "pending_approval",
+        "operation_id": operation_id,
+        "tool_name": "send_email_from",
+        "preview": {
+            "provider": integration.provider,
+            "to": to,
+            "subject": subject,
+            "body": body[:500] + ("..." if len(body) > 500 else ""),
+            "cc": cc,
+            "bcc": bcc,
+        },
+        "message": f"Ready to send email to {to}. Please review and click Approve to send.",
+    }
+
+
+async def execute_send_email_from(
+    params: dict[str, Any], organization_id: str, user_id: str
+) -> dict[str, Any]:
+    """
+    Actually execute the email send (called after user approval).
+    
+    Args:
+        params: Contains to, subject, body, cc, bcc
+        organization_id: Organization UUID
+        user_id: User UUID (whose email account to use)
+        
+    Returns:
+        Success/failure result
+    """
+    from connectors.gmail import GmailConnector
+    from connectors.microsoft_mail import MicrosoftMailConnector
+    
+    to = params.get("to", "").strip()
+    subject = params.get("subject", "").strip()
+    body = params.get("body", "").strip()
+    cc = params.get("cc", [])
+    bcc = params.get("bcc", [])
+    
+    # Get the user's email integration
+    async with get_session() as session:
+        result = await session.execute(
+            select(Integration).where(
+                Integration.organization_id == UUID(organization_id),
+                Integration.user_id == UUID(user_id),
+                Integration.provider.in_(["gmail", "microsoft_mail"]),
+                Integration.is_active == True,
+            )
+        )
+        integration = result.scalar_one_or_none()
+        
+        if not integration:
+            return {
+                "status": "failed",
+                "error": "No connected email account found.",
+            }
+    
+    try:
+        # Create appropriate connector with user_id for per-user integrations
+        if integration.provider == "gmail":
+            connector = GmailConnector(
+                organization_id=organization_id,
+                user_id=user_id,
+            )
+        else:
+            connector = MicrosoftMailConnector(
+                organization_id=organization_id,
+                user_id=user_id,
+            )
+        
+        # Send the email
+        result = await connector.send_email(
+            to=to,
+            subject=subject,
+            body=body,
+            cc=cc if cc else None,
+            bcc=bcc if bcc else None,
+        )
+        
+        if result.get("success"):
+            logger.info(f"[Tools] Email sent via {integration.provider} to {to}")
+            return {
+                "status": "completed",
+                "message": f"Email sent successfully to {to}",
+                "provider": integration.provider,
+                "to": to,
+                "subject": subject,
+            }
+        else:
+            return {
+                "status": "failed",
+                "error": result.get("error", "Failed to send email"),
+            }
+            
+    except Exception as e:
+        logger.error(f"[Tools._send_email_from] Failed: {str(e)}")
+        return {
+            "status": "failed",
+            "error": str(e),
+        }
+
+
+async def _send_slack(
+    params: dict[str, Any], organization_id: str, user_id: str, skip_approval: bool = False
+) -> dict[str, Any]:
+    """
+    Post a message to a Slack channel.
+    
+    This requires approval by default. If skip_approval is True, posts immediately.
+    
+    Args:
+        params: Contains channel, message, thread_ts
+        organization_id: Organization UUID
+        user_id: User UUID
+        skip_approval: If True, post immediately without approval
+        
+    Returns:
+        Pending approval preview, or post result if skip_approval
+    """
+    channel = params.get("channel", "").strip()
+    message = params.get("message", "").strip()
+    thread_ts = params.get("thread_ts")
+    
+    if not channel:
+        return {"error": "Slack channel is required."}
+    
+    if not message:
+        return {"error": "Message text is required."}
+    
+    # Check for active Slack integration
+    async with get_session() as session:
+        result = await session.execute(
+            select(Integration).where(
+                Integration.organization_id == UUID(organization_id),
+                Integration.provider == "slack",
+                Integration.is_active == True,
+            )
+        )
+        integration = result.scalar_one_or_none()
+        
+        if not integration:
+            return {
+                "error": "No connected Slack workspace found. Please connect Slack in Data Sources.",
+                "suggestion": "Go to Data Sources and connect your Slack workspace.",
+            }
+    
+    # If skip_approval, execute immediately
+    if skip_approval:
+        logger.info("[Tools._send_slack] Auto-approved, posting immediately")
+        return await execute_send_slack(params, organization_id)
+    
+    # Create pending operation for approval
+    operation_id = str(uuid4())
+    
+    # Store the full params for later execution (temp solution until Phase 6)
+    store_pending_operation(
+        operation_id=operation_id,
+        tool_name="send_slack",
+        params=params,
+        organization_id=organization_id,
+        user_id=user_id,
+    )
+    
+    return {
+        "type": "pending_approval",
+        "status": "pending_approval",
+        "operation_id": operation_id,
+        "tool_name": "send_slack",
+        "preview": {
+            "channel": channel,
+            "message": message[:500] + ("..." if len(message) > 500 else ""),
+            "thread_ts": thread_ts,
+        },
+        "message": f"Ready to post to {channel}. Please review and click Approve to send.",
+    }
+
+
+async def execute_send_slack(
+    params: dict[str, Any], organization_id: str
+) -> dict[str, Any]:
+    """
+    Actually execute the Slack post (called after user approval).
+    
+    Args:
+        params: Contains channel, message, thread_ts
+        organization_id: Organization UUID
+        
+    Returns:
+        Success/failure result
+    """
+    from connectors.slack import SlackConnector
+    
+    channel = params.get("channel", "").strip()
+    message = params.get("message", "").strip()
+    thread_ts = params.get("thread_ts")
+    
+    # Get the Slack integration
+    async with get_session() as session:
+        result = await session.execute(
+            select(Integration).where(
+                Integration.organization_id == UUID(organization_id),
+                Integration.provider == "slack",
+                Integration.is_active == True,
+            )
+        )
+        integration = result.scalar_one_or_none()
+        
+        if not integration:
+            return {
+                "status": "failed",
+                "error": "No connected Slack workspace found.",
+            }
+    
+    try:
+        connector = SlackConnector(
+            organization_id=organization_id,
+            nango_connection_id=integration.nango_connection_id,
+        )
+        
+        result = await connector.post_message(
+            channel=channel,
+            text=message,
+            thread_ts=thread_ts,
+        )
+        
+        logger.info(f"[Tools] Posted to Slack channel {channel}: {result.get('ts')}")
+        return {
+            "status": "completed",
+            "message": f"Message posted to {channel}",
+            "channel": channel,
+            "ts": result.get("ts"),
+        }
+        
+    except Exception as e:
+        logger.error(f"[Tools._send_slack] Failed: {str(e)}")
+        return {
+            "status": "failed",
+            "error": str(e),
+        }
+
+
+async def _trigger_sync(
+    params: dict[str, Any], organization_id: str
+) -> dict[str, Any]:
+    """
+    Trigger a data sync for a specific provider.
+    
+    This does NOT require approval as it's just refreshing data.
+    
+    Args:
+        params: Contains provider
+        organization_id: Organization UUID
+        
+    Returns:
+        Sync status
+    """
+    provider = params.get("provider", "").strip().lower()
+    
+    if not provider:
+        return {"error": "Provider is required (e.g., 'hubspot', 'gmail', 'salesforce')."}
+    
+    # Check for active integration
+    async with get_session() as session:
+        result = await session.execute(
+            select(Integration).where(
+                Integration.organization_id == UUID(organization_id),
+                Integration.provider == provider,
+                Integration.is_active == True,
+            )
+        )
+        integration = result.scalar_one_or_none()
+        
+        if not integration:
+            return {
+                "error": f"No active {provider} integration found.",
+                "suggestion": f"Go to Data Sources and connect {provider}.",
+            }
+    
+    try:
+        # Queue sync via Celery
+        from workers.tasks.sync import sync_integration
+        task = sync_integration.delay(organization_id, provider)
+        
+        return {
+            "status": "queued",
+            "message": f"Sync for {provider} has been queued. It may take a few minutes to complete.",
+            "task_id": task.id,
+            "provider": provider,
+        }
+        
+    except Exception as e:
+        logger.error(f"[Tools._trigger_sync] Failed: {str(e)}")
+        return {"error": f"Failed to trigger sync: {str(e)}"}

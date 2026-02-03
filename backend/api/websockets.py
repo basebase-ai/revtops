@@ -22,7 +22,13 @@ from uuid import UUID, uuid4
 from fastapi import WebSocket, WebSocketDisconnect
 
 from agents.orchestrator import ChatOrchestrator
-from agents.tools import execute_crm_operation, cancel_crm_operation, update_tool_call_result
+from agents.tools import (
+    execute_crm_operation, 
+    cancel_crm_operation, 
+    update_tool_call_result,
+    execute_send_email_from,
+    execute_send_slack,
+)
 from models.conversation import Conversation
 from models.database import get_session
 from models.user import User
@@ -41,6 +47,94 @@ def _generate_title(message: str) -> str:
     return title or "New Chat"
 
 logger = logging.getLogger(__name__)
+
+
+async def _execute_tool_approval(
+    operation_id: str,
+    approved: bool,
+    options: dict,
+    organization_id: str | None,
+    user_id: str,
+) -> dict:
+    """
+    Execute or cancel a pending tool approval.
+    
+    Routes to the appropriate execution function based on the tool type.
+    
+    Args:
+        operation_id: The pending operation ID
+        approved: Whether the user approved the operation
+        options: Tool-specific options (e.g., skip_duplicates for CRM)
+        organization_id: Organization UUID
+        user_id: User UUID
+        
+    Returns:
+        Execution result dict with status, message, etc.
+    """
+    from models.crm_operation import CrmOperation
+    from models.database import get_session
+    from agents.tools import (
+        get_pending_operation,
+        remove_pending_operation,
+        execute_send_email_from,
+        execute_send_slack,
+    )
+    
+    # First check if this is in our in-memory pending operations store
+    pending_op = get_pending_operation(operation_id)
+    
+    if pending_op:
+        tool_name = pending_op["tool_name"]
+        params = pending_op["params"]
+        op_org_id = pending_op["organization_id"]
+        op_user_id = pending_op["user_id"]
+        
+        # Remove from pending store
+        remove_pending_operation(operation_id)
+        
+        if not approved:
+            return {
+                "status": "canceled",
+                "message": "Operation canceled by user",
+                "tool_name": tool_name,
+            }
+        
+        # Execute based on tool type
+        if tool_name == "send_email_from":
+            result = await execute_send_email_from(params, op_org_id, op_user_id)
+            result["tool_name"] = tool_name
+            return result
+        elif tool_name == "send_slack":
+            result = await execute_send_slack(params, op_org_id)
+            result["tool_name"] = tool_name
+            return result
+        else:
+            return {
+                "status": "failed",
+                "error": f"Unknown tool type: {tool_name}",
+                "tool_name": tool_name,
+            }
+    
+    # Check if this is a CRM operation (stored in database)
+    async with get_session() as session:
+        crm_op = await session.get(CrmOperation, UUID(operation_id))
+        
+        if crm_op:
+            # It's a CRM operation
+            skip_duplicates = options.get("skip_duplicates", True)
+            if approved:
+                result = await execute_crm_operation(operation_id, skip_duplicates)
+            else:
+                result = await cancel_crm_operation(operation_id)
+            result["tool_name"] = "crm_write"
+            return result
+    
+    # Operation not found
+    return {
+        "status": "failed",
+        "error": f"Pending operation {operation_id} not found. It may have expired or already been processed.",
+        "tool_name": "unknown",
+    }
 
 
 async def websocket_endpoint(websocket: WebSocket, user_id: str) -> None:
@@ -209,7 +303,68 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str) -> None:
                         "success": cancelled,
                     }))
 
-            # Handle CRM approval messages
+            # Handle tool approval messages (generic for all tools)
+            elif message_type == "tool_approval":
+                operation_id = data.get("operation_id")
+                approved = data.get("approved", False)
+                options = data.get("options", {})
+                tool_conversation_id = data.get("conversation_id")
+
+                if not operation_id:
+                    await websocket.send_text(json.dumps({
+                        "type": "tool_approval_result",
+                        "status": "error",
+                        "error": "Missing operation_id",
+                    }))
+                    continue
+
+                # Execute the appropriate tool based on stored operation
+                result = await _execute_tool_approval(
+                    operation_id=operation_id,
+                    approved=approved,
+                    options=options,
+                    organization_id=organization_id,
+                    user_id=user_id_str,
+                )
+
+                await update_tool_call_result(operation_id, {
+                    "type": "tool_approval_result",
+                    "status": result.get("status", "unknown"),
+                    "operation_id": operation_id,
+                    **result,
+                })
+
+                await websocket.send_text(json.dumps({
+                    "type": "tool_approval_result",
+                    "operation_id": operation_id,
+                    **result,
+                }))
+
+                # If operation failed, start a task for the agent to handle the error
+                if result.get("status") == "failed" and result.get("error") and tool_conversation_id and organization_id:
+                    tool_name = result.get("tool_name", "tool")
+                    error_feedback = (
+                        f"[{tool_name} Operation Failed] The operation you requested was approved "
+                        f"but failed with this error:\n\n{result.get('error')}\n\n"
+                        f"Please analyze the error, explain what went wrong to the user, "
+                        f"and offer to retry with corrected parameters."
+                    )
+
+                    task_id = await task_manager.start_task(
+                        conversation_id=tool_conversation_id,
+                        user_id=user_id_str,
+                        organization_id=organization_id,
+                        user_message=error_feedback,
+                    )
+                    await task_manager.subscribe(task_id, websocket)
+
+                    await websocket.send_text(json.dumps({
+                        "type": "task_started",
+                        "task_id": task_id,
+                        "conversation_id": tool_conversation_id,
+                    }))
+
+            # Legacy: Handle CRM approval messages (for backward compatibility)
             elif message_type == "crm_approval":
                 operation_id = data.get("operation_id")
                 approved = data.get("approved", False)
