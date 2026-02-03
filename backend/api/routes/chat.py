@@ -19,7 +19,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select, update, func
 
-from models.database import get_session
+from models.database import get_session, get_admin_session
 from models.chat_message import ChatMessage
 from models.conversation import Conversation
 from models.user import User
@@ -215,8 +215,8 @@ async def get_conversation(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid ID format")
 
-    # First get user's org_id (users table has RLS disabled)
-    async with get_session() as session:
+    # First get user's org_id (users table has RLS disabled, use admin session)
+    async with get_admin_session() as session:
         user = await session.get(User, user_uuid)
         if not user:
             raise HTTPException(status_code=404, detail="User not found")

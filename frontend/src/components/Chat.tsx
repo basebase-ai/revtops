@@ -189,6 +189,11 @@ export function Chat({
   // Reset local state when chatId changes
   useEffect(() => {
     setLocalConversationId(chatId ?? null);
+    // Reset conversation type when starting a new chat
+    if (!chatId) {
+      setConversationType(null);
+      setIsWorkflowPolling(false);
+    }
     // Only clear pending messages if we're switching to an EXISTING chat
     // (i.e., when we have no pending messages to move to the new conversation)
     // If pendingMessages exist, the next effect will move them instead

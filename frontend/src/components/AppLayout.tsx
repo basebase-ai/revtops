@@ -297,6 +297,12 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
               if (result?.table === 'workflows' && result?.success) {
                 window.dispatchEvent(new Event('workflows-updated'));
               }
+              
+              // If CRM write tool completed, notify PendingChangesBar to refresh
+              const toolName = data.tool_name as string | undefined;
+              if (toolName === 'crm_write' || toolName === 'run_sql_write') {
+                window.dispatchEvent(new Event('pending-changes-updated'));
+              }
             } else if (data.type === 'text_block_complete') {
               // Text block complete, tools incoming
               markConversationMessageComplete(conversation_id);

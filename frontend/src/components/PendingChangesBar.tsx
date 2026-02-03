@@ -66,11 +66,17 @@ export function PendingChangesBar({ organizationId, userId, onChangesResolved }:
     }
   }, [organizationId, userId]);
 
-  // Poll for pending changes every 5 seconds
+  // Fetch pending changes on mount and when 'pending-changes-updated' event fires
+  // No polling - uses event-driven updates
   useEffect(() => {
-    fetchPendingChanges();
-    const interval = setInterval(fetchPendingChanges, 5000);
-    return () => clearInterval(interval);
+    void fetchPendingChanges();
+    
+    // Listen for updates from WebSocket (e.g., when crm_write tool completes)
+    const handleUpdate = (): void => {
+      void fetchPendingChanges();
+    };
+    window.addEventListener('pending-changes-updated', handleUpdate);
+    return () => window.removeEventListener('pending-changes-updated', handleUpdate);
   }, [fetchPendingChanges]);
 
   // Commit all pending changes
