@@ -434,3 +434,50 @@ async def list_workflow_runs(
         runs = result.scalars().all()
 
         return [WorkflowRunResponse(**r.to_dict()) for r in runs]
+
+
+@router.delete("/{organization_id}/runs/{run_id}")
+async def delete_workflow_run(
+    organization_id: str,
+    run_id: str,
+) -> dict[str, str]:
+    """Delete a workflow run and its associated conversation."""
+    from models.conversation import Conversation
+    
+    try:
+        org_uuid = UUID(organization_id)
+        run_uuid = UUID(run_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid ID format")
+
+    async with get_session(organization_id=organization_id) as session:
+        # Find the run
+        result = await session.execute(
+            select(WorkflowRun)
+            .where(
+                and_(
+                    WorkflowRun.id == run_uuid,
+                    WorkflowRun.organization_id == org_uuid,
+                )
+            )
+        )
+        run = result.scalar_one_or_none()
+        
+        if not run:
+            raise HTTPException(status_code=404, detail="Run not found")
+        
+        # Delete associated conversation if it exists
+        conversation_id = run.output.get("conversation_id") if run.output else None
+        if conversation_id:
+            conv_result = await session.execute(
+                select(Conversation).where(Conversation.id == UUID(conversation_id))
+            )
+            conversation = conv_result.scalar_one_or_none()
+            if conversation:
+                await session.delete(conversation)
+        
+        # Delete the run
+        await session.delete(run)
+        await session.commit()
+        
+        return {"status": "deleted", "run_id": run_id}

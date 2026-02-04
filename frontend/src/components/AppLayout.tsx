@@ -200,6 +200,84 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
       setMobileSidebarOpen(false);
     }
   }, [currentView, currentChatId, isMobile]);
+
+  // Track if initial URL sync is done (prevent URL update effect from running first)
+  const [urlInitialized, setUrlInitialized] = useState(false);
+
+  // Parse URL and update state
+  const syncStateFromUrl = useCallback(() => {
+    const path = window.location.pathname;
+    
+    // Match /chat/:id
+    const chatMatch = path.match(/^\/chat\/([a-f0-9-]+)$/i);
+    if (chatMatch && chatMatch[1]) {
+      setCurrentChatId(chatMatch[1]);
+      setCurrentView('chat');
+      return;
+    }
+    
+    // Match view paths
+    const viewPaths: Record<string, typeof currentView> = {
+      '/': 'home',
+      '/chat': 'chat',
+      '/sources': 'data-sources',
+      '/data': 'data',
+      '/search': 'search',
+      '/workflows': 'workflows',
+      '/admin': 'admin',
+    };
+    
+    const matchedView = viewPaths[path];
+    if (matchedView) {
+      if (matchedView !== 'chat') {
+        setCurrentChatId(null);
+      }
+      setCurrentView(matchedView);
+    }
+  }, [setCurrentChatId, setCurrentView]);
+
+  // Sync URL with app state - restore state on page load (runs FIRST)
+  useEffect(() => {
+    syncStateFromUrl();
+    setUrlInitialized(true);
+  }, [syncStateFromUrl]);
+
+  // Handle browser back/forward buttons
+  useEffect(() => {
+    const handlePopState = (): void => {
+      syncStateFromUrl();
+    };
+    
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, [syncStateFromUrl]);
+
+  // Update URL when app state changes (only after initial sync)
+  useEffect(() => {
+    // Don't update URL until we've read the initial URL
+    if (!urlInitialized) return;
+    
+    let newPath: string;
+    
+    if (currentChatId) {
+      newPath = `/chat/${currentChatId}`;
+    } else {
+      const viewPaths: Record<typeof currentView, string> = {
+        'home': '/',
+        'chat': '/chat',
+        'data-sources': '/sources',
+        'data': '/data',
+        'search': '/search',
+        'workflows': '/workflows',
+        'admin': '/admin',
+      };
+      newPath = viewPaths[currentView] || '/';
+    }
+    
+    if (window.location.pathname !== newPath) {
+      window.history.pushState({}, '', newPath);
+    }
+  }, [currentChatId, currentView, urlInitialized]);
   
   // Panels
   const [showOrgPanel, setShowOrgPanel] = useState(false);

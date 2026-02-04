@@ -62,6 +62,7 @@ const PREVIEW_RENDERERS: Record<string, PreviewRenderer> = {
   send_email_from: EmailPreview,
   send_slack: SlackPreview,
   crm_write: CrmPreview,
+  run_sql_write: CrmPreview,  // SQL-based CRM writes use the same preview
 };
 
 // =============================================================================
@@ -353,7 +354,8 @@ function getHeaderText(data: PendingApprovalData): string {
       const channel = (preview as { channel?: string }).channel;
       return `Post to ${channel}`;
     }
-    case 'crm_write': {
+    case 'crm_write':
+    case 'run_sql_write': {
       const records = (preview as { records?: unknown[] }).records ?? [];
       const recordLabel = records.length === 1 ? record_type : `${record_type}s`;
       const verb = operation === 'create' ? 'Create' : operation === 'update' ? 'Update' : 'Save';
@@ -380,6 +382,7 @@ function ToolIcon({ toolName, data }: { toolName: string; data: PendingApprovalD
         </svg>
       );
     case 'crm_write':
+    case 'run_sql_write':
       if (data.target_system === 'hubspot') {
         return (
           <svg className="w-4 h-4 text-orange-400" viewBox="0 0 24 24" fill="currentColor">

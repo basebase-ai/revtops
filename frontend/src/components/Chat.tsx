@@ -337,7 +337,7 @@ export function Chat({
     console.log('[Chat] Starting polling for workflow conversation');
     setIsWorkflowPolling(true);
     let pollCount = 0;
-    const maxPolls = 60; // Poll for up to 2 minutes (60 * 2 seconds)
+    const maxPolls = 300; // Poll for up to 10 minutes (300 * 2 seconds)
 
     const pollInterval = setInterval(async () => {
       pollCount++;
@@ -362,6 +362,15 @@ export function Chat({
           // Use ref to get current messages (avoids stale closure)
           const currentContent = JSON.stringify(messagesRef.current.map(m => m.contentBlocks));
           const newContent = JSON.stringify(loadedMessages.map(m => m.contentBlocks));
+          
+          // Debug: Log tool call status from API response
+          for (const msg of loadedMessages) {
+            for (const block of msg.contentBlocks || []) {
+              if (block.type === 'tool_use') {
+                console.log(`[Chat] Poll: tool ${block.name} status=${block.status}, result=`, block.result);
+              }
+            }
+          }
           
           if (newContent !== currentContent) {
             console.log('[Chat] Poll found updated content, updating UI');
@@ -1110,6 +1119,40 @@ function getToolStatusText(
         return `Prepared ${recordCount} ${pluralType} for review`;
       }
       return `Preparing ${recordCount} ${pluralType} for CRM...`;
+    }
+    case 'loop_over': {
+      const workflowName = typeof result?.workflow_name === 'string' 
+        ? result.workflow_name 
+        : (typeof input?.workflow_name === 'string' ? input.workflow_name : 'workflow');
+      const total = typeof result?.total === 'number' ? result.total : (Array.isArray(input?.items) ? input.items.length : 0);
+      const completed = typeof result?.completed === 'number' ? result.completed : 0;
+      const succeeded = typeof result?.succeeded === 'number' ? result.succeeded : 0;
+      const failed = typeof result?.failed === 'number' ? result.failed : 0;
+      
+      if (isComplete) {
+        if (failed > 0) {
+          return `Completed ${workflowName}: ${succeeded}/${total} succeeded, ${failed} failed`;
+        }
+        return `Completed ${workflowName} for ${total} item${total === 1 ? '' : 's'}`;
+      }
+      
+      // Show progress while running
+      if (completed > 0 && total > 0) {
+        const progressText = failed > 0 
+          ? `${completed}/${total} (${succeeded} ok, ${failed} failed)`
+          : `${completed}/${total}`;
+        return `Running ${workflowName}... ${progressText}`;
+      }
+      return `Running ${workflowName}...`;
+    }
+    case 'run_workflow': {
+      const workflowName = typeof result?.workflow_name === 'string'
+        ? result.workflow_name
+        : (typeof input?.workflow_name === 'string' ? input.workflow_name : 'workflow');
+      if (isComplete) {
+        return `Completed ${workflowName}`;
+      }
+      return `Running ${workflowName}...`;
     }
     default:
       return isComplete ? `Completed ${toolName}` : `Running ${toolName}...`;

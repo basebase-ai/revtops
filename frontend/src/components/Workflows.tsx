@@ -109,6 +109,14 @@ async function deleteWorkflow(orgId: string, workflowId: string): Promise<void> 
   if (!response.ok) throw new Error('Failed to delete workflow');
 }
 
+// Delete a workflow run
+async function deleteWorkflowRun(orgId: string, runId: string): Promise<void> {
+  const response = await fetch(`${API_BASE}/workflows/${orgId}/runs/${runId}`, {
+    method: 'DELETE',
+  });
+  if (!response.ok) throw new Error('Failed to delete run');
+}
+
 // Create a workflow
 interface CreateWorkflowParams {
   name: string;
@@ -271,10 +279,21 @@ function WorkflowDetail({
   const setCurrentView = useAppStore((state) => state.setCurrentView);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
+  const queryClient = useQueryClient();
+  
   const { data: runs = [], isLoading: runsLoading } = useQuery({
     queryKey: ['workflow-runs', workflow.id],
     queryFn: () => fetchWorkflowRuns(organization?.id ?? '', workflow.id),
     enabled: !!organization?.id,
+    // Refetch every 5s to catch status updates for running workflows
+    refetchInterval: 5000,
+  });
+
+  const deleteRunMutation = useMutation({
+    mutationFn: (runId: string) => deleteWorkflowRun(organization?.id ?? '', runId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['workflow-runs', workflow.id] });
+    },
   });
 
   const handleRunClick = (run: WorkflowRun): void => {
@@ -284,6 +303,11 @@ function WorkflowDetail({
       setCurrentView('chat');
       onClose();
     }
+  };
+
+  const handleDeleteRun = (e: React.MouseEvent, runId: string): void => {
+    e.stopPropagation();
+    deleteRunMutation.mutate(runId);
   };
 
   return (
@@ -452,7 +476,7 @@ function WorkflowDetail({
                 {runs.map((run) => (
                   <div 
                     key={run.id} 
-                    className={`p-3 bg-surface-800/50 rounded-lg transition-colors ${
+                    className={`group relative p-3 bg-surface-800/50 rounded-lg transition-colors ${
                       run.output?.conversation_id 
                         ? 'cursor-pointer hover:bg-surface-700/50' 
                         : ''
@@ -464,10 +488,22 @@ function WorkflowDetail({
                         <StatusBadge status={run.status} />
                         <span className="text-xs text-surface-500">{run.triggered_by}</span>
                       </div>
-                      <span className="text-xs text-surface-500">
-                        {formatRelativeTime(run.started_at)}
-                        {run.duration_ms && ` (${(run.duration_ms / 1000).toFixed(1)}s)`}
-                      </span>
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs text-surface-500">
+                          {formatRelativeTime(run.started_at)}
+                          {run.duration_ms && ` (${(run.duration_ms / 1000).toFixed(1)}s)`}
+                        </span>
+                        {/* Delete button - appears on hover */}
+                        <button
+                          onClick={(e) => handleDeleteRun(e, run.id)}
+                          className="p-1 rounded opacity-0 group-hover:opacity-100 hover:bg-surface-700 text-surface-500 hover:text-red-400 transition-all"
+                          title="Delete run"
+                        >
+                          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                          </svg>
+                        </button>
+                      </div>
                     </div>
                     {run.output?.conversation_id && (
                       <div className="text-xs text-primary-400 mb-1">Click to view conversation</div>

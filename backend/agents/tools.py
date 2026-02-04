@@ -889,13 +889,16 @@ async def _handle_crm_write_from_sql(
             )
             
             return {
-                "status": "pending_review",
+                "type": "pending_approval",
+                "status": "pending_approval",
                 "operation_id": str(pending_op.id),
+                "tool_name": "run_sql_write",
                 "operation": crm_operation,
+                "target_system": "hubspot",
                 "record_type": record_type,
                 "records_count": len(records),
-                "message": f"CRM {crm_operation} queued for review. User can commit or undo via the bottom panel.",
-                "preview": records[:3],  # Show first 3 records
+                "message": f"Review and approve {len(records)} {record_type}(s) to sync to HubSpot.",
+                "preview": {"records": records[:5], "duplicate_warnings": []},
             }
             
     except Exception as e:
