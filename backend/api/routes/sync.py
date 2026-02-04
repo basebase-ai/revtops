@@ -98,7 +98,7 @@ async def trigger_sync(
         )
 
     # Verify integration exists and is active
-    async with get_session() as session:
+    async with get_session(organization_id=organization_id) as session:
         result = await session.execute(
             select(Integration).where(
                 Integration.organization_id == customer_uuid,
@@ -145,7 +145,7 @@ async def get_sync_status(organization_id: str, provider: str) -> SyncStatusResp
 
     if not status:
         # Check database for last sync time
-        async with get_session() as session:
+        async with get_session(organization_id=organization_id) as session:
             result = await session.execute(
                 select(Integration).where(
                     Integration.organization_id == UUID(organization_id),
@@ -201,7 +201,7 @@ async def trigger_sync_all(
         raise HTTPException(status_code=400, detail="Invalid customer ID")
 
     # Get all active integrations
-    async with get_session() as session:
+    async with get_session(organization_id=organization_id) as session:
         result = await session.execute(
             select(Integration).where(
                 Integration.organization_id == customer_uuid,
@@ -364,7 +364,7 @@ async def queue_sync(organization_id: str, provider: str) -> QueuedSyncResponse:
         )
 
     # Verify integration exists
-    async with get_session() as session:
+    async with get_session(organization_id=organization_id) as session:
         result = await session.execute(
             select(Integration).where(
                 Integration.organization_id == customer_uuid,
@@ -401,7 +401,7 @@ async def queue_sync_all(organization_id: str) -> QueuedSyncResponse:
         raise HTTPException(status_code=400, detail="Invalid customer ID")
 
     # Verify org has integrations
-    async with get_session() as session:
+    async with get_session(organization_id=organization_id) as session:
         result = await session.execute(
             select(Integration).where(
                 Integration.organization_id == customer_uuid,

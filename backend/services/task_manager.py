@@ -170,8 +170,14 @@ class TaskManager:
                 # Parse chunk - could be JSON (tool call/result) or plain text
                 try:
                     parsed = json.loads(chunk)
-                    chunk_data["type"] = parsed.get("type", "json")
-                    chunk_data["data"] = parsed
+                    # Only treat as structured data if it's a dict with a type field
+                    if isinstance(parsed, dict):
+                        chunk_data["type"] = parsed.get("type", "json")
+                        chunk_data["data"] = parsed
+                    else:
+                        # JSON parsed but not a dict (e.g., number, string, list)
+                        chunk_data["type"] = "text_delta"
+                        chunk_data["data"] = chunk
                 except json.JSONDecodeError:
                     chunk_data["type"] = "text_delta"
                     chunk_data["data"] = chunk

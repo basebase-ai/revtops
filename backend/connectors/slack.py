@@ -14,6 +14,7 @@ from typing import Any, Optional
 
 import httpx
 
+from api.websockets import broadcast_sync_progress
 from connectors.base import BaseConnector
 from models.activity import Activity
 from models.database import get_session
@@ -154,6 +155,14 @@ class SlackConnector(BaseConnector):
         This captures communication activity that can be correlated
         with deals and accounts.
         """
+        # Broadcast that we're starting
+        await broadcast_sync_progress(
+            organization_id=self.organization_id,
+            provider=self.source_system,
+            count=0,
+            status="syncing",
+        )
+        
         # Get channels
         channels = await self.get_channels()
 
@@ -176,6 +185,15 @@ class SlackConnector(BaseConnector):
                         if activity:
                             await session.merge(activity)
                             count += 1
+                            
+                            # Broadcast progress every 10 messages
+                            if count % 10 == 0:
+                                await broadcast_sync_progress(
+                                    organization_id=self.organization_id,
+                                    provider=self.source_system,
+                                    count=count,
+                                    status="syncing",
+                                )
 
                 except Exception as e:
                     # Skip channels we can't access
@@ -237,6 +255,14 @@ class SlackConnector(BaseConnector):
     async def sync_all(self) -> dict[str, int]:
         """Run all sync operations."""
         activities_count = await self.sync_activities()
+
+        # Broadcast completion
+        await broadcast_sync_progress(
+            organization_id=self.organization_id,
+            provider=self.source_system,
+            count=activities_count,
+            status="completed",
+        )
 
         return {
             "accounts": 0,

@@ -16,6 +16,7 @@ from typing import Any, Optional
 
 import httpx
 
+from api.websockets import broadcast_sync_progress
 from connectors.base import BaseConnector
 from models.activity import Activity
 from models.database import get_session
@@ -176,6 +177,14 @@ class FirefliesConnector(BaseConnector):
         
         This ensures transcripts are properly associated with real-world meetings.
         """
+        # Broadcast that we're starting
+        await broadcast_sync_progress(
+            organization_id=self.organization_id,
+            provider=self.source_system,
+            count=0,
+            status="syncing",
+        )
+        
         print(f"[Fireflies] Fetching transcripts for org {self.organization_id}")
         transcripts = await self.get_transcripts(limit=50)  # Fireflies max is 50
         print(f"[Fireflies] Got {len(transcripts)} transcripts")
@@ -226,6 +235,14 @@ class FirefliesConnector(BaseConnector):
                     
                     await session.merge(activity)
                     count += 1
+                    
+                    # Broadcast progress
+                    await broadcast_sync_progress(
+                        organization_id=self.organization_id,
+                        provider=self.source_system,
+                        count=count,
+                        status="syncing",
+                    )
                     
                     print(f"[Fireflies] Synced transcript {parsed['transcript_id']} -> meeting {meeting.id}")
                     logger.debug(
@@ -352,6 +369,14 @@ class FirefliesConnector(BaseConnector):
     async def sync_all(self) -> dict[str, int]:
         """Run all sync operations."""
         activities_count = await self.sync_activities()
+
+        # Broadcast completion
+        await broadcast_sync_progress(
+            organization_id=self.organization_id,
+            provider=self.source_system,
+            count=activities_count,
+            status="completed",
+        )
 
         return {
             "accounts": 0,

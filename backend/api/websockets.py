@@ -7,6 +7,7 @@ Responsibilities:
 - Send active task state on connect for catchup
 - Handle CRM operation approvals
 - Stream task updates to subscribed clients
+- Broadcast sync progress events to clients
 
 Architecture:
 - WebSocket is a subscription mechanism, not the driver of agent processes
@@ -17,9 +18,103 @@ Architecture:
 
 import json
 import logging
+from collections import defaultdict
+from typing import Dict, Set
 from uuid import UUID, uuid4
 
 from fastapi import WebSocket, WebSocketDisconnect
+
+
+# =============================================================================
+# Sync Progress Broadcasting
+# =============================================================================
+
+class SyncProgressBroadcaster:
+    """
+    Manages WebSocket connections for broadcasting sync progress events.
+    
+    Clients are grouped by organization_id so we only send events to
+    users who belong to that organization.
+    """
+    
+    def __init__(self) -> None:
+        # org_id -> set of websockets
+        self._connections: Dict[str, Set[WebSocket]] = defaultdict(set)
+    
+    def register(self, organization_id: str, websocket: WebSocket) -> None:
+        """Register a websocket for sync progress updates."""
+        self._connections[organization_id].add(websocket)
+    
+    def unregister(self, organization_id: str, websocket: WebSocket) -> None:
+        """Unregister a websocket."""
+        self._connections[organization_id].discard(websocket)
+        if not self._connections[organization_id]:
+            del self._connections[organization_id]
+    
+    async def broadcast(
+        self,
+        organization_id: str,
+        event_type: str,
+        data: dict,
+    ) -> None:
+        """Broadcast an event to all connected clients for an organization."""
+        websockets = self._connections.get(organization_id, set())
+        if not websockets:
+            return
+        
+        message = json.dumps({
+            "type": event_type,
+            **data,
+        })
+        
+        # Send to all, collect any dead connections
+        dead: Set[WebSocket] = set()
+        for ws in websockets:
+            try:
+                await ws.send_text(message)
+            except Exception:
+                dead.add(ws)
+        
+        # Clean up dead connections
+        for ws in dead:
+            self._connections[organization_id].discard(ws)
+
+
+# Global broadcaster instance
+sync_broadcaster = SyncProgressBroadcaster()
+
+
+async def broadcast_sync_progress(
+    organization_id: str,
+    provider: str,
+    count: int,
+    status: str = "syncing",
+) -> None:
+    """
+    Broadcast sync progress to all connected clients for an organization.
+    
+    Called from connectors during sync to update the UI in real-time.
+    
+    Args:
+        organization_id: The organization UUID
+        provider: The provider name (e.g., "google_calendar")
+        count: Current count of synced items
+        status: "syncing" or "completed"
+    """
+    await sync_broadcaster.broadcast(
+        organization_id=organization_id,
+        event_type="sync_progress",
+        data={
+            "provider": provider,
+            "count": count,
+            "status": status,
+        },
+    )
+
+
+# =============================================================================
+# Chat WebSocket Handler
+# =============================================================================
 
 from agents.orchestrator import ChatOrchestrator
 from agents.tools import (
@@ -186,6 +281,10 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str) -> None:
         user_email = user.email
 
     try:
+        # Register for sync progress broadcasts
+        if organization_id:
+            sync_broadcaster.register(organization_id, websocket)
+        
         # Send active tasks on connect for client catchup
         active_tasks = await task_manager.get_active_tasks(user_id_str, organization_id)
         await websocket.send_text(json.dumps({
@@ -425,3 +524,6 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str) -> None:
     finally:
         # Clean up subscriptions
         await task_manager.unsubscribe_all(websocket)
+        # Unregister from sync progress broadcasts
+        if organization_id:
+            sync_broadcaster.unregister(organization_id, websocket)

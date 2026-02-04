@@ -217,14 +217,13 @@ class NangoClient:
         List all connections, optionally filtered by end_user_id.
 
         Args:
-            end_user_id: Optional filter by end user ID (organization ID)
+            end_user_id: Optional filter by end user ID
 
         Returns:
             List of connections
         """
         async with httpx.AsyncClient() as client:
             params: dict[str, str] = {}
-            # Nango uses endUserId to filter connections by the end_user.id we set during session creation
             if end_user_id:
                 params["endUserId"] = end_user_id
 
@@ -241,17 +240,29 @@ class NangoClient:
             
             data = response.json()
             connections = data.get("connections", [])
-            
-            # If filtering didn't work via API, filter locally
-            if end_user_id and connections:
-                filtered = [
-                    c for c in connections
-                    if c.get("end_user", {}).get("id") == end_user_id
-                ]
-                if filtered:
-                    return filtered
-            
             return connections
+    
+    async def list_all_connections(self) -> list[dict[str, Any]]:
+        """
+        List ALL connections without any filter.
+        Use this to debug or when end_user_id filtering isn't working.
+
+        Returns:
+            List of all connections
+        """
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{NANGO_API_BASE}/connections",
+                headers=self._get_headers(),
+                timeout=30.0,
+            )
+            
+            if response.status_code != 200:
+                print(f"Nango list all connections failed ({response.status_code}): {response.text}")
+                return []
+            
+            data = response.json()
+            return data.get("connections", [])
 
     async def delete_connection(
         self,
@@ -326,6 +337,8 @@ class NangoClient:
         self,
         integration_id: str,
         connection_id: str,
+        organization_id: Optional[str] = None,
+        user_id: Optional[str] = None,
     ) -> dict[str, Any]:
         """
         Create a Nango Connect session for OAuth.
@@ -334,19 +347,42 @@ class NangoClient:
 
         Args:
             integration_id: The Nango integration ID
-            connection_id: The unique connection identifier (e.g., "{org_id}:user:{user_id}")
+            connection_id: The unique connection identifier (legacy, used for backwards compat)
+            organization_id: The organization ID (used for Nango's organization.id)
+            user_id: The user ID for user-scoped integrations (used for Nango's end_user.id)
 
         Returns:
             Dict with token and other session info
         """
         async with httpx.AsyncClient() as client:
+            # Use proper Nango structure: organization.id for org, end_user.id for user
+            # This allows filtering connections by organization or user
             payload: dict[str, Any] = {
-                "end_user": {
-                    "id": connection_id,
-                },
                 "allowed_integrations": [integration_id],
             }
+            
+            # Set organization context (required for all connections)
+            org_id = organization_id
+            if not org_id and ":user:" in connection_id:
+                org_id = connection_id.split(":user:")[0]
+            elif not org_id:
+                org_id = connection_id
+            
+            payload["organization"] = {"id": org_id}
+            
+            # Set end_user for user-scoped connections
+            end_user_id = user_id
+            if not end_user_id and ":user:" in connection_id:
+                end_user_id = connection_id.split(":user:")[1]
+            
+            if end_user_id:
+                payload["end_user"] = {"id": end_user_id}
+            else:
+                # For org-scoped, use org_id as end_user.id (Nango requires end_user)
+                payload["end_user"] = {"id": org_id}
 
+            print(f"[Nango] Creating session with payload: {payload}")
+            
             response = await client.post(
                 f"{NANGO_API_BASE}/connect/sessions",
                 headers=self._get_headers(),
@@ -355,7 +391,10 @@ class NangoClient:
             )
 
             if response.status_code not in (200, 201):
+                print(f"[Nango] Session creation failed: {response.text}")
                 raise ValueError(f"Failed to create Nango session: {response.text}")
+            
+            print(f"[Nango] Session created successfully: {response.json()}")
 
             response_data = response.json()
             # Token is nested inside 'data' object

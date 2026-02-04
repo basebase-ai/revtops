@@ -808,7 +808,7 @@ async def confirm_integration(
     Confirm and create an integration record after successful OAuth.
     
     Called by the frontend after receiving a success event from Nango.
-    Creates the integration record directly without querying Nango.
+    Queries Nango to get the actual connection_id and stores it.
     """
     try:
         org_uuid = UUID(request.organization_id)
@@ -830,6 +830,11 @@ async def confirm_integration(
             status_code=400,
             detail=f"{request.provider} is a user-scoped integration. user_id is required."
         )
+    
+    # The frontend now passes the actual Nango connection_id from the event callback
+    # We trust this value and store it directly
+    nango_connection_id: str = request.connection_id
+    print(f"[Confirm] Received connection_id from frontend: {nango_connection_id}")
     
     async with get_session() as session:
         # Set RLS context
@@ -859,19 +864,19 @@ async def confirm_integration(
         existing = result.scalar_one_or_none()
         
         if existing:
-            # Update existing integration
-            existing.nango_connection_id = request.connection_id
+            # Update existing integration with the actual Nango connection_id
+            existing.nango_connection_id = nango_connection_id
             existing.is_active = True
             existing.last_error = None
             existing.updated_at = datetime.utcnow()
         else:
-            # Create new integration
+            # Create new integration with the actual Nango connection_id
             new_integration = Integration(
                 organization_id=org_uuid,
                 provider=request.provider,
                 scope=scope,
                 user_id=user_uuid if scope == "user" else None,
-                nango_connection_id=request.connection_id,
+                nango_connection_id=nango_connection_id,
                 connected_by_user_id=user_uuid,
                 is_active=True,
             )
@@ -880,7 +885,9 @@ async def confirm_integration(
         await session.commit()
     
     # Trigger initial sync in the background
-    background_tasks.add_task(run_initial_sync, str(org_uuid), request.provider)
+    # For user-scoped integrations, pass user_id so the connector can find the right integration
+    user_id_for_sync: Optional[str] = str(user_uuid) if scope == "user" and user_uuid else None
+    background_tasks.add_task(run_initial_sync, str(org_uuid), request.provider, user_id_for_sync)
     
     return {"status": "confirmed", "provider": request.provider}
 
@@ -993,7 +1000,10 @@ async def nango_callback(
         await session.commit()
 
     # Trigger initial sync in the background
-    background_tasks.add_task(run_initial_sync, str(org_uuid), provider)
+    # For user-scoped integrations, pass user_id so the connector can find the right integration
+    scope = get_provider_scope(provider)
+    user_id_for_sync: Optional[str] = str(user_uuid) if scope == "user" else None
+    background_tasks.add_task(run_initial_sync, str(org_uuid), provider, user_id_for_sync)
 
     return {"status": "connected", "provider": provider, "sync_started": True}
 
@@ -1034,31 +1044,12 @@ async def list_integrations(
     if not org_uuid:
         raise HTTPException(status_code=400, detail="Either user_id or organization_id required")
 
-    # Check Nango for connections and sync to our database
-    nango_connections: list[dict] = []
-    try:
-        nango = get_nango_client()
-        nango_connections = await nango.list_connections(end_user_id=str(org_uuid))
-        print(f"Found {len(nango_connections)} Nango connections for org {org_uuid}")
-    except ValueError as e:
-        # Nango not configured - just use database integrations
-        print(f"Nango not configured, skipping sync: {e}")
-    except Exception as e:
-        print(f"Failed to fetch Nango connections: {e}")
+    # We no longer query Nango to filter integrations
+    # Just show what's in the database - the nango_connection_id is stored there
+    # This avoids issues with inconsistent end_user.id values in Nango
 
     async with get_session(organization_id=str(org_uuid)) as db_session:
         # RLS context is set by get_session()
-        
-        # Ensure organization exists before inserting integrations
-        if nango_connections:
-            existing_org = await db_session.get(Organization, org_uuid)
-            if not existing_org:
-                new_org = Organization(
-                    id=org_uuid,
-                    name="Organization",
-                )
-                db_session.add(new_org)
-                await db_session.flush()
         
         # Get all integrations from our database for this org
         result = await db_session.execute(
@@ -1080,83 +1071,17 @@ async def list_integrations(
             else:
                 org_scoped_integrations[i.provider] = i
 
-        # Map Nango provider names to our internal provider names
-        nango_to_internal_providers: dict[str, list[str]] = {
-            "microsoft": ["microsoft_calendar", "microsoft_mail"],
-            "google-calendar": ["google_calendar"],
-            "google-mail": ["gmail"],
-        }
-
-        # Sync Nango connections to our database
-        for conn in nango_connections:
-            nango_provider = conn.get("provider_config_key") or conn.get("provider")
-            nango_conn_id = conn.get("connection_id") or conn.get("id")
-            
-            internal_providers = nango_to_internal_providers.get(nango_provider, [nango_provider])
-            print(f"Nango connection: nango_provider={nango_provider}, internal_providers={internal_providers}, conn_id={nango_conn_id}")
-            
-            for provider in internal_providers:
-                if not provider:
-                    continue
-                    
-                scope = get_provider_scope(provider)
-                
-                if scope == "user":
-                    # Parse user ID from connection ID (format: "{org_id}:user:{user_id}")
-                    user_id_from_conn: Optional[UUID] = None
-                    if nango_conn_id and ":user:" in nango_conn_id:
-                        try:
-                            user_id_str = nango_conn_id.split(":user:")[1]
-                            user_id_from_conn = UUID(user_id_str)
-                        except (IndexError, ValueError):
-                            pass
-                    
-                    if user_id_from_conn:
-                        # Check if this user's integration already exists
-                        existing_user_int = next(
-                            (i for i in user_scoped_integrations.get(provider, []) 
-                             if i.user_id == user_id_from_conn),
-                            None
-                        )
-                        if not existing_user_int:
-                            new_integration = Integration(
-                                organization_id=org_uuid,
-                                provider=provider,
-                                scope="user",
-                                user_id=user_id_from_conn,
-                                nango_connection_id=nango_conn_id,
-                                is_active=True,
-                            )
-                            db_session.add(new_integration)
-                            if provider not in user_scoped_integrations:
-                                user_scoped_integrations[provider] = []
-                            user_scoped_integrations[provider].append(new_integration)
-                        elif existing_user_int.nango_connection_id != nango_conn_id:
-                            existing_user_int.nango_connection_id = nango_conn_id
-                else:
-                    # Org-scoped integration
-                    if provider not in org_scoped_integrations:
-                        new_integration = Integration(
-                            organization_id=org_uuid,
-                            provider=provider,
-                            scope="organization",
-                            nango_connection_id=nango_conn_id,
-                            is_active=True,
-                        )
-                        db_session.add(new_integration)
-                        org_scoped_integrations[provider] = new_integration
-                    elif org_scoped_integrations[provider].nango_connection_id != nango_conn_id:
-                        org_scoped_integrations[provider].nango_connection_id = nango_conn_id
-        
-        await db_session.commit()
-        
-        # Get team member count and names for user-scoped integrations
+        # Get team members for validating user IDs and building response
         team_result = await db_session.execute(
             select(User).where(User.organization_id == org_uuid)
         )
-        team_members = {u.id: u for u in team_result.scalars().all()}
+        team_members: dict[UUID, User] = {u.id: u for u in team_result.scalars().all()}
         team_total = len(team_members)
-        
+
+        # Integration records are created by confirm_integration endpoint after OAuth
+        # We trust the database records - no filtering by Nango
+        # The stored nango_connection_id will be used when fetching tokens
+
         # Build response
         response_integrations: list[IntegrationResponse] = []
         
@@ -1424,11 +1349,20 @@ async def register_user(request: CreateUserRequest) -> CreateUserResponse:
 # =============================================================================
 
 
-async def run_initial_sync(organization_id: str, provider: str) -> None:
+async def run_initial_sync(
+    organization_id: str,
+    provider: str,
+    user_id: Optional[str] = None,
+) -> None:
     """
     Run initial data sync after OAuth connection.
     
     This runs in the background so the user isn't blocked waiting.
+    
+    Args:
+        organization_id: UUID of the organization
+        provider: Provider name (e.g., "gmail", "hubspot")
+        user_id: UUID of the user (required for user-scoped integrations)
     """
     from connectors.hubspot import HubSpotConnector
     from connectors.salesforce import SalesforceConnector
@@ -1458,8 +1392,8 @@ async def run_initial_sync(organization_id: str, provider: str) -> None:
         return
 
     try:
-        print(f"Starting initial sync for {provider} (org: {organization_id})")
-        connector = connector_class(organization_id)
+        print(f"Starting initial sync for {provider} (org: {organization_id}, user: {user_id})")
+        connector = connector_class(organization_id, user_id=user_id)
         counts = await connector.sync_all()
         await connector.update_last_sync(counts)
         print(f"Initial sync complete for {provider}: {counts}")
@@ -1467,7 +1401,7 @@ async def run_initial_sync(organization_id: str, provider: str) -> None:
         print(f"Initial sync failed for {provider}: {str(e)}")
         # Record the error
         try:
-            connector = connector_class(organization_id)
+            connector = connector_class(organization_id, user_id=user_id)
             await connector.record_error(str(e))
         except Exception:
             pass  # Ignore errors while recording error

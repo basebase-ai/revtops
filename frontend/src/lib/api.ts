@@ -20,10 +20,10 @@ export const API_BASE: string = isProduction
   ? `${PRODUCTION_BACKEND}/api`
   : '/api';
 
-// WebSocket base URL
+// WebSocket base URL - in dev, connect directly to backend (Vite doesn't proxy WebSocket)
 export const WS_BASE: string = isProduction
   ? PRODUCTION_BACKEND.replace(/^http/, 'ws')
-  : `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}`;
+  : 'ws://localhost:8000';
 
 /**
  * Standard API response wrapper

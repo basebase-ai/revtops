@@ -11,7 +11,7 @@ Responsibilities:
 
 import logging
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 import httpx
@@ -144,11 +144,24 @@ class GoogleCalendarConnector(BaseConnector):
         time_min = datetime.utcnow() - timedelta(days=30)
         time_max = datetime.utcnow() + timedelta(days=30)
 
+        # Import broadcast function for real-time progress updates
+        from api.websockets import broadcast_sync_progress
+        
+        print(f"[GCal Sync] Fetching events from {time_min} to {time_max}")
         events = await self.get_events(
             calendar_id="primary",
             time_min=time_min,
             time_max=time_max,
             max_results=500,
+        )
+        print(f"[GCal Sync] Fetched {len(events)} events from Google Calendar API")
+        
+        # Broadcast initial progress
+        await broadcast_sync_progress(
+            organization_id=self.organization_id,
+            provider=self.source_system,
+            count=0,
+            status="syncing",
         )
 
         count = 0
@@ -172,6 +185,11 @@ class GoogleCalendarConnector(BaseConnector):
                     )
                     
                     # Create the Activity record linked to the Meeting
+                    # Normalize activity_date to naive UTC for database compatibility
+                    activity_date = parsed["activity_date"]
+                    if activity_date and activity_date.tzinfo is not None:
+                        activity_date = activity_date.replace(tzinfo=None)
+                    
                     activity = Activity(
                         id=uuid.uuid4(),
                         organization_id=uuid.UUID(self.organization_id),
@@ -181,7 +199,7 @@ class GoogleCalendarConnector(BaseConnector):
                         type=parsed["meeting_type"],
                         subject=parsed["summary"] or "Untitled Event",
                         description=parsed["description"],
-                        activity_date=parsed["activity_date"],
+                        activity_date=activity_date,
                         custom_fields={
                             "calendar_id": parsed["calendar_id"],
                             "location": parsed["location"],
@@ -198,6 +216,15 @@ class GoogleCalendarConnector(BaseConnector):
                     await session.merge(activity)
                     count += 1
                     
+                    # Broadcast progress every 5 events
+                    if count % 5 == 0:
+                        await broadcast_sync_progress(
+                            organization_id=self.organization_id,
+                            provider=self.source_system,
+                            count=count,
+                            status="syncing",
+                        )
+                    
                     logger.debug(
                         "Synced calendar event %s linked to meeting %s",
                         parsed["event_id"],
@@ -205,11 +232,23 @@ class GoogleCalendarConnector(BaseConnector):
                     )
                     
                 except Exception as e:
+                    import traceback
+                    print(f"[GCal Sync] Error syncing event: {e}")
+                    print(f"[GCal Sync] Traceback: {traceback.format_exc()}")
                     logger.error("Error syncing calendar event: %s", e)
                     continue
 
             await session.commit()
 
+        # Broadcast final progress
+        await broadcast_sync_progress(
+            organization_id=self.organization_id,
+            provider=self.source_system,
+            count=count,
+            status="completed",
+        )
+        
+        print(f"[GCal Sync] Successfully synced {count} activities")
         return count
 
     def _parse_event(self, gcal_event: dict[str, Any]) -> Optional[dict[str, Any]]:
@@ -290,7 +329,11 @@ class GoogleCalendarConnector(BaseConnector):
 
         # Determine meeting status
         event_status = gcal_event.get("status", "confirmed")
-        if activity_date < datetime.utcnow():
+        # Use timezone-aware datetime for comparison
+        now_utc = datetime.now(timezone.utc)
+        # Make activity_date naive for comparison if needed, or make now_utc comparable
+        activity_date_for_compare = activity_date.replace(tzinfo=None) if activity_date.tzinfo else activity_date
+        if activity_date_for_compare < datetime.utcnow():
             meeting_status = "completed"
         else:
             meeting_status = "scheduled"

@@ -17,6 +17,7 @@ from typing import Any, Optional
 import httpx
 from sqlalchemy import select
 
+from api.websockets import broadcast_sync_progress
 from connectors.base import BaseConnector
 from models.account import Account
 from models.activity import Activity
@@ -41,6 +42,24 @@ class HubSpotConnector(BaseConnector):
         self._owner_cache: dict[str, Optional[uuid.UUID]] = {}
         # Cache for HubSpot pipeline ID -> internal pipeline ID mapping
         self._pipeline_cache: dict[str, uuid.UUID] = {}
+
+    async def sync_all(self) -> dict[str, int]:
+        """Run all sync operations with progress broadcasting."""
+        # Call parent sync_all
+        result = await super().sync_all()
+        
+        # Calculate total synced items
+        total = sum(result.values())
+        
+        # Broadcast completion
+        await broadcast_sync_progress(
+            organization_id=self.organization_id,
+            provider=self.source_system,
+            count=total,
+            status="completed",
+        )
+        
+        return result
 
     async def _get_headers(self) -> dict[str, str]:
         """Get authorization headers for HubSpot API."""
@@ -264,6 +283,14 @@ class HubSpotConnector(BaseConnector):
         raw_deals = await self._paginate_results(
             "/crm/v3/objects/deals", properties=properties
         )
+        
+        # Broadcast initial progress
+        await broadcast_sync_progress(
+            organization_id=self.organization_id,
+            provider=self.source_system,
+            count=0,
+            status="syncing",
+        )
 
         async with get_session(organization_id=self.organization_id) as session:
             count = 0
@@ -283,6 +310,15 @@ class HubSpotConnector(BaseConnector):
                 deal = await self._normalize_deal(raw_deal, existing_id=existing.id if existing else None)
                 await session.merge(deal)
                 count += 1
+                
+                # Broadcast progress every 10 deals
+                if count % 10 == 0:
+                    await broadcast_sync_progress(
+                        organization_id=self.organization_id,
+                        provider=self.source_system,
+                        count=count,
+                        status="syncing",
+                    )
             await session.commit()
 
         return count
@@ -378,6 +414,14 @@ class HubSpotConnector(BaseConnector):
         raw_companies = await self._paginate_results(
             "/crm/v3/objects/companies", properties=properties
         )
+        
+        # Broadcast progress
+        await broadcast_sync_progress(
+            organization_id=self.organization_id,
+            provider=self.source_system,
+            count=0,
+            status="syncing",
+        )
 
         async with get_session(organization_id=self.organization_id) as session:
             count = 0
@@ -397,6 +441,15 @@ class HubSpotConnector(BaseConnector):
                 account = await self._normalize_account(raw_company, existing_id=existing.id if existing else None)
                 await session.merge(account)
                 count += 1
+                
+                # Broadcast progress every 10 accounts
+                if count % 10 == 0:
+                    await broadcast_sync_progress(
+                        organization_id=self.organization_id,
+                        provider=self.source_system,
+                        count=count,
+                        status="syncing",
+                    )
             await session.commit()
 
         return count
@@ -485,6 +538,14 @@ class HubSpotConnector(BaseConnector):
             for account in accounts:
                 hs_company_id_to_account_id[account.source_id] = account.id
 
+        # Broadcast progress
+        await broadcast_sync_progress(
+            organization_id=self.organization_id,
+            provider=self.source_system,
+            count=0,
+            status="syncing",
+        )
+
         async with get_session(organization_id=self.organization_id) as session:
             count = 0
             for raw_contact in raw_contacts:
@@ -518,6 +579,15 @@ class HubSpotConnector(BaseConnector):
                 )
                 await session.merge(contact)
                 count += 1
+                
+                # Broadcast progress every 10 contacts
+                if count % 10 == 0:
+                    await broadcast_sync_progress(
+                        organization_id=self.organization_id,
+                        provider=self.source_system,
+                        count=count,
+                        status="syncing",
+                    )
             await session.commit()
 
         return count

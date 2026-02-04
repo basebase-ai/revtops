@@ -128,6 +128,12 @@ export type View =
   | "workflows"
   | "admin";
 
+// Pending chunk for out-of-order handling
+export interface PendingChunk {
+  index: number;
+  content: string;
+}
+
 // Per-conversation state
 export interface ConversationState {
   messages: ChatMessage[];
@@ -136,6 +142,7 @@ export interface ConversationState {
   streamingMessageId: string | null;
   activeTaskId: string | null;
   lastChunkIndex: number;
+  pendingChunks: PendingChunk[]; // Buffer for out-of-order chunks
 }
 
 // Task state from backend
@@ -233,11 +240,13 @@ interface AppState {
   appendToConversationStreaming: (
     conversationId: string,
     content: string,
+    chunkIndex: number,
   ) => void;
   startConversationStreaming: (
     conversationId: string,
     messageId: string,
     initialContent: string,
+    chunkIndex?: number,
   ) => void;
   markConversationMessageComplete: (conversationId: string) => void;
   setConversationTitle: (conversationId: string, title: string) => void;
@@ -283,7 +292,8 @@ const defaultConversationState: ConversationState = {
   isThinking: false,
   streamingMessageId: null,
   activeTaskId: null,
-  lastChunkIndex: 0,
+  lastChunkIndex: -1, // -1 means no chunks received yet, first chunk should be 0
+  pendingChunks: [],
 };
 
 // =============================================================================
@@ -662,7 +672,7 @@ export const useAppStore = create<AppState>()(
         });
       },
 
-      appendToConversationStreaming: (conversationId, content) => {
+      appendToConversationStreaming: (conversationId, content, chunkIndex) => {
         const { conversations } = get();
         const current = conversations[conversationId];
         if (!current?.streamingMessageId) {
@@ -672,32 +682,97 @@ export const useAppStore = create<AppState>()(
           );
           return;
         }
-        const updated = current.messages.map((msg) => {
-          if (msg.id !== current.streamingMessageId) return msg;
-          const blocks = [...(msg.contentBlocks ?? [])];
-          const lastBlock = blocks[blocks.length - 1];
-          if (lastBlock && lastBlock.type === "text") {
-            blocks[blocks.length - 1] = {
-              ...lastBlock,
-              text: lastBlock.text + content,
-            };
-          } else {
-            blocks.push({ type: "text", text: content });
+
+        // Helper to apply content to messages
+        const applyContent = (
+          messages: ChatMessage[],
+          streamingId: string,
+          text: string,
+        ): ChatMessage[] => {
+          return messages.map((msg) => {
+            if (msg.id !== streamingId) return msg;
+            const blocks = [...(msg.contentBlocks ?? [])];
+            const lastBlock = blocks[blocks.length - 1];
+            if (lastBlock && lastBlock.type === "text") {
+              blocks[blocks.length - 1] = {
+                ...lastBlock,
+                text: lastBlock.text + text,
+              };
+            } else {
+              blocks.push({ type: "text", text });
+            }
+            return { ...msg, contentBlocks: blocks };
+          });
+        };
+
+        const expectedIndex = current.lastChunkIndex + 1;
+
+        // If this is the expected chunk, apply it immediately
+        if (chunkIndex === expectedIndex) {
+          let updated = applyContent(
+            current.messages,
+            current.streamingMessageId,
+            content,
+          );
+          let newLastIndex = chunkIndex;
+          let newPendingChunks = [...current.pendingChunks];
+
+          // Apply any buffered chunks that are now in sequence
+          newPendingChunks.sort((a, b) => a.index - b.index);
+          while (newPendingChunks.length > 0) {
+            const nextPending = newPendingChunks[0];
+            if (nextPending.index === newLastIndex + 1) {
+              updated = applyContent(
+                updated,
+                current.streamingMessageId,
+                nextPending.content,
+              );
+              newLastIndex = nextPending.index;
+              newPendingChunks.shift();
+            } else {
+              break;
+            }
           }
-          return { ...msg, contentBlocks: blocks };
-        });
-        set({
-          conversations: {
-            ...conversations,
-            [conversationId]: { ...current, messages: updated },
-          },
-        });
+
+          set({
+            conversations: {
+              ...conversations,
+              [conversationId]: {
+                ...current,
+                messages: updated,
+                lastChunkIndex: newLastIndex,
+                pendingChunks: newPendingChunks,
+              },
+            },
+          });
+        } else if (chunkIndex > expectedIndex) {
+          // Chunk arrived out of order - buffer it
+          console.log(
+            `[Store] Buffering out-of-order chunk ${chunkIndex} (expected ${expectedIndex}) for conversation:`,
+            conversationId,
+          );
+          const newPendingChunks = [
+            ...current.pendingChunks,
+            { index: chunkIndex, content },
+          ];
+          set({
+            conversations: {
+              ...conversations,
+              [conversationId]: {
+                ...current,
+                pendingChunks: newPendingChunks,
+              },
+            },
+          });
+        }
+        // If chunkIndex < expectedIndex, it's a duplicate - ignore it
       },
 
       startConversationStreaming: (
         conversationId,
         messageId,
         initialContent,
+        chunkIndex,
       ) => {
         const { conversations } = get();
         const current = conversations[conversationId] ?? {
@@ -707,6 +782,8 @@ export const useAppStore = create<AppState>()(
           "[Store] Starting streaming for conversation:",
           conversationId,
           messageId,
+          "at chunk index:",
+          chunkIndex,
         );
         const newMessage: ChatMessage = {
           id: messageId,
@@ -725,6 +802,9 @@ export const useAppStore = create<AppState>()(
               messages: [...current.messages, newMessage],
               streamingMessageId: messageId,
               isThinking: false,
+              // Update lastChunkIndex if provided, clear pending chunks for new stream
+              lastChunkIndex: chunkIndex ?? current.lastChunkIndex,
+              pendingChunks: [],
             },
           },
         });
@@ -805,7 +885,14 @@ export const useAppStore = create<AppState>()(
         set({
           conversations: {
             ...conversations,
-            [conversationId]: { ...current, activeTaskId: taskId },
+            [conversationId]: {
+              ...current,
+              activeTaskId: taskId,
+              // Reset chunk tracking when a new task starts
+              ...(taskId
+                ? { lastChunkIndex: -1, pendingChunks: [] }
+                : {}),
+            },
           },
           activeTasksByConversation: updatedActiveTasks,
         });

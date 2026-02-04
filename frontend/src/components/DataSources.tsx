@@ -10,7 +10,7 @@
  * Uses React Query for server state (integrations list).
  */
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import Nango from '@nangohq/frontend';
 import type { IconType } from 'react-icons';
 import {
@@ -26,6 +26,7 @@ import { HiOutlineCalendar, HiOutlineMail, HiGlobeAlt, HiUserGroup, HiExclamatio
 import { SheetImporter } from './SheetImporter';
 import { API_BASE } from '../lib/api';
 import { useAppStore, useIntegrations, useIntegrationsLoading, type Integration, type SyncStats } from '../store';
+import { useWebSocket } from '../hooks/useWebSocket';
 
 // Detect if user is on a mobile device
 function useIsMobile(): boolean {
@@ -161,6 +162,9 @@ function getActivityLabel(provider: string, count: number): string {
     case 'fireflies':
     case 'zoom':
       return `${formatted} recordings`;
+    case 'hubspot':
+    case 'salesforce':
+      return `${formatted} records`;
     default:
       return `${formatted} activities`;
   }
@@ -186,11 +190,58 @@ export function DataSources(): JSX.Element {
   }, [organization?.id, user?.id, fetchIntegrations]);
 
   const [syncingProviders, setSyncingProviders] = useState<Set<string>>(new Set());
+  const [disconnectingProviders, setDisconnectingProviders] = useState<Set<string>>(new Set());
   const [connectingProvider, setConnectingProvider] = useState<string | null>(null);
   const [showSheetImporter, setShowSheetImporter] = useState(false);
+  
+  // Live sync progress from WebSocket
+  const [syncProgress, setSyncProgress] = useState<Record<string, number>>({});
 
   const organizationId = organization?.id ?? '';
   const userId = user?.id ?? '';
+  
+  // Handle WebSocket messages for sync progress
+  const handleWsMessage = useCallback((message: string) => {
+    try {
+      const data = JSON.parse(message) as { type: string; provider?: string; count?: number; status?: string };
+      if (data.type === 'sync_progress' && data.provider !== undefined && data.count !== undefined) {
+        setSyncProgress((prev) => ({
+          ...prev,
+          [data.provider as string]: data.count as number,
+        }));
+        
+        // If sync is in progress, add to syncingProviders to show spinner
+        if (data.status === 'syncing') {
+          setSyncingProviders((prev) => new Set(prev).add(data.provider as string));
+        }
+        
+        // If sync completed, refresh integrations to get final data
+        if (data.status === 'completed') {
+          void fetchIntegrations();
+          // Clear the progress for this provider after a short delay
+          setTimeout(() => {
+            setSyncProgress((prev) => {
+              const next = { ...prev };
+              delete next[data.provider as string];
+              return next;
+            });
+            setSyncingProviders((prev) => {
+              const next = new Set(prev);
+              next.delete(data.provider as string);
+              return next;
+            });
+          }, 1000);
+        }
+      }
+    } catch {
+      // Ignore non-JSON messages or parsing errors
+    }
+  }, [fetchIntegrations]);
+  
+  // Connect to WebSocket for sync progress updates
+  useWebSocket(userId ? `/ws/chat/${userId}` : '', {
+    onMessage: handleWsMessage,
+  });
 
   // Transform raw integrations to display integrations with UI metadata
   // Filter out raw "microsoft" integration - it's a meta-integration from Nango's OAuth.
@@ -282,14 +333,19 @@ export function DataSources(): JSX.Element {
             eventType === 'success'
           ) {
             // Connection successful - confirm and create integration record
-            console.log('Connection successful, confirming integration');
+            // Extract the actual Nango connection_id from the event
+            // The event payload contains the real connection_id that Nango created
+            const eventData = event as { type: string; connectionId?: string; connection_id?: string; payload?: { connectionId?: string } };
+            const nangoConnectionId = eventData.connectionId || eventData.connection_id || eventData.payload?.connectionId || connection_id;
+            
+            console.log('Connection successful, confirming integration with connectionId:', nangoConnectionId);
             try {
               const confirmResponse = await fetch(`${API_BASE}/auth/integrations/confirm`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                   provider,
-                  connection_id,
+                  connection_id: nangoConnectionId,  // Use the actual Nango connection_id
                   organization_id: organizationId,
                   user_id: scope === 'user' ? userId : undefined,
                 }),
@@ -320,7 +376,7 @@ export function DataSources(): JSX.Element {
   };
 
   const handleDisconnect = async (provider: string): Promise<void> => {
-    if (!organizationId) return;
+    if (!organizationId || disconnectingProviders.has(provider)) return;
     
     // Derive scope from provider (source of truth) rather than trusting passed value
     const isUserScoped = USER_SCOPED_PROVIDERS.has(provider);
@@ -332,6 +388,9 @@ export function DataSources(): JSX.Element {
     }
     
     if (!confirm(`Are you sure you want to disconnect ${provider}?`)) return;
+
+    // Set disconnecting state immediately for instant UI feedback
+    setDisconnectingProviders((prev) => new Set(prev).add(provider));
 
     const params = new URLSearchParams({ organization_id: organizationId });
     if (isUserScoped && userId) {
@@ -362,6 +421,12 @@ export function DataSources(): JSX.Element {
     } catch (error) {
       console.error('Failed to disconnect:', error);
       alert(`Failed to disconnect: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      // Remove from disconnecting state on error so user can retry
+      setDisconnectingProviders((prev) => {
+        const next = new Set(prev);
+        next.delete(provider);
+        return next;
+      });
     }
   };
 
@@ -455,11 +520,14 @@ export function DataSources(): JSX.Element {
   ): JSX.Element => {
     const isConnecting = connectingProvider === integration.provider;
     const isSyncing = syncingProviders.has(integration.provider);
+    const isDisconnecting = disconnectingProviders.has(integration.provider);
 
-    // State-specific styling
+    // State-specific styling - fade card when disconnecting
     const cardClass = state === 'action-required'
       ? 'card p-4 border-amber-500/30 bg-amber-500/5'
-      : 'card p-4';
+      : isDisconnecting
+        ? 'card p-4 opacity-50 pointer-events-none transition-opacity duration-200'
+        : 'card p-4';
 
     const iconOpacity = state === 'available' ? 'opacity-60' : '';
 
@@ -567,9 +635,15 @@ export function DataSources(): JSX.Element {
                   Last synced: {new Date(integration.lastSyncAt).toLocaleString()}
                 </p>
               )}
-              {state === 'connected' && integration.syncStats && (
+              {state === 'connected' && (syncProgress[integration.provider] !== undefined || integration.syncStats) && (
                 <p className="text-xs text-surface-400 mt-1 hidden sm:block">
-                  {formatSyncStats(integration.syncStats, integration.provider)}
+                  {syncProgress[integration.provider] !== undefined ? (
+                    <span className="text-primary-400">
+                      Syncing... {getActivityLabel(integration.provider, syncProgress[integration.provider])}
+                    </span>
+                  ) : integration.syncStats ? (
+                    formatSyncStats(integration.syncStats, integration.provider)
+                  ) : null}
                 </p>
               )}
               {state === 'connected' && integration.lastError && (
@@ -612,9 +686,16 @@ export function DataSources(): JSX.Element {
             {state === 'connected' && (
               <button
                 onClick={() => void handleDisconnect(integration.provider)}
-                className="px-3 sm:px-4 py-2 text-sm font-medium text-red-400 hover:text-red-300 hover:bg-red-500/10 rounded-lg transition-colors"
+                disabled={isDisconnecting}
+                className="px-3 sm:px-4 py-2 text-sm font-medium text-red-400 hover:text-red-300 hover:bg-red-500/10 disabled:opacity-50 rounded-lg transition-colors flex items-center gap-2"
               >
-                Disconnect
+                {isDisconnecting && (
+                  <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                  </svg>
+                )}
+                {isDisconnecting ? 'Disconnecting...' : 'Disconnect'}
               </button>
             )}
           </div>

@@ -230,18 +230,19 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
         case 'task_chunk': {
           const { conversation_id, chunk } = parsed;
           const chunkData = chunk.data;
+          const chunkIndex = chunk.index;
           
           // Route chunk to appropriate conversation
           if (chunk.type === 'text_delta' && typeof chunkData === 'string') {
-            // Text chunk - append to streaming message
+            // Text chunk - append to streaming message with index for ordering
             const state = useAppStore.getState();
             const convState = state.conversations[conversation_id];
             if (convState?.streamingMessageId) {
-              appendToConversationStreaming(conversation_id, chunkData);
+              appendToConversationStreaming(conversation_id, chunkData, chunkIndex);
             } else {
-              // Start new streaming message
+              // Start new streaming message with chunk index
               const msgId = `assistant-${Date.now()}`;
-              startConversationStreaming(conversation_id, msgId, chunkData);
+              startConversationStreaming(conversation_id, msgId, chunkData, chunkIndex);
             }
           } else if (typeof chunkData === 'object' && chunkData !== null) {
             const data = chunkData as Record<string, unknown>;

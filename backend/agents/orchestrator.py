@@ -445,6 +445,18 @@ class ChatOrchestrator:
 
         # Load conversation history (only from this conversation)
         history = await self._load_history(limit=20)
+        
+        # Debug: log loaded history structure
+        logger.info("[Orchestrator] Loaded %d history messages", len(history))
+        for i, msg in enumerate(history):
+            role = msg.get("role", "?")
+            content = msg.get("content", "")
+            if isinstance(content, str):
+                preview = content[:100] + "..." if len(content) > 100 else content
+                logger.info("[Orchestrator] History[%d] %s: %s", i, role, preview)
+            elif isinstance(content, list):
+                types = [b.get("type", "?") for b in content]
+                logger.info("[Orchestrator] History[%d] %s: %s", i, role, types)
 
         # Add user message to context for Claude
         messages: list[dict[str, Any]] = history + [
@@ -599,8 +611,8 @@ Use the user's local time to provide relative references (e.g., '3 hours ago', '
                     last_error = e
                     error_type = getattr(e, "body", {}).get("error", {}).get("type", "") if isinstance(getattr(e, "body", None), dict) else ""
                     
-                    # Check if this is a retryable error
-                    is_retryable = error_type in ("overloaded_error", "rate_limit_error") or e.status_code in (429, 529, 503)
+                    # Check if this is a retryable error (includes 500 Internal Server Error)
+                    is_retryable = error_type in ("overloaded_error", "rate_limit_error", "api_error") or e.status_code in (429, 500, 502, 503, 529)
                     
                     if is_retryable and attempt < max_retries - 1:
                         delay = base_delay * (2 ** attempt)  # Exponential backoff: 1s, 2s, 4s
@@ -830,17 +842,37 @@ Use the user's local time to provide relative references (e.g., '3 hours ago', '
                             elif block.get("type") == "tool_use":
                                 seen_tool = True
                                 tool_id = block.get("id", f"tool_{len(current_tool_uses)}")
+                                tool_name = block.get("name", "unknown")
+                                tool_result = block.get("result")
+                                
+                                # Log what we're loading for debugging
+                                logger.info(
+                                    "[_load_history] Tool %s result: %s",
+                                    tool_name,
+                                    str(tool_result)[:200] if tool_result else "NO RESULT"
+                                )
+                                
                                 current_tool_uses.append({
                                     "type": "tool_use",
                                     "id": tool_id,
-                                    "name": block.get("name", "unknown"),
+                                    "name": tool_name,
                                     "input": block.get("input", {}),
                                 })
-                                tool_results.append({
-                                    "type": "tool_result",
-                                    "tool_use_id": tool_id,
-                                    "content": json.dumps(block.get("result", {})),
-                                })
+                                
+                                # Only add tool_result if we have actual result data
+                                if tool_result is not None:
+                                    tool_results.append({
+                                        "type": "tool_result",
+                                        "tool_use_id": tool_id,
+                                        "content": json.dumps(tool_result) if isinstance(tool_result, dict) else str(tool_result),
+                                    })
+                                else:
+                                    # If no result, indicate the tool was called but result is missing
+                                    tool_results.append({
+                                        "type": "tool_result",
+                                        "tool_use_id": tool_id,
+                                        "content": json.dumps({"error": "Result not available - tool execution may have failed"}),
+                                    })
                         
                         # Build assistant message with pre-tool text + tool_use
                         claude_blocks: list[dict[str, Any]] = []
@@ -860,8 +892,19 @@ Use the user's local time to provide relative references (e.g., '3 hours ago', '
                         if post_tool_text:
                             history.append({"role": "assistant", "content": " ".join(post_tool_text)})
                         else:
-                            # Minimal placeholder to prevent consecutive user messages
-                            history.append({"role": "assistant", "content": "I've processed the tool results."})
+                            # Build a summary of tool results to help Claude understand context
+                            result_summaries: list[str] = []
+                            for tr in tool_results:
+                                try:
+                                    content = json.loads(tr.get("content", "{}"))
+                                    if "rows" in content:
+                                        result_summaries.append(f"{content.get('row_count', len(content['rows']))} rows returned")
+                                    elif "error" in content:
+                                        result_summaries.append(f"error: {content['error'][:50]}")
+                                except:
+                                    pass
+                            summary = ", ".join(result_summaries) if result_summaries else "results processed"
+                            history.append({"role": "assistant", "content": f"Tool results: {summary}. I'll analyze these results."})
                     else:
                         # Simple text response - extract text from blocks
                         text_content = ""
