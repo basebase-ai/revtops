@@ -86,6 +86,28 @@ class Workflow(Base):
     auto_approve_tools: Mapped[list[str]] = mapped_column(
         JSONB, nullable=False, default=list
     )
+    
+    # NEW: Typed input/output schemas for workflow composition
+    # input_schema: JSON Schema defining expected input parameters
+    # - null (default) = accepts any trigger_data, no validation
+    # - When defined: validates input, injects typed params into prompt
+    input_schema: Mapped[Optional[dict[str, Any]]] = mapped_column(
+        JSONB, nullable=True
+    )
+    
+    # output_schema: JSON Schema defining expected output format
+    # - null (default) = string/free-form response from agent
+    # - When defined: attempts to extract structured output
+    output_schema: Mapped[Optional[dict[str, Any]]] = mapped_column(
+        JSONB, nullable=True
+    )
+    
+    # child_workflows: List of workflow IDs this workflow can call
+    # At runtime, these are resolved to full metadata and injected into the prompt
+    # so the agent knows what workflows are available without needing to look them up
+    child_workflows: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, default=list
+    )
 
     # Output configuration (optional, can also be in last step)
     # Example: { "channel": "email", "to": "user@example.com" }
@@ -128,6 +150,9 @@ class Workflow(Base):
             "steps": self.steps,
             "prompt": self.prompt,
             "auto_approve_tools": self.auto_approve_tools,
+            "input_schema": self.input_schema,
+            "output_schema": self.output_schema,
+            "child_workflows": self.child_workflows,
             "output_config": self.output_config,
             "is_enabled": self.is_enabled,
             "last_run_at": f"{self.last_run_at.isoformat()}Z" if self.last_run_at else None,

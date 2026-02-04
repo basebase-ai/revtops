@@ -18,6 +18,7 @@ if str(_backend_dir) not in sys.path:
     sys.path.insert(0, str(_backend_dir))
 
 import asyncio
+import json
 import logging
 from datetime import datetime
 from typing import Any
@@ -26,6 +27,238 @@ from uuid import UUID
 from workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# Schema Validation and Parameter Formatting
+# =============================================================================
+
+def validate_workflow_input(
+    input_data: dict[str, Any] | None,
+    input_schema: dict[str, Any] | None,
+) -> tuple[bool, str | None]:
+    """
+    Validate input data against the workflow's input schema.
+    
+    Returns:
+        (is_valid, error_message) - error_message is None if valid
+    """
+    if input_schema is None:
+        # No schema defined = accept anything
+        return True, None
+    
+    if input_data is None:
+        input_data = {}
+    
+    try:
+        import jsonschema
+        jsonschema.validate(instance=input_data, schema=input_schema)
+        return True, None
+    except jsonschema.ValidationError as e:
+        return False, f"Input validation failed: {e.message}"
+    except jsonschema.SchemaError as e:
+        logger.error(f"Invalid input_schema: {e}")
+        return True, None  # Don't fail on bad schema, just skip validation
+
+
+def format_typed_parameters(
+    input_data: dict[str, Any] | None,
+    input_schema: dict[str, Any] | None,
+) -> str | None:
+    """
+    Format input data as typed parameters for injection into the prompt.
+    
+    Returns a formatted string like:
+    
+    Input parameters:
+    - email (string, required): "john@acme.com"
+    - company_domain (string, optional): "acme.com"
+    - contact_id (uuid, optional): not provided
+    
+    Returns None if no schema is defined.
+    """
+    if input_schema is None:
+        return None
+    
+    if input_data is None:
+        input_data = {}
+    
+    properties: dict[str, Any] = input_schema.get("properties", {})
+    required: list[str] = input_schema.get("required", [])
+    
+    if not properties:
+        return None
+    
+    lines: list[str] = ["Input parameters:"]
+    
+    for prop_name, prop_schema in properties.items():
+        prop_type = prop_schema.get("type", "any")
+        prop_format = prop_schema.get("format")
+        is_required = prop_name in required
+        
+        # Build type string
+        type_str = prop_type
+        if prop_format:
+            type_str = prop_format
+        
+        req_str = "required" if is_required else "optional"
+        
+        # Get value
+        if prop_name in input_data:
+            value = input_data[prop_name]
+            if isinstance(value, str):
+                value_str = f'"{value}"'
+            else:
+                value_str = json.dumps(value)
+        else:
+            value_str = "not provided"
+        
+        lines.append(f"- {prop_name} ({type_str}, {req_str}): {value_str}")
+    
+    return "\n".join(lines)
+
+
+async def resolve_child_workflows(
+    child_workflow_ids: list[str],
+    organization_id: str,
+) -> list[dict[str, Any]]:
+    """
+    Resolve child workflow IDs to full metadata for prompt injection.
+    
+    Returns a list of workflow info dicts with id, name, description, 
+    input_schema, and output_schema.
+    """
+    if not child_workflow_ids:
+        return []
+    
+    from sqlalchemy import select
+    from models.database import get_session
+    from models.workflow import Workflow
+    
+    resolved: list[dict[str, Any]] = []
+    
+    async with get_session(organization_id=organization_id) as session:
+        for wf_id in child_workflow_ids:
+            try:
+                result = await session.execute(
+                    select(Workflow).where(Workflow.id == UUID(wf_id))
+                )
+                workflow = result.scalar_one_or_none()
+                
+                if workflow and workflow.is_enabled:
+                    resolved.append({
+                        "id": str(workflow.id),
+                        "name": workflow.name,
+                        "description": workflow.description,
+                        "input_schema": workflow.input_schema,
+                        "output_schema": workflow.output_schema,
+                    })
+            except Exception as e:
+                logger.warning(f"Failed to resolve child workflow {wf_id}: {e}")
+    
+    return resolved
+
+
+def format_child_workflows_for_prompt(child_workflows: list[dict[str, Any]]) -> str | None:
+    """
+    Format resolved child workflows as instructions for the agent.
+    
+    Returns a string like:
+    
+    Available child workflows (use with run_workflow or loop_over):
+    
+    1. "Enrich Single Contact" (id: 9645564e-...)
+       Input: {email: string (required), first_name: string}
+       Output: {enriched: boolean, company_name: string}
+    """
+    if not child_workflows:
+        return None
+    
+    lines: list[str] = [
+        "Available child workflows (use with run_workflow or loop_over):",
+        "",
+    ]
+    
+    for i, wf in enumerate(child_workflows, 1):
+        lines.append(f'{i}. "{wf["name"]}" (id: {wf["id"]})')
+        
+        if wf.get("description"):
+            lines.append(f'   Description: {wf["description"]}')
+        
+        # Format input schema
+        input_schema = wf.get("input_schema")
+        if input_schema and input_schema.get("properties"):
+            props = input_schema["properties"]
+            required = input_schema.get("required", [])
+            prop_strs: list[str] = []
+            for prop_name, prop_def in props.items():
+                prop_type = prop_def.get("type", "any")
+                req_str = " (required)" if prop_name in required else ""
+                prop_strs.append(f"{prop_name}: {prop_type}{req_str}")
+            lines.append(f'   Input: {{{", ".join(prop_strs)}}}')
+        else:
+            lines.append("   Input: any object")
+        
+        # Format output schema
+        output_schema = wf.get("output_schema")
+        if output_schema and output_schema.get("properties"):
+            props = output_schema["properties"]
+            prop_strs = [f"{k}: {v.get('type', 'any')}" for k, v in props.items()]
+            lines.append(f'   Output: {{{", ".join(prop_strs)}}}')
+        else:
+            lines.append("   Output: string")
+        
+        lines.append("")  # Blank line between workflows
+    
+    return "\n".join(lines)
+
+
+def format_output_schema_instruction(output_schema: dict[str, Any] | None) -> str | None:
+    """
+    Format output schema as instructions for the agent.
+    
+    Returns a string like:
+    
+    Expected output format (JSON):
+    {
+      "enriched": boolean,
+      "company_name": string,
+      "linkedin_url": string
+    }
+    
+    Returns None if no schema is defined.
+    """
+    if output_schema is None:
+        return None
+    
+    # Simple case: primitive type
+    schema_type = output_schema.get("type")
+    if schema_type in ("string", "number", "boolean", "integer"):
+        return f"Expected output: Return a {schema_type} value."
+    
+    # Object type: format properties
+    if schema_type == "object":
+        properties = output_schema.get("properties", {})
+        if not properties:
+            return "Expected output: Return a JSON object."
+        
+        lines: list[str] = ["Expected output format (return as JSON):"]
+        lines.append("{")
+        
+        prop_lines: list[str] = []
+        for prop_name, prop_schema in properties.items():
+            prop_type = prop_schema.get("type", "any")
+            prop_desc = prop_schema.get("description", "")
+            desc_str = f"  // {prop_desc}" if prop_desc else ""
+            prop_lines.append(f'  "{prop_name}": {prop_type}{desc_str}')
+        
+        lines.append(",\n".join(prop_lines))
+        lines.append("}")
+        
+        return "\n".join(lines)
+    
+    # Array or complex type: just show the schema
+    return f"Expected output format:\n```json\n{json.dumps(output_schema, indent=2)}\n```"
 
 
 def run_async(coro: Any) -> Any:
@@ -307,16 +540,70 @@ async def _execute_workflow_via_agent(
         f"conversation {conversation.id}"
     )
     
-    # Build the prompt with trigger context
-    prompt = workflow.prompt
+    # Extract user-facing trigger data (filter out internal context)
+    user_trigger_data: dict[str, Any] | None = None
     if trigger_data:
-        prompt += f"\n\nTrigger data: {trigger_data}"
+        user_trigger_data = {
+            k: v for k, v in trigger_data.items() 
+            if not k.startswith("_")  # Exclude internal keys like _parent_context
+        }
+    
+    # Validate input against schema if defined
+    input_schema: dict[str, Any] | None = getattr(workflow, "input_schema", None)
+    output_schema: dict[str, Any] | None = getattr(workflow, "output_schema", None)
+    
+    if input_schema is not None:
+        is_valid, error_msg = validate_workflow_input(user_trigger_data, input_schema)
+        if not is_valid:
+            run.status = "failed"
+            run.error_message = error_msg
+            run.completed_at = datetime.utcnow()
+            await session.commit()
+            return {
+                "status": "failed",
+                "workflow_id": str(workflow.id),
+                "run_id": str(run.id),
+                "error": error_msg,
+            }
+    
+    # Build the prompt with typed parameters or raw trigger data
+    prompt = workflow.prompt
+    
+    # If schema is defined, inject typed parameters; otherwise use raw trigger data
+    typed_params = format_typed_parameters(user_trigger_data, input_schema)
+    if typed_params:
+        prompt += f"\n\n{typed_params}"
+    elif user_trigger_data:
+        prompt += f"\n\nTrigger data: {user_trigger_data}"
+    
+    # Add output format instructions if schema is defined
+    output_instruction = format_output_schema_instruction(output_schema)
+    if output_instruction:
+        prompt += f"\n\n{output_instruction}"
+    
+    # Resolve and inject child workflows
+    child_workflow_ids: list[str] = getattr(workflow, "child_workflows", []) or []
+    if child_workflow_ids:
+        resolved_children = await resolve_child_workflows(
+            child_workflow_ids, 
+            str(workflow.organization_id)
+        )
+        child_workflows_text = format_child_workflows_for_prompt(resolved_children)
+        if child_workflows_text:
+            prompt += f"\n\n{child_workflows_text}"
+    
+    # Extract call_stack from parent context for recursion detection
+    call_stack: list[str] = []
+    if trigger_data and "_parent_context" in trigger_data:
+        parent_context = trigger_data["_parent_context"]
+        call_stack = parent_context.get("call_stack", [])
     
     # Create orchestrator with workflow context for auto-approvals
     workflow_context: dict[str, Any] = {
         "is_workflow": True,
         "workflow_id": str(workflow.id),
         "auto_approve_tools": workflow.auto_approve_tools or [],
+        "call_stack": call_stack,  # For nested workflow recursion detection
     }
     
     orchestrator = ChatOrchestrator(

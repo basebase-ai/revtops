@@ -37,6 +37,7 @@ python-jose[cryptography]==3.3.0
 
 # Utilities
 structlog==24.1.0
+jsonschema==4.21.1
 
 # Task Queue (Celery)
 celery[redis]==5.3.6

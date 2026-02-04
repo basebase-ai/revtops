@@ -49,6 +49,9 @@ class CreateWorkflowRequest(BaseModel):
     steps: list[WorkflowStep] = []  # Optional for prompt-based workflows
     prompt: Optional[str] = None  # Agent prompt for prompt-based workflows
     auto_approve_tools: list[str] = []  # Tools that run without approval
+    input_schema: Optional[dict[str, Any]] = None  # JSON Schema for typed inputs
+    output_schema: Optional[dict[str, Any]] = None  # JSON Schema for typed outputs
+    child_workflows: list[str] = []  # IDs of workflows this can call
     output_config: Optional[dict[str, Any]] = None
     is_enabled: bool = True
 
@@ -63,6 +66,9 @@ class UpdateWorkflowRequest(BaseModel):
     steps: Optional[list[WorkflowStep]] = None
     prompt: Optional[str] = None
     auto_approve_tools: Optional[list[str]] = None
+    input_schema: Optional[dict[str, Any]] = None
+    output_schema: Optional[dict[str, Any]] = None
+    child_workflows: Optional[list[str]] = None
     output_config: Optional[dict[str, Any]] = None
     is_enabled: Optional[bool] = None
 
@@ -78,8 +84,11 @@ class WorkflowResponse(BaseModel):
     trigger_type: str
     trigger_config: dict[str, Any]
     steps: list[dict[str, Any]]
-    prompt: Optional[str]  # New: Agent prompt for prompt-based workflows
-    auto_approve_tools: list[str]  # New: Tools that run without approval
+    prompt: Optional[str]  # Agent prompt for prompt-based workflows
+    auto_approve_tools: list[str]  # Tools that run without approval
+    input_schema: Optional[dict[str, Any]]  # JSON Schema for typed inputs
+    output_schema: Optional[dict[str, Any]]  # JSON Schema for typed outputs
+    child_workflows: list[str]  # IDs of workflows this can call
     output_config: Optional[dict[str, Any]]
     is_enabled: bool
     last_run_at: Optional[str]
@@ -228,6 +237,9 @@ async def create_workflow(
             steps=[s.model_dump() for s in request.steps],
             prompt=request.prompt,
             auto_approve_tools=request.auto_approve_tools,
+            input_schema=request.input_schema,
+            output_schema=request.output_schema,
+            child_workflows=request.child_workflows,
             output_config=request.output_config,
             is_enabled=request.is_enabled,
         )
@@ -280,6 +292,12 @@ async def update_workflow(
             workflow.prompt = request.prompt
         if request.auto_approve_tools is not None:
             workflow.auto_approve_tools = request.auto_approve_tools
+        if request.input_schema is not None:
+            workflow.input_schema = request.input_schema
+        if request.output_schema is not None:
+            workflow.output_schema = request.output_schema
+        if request.child_workflows is not None:
+            workflow.child_workflows = request.child_workflows
         if request.output_config is not None:
             workflow.output_config = request.output_config
         if request.is_enabled is not None:

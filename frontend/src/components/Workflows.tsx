@@ -33,8 +33,11 @@ interface Workflow {
     filter?: Record<string, unknown>;
   };
   steps: WorkflowStep[];
-  prompt: string | null;  // New: Agent prompt for prompt-based workflows
-  auto_approve_tools: string[];  // New: Tools that don't require approval
+  prompt: string | null;  // Agent prompt for prompt-based workflows
+  auto_approve_tools: string[];  // Tools that don't require approval
+  input_schema: Record<string, unknown> | null;  // JSON Schema for typed inputs
+  output_schema: Record<string, unknown> | null;  // JSON Schema for typed outputs
+  child_workflows: string[];  // IDs of workflows this can call
   is_enabled: boolean;
   last_run_at: string | null;
   last_error: string | null;
@@ -109,6 +112,9 @@ interface CreateWorkflowParams {
   trigger_type: 'schedule' | 'manual';
   cron?: string;
   auto_approve_tools?: string[];
+  input_schema?: Record<string, unknown> | null;
+  output_schema?: Record<string, unknown> | null;
+  child_workflows?: string[];
 }
 
 async function createWorkflow(orgId: string, userId: string, params: CreateWorkflowParams): Promise<Workflow> {
@@ -125,6 +131,9 @@ async function createWorkflow(orgId: string, userId: string, params: CreateWorkf
       steps: [],
       prompt: params.prompt,
       auto_approve_tools: params.auto_approve_tools ?? [],
+      input_schema: params.input_schema ?? null,
+      output_schema: params.output_schema ?? null,
+      child_workflows: params.child_workflows ?? [],
       is_enabled: true,
     }),
   });
@@ -149,6 +158,9 @@ async function updateWorkflow(orgId: string, workflowId: string, params: CreateW
       },
       prompt: params.prompt,
       auto_approve_tools: params.auto_approve_tools ?? [],
+      input_schema: params.input_schema,
+      output_schema: params.output_schema,
+      child_workflows: params.child_workflows,
     }),
   });
   if (!response.ok) {
@@ -342,6 +354,52 @@ function WorkflowDetail({
             </div>
           )}
 
+          {/* Child Workflows */}
+          {workflow.child_workflows && workflow.child_workflows.length > 0 && (
+            <div>
+              <h3 className="text-sm font-medium text-surface-300 mb-3">Child Workflows</h3>
+              <p className="text-xs text-surface-500 mb-2">
+                This workflow can call the following workflows (IDs auto-injected into prompt):
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {workflow.child_workflows.map((childId) => (
+                  <span
+                    key={childId}
+                    className="px-2 py-1 bg-surface-800 text-surface-300 rounded text-xs font-mono"
+                    title={childId}
+                  >
+                    {childId.slice(0, 8)}...
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Input/Output Schemas */}
+          {(workflow.input_schema || workflow.output_schema) && (
+            <div>
+              <h3 className="text-sm font-medium text-surface-300 mb-3">Type Definitions</h3>
+              <div className="space-y-3">
+                {workflow.input_schema && (
+                  <div>
+                    <span className="text-xs text-surface-400 uppercase tracking-wider">Input Schema</span>
+                    <pre className="mt-1 p-3 bg-surface-800/50 rounded-lg text-xs text-surface-300 overflow-x-auto font-mono">
+                      {JSON.stringify(workflow.input_schema, null, 2)}
+                    </pre>
+                  </div>
+                )}
+                {workflow.output_schema && (
+                  <div>
+                    <span className="text-xs text-surface-400 uppercase tracking-wider">Output Schema</span>
+                    <pre className="mt-1 p-3 bg-surface-800/50 rounded-lg text-xs text-surface-300 overflow-x-auto font-mono">
+                      {JSON.stringify(workflow.output_schema, null, 2)}
+                    </pre>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
           {/* Steps (legacy workflows only) */}
           {workflow.steps && workflow.steps.length > 0 && !workflow.prompt && (
             <div>
@@ -499,12 +557,49 @@ function WorkflowModal({
   const [autoApproveTools, setAutoApproveTools] = useState<string[]>(
     workflow?.auto_approve_tools ?? []
   );
+  const [showAdvanced, setShowAdvanced] = useState(
+    !!(workflow?.input_schema || workflow?.output_schema)
+  );
+  const [inputSchemaText, setInputSchemaText] = useState(
+    workflow?.input_schema ? JSON.stringify(workflow.input_schema, null, 2) : ''
+  );
+  const [outputSchemaText, setOutputSchemaText] = useState(
+    workflow?.output_schema ? JSON.stringify(workflow.output_schema, null, 2) : ''
+  );
+  const [schemaError, setSchemaError] = useState<string | null>(null);
+  const [selectedChildWorkflows, setSelectedChildWorkflows] = useState<string[]>(
+    workflow?.child_workflows ?? []
+  );
+
+  // Get all workflows for child workflow selection (exclude current workflow)
+  const organization = useAppStore((state) => state.organization);
+  const { data: allWorkflows = [] } = useQuery({
+    queryKey: ['workflows', organization?.id],
+    queryFn: () => fetchWorkflows(organization?.id ?? ''),
+    enabled: !!organization?.id,
+  });
+  
+  // Filter out the current workflow being edited
+  const availableChildWorkflows = allWorkflows.filter(
+    (w) => w.id !== workflow?.id && w.is_enabled
+  );
+
+  const toggleChildWorkflow = (workflowId: string): void => {
+    setSelectedChildWorkflows(prev =>
+      prev.includes(workflowId)
+        ? prev.filter(id => id !== workflowId)
+        : [...prev, workflowId]
+    );
+  };
 
   // Tools that can be auto-approved for workflows
   const availableAutoApproveTools = [
+    { id: 'run_sql_query', label: 'Query Data', description: 'Run SQL queries to read from your synced data' },
+    { id: 'run_workflow', label: 'Run Workflow', description: 'Execute another workflow and wait for results' },
+    { id: 'loop_over', label: 'Loop Over Items', description: 'Run a workflow for each item in a list' },
     { id: 'send_slack', label: 'Post to Slack', description: 'Send messages to Slack channels' },
     { id: 'send_email_from', label: 'Send Email', description: 'Send emails from your connected account' },
-    { id: 'crm_write', label: 'CRM Updates', description: 'Create or update contacts, deals, accounts' },
+    { id: 'run_sql_write', label: 'Write Data', description: 'Insert, update, or delete records' },
   ];
 
   const toggleAutoApproveTool = (toolId: string): void => {
@@ -515,9 +610,44 @@ function WorkflowModal({
     );
   };
 
+  const parseSchema = (text: string): Record<string, unknown> | null => {
+    if (!text.trim()) return null;
+    try {
+      return JSON.parse(text) as Record<string, unknown>;
+    } catch {
+      return null;
+    }
+  };
+
   const handleSubmit = (e: React.FormEvent): void => {
     e.preventDefault();
     if (!name.trim() || !prompt.trim()) return;
+    
+    // Validate schemas if provided
+    let inputSchema: Record<string, unknown> | null | undefined = undefined;
+    let outputSchema: Record<string, unknown> | null | undefined = undefined;
+    
+    if (inputSchemaText.trim()) {
+      inputSchema = parseSchema(inputSchemaText);
+      if (inputSchema === null) {
+        setSchemaError('Invalid JSON in input schema');
+        return;
+      }
+    } else {
+      inputSchema = null;
+    }
+    
+    if (outputSchemaText.trim()) {
+      outputSchema = parseSchema(outputSchemaText);
+      if (outputSchema === null) {
+        setSchemaError('Invalid JSON in output schema');
+        return;
+      }
+    } else {
+      outputSchema = null;
+    }
+    
+    setSchemaError(null);
     
     onSubmit({
       name: name.trim(),
@@ -526,6 +656,9 @@ function WorkflowModal({
       trigger_type: triggerType,
       cron: triggerType === 'schedule' ? cron : undefined,
       auto_approve_tools: autoApproveTools.length > 0 ? autoApproveTools : undefined,
+      input_schema: inputSchema,
+      output_schema: outputSchema,
+      child_workflows: selectedChildWorkflows.length > 0 ? selectedChildWorkflows : undefined,
     });
   };
 
@@ -662,6 +795,120 @@ function WorkflowModal({
                 </label>
               ))}
             </div>
+          </div>
+
+          {/* Child Workflows */}
+          {availableChildWorkflows.length > 0 && (
+            <div>
+              <label className="block text-sm font-medium text-surface-300 mb-2">
+                Child Workflows
+              </label>
+              <p className="text-xs text-surface-500 mb-3">
+                Select workflows this one can call using run_workflow or loop_over.
+                Selected workflows will be auto-injected into the prompt with their IDs and schemas.
+              </p>
+              <div className="space-y-2 max-h-48 overflow-y-auto">
+                {availableChildWorkflows.map((wf) => (
+                  <label
+                    key={wf.id}
+                    className="flex items-start gap-3 p-3 bg-surface-800/50 rounded-lg cursor-pointer hover:bg-surface-800 transition-colors"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={selectedChildWorkflows.includes(wf.id)}
+                      onChange={() => toggleChildWorkflow(wf.id)}
+                      className="mt-0.5 text-primary-500 focus:ring-primary-500 rounded"
+                    />
+                    <div className="flex-1 min-w-0">
+                      <span className="text-surface-200 font-medium">{wf.name}</span>
+                      {wf.description && (
+                        <p className="text-xs text-surface-500 truncate">{wf.description}</p>
+                      )}
+                      {wf.input_schema && (
+                        <p className="text-xs text-surface-600 mt-1">
+                          Has typed input schema
+                        </p>
+                      )}
+                    </div>
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Advanced: Input/Output Schemas */}
+          <div className="border-t border-surface-800 pt-4">
+            <button
+              type="button"
+              onClick={() => setShowAdvanced(!showAdvanced)}
+              className="flex items-center gap-2 text-sm text-surface-400 hover:text-surface-200 transition-colors"
+            >
+              <svg
+                className={`w-4 h-4 transition-transform ${showAdvanced ? 'rotate-90' : ''}`}
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+              </svg>
+              Advanced: Typed Input/Output Schemas
+            </button>
+            
+            {showAdvanced && (
+              <div className="mt-4 space-y-4">
+                <p className="text-xs text-surface-500">
+                  Define JSON Schemas for type-safe workflow composition. When defined, inputs are validated
+                  and typed parameters are injected into the prompt.
+                </p>
+
+                {schemaError && (
+                  <div className="p-2 bg-red-500/10 border border-red-500/20 rounded text-sm text-red-400">
+                    {schemaError}
+                  </div>
+                )}
+
+                {/* Input Schema */}
+                <div>
+                  <label className="block text-sm font-medium text-surface-300 mb-1">
+                    Input Schema (JSON Schema)
+                  </label>
+                  <textarea
+                    value={inputSchemaText}
+                    onChange={(e) => setInputSchemaText(e.target.value)}
+                    placeholder={`{
+  "type": "object",
+  "properties": {
+    "email": { "type": "string", "format": "email" },
+    "company_domain": { "type": "string" }
+  },
+  "required": ["email"]
+}`}
+                    rows={6}
+                    className="w-full px-3 py-2 bg-surface-800 border border-surface-700 rounded-lg text-surface-100 placeholder-surface-600 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent font-mono text-xs resize-none"
+                  />
+                </div>
+
+                {/* Output Schema */}
+                <div>
+                  <label className="block text-sm font-medium text-surface-300 mb-1">
+                    Output Schema (JSON Schema)
+                  </label>
+                  <textarea
+                    value={outputSchemaText}
+                    onChange={(e) => setOutputSchemaText(e.target.value)}
+                    placeholder={`{
+  "type": "object",
+  "properties": {
+    "enriched": { "type": "boolean" },
+    "company_name": { "type": "string" }
+  }
+}`}
+                    rows={5}
+                    className="w-full px-3 py-2 bg-surface-800 border border-surface-700 rounded-lg text-surface-100 placeholder-surface-600 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent font-mono text-xs resize-none"
+                  />
+                </div>
+              </div>
+            )}
           </div>
         </form>
 

@@ -464,6 +464,93 @@ The workflow will create a new conversation that you can view in the chat list."
     default_requires_approval=False,
 )
 
+
+register_tool(
+    name="run_workflow",
+    description="""Execute another workflow and wait for its result.
+
+Use this to compose workflows - a parent workflow can delegate tasks to specialist workflows.
+For example, an "Enrich All Contacts" workflow could call "Enrich Single Contact" for each contact.
+
+The child workflow executes with its own conversation and returns its output.
+Input data is passed to the child workflow and available in its prompt context.
+
+IMPORTANT: Avoid circular calls (A calls B calls A) - this will be detected and rejected.""",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "workflow_id": {
+                "type": "string",
+                "description": "UUID of the workflow to execute",
+            },
+            "input_data": {
+                "type": "object",
+                "description": "Data to pass to the child workflow (available as trigger_data)",
+            },
+            "wait_for_completion": {
+                "type": "boolean",
+                "description": "If true, wait for workflow to complete and return result. If false, fire and forget.",
+                "default": True,
+            },
+        },
+        "required": ["workflow_id"],
+    },
+    category=ToolCategory.LOCAL_WRITE,
+    default_requires_approval=False,
+)
+
+
+register_tool(
+    name="loop_over",
+    description="""Execute a workflow for each item in a list.
+
+Use this to process a batch of items (e.g., enrich 100 contacts, send 50 emails).
+Each item is passed to the workflow as input_data.
+
+Returns a summary with results and any failures.
+
+Example: Query 100 contacts, then use loop_over to run "research-company" workflow for each.
+
+Parameters:
+- items: List of objects to process
+- workflow_id: The workflow to run for each item
+- max_concurrent: How many to run in parallel (default 3, max 10)
+- max_items: Safety limit on total items (default 100, max 500)
+- continue_on_error: If true, continue processing even if some items fail""",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "items": {
+                "type": "array",
+                "items": {"type": "object"},
+                "description": "List of items to process. Each item is passed to the workflow as input_data.",
+            },
+            "workflow_id": {
+                "type": "string",
+                "description": "UUID of the workflow to execute for each item",
+            },
+            "max_concurrent": {
+                "type": "integer",
+                "description": "Maximum parallel executions (default 3, max 10)",
+                "default": 3,
+            },
+            "max_items": {
+                "type": "integer",
+                "description": "Maximum items to process (default 100, max 500)",
+                "default": 100,
+            },
+            "continue_on_error": {
+                "type": "boolean",
+                "description": "Continue processing if an item fails (default true)",
+                "default": True,
+            },
+        },
+        "required": ["items", "workflow_id"],
+    },
+    category=ToolCategory.LOCAL_WRITE,
+    default_requires_approval=False,
+)
+
 # =============================================================================
 # Helper Functions
 # =============================================================================

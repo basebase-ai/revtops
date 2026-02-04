@@ -196,6 +196,16 @@ async def execute_tool(
         logger.info("[Tools] trigger_workflow completed: %s", result)
         return result
 
+    elif tool_name == "run_workflow":
+        result = await _run_workflow(tool_input, organization_id, user_id, context)
+        logger.info("[Tools] run_workflow completed: %s", result.get("status"))
+        return result
+
+    elif tool_name == "loop_over":
+        result = await _loop_over(tool_input, organization_id, user_id, context)
+        logger.info("[Tools] loop_over completed: %d/%d successful", result.get("succeeded", 0), result.get("total", 0))
+        return result
+
     elif tool_name == "enrich_contacts_with_apollo":
         result = await _enrich_contacts_with_apollo(tool_input, organization_id)
         logger.info("[Tools] enrich_contacts_with_apollo completed: %d results", len(result.get("enriched", [])))
@@ -2832,3 +2842,306 @@ async def _trigger_sync(
     except Exception as e:
         logger.error(f"[Tools._trigger_sync] Failed: {str(e)}")
         return {"error": f"Failed to trigger sync: {str(e)}"}
+
+
+# =============================================================================
+# Workflow Composition Tools
+# =============================================================================
+
+# Maximum depth for nested workflow calls to prevent infinite recursion
+MAX_WORKFLOW_CALL_DEPTH: int = 5
+
+# Maximum items that can be processed in loop_over
+MAX_LOOP_ITEMS: int = 500
+
+# Maximum concurrent workflow executions in loop_over
+MAX_CONCURRENT_WORKFLOWS: int = 10
+
+
+async def _run_workflow(
+    params: dict[str, Any],
+    organization_id: str,
+    user_id: str,
+    context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """
+    Execute another workflow and optionally wait for completion.
+    
+    This enables workflow composition - parent workflows can delegate
+    to specialist child workflows.
+    
+    Args:
+        params: Contains workflow_id, input_data, wait_for_completion
+        organization_id: Organization UUID
+        user_id: User UUID
+        context: Workflow context containing call_stack for recursion detection
+        
+    Returns:
+        Workflow execution result or task info
+    """
+    from models.workflow import Workflow, WorkflowRun
+    from workers.tasks.workflows import _execute_workflow
+    
+    workflow_id = params.get("workflow_id", "").strip()
+    input_data: dict[str, Any] = params.get("input_data", {}) or {}
+    wait_for_completion: bool = params.get("wait_for_completion", True)
+    
+    if not workflow_id:
+        return {"error": "workflow_id is required"}
+    
+    # === Recursion Detection ===
+    call_stack: list[str] = []
+    if context:
+        call_stack = list(context.get("call_stack", []))
+    
+    # Check depth limit
+    if len(call_stack) >= MAX_WORKFLOW_CALL_DEPTH:
+        return {
+            "error": f"Maximum workflow call depth ({MAX_WORKFLOW_CALL_DEPTH}) exceeded. "
+                     f"Call stack: {' -> '.join(call_stack)}",
+            "status": "rejected",
+        }
+    
+    # Check for circular call
+    if workflow_id in call_stack:
+        return {
+            "error": f"Circular workflow call detected. "
+                     f"Workflow {workflow_id} is already in call stack: {' -> '.join(call_stack)}",
+            "status": "rejected",
+        }
+    
+    try:
+        # Verify workflow exists and belongs to org
+        async with get_session(organization_id=organization_id) as session:
+            result = await session.execute(
+                select(Workflow).where(
+                    Workflow.id == UUID(workflow_id),
+                    Workflow.organization_id == UUID(organization_id),
+                )
+            )
+            workflow = result.scalar_one_or_none()
+            
+            if not workflow:
+                return {"error": f"Workflow {workflow_id} not found"}
+            
+            if not workflow.is_enabled:
+                return {"error": f"Workflow '{workflow.name}' is disabled."}
+            
+            workflow_name: str = workflow.name
+        
+        if not wait_for_completion:
+            # Fire and forget - queue via Celery
+            from workers.tasks.workflows import execute_workflow
+            task = execute_workflow.delay(
+                workflow_id, 
+                "run_workflow", 
+                input_data, 
+                None, 
+                organization_id
+            )
+            
+            return {
+                "status": "queued",
+                "workflow_id": workflow_id,
+                "workflow_name": workflow_name,
+                "task_id": task.id,
+                "message": f"Workflow '{workflow_name}' queued for execution.",
+            }
+        
+        # === Synchronous execution ===
+        # Build child context with updated call stack
+        child_call_stack: list[str] = call_stack + [workflow_id]
+        
+        # Build trigger_data with parent context info
+        trigger_data: dict[str, Any] = {
+            **input_data,
+            "_parent_context": {
+                "call_stack": child_call_stack,
+                "parent_workflow_id": context.get("workflow_id") if context else None,
+            },
+        }
+        
+        # Execute workflow directly (not via Celery) for synchronous result
+        execution_result = await _execute_workflow(
+            workflow_id=workflow_id,
+            triggered_by="run_workflow",
+            trigger_data=trigger_data,
+            conversation_id=None,
+            organization_id=organization_id,
+        )
+        
+        return {
+            "status": execution_result.get("status", "unknown"),
+            "workflow_id": workflow_id,
+            "workflow_name": workflow_name,
+            "run_id": execution_result.get("run_id"),
+            "conversation_id": execution_result.get("conversation_id"),
+            "output": execution_result.get("output"),
+            "error": execution_result.get("error"),
+        }
+        
+    except Exception as e:
+        logger.error("[Tools._run_workflow] Failed: %s", str(e))
+        return {"error": f"Failed to run workflow: {str(e)}", "status": "failed"}
+
+
+async def _loop_over(
+    params: dict[str, Any],
+    organization_id: str,
+    user_id: str,
+    context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """
+    Execute a workflow for each item in a list.
+    
+    This is the "map" operation for workflows - process a batch of items
+    by running a workflow for each one.
+    
+    Args:
+        params: Contains items, workflow_id, max_concurrent, max_items, continue_on_error
+        organization_id: Organization UUID
+        user_id: User UUID
+        context: Workflow context for recursion detection
+        
+    Returns:
+        Summary of results and failures
+    """
+    import asyncio
+    from models.workflow import Workflow
+    
+    items: list[dict[str, Any]] = params.get("items", [])
+    workflow_id: str = params.get("workflow_id", "").strip()
+    max_concurrent: int = min(params.get("max_concurrent", 3), MAX_CONCURRENT_WORKFLOWS)
+    max_items: int = min(params.get("max_items", 100), MAX_LOOP_ITEMS)
+    continue_on_error: bool = params.get("continue_on_error", True)
+    
+    if not workflow_id:
+        return {"error": "workflow_id is required"}
+    
+    if not items:
+        return {"error": "items array is required and cannot be empty"}
+    
+    if not isinstance(items, list):
+        return {"error": "items must be an array"}
+    
+    # Apply item limit
+    original_count: int = len(items)
+    items = items[:max_items]
+    truncated: bool = original_count > max_items
+    
+    # Verify workflow exists
+    async with get_session(organization_id=organization_id) as session:
+        result = await session.execute(
+            select(Workflow).where(
+                Workflow.id == UUID(workflow_id),
+                Workflow.organization_id == UUID(organization_id),
+            )
+        )
+        workflow = result.scalar_one_or_none()
+        
+        if not workflow:
+            return {"error": f"Workflow {workflow_id} not found"}
+        
+        if not workflow.is_enabled:
+            return {"error": f"Workflow '{workflow.name}' is disabled."}
+        
+        workflow_name: str = workflow.name
+    
+    # === Execute workflow for each item ===
+    results: list[dict[str, Any]] = []
+    failures: list[dict[str, Any]] = []
+    semaphore = asyncio.Semaphore(max_concurrent)
+    
+    async def process_item(index: int, item: dict[str, Any]) -> dict[str, Any]:
+        """Process a single item through the workflow."""
+        async with semaphore:
+            try:
+                # Run workflow with item directly as input_data (not wrapped)
+                # The item IS the input, plus we add _loop_context for metadata
+                input_data: dict[str, Any] = {
+                    **item,  # Spread the item properties at root level
+                    "_loop_context": {
+                        "index": index,
+                        "total": len(items),
+                    },
+                }
+                
+                result = await _run_workflow(
+                    params={
+                        "workflow_id": workflow_id,
+                        "input_data": input_data,
+                        "wait_for_completion": True,
+                    },
+                    organization_id=organization_id,
+                    user_id=user_id,
+                    context=context,
+                )
+                
+                return {
+                    "index": index,
+                    "item": item,
+                    "result": result,
+                    "success": result.get("status") == "completed",
+                }
+                
+            except Exception as e:
+                logger.error(f"[Tools._loop_over] Item {index} failed: {str(e)}")
+                return {
+                    "index": index,
+                    "item": item,
+                    "result": {"error": str(e)},
+                    "success": False,
+                }
+    
+    # Create tasks for all items
+    tasks: list[asyncio.Task[dict[str, Any]]] = [
+        asyncio.create_task(process_item(i, item))
+        for i, item in enumerate(items)
+    ]
+    
+    # Process with or without early termination
+    if continue_on_error:
+        # Wait for all tasks
+        item_results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        for item_result in item_results:
+            if isinstance(item_result, Exception):
+                failures.append({"error": str(item_result)})
+            elif item_result.get("success"):
+                results.append(item_result)
+            else:
+                failures.append(item_result)
+    else:
+        # Stop on first error
+        for task in asyncio.as_completed(tasks):
+            item_result = await task
+            
+            if not item_result.get("success"):
+                failures.append(item_result)
+                # Cancel remaining tasks
+                for t in tasks:
+                    if not t.done():
+                        t.cancel()
+                break
+            
+            results.append(item_result)
+    
+    succeeded: int = len(results)
+    failed: int = len(failures)
+    
+    return {
+        "status": "completed" if failed == 0 else ("partial" if succeeded > 0 else "failed"),
+        "workflow_id": workflow_id,
+        "workflow_name": workflow_name,
+        "total": len(items),
+        "succeeded": succeeded,
+        "failed": failed,
+        "truncated": truncated,
+        "original_count": original_count if truncated else None,
+        "results": results,
+        "failures": failures[:10],  # Limit failure details to first 10
+        "message": (
+            f"Processed {len(items)} items: {succeeded} succeeded, {failed} failed."
+            + (f" (Truncated from {original_count} items)" if truncated else "")
+        ),
+    }
