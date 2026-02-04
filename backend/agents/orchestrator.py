@@ -28,6 +28,81 @@ from models.database import get_session
 
 logger = logging.getLogger(__name__)
 
+
+async def update_tool_result(
+    conversation_id: str,
+    tool_id: str,
+    result: dict[str, Any],
+    status: str = "running",
+    organization_id: str | None = None,
+) -> bool:
+    """
+    Update a tool call's result in an existing conversation message.
+    
+    This enables long-running tools (like loop_over) to report progress
+    that the frontend can poll for and display.
+    
+    Args:
+        conversation_id: The conversation containing the tool call
+        tool_id: The tool_use block ID to update
+        result: The new result dict (can be partial progress or final)
+        status: "running" for progress updates, "complete" when done
+        organization_id: Organization ID for RLS context
+        
+    Returns:
+        True if update succeeded, False otherwise
+    """
+    logger.info(
+        "[update_tool_result] Called: conv=%s, tool=%s, status=%s",
+        conversation_id[:8] if conversation_id else None,
+        tool_id[:8] if tool_id else None,
+        status,
+    )
+    try:
+        async with get_session(organization_id=organization_id) as session:
+            # Find the latest assistant message in this conversation
+            query = (
+                select(ChatMessage)
+                .where(ChatMessage.conversation_id == UUID(conversation_id))
+                .where(ChatMessage.role == "assistant")
+                .order_by(ChatMessage.created_at.desc())
+                .limit(1)
+            )
+            db_result = await session.execute(query)
+            message = db_result.scalar_one_or_none()
+            
+            if not message or not message.content_blocks:
+                logger.warning(f"[update_tool_result] No message found for conversation {conversation_id}")
+                return False
+            
+            # Find and update the tool_use block
+            updated = False
+            new_blocks: list[dict[str, Any]] = []
+            
+            for block in message.content_blocks:
+                if block.get("type") == "tool_use" and block.get("id") == tool_id:
+                    # Update this block
+                    block["result"] = result
+                    block["status"] = status
+                    updated = True
+                    logger.info("[update_tool_result] Found and updating tool block")
+                new_blocks.append(block)
+            
+            if not updated:
+                logger.warning(f"[update_tool_result] Tool {tool_id} not found in message")
+                return False
+            
+            # Save updated blocks
+            message.content_blocks = new_blocks
+            await session.commit()
+            
+            logger.info(f"[update_tool_result] SUCCESS: Updated tool {tool_id[:8]} with status={status}")
+            return True
+            
+    except Exception as e:
+        logger.error(f"[update_tool_result] Error: {e}")
+        return False
+
 SYSTEM_PROMPT = """You are Revtops, an AI assistant that helps teams work with their enterprise data.
 
 Your primary focus is sales and revenue operations - pipeline analysis, deal tracking, CRM management, and team productivity. But you're flexible and will help users with any reasonable request involving their data, automations, or integrations.
@@ -335,6 +410,8 @@ class ChatOrchestrator:
         self.timezone = timezone
         self.workflow_context = workflow_context
         self.client = AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
+        # Track if we've saved the assistant message (for early save during tool execution)
+        self._assistant_message_saved = False
 
     async def process_message(
         self, user_message: str, save_user_message: bool = True
@@ -556,13 +633,52 @@ Use the user's local time to provide relative references (e.g., '3 hours ago', '
             # Signal frontend to complete current text block before showing tools
             yield json.dumps({"type": "text_block_complete"})
             
-            # Process ALL tool calls from this response
+            # === EARLY SAVE: Add tool_use blocks with "running" status and save message ===
+            # This allows long-running tools to update their progress in the database
+            tool_block_indices: dict[str, int] = {}  # tool_id -> index in content_blocks
+            
+            for tool_use in tool_uses:
+                tool_id: str = tool_use["id"]
+                tool_name: str = tool_use["name"]
+                tool_input: dict[str, Any] = tool_use["input"]
+                
+                tool_block_indices[tool_id] = len(content_blocks)
+                content_blocks.append({
+                    "type": "tool_use",
+                    "id": tool_id,
+                    "name": tool_name,
+                    "input": tool_input,
+                    "result": None,
+                    "status": "running",
+                })
+                
+                # Send tool call info as JSON for frontend to display
+                yield json.dumps({
+                    "type": "tool_call",
+                    "tool_name": tool_name,
+                    "tool_input": tool_input,
+                    "tool_id": tool_id,
+                    "status": "running",
+                })
+            
+            # Save message early so tools can update their progress
+            if self.conversation_id:
+                logger.info(
+                    "[Orchestrator] Early save: %d blocks, _assistant_message_saved=%s",
+                    len(content_blocks),
+                    self._assistant_message_saved,
+                )
+                await self._save_assistant_message(content_blocks)
+                self._assistant_message_saved = True
+                logger.info("[Orchestrator] Early save complete")
+            
+            # === EXECUTE TOOLS: Process each tool and update results ===
             tool_results: list[dict[str, Any]] = []
             
             for tool_use in tool_uses:
-                tool_name: str = tool_use["name"]
-                tool_input: dict[str, Any] = tool_use["input"]
-                tool_id: str = tool_use["id"]
+                tool_name = tool_use["name"]
+                tool_input = tool_use["input"]
+                tool_id = tool_use["id"]
 
                 logger.info(
                     "[Orchestrator] Tool call: %s | input=%s | org_id=%s | user_id=%s",
@@ -572,19 +688,18 @@ Use the user's local time to provide relative references (e.g., '3 hours ago', '
                     self.user_id,
                 )
 
-                # Send tool call info as JSON for frontend to display
-                yield json.dumps({
-                    "type": "tool_call",
-                    "tool_name": tool_name,
-                    "tool_input": tool_input,
-                    "tool_id": tool_id,
-                    "status": "running",
-                })
+                # Build context with conversation_id and tool_id for progress updates
+                tool_context: dict[str, Any] = {}
+                if self.workflow_context:
+                    tool_context.update(self.workflow_context)
+                if self.conversation_id:
+                    tool_context["conversation_id"] = self.conversation_id
+                tool_context["tool_id"] = tool_id
 
-                # Execute tool (pass workflow context for auto-approval checks)
+                # Execute tool
                 tool_result = await execute_tool(
                     tool_name, tool_input, self.organization_id, self.user_id,
-                    context=self.workflow_context,
+                    context=tool_context,
                 )
 
                 logger.info(
@@ -593,15 +708,20 @@ Use the user's local time to provide relative references (e.g., '3 hours ago', '
                     tool_result,
                 )
 
-                # Add tool_use block with result to content_blocks
-                content_blocks.append({
-                    "type": "tool_use",
-                    "id": tool_id,
-                    "name": tool_name,
-                    "input": tool_input,
-                    "result": tool_result,
-                    "status": "complete",
-                })
+                # Update the tool_use block in content_blocks with final result
+                block_idx = tool_block_indices[tool_id]
+                content_blocks[block_idx]["result"] = tool_result
+                content_blocks[block_idx]["status"] = "complete"
+                
+                # Update the message in database with final result
+                if self.conversation_id:
+                    await update_tool_result(
+                        self.conversation_id,
+                        tool_id,
+                        tool_result,
+                        "complete",
+                        self.organization_id,
+                    )
 
                 # Send tool result for frontend
                 yield json.dumps({
@@ -784,19 +904,54 @@ Use the user's local time to provide relative references (e.g., '3 hours ago', '
             logger.info("[Orchestrator] Saved user message to conversation %s", self.conversation_id)
 
     async def _save_assistant_message(self, assistant_blocks: list[dict[str, Any]]) -> None:
-        """Save assistant message to database."""
+        """Save or update assistant message in database."""
         conv_uuid = UUID(self.conversation_id) if self.conversation_id else None
+        logger.info(
+            "[Orchestrator] _save_assistant_message: _saved=%s, conv=%s",
+            self._assistant_message_saved,
+            conv_uuid,
+        )
 
         async with get_session(organization_id=self.organization_id) as session:
-            session.add(
-                ChatMessage(
-                    conversation_id=conv_uuid,
-                    user_id=UUID(self.user_id),
-                    organization_id=UUID(self.organization_id) if self.organization_id else None,
-                    role="assistant",
-                    content_blocks=assistant_blocks,
+            if self._assistant_message_saved:
+                # UPDATE existing message (we saved early during tool execution)
+                # Find the latest assistant message and update its content
+                query = (
+                    select(ChatMessage)
+                    .where(ChatMessage.conversation_id == conv_uuid)
+                    .where(ChatMessage.role == "assistant")
+                    .order_by(ChatMessage.created_at.desc())
+                    .limit(1)
                 )
-            )
+                result = await session.execute(query)
+                message = result.scalar_one_or_none()
+                
+                if message:
+                    logger.info("[Orchestrator] UPDATE existing assistant message %s", message.id)
+                    message.content_blocks = assistant_blocks
+                else:
+                    # Fallback to insert if not found
+                    session.add(
+                        ChatMessage(
+                            conversation_id=conv_uuid,
+                            user_id=UUID(self.user_id),
+                            organization_id=UUID(self.organization_id) if self.organization_id else None,
+                            role="assistant",
+                            content_blocks=assistant_blocks,
+                        )
+                    )
+            else:
+                # INSERT new message
+                logger.info("[Orchestrator] INSERT new assistant message")
+                session.add(
+                    ChatMessage(
+                        conversation_id=conv_uuid,
+                        user_id=UUID(self.user_id),
+                        organization_id=UUID(self.organization_id) if self.organization_id else None,
+                        role="assistant",
+                        content_blocks=assistant_blocks,
+                    )
+                )
 
             # Update conversation's cached fields
             if conv_uuid:
@@ -807,15 +962,26 @@ Use the user's local time to provide relative references (e.g., '3 hours ago', '
                         preview_text = block["text"][:200]
                         break
 
-                await session.execute(
-                    update(Conversation)
-                    .where(Conversation.id == conv_uuid)
-                    .values(
-                        updated_at=datetime.utcnow(),
-                        message_count=Conversation.message_count + 1,
-                        last_message_preview=preview_text,
+                # Only increment message_count if this is a new message
+                if self._assistant_message_saved:
+                    await session.execute(
+                        update(Conversation)
+                        .where(Conversation.id == conv_uuid)
+                        .values(
+                            updated_at=datetime.utcnow(),
+                            last_message_preview=preview_text,
+                        )
                     )
-                )
+                else:
+                    await session.execute(
+                        update(Conversation)
+                        .where(Conversation.id == conv_uuid)
+                        .values(
+                            updated_at=datetime.utcnow(),
+                            message_count=Conversation.message_count + 1,
+                            last_message_preview=preview_text,
+                        )
+                    )
 
             await session.commit()
 

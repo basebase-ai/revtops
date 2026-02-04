@@ -126,9 +126,11 @@ async def list_conversations(
 
     async with get_session(organization_id=org_id) as session:
         # Simple query - message_count and last_message_preview are cached on the conversation
+        # Filter out workflow conversations - they're accessed via Automations tab, not chat list
         result = await session.execute(
             select(Conversation, func.count(Conversation.id).over().label("total_count"))
             .where(Conversation.user_id == user_uuid)
+            .where(Conversation.type != "workflow")
             .order_by(Conversation.updated_at.desc())
             .offset(offset)
             .limit(limit)

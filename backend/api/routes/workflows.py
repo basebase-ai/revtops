@@ -105,6 +105,7 @@ class WorkflowRunResponse(BaseModel):
     triggered_by: str
     status: str
     steps_completed: Optional[list[dict[str, Any]]]
+    output: Optional[dict[str, Any]]  # Contains conversation_id, response_preview, structured_output
     error_message: Optional[str]
     started_at: str
     completed_at: Optional[str]

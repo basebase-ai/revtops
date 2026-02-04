@@ -261,6 +261,77 @@ def format_output_schema_instruction(output_schema: dict[str, Any] | None) -> st
     return f"Expected output format:\n```json\n{json.dumps(output_schema, indent=2)}\n```"
 
 
+def extract_structured_output(response_text: str) -> dict[str, Any] | None:
+    """
+    Extract structured JSON output from agent response text.
+    
+    Looks for JSON in the following order:
+    1. ```json ... ``` code blocks (last one takes precedence)
+    2. Bare {...} at the end of the response
+    
+    Returns the parsed dict or None if no valid JSON found.
+    """
+    import re
+    
+    if not response_text:
+        return None
+    
+    # 1. Look for ```json ... ``` blocks (take the last one)
+    json_block_pattern = r'```json\s*([\s\S]*?)\s*```'
+    matches = re.findall(json_block_pattern, response_text)
+    
+    if matches:
+        # Try the last match first (most likely to be the final output)
+        for match in reversed(matches):
+            try:
+                parsed = json.loads(match.strip())
+                if isinstance(parsed, dict):
+                    return parsed
+            except json.JSONDecodeError:
+                continue
+    
+    # 2. Look for bare JSON object at end of response
+    # Find the last {...} in the text
+    brace_pattern = r'\{[^{}]*\}'
+    brace_matches = re.findall(brace_pattern, response_text)
+    
+    if brace_matches:
+        # Try the last match
+        try:
+            parsed = json.loads(brace_matches[-1])
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError:
+            pass
+    
+    # 3. Try nested JSON objects (more complex patterns)
+    # Look for JSON that might span multiple lines at the end
+    last_brace = response_text.rfind('}')
+    if last_brace != -1:
+        # Find matching opening brace
+        depth = 0
+        start_idx = -1
+        for i in range(last_brace, -1, -1):
+            if response_text[i] == '}':
+                depth += 1
+            elif response_text[i] == '{':
+                depth -= 1
+                if depth == 0:
+                    start_idx = i
+                    break
+        
+        if start_idx != -1:
+            try:
+                json_str = response_text[start_idx:last_brace + 1]
+                parsed = json.loads(json_str)
+                if isinstance(parsed, dict):
+                    return parsed
+            except json.JSONDecodeError:
+                pass
+    
+    return None
+
+
 def run_async(coro: Any) -> Any:
     """Run an async function in a sync context (for Celery tasks)."""
     loop = asyncio.new_event_loop()
@@ -501,6 +572,17 @@ async def _execute_workflow_via_agent(
     from agents.orchestrator import ChatOrchestrator
     from models.conversation import Conversation
     
+    # Extract parent_conversation_id from trigger_data if this is a child workflow
+    parent_conversation_id: UUID | None = None
+    if trigger_data and "_parent_context" in trigger_data:
+        parent_context = trigger_data["_parent_context"]
+        parent_conv_id_str = parent_context.get("parent_conversation_id")
+        if parent_conv_id_str:
+            try:
+                parent_conversation_id = UUID(parent_conv_id_str)
+            except ValueError:
+                logger.warning(f"Invalid parent_conversation_id: {parent_conv_id_str}")
+    
     # Use existing conversation or create a new one
     if existing_conversation_id:
         # Load the pre-created conversation
@@ -516,6 +598,7 @@ async def _execute_workflow_via_agent(
                 type="workflow",
                 workflow_id=workflow.id,
                 title=f"Workflow: {workflow.name}",
+                parent_conversation_id=parent_conversation_id,
             )
             session.add(conversation)
             await session.flush()
@@ -527,6 +610,7 @@ async def _execute_workflow_via_agent(
             type="workflow",
             workflow_id=workflow.id,
             title=f"Workflow: {workflow.name}",
+            parent_conversation_id=parent_conversation_id,
         )
         session.add(conversation)
         await session.flush()
@@ -621,11 +705,19 @@ async def _execute_workflow_via_agent(
         if not chunk.startswith("{"):
             response_text += chunk
     
+    # Extract structured output from response if output_schema is defined
+    structured_output: dict[str, Any] | None = None
+    if output_schema is not None:
+        structured_output = extract_structured_output(response_text)
+        if structured_output:
+            logger.info(f"[Workflow] Extracted structured output: {structured_output}")
+    
     # Update run record
     run.status = "completed"
     run.output = {
         "conversation_id": str(conversation.id),
         "response_preview": response_text[:500] if response_text else None,
+        "structured_output": structured_output,
     }
     run.completed_at = datetime.utcnow()
     
@@ -642,6 +734,7 @@ async def _execute_workflow_via_agent(
         "run_id": str(run.id),
         "conversation_id": str(conversation.id),
         "execution_type": "agent",
+        "structured_output": structured_output,
     }
 
 

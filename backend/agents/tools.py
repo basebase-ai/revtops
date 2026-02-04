@@ -2977,6 +2977,7 @@ async def _run_workflow(
             "run_id": execution_result.get("run_id"),
             "conversation_id": execution_result.get("conversation_id"),
             "output": execution_result.get("output"),
+            "structured_output": execution_result.get("structured_output"),
             "error": execution_result.get("error"),
         }
         
@@ -3051,9 +3052,43 @@ async def _loop_over(
     results: list[dict[str, Any]] = []
     failures: list[dict[str, Any]] = []
     semaphore = asyncio.Semaphore(max_concurrent)
+    completed_count = 0
+    
+    # Get context for progress updates
+    conversation_id: str | None = context.get("conversation_id") if context else None
+    tool_id: str | None = context.get("tool_id") if context else None
+    
+    logger.info(
+        "[Tools._loop_over] Progress context: conversation_id=%s, tool_id=%s",
+        conversation_id,
+        tool_id,
+    )
+    
+    async def update_progress() -> None:
+        """Update tool progress in the conversation."""
+        if not conversation_id or not tool_id:
+            logger.warning("[Tools._loop_over] Cannot update progress - missing conversation_id or tool_id")
+            return
+        
+        # Import here to avoid circular import
+        from agents.orchestrator import update_tool_result
+        
+        progress_result: dict[str, Any] = {
+            "status": "running",
+            "completed": completed_count,
+            "total": len(items),
+            "workflow_name": workflow_name,
+            "succeeded": len(results),
+            "failed": len(failures),
+        }
+        
+        logger.info("[Tools._loop_over] Updating progress: %d/%d", completed_count, len(items))
+        await update_tool_result(conversation_id, tool_id, progress_result, "running", organization_id)
     
     async def process_item(index: int, item: dict[str, Any]) -> dict[str, Any]:
         """Process a single item through the workflow."""
+        nonlocal completed_count
+        
         async with semaphore:
             try:
                 # Run workflow with item directly as input_data (not wrapped)
@@ -3065,6 +3100,11 @@ async def _loop_over(
                         "total": len(items),
                     },
                 }
+                
+                # Also pass parent_conversation_id so child can link back
+                if conversation_id:
+                    input_data["_parent_context"] = input_data.get("_parent_context", {})
+                    input_data["_parent_context"]["parent_conversation_id"] = conversation_id
                 
                 result = await _run_workflow(
                     params={
@@ -3092,6 +3132,10 @@ async def _loop_over(
                     "result": {"error": str(e)},
                     "success": False,
                 }
+            finally:
+                # Update progress after each item (success or failure)
+                completed_count += 1
+                await update_progress()
     
     # Create tasks for all items
     tasks: list[asyncio.Task[dict[str, Any]]] = [

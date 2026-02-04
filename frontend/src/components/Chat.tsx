@@ -108,6 +108,7 @@ export function Chat({
   const pendingTitleRef = useRef<string | null>(null);
   const pendingMessagesRef = useRef<ChatMessage[]>([]);
   const pendingAutoSendRef = useRef<string | null>(null);
+  const messagesRef = useRef<ChatMessage[]>([]); // Track current messages for polling comparison
   
   // Keep ref in sync with state
   pendingMessagesRef.current = pendingMessages;
@@ -320,6 +321,11 @@ export function Chat({
     };
   }, [chatId, userId, setConversationMessages, setConversationTitle]);
 
+  // Keep messagesRef in sync for polling comparison (avoids stale closure)
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+
   // Poll for updates on workflow conversations (Celery workers can't send WebSocket updates)
   useEffect(() => {
     // Only poll for workflow conversations with few messages
@@ -344,15 +350,23 @@ export function Chat({
 
       try {
         const { data, error } = await getConversation(chatId, userId);
-        if (data && !error && data.messages.length > messages.length) {
-          console.log('[Chat] Poll found new messages:', data.messages.length, 'vs', messages.length);
+        if (data && !error) {
           const loadedMessages: ChatMessage[] = data.messages.map((msg) => ({
             id: msg.id,
             role: msg.role as 'user' | 'assistant',
             contentBlocks: msg.content_blocks,
             timestamp: new Date(msg.created_at),
           }));
-          setConversationMessages(chatId, loadedMessages);
+          
+          // Check if content has changed (not just message count)
+          // Use ref to get current messages (avoids stale closure)
+          const currentContent = JSON.stringify(messagesRef.current.map(m => m.contentBlocks));
+          const newContent = JSON.stringify(loadedMessages.map(m => m.contentBlocks));
+          
+          if (newContent !== currentContent) {
+            console.log('[Chat] Poll found updated content, updating UI');
+            setConversationMessages(chatId, loadedMessages);
+          }
           
           // If we have substantial messages, stop polling
           if (loadedMessages.length > 5) {

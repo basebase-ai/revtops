@@ -47,6 +47,12 @@ class Conversation(Base):
         nullable=True, index=True
     )
     
+    # For child workflow conversations, link to parent conversation
+    parent_conversation_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("conversations.id", ondelete="SET NULL"),
+        nullable=True, index=True
+    )
+    
     title: Mapped[Optional[str]] = mapped_column(
         String(255), nullable=True
     )  # Auto-generated from first message
@@ -92,6 +98,8 @@ class Conversation(Base):
         }
         if self.workflow_id:
             result["workflow_id"] = str(self.workflow_id)
+        if self.parent_conversation_id:
+            result["parent_conversation_id"] = str(self.parent_conversation_id)
         return result
     
     @property

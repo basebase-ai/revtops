@@ -55,6 +55,11 @@ interface WorkflowRun {
     action: string;
     result: Record<string, unknown>;
   }> | null;
+  output: {
+    conversation_id?: string;
+    response_preview?: string;
+    structured_output?: Record<string, unknown>;
+  } | null;
   error_message: string | null;
   started_at: string;
   completed_at: string | null;
@@ -262,6 +267,8 @@ function WorkflowDetail({
   isTriggering: boolean;
 }): JSX.Element {
   const organization = useAppStore((state) => state.organization);
+  const setCurrentChatId = useAppStore((state) => state.setCurrentChatId);
+  const setCurrentView = useAppStore((state) => state.setCurrentView);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
   const { data: runs = [], isLoading: runsLoading } = useQuery({
@@ -269,6 +276,15 @@ function WorkflowDetail({
     queryFn: () => fetchWorkflowRuns(organization?.id ?? '', workflow.id),
     enabled: !!organization?.id,
   });
+
+  const handleRunClick = (run: WorkflowRun): void => {
+    const conversationId = run.output?.conversation_id;
+    if (conversationId) {
+      setCurrentChatId(conversationId);
+      setCurrentView('chat');
+      onClose();
+    }
+  };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onClose}>
@@ -434,7 +450,15 @@ function WorkflowDetail({
             ) : (
               <div className="space-y-2">
                 {runs.map((run) => (
-                  <div key={run.id} className="p-3 bg-surface-800/50 rounded-lg">
+                  <div 
+                    key={run.id} 
+                    className={`p-3 bg-surface-800/50 rounded-lg transition-colors ${
+                      run.output?.conversation_id 
+                        ? 'cursor-pointer hover:bg-surface-700/50' 
+                        : ''
+                    }`}
+                    onClick={() => handleRunClick(run)}
+                  >
                     <div className="flex items-center justify-between mb-2">
                       <div className="flex items-center gap-2">
                         <StatusBadge status={run.status} />
@@ -445,6 +469,9 @@ function WorkflowDetail({
                         {run.duration_ms && ` (${(run.duration_ms / 1000).toFixed(1)}s)`}
                       </span>
                     </div>
+                    {run.output?.conversation_id && (
+                      <div className="text-xs text-primary-400 mb-1">Click to view conversation</div>
+                    )}
                     {run.error_message && (
                       <div className="text-xs text-red-400 mt-1">{run.error_message}</div>
                     )}
