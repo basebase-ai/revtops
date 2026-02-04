@@ -639,7 +639,7 @@ export function DataSources(): JSX.Element {
                 <p className="text-xs text-surface-400 mt-1 hidden sm:block">
                   {syncProgress[integration.provider] !== undefined ? (
                     <span className="text-primary-400">
-                      Syncing... {getActivityLabel(integration.provider, syncProgress[integration.provider])}
+                      Syncing... {getActivityLabel(integration.provider, syncProgress[integration.provider] ?? 0)}
                     </span>
                   ) : integration.syncStats ? (
                     formatSyncStats(integration.syncStats, integration.provider)

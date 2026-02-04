@@ -721,17 +721,16 @@ export const useAppStore = create<AppState>()(
           newPendingChunks.sort((a, b) => a.index - b.index);
           while (newPendingChunks.length > 0) {
             const nextPending = newPendingChunks[0];
-            if (nextPending.index === newLastIndex + 1) {
-              updated = applyContent(
-                updated,
-                current.streamingMessageId,
-                nextPending.content,
-              );
-              newLastIndex = nextPending.index;
-              newPendingChunks.shift();
-            } else {
+            if (!nextPending || nextPending.index !== newLastIndex + 1) {
               break;
             }
+            updated = applyContent(
+              updated,
+              current.streamingMessageId,
+              nextPending.content,
+            );
+            newLastIndex = nextPending.index;
+            newPendingChunks.shift();
           }
 
           set({
