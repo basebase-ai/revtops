@@ -11,7 +11,7 @@ Responsibilities:
 
 import logging
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 import httpx
@@ -316,8 +316,14 @@ class MicrosoftCalendarConnector(BaseConnector):
             else:
                 meeting_type = "online_meeting"
 
-        # Determine meeting status
-        if activity_date < datetime.utcnow():
+        # Determine meeting status - convert to UTC for proper comparison
+        now_utc = datetime.now(timezone.utc)
+        if activity_date.tzinfo is not None:
+            activity_date_utc = activity_date.astimezone(timezone.utc)
+        else:
+            activity_date_utc = activity_date.replace(tzinfo=timezone.utc)
+        
+        if activity_date_utc < now_utc:
             meeting_status = "completed"
         else:
             meeting_status = "scheduled"

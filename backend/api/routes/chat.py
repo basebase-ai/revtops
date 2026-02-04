@@ -91,6 +91,8 @@ class SendMessageRequest(BaseModel):
     user_id: str
     conversation_id: Optional[str] = None
     content: str
+    local_time: Optional[str] = None
+    timezone: Optional[str] = None
 
 
 class SendMessageResponse(BaseModel):
@@ -444,6 +446,8 @@ async def send_message(request: SendMessageRequest) -> SendMessageResponse:
             user_id=str(user_uuid),
             organization_id=org_id,
             conversation_id=str(conv_uuid),
+            local_time=request.local_time,
+            timezone=request.timezone,
         )
 
         # Collect all chunks into a single response

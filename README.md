@@ -451,6 +451,57 @@ User Message → WebSocket → Orchestrator → Claude API
 
 The frontend (`Chat.tsx`) has no tool logic—it just detects the `*Querying...*` markdown pattern and displays a loading indicator. All tool definitions and execution happen server-side.
 
+## Datetime Handling Conventions
+
+All datetime handling follows a consistent pattern to avoid timezone bugs. **Please follow these conventions strictly.**
+
+### Storage (Database)
+
+- All timestamps are stored in **UTC**
+- Use `DateTime(timezone=True)` for new SQLAlchemy columns when possible
+- When parsing external API responses, **always convert to UTC** before storing:
+
+```python
+# CORRECT - convert to UTC before stripping timezone
+if dt.tzinfo is not None:
+    dt_utc = dt.astimezone(timezone.utc)
+else:
+    dt_utc = dt.replace(tzinfo=timezone.utc)
+
+# WRONG - never strip timezone without converting first
+dt_naive = dt.replace(tzinfo=None)  # DON'T DO THIS
+```
+
+### Serialization (API Responses & Agent Tools)
+
+- All datetimes returned to the frontend or agent use **ISO 8601 format with 'Z' suffix**
+- Format: `"2026-02-04T18:00:00Z"` (the 'Z' indicates UTC)
+- Use the `_serialize_value()` helper in `agents/tools.py` for SQL query results:
+
+```python
+# This helper handles all datetime serialization consistently
+from agents.tools import _serialize_value
+
+value = _serialize_value(datetime_from_db)  # Returns "2026-02-04T18:00:00Z"
+```
+
+### User Timezone Context
+
+- Frontend sends `local_time` and `timezone` with each chat message
+- The agent uses this to:
+  1. Convert user queries like "today" or "this morning" to correct UTC ranges
+  2. Display results in the user's local timezone
+- Always pass these through WebSocket and REST endpoints to `ChatOrchestrator`
+
+### Common Pitfalls to Avoid
+
+| Don't | Do Instead |
+|-------|------------|
+| `datetime.utcnow()` (deprecated) | `datetime.now(timezone.utc)` |
+| `dt.replace(tzinfo=None)` without converting | `dt.astimezone(timezone.utc).replace(tzinfo=None)` |
+| Compare naive and aware datetimes | Convert both to UTC-aware first |
+| `f"{dt.isoformat()}"` (inconsistent) | `f"{dt.strftime('%Y-%m-%dT%H:%M:%SZ')}"` |
+
 ## Features
 
 - **Google OAuth via Supabase**: Simple sign-in with Google accounts (work email required)

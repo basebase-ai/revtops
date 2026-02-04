@@ -329,11 +329,16 @@ class GoogleCalendarConnector(BaseConnector):
 
         # Determine meeting status
         event_status = gcal_event.get("status", "confirmed")
-        # Use timezone-aware datetime for comparison
+        # Convert activity_date to UTC for proper comparison
         now_utc = datetime.now(timezone.utc)
-        # Make activity_date naive for comparison if needed, or make now_utc comparable
-        activity_date_for_compare = activity_date.replace(tzinfo=None) if activity_date.tzinfo else activity_date
-        if activity_date_for_compare < datetime.utcnow():
+        if activity_date.tzinfo is not None:
+            # Compare timezone-aware datetimes directly
+            activity_date_utc = activity_date.astimezone(timezone.utc)
+        else:
+            # Assume naive datetime is already UTC
+            activity_date_utc = activity_date.replace(tzinfo=timezone.utc)
+        
+        if activity_date_utc < now_utc:
             meeting_status = "completed"
         else:
             meeting_status = "scheduled"

@@ -13,7 +13,8 @@ EXTERNAL_WRITE tools require user approval by default (can be overridden in sett
 import json
 import logging
 import re
-from datetime import datetime
+from datetime import date, datetime, timezone
+from decimal import Decimal
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -278,6 +279,39 @@ def _extract_tables_from_query(query: str) -> set[str]:
     return tables
 
 
+def _serialize_value(value: Any) -> Any:
+    """
+    Serialize a value for JSON output to the agent.
+    
+    Ensures consistent formatting:
+    - Datetimes: ISO 8601 format with 'Z' suffix (UTC)
+    - Dates: ISO 8601 date format (YYYY-MM-DD)
+    - UUIDs: String representation
+    - Decimals: Float representation
+    - Other types: String fallback
+    """
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        # If timezone-aware, convert to UTC; if naive, assume UTC
+        if value.tzinfo is not None:
+            utc_dt = value.astimezone(timezone.utc)
+        else:
+            utc_dt = value.replace(tzinfo=timezone.utc)
+        # Return ISO format with Z suffix (drop +00:00, use Z for clarity)
+        return utc_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, UUID):
+        return str(value)
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, (str, int, float, bool, list, dict)):
+        return value
+    # Fallback for other types
+    return str(value)
+
+
 async def _run_sql_query(
     params: dict[str, Any], organization_id: str, user_id: str
 ) -> dict[str, Any]:
@@ -322,17 +356,14 @@ async def _run_sql_query(
             rows = result.fetchall()
             columns = list(result.keys())
             
-            # Convert to list of dicts for JSON serialization
+            # Convert to list of dicts with consistent serialization
+            # All datetimes are formatted as ISO 8601 with Z suffix (UTC)
             data: list[dict[str, Any]] = []
             for row in rows:
-                row_dict: dict[str, Any] = {}
-                for i, col in enumerate(columns):
-                    value = row[i]
-                    # Handle UUID and other non-JSON-serializable types
-                    if hasattr(value, '__str__') and not isinstance(value, (str, int, float, bool, type(None), list, dict)):
-                        row_dict[col] = str(value)
-                    else:
-                        row_dict[col] = value
+                row_dict: dict[str, Any] = {
+                    col: _serialize_value(row[i])
+                    for i, col in enumerate(columns)
+                }
                 data.append(row_dict)
             
             logger.info("[Tools._run_sql_query] Query returned %d rows", len(data))
