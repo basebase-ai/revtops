@@ -414,11 +414,14 @@ export function Chat({
 
     console.log(`[Chat] Sending message (${source}):`, message.substring(0, 30) + '...');
 
+    const clientCreatedAt = new Date();
+    const clientMessageId = `user-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+
     const userMessage: ChatMessage = {
-      id: `user-${Date.now()}`,
+      id: clientMessageId,
       role: 'user',
       contentBlocks: [{ type: 'text', text: message }],
-      timestamp: new Date(),
+      timestamp: clientCreatedAt,
     };
 
     // Get current conversation ID
@@ -436,13 +439,14 @@ export function Chat({
     }
 
     // Send message with conversation context and timezone info
-    const now = new Date();
     sendMessage({
       type: 'send_message',
       message,
       conversation_id: currentConvId,
-      local_time: now.toISOString(),
+      local_time: clientCreatedAt.toISOString(),
       timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      client_message_id: clientMessageId,
+      client_created_at: clientCreatedAt.toISOString(),
     });
 
     console.log(`[Chat] Sent to WebSocket (${source})`);

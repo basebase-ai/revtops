@@ -13,7 +13,7 @@
  * Tasks continue running server-side even when browser tabs are closed.
  */
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { API_BASE } from '../lib/api';
 
@@ -111,6 +111,23 @@ interface WsToolApprovalResult {
 
 type WsMessage = WsActiveTasks | WsTaskStarted | WsTaskChunk | WsTaskComplete | WsConversationCreated | WsCatchup | WsCrmApprovalResult | WsToolApprovalResult;
 
+interface CrossTabWsMessage {
+  kind: 'ws_message';
+  sourceTabId: string;
+  payload: string;
+}
+
+interface CrossTabChatSendMessage {
+  kind: 'chat_send';
+  sourceTabId: string;
+  conversationId: string;
+  messageId: string;
+  message: string;
+  createdAt: string;
+}
+
+type CrossTabMessage = CrossTabWsMessage | CrossTabChatSendMessage;
+
 // Props
 interface AppLayoutProps {
   onLogout: () => void;
@@ -189,6 +206,9 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
   const markConversationMessageComplete = useAppStore((state) => state.markConversationMessageComplete);
   const setConversationThinking = useAppStore((state) => state.setConversationThinking);
   const updateConversationToolMessage = useAppStore((state) => state.updateConversationToolMessage);
+  const crossTabChannelRef = useRef<BroadcastChannel | null>(null);
+  const tabIdRef = useRef<string>(`tab-${crypto.randomUUID()}`);
+  const seenCrossTabMessagesRef = useRef<Set<string>>(new Set());
   
   // Mobile responsive state
   const isMobile = useIsMobile();
@@ -285,6 +305,13 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
 
   // CRM approval results (shared across chats) - use state to trigger re-renders
   const [crmApprovalResults, setCrmApprovalResults] = useState<Map<string, unknown>>(() => new Map());
+
+  const broadcastCrossTabMessage = useCallback((message: CrossTabMessage): void => {
+    if (!crossTabChannelRef.current) {
+      return;
+    }
+    crossTabChannelRef.current.postMessage(message);
+  }, []);
 
   // Handle WebSocket messages
   const handleWebSocketMessage = useCallback((message: string) => {
@@ -494,15 +521,103 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
     setCurrentChatId
   ]);
 
+  const handleCrossTabMessage = useCallback((event: MessageEvent<unknown>): void => {
+    const payload = event.data as CrossTabMessage | undefined;
+    if (!payload || payload.sourceTabId === tabIdRef.current) {
+      return;
+    }
+
+    if (payload.kind === 'chat_send') {
+      const dedupeKey = `${payload.conversationId}:${payload.messageId}`;
+      if (seenCrossTabMessagesRef.current.has(dedupeKey)) {
+        console.log('[AppLayout] Skipping duplicate cross-tab chat_send:', dedupeKey);
+        return;
+      }
+
+      seenCrossTabMessagesRef.current.add(dedupeKey);
+      console.log('[AppLayout] Applying cross-tab user message for conversation:', payload.conversationId);
+      addConversationMessage(payload.conversationId, {
+        id: payload.messageId,
+        role: 'user',
+        contentBlocks: [{ type: 'text', text: payload.message }],
+        timestamp: new Date(payload.createdAt),
+      });
+      setConversationThinking(payload.conversationId, true);
+      return;
+    }
+
+    if (payload.kind === 'ws_message') {
+      console.log('[AppLayout] Replaying cross-tab websocket message');
+      handleWebSocketMessage(payload.payload);
+    }
+  }, [addConversationMessage, handleWebSocketMessage, setConversationThinking]);
+
+  useEffect(() => {
+    if (typeof BroadcastChannel === 'undefined') {
+      console.warn('[AppLayout] BroadcastChannel not available; cross-tab chat sync disabled');
+      return;
+    }
+
+    const channel = new BroadcastChannel('revtops-chat-sync-v1');
+    crossTabChannelRef.current = channel;
+    channel.addEventListener('message', handleCrossTabMessage);
+    console.log('[AppLayout] Broadcast channel initialized for cross-tab sync');
+
+    return () => {
+      channel.removeEventListener('message', handleCrossTabMessage);
+      channel.close();
+      crossTabChannelRef.current = null;
+      console.log('[AppLayout] Broadcast channel closed');
+    };
+  }, [handleCrossTabMessage]);
+
   // Global WebSocket connection - authenticated via JWT token
   const { sendJson, isConnected, connectionState } = useWebSocket(
     user ? '/ws/chat' : '',
     {
-      onMessage: handleWebSocketMessage,
+      onMessage: (message) => {
+        handleWebSocketMessage(message);
+        broadcastCrossTabMessage({
+          kind: 'ws_message',
+          sourceTabId: tabIdRef.current,
+          payload: message,
+        });
+      },
       onConnect: () => console.log('[AppLayout] WebSocket connected'),
       onDisconnect: () => console.log('[AppLayout] WebSocket disconnected'),
     }
   );
+
+  const sendChatMessage = useCallback((data: Record<string, unknown>): void => {
+    sendJson(data);
+
+    if (data.type !== 'send_message') {
+      return;
+    }
+
+    const conversationId = typeof data.conversation_id === 'string' ? data.conversation_id : null;
+    const message = typeof data.message === 'string' ? data.message : null;
+    const messageId = typeof data.client_message_id === 'string' ? data.client_message_id : null;
+    const createdAt = typeof data.client_created_at === 'string' ? data.client_created_at : new Date().toISOString();
+
+    if (!conversationId || !message || !messageId) {
+      console.warn('[AppLayout] Skipping cross-tab chat_send broadcast due to missing fields', {
+        conversationId,
+        hasMessage: Boolean(message),
+        messageId,
+      });
+      return;
+    }
+
+    broadcastCrossTabMessage({
+      kind: 'chat_send',
+      sourceTabId: tabIdRef.current,
+      conversationId,
+      message,
+      messageId,
+      createdAt,
+    });
+  }, [broadcastCrossTabMessage, sendJson]);
 
   // Fetch conversations on mount
   useEffect(() => {
@@ -655,7 +770,7 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
             userId={user.id}
             organizationId={organization.id}
             chatId={currentChatId}
-            sendMessage={sendJson}
+            sendMessage={sendChatMessage}
             isConnected={isConnected}
             connectionState={connectionState}
             crmApprovalResults={crmApprovalResults}
