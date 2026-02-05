@@ -139,10 +139,11 @@ async def _sync_integration(organization_id: str, provider: str) -> dict[str, An
 async def _get_all_active_integrations() -> list[dict[str, str]]:
     """Get all active integrations across all organizations."""
     from sqlalchemy import select
-    from models.database import get_session
+    from models.database import get_admin_session
     from models.integration import Integration
 
-    async with get_session() as session:
+    # Use admin session to bypass RLS and query across all organizations
+    async with get_admin_session() as session:
         result = await session.execute(
             select(Integration).where(Integration.is_active == True)
         )

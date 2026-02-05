@@ -23,6 +23,7 @@ from sqlalchemy import select, text
 
 from config import settings
 from models.account import Account
+from models.artifact import Artifact
 from models.contact import Contact
 from models.pending_operation import PendingOperation, CrmOperation  # CrmOperation is alias
 from models.database import get_session
@@ -95,7 +96,7 @@ def get_tools() -> list[dict[str, Any]]:
 
 async def _should_skip_approval(
     tool_name: str, 
-    user_id: str, 
+    user_id: str | None, 
     context: dict[str, Any] | None
 ) -> bool:
     """
@@ -108,7 +109,7 @@ async def _should_skip_approval(
     
     Args:
         tool_name: Name of the tool
-        user_id: User UUID
+        user_id: User UUID (may be None for Slack DM conversations)
         context: Execution context (may contain workflow auto_approve_tools)
         
     Returns:
@@ -125,11 +126,12 @@ async def _should_skip_approval(
             logger.info(f"[Tools] Skipping approval for {tool_name} - workflow auto-approved")
             return True
     
-    # Check user's global settings
-    from api.routes.tool_settings import is_tool_auto_approved
-    if await is_tool_auto_approved(UUID(user_id), tool_name):
-        logger.info(f"[Tools] Skipping approval for {tool_name} - user auto-approved")
-        return True
+    # Check user's global settings (only if we have a user)
+    if user_id:
+        from api.routes.tool_settings import is_tool_auto_approved
+        if await is_tool_auto_approved(UUID(user_id), tool_name):
+            logger.info(f"[Tools] Skipping approval for {tool_name} - user auto-approved")
+            return True
     
     return False
 
@@ -138,7 +140,7 @@ async def execute_tool(
     tool_name: str, 
     tool_input: dict[str, Any], 
     organization_id: str | None, 
-    user_id: str,
+    user_id: str | None,
     context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
@@ -148,7 +150,7 @@ async def execute_tool(
         tool_name: Name of the tool to execute
         tool_input: Input parameters for the tool
         organization_id: Organization UUID (required for most tools)
-        user_id: User UUID executing the tool
+        user_id: User UUID executing the tool (None for Slack DM conversations)
         context: Optional context containing:
             - is_workflow: bool - Whether this is a workflow execution
             - auto_approve_tools: list[str] - Tools auto-approved for this workflow
@@ -232,6 +234,11 @@ async def execute_tool(
         logger.info("[Tools] trigger_sync completed: %s", result.get("status"))
         return result
 
+    elif tool_name == "create_artifact":
+        result = await _create_artifact(tool_input, organization_id, user_id, context)
+        logger.info("[Tools] create_artifact completed: %s", result.get("artifact_id"))
+        return result
+
     else:
         logger.error("[Tools] Unknown tool: %s", tool_name)
         return {"error": f"Unknown tool: {tool_name}"}
@@ -313,7 +320,7 @@ def _serialize_value(value: Any) -> Any:
 
 
 async def _run_sql_query(
-    params: dict[str, Any], organization_id: str, user_id: str
+    params: dict[str, Any], organization_id: str, user_id: str | None
 ) -> dict[str, Any]:
     """
     Execute a read-only SQL query with Row-Level Security (RLS).
@@ -676,7 +683,7 @@ def _parse_update_values(query: str) -> tuple[dict[str, Any], str] | None:
 
 
 async def _run_sql_write(
-    params: dict[str, Any], organization_id: str, user_id: str
+    params: dict[str, Any], organization_id: str, user_id: str | None
 ) -> dict[str, Any]:
     """
     Execute a write SQL query (INSERT, UPDATE, DELETE) with safety rails.
@@ -907,7 +914,7 @@ async def _handle_crm_write_from_sql(
 
 
 async def _search_activities(
-    params: dict[str, Any], organization_id: str, user_id: str
+    params: dict[str, Any], organization_id: str, user_id: str | None
 ) -> dict[str, Any]:
     """Execute semantic search across activities."""
     query = params.get("query", "").strip()
@@ -1017,7 +1024,7 @@ async def _web_search(params: dict[str, Any]) -> dict[str, Any]:
 
 
 async def _crm_write(
-    params: dict[str, Any], organization_id: str, user_id: str, skip_approval: bool = False
+    params: dict[str, Any], organization_id: str, user_id: str | None, skip_approval: bool = False
 ) -> dict[str, Any]:
     """
     Create or update CRM records with user approval workflow.
@@ -2498,7 +2505,7 @@ async def _enrich_company_with_apollo(
 
 
 async def _send_email_from(
-    params: dict[str, Any], organization_id: str, user_id: str, skip_approval: bool = False
+    params: dict[str, Any], organization_id: str, user_id: str | None, skip_approval: bool = False
 ) -> dict[str, Any]:
     """
     Send an email from the user's connected Gmail or Outlook account.
@@ -2515,6 +2522,13 @@ async def _send_email_from(
     Returns:
         Pending approval preview, or send result if skip_approval
     """
+    # send_email_from requires a user account to send from
+    if not user_id:
+        return {
+            "error": "Cannot send email from user account: no user identified.",
+            "suggestion": "This conversation doesn't have an associated user. Email sending requires a logged-in user with a connected email account.",
+        }
+    
     to = params.get("to", "").strip()
     subject = params.get("subject", "").strip()
     body = params.get("body", "").strip()
@@ -2669,7 +2683,7 @@ async def execute_send_email_from(
 
 
 async def _send_slack(
-    params: dict[str, Any], organization_id: str, user_id: str, skip_approval: bool = False
+    params: dict[str, Any], organization_id: str, user_id: str | None, skip_approval: bool = False
 ) -> dict[str, Any]:
     """
     Post a message to a Slack channel.
@@ -2895,7 +2909,7 @@ MAX_CONCURRENT_WORKFLOWS: int = 10
 async def _run_workflow(
     params: dict[str, Any],
     organization_id: str,
-    user_id: str,
+    user_id: str | None,
     context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
@@ -3023,7 +3037,7 @@ async def _run_workflow(
 async def _loop_over(
     params: dict[str, Any],
     organization_id: str,
-    user_id: str,
+    user_id: str | None,
     context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
@@ -3222,4 +3236,122 @@ async def _loop_over(
             f"Processed {len(items)} items: {succeeded} succeeded, {failed} failed."
             + (f" (Truncated from {original_count} items)" if truncated else "")
         ),
+    }
+
+
+# =============================================================================
+# Artifact Creation Tool
+# =============================================================================
+
+# Mapping of content_type to MIME type
+CONTENT_TYPE_TO_MIME: dict[str, str] = {
+    "text": "text/plain",
+    "markdown": "text/markdown",
+    "pdf": "application/pdf",
+    "chart": "application/json",
+}
+
+
+async def _create_artifact(
+    params: dict[str, Any],
+    organization_id: str,
+    user_id: str | None,
+    context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """
+    Create a downloadable artifact (file) for the user.
+    
+    Args:
+        params: Tool input with title, filename, content_type, content
+        organization_id: Organization UUID
+        user_id: User UUID
+        context: Optional context with conversation_id, message_id
+        
+    Returns:
+        Artifact metadata for frontend display
+    """
+    title: str = params.get("title", "Untitled")
+    filename: str = params.get("filename", "artifact.txt")
+    content_type: str = params.get("content_type", "text")
+    content: str = params.get("content", "")
+    
+    # Validate content_type
+    valid_types: set[str] = {"text", "markdown", "pdf", "chart"}
+    if content_type not in valid_types:
+        return {
+            "error": f"Invalid content_type '{content_type}'. Must be one of: {', '.join(valid_types)}"
+        }
+    
+    # Validate content is not empty
+    if not content.strip():
+        return {"error": "Content cannot be empty"}
+    
+    # For charts, validate JSON
+    if content_type == "chart":
+        try:
+            chart_spec = json.loads(content)
+            # Ensure it has the basic Plotly structure
+            if not isinstance(chart_spec, dict):
+                return {"error": "Chart content must be a JSON object"}
+            if "data" not in chart_spec:
+                return {"error": "Chart content must have a 'data' field with Plotly traces"}
+        except json.JSONDecodeError as e:
+            return {"error": f"Invalid JSON for chart: {str(e)}"}
+    
+    # Get MIME type
+    mime_type: str = CONTENT_TYPE_TO_MIME.get(content_type, "application/octet-stream")
+    
+    # For PDF, we'll store markdown content and generate PDF on download
+    # This avoids storing large base64 content in the database
+    stored_content: str = content
+    if content_type == "pdf":
+        # Store markdown source - PDF will be generated on demand
+        mime_type = "text/markdown"  # Source is markdown
+    
+    # Get context for linking
+    conversation_id: str | None = None
+    message_id: str | None = None
+    if context:
+        conversation_id = context.get("conversation_id")
+        message_id = context.get("message_id")
+    
+    # Create artifact in database
+    artifact_id: str = str(uuid4())
+    
+    async with get_session() as session:
+        artifact = Artifact(
+            id=artifact_id,
+            user_id=user_id,
+            organization_id=organization_id,
+            type="file",  # Use 'file' type to distinguish from dashboards/reports
+            title=title,
+            content=stored_content,
+            content_type=content_type,
+            mime_type=mime_type,
+            filename=filename,
+            conversation_id=conversation_id,
+            message_id=message_id,
+        )
+        session.add(artifact)
+        await session.commit()
+        
+        logger.info(
+            "[Tools._create_artifact] Created artifact: id=%s, type=%s, title=%s",
+            artifact_id,
+            content_type,
+            title,
+        )
+    
+    # Return metadata for frontend (content excluded to keep response small)
+    return {
+        "status": "success",
+        "artifact_id": artifact_id,
+        "artifact": {
+            "id": artifact_id,
+            "title": title,
+            "filename": filename,
+            "content_type": content_type,
+            "mime_type": CONTENT_TYPE_TO_MIME.get(content_type, "application/octet-stream"),
+        },
+        "message": f"Created {content_type} artifact: {title}",
     }

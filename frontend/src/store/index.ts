@@ -100,7 +100,18 @@ export interface ErrorBlock {
   message: string;
 }
 
-export type ContentBlock = TextBlock | ToolUseBlock | ErrorBlock;
+export interface ArtifactBlock {
+  type: "artifact";
+  artifact: {
+    id: string;
+    title: string;
+    filename: string;
+    contentType: "text" | "markdown" | "pdf" | "chart";
+    mimeType: string;
+  };
+}
+
+export type ContentBlock = TextBlock | ToolUseBlock | ErrorBlock | ArtifactBlock;
 
 // Legacy type for streaming compatibility
 export interface ToolCallData {

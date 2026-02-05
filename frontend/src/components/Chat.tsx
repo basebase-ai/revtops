@@ -13,7 +13,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Message } from './Message';
-import { ArtifactViewer } from './ArtifactViewer';
+import { ArtifactViewer, type FileArtifact } from './ArtifactViewer';
+import { ArtifactTile } from './ArtifactTile';
 import { PendingApprovalCard, type ApprovalResult } from './PendingApprovalCard';
 import { PendingChangesBar } from './PendingChangesBar';
 import { getConversation } from '../api/client';
@@ -26,12 +27,16 @@ import {
   type ErrorBlock,
 } from '../store';
 
-interface Artifact {
+// Legacy data artifact format
+interface LegacyArtifact {
   id: string;
   type: string;
   title: string;
   data: Record<string, unknown>;
 }
+
+// Union type for all artifact formats
+type AnyArtifact = LegacyArtifact | FileArtifact;
 
 interface ChatProps {
   userId: string;
@@ -91,7 +96,7 @@ export function Chat({
   
   // Local state
   const [input, setInput] = useState<string>('');
-  const [currentArtifact, setCurrentArtifact] = useState<Artifact | null>(null);
+  const [currentArtifact, setCurrentArtifact] = useState<AnyArtifact | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [selectedToolCall, setSelectedToolCall] = useState<ToolCallData | null>(null);
   const [toolApprovals, setToolApprovals] = useState<Map<string, ToolApprovalState>>(new Map());
@@ -711,7 +716,7 @@ export function Chat({
                   </svg>
                 </button>
               </div>
-              <ArtifactViewer artifact={currentArtifact} />
+              <ArtifactViewer artifact={currentArtifact} userId={userId} />
             </div>
           </>
         )}
@@ -804,7 +809,7 @@ function MessageWithBlocks({
 }: {
   message: ChatMessage;
   toolApprovals: Map<string, { operationId: string; toolName: string; isProcessing: boolean; result: unknown }>;
-  onArtifactClick: (artifact: { id: string; type: string; title: string; data: Record<string, unknown> }) => void;
+  onArtifactClick: (artifact: AnyArtifact) => void;
   onToolApprove: (operationId: string, options?: Record<string, unknown>) => void;
   onToolCancel: (operationId: string) => void;
   onToolClick: (block: ToolUseBlock) => void;
@@ -930,6 +935,16 @@ function MessageWithBlocks({
             return (
               <div key={`error-${index}`} className="my-0.5">
                 <ErrorBlockIndicator block={block} />
+              </div>
+            );
+          }
+          if (block.type === 'artifact') {
+            return (
+              <div key={`artifact-${block.artifact.id}`} className="my-2">
+                <ArtifactTile
+                  artifact={block.artifact}
+                  onClick={() => onArtifactClick(block.artifact)}
+                />
               </div>
             );
           }

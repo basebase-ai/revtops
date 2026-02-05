@@ -158,39 +158,30 @@ async def get_session(organization_id: str | None = None) -> AsyncGenerator[Asyn
 @asynccontextmanager
 async def get_admin_session() -> AsyncGenerator[AsyncSession, None]:
     """
-    Yield an admin database session WITHOUT RLS context.
+    Yield an admin database session that BYPASSES RLS.
     
     WARNING: Use sparingly! This should only be used for:
     - System-level scheduled tasks that iterate across all organizations
     - Initial lookups where org_id is not yet known (then use get_session for subsequent ops)
     - Database migrations and maintenance
     
-    This session still uses the non-superuser role (revtops_app) so RLS policies
-    are active, but NO organization context is set. Queries will only succeed
-    on tables without RLS policies, or will return empty results on RLS-protected tables.
+    This session keeps the superuser role (postgres) which bypasses RLS entirely.
+    All tables are accessible without organization filtering.
     
     Usage:
         async with get_admin_session() as session:
-            # Query tables without RLS (e.g., workflows, users)
+            # Query across all organizations
             result = await session.execute(query)
     """
-    from sqlalchemy import text
-    
     factory = get_session_factory()
     session: AsyncSession = factory()
     try:
-        # Still use non-superuser role for basic security
-        await session.execute(text("SET ROLE revtops_app"))
-        # NO org context set - queries on RLS tables will fail or return empty
+        # Keep superuser role - bypasses RLS for cross-org system operations
         yield session
     except Exception:
         await session.rollback()
         raise
     finally:
-        try:
-            await session.execute(text("RESET ROLE"))
-        except Exception:
-            pass
         await session.close()
 
 

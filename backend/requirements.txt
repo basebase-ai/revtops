@@ -39,6 +39,10 @@ python-jose[cryptography]==3.3.0
 structlog==24.1.0
 jsonschema==4.21.1
 
+# PDF Generation
+weasyprint==62.3
+markdown==3.6
+
 # Task Queue (Celery)
 celery[redis]==5.3.6
 kombu==5.3.5

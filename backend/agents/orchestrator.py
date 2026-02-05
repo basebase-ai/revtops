@@ -379,7 +379,7 @@ class ChatOrchestrator:
 
     def __init__(
         self,
-        user_id: str,
+        user_id: str | None,
         organization_id: str | None,
         conversation_id: str | None = None,
         user_email: str | None = None,
@@ -391,7 +391,7 @@ class ChatOrchestrator:
         Initialize the orchestrator.
 
         Args:
-            user_id: UUID of the authenticated user
+            user_id: UUID of the authenticated user (None for Slack DM conversations)
             organization_id: UUID of the user's organization (may be None for new users)
             conversation_id: UUID of the conversation (may be None for new conversations)
             user_email: Email of the authenticated user
@@ -470,13 +470,16 @@ class ChatOrchestrator:
         system_prompt = SYSTEM_PROMPT
         
         # Add user context so the agent knows who "me" is
-        if self.user_email:
+        if self.user_email and self.user_id:
             user_context = f"\n\n## Current User\n"
             user_context += f"- Email: {self.user_email}\n"
             user_context += f"- User ID: {self.user_id}\n"
             user_context += "\nWhen the user asks about 'my' data, use this email to filter queries. "
             user_context += "For example, to find the user's company, join the users table (filter by email) to the organizations table."
             system_prompt += user_context
+        elif not self.user_id:
+            # Slack DM conversation - no specific user context
+            system_prompt += "\n\n## Current User\nThis conversation is from a Slack DM. The specific user is not identified in Revtops."
         
         if self.local_time or self.timezone:
             time_context = "\n\n## Current Time Context\n"
@@ -748,6 +751,21 @@ WHERE scheduled_start >= '2026-01-27'::date AND scheduled_start < '2026-01-28'::
                     "status": "complete",
                 })
 
+                # If this was a create_artifact call, emit an artifact block
+                if tool_name == "create_artifact" and tool_result.get("status") == "success":
+                    artifact_data: dict[str, Any] | None = tool_result.get("artifact")
+                    if artifact_data:
+                        # Emit artifact block for frontend to render
+                        yield json.dumps({
+                            "type": "artifact",
+                            "artifact": artifact_data,
+                        })
+                        # Also add artifact block to content_blocks for persistence
+                        content_blocks.append({
+                            "type": "artifact",
+                            "artifact": artifact_data,
+                        })
+
                 tool_results.append({
                     "type": "tool_result",
                     "tool_use_id": tool_id,
@@ -772,9 +790,10 @@ WHERE scheduled_start >= '2026-01-27'::date AND scheduled_start < '2026-01-28'::
 
     async def _create_conversation(self) -> str:
         """Create a new conversation and return its ID."""
+        user_uuid = UUID(self.user_id) if self.user_id else None
         async with get_session(organization_id=self.organization_id) as session:
             conversation = Conversation(
-                user_id=UUID(self.user_id),
+                user_id=user_uuid,
                 organization_id=UUID(self.organization_id) if self.organization_id else None,
                 title=None,
             )
@@ -923,12 +942,13 @@ WHERE scheduled_start >= '2026-01-27'::date AND scheduled_start < '2026-01-28'::
     async def _save_user_message(self, user_msg: str) -> None:
         """Save user message to database immediately."""
         conv_uuid = UUID(self.conversation_id) if self.conversation_id else None
+        user_uuid = UUID(self.user_id) if self.user_id else None
 
         async with get_session(organization_id=self.organization_id) as session:
             session.add(
                 ChatMessage(
                     conversation_id=conv_uuid,
-                    user_id=UUID(self.user_id),
+                    user_id=user_uuid,
                     organization_id=UUID(self.organization_id) if self.organization_id else None,
                     role="user",
                     content_blocks=[{"type": "text", "text": user_msg}],
@@ -953,6 +973,7 @@ WHERE scheduled_start >= '2026-01-27'::date AND scheduled_start < '2026-01-28'::
     async def _save_assistant_message(self, assistant_blocks: list[dict[str, Any]]) -> None:
         """Save or update assistant message in database."""
         conv_uuid = UUID(self.conversation_id) if self.conversation_id else None
+        user_uuid = UUID(self.user_id) if self.user_id else None
         logger.info(
             "[Orchestrator] _save_assistant_message: _saved=%s, conv=%s",
             self._assistant_message_saved,
@@ -981,7 +1002,7 @@ WHERE scheduled_start >= '2026-01-27'::date AND scheduled_start < '2026-01-28'::
                     session.add(
                         ChatMessage(
                             conversation_id=conv_uuid,
-                            user_id=UUID(self.user_id),
+                            user_id=user_uuid,
                             organization_id=UUID(self.organization_id) if self.organization_id else None,
                             role="assistant",
                             content_blocks=assistant_blocks,
@@ -993,7 +1014,7 @@ WHERE scheduled_start >= '2026-01-27'::date AND scheduled_start < '2026-01-28'::
                 session.add(
                     ChatMessage(
                         conversation_id=conv_uuid,
-                        user_id=UUID(self.user_id),
+                        user_id=user_uuid,
                         organization_id=UUID(self.organization_id) if self.organization_id else None,
                         role="assistant",
                         content_blocks=assistant_blocks,
