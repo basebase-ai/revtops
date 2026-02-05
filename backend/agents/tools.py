@@ -81,6 +81,60 @@ def remove_pending_operation(operation_id: str) -> None:
         del _pending_operations[operation_id]
         logger.info(f"[Tools] Removed pending operation {operation_id}")
 
+
+# =============================================================================
+# Tool Progress Helper (DRY pattern for progress updates)
+# =============================================================================
+
+class ToolProgressUpdater:
+    """
+    Centralized helper for sending tool progress updates to the frontend.
+    
+    Usage:
+        progress = ToolProgressUpdater(context, organization_id)
+        await progress.update({"message": "Processing...", "completed": 5, "total": 10})
+    """
+    
+    def __init__(
+        self,
+        context: dict[str, Any] | None,
+        organization_id: str,
+    ) -> None:
+        self.conversation_id: str | None = context.get("conversation_id") if context else None
+        self.tool_id: str | None = context.get("tool_id") if context else None
+        self.organization_id = organization_id
+        
+    @property
+    def can_update(self) -> bool:
+        """Returns True if progress updates can be sent (have required context)."""
+        return bool(self.conversation_id and self.tool_id)
+    
+    async def update(self, result: dict[str, Any], status: str = "running") -> bool:
+        """
+        Send a progress update to the frontend.
+        
+        Args:
+            result: Progress data dict (e.g., message, completed, total, etc.)
+            status: "running" for in-progress, "complete" when done
+            
+        Returns:
+            True if update was sent, False if missing context
+        """
+        if not self.can_update:
+            return False
+        
+        # Import here to avoid circular import
+        from agents.orchestrator import update_tool_result
+        
+        return await update_tool_result(
+            self.conversation_id,  # type: ignore[arg-type]
+            self.tool_id,  # type: ignore[arg-type]
+            result,
+            status,
+            self.organization_id,
+        )
+
+
 # Tables that are allowed to be queried (synced data only - no internal admin tables)
 # Note: Row-Level Security (RLS) handles organization filtering at the database level
 ALLOWED_TABLES: set[str] = {
@@ -1181,7 +1235,7 @@ async def _crm_write(
     async with get_session(organization_id=organization_id) as session:
         crm_operation = CrmOperation(
             organization_id=UUID(organization_id),
-            user_id=UUID(user_id),
+            user_id=UUID(user_id) if user_id else None,
             target_system=target_system,
             record_type=record_type,
             operation=operation,
@@ -3098,36 +3152,25 @@ async def _loop_over(
     semaphore = asyncio.Semaphore(max_concurrent)
     completed_count = 0
     
-    # Get context for progress updates
-    conversation_id: str | None = context.get("conversation_id") if context else None
-    tool_id: str | None = context.get("tool_id") if context else None
+    # Centralized progress updater
+    progress = ToolProgressUpdater(context, organization_id)
+    conversation_id = progress.conversation_id  # Keep for parent context linking
     
     logger.info(
-        "[Tools._loop_over] Progress context: conversation_id=%s, tool_id=%s",
-        conversation_id,
-        tool_id,
+        "[Tools._loop_over] Progress context: can_update=%s",
+        progress.can_update,
     )
     
-    async def update_progress() -> None:
-        """Update tool progress in the conversation."""
-        if not conversation_id or not tool_id:
-            logger.warning("[Tools._loop_over] Cannot update progress - missing conversation_id or tool_id")
-            return
-        
-        # Import here to avoid circular import
-        from agents.orchestrator import update_tool_result
-        
-        progress_result: dict[str, Any] = {
-            "status": "running",
+    async def send_progress() -> None:
+        """Send loop progress update."""
+        await progress.update({
             "completed": completed_count,
             "total": len(items),
             "workflow_name": workflow_name,
             "succeeded": len(results),
             "failed": len(failures),
-        }
-        
+        })
         logger.info("[Tools._loop_over] Updating progress: %d/%d", completed_count, len(items))
-        await update_tool_result(conversation_id, tool_id, progress_result, "running", organization_id)
     
     async def process_item(index: int, item: dict[str, Any]) -> dict[str, Any]:
         """Process a single item through the workflow."""
@@ -3179,7 +3222,7 @@ async def _loop_over(
             finally:
                 # Update progress after each item (success or failure)
                 completed_count += 1
-                await update_progress()
+                await send_progress()
     
     # Create tasks for all items
     tasks: list[asyncio.Task[dict[str, Any]]] = [
@@ -3271,6 +3314,19 @@ async def _create_artifact(
     content_type: str = params.get("content_type", "text")
     content: str = params.get("content", "")
     
+    # Centralized progress updater
+    progress = ToolProgressUpdater(context, organization_id)
+    content_len = len(content)
+    
+    # Send initial progress
+    await progress.update({
+        "message": f"Validating {content_type} content...",
+        "title": title,
+        "content_type": content_type,
+        "chars_processed": 0,
+        "total_chars": content_len,
+    })
+    
     # Validate content_type
     valid_types: set[str] = {"text", "markdown", "pdf", "chart"}
     if content_type not in valid_types:
@@ -3304,12 +3360,17 @@ async def _create_artifact(
         # Store markdown source - PDF will be generated on demand
         mime_type = "text/markdown"  # Source is markdown
     
-    # Get context for linking
-    conversation_id: str | None = None
-    message_id: str | None = None
-    if context:
-        conversation_id = context.get("conversation_id")
-        message_id = context.get("message_id")
+    # Get context for linking (already extracted above, but get message_id)
+    message_id: str | None = context.get("message_id") if context else None
+    
+    # Update progress before database save
+    await progress.update({
+        "message": f"Saving {content_type} artifact...",
+        "title": title,
+        "content_type": content_type,
+        "chars_processed": content_len,
+        "total_chars": content_len,
+    })
     
     # Create artifact in database
     artifact_id: str = str(uuid4())
@@ -3339,6 +3400,7 @@ async def _create_artifact(
         )
     
     # Return metadata for frontend (content excluded to keep response small)
+    # Use camelCase for frontend compatibility
     return {
         "status": "success",
         "artifact_id": artifact_id,
@@ -3346,8 +3408,8 @@ async def _create_artifact(
             "id": artifact_id,
             "title": title,
             "filename": filename,
-            "content_type": content_type,
-            "mime_type": CONTENT_TYPE_TO_MIME.get(content_type, "application/octet-stream"),
+            "contentType": content_type,  # camelCase for frontend
+            "mimeType": CONTENT_TYPE_TO_MIME.get(content_type, "application/octet-stream"),  # camelCase
         },
         "message": f"Created {content_type} artifact: {title}",
     }

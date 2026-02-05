@@ -271,6 +271,10 @@ interface AppState {
     toolId: string,
     updates: Partial<ToolCallData>,
   ) => void;
+  addConversationArtifactBlock: (
+    conversationId: string,
+    artifact: ArtifactBlock["artifact"],
+  ) => void;
   clearConversation: (conversationId: string) => void;
 
   // Actions - Active tasks
@@ -930,6 +934,36 @@ export const useAppStore = create<AppState>()(
           });
           return { ...msg, contentBlocks: updatedBlocks };
         });
+        set({
+          conversations: {
+            ...conversations,
+            [conversationId]: { ...current, messages: updated },
+          },
+        });
+      },
+
+      addConversationArtifactBlock: (conversationId, artifact) => {
+        const { conversations } = get();
+        const current = conversations[conversationId];
+        if (!current) return;
+
+        // Add artifact block to the last assistant message
+        const updated: ChatMessage[] = current.messages.map((msg, idx, arr) => {
+          // Find the last assistant message
+          const isLastAssistant =
+            msg.role === "assistant" &&
+            !arr.slice(idx + 1).some((m) => m.role === "assistant");
+
+          if (isLastAssistant) {
+            const blocks = msg.contentBlocks ?? [];
+            return {
+              ...msg,
+              contentBlocks: [...blocks, { type: "artifact" as const, artifact }],
+            };
+          }
+          return msg;
+        });
+
         set({
           conversations: {
             ...conversations,

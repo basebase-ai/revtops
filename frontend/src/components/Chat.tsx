@@ -1124,8 +1124,22 @@ function getToolStatusText(
       }
       return `Querying ${tableDesc}...`;
     }
-    case 'create_artifact':
-      return isComplete ? 'Created artifact' : 'Creating artifact...';
+    case 'create_artifact': {
+      const artifactTitle = typeof input?.title === 'string' ? input.title : 'artifact';
+      const artifactType = typeof input?.content_type === 'string' ? input.content_type : 'file';
+      if (isComplete) {
+        return `Created ${artifactType}: ${artifactTitle}`;
+      }
+      // Show progress message from result if available
+      const progressMsg = typeof result?.message === 'string' ? result.message : null;
+      const charsProcessed = typeof result?.chars_processed === 'number' ? result.chars_processed : 0;
+      const totalChars = typeof result?.total_chars === 'number' ? result.total_chars : 0;
+      if (progressMsg && totalChars > 0) {
+        const progress = Math.round((charsProcessed / totalChars) * 100);
+        return `${progressMsg} (${progress}%)`;
+      }
+      return progressMsg || `Creating ${artifactType}...`;
+    }
     case 'crm_write': {
       const recordType = typeof input?.record_type === 'string' ? input.record_type : 'record';
       const recordCount = Array.isArray(input?.records) ? input.records.length : 1;

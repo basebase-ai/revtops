@@ -112,6 +112,40 @@ async def broadcast_sync_progress(
     )
 
 
+async def broadcast_tool_progress(
+    organization_id: str,
+    conversation_id: str,
+    tool_id: str,
+    tool_name: str,
+    result: dict,
+    status: str = "running",
+) -> None:
+    """
+    Broadcast tool progress to all connected clients for an organization.
+    
+    Called from tools during execution to update the UI with progress.
+    
+    Args:
+        organization_id: The organization UUID
+        conversation_id: The conversation containing the tool call
+        tool_id: The tool_use block ID
+        tool_name: Name of the tool (e.g., "create_artifact")
+        result: Progress result dict
+        status: "running" for progress, "complete" when done
+    """
+    await sync_broadcaster.broadcast(
+        organization_id=organization_id,
+        event_type="tool_progress",
+        data={
+            "conversation_id": conversation_id,
+            "tool_id": tool_id,
+            "tool_name": tool_name,
+            "result": result,
+            "status": status,
+        },
+    )
+
+
 # =============================================================================
 # Chat WebSocket Handler
 # =============================================================================

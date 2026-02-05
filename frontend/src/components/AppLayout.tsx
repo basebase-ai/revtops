@@ -109,7 +109,16 @@ interface WsToolApprovalResult {
   [key: string]: unknown;
 }
 
-type WsMessage = WsActiveTasks | WsTaskStarted | WsTaskChunk | WsTaskComplete | WsConversationCreated | WsCatchup | WsCrmApprovalResult | WsToolApprovalResult;
+interface WsToolProgress {
+  type: 'tool_progress';
+  conversation_id: string;
+  tool_id: string;
+  tool_name: string;
+  result: Record<string, unknown>;
+  status: string;
+}
+
+type WsMessage = WsActiveTasks | WsTaskStarted | WsTaskChunk | WsTaskComplete | WsConversationCreated | WsCatchup | WsCrmApprovalResult | WsToolApprovalResult | WsToolProgress;
 
 // Props
 interface AppLayoutProps {
@@ -189,6 +198,7 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
   const markConversationMessageComplete = useAppStore((state) => state.markConversationMessageComplete);
   const setConversationThinking = useAppStore((state) => state.setConversationThinking);
   const updateConversationToolMessage = useAppStore((state) => state.updateConversationToolMessage);
+  const addConversationArtifactBlock = useAppStore((state) => state.addConversationArtifactBlock);
   
   // Mobile responsive state
   const isMobile = useIsMobile();
@@ -397,6 +407,18 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
                 next.set(data.operation_id as string, data);
                 return next;
               });
+            } else if (data.type === 'artifact') {
+              // Artifact created - add artifact block to the message
+              const artifact = data.artifact as {
+                id: string;
+                title: string;
+                filename: string;
+                contentType: "text" | "markdown" | "pdf" | "chart";
+                mimeType: string;
+              } | undefined;
+              if (artifact) {
+                addConversationArtifactBlock(conversation_id, artifact);
+              }
             }
           }
           break;
@@ -483,6 +505,18 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
           });
           break;
         }
+        
+        case 'tool_progress': {
+          // Tool progress update - update tool result in real-time
+          const { conversation_id, tool_id, result, status } = parsed;
+          if (conversation_id && tool_id) {
+            updateConversationToolMessage(conversation_id, tool_id, {
+              result,
+              status: status === 'complete' ? 'complete' : 'running',
+            });
+          }
+          break;
+        }
       }
     } catch {
       // Not JSON, ignore
@@ -491,7 +525,7 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
     setActiveTasks, setConversationActiveTask, setConversationThinking,
     addConversation, addConversationMessage, appendToConversationStreaming,
     startConversationStreaming, markConversationMessageComplete, updateConversationToolMessage,
-    setCurrentChatId
+    addConversationArtifactBlock, setCurrentChatId
   ]);
 
   // Global WebSocket connection - authenticated via JWT token
