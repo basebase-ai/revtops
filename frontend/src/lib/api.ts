@@ -2,10 +2,15 @@
  * Centralized API configuration.
  *
  * Single source of truth for API URLs and common request helpers.
- * Includes masquerade support for admin impersonation.
+ * Includes JWT authentication and masquerade support for admin impersonation.
+ *
+ * SECURITY: All API requests include the Supabase JWT token in the
+ * Authorization header. The backend verifies this token to authenticate
+ * the user - never trust user_id or organization_id from query parameters.
  */
 
 import { getAdminUserId } from "../store";
+import { supabase } from "./supabase";
 
 // Backend URL for production
 const PRODUCTION_BACKEND = "https://api.revtops.com";
@@ -35,8 +40,35 @@ export interface ApiResponse<T> {
 }
 
 /**
+ * Get the current Supabase access token.
+ * Returns null if not authenticated.
+ */
+async function getAccessToken(): Promise<string | null> {
+  const { data: { session } } = await supabase.auth.getSession();
+  return session?.access_token ?? null;
+}
+
+/**
+ * Build WebSocket URL with authentication token.
+ * Use this instead of manually constructing WS URLs.
+ *
+ * @param path - WebSocket endpoint path (e.g., "/ws/chat")
+ * @returns Full WebSocket URL with token query parameter, or null if not authenticated
+ */
+export async function getAuthenticatedWsUrl(path: string): Promise<string | null> {
+  const token = await getAccessToken();
+  if (!token) {
+    return null;
+  }
+  const baseUrl = `${WS_BASE}${path}`;
+  return `${baseUrl}?token=${encodeURIComponent(token)}`;
+}
+
+/**
  * Make an API request with standard error handling.
- * Automatically includes X-Admin-User-Id header when masquerading.
+ * Automatically includes:
+ * - Authorization header with Supabase JWT token
+ * - X-Admin-User-Id header when masquerading
  */
 export async function apiRequest<T>(
   endpoint: string,
@@ -46,6 +78,12 @@ export async function apiRequest<T>(
     "Content-Type": "application/json",
     ...options.headers,
   };
+
+  // Add Authorization header with Supabase JWT token
+  const accessToken = await getAccessToken();
+  if (accessToken) {
+    (headers as Record<string, string>)["Authorization"] = `Bearer ${accessToken}`;
+  }
 
   // Add admin user ID header when masquerading
   const adminUserId = getAdminUserId();

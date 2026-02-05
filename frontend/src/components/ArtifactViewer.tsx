@@ -1,6 +1,9 @@
 /**
  * Artifact viewer component for displaying various artifact types.
  *
+ * SECURITY: API calls use JWT authentication via the centralized apiRequest
+ * function. No user_id is passed in query parameters.
+ *
  * Supports:
  * - Text files (.txt) - monospace display with copy button
  * - Markdown files (.md) - rendered with react-markdown
@@ -12,6 +15,8 @@
 import { useEffect, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { apiRequest, API_BASE } from "../lib/api";
+import { supabase } from "../lib/supabase";
 
 // New file-based artifact format
 interface FileArtifact {
@@ -33,7 +38,6 @@ interface DataArtifact {
 
 interface ArtifactViewerProps {
   artifact: FileArtifact | DataArtifact;
-  userId: string;
   onDownload?: () => void;
 }
 
@@ -44,7 +48,6 @@ function isFileArtifact(artifact: FileArtifact | DataArtifact): artifact is File
 
 export function ArtifactViewer({
   artifact,
-  userId,
   onDownload,
 }: ArtifactViewerProps): JSX.Element {
   const [content, setContent] = useState<string | null>(null);
@@ -60,20 +63,18 @@ export function ArtifactViewer({
       return;
     }
 
-    // Fetch content from API
+    // Fetch content from API using authenticated request
     const fetchContent = async (): Promise<void> => {
       setLoading(true);
       setError(null);
       try {
-        const apiBase = import.meta.env.VITE_API_URL || "";
-        const response = await fetch(
-          `${apiBase}/api/artifacts/${artifact.id}?user_id=${userId}`
+        const { data, error: apiError } = await apiRequest<{ content: string }>(
+          `/artifacts/${artifact.id}`
         );
-        if (!response.ok) {
-          throw new Error("Failed to fetch artifact");
+        if (apiError) {
+          throw new Error(apiError);
         }
-        const data = await response.json();
-        setContent(data.content);
+        setContent(data?.content ?? null);
       } catch (err) {
         setError(err instanceof Error ? err.message : "Failed to load artifact");
       } finally {
@@ -81,16 +82,22 @@ export function ArtifactViewer({
       }
     };
 
-    fetchContent();
-  }, [artifact, userId]);
+    void fetchContent();
+  }, [artifact]);
 
   const handleDownload = async (): Promise<void> => {
     if (!isFileArtifact(artifact)) return;
 
     try {
-      const apiBase = import.meta.env.VITE_API_URL || "";
+      // Get auth token for download request
+      const { data: { session } } = await supabase.auth.getSession();
+      const token = session?.access_token;
+      
       const response = await fetch(
-        `${apiBase}/api/artifacts/${artifact.id}/download?user_id=${userId}`
+        `${API_BASE}/artifacts/${artifact.id}/download`,
+        {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        }
       );
       if (!response.ok) {
         throw new Error("Failed to download artifact");

@@ -71,6 +71,12 @@ class Settings(BaseSettings):
     ENVIRONMENT: str = "development"
     FRONTEND_URL: str = "http://localhost:5173"
     
+    # Supabase configuration
+    # URL: Your Supabase project URL (e.g., https://xyz.supabase.co)
+    SUPABASE_URL: Optional[str] = None
+    # JWT Secret: Legacy HS256 secret (optional if using ES256)
+    SUPABASE_JWT_SECRET: Optional[str] = None
+    
     # Admin
     ADMIN_KEY: Optional[str] = None  # Simple admin auth for MVP
     

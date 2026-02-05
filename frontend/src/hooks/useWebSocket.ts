@@ -4,6 +4,10 @@
  * Handles connection, reconnection, and message streaming.
  * Uses centralized API configuration.
  * 
+ * SECURITY: Authenticates WebSocket connections using JWT token from
+ * Supabase session, passed as a query parameter. The backend verifies
+ * this token to authenticate the user.
+ * 
  * Uses a callback pattern to handle messages immediately as they arrive,
  * avoiding React state batching issues.
  * 
@@ -15,6 +19,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { WS_BASE, isProduction } from '../lib/api';
+import { supabase } from '../lib/supabase';
 
 interface UseWebSocketOptions {
   /** Callback called immediately for each message received */
@@ -33,7 +38,7 @@ interface UseWebSocketReturn {
   reconnect: () => void;
 }
 
-export function useWebSocket(url: string, options?: UseWebSocketOptions): UseWebSocketReturn {
+export function useWebSocket(path: string, options?: UseWebSocketOptions): UseWebSocketReturn {
   const [isConnected, setIsConnected] = useState<boolean>(false);
   const [connectionState, setConnectionState] = useState<
     'connecting' | 'connected' | 'disconnected' | 'error'
@@ -53,7 +58,7 @@ export function useWebSocket(url: string, options?: UseWebSocketOptions): UseWeb
     onDisconnectRef.current = options?.onDisconnect;
   }, [options?.onMessage, options?.onConnect, options?.onDisconnect]);
 
-  const connect = useCallback(() => {
+  const connect = useCallback(async () => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       return;
     }
@@ -66,9 +71,19 @@ export function useWebSocket(url: string, options?: UseWebSocketOptions): UseWeb
 
     setConnectionState('connecting');
 
-    // Build WebSocket URL using centralized config
-    const wsUrl = `${WS_BASE}${url}`;
-    console.log('[WebSocket] Connecting:', isProduction ? 'production' : 'dev', wsUrl);
+    // Get authentication token from Supabase session
+    const { data: { session } } = await supabase.auth.getSession();
+    const token = session?.access_token;
+    
+    if (!token) {
+      console.error('[WebSocket] No authentication token available');
+      setConnectionState('error');
+      return;
+    }
+
+    // Build WebSocket URL with authentication token
+    const wsUrl = `${WS_BASE}${path}?token=${encodeURIComponent(token)}`;
+    console.log('[WebSocket] Connecting:', isProduction ? 'production' : 'dev', `${WS_BASE}${path}`);
     
     const ws = new WebSocket(wsUrl);
 
@@ -98,13 +113,19 @@ export function useWebSocket(url: string, options?: UseWebSocketOptions): UseWeb
       onDisconnectRef.current?.();
 
       // Attempt reconnection with exponential backoff
+      // Skip reconnection on auth errors (4001)
+      if (event.code === 4001) {
+        console.error('[WebSocket] Authentication failed, not reconnecting');
+        return;
+      }
+      
       if (reconnectAttemptsRef.current < maxReconnectAttempts) {
         const delay = Math.min(1000 * Math.pow(2, reconnectAttemptsRef.current), 30000);
         reconnectAttemptsRef.current += 1;
 
         console.log(`[WebSocket] Reconnecting in ${delay}ms (attempt ${reconnectAttemptsRef.current})`);
         reconnectTimeoutRef.current = window.setTimeout(() => {
-          connect();
+          void connect();
         }, delay);
       } else {
         console.error('[WebSocket] Max reconnection attempts reached');
@@ -112,7 +133,7 @@ export function useWebSocket(url: string, options?: UseWebSocketOptions): UseWeb
     };
 
     wsRef.current = ws;
-  }, [url]);
+  }, [path]);
 
   const reconnect = useCallback(() => {
     reconnectAttemptsRef.current = 0;
@@ -120,11 +141,11 @@ export function useWebSocket(url: string, options?: UseWebSocketOptions): UseWeb
       clearTimeout(reconnectTimeoutRef.current);
       reconnectTimeoutRef.current = null;
     }
-    connect();
+    void connect();
   }, [connect]);
 
   useEffect(() => {
-    connect();
+    void connect();
 
     return (): void => {
       if (reconnectTimeoutRef.current) {

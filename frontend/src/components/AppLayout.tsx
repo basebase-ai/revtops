@@ -494,9 +494,9 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
     setCurrentChatId
   ]);
 
-  // Global WebSocket connection
+  // Global WebSocket connection - authenticated via JWT token
   const { sendJson, isConnected, connectionState } = useWebSocket(
-    user ? `/ws/chat/${user.id}` : '',
+    user ? '/ws/chat' : '',
     {
       onMessage: handleWebSocketMessage,
       onConnect: () => console.log('[AppLayout] WebSocket connected'),

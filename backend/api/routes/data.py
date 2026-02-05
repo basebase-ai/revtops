@@ -1,16 +1,20 @@
 """
 Data inspector endpoints for viewing synced data.
 
+SECURITY: All endpoints use JWT authentication via the AuthContext dependency.
+User and organization are verified from the JWT token, NOT from query parameters.
+
 Allows users to browse their synced contacts, accounts, deals, and activities
 in a paginated table view.
 """
 from typing import Literal, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import asc, desc, func, select
 
+from api.auth_middleware import AuthContext, require_organization
 from models.account import Account
 from models.activity import Activity
 from models.contact import Contact
@@ -64,15 +68,12 @@ class FilterOptionsResponse(BaseModel):
 
 @router.get("/summary", response_model=DataSummaryResponse)
 async def get_data_summary(
-    organization_id: str,
+    auth: AuthContext = Depends(require_organization),
 ) -> DataSummaryResponse:
     """Get counts for all synced data tables."""
-    try:
-        org_uuid = UUID(organization_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid organization ID")
+    org_uuid = auth.organization_id
 
-    async with get_session() as session:
+    async with get_session(organization_id=auth.organization_id_str) as session:
         # Count each table
         contacts_count = await session.scalar(
             select(func.count(Contact.id)).where(Contact.organization_id == org_uuid)
@@ -91,7 +92,7 @@ async def get_data_summary(
         ) or 0
 
     return DataSummaryResponse(
-        organization_id=organization_id,
+        organization_id=auth.organization_id_str or "",
         tables=[
             TableSummary(name="contacts", display_name="Contacts", count=contacts_count),
             TableSummary(name="accounts", display_name="Accounts", count=accounts_count),
@@ -103,15 +104,12 @@ async def get_data_summary(
 
 @router.get("/activities/types", response_model=ActivityTypesResponse)
 async def get_activity_types(
-    organization_id: str,
+    auth: AuthContext = Depends(require_organization),
 ) -> ActivityTypesResponse:
     """Get distinct activity types for filtering."""
-    try:
-        org_uuid = UUID(organization_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid organization ID")
+    org_uuid = auth.organization_id
 
-    async with get_session() as session:
+    async with get_session(organization_id=auth.organization_id_str) as session:
         result = await session.execute(
             select(Activity.type)
             .where(Activity.organization_id == org_uuid)
@@ -127,13 +125,10 @@ async def get_activity_types(
 @router.get("/{table}/filters", response_model=FilterOptionsResponse)
 async def get_filter_options(
     table: str,
-    organization_id: str,
+    auth: AuthContext = Depends(require_organization),
 ) -> FilterOptionsResponse:
     """Get available filter options for a table."""
-    try:
-        org_uuid = UUID(organization_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid organization ID")
+    org_uuid = auth.organization_id
 
     table_models: dict[str, type] = {
         "contacts": Contact,
@@ -147,7 +142,7 @@ async def get_filter_options(
 
     model = table_models[table]
 
-    async with get_session() as session:
+    async with get_session(organization_id=auth.organization_id_str) as session:
         # Get distinct source systems
         result = await session.execute(
             select(model.source_system)
@@ -179,7 +174,7 @@ async def get_filter_options(
 @router.get("/{table}", response_model=DataResponse)
 async def get_data(
     table: str,
-    organization_id: str,
+    auth: AuthContext = Depends(require_organization),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=100),
     search: Optional[str] = None,
@@ -189,10 +184,7 @@ async def get_data(
     source_system: Optional[str] = None,
 ) -> DataResponse:
     """Get paginated data from a synced table."""
-    try:
-        org_uuid = UUID(organization_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid organization ID")
+    org_uuid = auth.organization_id
 
     # Map table names to models and their display columns
     table_config: dict[str, dict] = {
@@ -228,7 +220,7 @@ async def get_data(
     model = config["model"]
     columns: list[str] = config["columns"]
 
-    async with get_session() as session:
+    async with get_session(organization_id=auth.organization_id_str) as session:
         # Base query
         base_query = select(model).where(model.organization_id == org_uuid)
 

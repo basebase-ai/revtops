@@ -106,8 +106,8 @@ app.include_router(tool_settings.router, prefix="/api", tags=["tools"])
 app.include_router(change_sessions.router, prefix="/api", tags=["change-sessions"])
 app.include_router(slack_events.router, prefix="/api/slack", tags=["slack"])
 
-# WebSocket
-app.add_api_websocket_route("/ws/chat/{user_id}", websocket_endpoint)
+# WebSocket - authenticated via JWT token in query parameter
+app.add_api_websocket_route("/ws/chat", websocket_endpoint)
 
 
 @app.on_event("startup")

@@ -1,12 +1,15 @@
 /**
  * Data inspector component.
  * 
+ * SECURITY: Uses JWT authentication via apiRequest. Organization is determined
+ * from the authenticated user, not from query parameters.
+ * 
  * Allows users to browse their synced data (contacts, accounts, deals, activities)
  * in a paginated table view. Helps build trust and debug sync issues.
  */
 
 import { useState, useEffect } from 'react';
-import { API_BASE } from '../lib/api';
+import { apiRequest } from '../lib/api';
 import { useAppStore } from '../store';
 
 interface TableSummary {
@@ -36,6 +39,11 @@ interface FilterOptions {
   activity_types: string[] | null;
 }
 
+interface DataSummaryResponse {
+  organization_id: string;
+  tables: TableSummary[];
+}
+
 type SortOrder = 'asc' | 'desc';
 
 export function Data(): JSX.Element {
@@ -62,11 +70,12 @@ export function Data(): JSX.Element {
 
     const fetchSummary = async (): Promise<void> => {
       try {
-        const response = await fetch(
-          `${API_BASE}/data/summary?organization_id=${organizationId}`
+        const { data: result, error: apiError } = await apiRequest<DataSummaryResponse>(
+          '/data/summary'
         );
-        if (!response.ok) throw new Error('Failed to fetch data summary');
-        const result = await response.json();
+        if (apiError || !result) {
+          throw new Error(apiError || 'Failed to fetch data summary');
+        }
         setTables(result.tables);
       } catch (err) {
         console.error('Error fetching data summary:', err);
@@ -82,11 +91,12 @@ export function Data(): JSX.Element {
 
     const fetchFilters = async (): Promise<void> => {
       try {
-        const response = await fetch(
-          `${API_BASE}/data/${selectedTable}/filters?organization_id=${organizationId}`
+        const { data: result, error: apiError } = await apiRequest<FilterOptions>(
+          `/data/${selectedTable}/filters`
         );
-        if (!response.ok) throw new Error('Failed to fetch filters');
-        const result: FilterOptions = await response.json();
+        if (apiError || !result) {
+          throw new Error(apiError || 'Failed to fetch filters');
+        }
         setFilterOptions(result);
       } catch (err) {
         console.error('Error fetching filter options:', err);
@@ -106,7 +116,6 @@ export function Data(): JSX.Element {
       setError(null);
       try {
         const params = new URLSearchParams({
-          organization_id: organizationId,
           page: String(page),
           page_size: '50',
         });
@@ -124,11 +133,12 @@ export function Data(): JSX.Element {
           params.set('type_filter', typeFilter);
         }
         
-        const response = await fetch(
-          `${API_BASE}/data/${selectedTable}?${params.toString()}`
+        const { data: result, error: apiError } = await apiRequest<DataResponse>(
+          `/data/${selectedTable}?${params.toString()}`
         );
-        if (!response.ok) throw new Error('Failed to fetch data');
-        const result: DataResponse = await response.json();
+        if (apiError || !result) {
+          throw new Error(apiError || 'Failed to fetch data');
+        }
         setData(result);
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Unknown error');

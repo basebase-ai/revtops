@@ -281,7 +281,7 @@ export function Chat({
       setIsLoading(true);
 
       try {
-        const { data, error } = await getConversation(chatId, userId);
+        const { data, error } = await getConversation(chatId);
         
         if (cancelled) {
           console.log('[Chat] Load cancelled - chatId changed');
@@ -354,7 +354,7 @@ export function Chat({
       }
 
       try {
-        const { data, error } = await getConversation(chatId, userId);
+        const { data, error } = await getConversation(chatId);
         if (data && !error) {
           const loadedMessages: ChatMessage[] = data.messages.map((msg) => ({
             id: msg.id,
@@ -716,7 +716,7 @@ export function Chat({
                   </svg>
                 </button>
               </div>
-              <ArtifactViewer artifact={currentArtifact} userId={userId} />
+              <ArtifactViewer artifact={currentArtifact} />
             </div>
           </>
         )}

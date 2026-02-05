@@ -238,8 +238,8 @@ export function DataSources(): JSX.Element {
     }
   }, [fetchIntegrations]);
   
-  // Connect to WebSocket for sync progress updates
-  useWebSocket(userId ? `/ws/chat/${userId}` : '', {
+  // Connect to WebSocket for sync progress updates - authenticated via JWT token
+  useWebSocket(userId ? '/ws/chat' : '', {
     onMessage: handleWsMessage,
   });
 

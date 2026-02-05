@@ -1,6 +1,9 @@
 """
 Artifact API routes for viewing and downloading artifacts.
 
+SECURITY: All endpoints use JWT authentication via the AuthContext dependency.
+User and organization are verified from the JWT token, NOT from query parameters.
+
 Provides endpoints to:
 - Get artifact metadata
 - Get artifact content
@@ -10,14 +13,14 @@ Provides endpoints to:
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy import select
 
+from api.auth_middleware import AuthContext, require_organization
 from models.artifact import Artifact
 from models.database import get_session
-from models.user import User
 from services.pdf_generator import generate_pdf
 
 router = APIRouter()
@@ -63,42 +66,17 @@ class ArtifactListResponse(BaseModel):
     total: int
 
 
-async def _get_user_org_id(user_id: str) -> tuple[UUID, UUID]:
-    """
-    Get user and their organization ID.
-    
-    Returns:
-        Tuple of (user_uuid, org_uuid)
-        
-    Raises:
-        HTTPException if user not found or has no organization
-    """
-    try:
-        user_uuid = UUID(user_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid user ID format")
-    
-    # Get user to find their org_id (users table query doesn't need RLS)
-    async with get_session() as session:
-        user = await session.get(User, user_uuid)
-        if not user:
-            raise HTTPException(status_code=404, detail="User not found")
-        if not user.organization_id:
-            raise HTTPException(status_code=400, detail="User not associated with an organization")
-        return user_uuid, user.organization_id
-
-
 @router.get("/{artifact_id}", response_model=ArtifactContent)
 async def get_artifact(
     artifact_id: str,
-    user_id: str = Query(..., description="User ID for authorization"),
+    auth: AuthContext = Depends(require_organization),
 ) -> ArtifactContent:
     """
     Get artifact by ID with full content.
     
     Args:
         artifact_id: UUID of the artifact
-        user_id: User requesting the artifact
+        auth: Verified authentication context (from JWT)
         
     Returns:
         Full artifact including content
@@ -107,14 +85,12 @@ async def get_artifact(
         artifact_uuid = UUID(artifact_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid artifact ID format")
-    
-    user_uuid, org_uuid = await _get_user_org_id(user_id)
 
-    async with get_session(organization_id=str(org_uuid)) as session:
+    async with get_session(organization_id=auth.organization_id_str) as session:
         result = await session.execute(
             select(Artifact).where(
                 Artifact.id == artifact_uuid,
-                Artifact.user_id == user_uuid,
+                Artifact.user_id == auth.user_id,
             )
         )
         artifact: Artifact | None = result.scalar_one_or_none()
@@ -141,7 +117,7 @@ async def get_artifact(
 @router.get("/{artifact_id}/download", response_model=None)
 async def download_artifact(
     artifact_id: str,
-    user_id: str = Query(..., description="User ID for authorization"),
+    auth: AuthContext = Depends(require_organization),
 ) -> Response:
     """
     Download artifact as a file.
@@ -150,7 +126,7 @@ async def download_artifact(
     
     Args:
         artifact_id: UUID of the artifact
-        user_id: User requesting the download
+        auth: Verified authentication context (from JWT)
         
     Returns:
         File response with appropriate content-type and filename
@@ -159,14 +135,12 @@ async def download_artifact(
         artifact_uuid = UUID(artifact_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid artifact ID format")
-    
-    user_uuid, org_uuid = await _get_user_org_id(user_id)
 
-    async with get_session(organization_id=str(org_uuid)) as session:
+    async with get_session(organization_id=auth.organization_id_str) as session:
         result = await session.execute(
             select(Artifact).where(
                 Artifact.id == artifact_uuid,
-                Artifact.user_id == user_uuid,
+                Artifact.user_id == auth.user_id,
             )
         )
         artifact: Artifact | None = result.scalar_one_or_none()
@@ -228,14 +202,14 @@ async def download_artifact(
 @router.get("/conversation/{conversation_id}", response_model=ArtifactListResponse)
 async def list_conversation_artifacts(
     conversation_id: str,
-    user_id: str = Query(..., description="User ID for authorization"),
+    auth: AuthContext = Depends(require_organization),
 ) -> ArtifactListResponse:
     """
     List all artifacts in a conversation.
     
     Args:
         conversation_id: UUID of the conversation
-        user_id: User requesting the list
+        auth: Verified authentication context (from JWT)
         
     Returns:
         List of artifact metadata (without content)
@@ -244,15 +218,13 @@ async def list_conversation_artifacts(
         conv_uuid = UUID(conversation_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid conversation ID format")
-    
-    user_uuid, org_uuid = await _get_user_org_id(user_id)
 
-    async with get_session(organization_id=str(org_uuid)) as session:
+    async with get_session(organization_id=auth.organization_id_str) as session:
         result = await session.execute(
             select(Artifact)
             .where(
                 Artifact.conversation_id == conv_uuid,
-                Artifact.user_id == user_uuid,
+                Artifact.user_id == auth.user_id,
             )
             .order_by(Artifact.created_at.desc())
         )

@@ -232,9 +232,12 @@ async def _execute_tool_approval(
     }
 
 
-async def websocket_endpoint(websocket: WebSocket, user_id: str) -> None:
+async def websocket_endpoint(websocket: WebSocket) -> None:
     """
     WebSocket endpoint for chat communication.
+    
+    SECURITY: Authentication is done via JWT token passed as query parameter.
+    The token is verified before accepting the connection.
 
     Protocol (client -> server):
     - {"type": "send_message", "message": "...", "conversation_id": "..."}
@@ -252,33 +255,28 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str) -> None:
 
     Args:
         websocket: The WebSocket connection
-        user_id: UUID of the authenticated user
     """
-    await websocket.accept()
-
+    # Verify JWT token BEFORE accepting the connection
+    from api.auth_middleware import verify_websocket_token
+    
     try:
-        user_uuid = UUID(user_id)
-    except ValueError:
-        await websocket.close(code=1008, reason="Invalid user ID format")
+        auth = await verify_websocket_token(websocket)
+    except Exception as e:
+        # verify_websocket_token already closed the WebSocket with appropriate code
+        logger.warning(f"WebSocket auth failed: {e}")
         return
-
-    async with get_session() as session:
-        user = await session.get(User, user_uuid)
-
-        if not user:
-            await websocket.close(code=1008, reason="User not found. Please sign in first.")
-            return
-
-        if user.status == "waitlist":
-            await websocket.close(code=1008, reason="You're on the waitlist. We'll notify you when you have access.")
-            return
-        if user.status == "crm_only":
-            await websocket.close(code=1008, reason="Please sign up to use Revtops.")
-            return
-
-        organization_id = str(user.organization_id) if user.organization_id else None
-        user_id_str = str(user.id)
-        user_email = user.email
+    
+    await websocket.accept()
+    
+    # User is authenticated - extract values from verified auth context
+    user_id_str = auth.user_id_str
+    organization_id = auth.organization_id_str
+    user_email = auth.email
+    
+    # Check user status (already done in auth middleware, but double-check waitlist)
+    if auth.role == "waitlist":
+        await websocket.close(code=1008, reason="You're on the waitlist. We'll notify you when you have access.")
+        return
 
     try:
         # Register for sync progress broadcasts

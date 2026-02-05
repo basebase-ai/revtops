@@ -110,53 +110,53 @@ export interface SyncStatusResponse {
 // =============================================================================
 
 /**
- * List conversations for a user
+ * List conversations for authenticated user.
+ * SECURITY: User is identified from JWT token, not from parameters.
  */
 export async function listConversations(
-  userId: string,
   limit = 50,
   offset = 0,
 ): Promise<ApiResponse<ConversationListResponse>> {
   return apiRequest<ConversationListResponse>(
-    `/chat/conversations?user_id=${userId}&limit=${limit}&offset=${offset}`,
+    `/chat/conversations?limit=${limit}&offset=${offset}`,
   );
 }
 
 /**
- * Get a conversation with all its messages
+ * Get a conversation with all its messages.
+ * SECURITY: User is identified from JWT token.
  */
 export async function getConversation(
   conversationId: string,
-  userId: string,
 ): Promise<ApiResponse<ConversationDetailResponse>> {
   return apiRequest<ConversationDetailResponse>(
-    `/chat/conversations/${conversationId}?user_id=${userId}`,
+    `/chat/conversations/${conversationId}`,
   );
 }
 
 /**
- * Create a new conversation
+ * Create a new conversation.
+ * SECURITY: User is identified from JWT token.
  */
 export async function createConversation(
-  userId: string,
   title?: string,
 ): Promise<ApiResponse<ConversationSummary>> {
   return apiRequest<ConversationSummary>("/chat/conversations", {
     method: "POST",
-    body: JSON.stringify({ user_id: userId, title }),
+    body: JSON.stringify({ title }),
   });
 }
 
 /**
  * Update a conversation (title, etc.)
+ * SECURITY: User is identified from JWT token.
  */
 export async function updateConversation(
   conversationId: string,
-  userId: string,
   title: string,
 ): Promise<ApiResponse<ConversationSummary>> {
   return apiRequest<ConversationSummary>(
-    `/chat/conversations/${conversationId}?user_id=${userId}`,
+    `/chat/conversations/${conversationId}`,
     {
       method: "PATCH",
       body: JSON.stringify({ title }),
@@ -165,29 +165,28 @@ export async function updateConversation(
 }
 
 /**
- * Delete a conversation
+ * Delete a conversation.
+ * SECURITY: User is identified from JWT token.
  */
 export async function deleteConversation(
   conversationId: string,
-  userId: string,
 ): Promise<ApiResponse<{ success: boolean }>> {
   return apiRequest<{ success: boolean }>(
-    `/chat/conversations/${conversationId}?user_id=${userId}`,
+    `/chat/conversations/${conversationId}`,
     { method: "DELETE" },
   );
 }
 
 /**
- * Get chat history for a user (legacy - use getConversation instead)
+ * Get chat history for authenticated user (legacy - use getConversation instead).
+ * SECURITY: User is identified from JWT token.
  */
 export async function getChatHistory(
-  userId: string,
   conversationId?: string,
   limit = 50,
   offset = 0,
 ): Promise<ApiResponse<ChatHistoryResponse>> {
   const params = new URLSearchParams({
-    user_id: userId,
     limit: limit.toString(),
     offset: offset.toString(),
   });

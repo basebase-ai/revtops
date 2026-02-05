@@ -14,7 +14,7 @@
 
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import { API_BASE } from "../lib/api";
+import { API_BASE, apiRequest } from "../lib/api";
 
 // =============================================================================
 // Types
@@ -539,19 +539,8 @@ export const useAppStore = create<AppState>()(
 
         try {
           console.log("[Store] Fetching conversations for user:", user.id);
-          const response = await fetch(
-            `${API_BASE}/chat/conversations?user_id=${user.id}&limit=20`,
-          );
-
-          if (!response.ok) {
-            console.error(
-              "[Store] Failed to fetch conversations:",
-              response.status,
-            );
-            return;
-          }
-
-          const data = (await response.json()) as {
+          // Use apiRequest for authenticated requests (JWT in Authorization header)
+          const { data, error } = await apiRequest<{
             conversations: Array<{
               id: string;
               title: string | null;
@@ -561,7 +550,12 @@ export const useAppStore = create<AppState>()(
               workflow_id?: string;
             }>;
             total: number;
-          };
+          }>(`/chat/conversations?limit=20`);
+
+          if (error || !data) {
+            console.error("[Store] Failed to fetch conversations:", error);
+            return;
+          }
 
           console.log(
             "[Store] Conversations response:",
@@ -626,18 +620,17 @@ export const useAppStore = create<AppState>()(
 
         try {
           console.log("[Store] Deleting conversation:", id);
-          const response = await fetch(
-            `${API_BASE}/chat/conversations/${id}?user_id=${user.id}`,
+          // Use apiRequest for authenticated requests (JWT in Authorization header)
+          const { error } = await apiRequest<{ success: boolean }>(
+            `/chat/conversations/${id}`,
             { method: "DELETE" },
           );
 
-          if (!response.ok && response.status !== 404) {
-            console.error(
-              "[Store] Failed to delete conversation:",
-              response.status,
-            );
+          if (error) {
+            console.error("[Store] Failed to delete conversation:", error);
+          } else {
+            console.log("[Store] Conversation deleted");
           }
-          console.log("[Store] Conversation deleted");
         } catch (error) {
           console.error("[Store] Error deleting conversation:", error);
         }

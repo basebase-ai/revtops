@@ -1,6 +1,9 @@
 """
 Chat endpoints for REST-based interactions.
 
+SECURITY: All endpoints use JWT authentication via the AuthContext dependency.
+User and organization are verified from the JWT token, NOT from query parameters.
+
 Endpoints:
 - GET /api/chat/conversations - List conversations for user
 - POST /api/chat/conversations - Create a new conversation
@@ -15,14 +18,14 @@ from datetime import datetime
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import select, update, func
+from sqlalchemy import select, func
 
-from models.database import get_session, get_admin_session
+from api.auth_middleware import AuthContext, get_current_auth
+from models.database import get_session
 from models.chat_message import ChatMessage
 from models.conversation import Conversation
-from models.user import User
 
 router = APIRouter()
 
@@ -33,7 +36,6 @@ router = APIRouter()
 
 class ConversationCreate(BaseModel):
     """Request model for creating a conversation."""
-    user_id: str
     title: Optional[str] = None
 
 
@@ -88,7 +90,6 @@ class ChatHistoryResponse(BaseModel):
 
 class SendMessageRequest(BaseModel):
     """Request model for sending a message."""
-    user_id: str
     conversation_id: Optional[str] = None
     content: str
     local_time: Optional[str] = None
@@ -109,29 +110,19 @@ class SendMessageResponse(BaseModel):
 
 @router.get("/conversations", response_model=ConversationListResponse)
 async def list_conversations(
-    user_id: str,
+    auth: AuthContext = Depends(get_current_auth),
     limit: int = 50,
     offset: int = 0
 ) -> ConversationListResponse:
-    """List conversations for a user, ordered by most recent."""
-    try:
-        user_uuid = UUID(user_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid user ID")
-
-    # First get user's org_id (users table has RLS disabled)
-    async with get_session() as session:
-        user = await session.get(User, user_uuid)
-        if not user:
-            raise HTTPException(status_code=404, detail="User not found")
-        org_id = str(user.organization_id) if user.organization_id else None
+    """List conversations for the authenticated user, ordered by most recent."""
+    org_id = auth.organization_id_str
 
     async with get_session(organization_id=org_id) as session:
         # Simple query - message_count and last_message_preview are cached on the conversation
         # Filter out workflow conversations - they're accessed via Automations tab, not chat list
         result = await session.execute(
             select(Conversation, func.count(Conversation.id).over().label("total_count"))
-            .where(Conversation.user_id == user_uuid)
+            .where(Conversation.user_id == auth.user_id)
             .where(Conversation.type != "workflow")
             .order_by(Conversation.updated_at.desc())
             .offset(offset)
@@ -165,24 +156,17 @@ async def list_conversations(
 
 
 @router.post("/conversations", response_model=ConversationResponse)
-async def create_conversation(request: ConversationCreate) -> ConversationResponse:
-    """Create a new conversation."""
-    try:
-        user_uuid = UUID(request.user_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid user ID")
-
-    # First get user's org_id (users table has RLS disabled)
-    async with get_session() as session:
-        user = await session.get(User, user_uuid)
-        if not user:
-            raise HTTPException(status_code=404, detail="User not found")
-        org_id = str(user.organization_id) if user.organization_id else None
+async def create_conversation(
+    request: ConversationCreate,
+    auth: AuthContext = Depends(get_current_auth),
+) -> ConversationResponse:
+    """Create a new conversation for the authenticated user."""
+    org_id = auth.organization_id_str
 
     async with get_session(organization_id=org_id) as session:
         conversation = Conversation(
-            user_id=user_uuid,
-            organization_id=UUID(org_id) if org_id else None,
+            user_id=auth.user_id,
+            organization_id=auth.organization_id,
             title=request.title,
         )
         session.add(conversation)
@@ -197,7 +181,7 @@ async def create_conversation(request: ConversationCreate) -> ConversationRespon
 
         return ConversationResponse(
             id=conv_id,
-            user_id=str(user_uuid),
+            user_id=auth.user_id_str,
             title=conv_title,
             summary=conv_summary,
             created_at=f"{conv_created_at.isoformat()}Z" if conv_created_at else "",
@@ -210,27 +194,21 @@ async def create_conversation(request: ConversationCreate) -> ConversationRespon
 @router.get("/conversations/{conversation_id}", response_model=ConversationDetailResponse)
 async def get_conversation(
     conversation_id: str,
-    user_id: str,
+    auth: AuthContext = Depends(get_current_auth),
 ) -> ConversationDetailResponse:
     """Get a conversation with all its messages."""
     try:
         conv_uuid = UUID(conversation_id)
-        user_uuid = UUID(user_id)
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid ID format")
+        raise HTTPException(status_code=400, detail="Invalid conversation ID format")
 
-    # First get user's org_id (users table has RLS disabled, use admin session)
-    async with get_admin_session() as session:
-        user = await session.get(User, user_uuid)
-        if not user:
-            raise HTTPException(status_code=404, detail="User not found")
-        org_id = str(user.organization_id) if user.organization_id else None
+    org_id = auth.organization_id_str
 
     async with get_session(organization_id=org_id) as session:
         result = await session.execute(
             select(Conversation)
             .where(Conversation.id == conv_uuid)
-            .where(Conversation.user_id == user_uuid)
+            .where(Conversation.user_id == auth.user_id)
         )
         conversation = result.scalar_one_or_none()
 
@@ -263,28 +241,22 @@ async def get_conversation(
 @router.patch("/conversations/{conversation_id}", response_model=ConversationResponse)
 async def update_conversation(
     conversation_id: str,
-    user_id: str,
     request: ConversationUpdate,
+    auth: AuthContext = Depends(get_current_auth),
 ) -> ConversationResponse:
     """Update a conversation (title, etc.)."""
     try:
         conv_uuid = UUID(conversation_id)
-        user_uuid = UUID(user_id)
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid ID format")
+        raise HTTPException(status_code=400, detail="Invalid conversation ID format")
 
-    # First get user's org_id (users table has RLS disabled)
-    async with get_session() as session:
-        user = await session.get(User, user_uuid)
-        if not user:
-            raise HTTPException(status_code=404, detail="User not found")
-        org_id = str(user.organization_id) if user.organization_id else None
+    org_id = auth.organization_id_str
 
     async with get_session(organization_id=org_id) as session:
         result = await session.execute(
             select(Conversation)
             .where(Conversation.id == conv_uuid)
-            .where(Conversation.user_id == user_uuid)
+            .where(Conversation.user_id == auth.user_id)
         )
         conversation = result.scalar_one_or_none()
 
@@ -322,27 +294,21 @@ async def update_conversation(
 @router.delete("/conversations/{conversation_id}")
 async def delete_conversation(
     conversation_id: str,
-    user_id: str,
+    auth: AuthContext = Depends(get_current_auth),
 ) -> dict[str, bool]:
     """Delete a conversation and all its messages."""
     try:
         conv_uuid = UUID(conversation_id)
-        user_uuid = UUID(user_id)
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid ID format")
+        raise HTTPException(status_code=400, detail="Invalid conversation ID format")
 
-    # First get user's org_id (users table has RLS disabled)
-    async with get_session() as session:
-        user = await session.get(User, user_uuid)
-        if not user:
-            raise HTTPException(status_code=404, detail="User not found")
-        org_id = str(user.organization_id) if user.organization_id else None
+    org_id = auth.organization_id_str
 
     async with get_session(organization_id=org_id) as session:
         result = await session.execute(
             select(Conversation)
             .where(Conversation.id == conv_uuid)
-            .where(Conversation.user_id == user_uuid)
+            .where(Conversation.user_id == auth.user_id)
         )
         conversation = result.scalar_one_or_none()
 
@@ -361,27 +327,21 @@ async def delete_conversation(
 
 @router.get("/history", response_model=ChatHistoryResponse)
 async def get_chat_history(
-    user_id: str,
+    auth: AuthContext = Depends(get_current_auth),
     conversation_id: Optional[str] = None,
     limit: int = 50,
     offset: int = 0
 ) -> ChatHistoryResponse:
-    """Get chat history for a user (optionally filtered by conversation)."""
+    """Get chat history for authenticated user (optionally filtered by conversation)."""
     try:
-        user_uuid = UUID(user_id)
         conv_uuid = UUID(conversation_id) if conversation_id else None
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid ID format")
+        raise HTTPException(status_code=400, detail="Invalid conversation ID format")
 
-    # First get user's org_id (users table has RLS disabled)
-    async with get_session() as session:
-        user = await session.get(User, user_uuid)
-        if not user:
-            raise HTTPException(status_code=404, detail="User not found")
-        org_id = str(user.organization_id) if user.organization_id else None
+    org_id = auth.organization_id_str
 
     async with get_session(organization_id=org_id) as session:
-        query = select(ChatMessage).where(ChatMessage.user_id == user_uuid)
+        query = select(ChatMessage).where(ChatMessage.user_id == auth.user_id)
         
         if conv_uuid:
             query = query.where(ChatMessage.conversation_id == conv_uuid)
@@ -393,20 +353,17 @@ async def get_chat_history(
 
         return ChatHistoryResponse(
             messages=[
-                ChatMessageResponse(
-                    id=str(msg.id),
-                    conversation_id=str(msg.conversation_id) if msg.conversation_id else None,
-                    role=msg.role,
-                    content=msg.content,
-                    created_at=f"{msg.created_at.isoformat()}Z" if msg.created_at else "",
-                )
+                ChatMessageResponse(**msg.to_dict())
                 for msg in reversed(messages)
             ]
         )
 
 
 @router.post("/message", response_model=SendMessageResponse)
-async def send_message(request: SendMessageRequest) -> SendMessageResponse:
+async def send_message(
+    request: SendMessageRequest,
+    auth: AuthContext = Depends(get_current_auth),
+) -> SendMessageResponse:
     """
     Send a message and get a response (non-streaming).
 
@@ -415,24 +372,18 @@ async def send_message(request: SendMessageRequest) -> SendMessageResponse:
     from agents.orchestrator import ChatOrchestrator
 
     try:
-        user_uuid = UUID(request.user_id)
         conv_uuid = UUID(request.conversation_id) if request.conversation_id else None
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid ID format")
+        raise HTTPException(status_code=400, detail="Invalid conversation ID format")
 
-    # First get user info (users table has RLS disabled)
-    async with get_session() as session:
-        user = await session.get(User, user_uuid)
-        if not user:
-            raise HTTPException(status_code=404, detail="User not found")
-        org_id = str(user.organization_id) if user.organization_id else None
+    org_id = auth.organization_id_str
 
     async with get_session(organization_id=org_id) as session:
         # Create conversation if not provided
         if not conv_uuid:
             conversation = Conversation(
-                user_id=user_uuid,
-                organization_id=UUID(org_id) if org_id else None,
+                user_id=auth.user_id,
+                organization_id=auth.organization_id,
                 title=None,  # Will be set after first message
             )
             session.add(conversation)
@@ -443,7 +394,7 @@ async def send_message(request: SendMessageRequest) -> SendMessageResponse:
 
         # Allow users without organization to chat with limited functionality
         orchestrator = ChatOrchestrator(
-            user_id=str(user_uuid),
+            user_id=auth.user_id_str,
             organization_id=org_id,
             conversation_id=str(conv_uuid),
             local_time=request.local_time,
