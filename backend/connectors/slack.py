@@ -8,11 +8,34 @@ Responsibilities:
 - Handle pagination and rate limits
 """
 
+import re
 import uuid
 from datetime import datetime
 from typing import Any, Optional
 
 import httpx
+
+
+def markdown_to_mrkdwn(text: str) -> str:
+    """
+    Convert standard Markdown to Slack mrkdwn format.
+    
+    Key differences:
+    - Bold: **text** → *text*
+    - Italic: *text* → _text_ (when not already bold)
+    - Links: [text](url) → <url|text>
+    - Headers: # Header → *Header*
+    """
+    # Convert bold: **text** → *text*
+    text = re.sub(r'\*\*(.+?)\*\*', r'*\1*', text)
+    
+    # Convert markdown links: [text](url) → <url|text>
+    text = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'<\2|\1>', text)
+    
+    # Convert headers: # Header → *Header*
+    text = re.sub(r'^#{1,6}\s+(.+)$', r'*\1*', text, flags=re.MULTILINE)
+    
+    return text
 
 from api.websockets import broadcast_sync_progress
 from connectors.base import BaseConnector
@@ -321,9 +344,12 @@ class SlackConnector(BaseConnector):
         Returns:
             Response with channel, ts (timestamp), and message details
         """
+        # Auto-convert any Markdown to Slack mrkdwn format
+        formatted_text = markdown_to_mrkdwn(text)
+        
         payload: dict[str, Any] = {
             "channel": channel,
-            "text": text,
+            "text": formatted_text,
         }
         
         if thread_ts:

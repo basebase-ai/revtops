@@ -1094,12 +1094,7 @@ async def _action_send_slack(
                 # Also support {previous_output} as alias for last step
                 message = message.replace("{previous_output}", str(output_text))
     
-    # Check for markdown-style formatting (Slack uses mrkdwn, not markdown)
-    if "**" in message:
-        return {
-            "status": "failed",
-            "error": "Message contains **text** (Markdown bold). Slack uses *text* (single asterisks) for bold. Update the workflow LLM prompt to specify Slack mrkdwn formatting.",
-        }
+    # Note: SlackConnector.post_message auto-converts markdown to mrkdwn
     
     try:
         # Get the Slack integration for this org

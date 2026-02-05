@@ -198,7 +198,7 @@ async def process_slack_dm(
         logger.error("[slack_conversations] Error processing message: %s", e, exc_info=True)
         response_text = f"Sorry, I encountered an error processing your message: {str(e)}"
     
-    # Post response back to Slack
+    # Post response back to Slack (connector auto-converts markdown to mrkdwn)
     if response_text.strip():
         try:
             connector = SlackConnector(organization_id=organization_id)
