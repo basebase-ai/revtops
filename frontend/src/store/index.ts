@@ -719,7 +719,7 @@ export const useAppStore = create<AppState>()(
             content,
           );
           let newLastIndex = chunkIndex;
-          let newPendingChunks = [...current.pendingChunks];
+          const newPendingChunks = [...current.pendingChunks];
 
           // Apply any buffered chunks that are now in sequence
           newPendingChunks.sort((a, b) => a.index - b.index);
