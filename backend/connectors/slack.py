@@ -25,7 +25,25 @@ def markdown_to_mrkdwn(text: str) -> str:
     - Italic: *text* → _text_ (when not already bold)
     - Links: [text](url) → <url|text>
     - Headers: # Header → *Header*
+    - Tables: Wrapped in code blocks (Slack doesn't support tables)
     """
+    # Convert markdown tables to code blocks (Slack doesn't support tables)
+    # Match table pattern: lines starting with | and containing |
+    table_pattern = r'((?:^\|.+\|$\n?)+)'
+    
+    def wrap_table_in_code_block(match: re.Match[str]) -> str:
+        table = match.group(1)
+        # Remove the separator row (|---|---|) as it's just visual noise in monospace
+        lines = table.strip().split('\n')
+        filtered_lines: list[str] = []
+        for line in lines:
+            # Skip separator rows like |---|---| or | --- | --- |
+            if not re.match(r'^\|[\s\-:]+\|$', line.strip()):
+                filtered_lines.append(line)
+        return '```\n' + '\n'.join(filtered_lines) + '\n```'
+    
+    text = re.sub(table_pattern, wrap_table_in_code_block, text, flags=re.MULTILINE)
+    
     # Convert bold: **text** → *text*
     text = re.sub(r'\*\*(.+?)\*\*', r'*\1*', text)
     
