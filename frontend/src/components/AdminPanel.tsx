@@ -425,7 +425,7 @@ export function AdminPanel(): JSX.Element {
   return (
     <div className="flex-1 overflow-y-auto">
       {/* Header */}
-      <header className="sticky top-0 bg-surface-950 border-b border-surface-800 px-8 py-6">
+      <header className="sticky top-0 z-10 bg-surface-950 border-b border-surface-800 px-8 py-6">
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-amber-500 to-orange-600 flex items-center justify-center">
             <svg className="w-5 h-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">

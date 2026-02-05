@@ -116,9 +116,10 @@ async def find_matching_meeting(
     
     Returns the matching Meeting or None if no match found.
     """
-    # Normalize to naive UTC datetime for database compatibility
+    # Convert to UTC then strip timezone for database compatibility
     if scheduled_start.tzinfo is not None:
-        scheduled_start = scheduled_start.replace(tzinfo=None)
+        from datetime import timezone
+        scheduled_start = scheduled_start.astimezone(timezone.utc).replace(tzinfo=None)
     
     time_window = timedelta(minutes=MEETING_TIME_WINDOW_MINUTES)
     start_min = scheduled_start - time_window
@@ -204,11 +205,12 @@ async def find_or_create_meeting(
     if isinstance(organization_id, str):
         organization_id = UUID(organization_id)
     
-    # Normalize datetimes to naive UTC for database compatibility
+    # Convert to UTC then strip timezone for database compatibility
+    from datetime import timezone as tz
     if scheduled_start.tzinfo is not None:
-        scheduled_start = scheduled_start.replace(tzinfo=None)
+        scheduled_start = scheduled_start.astimezone(tz.utc).replace(tzinfo=None)
     if scheduled_end is not None and scheduled_end.tzinfo is not None:
-        scheduled_end = scheduled_end.replace(tzinfo=None)
+        scheduled_end = scheduled_end.astimezone(tz.utc).replace(tzinfo=None)
     
     async with get_session(organization_id=str(organization_id)) as session:
         # Try to find existing meeting
