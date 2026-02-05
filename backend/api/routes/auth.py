@@ -16,7 +16,7 @@ Endpoints:
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, Response
@@ -1165,11 +1165,18 @@ async def disconnect_integration(
     provider: str,
     user_id: Optional[str] = None,
     organization_id: Optional[str] = None,
-) -> dict[str, str]:
+    delete_data: bool = False,
+) -> dict[str, Any]:
     """Disconnect an integration.
     
     For org-scoped integrations: disconnects the shared org connection.
     For user-scoped integrations: disconnects only the current user's connection.
+    
+    Args:
+        provider: The integration provider to disconnect
+        user_id: User ID (required for user-scoped integrations)
+        organization_id: Organization ID
+        delete_data: If True, also deletes all synced data (activities, orphaned meetings)
     """
     org_uuid: Optional[UUID] = None
     current_user_uuid: Optional[UUID] = None
@@ -1273,12 +1280,60 @@ async def disconnect_integration(
         else:
             print("Disconnect: No nango_connection_id, skipping Nango deletion")
 
+        # Optionally delete all synced data from this provider
+        deleted_activities = 0
+        deleted_meetings = 0
+        
+        if delete_data:
+            print(f"Disconnect: Deleting all data from source_system={provider}")
+            
+            # Map provider names to source_system values
+            # Some providers have different names in the activities table
+            source_system = provider
+            if provider == "google-calendar":
+                source_system = "google_calendar"
+            elif provider == "google-mail":
+                source_system = "gmail"
+            
+            from models.activity import Activity
+            from models.meeting import Meeting
+            
+            # Delete all activities from this source_system
+            result = await db_session.execute(
+                text("""
+                    DELETE FROM activities 
+                    WHERE organization_id = :org_id 
+                      AND source_system = :source_system
+                    RETURNING id
+                """),
+                {"org_id": str(org_uuid), "source_system": source_system}
+            )
+            deleted_activities = len(result.fetchall())
+            print(f"Disconnect: Deleted {deleted_activities} activities")
+            
+            # Clean up orphaned meetings (meetings with no linked activities)
+            result = await db_session.execute(
+                text("""
+                    DELETE FROM meetings
+                    WHERE organization_id = :org_id
+                      AND id NOT IN (SELECT DISTINCT meeting_id FROM activities WHERE meeting_id IS NOT NULL)
+                    RETURNING id
+                """),
+                {"org_id": str(org_uuid)}
+            )
+            deleted_meetings = len(result.fetchall())
+            print(f"Disconnect: Deleted {deleted_meetings} orphaned meetings")
+
         print(f"Disconnect: Deleting integration from database")
         await db_session.delete(integration)
         await db_session.commit()
         print(f"Disconnect: Database deletion successful")
 
-    return {"status": "disconnected", "provider": provider}
+    response: dict[str, Any] = {"status": "disconnected", "provider": provider}
+    if delete_data:
+        response["deleted_activities"] = deleted_activities
+        response["deleted_meetings"] = deleted_meetings
+    return response
 
 
 # =============================================================================

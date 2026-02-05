@@ -388,6 +388,13 @@ export function DataSources(): JSX.Element {
     }
     
     if (!confirm(`Are you sure you want to disconnect ${provider}?`)) return;
+    
+    // Ask if user wants to delete all synced data
+    const deleteData = confirm(
+      `Do you also want to delete all data synced from ${provider}?\n\n` +
+      `This includes activities, meetings, and other records imported from this integration.\n\n` +
+      `Click OK to delete data, or Cancel to keep the data.`
+    );
 
     // Set disconnecting state immediately for instant UI feedback
     setDisconnectingProviders((prev) => new Set(prev).add(provider));
@@ -395,6 +402,9 @@ export function DataSources(): JSX.Element {
     const params = new URLSearchParams({ organization_id: organizationId });
     if (isUserScoped && userId) {
       params.set('user_id', userId);
+    }
+    if (deleteData) {
+      params.set('delete_data', 'true');
     }
     const url = `${API_BASE}/auth/integrations/${provider}?${params.toString()}`;
     console.log('Disconnecting:', { provider, organizationId, userId, url });
@@ -413,6 +423,21 @@ export function DataSources(): JSX.Element {
 
       if (!response.ok) {
         throw new Error(responseText);
+      }
+
+      // Parse response to show deletion summary
+      try {
+        const data = JSON.parse(responseText) as { 
+          deleted_activities?: number; 
+          deleted_meetings?: number 
+        };
+        if (data.deleted_activities !== undefined || data.deleted_meetings !== undefined) {
+          const activities = data.deleted_activities ?? 0;
+          const meetings = data.deleted_meetings ?? 0;
+          alert(`Disconnected ${provider}.\n\nDeleted ${activities} activities and ${meetings} orphaned meetings.`);
+        }
+      } catch {
+        // Response wasn't JSON or didn't have deletion info, that's fine
       }
 
       console.log('Disconnect successful, invalidating integrations cache...');
