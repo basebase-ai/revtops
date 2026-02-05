@@ -10,6 +10,7 @@ Provides endpoints to:
 - Download artifacts as files
 - List artifacts in a conversation
 """
+import logging
 from typing import Optional
 from uuid import UUID
 
@@ -22,6 +23,8 @@ from api.auth_middleware import AuthContext, require_organization
 from models.artifact import Artifact
 from models.database import get_session
 from services.pdf_generator import generate_pdf
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -157,7 +160,15 @@ async def download_artifact(
         # Handle different content types
         if content_type == "pdf":
             # Generate PDF from markdown content
-            pdf_bytes: bytes = generate_pdf(artifact.content)
+            try:
+                pdf_bytes: bytes = generate_pdf(artifact.content)
+            except RuntimeError as exc:
+                logger.warning(
+                    "[Artifacts] PDF generation unavailable due to missing WeasyPrint system libraries",
+                    extra={"artifact_id": str(artifact.id), "user_id": str(auth.user_id)},
+                )
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
+
             return Response(
                 content=pdf_bytes,
                 media_type="application/pdf",

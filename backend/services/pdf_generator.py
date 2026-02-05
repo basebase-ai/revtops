@@ -10,10 +10,36 @@ import logging
 from typing import Optional
 
 import markdown
-from weasyprint import HTML, CSS
-from weasyprint.text.fonts import FontConfiguration
+
+try:
+    from weasyprint import CSS, HTML
+    from weasyprint.text.fonts import FontConfiguration
+    WEASYPRINT_IMPORT_ERROR: Exception | None = None
+except Exception as exc:  # pragma: no cover - environment dependent
+    CSS = HTML = FontConfiguration = None
+    WEASYPRINT_IMPORT_ERROR = exc
 
 logger = logging.getLogger(__name__)
+
+WEASYPRINT_INSTALL_HELP = (
+    "WeasyPrint is unavailable because required native libraries are missing. "
+    "Install dependencies from "
+    "https://doc.courtbouillon.org/weasyprint/stable/first_steps.html#installation "
+    "and troubleshooting at "
+    "https://doc.courtbouillon.org/weasyprint/stable/first_steps.html#troubleshooting."
+)
+
+
+def _ensure_weasyprint_available() -> None:
+    """Validate WeasyPrint imports succeeded before PDF generation."""
+    if WEASYPRINT_IMPORT_ERROR is None:
+        return
+
+    logger.error(
+        "[PDFGenerator] WeasyPrint import failed; PDF generation unavailable: %s",
+        WEASYPRINT_IMPORT_ERROR,
+    )
+    raise RuntimeError(WEASYPRINT_INSTALL_HELP) from WEASYPRINT_IMPORT_ERROR
 
 # Default CSS for PDF documents
 DEFAULT_PDF_CSS: str = """
@@ -213,7 +239,8 @@ def generate_pdf(
         PDF content as bytes
     """
     logger.info("[PDFGenerator] Starting PDF generation")
-    
+    _ensure_weasyprint_available()
+
     # Convert markdown to HTML
     html_content: str = markdown_to_html(markdown_content)
     
@@ -258,7 +285,8 @@ def generate_pdf_from_html(
         PDF content as bytes
     """
     logger.info("[PDFGenerator] Generating PDF from HTML")
-    
+    _ensure_weasyprint_available()
+
     # Combine default CSS with any custom CSS
     css_content: str = DEFAULT_PDF_CSS
     if custom_css:
