@@ -69,10 +69,39 @@ async def resolve_revtops_user_for_slack_actor(
     slack_user_id: str,
 ) -> User | None:
     """Resolve the RevTops user linked to a Slack actor in this organization."""
+    def _normalize_name(value: str | None) -> str:
+        """Normalize a person name for case-insensitive equality matching."""
+        if not value:
+            return ""
+        return " ".join(value.strip().lower().split())
+
     async with get_admin_session() as session:
         users_query = select(User).where(User.organization_id == UUID(organization_id))
         users_result = await session.execute(users_query)
         org_users = users_result.scalars().all()
+
+        # "Connected their Slack" can be represented by either user-scoped Slack
+        # integrations (user_id) or organization-scoped Slack integrations that were
+        # authorized by a specific user (connected_by_user_id).
+        integrations_query = (
+            select(Integration)
+            .where(Integration.organization_id == UUID(organization_id))
+            .where(Integration.provider == "slack")
+            .where(Integration.is_active == True)
+        )
+        integrations_result = await session.execute(integrations_query)
+        slack_integrations = integrations_result.scalars().all()
+
+    users_with_connected_slack: set[UUID] = {
+        integration.user_id
+        for integration in slack_integrations
+        if integration.user_id is not None
+    }
+    users_with_connected_slack.update(
+        integration.connected_by_user_id
+        for integration in slack_integrations
+        if integration.connected_by_user_id is not None
+    )
 
     if not org_users:
         logger.info(
@@ -87,10 +116,22 @@ async def resolve_revtops_user_for_slack_actor(
         slack_user = await connector.get_user_info(slack_user_id)
         profile = slack_user.get("profile", {})
         slack_email = (profile.get("email") or "").strip().lower()
+        slack_names = {
+            _normalize_name(slack_user.get("name")),
+            _normalize_name(slack_user.get("real_name")),
+            _normalize_name(profile.get("display_name")),
+            _normalize_name(profile.get("real_name")),
+            _normalize_name(profile.get("display_name_normalized")),
+            _normalize_name(profile.get("real_name_normalized")),
+        }
+        slack_names.discard("")
+
         logger.info(
-            "[slack_conversations] Slack user resolution lookup user=%s has_email=%s",
+            "[slack_conversations] Slack user resolution lookup user=%s has_email=%s candidate_names=%s users_with_connected_slack=%d",
             slack_user_id,
             bool(slack_email),
+            sorted(slack_names),
+            len(users_with_connected_slack),
         )
     except Exception as exc:
         logger.warning(
@@ -102,23 +143,51 @@ async def resolve_revtops_user_for_slack_actor(
         )
         return None
 
-    if not slack_email:
-        return None
+    # 1) email matching
+    if slack_email:
+        for user in org_users:
+            if user.email and user.email.strip().lower() == slack_email:
+                logger.info(
+                    "[slack_conversations] Matched Slack user=%s email=%s to RevTops user=%s",
+                    slack_user_id,
+                    slack_email,
+                    user.id,
+                )
+                return user
 
-    for user in org_users:
-        if user.email and user.email.strip().lower() == slack_email:
-            logger.info(
-                "[slack_conversations] Matched Slack user=%s email=%s to RevTops user=%s",
-                slack_user_id,
-                slack_email,
-                user.id,
-            )
-            return user
+        logger.info(
+            "[slack_conversations] No email match for Slack user=%s email=%s org=%s",
+            slack_user_id,
+            slack_email,
+            organization_id,
+        )
+
+    # 2) slack name matching for users who have connected Slack
+    if slack_names and users_with_connected_slack:
+        for user in org_users:
+            if user.id not in users_with_connected_slack:
+                continue
+
+            user_name = _normalize_name(user.name)
+            if user_name and user_name in slack_names:
+                logger.info(
+                    "[slack_conversations] Matched Slack user=%s by name=%s to connected RevTops user=%s",
+                    slack_user_id,
+                    user_name,
+                    user.id,
+                )
+                return user
+
+        logger.info(
+            "[slack_conversations] No connected Slack-name match for Slack user=%s org=%s candidate_names=%s",
+            slack_user_id,
+            organization_id,
+            sorted(slack_names),
+        )
 
     logger.info(
-        "[slack_conversations] No RevTops user email match for Slack user=%s email=%s org=%s",
+        "[slack_conversations] Failed to resolve RevTops user for Slack actor user=%s org=%s",
         slack_user_id,
-        slack_email,
         organization_id,
     )
     return None
