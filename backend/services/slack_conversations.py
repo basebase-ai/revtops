@@ -14,7 +14,7 @@ from sqlalchemy import select
 from agents.orchestrator import ChatOrchestrator
 from connectors.slack import SlackConnector
 from models.conversation import Conversation
-from models.database import get_session
+from models.database import get_admin_session, get_session
 from models.integration import Integration
 
 logger = logging.getLogger(__name__)
@@ -25,6 +25,7 @@ async def find_organization_by_slack_team(team_id: str) -> str | None:
     Find the organization ID for a Slack team/workspace.
     
     Matches the team_id to an active Slack integration's external data.
+    Uses admin session to bypass RLS since we don't know the org yet.
     
     Args:
         team_id: Slack workspace/team ID (e.g., "T04ABCDEF")
@@ -32,7 +33,7 @@ async def find_organization_by_slack_team(team_id: str) -> str | None:
     Returns:
         Organization ID string or None if not found
     """
-    async with get_session() as session:
+    async with get_admin_session() as session:
         # Find Slack integration with matching team_id in extra_data
         # The team_id is stored when the integration is connected via Nango
         query = (
