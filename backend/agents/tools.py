@@ -3318,7 +3318,7 @@ async def _create_artifact(
     # Create artifact in database
     artifact_id: str = str(uuid4())
     
-    async with get_session() as session:
+    async with get_session(organization_id=organization_id) as session:
         artifact = Artifact(
             id=artifact_id,
             user_id=user_id,
