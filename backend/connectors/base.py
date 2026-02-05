@@ -6,6 +6,7 @@ on demand and automatically refreshed.
 """
 
 from abc import ABC, abstractmethod
+import logging
 from typing import Any, Optional
 from uuid import UUID
 
@@ -15,6 +16,13 @@ from config import get_nango_integration_id
 from models.database import get_session
 from models.integration import Integration
 from services.nango import get_nango_client
+
+
+logger = logging.getLogger(__name__)
+
+
+class SyncCancelledError(RuntimeError):
+    """Raised when a sync should stop because the integration was disconnected."""
 
 
 class BaseConnector(ABC):
@@ -36,6 +44,52 @@ class BaseConnector(ABC):
         self._token: Optional[str] = None
         self._credentials: Optional[dict[str, Any]] = None
         self._integration: Optional[Integration] = None
+
+    async def ensure_sync_active(self, stage: str) -> None:
+        """Stop in-flight syncs when integration has been disconnected."""
+        async with get_session(organization_id=self.organization_id) as session:
+            conditions = [
+                Integration.organization_id == UUID(self.organization_id),
+                Integration.provider == self.source_system,
+            ]
+            if self.user_id:
+                conditions.append(Integration.user_id == UUID(self.user_id))
+            else:
+                conditions.append(Integration.user_id.is_(None))
+
+            result = await session.execute(select(Integration).where(*conditions))
+            integration = result.scalar_one_or_none()
+
+        if not integration:
+            logger.info(
+                "Sync cancelled because integration row is missing",
+                extra={
+                    "organization_id": self.organization_id,
+                    "provider": self.source_system,
+                    "user_id": self.user_id,
+                    "stage": stage,
+                },
+            )
+            raise SyncCancelledError(
+                f"{self.source_system} integration disconnected during sync ({stage})"
+            )
+
+        if not integration.is_active:
+            logger.info(
+                "Sync cancelled because integration was deactivated",
+                extra={
+                    "organization_id": self.organization_id,
+                    "provider": self.source_system,
+                    "integration_id": str(integration.id),
+                    "user_id": self.user_id,
+                    "stage": stage,
+                },
+            )
+            raise SyncCancelledError(
+                f"{self.source_system} integration deactivated during sync ({stage})"
+            )
+
+        self._integration = integration
 
     @abstractmethod
     async def sync_deals(self) -> int:
@@ -78,12 +132,19 @@ class BaseConnector(ABC):
         Returns:
             Dictionary with counts of synced records by type
         """
+        await self.ensure_sync_active("sync_all:start")
+
         # Sync pipelines first so deals can reference them
         pipelines_count = await self.sync_pipelines()
+        await self.ensure_sync_active("sync_all:after_pipelines")
         accounts_count = await self.sync_accounts()
+        await self.ensure_sync_active("sync_all:after_accounts")
         deals_count = await self.sync_deals()
+        await self.ensure_sync_active("sync_all:after_deals")
         contacts_count = await self.sync_contacts()
+        await self.ensure_sync_active("sync_all:after_contacts")
         activities_count = await self.sync_activities()
+        await self.ensure_sync_active("sync_all:after_activities")
 
         result: dict[str, int] = {
             "accounts": accounts_count,

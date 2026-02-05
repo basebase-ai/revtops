@@ -48,6 +48,7 @@ async def _sync_integration(organization_id: str, provider: str) -> dict[str, An
     from connectors.microsoft_calendar import MicrosoftCalendarConnector
     from connectors.microsoft_mail import MicrosoftMailConnector
     from connectors.salesforce import SalesforceConnector
+    from connectors.base import SyncCancelledError
     from connectors.slack import SlackConnector
     from services.embedding_sync import generate_embeddings_for_organization
     from workers.events import emit_event
@@ -104,6 +105,16 @@ async def _sync_integration(organization_id: str, provider: str) -> dict[str, An
             "organization_id": organization_id,
             "provider": provider,
             "counts": counts,
+        }
+
+    except SyncCancelledError as e:
+        cancel_msg = str(e)
+        logger.info(f"Sync cancelled for {provider} in org {organization_id}: {cancel_msg}")
+        return {
+            "status": "cancelled",
+            "organization_id": organization_id,
+            "provider": provider,
+            "error": cancel_msg,
         }
 
     except Exception as e:
