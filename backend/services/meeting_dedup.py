@@ -116,6 +116,11 @@ async def find_matching_meeting(
     
     Returns the matching Meeting or None if no match found.
     """
+    # Convert to UTC then strip timezone for database compatibility
+    if scheduled_start.tzinfo is not None:
+        from datetime import timezone
+        scheduled_start = scheduled_start.astimezone(timezone.utc).replace(tzinfo=None)
+    
     time_window = timedelta(minutes=MEETING_TIME_WINDOW_MINUTES)
     start_min = scheduled_start - time_window
     start_max = scheduled_start + time_window
@@ -200,7 +205,14 @@ async def find_or_create_meeting(
     if isinstance(organization_id, str):
         organization_id = UUID(organization_id)
     
-    async with get_session() as session:
+    # Convert to UTC then strip timezone for database compatibility
+    from datetime import timezone as tz
+    if scheduled_start.tzinfo is not None:
+        scheduled_start = scheduled_start.astimezone(tz.utc).replace(tzinfo=None)
+    if scheduled_end is not None and scheduled_end.tzinfo is not None:
+        scheduled_end = scheduled_end.astimezone(tz.utc).replace(tzinfo=None)
+    
+    async with get_session(organization_id=str(organization_id)) as session:
         # Try to find existing meeting
         meeting = await find_matching_meeting(
             session=session,
@@ -279,6 +291,7 @@ async def find_or_create_meeting(
 async def link_activity_to_meeting(
     activity_id: str | UUID,
     meeting_id: str | UUID,
+    organization_id: str | UUID | None = None,
 ) -> bool:
     """
     Link an activity to a meeting.
@@ -286,6 +299,7 @@ async def link_activity_to_meeting(
     Args:
         activity_id: Activity UUID to link
         meeting_id: Meeting UUID to link to
+        organization_id: Organization UUID for RLS context
     
     Returns:
         True if successful, False otherwise
@@ -295,8 +309,9 @@ async def link_activity_to_meeting(
     if isinstance(meeting_id, str):
         meeting_id = UUID(meeting_id)
     
+    org_id_str = str(organization_id) if organization_id else None
     try:
-        async with get_session() as session:
+        async with get_session(organization_id=org_id_str) as session:
             activity = await session.get(Activity, activity_id)
             if not activity:
                 logger.warning("Activity %s not found", activity_id)
@@ -312,7 +327,10 @@ async def link_activity_to_meeting(
         return False
 
 
-async def get_meeting_with_activities(meeting_id: str | UUID) -> dict[str, Any] | None:
+async def get_meeting_with_activities(
+    meeting_id: str | UUID,
+    organization_id: str | UUID | None = None,
+) -> dict[str, Any] | None:
     """
     Get a meeting with all its linked activities.
     
@@ -322,7 +340,8 @@ async def get_meeting_with_activities(meeting_id: str | UUID) -> dict[str, Any] 
     if isinstance(meeting_id, str):
         meeting_id = UUID(meeting_id)
     
-    async with get_session() as session:
+    org_id_str = str(organization_id) if organization_id else None
+    async with get_session(organization_id=org_id_str) as session:
         meeting = await session.get(Meeting, meeting_id)
         if not meeting:
             return None

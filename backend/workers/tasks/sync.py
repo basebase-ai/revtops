@@ -6,6 +6,14 @@ on a scheduled or on-demand basis.
 """
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+# Ensure backend directory is in Python path for Celery forked workers
+_backend_dir = Path(__file__).resolve().parent.parent.parent
+if str(_backend_dir) not in sys.path:
+    sys.path.insert(0, str(_backend_dir))
+
 import asyncio
 import logging
 from datetime import datetime
@@ -131,10 +139,11 @@ async def _sync_integration(organization_id: str, provider: str) -> dict[str, An
 async def _get_all_active_integrations() -> list[dict[str, str]]:
     """Get all active integrations across all organizations."""
     from sqlalchemy import select
-    from models.database import get_session
+    from models.database import get_admin_session
     from models.integration import Integration
 
-    async with get_session() as session:
+    # Use admin session to bypass RLS and query across all organizations
+    async with get_admin_session() as session:
         result = await session.execute(
             select(Integration).where(Integration.is_active == True)
         )

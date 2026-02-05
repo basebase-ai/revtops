@@ -5,18 +5,24 @@ Workflows allow users to create automated actions that:
 - Run on a schedule (cron-based)
 - Trigger on events (sync completed, deal created, etc.)
 - Execute a series of steps (query, LLM, notify, etc.)
+
+In the unified architecture, workflows are "scheduled prompts to the agent"
+and their execution is visible as a conversation.
 """
 from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, Index, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from models.database import Base
+
+if TYPE_CHECKING:
+    from models.conversation import Conversation
 
 
 class Workflow(Base):
@@ -61,14 +67,45 @@ class Workflow(Base):
         JSONB, nullable=False, default=dict
     )
 
-    # Workflow steps - ordered list of actions to execute
-    # Example:
-    # [
-    #   { "action": "query", "params": { "query": "all deals updated today" } },
-    #   { "action": "llm", "params": { "prompt": "Summarize these deals: {query_result}" } },
-    #   { "action": "send_email", "params": { "to": "user", "body": "{llm_output}" } }
-    # ]
+    # Legacy: Workflow steps - ordered list of actions to execute
+    # Deprecated in favor of prompt-based execution
+    # Kept for backward compatibility with existing workflows
     steps: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, nullable=False, default=list
+    )
+    
+    # NEW: Natural language prompt for the agent
+    # This replaces the rigid step definitions with flexible agent instructions
+    # Example: "Query deals that haven't had activity in 30 days, summarize the 
+    # top 5 at-risk deals, and post to #sales-alerts on Slack"
+    prompt: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    
+    # NEW: Tools pre-approved for this workflow (no user approval needed)
+    # Example: ["send_slack"] means agent can post to Slack without approval
+    # for THIS workflow only
+    auto_approve_tools: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, default=list
+    )
+    
+    # NEW: Typed input/output schemas for workflow composition
+    # input_schema: JSON Schema defining expected input parameters
+    # - null (default) = accepts any trigger_data, no validation
+    # - When defined: validates input, injects typed params into prompt
+    input_schema: Mapped[Optional[dict[str, Any]]] = mapped_column(
+        JSONB, nullable=True
+    )
+    
+    # output_schema: JSON Schema defining expected output format
+    # - null (default) = string/free-form response from agent
+    # - When defined: attempts to extract structured output
+    output_schema: Mapped[Optional[dict[str, Any]]] = mapped_column(
+        JSONB, nullable=True
+    )
+    
+    # child_workflows: List of workflow IDs this workflow can call
+    # At runtime, these are resolved to full metadata and injected into the prompt
+    # so the agent knows what workflows are available without needing to look them up
+    child_workflows: Mapped[list[str]] = mapped_column(
         JSONB, nullable=False, default=list
     )
 
@@ -96,6 +133,9 @@ class Workflow(Base):
         "WorkflowRun", back_populates="workflow", lazy="dynamic",
         cascade="all, delete-orphan", passive_deletes=True
     )
+    conversations: Mapped[list["Conversation"]] = relationship(
+        "Conversation", back_populates="workflow", lazy="dynamic"
+    )
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for API responses."""
@@ -108,6 +148,11 @@ class Workflow(Base):
             "trigger_type": self.trigger_type,
             "trigger_config": self.trigger_config,
             "steps": self.steps,
+            "prompt": self.prompt,
+            "auto_approve_tools": self.auto_approve_tools,
+            "input_schema": self.input_schema,
+            "output_schema": self.output_schema,
+            "child_workflows": self.child_workflows,
             "output_config": self.output_config,
             "is_enabled": self.is_enabled,
             "last_run_at": f"{self.last_run_at.isoformat()}Z" if self.last_run_at else None,
@@ -115,6 +160,11 @@ class Workflow(Base):
             "created_at": f"{self.created_at.isoformat()}Z",
             "updated_at": f"{self.updated_at.isoformat()}Z",
         }
+    
+    @property
+    def has_prompt(self) -> bool:
+        """Check if this workflow uses the new prompt-based execution."""
+        return bool(self.prompt and self.prompt.strip())
 
 
 class WorkflowRun(Base):

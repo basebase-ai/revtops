@@ -113,8 +113,15 @@ function App(): JSX.Element {
         const { data: { session } } = await supabase.auth.getSession();
 
         if (session?.user) {
-          // Always sync with backend to get fresh data (including avatar_url)
-          await handleAuthenticatedUser(session.user);
+          // If masquerading, preserve the masquerade state - don't overwrite with Supabase user
+          const masquerade = useAppStore.getState().masquerade;
+          if (masquerade) {
+            console.log('[Auth] Masquerade active, preserving masquerade state');
+            // Don't call handleAuthenticatedUser - keep the masqueraded user/org
+          } else {
+            // Always sync with backend to get fresh data (including avatar_url)
+            await handleAuthenticatedUser(session.user);
+          }
         } else if (!hasPersistedUser) {
           // No session and no persisted user - check legacy localStorage auth
           const storedUserId = localStorage.getItem('user_id');
@@ -147,6 +154,13 @@ function App(): JSX.Element {
         
         // Only handle actual sign-in/sign-out events, not token refreshes
         if (event === 'SIGNED_IN' && session?.user) {
+          // Skip if masquerading - don't overwrite masquerade state
+          const masquerade = useAppStore.getState().masquerade;
+          if (masquerade) {
+            console.log('[Auth] Masquerade active, ignoring SIGNED_IN event');
+            return;
+          }
+          
           // Skip if user is already authenticated (this is just a token refresh)
           const currentUser = useAppStore.getState().user;
           if (currentUser?.id === session.user.id) {

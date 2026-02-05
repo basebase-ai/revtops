@@ -6,6 +6,7 @@ import path from 'path';
 export default defineConfig({
   plugins: [react()],
   envDir: path.resolve(__dirname, '..'), // Read .env from project root
+  appType: 'spa', // Enable SPA fallback for client-side routing
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),

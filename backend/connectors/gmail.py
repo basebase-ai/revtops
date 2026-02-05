@@ -15,6 +15,7 @@ from typing import Any, Optional
 
 import httpx
 
+from api.websockets import broadcast_sync_progress
 from connectors.base import BaseConnector
 from models.activity import Activity
 from models.database import get_session
@@ -82,6 +83,14 @@ class GmailConnector(BaseConnector):
 
         messages: list[dict[str, Any]] = []
         page_token: Optional[str] = None
+        
+        # Broadcast that we're starting to fetch
+        await broadcast_sync_progress(
+            organization_id=self.organization_id,
+            provider=self.source_system,
+            count=0,
+            status="syncing",
+        )
 
         while len(messages) < max_results:
             params: dict[str, Any] = {
@@ -107,6 +116,15 @@ class GmailConnector(BaseConnector):
                     try:
                         full_msg = await self._get_message_detail(msg_id)
                         messages.append(full_msg)
+                        
+                        # Broadcast progress every 10 messages fetched
+                        if len(messages) % 10 == 0:
+                            await broadcast_sync_progress(
+                                organization_id=self.organization_id,
+                                provider=self.source_system,
+                                count=len(messages),
+                                status="syncing",
+                            )
                     except Exception as e:
                         print(f"Failed to fetch message {msg_id}: {e}")
 
@@ -150,8 +168,9 @@ class GmailConnector(BaseConnector):
             max_results=500,
         )
 
+        # Progress already broadcast during fetch phase
         count = 0
-        async with get_session() as session:
+        async with get_session(organization_id=self.organization_id) as session:
             for message in messages:
                 activity = self._normalize_message(message)
                 if activity:
@@ -259,6 +278,14 @@ class GmailConnector(BaseConnector):
     async def sync_all(self) -> dict[str, int]:
         """Run all sync operations."""
         activities_count = await self.sync_activities()
+
+        # Broadcast completion
+        await broadcast_sync_progress(
+            organization_id=self.organization_id,
+            provider=self.source_system,
+            count=activities_count,
+            status="completed",
+        )
 
         return {
             "accounts": 0,

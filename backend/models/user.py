@@ -17,6 +17,8 @@ if TYPE_CHECKING:
     from models.organization import Organization
     from models.deal import Deal
     from models.sheet_import import SheetImport
+    from models.user_tool_setting import UserToolSetting
+    from models.change_session import ChangeSession
 
 
 class User(Base):
@@ -62,9 +64,17 @@ class User(Base):
     organization: Mapped[Optional["Organization"]] = relationship(
         "Organization", back_populates="users", foreign_keys=[organization_id]
     )
-    deals: Mapped[list["Deal"]] = relationship("Deal", back_populates="owner")
+    deals: Mapped[list["Deal"]] = relationship(
+        "Deal", back_populates="owner", foreign_keys="Deal.owner_id"
+    )
     sheet_imports: Mapped[list["SheetImport"]] = relationship(
         "SheetImport", back_populates="user"
+    )
+    tool_settings: Mapped[list["UserToolSetting"]] = relationship(
+        "UserToolSetting", back_populates="user"
+    )
+    change_sessions: Mapped[list["ChangeSession"]] = relationship(
+        "ChangeSession", back_populates="user", foreign_keys="ChangeSession.user_id"
     )
 
     def to_dict(self) -> dict[str, Any]:

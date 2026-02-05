@@ -64,11 +64,18 @@ class Settings(BaseSettings):
     NANGO_FIREFLIES_INTEGRATION_ID: str = "fireflies"
     NANGO_ZOOM_INTEGRATION_ID: str = "zoom"
     NANGO_GOOGLE_SHEETS_INTEGRATION_ID: str = "google-sheet"
+    NANGO_APOLLO_INTEGRATION_ID: str = "apollo"
 
     # App
     SECRET_KEY: str = "dev-secret-change-in-production"
     ENVIRONMENT: str = "development"
     FRONTEND_URL: str = "http://localhost:5173"
+    
+    # Supabase configuration
+    # URL: Your Supabase project URL (e.g., https://xyz.supabase.co)
+    SUPABASE_URL: Optional[str] = None
+    # JWT Secret: Legacy HS256 secret (optional if using ES256)
+    SUPABASE_JWT_SECRET: Optional[str] = None
     
     # Admin
     ADMIN_KEY: Optional[str] = None  # Simple admin auth for MVP
@@ -81,6 +88,9 @@ class Settings(BaseSettings):
     TWILIO_ACCOUNT_SID: Optional[str] = None
     TWILIO_AUTH_TOKEN: Optional[str] = None
     TWILIO_PHONE_NUMBER: Optional[str] = None  # E.164 format, e.g., +14155551234
+    
+    # Slack Events API (for receiving DMs)
+    SLACK_SIGNING_SECRET: Optional[str] = None
 
     class Config:
         env_file = str(_env_file)
@@ -103,6 +113,7 @@ NANGO_INTEGRATION_IDS: dict[str, str] = {
     "fireflies": settings.NANGO_FIREFLIES_INTEGRATION_ID,
     "zoom": settings.NANGO_ZOOM_INTEGRATION_ID,
     "google_sheets": settings.NANGO_GOOGLE_SHEETS_INTEGRATION_ID,
+    "apollo": settings.NANGO_APOLLO_INTEGRATION_ID,
 }
 
 # Provider scope mapping: which integrations are user-scoped vs org-scoped
@@ -119,6 +130,7 @@ PROVIDER_SCOPES: dict[str, str] = {
     "fireflies": "user",
     "zoom": "user",
     "google_sheets": "user",
+    "apollo": "organization",
 }
 
 

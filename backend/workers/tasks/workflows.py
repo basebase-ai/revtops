@@ -8,7 +8,17 @@ These tasks handle:
 """
 from __future__ import annotations
 
+import os
+import sys
+from pathlib import Path
+
+# Ensure backend directory is in Python path for Celery forked workers
+_backend_dir = Path(__file__).resolve().parent.parent.parent
+if str(_backend_dir) not in sys.path:
+    sys.path.insert(0, str(_backend_dir))
+
 import asyncio
+import json
 import logging
 from datetime import datetime
 from typing import Any
@@ -17,6 +27,309 @@ from uuid import UUID
 from workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# Schema Validation and Parameter Formatting
+# =============================================================================
+
+def validate_workflow_input(
+    input_data: dict[str, Any] | None,
+    input_schema: dict[str, Any] | None,
+) -> tuple[bool, str | None]:
+    """
+    Validate input data against the workflow's input schema.
+    
+    Returns:
+        (is_valid, error_message) - error_message is None if valid
+    """
+    if input_schema is None:
+        # No schema defined = accept anything
+        return True, None
+    
+    if input_data is None:
+        input_data = {}
+    
+    try:
+        import jsonschema
+        jsonschema.validate(instance=input_data, schema=input_schema)
+        return True, None
+    except jsonschema.ValidationError as e:
+        return False, f"Input validation failed: {e.message}"
+    except jsonschema.SchemaError as e:
+        logger.error(f"Invalid input_schema: {e}")
+        return True, None  # Don't fail on bad schema, just skip validation
+
+
+def format_typed_parameters(
+    input_data: dict[str, Any] | None,
+    input_schema: dict[str, Any] | None,
+) -> str | None:
+    """
+    Format input data as typed parameters for injection into the prompt.
+    
+    Returns a formatted string like:
+    
+    Input parameters:
+    - email (string, required): "john@acme.com"
+    - company_domain (string, optional): "acme.com"
+    - contact_id (uuid, optional): not provided
+    
+    Returns None if no schema is defined.
+    """
+    if input_schema is None:
+        return None
+    
+    if input_data is None:
+        input_data = {}
+    
+    properties: dict[str, Any] = input_schema.get("properties", {})
+    required: list[str] = input_schema.get("required", [])
+    
+    if not properties:
+        return None
+    
+    lines: list[str] = ["Input parameters:"]
+    
+    for prop_name, prop_schema in properties.items():
+        prop_type = prop_schema.get("type", "any")
+        prop_format = prop_schema.get("format")
+        is_required = prop_name in required
+        
+        # Build type string
+        type_str = prop_type
+        if prop_format:
+            type_str = prop_format
+        
+        req_str = "required" if is_required else "optional"
+        
+        # Get value
+        if prop_name in input_data:
+            value = input_data[prop_name]
+            if isinstance(value, str):
+                value_str = f'"{value}"'
+            else:
+                value_str = json.dumps(value)
+        else:
+            value_str = "not provided"
+        
+        lines.append(f"- {prop_name} ({type_str}, {req_str}): {value_str}")
+    
+    return "\n".join(lines)
+
+
+async def resolve_child_workflows(
+    child_workflow_ids: list[str],
+    organization_id: str,
+) -> list[dict[str, Any]]:
+    """
+    Resolve child workflow IDs to full metadata for prompt injection.
+    
+    Returns a list of workflow info dicts with id, name, description, 
+    input_schema, and output_schema.
+    """
+    if not child_workflow_ids:
+        return []
+    
+    from sqlalchemy import select
+    from models.database import get_session
+    from models.workflow import Workflow
+    
+    resolved: list[dict[str, Any]] = []
+    
+    async with get_session(organization_id=organization_id) as session:
+        for wf_id in child_workflow_ids:
+            try:
+                result = await session.execute(
+                    select(Workflow).where(Workflow.id == UUID(wf_id))
+                )
+                workflow = result.scalar_one_or_none()
+                
+                if workflow and workflow.is_enabled:
+                    resolved.append({
+                        "id": str(workflow.id),
+                        "name": workflow.name,
+                        "description": workflow.description,
+                        "input_schema": workflow.input_schema,
+                        "output_schema": workflow.output_schema,
+                    })
+            except Exception as e:
+                logger.warning(f"Failed to resolve child workflow {wf_id}: {e}")
+    
+    return resolved
+
+
+def format_child_workflows_for_prompt(child_workflows: list[dict[str, Any]]) -> str | None:
+    """
+    Format resolved child workflows as instructions for the agent.
+    
+    Returns a string like:
+    
+    Available child workflows (use with run_workflow or loop_over):
+    
+    1. "Enrich Single Contact" (id: 9645564e-...)
+       Input: {email: string (required), first_name: string}
+       Output: {enriched: boolean, company_name: string}
+    """
+    if not child_workflows:
+        return None
+    
+    lines: list[str] = [
+        "Available child workflows (use with run_workflow or loop_over):",
+        "",
+    ]
+    
+    for i, wf in enumerate(child_workflows, 1):
+        lines.append(f'{i}. "{wf["name"]}" (id: {wf["id"]})')
+        
+        if wf.get("description"):
+            lines.append(f'   Description: {wf["description"]}')
+        
+        # Format input schema
+        input_schema = wf.get("input_schema")
+        if input_schema and input_schema.get("properties"):
+            props = input_schema["properties"]
+            required = input_schema.get("required", [])
+            prop_strs: list[str] = []
+            for prop_name, prop_def in props.items():
+                prop_type = prop_def.get("type", "any")
+                req_str = " (required)" if prop_name in required else ""
+                prop_strs.append(f"{prop_name}: {prop_type}{req_str}")
+            lines.append(f'   Input: {{{", ".join(prop_strs)}}}')
+        else:
+            lines.append("   Input: any object")
+        
+        # Format output schema
+        output_schema = wf.get("output_schema")
+        if output_schema and output_schema.get("properties"):
+            props = output_schema["properties"]
+            prop_strs = [f"{k}: {v.get('type', 'any')}" for k, v in props.items()]
+            lines.append(f'   Output: {{{", ".join(prop_strs)}}}')
+        else:
+            lines.append("   Output: string")
+        
+        lines.append("")  # Blank line between workflows
+    
+    return "\n".join(lines)
+
+
+def format_output_schema_instruction(output_schema: dict[str, Any] | None) -> str | None:
+    """
+    Format output schema as instructions for the agent.
+    
+    Returns a string like:
+    
+    Expected output format (JSON):
+    {
+      "enriched": boolean,
+      "company_name": string,
+      "linkedin_url": string
+    }
+    
+    Returns None if no schema is defined.
+    """
+    if output_schema is None:
+        return None
+    
+    # Simple case: primitive type
+    schema_type = output_schema.get("type")
+    if schema_type in ("string", "number", "boolean", "integer"):
+        return f"Expected output: Return a {schema_type} value."
+    
+    # Object type: format properties
+    if schema_type == "object":
+        properties = output_schema.get("properties", {})
+        if not properties:
+            return "Expected output: Return a JSON object."
+        
+        lines: list[str] = ["Expected output format (return as JSON):"]
+        lines.append("{")
+        
+        prop_lines: list[str] = []
+        for prop_name, prop_schema in properties.items():
+            prop_type = prop_schema.get("type", "any")
+            prop_desc = prop_schema.get("description", "")
+            desc_str = f"  // {prop_desc}" if prop_desc else ""
+            prop_lines.append(f'  "{prop_name}": {prop_type}{desc_str}')
+        
+        lines.append(",\n".join(prop_lines))
+        lines.append("}")
+        
+        return "\n".join(lines)
+    
+    # Array or complex type: just show the schema
+    return f"Expected output format:\n```json\n{json.dumps(output_schema, indent=2)}\n```"
+
+
+def extract_structured_output(response_text: str) -> dict[str, Any] | None:
+    """
+    Extract structured JSON output from agent response text.
+    
+    Looks for JSON in the following order:
+    1. ```json ... ``` code blocks (last one takes precedence)
+    2. Bare {...} at the end of the response
+    
+    Returns the parsed dict or None if no valid JSON found.
+    """
+    import re
+    
+    if not response_text:
+        return None
+    
+    # 1. Look for ```json ... ``` blocks (take the last one)
+    json_block_pattern = r'```json\s*([\s\S]*?)\s*```'
+    matches = re.findall(json_block_pattern, response_text)
+    
+    if matches:
+        # Try the last match first (most likely to be the final output)
+        for match in reversed(matches):
+            try:
+                parsed = json.loads(match.strip())
+                if isinstance(parsed, dict):
+                    return parsed
+            except json.JSONDecodeError:
+                continue
+    
+    # 2. Look for bare JSON object at end of response
+    # Find the last {...} in the text
+    brace_pattern = r'\{[^{}]*\}'
+    brace_matches = re.findall(brace_pattern, response_text)
+    
+    if brace_matches:
+        # Try the last match
+        try:
+            parsed = json.loads(brace_matches[-1])
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError:
+            pass
+    
+    # 3. Try nested JSON objects (more complex patterns)
+    # Look for JSON that might span multiple lines at the end
+    last_brace = response_text.rfind('}')
+    if last_brace != -1:
+        # Find matching opening brace
+        depth = 0
+        start_idx = -1
+        for i in range(last_brace, -1, -1):
+            if response_text[i] == '}':
+                depth += 1
+            elif response_text[i] == '{':
+                depth -= 1
+                if depth == 0:
+                    start_idx = i
+                    break
+        
+        if start_idx != -1:
+            try:
+                json_str = response_text[start_idx:last_brace + 1]
+                parsed = json.loads(json_str)
+                if isinstance(parsed, dict):
+                    return parsed
+            except json.JSONDecodeError:
+                pass
+    
+    return None
 
 
 def run_async(coro: Any) -> Any:
@@ -37,14 +350,15 @@ async def _check_scheduled_workflows() -> dict[str, Any]:
     that are due to run.
     """
     from sqlalchemy import select, and_
-    from models.database import get_session
+    from models.database import get_admin_session
     from models.workflow import Workflow
     from croniter import croniter
     
     now = datetime.utcnow()
     triggered: list[str] = []
     
-    async with get_session() as session:
+    # Admin session: iterates across ALL organizations' workflows
+    async with get_admin_session() as session:
         # Get all enabled scheduled workflows
         result = await session.execute(
             select(Workflow).where(
@@ -69,7 +383,13 @@ async def _check_scheduled_workflows() -> dict[str, Any]:
                 
                 if next_run <= now:
                     # Queue workflow for execution
-                    execute_workflow.delay(str(workflow.id), "schedule")
+                    execute_workflow.delay(
+                        str(workflow.id), 
+                        "schedule", 
+                        None, 
+                        None, 
+                        str(workflow.organization_id)
+                    )
                     triggered.append(str(workflow.id))
                     
                     # Update last_run_at
@@ -92,7 +412,7 @@ async def _process_pending_events() -> dict[str, Any]:
     Process pending events and trigger matching workflows.
     """
     from sqlalchemy import select, and_
-    from models.database import get_session
+    from models.database import get_admin_session
     from models.workflow import Workflow
     from workers.events import get_pending_events
     
@@ -102,7 +422,8 @@ async def _process_pending_events() -> dict[str, Any]:
     
     triggered: list[dict[str, str]] = []
     
-    async with get_session() as session:
+    # Admin session: iterates across events from ALL organizations
+    async with get_admin_session() as session:
         for event in events:
             event_type = event["type"]
             org_id = event["organization_id"]
@@ -127,6 +448,8 @@ async def _process_pending_events() -> dict[str, Any]:
                         str(workflow.id),
                         f"event:{event_type}",
                         event["data"],
+                        None,  # conversation_id
+                        org_id,  # organization_id for RLS
                     )
                     triggered.append({
                         "workflow_id": str(workflow.id),
@@ -143,24 +466,30 @@ async def _execute_workflow(
     workflow_id: str,
     triggered_by: str,
     trigger_data: dict[str, Any] | None = None,
+    conversation_id: str | None = None,
+    organization_id: str | None = None,
 ) -> dict[str, Any]:
     """
-    Execute a workflow and its steps.
+    Execute a workflow by creating a conversation and sending the prompt to the agent.
     
-    This is the main workflow execution engine that:
-    1. Loads the workflow definition
-    2. Creates a WorkflowRun record
-    3. Executes each step in sequence
-    4. Records results and handles errors
+    NEW ARCHITECTURE (Phase 5): Workflows are "scheduled prompts to the agent".
+    Instead of a rigid step-by-step execution engine, workflows:
+    1. Create a conversation (type='workflow') - or use pre-created one
+    2. Send the workflow prompt to the agent
+    3. Agent uses tools to accomplish the task
+    4. If agent hits an approval-required tool, conversation pauses
+    5. Full execution is visible as a chat conversation
+    
+    For backward compatibility, workflows without a prompt fall back to legacy execution.
     """
     from sqlalchemy import select
     from models.database import get_session
+    from models.conversation import Conversation
     from models.workflow import Workflow, WorkflowRun
     
     started_at = datetime.utcnow()
-    steps_completed: list[dict[str, Any]] = []
     
-    async with get_session() as session:
+    async with get_session(organization_id=organization_id) as session:
         # Load workflow
         result = await session.execute(
             select(Workflow).where(Workflow.id == UUID(workflow_id))
@@ -192,64 +521,301 @@ async def _execute_workflow(
         await session.flush()
         run_id = run.id
         
-        try:
-            # Execute each step
-            context: dict[str, Any] = {
-                "trigger_data": trigger_data or {},
-                "organization_id": str(workflow.organization_id),
-                "workflow_id": workflow_id,
-            }
-            
-            for i, step in enumerate(workflow.steps):
-                step_result = await _execute_step(step, context, workflow)
-                steps_completed.append({
-                    "step_index": i,
-                    "action": step.get("action"),
-                    "result": step_result,
-                })
+        # Check if this workflow uses the new prompt-based execution
+        if workflow.prompt and workflow.prompt.strip():
+            # NEW: Execute via agent conversation
+            try:
+                result = await _execute_workflow_via_agent(
+                    workflow=workflow,
+                    run=run,
+                    triggered_by=triggered_by,
+                    trigger_data=trigger_data,
+                    session=session,
+                    existing_conversation_id=conversation_id,
+                )
+                return result
+            except Exception as e:
+                error_msg = str(e)
+                logger.error(f"Workflow {workflow_id} agent execution failed: {error_msg}")
                 
-                # Pass step output to next step
-                context[f"step_{i}_output"] = step_result
+                run.status = "failed"
+                run.error_message = error_msg
+                run.completed_at = datetime.utcnow()
+                await session.commit()
                 
-                if step_result.get("status") == "failed":
-                    raise Exception(step_result.get("error", "Step failed"))
-            
-            # Update run as completed
-            run.status = "completed"
-            run.steps_completed = steps_completed
-            run.completed_at = datetime.utcnow()
-            
-            # Update workflow last_run_at
-            workflow.last_run_at = datetime.utcnow()
-            
-            await session.commit()
-            
-            logger.info(f"Workflow {workflow_id} completed successfully")
-            return {
-                "status": "completed",
-                "workflow_id": workflow_id,
-                "run_id": str(run_id),
-                "steps_completed": len(steps_completed),
-            }
-            
-        except Exception as e:
-            error_msg = str(e)
-            logger.error(f"Workflow {workflow_id} failed: {error_msg}")
-            
+                return {
+                    "status": "failed",
+                    "workflow_id": workflow_id,
+                    "run_id": str(run_id),
+                    "error": error_msg,
+                }
+        
+        # LEGACY: Fall back to step-by-step execution for workflows without prompts
+        return await _execute_workflow_legacy(workflow, run, trigger_data, session)
+
+
+async def _execute_workflow_via_agent(
+    workflow: Any,
+    run: Any,
+    triggered_by: str,
+    trigger_data: dict[str, Any] | None,
+    session: Any,
+    existing_conversation_id: str | None = None,
+) -> dict[str, Any]:
+    """
+    Execute a workflow by sending its prompt to the agent.
+    
+    This creates a conversation visible in the chat UI, allowing users
+    to see exactly what the agent did and intervene if needed.
+    """
+    from sqlalchemy import select
+    from agents.orchestrator import ChatOrchestrator
+    from models.conversation import Conversation
+    
+    # Extract parent_conversation_id from trigger_data if this is a child workflow
+    parent_conversation_id: UUID | None = None
+    if trigger_data and "_parent_context" in trigger_data:
+        parent_context = trigger_data["_parent_context"]
+        parent_conv_id_str = parent_context.get("parent_conversation_id")
+        if parent_conv_id_str:
+            try:
+                parent_conversation_id = UUID(parent_conv_id_str)
+            except ValueError:
+                logger.warning(f"Invalid parent_conversation_id: {parent_conv_id_str}")
+    
+    # Use existing conversation or create a new one
+    if existing_conversation_id:
+        # Load the pre-created conversation
+        result = await session.execute(
+            select(Conversation).where(Conversation.id == UUID(existing_conversation_id))
+        )
+        conversation = result.scalar_one_or_none()
+        if not conversation:
+            # Fallback to creating new if not found
+            conversation = Conversation(
+                user_id=workflow.created_by_user_id,
+                organization_id=workflow.organization_id,
+                type="workflow",
+                workflow_id=workflow.id,
+                title=f"Workflow: {workflow.name}",
+                parent_conversation_id=parent_conversation_id,
+            )
+            session.add(conversation)
+            await session.flush()
+    else:
+        # Create a new workflow conversation
+        conversation = Conversation(
+            user_id=workflow.created_by_user_id,
+            organization_id=workflow.organization_id,
+            type="workflow",
+            workflow_id=workflow.id,
+            title=f"Workflow: {workflow.name}",
+            parent_conversation_id=parent_conversation_id,
+        )
+        session.add(conversation)
+        await session.flush()
+    
+    # IMPORTANT: Commit the conversation so the orchestrator's separate session can see it
+    # The orchestrator uses its own sessions for saving messages, which won't see uncommitted data
+    await session.commit()
+    
+    # Set conversation_id in output early so UI can link to it while running
+    run.output = {"conversation_id": str(conversation.id)}
+    await session.commit()
+    
+    logger.info(
+        f"[Workflow] Starting agent execution for workflow {workflow.id} "
+        f"conversation {conversation.id}"
+    )
+    
+    # Extract user-facing trigger data (filter out internal context)
+    user_trigger_data: dict[str, Any] | None = None
+    if trigger_data:
+        user_trigger_data = {
+            k: v for k, v in trigger_data.items() 
+            if not k.startswith("_")  # Exclude internal keys like _parent_context
+        }
+    
+    # Validate input against schema if defined
+    input_schema: dict[str, Any] | None = getattr(workflow, "input_schema", None)
+    output_schema: dict[str, Any] | None = getattr(workflow, "output_schema", None)
+    
+    if input_schema is not None:
+        is_valid, error_msg = validate_workflow_input(user_trigger_data, input_schema)
+        if not is_valid:
             run.status = "failed"
             run.error_message = error_msg
-            run.steps_completed = steps_completed
             run.completed_at = datetime.utcnow()
-            
             await session.commit()
-            
             return {
                 "status": "failed",
-                "workflow_id": workflow_id,
-                "run_id": str(run_id),
+                "workflow_id": str(workflow.id),
+                "run_id": str(run.id),
                 "error": error_msg,
-                "steps_completed": len(steps_completed),
             }
+    
+    # Build the prompt with typed parameters or raw trigger data
+    prompt = workflow.prompt
+    
+    # If schema is defined, inject typed parameters; otherwise use raw trigger data
+    typed_params = format_typed_parameters(user_trigger_data, input_schema)
+    if typed_params:
+        prompt += f"\n\n{typed_params}"
+    elif user_trigger_data:
+        prompt += f"\n\nTrigger data: {user_trigger_data}"
+    
+    # Add output format instructions if schema is defined
+    output_instruction = format_output_schema_instruction(output_schema)
+    if output_instruction:
+        prompt += f"\n\n{output_instruction}"
+    
+    # Resolve and inject child workflows
+    child_workflow_ids: list[str] = getattr(workflow, "child_workflows", []) or []
+    if child_workflow_ids:
+        resolved_children = await resolve_child_workflows(
+            child_workflow_ids, 
+            str(workflow.organization_id)
+        )
+        child_workflows_text = format_child_workflows_for_prompt(resolved_children)
+        if child_workflows_text:
+            prompt += f"\n\n{child_workflows_text}"
+    
+    # Extract call_stack from parent context for recursion detection
+    call_stack: list[str] = []
+    if trigger_data and "_parent_context" in trigger_data:
+        parent_context = trigger_data["_parent_context"]
+        call_stack = parent_context.get("call_stack", [])
+    
+    # Create orchestrator with workflow context for auto-approvals
+    workflow_context: dict[str, Any] = {
+        "is_workflow": True,
+        "workflow_id": str(workflow.id),
+        "auto_approve_tools": workflow.auto_approve_tools or [],
+        "call_stack": call_stack,  # For nested workflow recursion detection
+    }
+    
+    orchestrator = ChatOrchestrator(
+        user_id=str(workflow.created_by_user_id),
+        organization_id=str(workflow.organization_id),
+        conversation_id=str(conversation.id),
+        workflow_context=workflow_context,
+    )
+    
+    # Process the prompt (this streams through the agent)
+    # Since we're in a background worker, we consume the generator fully
+    response_text = ""
+    async for chunk in orchestrator.process_message(prompt, save_user_message=True):
+        # Collect text chunks (JSON chunks are tool events)
+        if not chunk.startswith("{"):
+            response_text += chunk
+    
+    # Extract structured output from response if output_schema is defined
+    structured_output: dict[str, Any] | None = None
+    if output_schema is not None:
+        structured_output = extract_structured_output(response_text)
+        if structured_output:
+            logger.info(f"[Workflow] Extracted structured output: {structured_output}")
+    
+    # Update run record
+    run.status = "completed"
+    run.output = {
+        "conversation_id": str(conversation.id),
+        "response_preview": response_text[:500] if response_text else None,
+        "structured_output": structured_output,
+    }
+    run.completed_at = datetime.utcnow()
+    
+    # Update workflow last_run_at
+    workflow.last_run_at = datetime.utcnow()
+    
+    await session.commit()
+    
+    logger.info(f"[Workflow] Completed workflow {workflow.id} via agent")
+    
+    return {
+        "status": "completed",
+        "workflow_id": str(workflow.id),
+        "run_id": str(run.id),
+        "conversation_id": str(conversation.id),
+        "execution_type": "agent",
+        "structured_output": structured_output,
+    }
+
+
+async def _execute_workflow_legacy(
+    workflow: Any,
+    run: Any,
+    trigger_data: dict[str, Any] | None,
+    session: Any,
+) -> dict[str, Any]:
+    """
+    Legacy step-by-step workflow execution.
+    
+    This is kept for backward compatibility with existing workflows
+    that use the steps[] array instead of the new prompt field.
+    """
+    steps_completed: list[dict[str, Any]] = []
+    
+    try:
+        # Execute each step
+        context: dict[str, Any] = {
+            "trigger_data": trigger_data or {},
+            "organization_id": str(workflow.organization_id),
+            "workflow_id": str(workflow.id),
+        }
+        
+        for i, step in enumerate(workflow.steps):
+            step_result = await _execute_step(step, context, workflow)
+            steps_completed.append({
+                "step_index": i,
+                "action": step.get("action"),
+                "result": step_result,
+            })
+            
+            # Pass step output to next step
+            context[f"step_{i}_output"] = step_result
+            
+            if step_result.get("status") == "failed":
+                raise Exception(step_result.get("error", "Step failed"))
+        
+        # Update run as completed
+        run.status = "completed"
+        run.steps_completed = steps_completed
+        run.completed_at = datetime.utcnow()
+        
+        # Update workflow last_run_at
+        workflow.last_run_at = datetime.utcnow()
+        
+        await session.commit()
+        
+        logger.info(f"[Workflow] Completed legacy workflow {workflow.id}")
+        return {
+            "status": "completed",
+            "workflow_id": str(workflow.id),
+            "run_id": str(run.id),
+            "steps_completed": len(steps_completed),
+            "execution_type": "legacy",
+        }
+        
+    except Exception as e:
+        error_msg = str(e)
+        logger.error(f"[Workflow] Legacy workflow {workflow.id} failed: {error_msg}")
+        
+        run.status = "failed"
+        run.error_message = error_msg
+        run.steps_completed = steps_completed
+        run.completed_at = datetime.utcnow()
+        
+        await session.commit()
+        
+        return {
+            "status": "failed",
+            "workflow_id": str(workflow.id),
+            "run_id": str(run.id),
+            "error": error_msg,
+            "steps_completed": len(steps_completed),
+            "execution_type": "legacy",
+        }
 
 
 async def _execute_step(
@@ -260,6 +826,10 @@ async def _execute_step(
     """
     Execute a single workflow step.
     
+    DEPRECATED: This is the legacy step-by-step execution engine.
+    New workflows should use the prompt field for agent-based execution.
+    This function is kept for backward compatibility with existing workflows.
+    
     Supported actions:
     - query: Query data from the database
     - llm: Call an LLM for processing
@@ -267,6 +837,12 @@ async def _execute_step(
     - send_slack: Post to Slack
     - sync: Trigger a data sync
     """
+    import warnings
+    warnings.warn(
+        "Legacy workflow step execution is deprecated. "
+        "Use prompt-based workflows for new automations.",
+        DeprecationWarning,
+    )
     action = step.get("action")
     params = step.get("params", {})
     
@@ -359,7 +935,7 @@ async def _action_run_query(
             }
     
     try:
-        async with get_session() as session:
+        async with get_session(organization_id=org_id) as session:
             # Execute with org_id parameter always available
             result = await session.execute(
                 text(sql),
@@ -518,9 +1094,11 @@ async def _action_send_slack(
                 # Also support {previous_output} as alias for last step
                 message = message.replace("{previous_output}", str(output_text))
     
+    # Note: SlackConnector.post_message auto-converts markdown to mrkdwn
+    
     try:
         # Get the Slack integration for this org
-        async with get_session() as session:
+        async with get_session(organization_id=org_id) as session:
             result = await session.execute(
                 select(Integration).where(
                     and_(
@@ -752,7 +1330,7 @@ async def _action_send_email_from(
             body = body.replace(f"{{{key}}}", output_str)
     
     try:
-        async with get_session() as session:
+        async with get_session(organization_id=org_id) as session:
             # Find the user's email integration
             query = select(Integration).where(
                 and_(
@@ -847,6 +1425,8 @@ def execute_workflow(
     workflow_id: str,
     triggered_by: str,
     trigger_data: dict[str, Any] | None = None,
+    conversation_id: str | None = None,
+    organization_id: str | None = None,
 ) -> dict[str, Any]:
     """
     Celery task to execute a workflow.
@@ -855,9 +1435,11 @@ def execute_workflow(
         workflow_id: UUID of the workflow to execute
         triggered_by: What triggered this execution (e.g., 'schedule', 'event:sync.completed')
         trigger_data: Optional data from the trigger event
+        conversation_id: Optional pre-created conversation ID (for immediate navigation)
+        organization_id: Organization ID for RLS context (required for proper security)
     
     Returns:
         Execution result with status and any errors
     """
     logger.info(f"Task {self.request.id}: Executing workflow {workflow_id}")
-    return run_async(_execute_workflow(workflow_id, triggered_by, trigger_data))
+    return run_async(_execute_workflow(workflow_id, triggered_by, trigger_data, conversation_id, organization_id))

@@ -10,7 +10,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { API_BASE } from '../lib/api';
 import { useAppStore, type UserProfile, type OrganizationInfo } from '../store';
 
-type AdminTab = 'waitlist' | 'users' | 'organizations';
+type AdminTab = 'waitlist' | 'users' | 'organizations' | 'sources';
 
 interface WaitlistEntry {
   id: string;
@@ -50,6 +50,18 @@ interface AdminOrganization {
   last_sync_at: string | null;
 }
 
+interface AdminIntegration {
+  id: string;
+  organization_id: string;
+  organization_name: string;
+  provider: string;
+  is_active: boolean;
+  last_sync_at: string | null;
+  last_error: string | null;
+  sync_stats: Record<string, number> | null;
+  created_at: string | null;
+}
+
 export function AdminPanel(): JSX.Element {
   const user = useAppStore((state) => state.user);
   const startMasquerade = useAppStore((state) => state.startMasquerade);
@@ -73,6 +85,16 @@ export function AdminPanel(): JSX.Element {
   const [orgsLoading, setOrgsLoading] = useState<boolean>(true);
   const [orgsError, setOrgsError] = useState<string | null>(null);
   const [orgSearch, setOrgSearch] = useState<string>('');
+
+  // Sources tab state
+  const [adminIntegrations, setAdminIntegrations] = useState<AdminIntegration[]>([]);
+  const [integrationsLoading, setIntegrationsLoading] = useState<boolean>(true);
+  const [integrationsError, setIntegrationsError] = useState<string | null>(null);
+  const [sourceSearch, setSourceSearch] = useState<string>('');
+
+  // Global sync state
+  const [syncing, setSyncing] = useState<boolean>(false);
+  const [syncResult, setSyncResult] = useState<{ status: string; taskId: string; count: number } | null>(null);
 
   const fetchWaitlist = useCallback(async (): Promise<void> => {
     if (!user) return;
@@ -167,6 +189,37 @@ export function AdminPanel(): JSX.Element {
     }
   }, [user]);
 
+  const fetchIntegrations = useCallback(async (): Promise<void> => {
+    if (!user) return;
+    
+    setIntegrationsLoading(true);
+    setIntegrationsError(null);
+
+    try {
+      const response = await fetch(
+        `${API_BASE}/sync/admin/integrations?user_id=${user.id}`
+      );
+
+      if (!response.ok) {
+        if (response.status === 403) {
+          setIntegrationsError('Access denied. You need global_admin role.');
+        } else {
+          setIntegrationsError('Failed to fetch integrations');
+        }
+        setAdminIntegrations([]);
+        return;
+      }
+
+      const data = await response.json() as { integrations: AdminIntegration[]; total: number };
+      setAdminIntegrations(data.integrations);
+    } catch (err) {
+      setIntegrationsError('Failed to connect to server');
+      setAdminIntegrations([]);
+    } finally {
+      setIntegrationsLoading(false);
+    }
+  }, [user]);
+
   useEffect(() => {
     if (activeTab === 'waitlist') {
       void fetchWaitlist();
@@ -174,8 +227,10 @@ export function AdminPanel(): JSX.Element {
       void fetchUsers();
     } else if (activeTab === 'organizations') {
       void fetchOrganizations();
+    } else if (activeTab === 'sources') {
+      void fetchIntegrations();
     }
-  }, [activeTab, fetchWaitlist, fetchUsers, fetchOrganizations]);
+  }, [activeTab, fetchWaitlist, fetchUsers, fetchOrganizations, fetchIntegrations]);
 
   const handleInvite = async (targetUserId: string): Promise<void> => {
     if (!user) return;
@@ -254,6 +309,37 @@ export function AdminPanel(): JSX.Element {
     }
   };
 
+  const handleGlobalSync = async (): Promise<void> => {
+    if (!user) return;
+    
+    setSyncing(true);
+    setSyncResult(null);
+
+    try {
+      const response = await fetch(
+        `${API_BASE}/sync/admin/all?user_id=${user.id}`,
+        { method: 'POST' }
+      );
+
+      if (!response.ok) {
+        const data = await response.json() as { detail?: string };
+        throw new Error(data.detail ?? 'Failed to trigger sync');
+      }
+
+      const data = await response.json() as { status: string; task_id: string; integration_count: number };
+      setSyncResult({
+        status: data.status,
+        taskId: data.task_id,
+        count: data.integration_count,
+      });
+    } catch (err) {
+      console.error('Failed to trigger global sync:', err);
+      alert('Failed to trigger sync: ' + (err instanceof Error ? err.message : 'Unknown error'));
+    } finally {
+      setSyncing(false);
+    }
+  };
+
   const formatDate = (dateStr: string | null): string => {
     if (!dateStr) return '—';
     // Backend returns UTC times without 'Z' suffix, so append it if missing
@@ -286,6 +372,7 @@ export function AdminPanel(): JSX.Element {
     { id: 'waitlist', label: 'Waitlist', available: true },
     { id: 'users', label: 'Users', available: true },
     { id: 'organizations', label: 'Organizations', available: true },
+    { id: 'sources', label: 'Sources', available: true },
   ];
 
   // Filter users by search term (in-memory)
@@ -313,10 +400,32 @@ export function AdminPanel(): JSX.Element {
     return name.includes(searchLower) || domain.includes(searchLower);
   });
 
+  // Filter integrations by search term (in-memory)
+  const filteredIntegrations = adminIntegrations.filter((i) => {
+    if (!sourceSearch.trim()) return true;
+    const searchLower = sourceSearch.toLowerCase();
+    const orgName = i.organization_name.toLowerCase();
+    const provider = i.provider.toLowerCase();
+    return orgName.includes(searchLower) || provider.includes(searchLower);
+  });
+
+  // Provider display names
+  const providerNames: Record<string, string> = {
+    salesforce: 'Salesforce',
+    hubspot: 'HubSpot',
+    slack: 'Slack',
+    fireflies: 'Fireflies',
+    google_calendar: 'Google Calendar',
+    gmail: 'Gmail',
+    microsoft_calendar: 'Microsoft Calendar',
+    microsoft_mail: 'Microsoft Mail',
+    zoom: 'Zoom',
+  };
+
   return (
     <div className="flex-1 overflow-y-auto">
       {/* Header */}
-      <header className="sticky top-0 bg-surface-950 border-b border-surface-800 px-8 py-6">
+      <header className="sticky top-0 z-10 bg-surface-950 border-b border-surface-800 px-8 py-6">
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-amber-500 to-orange-600 flex items-center justify-center">
             <svg className="w-5 h-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -722,6 +831,166 @@ export function AdminPanel(): JSX.Element {
               <div className="text-sm text-surface-500 text-center">
                 Showing {filteredOrgs.length} of {adminOrgs.length} organizations
                 {orgSearch && ` matching "${orgSearch}"`}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Sources Tab Content */}
+        {activeTab === 'sources' && (
+          <div className="space-y-6">
+            {/* Search & Actions */}
+            <div className="flex items-center justify-between gap-4">
+              <div className="relative flex-1 max-w-md">
+                <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-surface-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                </svg>
+                <input
+                  type="text"
+                  placeholder="Search by organization or provider..."
+                  value={sourceSearch}
+                  onChange={(e) => setSourceSearch(e.target.value)}
+                  className="w-full pl-10 pr-4 py-2 rounded-lg bg-surface-800 border border-surface-700 text-surface-100 placeholder-surface-500 focus:outline-none focus:border-primary-500"
+                />
+              </div>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => void handleGlobalSync()}
+                  disabled={syncing}
+                  className="px-4 py-2 rounded-lg bg-emerald-500/20 border border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/30 transition-colors disabled:opacity-50 flex items-center gap-2"
+                  title="Trigger sync for all organizations (same as hourly scheduled sync)"
+                >
+                  <svg className={`w-4 h-4 ${syncing ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                  </svg>
+                  {syncing ? 'Syncing...' : 'Sync All'}
+                </button>
+                <button
+                  onClick={() => void fetchIntegrations()}
+                  disabled={integrationsLoading}
+                  className="px-4 py-2 rounded-lg bg-surface-800 border border-surface-700 text-surface-300 hover:bg-surface-700 transition-colors disabled:opacity-50 flex items-center gap-2"
+                >
+                  <svg className={`w-4 h-4 ${integrationsLoading ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                  </svg>
+                  Refresh
+                </button>
+              </div>
+            </div>
+
+            {/* Sync Result Banner */}
+            {syncResult && (
+              <div className="p-4 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 flex items-center justify-between">
+                <div>
+                  <span className="font-medium">Sync queued!</span>
+                  <span className="ml-2 text-emerald-300/80">
+                    {syncResult.count} integrations will be synced.
+                  </span>
+                  <span className="ml-2 text-xs text-emerald-400/60">
+                    Task ID: {syncResult.taskId.slice(0, 8)}...
+                  </span>
+                </div>
+                <button
+                  onClick={() => setSyncResult(null)}
+                  className="text-emerald-400/60 hover:text-emerald-400"
+                >
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+            )}
+
+            {/* Error */}
+            {integrationsError && (
+              <div className="p-4 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400">
+                {integrationsError}
+              </div>
+            )}
+
+            {/* Loading */}
+            {integrationsLoading && (
+              <div className="text-center py-12 text-surface-400">
+                <div className="w-8 h-8 border-2 border-primary-500 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
+                Loading data sources...
+              </div>
+            )}
+
+            {/* Empty state */}
+            {!integrationsLoading && !integrationsError && filteredIntegrations.length === 0 && (
+              <div className="text-center py-12">
+                <div className="w-16 h-16 rounded-full bg-surface-800 flex items-center justify-center mx-auto mb-4">
+                  <svg className="w-8 h-8 text-surface-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4" />
+                  </svg>
+                </div>
+                <p className="text-surface-400">
+                  {sourceSearch ? 'No sources match your search' : 'No data sources connected'}
+                </p>
+              </div>
+            )}
+
+            {/* Table */}
+            {!integrationsLoading && !integrationsError && filteredIntegrations.length > 0 && (
+              <div className="bg-surface-900 rounded-xl border border-surface-800 overflow-hidden">
+                <table className="w-full">
+                  <thead>
+                    <tr className="border-b border-surface-800 text-left">
+                      <th className="px-4 py-3 text-sm font-medium text-surface-400">Organization</th>
+                      <th className="px-4 py-3 text-sm font-medium text-surface-400">Provider</th>
+                      <th className="px-4 py-3 text-sm font-medium text-surface-400">Status</th>
+                      <th className="px-4 py-3 text-sm font-medium text-surface-400">Last Sync</th>
+                      <th className="px-4 py-3 text-sm font-medium text-surface-400">Records</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-surface-800">
+                    {filteredIntegrations.map((i) => (
+                      <tr key={i.id} className="hover:bg-surface-800/50">
+                        <td className="px-4 py-3">
+                          <div className="font-medium text-surface-100">{i.organization_name}</div>
+                        </td>
+                        <td className="px-4 py-3">
+                          <div className="text-surface-200">{providerNames[i.provider] ?? i.provider}</div>
+                        </td>
+                        <td className="px-4 py-3">
+                          {i.is_active ? (
+                            i.last_error ? (
+                              <span className="px-2 py-0.5 rounded-full text-xs bg-red-500/20 text-red-400 border border-red-500/30" title={i.last_error}>
+                                Error
+                              </span>
+                            ) : (
+                              <span className="px-2 py-0.5 rounded-full text-xs bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                                Active
+                              </span>
+                            )
+                          ) : (
+                            <span className="px-2 py-0.5 rounded-full text-xs bg-surface-700 text-surface-400">
+                              Inactive
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-4 py-3 text-sm text-surface-400">
+                          {i.last_sync_at ? formatDate(i.last_sync_at) : 'Never'}
+                        </td>
+                        <td className="px-4 py-3 text-sm text-surface-400">
+                          {i.sync_stats ? (
+                            <span title={JSON.stringify(i.sync_stats, null, 2)}>
+                              {Object.values(i.sync_stats).reduce((a, b) => a + b, 0).toLocaleString()}
+                            </span>
+                          ) : '—'}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {/* Stats */}
+            {!integrationsLoading && !integrationsError && (
+              <div className="text-sm text-surface-500 text-center">
+                Showing {filteredIntegrations.length} of {adminIntegrations.length} data sources
+                {sourceSearch && ` matching "${sourceSearch}"`}
               </div>
             )}
           </div>

@@ -8,12 +8,54 @@ Responsibilities:
 - Handle pagination and rate limits
 """
 
+import re
 import uuid
 from datetime import datetime
 from typing import Any, Optional
 
 import httpx
 
+
+def markdown_to_mrkdwn(text: str) -> str:
+    """
+    Convert standard Markdown to Slack mrkdwn format.
+    
+    Key differences:
+    - Bold: **text** → *text*
+    - Italic: *text* → _text_ (when not already bold)
+    - Links: [text](url) → <url|text>
+    - Headers: # Header → *Header*
+    - Tables: Wrapped in code blocks (Slack doesn't support tables)
+    """
+    # Convert markdown tables to code blocks (Slack doesn't support tables)
+    # Match table pattern: lines starting with | and containing |
+    table_pattern = r'((?:^\|.+\|$\n?)+)'
+    
+    def wrap_table_in_code_block(match: re.Match[str]) -> str:
+        table = match.group(1)
+        # Remove the separator row (|---|---|) as it's just visual noise in monospace
+        lines = table.strip().split('\n')
+        filtered_lines: list[str] = []
+        for line in lines:
+            # Skip separator rows like |---|---| or | --- | --- |
+            if not re.match(r'^\|[\s\-:]+\|$', line.strip()):
+                filtered_lines.append(line)
+        return '```\n' + '\n'.join(filtered_lines) + '\n```'
+    
+    text = re.sub(table_pattern, wrap_table_in_code_block, text, flags=re.MULTILINE)
+    
+    # Convert bold: **text** → *text*
+    text = re.sub(r'\*\*(.+?)\*\*', r'*\1*', text)
+    
+    # Convert markdown links: [text](url) → <url|text>
+    text = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'<\2|\1>', text)
+    
+    # Convert headers: # Header → *Header*
+    text = re.sub(r'^#{1,6}\s+(.+)$', r'*\1*', text, flags=re.MULTILINE)
+    
+    return text
+
+from api.websockets import broadcast_sync_progress
 from connectors.base import BaseConnector
 from models.activity import Activity
 from models.database import get_session
@@ -154,6 +196,14 @@ class SlackConnector(BaseConnector):
         This captures communication activity that can be correlated
         with deals and accounts.
         """
+        # Broadcast that we're starting
+        await broadcast_sync_progress(
+            organization_id=self.organization_id,
+            provider=self.source_system,
+            count=0,
+            status="syncing",
+        )
+        
         # Get channels
         channels = await self.get_channels()
 
@@ -161,7 +211,7 @@ class SlackConnector(BaseConnector):
         oldest = (datetime.utcnow().timestamp()) - (7 * 24 * 60 * 60)
 
         count = 0
-        async with get_session() as session:
+        async with get_session(organization_id=self.organization_id) as session:
             for channel in channels:
                 channel_id = channel.get("id", "")
                 channel_name = channel.get("name", "unknown")
@@ -176,6 +226,15 @@ class SlackConnector(BaseConnector):
                         if activity:
                             await session.merge(activity)
                             count += 1
+                            
+                            # Broadcast progress every 10 messages
+                            if count % 10 == 0:
+                                await broadcast_sync_progress(
+                                    organization_id=self.organization_id,
+                                    provider=self.source_system,
+                                    count=count,
+                                    status="syncing",
+                                )
 
                 except Exception as e:
                     # Skip channels we can't access
@@ -238,6 +297,14 @@ class SlackConnector(BaseConnector):
         """Run all sync operations."""
         activities_count = await self.sync_activities()
 
+        # Broadcast completion
+        await broadcast_sync_progress(
+            organization_id=self.organization_id,
+            provider=self.source_system,
+            count=activities_count,
+            status="completed",
+        )
+
         return {
             "accounts": 0,
             "deals": 0,
@@ -295,9 +362,12 @@ class SlackConnector(BaseConnector):
         Returns:
             Response with channel, ts (timestamp), and message details
         """
+        # Auto-convert any Markdown to Slack mrkdwn format
+        formatted_text = markdown_to_mrkdwn(text)
+        
         payload: dict[str, Any] = {
             "channel": channel,
-            "text": text,
+            "text": formatted_text,
         }
         
         if thread_ts:

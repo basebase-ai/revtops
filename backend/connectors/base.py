@@ -23,14 +23,16 @@ class BaseConnector(ABC):
     # Override in subclasses - must match our provider names
     source_system: str = "unknown"
 
-    def __init__(self, organization_id: str) -> None:
+    def __init__(self, organization_id: str, user_id: Optional[str] = None) -> None:
         """
         Initialize the connector.
 
         Args:
             organization_id: UUID of the organization to sync data for
+            user_id: Optional UUID of specific user (for per-user integrations like Gmail)
         """
         self.organization_id = organization_id
+        self.user_id = user_id
         self._token: Optional[str] = None
         self._credentials: Optional[dict[str, Any]] = None
         self._integration: Optional[Integration] = None
@@ -109,19 +111,26 @@ class BaseConnector(ABC):
             return self._token, ""
 
         # Verify we have an active integration
-        async with get_session() as session:
+        async with get_session(organization_id=self.organization_id) as session:
+            # Build base query
+            conditions = [
+                Integration.organization_id == UUID(self.organization_id),
+                Integration.provider == self.source_system,
+                Integration.is_active == True,
+            ]
+            # Add user_id filter for per-user integrations (Gmail, Outlook)
+            if self.user_id:
+                conditions.append(Integration.user_id == UUID(self.user_id))
+            
             result = await session.execute(
-                select(Integration).where(
-                    Integration.organization_id == UUID(self.organization_id),
-                    Integration.provider == self.source_system,
-                    Integration.is_active == True,
-                )
+                select(Integration).where(*conditions)
             )
             integration = result.scalar_one_or_none()
 
             if not integration:
+                user_msg = f" for user {self.user_id}" if self.user_id else ""
                 raise ValueError(
-                    f"No active {self.source_system} integration for organization: {self.organization_id}"
+                    f"No active {self.source_system} integration{user_msg} for organization: {self.organization_id}"
                 )
 
             self._integration = integration
@@ -137,10 +146,13 @@ class BaseConnector(ABC):
                 f"No Nango connection ID stored for {self.source_system} integration"
             )
 
+        print(f"[Connector] Getting token from Nango for {self.source_system}, connection_id={connection_id}")
         try:
             self._token = await nango.get_token(nango_integration_id, connection_id)
+            print(f"[Connector] Got token for {self.source_system}: {self._token[:20]}...")
             return self._token, ""
         except Exception as e:
+            print(f"[Connector] Failed to get token: {e}")
             raise ValueError(
                 f"Failed to get token from Nango for {self.source_system}: {str(e)}"
             )
@@ -187,7 +199,7 @@ class BaseConnector(ABC):
 
         if not self._integration:
             # Try to load integration
-            async with get_session() as session:
+            async with get_session(organization_id=self.organization_id) as session:
                 result = await session.execute(
                     select(Integration).where(
                         Integration.organization_id == UUID(self.organization_id),
@@ -197,23 +209,29 @@ class BaseConnector(ABC):
                 self._integration = result.scalar_one_or_none()
 
         if not self._integration:
+            print(f"[Sync] WARNING: No integration found for {self.source_system} in org {self.organization_id}")
             return
 
-        async with get_session() as session:
+        async with get_session(organization_id=self.organization_id) as session:
+            from sqlalchemy.orm.attributes import flag_modified
             integration = await session.get(Integration, self._integration.id)
             if integration:
                 integration.last_sync_at = datetime.utcnow()
                 integration.last_error = None
                 if counts is not None:
                     integration.sync_stats = counts
+                    # JSONB columns need explicit flag for SQLAlchemy to detect changes
+                    flag_modified(integration, "sync_stats")
+                    print(f"[Sync] Saving sync_stats={counts} to integration {integration.id}")
                 await session.commit()
+                print(f"[Sync] Committed update_last_sync for {self.source_system}")
 
     async def record_error(self, error: str) -> None:
         """Record an error for this integration."""
         if not self._integration:
             return
 
-        async with get_session() as session:
+        async with get_session(organization_id=self.organization_id) as session:
             integration = await session.get(Integration, self._integration.id)
             if integration:
                 integration.last_error = error[:500]  # Truncate long errors

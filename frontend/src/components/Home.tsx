@@ -6,8 +6,7 @@
 
 import { useEffect, useState, useMemo, useCallback } from 'react';
 import { API_BASE } from '../lib/api';
-import { useAppStore } from '../store';
-import { useIntegrations } from '../hooks/useIntegrations';
+import { useAppStore, useIntegrations } from '../store';
 
 interface Deal {
   id: string;
@@ -54,7 +53,6 @@ interface PipelineWithDeals {
 
 export function Home(): JSX.Element {
   const organization = useAppStore((state) => state.organization);
-  const user = useAppStore((state) => state.user);
   const startNewChat = useAppStore((state) => state.startNewChat);
   const setPendingChatInput = useAppStore((state) => state.setPendingChatInput);
   const setPendingChatAutoSend = useAppStore((state) => state.setPendingChatAutoSend);
@@ -64,9 +62,9 @@ export function Home(): JSX.Element {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   
-  // Check if the organization has any connected data sources
-  const { data: integrations } = useIntegrations(organization?.id ?? null, user?.id ?? null);
-  const hasConnectedSources = integrations?.some((i) => i.isActive) ?? false;
+  // Check if the organization has any connected data sources (from Zustand store)
+  const integrations = useIntegrations();
+  const hasConnectedSources = integrations.some((i) => i.isActive);
 
   useEffect(() => {
     if (!organization?.id) return;

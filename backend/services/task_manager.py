@@ -170,16 +170,24 @@ class TaskManager:
                 # Parse chunk - could be JSON (tool call/result) or plain text
                 try:
                     parsed = json.loads(chunk)
-                    chunk_data["type"] = parsed.get("type", "json")
-                    chunk_data["data"] = parsed
+                    # Only treat as structured data if it's a dict with a type field
+                    if isinstance(parsed, dict):
+                        chunk_data["type"] = parsed.get("type", "json")
+                        chunk_data["data"] = parsed
+                    else:
+                        # JSON parsed but not a dict (e.g., number, string, list)
+                        chunk_data["type"] = "text_delta"
+                        chunk_data["data"] = chunk
                 except json.JSONDecodeError:
                     chunk_data["type"] = "text_delta"
                     chunk_data["data"] = chunk
                 
-                # Persist chunk to database
-                await self._append_chunk(task_id, chunk_data)
+                # Only persist important events to database (tool calls/results)
+                # Text deltas are ephemeral - the full message is saved at the end by orchestrator
+                if chunk_data["type"] != "text_delta":
+                    await self._append_chunk(task_id, chunk_data)
                 
-                # Broadcast to subscribers
+                # Broadcast ALL chunks to subscribers (including text deltas for live streaming)
                 await self._broadcast(task_id, {
                     "type": "task_chunk",
                     "task_id": task_id,

@@ -51,11 +51,24 @@ class Account(Base):
     synced_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime, default=datetime.utcnow, nullable=True
     )
+    
+    # Sync status: 'pending' (local only), 'synced' (in CRM), 'failed' (sync error)
+    sync_status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="synced"
+    )
+    
+    # Change tracking columns (for local modifications)
+    updated_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    updated_by: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
 
     # Relationships
     deals: Mapped[list["Deal"]] = relationship("Deal", back_populates="account")
     contacts: Mapped[list["Contact"]] = relationship("Contact", back_populates="account")
-    owner: Mapped[Optional["User"]] = relationship("User")
+    owner: Mapped[Optional["User"]] = relationship("User", foreign_keys=[owner_id])
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for API responses."""
@@ -69,4 +82,5 @@ class Account(Base):
             "owner_id": str(self.owner_id) if self.owner_id else None,
             "source_id": self.source_id,
             "source_system": self.source_system,
+            "sync_status": self.sync_status,
         }

@@ -7,7 +7,24 @@ Beat schedule is defined here for periodic tasks.
 from __future__ import annotations
 
 import os
+import sys
 from datetime import timedelta
+from pathlib import Path
+
+# Ensure backend directory is in Python path for Celery workers
+backend_dir = Path(__file__).resolve().parent.parent
+if str(backend_dir) not in sys.path:
+    sys.path.insert(0, str(backend_dir))
+
+# CRITICAL: Load .env BEFORE importing config/settings
+# This ensures Celery workers use the same DATABASE_URL as the API server
+from dotenv import load_dotenv
+env_file = backend_dir / ".env"
+if not env_file.exists():
+    env_file = backend_dir.parent / ".env"
+if env_file.exists():
+    load_dotenv(env_file)
+    print(f"[Celery] Loaded environment from: {env_file}")
 
 from celery import Celery
 from celery.schedules import crontab

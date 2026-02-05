@@ -1,10 +1,10 @@
 /**
  * API client for backend communication.
- * 
+ *
  * Uses centralized API configuration from lib/api.ts
  */
 
-import { API_BASE, apiRequest, type ApiResponse } from '../lib/api';
+import { API_BASE, apiRequest, type ApiResponse } from "../lib/api";
 
 // Re-export for backwards compatibility
 export { API_BASE, apiRequest };
@@ -16,17 +16,17 @@ export type { ApiResponse };
 
 // Content block types following Anthropic API pattern
 export interface TextBlock {
-  type: 'text';
+  type: "text";
   text: string;
 }
 
 export interface ToolUseBlock {
-  type: 'tool_use';
+  type: "tool_use";
   id: string;
   name: string;
   input: Record<string, unknown>;
   result?: Record<string, unknown>;
-  status?: 'pending' | 'running' | 'complete';
+  status?: "pending" | "running" | "complete";
 }
 
 export type ContentBlock = TextBlock | ToolUseBlock;
@@ -34,7 +34,7 @@ export type ContentBlock = TextBlock | ToolUseBlock;
 export interface ChatMessage {
   id: string;
   conversation_id: string | null;
-  role: 'user' | 'assistant';
+  role: "user" | "assistant";
   content_blocks: ContentBlock[];
   created_at: string;
 }
@@ -62,6 +62,7 @@ export interface ConversationDetailResponse {
   summary: string | null;
   created_at: string;
   updated_at: string;
+  type: "chat" | "workflow" | null;
   messages: ChatMessage[];
 }
 
@@ -96,7 +97,7 @@ export interface ConnectUrlResponse {
 // =============================================================================
 
 export interface SyncStatusResponse {
-  status: 'idle' | 'syncing' | 'completed' | 'failed';
+  status: "idle" | "syncing" | "completed" | "failed";
   provider: string;
   started_at: string | null;
   completed_at: string | null;
@@ -109,89 +110,88 @@ export interface SyncStatusResponse {
 // =============================================================================
 
 /**
- * List conversations for a user
+ * List conversations for authenticated user.
+ * SECURITY: User is identified from JWT token, not from parameters.
  */
 export async function listConversations(
-  userId: string,
   limit = 50,
-  offset = 0
+  offset = 0,
 ): Promise<ApiResponse<ConversationListResponse>> {
   return apiRequest<ConversationListResponse>(
-    `/chat/conversations?user_id=${userId}&limit=${limit}&offset=${offset}`
+    `/chat/conversations?limit=${limit}&offset=${offset}`,
   );
 }
 
 /**
- * Get a conversation with all its messages
+ * Get a conversation with all its messages.
+ * SECURITY: User is identified from JWT token.
  */
 export async function getConversation(
   conversationId: string,
-  userId: string
 ): Promise<ApiResponse<ConversationDetailResponse>> {
   return apiRequest<ConversationDetailResponse>(
-    `/chat/conversations/${conversationId}?user_id=${userId}`
+    `/chat/conversations/${conversationId}`,
   );
 }
 
 /**
- * Create a new conversation
+ * Create a new conversation.
+ * SECURITY: User is identified from JWT token.
  */
 export async function createConversation(
-  userId: string,
-  title?: string
+  title?: string,
 ): Promise<ApiResponse<ConversationSummary>> {
-  return apiRequest<ConversationSummary>('/chat/conversations', {
-    method: 'POST',
-    body: JSON.stringify({ user_id: userId, title }),
+  return apiRequest<ConversationSummary>("/chat/conversations", {
+    method: "POST",
+    body: JSON.stringify({ title }),
   });
 }
 
 /**
  * Update a conversation (title, etc.)
+ * SECURITY: User is identified from JWT token.
  */
 export async function updateConversation(
   conversationId: string,
-  userId: string,
-  title: string
+  title: string,
 ): Promise<ApiResponse<ConversationSummary>> {
   return apiRequest<ConversationSummary>(
-    `/chat/conversations/${conversationId}?user_id=${userId}`,
+    `/chat/conversations/${conversationId}`,
     {
-      method: 'PATCH',
+      method: "PATCH",
       body: JSON.stringify({ title }),
-    }
+    },
   );
 }
 
 /**
- * Delete a conversation
+ * Delete a conversation.
+ * SECURITY: User is identified from JWT token.
  */
 export async function deleteConversation(
   conversationId: string,
-  userId: string
 ): Promise<ApiResponse<{ success: boolean }>> {
   return apiRequest<{ success: boolean }>(
-    `/chat/conversations/${conversationId}?user_id=${userId}`,
-    { method: 'DELETE' }
+    `/chat/conversations/${conversationId}`,
+    { method: "DELETE" },
   );
 }
 
 /**
- * Get chat history for a user (legacy - use getConversation instead)
+ * Get chat history for authenticated user (legacy - use getConversation instead).
+ * SECURITY: User is identified from JWT token.
  */
 export async function getChatHistory(
-  userId: string,
   conversationId?: string,
   limit = 50,
-  offset = 0
+  offset = 0,
 ): Promise<ApiResponse<ChatHistoryResponse>> {
   const params = new URLSearchParams({
-    user_id: userId,
     limit: limit.toString(),
     offset: offset.toString(),
   });
   if (conversationId) {
-    params.append('conversation_id', conversationId);
+    params.append("conversation_id", conversationId);
   }
   return apiRequest<ChatHistoryResponse>(`/chat/history?${params.toString()}`);
 }
@@ -200,10 +200,10 @@ export async function getChatHistory(
  * Get list of integrations for an organization
  */
 export async function getIntegrations(
-  organizationId: string
+  organizationId: string,
 ): Promise<ApiResponse<IntegrationsListResponse>> {
   return apiRequest<IntegrationsListResponse>(
-    `/auth/integrations?organization_id=${organizationId}`
+    `/auth/integrations?organization_id=${organizationId}`,
   );
 }
 
@@ -212,10 +212,10 @@ export async function getIntegrations(
  */
 export async function getConnectUrl(
   provider: string,
-  organizationId: string
+  organizationId: string,
 ): Promise<ApiResponse<ConnectUrlResponse>> {
   return apiRequest<ConnectUrlResponse>(
-    `/auth/connect/${provider}?organization_id=${organizationId}`
+    `/auth/connect/${provider}?organization_id=${organizationId}`,
   );
 }
 
@@ -225,15 +225,15 @@ export async function getConnectUrl(
 export async function disconnectIntegration(
   provider: string,
   organizationId: string,
-  userId?: string
+  userId?: string,
 ): Promise<ApiResponse<{ success: boolean }>> {
   const params = new URLSearchParams({ organization_id: organizationId });
   if (userId) {
-    params.set('user_id', userId);
+    params.set("user_id", userId);
   }
   return apiRequest<{ success: boolean }>(
     `/auth/integrations/${provider}?${params.toString()}`,
-    { method: 'DELETE' }
+    { method: "DELETE" },
   );
 }
 
@@ -242,12 +242,11 @@ export async function disconnectIntegration(
  */
 export async function triggerSync(
   organizationId: string,
-  provider: string
+  provider: string,
 ): Promise<ApiResponse<SyncStatusResponse>> {
-  return apiRequest<SyncStatusResponse>(
-    `/sync/${organizationId}/${provider}`,
-    { method: 'POST' }
-  );
+  return apiRequest<SyncStatusResponse>(`/sync/${organizationId}/${provider}`, {
+    method: "POST",
+  });
 }
 
 /**
@@ -255,10 +254,10 @@ export async function triggerSync(
  */
 export async function getSyncStatus(
   organizationId: string,
-  provider: string
+  provider: string,
 ): Promise<ApiResponse<SyncStatusResponse>> {
   return apiRequest<SyncStatusResponse>(
-    `/sync/${organizationId}/${provider}/status`
+    `/sync/${organizationId}/${provider}/status`,
   );
 }
 
@@ -267,7 +266,7 @@ export async function getSyncStatus(
 // =============================================================================
 
 export interface DealSearchResult {
-  type: 'deal';
+  type: "deal";
   id: string;
   name: string;
   amount: number | null;
@@ -278,7 +277,7 @@ export interface DealSearchResult {
 }
 
 export interface AccountSearchResult {
-  type: 'account';
+  type: "account";
   id: string;
   name: string;
   domain: string | null;
@@ -305,7 +304,7 @@ export interface SearchResponse {
 export async function searchData(
   query: string,
   organizationId: string,
-  limit = 10
+  limit = 10,
 ): Promise<ApiResponse<SearchResponse>> {
   const params = new URLSearchParams({
     q: query,

@@ -141,7 +141,7 @@ class SalesforceConnector(BaseConnector):
 
         raw_opportunities = await self._query_soql(soql)
 
-        async with get_session() as session:
+        async with get_session(organization_id=self.organization_id) as session:
             count = 0
             for opp in raw_opportunities:
                 sf_id = opp.get("Id", "")
@@ -244,7 +244,7 @@ class SalesforceConnector(BaseConnector):
 
         raw_accounts = await self._query_soql(soql)
 
-        async with get_session() as session:
+        async with get_session(organization_id=self.organization_id) as session:
             count = 0
             for acc in raw_accounts:
                 sf_id = acc.get("Id", "")
@@ -329,7 +329,7 @@ class SalesforceConnector(BaseConnector):
 
         raw_contacts = await self._query_soql(soql)
 
-        async with get_session() as session:
+        async with get_session(organization_id=self.organization_id) as session:
             count = 0
             for cont in raw_contacts:
                 sf_id = cont.get("Id", "")
@@ -401,7 +401,7 @@ class SalesforceConnector(BaseConnector):
         try:
             raw_tasks = await self._query_soql(task_soql)
 
-            async with get_session() as session:
+            async with get_session(organization_id=self.organization_id) as session:
                 for task in raw_tasks:
                     sf_id = task.get("Id", "")
 
@@ -435,7 +435,7 @@ class SalesforceConnector(BaseConnector):
         try:
             raw_events = await self._query_soql(event_soql)
 
-            async with get_session() as session:
+            async with get_session(organization_id=self.organization_id) as session:
                 for event in raw_events:
                     sf_id = event.get("Id", "")
 
@@ -523,7 +523,7 @@ class SalesforceConnector(BaseConnector):
         if not sf_user_id:
             return None
 
-        async with get_session() as session:
+        async with get_session(organization_id=self.organization_id) as session:
             # First try to match by salesforce_user_id within the organization
             result = await session.execute(
                 select(User).where(
@@ -552,7 +552,7 @@ class SalesforceConnector(BaseConnector):
         if not sf_account_id:
             return None
 
-        async with get_session() as session:
+        async with get_session(organization_id=self.organization_id) as session:
             result = await session.execute(
                 select(Account).where(
                     Account.organization_id == uuid.UUID(self.organization_id),

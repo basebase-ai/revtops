@@ -13,8 +13,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Message } from './Message';
-import { ArtifactViewer } from './ArtifactViewer';
-import { CrmApprovalCard } from './CrmApprovalCard';
+import { ArtifactViewer, type FileArtifact } from './ArtifactViewer';
+import { ArtifactTile } from './ArtifactTile';
+import { PendingApprovalCard, type ApprovalResult } from './PendingApprovalCard';
+import { PendingChangesBar } from './PendingChangesBar';
 import { getConversation } from '../api/client';
 import { 
   useAppStore,
@@ -22,14 +24,19 @@ import {
   type ChatMessage,
   type ToolCallData,
   type ToolUseBlock,
+  type ErrorBlock,
 } from '../store';
 
-interface Artifact {
+// Legacy data artifact format
+interface LegacyArtifact {
   id: string;
   type: string;
   title: string;
   data: Record<string, unknown>;
 }
+
+// Union type for all artifact formats
+type AnyArtifact = LegacyArtifact | FileArtifact;
 
 interface ChatProps {
   userId: string;
@@ -41,10 +48,11 @@ interface ChatProps {
   crmApprovalResults: Map<string, unknown>;
 }
 
-// CRM approval result type (received via parent component)
-interface WsCrmApprovalResult {
-  type: 'crm_approval_result';
+// Tool approval result type (received via parent component)
+interface WsToolApprovalResult {
+  type: 'tool_approval_result';
   operation_id: string;
+  tool_name: string;
   status: string;
   message?: string;
   success_count?: number;
@@ -53,15 +61,17 @@ interface WsCrmApprovalResult {
   error?: string;
 }
 
-// CRM approval state tracking
-interface CrmApprovalState {
+// Tool approval state tracking (generic for all tools)
+interface ToolApprovalState {
   operationId: string;
+  toolName: string;
   isProcessing: boolean;
-  result: WsCrmApprovalResult | null;
+  result: WsToolApprovalResult | null;
 }
 
 export function Chat({ 
   userId, 
+  organizationId,
   chatId, 
   sendMessage,
   isConnected,
@@ -86,14 +96,16 @@ export function Chat({
   
   // Local state
   const [input, setInput] = useState<string>('');
-  const [currentArtifact, setCurrentArtifact] = useState<Artifact | null>(null);
+  const [currentArtifact, setCurrentArtifact] = useState<AnyArtifact | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [selectedToolCall, setSelectedToolCall] = useState<ToolCallData | null>(null);
-  const [crmApprovals, setCrmApprovals] = useState<Map<string, CrmApprovalState>>(new Map());
+  const [toolApprovals, setToolApprovals] = useState<Map<string, ToolApprovalState>>(new Map());
   const [localConversationId, setLocalConversationId] = useState<string | null>(chatId ?? null);
   // Pending messages for new conversations (before we have an ID)
   const [pendingMessages, setPendingMessages] = useState<ChatMessage[]>([]);
   const [pendingThinking, setPendingThinking] = useState<boolean>(false);
+  const [conversationType, setConversationType] = useState<string | null>(null);
+  const [isWorkflowPolling, setIsWorkflowPolling] = useState<boolean>(false);
   
   // Refs
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -101,6 +113,7 @@ export function Chat({
   const pendingTitleRef = useRef<string | null>(null);
   const pendingMessagesRef = useRef<ChatMessage[]>([]);
   const pendingAutoSendRef = useRef<string | null>(null);
+  const messagesRef = useRef<ChatMessage[]>([]); // Track current messages for polling comparison
   
   // Keep ref in sync with state
   pendingMessagesRef.current = pendingMessages;
@@ -114,13 +127,15 @@ export function Chat({
   }, [pendingMessages, conversationState?.messages]);
   const isThinking = pendingThinking || conversationThinking;
 
-  // Handle CRM approval
-  const handleCrmApprove = useCallback((operationId: string, skipDuplicates: boolean) => {
-    console.log('[Chat] Approving CRM operation:', operationId);
-    setCrmApprovals((prev) => {
+  // Handle tool approval (generic for all tools)
+  const handleToolApprove = useCallback((operationId: string, options?: Record<string, unknown>) => {
+    console.log('[Chat] Approving tool operation:', operationId, options);
+    const existing = toolApprovals.get(operationId);
+    setToolApprovals((prev) => {
       const newMap = new Map(prev);
       newMap.set(operationId, {
         operationId,
+        toolName: existing?.toolName ?? 'unknown',
         isProcessing: true,
         result: null,
       });
@@ -128,21 +143,23 @@ export function Chat({
     });
     const currentConversationId = localConversationId || chatId;
     sendMessage({
-      type: 'crm_approval',
+      type: 'tool_approval',
       operation_id: operationId,
       approved: true,
-      skip_duplicates: skipDuplicates,
+      options: options ?? {},
       conversation_id: currentConversationId,
     });
-  }, [sendMessage, localConversationId, chatId]);
+  }, [sendMessage, localConversationId, chatId, toolApprovals]);
 
-  // Handle CRM cancel
-  const handleCrmCancel = useCallback((operationId: string) => {
-    console.log('[Chat] Canceling CRM operation:', operationId);
-    setCrmApprovals((prev) => {
+  // Handle tool cancel (generic for all tools)
+  const handleToolCancel = useCallback((operationId: string) => {
+    console.log('[Chat] Canceling tool operation:', operationId);
+    const existing = toolApprovals.get(operationId);
+    setToolApprovals((prev) => {
       const newMap = new Map(prev);
       newMap.set(operationId, {
         operationId,
+        toolName: existing?.toolName ?? 'unknown',
         isProcessing: true,
         result: null,
       });
@@ -150,24 +167,24 @@ export function Chat({
     });
     const currentConversationId = localConversationId || chatId;
     sendMessage({
-      type: 'crm_approval',
+      type: 'tool_approval',
       operation_id: operationId,
       approved: false,
       conversation_id: currentConversationId,
     });
-  }, [sendMessage, localConversationId, chatId]);
+  }, [sendMessage, localConversationId, chatId, toolApprovals]);
 
-  // Sync CRM approval results from parent
+  // Sync tool approval results from parent (handles both old crm_approval and new tool_approval)
   useEffect(() => {
     crmApprovalResults.forEach((result, operationId) => {
-      setCrmApprovals((prev) => {
+      setToolApprovals((prev) => {
         const existing = prev.get(operationId);
         if (existing?.isProcessing) {
           const newMap = new Map(prev);
           newMap.set(operationId, {
             ...existing,
             isProcessing: false,
-            result: result as WsCrmApprovalResult,
+            result: result as WsToolApprovalResult,
           });
           return newMap;
         }
@@ -179,6 +196,11 @@ export function Chat({
   // Reset local state when chatId changes
   useEffect(() => {
     setLocalConversationId(chatId ?? null);
+    // Reset conversation type when starting a new chat
+    if (!chatId) {
+      setConversationType(null);
+      setIsWorkflowPolling(false);
+    }
     // Only clear pending messages if we're switching to an EXISTING chat
     // (i.e., when we have no pending messages to move to the new conversation)
     // If pendingMessages exist, the next effect will move them instead
@@ -259,7 +281,7 @@ export function Chat({
       setIsLoading(true);
 
       try {
-        const { data, error } = await getConversation(chatId, userId);
+        const { data, error } = await getConversation(chatId);
         
         if (cancelled) {
           console.log('[Chat] Load cancelled - chatId changed');
@@ -278,7 +300,8 @@ export function Chat({
           // Set conversation state
           setConversationMessages(chatId, loadedMessages);
           setConversationTitle(chatId, data.title ?? 'New Chat');
-          console.log('[Chat] Loaded', loadedMessages.length, 'messages');
+          setConversationType(data.type ?? null);
+          console.log('[Chat] Loaded', loadedMessages.length, 'messages, type:', data.type);
           
           // Scroll to bottom immediately after loading
           setTimeout(() => {
@@ -302,6 +325,81 @@ export function Chat({
       cancelled = true;
     };
   }, [chatId, userId, setConversationMessages, setConversationTitle]);
+
+  // Keep messagesRef in sync for polling comparison (avoids stale closure)
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+
+  // Poll for updates on workflow conversations (Celery workers can't send WebSocket updates)
+  useEffect(() => {
+    // Only poll for workflow conversations with few messages
+    if (!chatId || conversationType !== 'workflow' || messages.length > 5) {
+      setIsWorkflowPolling(false);
+      return;
+    }
+
+    console.log('[Chat] Starting polling for workflow conversation');
+    setIsWorkflowPolling(true);
+    let pollCount = 0;
+    const maxPolls = 300; // Poll for up to 10 minutes (300 * 2 seconds)
+
+    const pollInterval = setInterval(async () => {
+      pollCount++;
+      if (pollCount > maxPolls) {
+        console.log('[Chat] Stopping polling - max polls reached');
+        setIsWorkflowPolling(false);
+        clearInterval(pollInterval);
+        return;
+      }
+
+      try {
+        const { data, error } = await getConversation(chatId);
+        if (data && !error) {
+          const loadedMessages: ChatMessage[] = data.messages.map((msg) => ({
+            id: msg.id,
+            role: msg.role as 'user' | 'assistant',
+            contentBlocks: msg.content_blocks,
+            timestamp: new Date(msg.created_at),
+          }));
+          
+          // Check if content has changed (not just message count)
+          // Use ref to get current messages (avoids stale closure)
+          const currentContent = JSON.stringify(messagesRef.current.map(m => m.contentBlocks));
+          const newContent = JSON.stringify(loadedMessages.map(m => m.contentBlocks));
+          
+          // Debug: Log tool call status from API response
+          for (const msg of loadedMessages) {
+            for (const block of msg.contentBlocks || []) {
+              if (block.type === 'tool_use') {
+                console.log(`[Chat] Poll: tool ${block.name} status=${block.status}, result=`, block.result);
+              }
+            }
+          }
+          
+          if (newContent !== currentContent) {
+            console.log('[Chat] Poll found updated content, updating UI');
+            setConversationMessages(chatId, loadedMessages);
+          }
+          
+          // If we have substantial messages, stop polling
+          if (loadedMessages.length > 5) {
+            console.log('[Chat] Stopping polling - have enough messages');
+            setIsWorkflowPolling(false);
+            clearInterval(pollInterval);
+          }
+        }
+      } catch (err) {
+        console.error('[Chat] Polling error:', err);
+      }
+    }, 2000); // Poll every 2 seconds
+
+    return () => {
+      console.log('[Chat] Cleaning up workflow polling');
+      setIsWorkflowPolling(false);
+      clearInterval(pollInterval);
+    };
+  }, [chatId, userId, conversationType, messages.length, setConversationMessages]);
 
   // Auto-scroll to bottom
   useEffect(() => {
@@ -539,17 +637,37 @@ export function Chat({
         {/* Messages */}
         <div className="flex-1 overflow-y-auto overflow-x-hidden p-3 md:p-6">
           {messages.length === 0 && !isThinking ? (
-            <EmptyState onSuggestionClick={handleSuggestionClick} />
+            conversationType === 'workflow' ? (
+              // Show loading state for workflow conversations waiting for agent to start
+              <div className="flex-1 flex flex-col items-center justify-center py-20">
+                <div className="relative mb-6">
+                  {/* Spinning ring */}
+                  <div className="w-16 h-16 rounded-full border-4 border-surface-700 border-t-primary-500 animate-spin" />
+                  {/* Center icon */}
+                  <div className="absolute inset-0 flex items-center justify-center">
+                    <svg className="w-6 h-6 text-primary-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                    </svg>
+                  </div>
+                </div>
+                <h3 className="text-lg font-medium text-surface-200 mb-2">Running Workflow</h3>
+                <p className="text-surface-400 text-center max-w-md">
+                  The agent is processing your workflow. Results will appear here momentarily...
+                </p>
+              </div>
+            ) : (
+              <EmptyState onSuggestionClick={handleSuggestionClick} />
+            )
           ) : (
             <div className="max-w-3xl mx-auto space-y-3">
               {messages.map((msg) => (
                 <MessageWithBlocks
                   key={msg.id}
                   message={msg}
-                  crmApprovals={crmApprovals}
+                  toolApprovals={toolApprovals}
                   onArtifactClick={setCurrentArtifact}
-                  onCrmApprove={handleCrmApprove}
-                  onCrmCancel={handleCrmCancel}
+                  onToolApprove={handleToolApprove}
+                  onToolCancel={handleToolCancel}
                   onToolClick={(block) => setSelectedToolCall({
                     toolName: block.name,
                     toolId: block.id,
@@ -562,6 +680,14 @@ export function Chat({
 
               {/* Thinking indicator */}
               {isThinking && <ThinkingIndicator />}
+
+              {/* Workflow polling spinner - shows at bottom while workflow is running */}
+              {isWorkflowPolling && messages.length > 0 && !isThinking && (
+                <div className="flex items-center justify-center gap-2 py-4 text-surface-400">
+                  <div className="w-4 h-4 border-2 border-surface-600 border-t-primary-500 rounded-full animate-spin" />
+                  <span className="text-sm">Workflow running...</span>
+                </div>
+              )}
 
               <div ref={messagesEndRef} />
             </div>
@@ -599,6 +725,9 @@ export function Chat({
       {/* Input */}
       <div className="border-t border-surface-800 p-2 md:p-3">
         <div className="max-w-3xl mx-auto">
+          {/* Pending changes bar (local-first CRM changes) */}
+          <PendingChangesBar organizationId={organizationId} userId={userId} />
+          
           <div className="flex items-end gap-2">
             {/* Attach button - hidden on very small screens */}
             <button
@@ -672,17 +801,17 @@ export function Chat({
  */
 function MessageWithBlocks({
   message,
-  crmApprovals,
+  toolApprovals,
   onArtifactClick,
-  onCrmApprove,
-  onCrmCancel,
+  onToolApprove,
+  onToolCancel,
   onToolClick,
 }: {
   message: ChatMessage;
-  crmApprovals: Map<string, { operationId: string; isProcessing: boolean; result: unknown }>;
-  onArtifactClick: (artifact: { id: string; type: string; title: string; data: Record<string, unknown> }) => void;
-  onCrmApprove: (operationId: string, skipDuplicates: boolean) => void;
-  onCrmCancel: (operationId: string) => void;
+  toolApprovals: Map<string, { operationId: string; toolName: string; isProcessing: boolean; result: unknown }>;
+  onArtifactClick: (artifact: AnyArtifact) => void;
+  onToolApprove: (operationId: string, options?: Record<string, unknown>) => void;
+  onToolCancel: (operationId: string) => void;
   onToolClick: (block: ToolUseBlock) => void;
 }): JSX.Element {
   const blocks = message.contentBlocks ?? [];
@@ -720,52 +849,44 @@ function MessageWithBlocks({
     block.type === 'text' ? idx : lastIdx, -1);
 
   const renderToolBlock = (block: ToolUseBlock): JSX.Element => {
-    // CRM write gets special handling
-    if (block.name === 'crm_write' && block.result) {
-      const result = block.result as Record<string, unknown>;
+    // Check if this is a pending_approval response from any tool
+    const result = block.result as Record<string, unknown> | undefined;
+    const isPendingApproval = result?.type === 'pending_approval' || result?.status === 'pending_approval';
+    
+    if (isPendingApproval && result) {
       const operationId = result.operation_id as string;
-      const approvalState = crmApprovals.get(operationId);
+      const toolName = (result.tool_name as string) || block.name;
+      const approvalState = toolApprovals.get(operationId);
       
+      // Check if we have a final result stored (completed/failed/canceled)
       const storedStatus = result?.status as string | undefined;
       const isFinalState = storedStatus && ['completed', 'failed', 'canceled', 'expired'].includes(storedStatus);
       
       const finalResult = isFinalState
-        ? (result as { status: string; message?: string; success_count?: number; failure_count?: number; skipped_count?: number; error?: string })
-        : (approvalState?.result as { status: string; message?: string; success_count?: number; failure_count?: number; skipped_count?: number; error?: string } | null) ?? null;
+        ? (result as unknown as ApprovalResult)
+        : (approvalState?.result as ApprovalResult | null) ?? null;
 
-      if (result?.preview || finalResult) {
-        return (
-          <div key={block.id} className="my-1">
-            <CrmApprovalCard
-              data={result as {
-                operation_id: string;
-                target_system: string;
-                record_type: string;
-                operation: string;
-                preview: {
-                  records: Record<string, unknown>[];
-                  record_count: number;
-                  will_create: number;
-                  will_skip: number;
-                  will_update: number;
-                  duplicate_warnings: Array<{
-                    record: Record<string, unknown>;
-                    existing_id: string;
-                    existing: Record<string, unknown>;
-                    match_field: string;
-                    match_value: string;
-                  }>;
-                };
-                message: string;
-              }}
-              onApprove={onCrmApprove}
-              onCancel={onCrmCancel}
-              isProcessing={approvalState?.isProcessing ?? false}
-              result={finalResult}
-            />
-          </div>
-        );
-      }
+      return (
+        <div key={block.id} className="my-1">
+          <PendingApprovalCard
+            data={{
+              type: 'pending_approval',
+              status: (result.status as string) ?? 'pending_approval',
+              operation_id: operationId,
+              tool_name: toolName,
+              preview: (result.preview as Record<string, unknown>) ?? {},
+              message: (result.message as string) ?? '',
+              target_system: result.target_system as string | undefined,
+              record_type: result.record_type as string | undefined,
+              operation: result.operation as string | undefined,
+            }}
+            onApprove={onToolApprove}
+            onCancel={onToolCancel}
+            isProcessing={approvalState?.isProcessing ?? false}
+            result={finalResult}
+          />
+        </div>
+      );
     }
 
     return (
@@ -810,6 +931,23 @@ function MessageWithBlocks({
               </div>
             );
           }
+          if (block.type === 'error') {
+            return (
+              <div key={`error-${index}`} className="my-0.5">
+                <ErrorBlockIndicator block={block} />
+              </div>
+            );
+          }
+          if (block.type === 'artifact') {
+            return (
+              <div key={`artifact-${block.artifact.id}`} className="my-2">
+                <ArtifactTile
+                  artifact={block.artifact}
+                  onClick={() => onArtifactClick(block.artifact)}
+                />
+              </div>
+            );
+          }
           return null;
         })}
         
@@ -834,14 +972,17 @@ function AssistantTextBlock({
   text: string;
   isStreaming?: boolean;
 }): JSX.Element {
+  // Trim trailing whitespace when streaming to prevent cursor appearing on empty line
+  const displayText: string = isStreaming ? text.trimEnd() : text;
+  
   return (
     <div className="inline-block px-3 py-2 rounded-xl rounded-tl-sm bg-surface-800/80 text-surface-200 text-[13px] leading-relaxed">
-      <div className="prose prose-sm prose-invert max-w-none prose-p:my-1 prose-headings:my-2 prose-ul:my-1 prose-ol:my-1 prose-li:my-0.5 prose-pre:my-2 prose-code:text-primary-300 prose-code:bg-surface-900/50 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-code:text-xs prose-pre:bg-surface-900/80 prose-pre:text-xs prose-table:text-xs prose-th:bg-surface-700/50 prose-th:px-2 prose-th:py-1 prose-td:px-2 prose-td:py-1 prose-td:border-surface-700 prose-th:border-surface-700">
-        <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
+      <div className={`prose prose-sm prose-invert max-w-none prose-p:my-1 prose-headings:my-2 prose-ul:my-1 prose-ol:my-1 prose-li:my-0.5 prose-pre:my-2 prose-code:text-primary-300 prose-code:bg-surface-900/50 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-code:text-xs prose-pre:bg-surface-900/80 prose-pre:text-xs prose-table:text-xs prose-th:bg-surface-700/50 prose-th:px-2 prose-th:py-1 prose-td:px-2 prose-td:py-1 prose-td:border-surface-700 prose-th:border-surface-700 ${isStreaming ? '[&>p:last-of-type]:inline [&>p:last-of-type]:mb-0' : ''}`}>
+        <ReactMarkdown remarkPlugins={[remarkGfm]}>{displayText}</ReactMarkdown>
+        {isStreaming && (
+          <span className="inline-block w-1.5 h-3 bg-current animate-pulse ml-0.5 align-middle" />
+        )}
       </div>
-      {isStreaming && (
-        <span className="inline-block w-1.5 h-3 bg-current animate-pulse ml-0.5" />
-      )}
     </div>
   );
 }
@@ -880,6 +1021,54 @@ function ToolBlockIndicator({
       </svg>
     </button>
   );
+}
+
+/**
+ * Error block indicator - shows errors in a compact, non-intrusive style
+ */
+function ErrorBlockIndicator({
+  block,
+}: {
+  block: ErrorBlock;
+}): JSX.Element {
+  // Parse the error message to extract a user-friendly summary
+  const errorSummary = getErrorSummary(block.message);
+
+  return (
+    <div className="flex items-center gap-1.5 py-0.5 text-xs text-red-400/80">
+      <svg className="w-3.5 h-3.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+      </svg>
+      <span className="italic">{errorSummary}</span>
+    </div>
+  );
+}
+
+/**
+ * Extract a user-friendly error summary from error messages
+ */
+function getErrorSummary(errorMessage: string): string {
+  // Check for common error patterns
+  if (errorMessage.includes('overloaded_error') || errorMessage.includes('Overloaded')) {
+    return 'Service temporarily unavailable. Please try again.';
+  }
+  if (errorMessage.includes('rate_limit')) {
+    return 'Rate limit reached. Please wait a moment and try again.';
+  }
+  if (errorMessage.includes('timeout') || errorMessage.includes('Timeout')) {
+    return 'Request timed out. Please try again.';
+  }
+  if (errorMessage.includes('connection') || errorMessage.includes('network')) {
+    return 'Connection error. Please check your network and try again.';
+  }
+  
+  // For other errors, truncate if too long
+  const maxLength = 80;
+  if (errorMessage.length > maxLength) {
+    return errorMessage.slice(0, maxLength) + '...';
+  }
+  
+  return errorMessage || 'An error occurred. Please try again.';
 }
 
 /**
@@ -945,6 +1134,40 @@ function getToolStatusText(
         return `Prepared ${recordCount} ${pluralType} for review`;
       }
       return `Preparing ${recordCount} ${pluralType} for CRM...`;
+    }
+    case 'loop_over': {
+      const workflowName = typeof result?.workflow_name === 'string' 
+        ? result.workflow_name 
+        : (typeof input?.workflow_name === 'string' ? input.workflow_name : 'workflow');
+      const total = typeof result?.total === 'number' ? result.total : (Array.isArray(input?.items) ? input.items.length : 0);
+      const completed = typeof result?.completed === 'number' ? result.completed : 0;
+      const succeeded = typeof result?.succeeded === 'number' ? result.succeeded : 0;
+      const failed = typeof result?.failed === 'number' ? result.failed : 0;
+      
+      if (isComplete) {
+        if (failed > 0) {
+          return `Completed ${workflowName}: ${succeeded}/${total} succeeded, ${failed} failed`;
+        }
+        return `Completed ${workflowName} for ${total} item${total === 1 ? '' : 's'}`;
+      }
+      
+      // Show progress while running
+      if (completed > 0 && total > 0) {
+        const progressText = failed > 0 
+          ? `${completed}/${total} (${succeeded} ok, ${failed} failed)`
+          : `${completed}/${total}`;
+        return `Running ${workflowName}... ${progressText}`;
+      }
+      return `Running ${workflowName}...`;
+    }
+    case 'run_workflow': {
+      const workflowName = typeof result?.workflow_name === 'string'
+        ? result.workflow_name
+        : (typeof input?.workflow_name === 'string' ? input.workflow_name : 'workflow');
+      if (isComplete) {
+        return `Completed ${workflowName}`;
+      }
+      return `Running ${workflowName}...`;
     }
     default:
       return isComplete ? `Completed ${toolName}` : `Running ${toolName}...`;

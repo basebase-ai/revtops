@@ -81,6 +81,139 @@ def _get_status_key(organization_id: str, provider: str) -> str:
     return f"{organization_id}:{provider}"
 
 
+# =============================================================================
+# Admin endpoints (must be defined BEFORE parameterized routes)
+# =============================================================================
+
+
+class GlobalSyncResponse(BaseModel):
+    """Response model for global sync (all organizations)."""
+
+    status: str
+    task_id: str
+    integration_count: int
+
+
+class AdminIntegration(BaseModel):
+    """Integration info for admin view."""
+
+    id: str
+    organization_id: str
+    organization_name: str
+    provider: str
+    is_active: bool
+    last_sync_at: str | None
+    last_error: str | None
+    sync_stats: dict[str, int] | None
+    created_at: str | None
+
+
+class AdminIntegrationsResponse(BaseModel):
+    """Response model for admin integrations list."""
+
+    integrations: list[AdminIntegration]
+    total: int
+
+
+@router.get("/admin/integrations", response_model=AdminIntegrationsResponse)
+async def list_admin_integrations(user_id: str) -> AdminIntegrationsResponse:
+    """
+    List all integrations across all organizations (global admin only).
+    """
+    from models.database import get_admin_session
+    from models.user import User
+    
+    # Verify user is global admin
+    async with get_admin_session() as session:
+        result = await session.execute(
+            select(User).where(User.id == UUID(user_id))
+        )
+        user = result.scalar_one_or_none()
+        
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        if "global_admin" not in (user.roles or []):
+            raise HTTPException(status_code=403, detail="Requires global_admin role")
+        
+        # Get all integrations with org names
+        result = await session.execute(
+            select(Integration, Organization.name.label("org_name"))
+            .join(Organization, Integration.organization_id == Organization.id)
+            .order_by(Organization.name, Integration.provider)
+        )
+        rows = result.all()
+    
+    integrations: list[AdminIntegration] = []
+    for row in rows:
+        integration = row[0]
+        org_name = row[1]
+        integrations.append(AdminIntegration(
+            id=str(integration.id),
+            organization_id=str(integration.organization_id),
+            organization_name=org_name,
+            provider=integration.provider,
+            is_active=integration.is_active,
+            last_sync_at=integration.last_sync_at.isoformat() if integration.last_sync_at else None,
+            last_error=integration.last_error,
+            sync_stats=integration.sync_stats,
+            created_at=integration.created_at.isoformat() if integration.created_at else None,
+        ))
+    
+    return AdminIntegrationsResponse(
+        integrations=integrations,
+        total=len(integrations),
+    )
+
+
+@router.post("/admin/all", response_model=GlobalSyncResponse)
+async def trigger_global_sync(user_id: str) -> GlobalSyncResponse:
+    """
+    Trigger sync for ALL organizations (global admin only).
+    
+    This calls the same task that the hourly beat scheduler runs.
+    """
+    from models.database import get_admin_session
+    from models.user import User
+    
+    # Verify user is global admin
+    async with get_admin_session() as session:
+        result = await session.execute(
+            select(User).where(User.id == UUID(user_id))
+        )
+        user = result.scalar_one_or_none()
+        
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        if "global_admin" not in (user.roles or []):
+            raise HTTPException(status_code=403, detail="Requires global_admin role")
+        
+        # Count active integrations
+        result = await session.execute(
+            select(Integration).where(Integration.is_active == True)
+        )
+        integrations = result.scalars().all()
+    
+    if not integrations:
+        raise HTTPException(status_code=404, detail="No active integrations found")
+    
+    # Queue the global sync task (same as hourly beat task)
+    from workers.tasks.sync import sync_all_organizations
+    task = sync_all_organizations.delay()
+    
+    return GlobalSyncResponse(
+        status="queued",
+        task_id=task.id,
+        integration_count=len(integrations),
+    )
+
+
+# =============================================================================
+# Organization-scoped endpoints
+# =============================================================================
+
+
 @router.post("/{organization_id}/{provider}", response_model=SyncTriggerResponse)
 async def trigger_sync(
     organization_id: str, provider: str, background_tasks: BackgroundTasks
@@ -98,7 +231,7 @@ async def trigger_sync(
         )
 
     # Verify integration exists and is active
-    async with get_session() as session:
+    async with get_session(organization_id=organization_id) as session:
         result = await session.execute(
             select(Integration).where(
                 Integration.organization_id == customer_uuid,
@@ -145,7 +278,7 @@ async def get_sync_status(organization_id: str, provider: str) -> SyncStatusResp
 
     if not status:
         # Check database for last sync time
-        async with get_session() as session:
+        async with get_session(organization_id=organization_id) as session:
             result = await session.execute(
                 select(Integration).where(
                     Integration.organization_id == UUID(organization_id),
@@ -201,7 +334,7 @@ async def trigger_sync_all(
         raise HTTPException(status_code=400, detail="Invalid customer ID")
 
     # Get all active integrations
-    async with get_session() as session:
+    async with get_session(organization_id=organization_id) as session:
         result = await session.execute(
             select(Integration).where(
                 Integration.organization_id == customer_uuid,
@@ -250,8 +383,9 @@ async def sync_integration_data(organization_id: str, provider: str) -> None:
         print(f"[Sync] Starting sync for {provider} in org {organization_id}")
         connector = connector_class(organization_id)
         counts = await connector.sync_all()
+        print(f"[Sync] sync_all returned counts: {counts}")
         await connector.update_last_sync(counts)
-        print(f"[Sync] Completed sync for {provider}: {counts}")
+        print(f"[Sync] Completed sync for {provider}, saved sync_stats: {counts}")
 
         _sync_status[status_key]["status"] = "completed"
         _sync_status[status_key]["completed_at"] = datetime.utcnow()
@@ -363,7 +497,7 @@ async def queue_sync(organization_id: str, provider: str) -> QueuedSyncResponse:
         )
 
     # Verify integration exists
-    async with get_session() as session:
+    async with get_session(organization_id=organization_id) as session:
         result = await session.execute(
             select(Integration).where(
                 Integration.organization_id == customer_uuid,
@@ -400,7 +534,7 @@ async def queue_sync_all(organization_id: str) -> QueuedSyncResponse:
         raise HTTPException(status_code=400, detail="Invalid customer ID")
 
     # Verify org has integrations
-    async with get_session() as session:
+    async with get_session(organization_id=organization_id) as session:
         result = await session.execute(
             select(Integration).where(
                 Integration.organization_id == customer_uuid,

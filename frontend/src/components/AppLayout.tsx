@@ -14,6 +14,8 @@
  */
 
 import { useState, useEffect, useCallback } from 'react';
+import { useQuery } from '@tanstack/react-query';
+import { API_BASE } from '../lib/api';
 
 // Hook to detect mobile viewport
 function useIsMobile(): boolean {
@@ -35,14 +37,15 @@ import { useShallow } from 'zustand/react/shallow';
 import { Sidebar } from './Sidebar';
 import { Home } from './Home';
 import { DataSources } from './DataSources';
+import { Data } from './Data';
 import { Search } from './Search';
 import { Chat } from './Chat';
-import { Automations } from './Automations';
+import { Workflows } from './Workflows';
 import { AdminPanel } from './AdminPanel';
 import { OrganizationPanel } from './OrganizationPanel';
 import { ProfilePanel } from './ProfilePanel';
-import { useAppStore, useMasquerade, type ActiveTask } from '../store';
-import { useIntegrations, useTeamMembers, useWebSocket } from '../hooks';
+import { useAppStore, useMasquerade, useIntegrations, type ActiveTask } from '../store';
+import { useTeamMembers, useWebSocket } from '../hooks';
 
 // Re-export types from store for backwards compatibility
 export type { UserProfile, OrganizationInfo, ChatSummary, View } from '../store';
@@ -99,7 +102,14 @@ interface WsCrmApprovalResult {
   [key: string]: unknown;
 }
 
-type WsMessage = WsActiveTasks | WsTaskStarted | WsTaskChunk | WsTaskComplete | WsConversationCreated | WsCatchup | WsCrmApprovalResult;
+interface WsToolApprovalResult {
+  type: 'tool_approval_result';
+  operation_id: string;
+  status: string;
+  [key: string]: unknown;
+}
+
+type WsMessage = WsActiveTasks | WsTaskStarted | WsTaskChunk | WsTaskComplete | WsConversationCreated | WsCatchup | WsCrmApprovalResult | WsToolApprovalResult;
 
 // Props
 interface AppLayoutProps {
@@ -126,12 +136,31 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
     }))
   );
 
-  // React Query: Get integrations for connected count badge
-  const { data: integrations = [] } = useIntegrations(
-    organization?.id ?? null, 
-    user?.id ?? null
-  );
+  // Zustand: Get integrations for connected count badge
+  const integrations = useIntegrations();
+  const fetchIntegrations = useAppStore((state) => state.fetchIntegrations);
   const connectedIntegrationsCount = integrations.filter((i) => i.isActive).length;
+  
+  // Fetch integrations on mount and when org changes
+  useEffect(() => {
+    if (organization?.id && user?.id) {
+      void fetchIntegrations();
+    }
+  }, [organization?.id, user?.id, fetchIntegrations]);
+
+  // React Query: Get workflows for count badge
+  const { data: workflows = [] } = useQuery({
+    queryKey: ['workflows', organization?.id],
+    queryFn: async () => {
+      if (!organization?.id) return [];
+      const response = await fetch(`${API_BASE}/workflows/${organization.id}`);
+      if (!response.ok) return [];
+      const data = await response.json() as { workflows: Array<{ is_enabled: boolean }> };
+      return data.workflows ?? [];
+    },
+    enabled: !!organization?.id,
+  });
+  const workflowCount = workflows.length;
 
   // React Query: Get team members for member count (single source of truth)
   const { data: teamMembers = [] } = useTeamMembers(
@@ -171,6 +200,84 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
       setMobileSidebarOpen(false);
     }
   }, [currentView, currentChatId, isMobile]);
+
+  // Track if initial URL sync is done (prevent URL update effect from running first)
+  const [urlInitialized, setUrlInitialized] = useState(false);
+
+  // Parse URL and update state
+  const syncStateFromUrl = useCallback(() => {
+    const path = window.location.pathname;
+    
+    // Match /chat/:id
+    const chatMatch = path.match(/^\/chat\/([a-f0-9-]+)$/i);
+    if (chatMatch && chatMatch[1]) {
+      setCurrentChatId(chatMatch[1]);
+      setCurrentView('chat');
+      return;
+    }
+    
+    // Match view paths
+    const viewPaths: Record<string, typeof currentView> = {
+      '/': 'home',
+      '/chat': 'chat',
+      '/sources': 'data-sources',
+      '/data': 'data',
+      '/search': 'search',
+      '/workflows': 'workflows',
+      '/admin': 'admin',
+    };
+    
+    const matchedView = viewPaths[path];
+    if (matchedView) {
+      if (matchedView !== 'chat') {
+        setCurrentChatId(null);
+      }
+      setCurrentView(matchedView);
+    }
+  }, [setCurrentChatId, setCurrentView]);
+
+  // Sync URL with app state - restore state on page load (runs FIRST)
+  useEffect(() => {
+    syncStateFromUrl();
+    setUrlInitialized(true);
+  }, [syncStateFromUrl]);
+
+  // Handle browser back/forward buttons
+  useEffect(() => {
+    const handlePopState = (): void => {
+      syncStateFromUrl();
+    };
+    
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, [syncStateFromUrl]);
+
+  // Update URL when app state changes (only after initial sync)
+  useEffect(() => {
+    // Don't update URL until we've read the initial URL
+    if (!urlInitialized) return;
+    
+    let newPath: string;
+    
+    if (currentChatId) {
+      newPath = `/chat/${currentChatId}`;
+    } else {
+      const viewPaths: Record<typeof currentView, string> = {
+        'home': '/',
+        'chat': '/chat',
+        'data-sources': '/sources',
+        'data': '/data',
+        'search': '/search',
+        'workflows': '/workflows',
+        'admin': '/admin',
+      };
+      newPath = viewPaths[currentView] || '/';
+    }
+    
+    if (window.location.pathname !== newPath) {
+      window.history.pushState({}, '', newPath);
+    }
+  }, [currentChatId, currentView, urlInitialized]);
   
   // Panels
   const [showOrgPanel, setShowOrgPanel] = useState(false);
@@ -201,18 +308,19 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
         case 'task_chunk': {
           const { conversation_id, chunk } = parsed;
           const chunkData = chunk.data;
+          const chunkIndex = chunk.index;
           
           // Route chunk to appropriate conversation
           if (chunk.type === 'text_delta' && typeof chunkData === 'string') {
-            // Text chunk - append to streaming message
+            // Text chunk - append to streaming message with index for ordering
             const state = useAppStore.getState();
             const convState = state.conversations[conversation_id];
             if (convState?.streamingMessageId) {
-              appendToConversationStreaming(conversation_id, chunkData);
+              appendToConversationStreaming(conversation_id, chunkData, chunkIndex);
             } else {
-              // Start new streaming message
+              // Start new streaming message with chunk index
               const msgId = `assistant-${Date.now()}`;
-              startConversationStreaming(conversation_id, msgId, chunkData);
+              startConversationStreaming(conversation_id, msgId, chunkData, chunkIndex);
             }
           } else if (typeof chunkData === 'object' && chunkData !== null) {
             const data = chunkData as Record<string, unknown>;
@@ -267,11 +375,23 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
                 result: data.result as Record<string, unknown>,
                 status: 'complete',
               });
+              
+              // If workflows table was modified, notify the Workflows component to refresh
+              const result = data.result as Record<string, unknown> | undefined;
+              if (result?.table === 'workflows' && result?.success) {
+                window.dispatchEvent(new Event('workflows-updated'));
+              }
+              
+              // If CRM write tool completed, notify PendingChangesBar to refresh
+              const toolName = data.tool_name as string | undefined;
+              if (toolName === 'crm_write' || toolName === 'run_sql_write') {
+                window.dispatchEvent(new Event('pending-changes-updated'));
+              }
             } else if (data.type === 'text_block_complete') {
               // Text block complete, tools incoming
               markConversationMessageComplete(conversation_id);
-            } else if (data.type === 'crm_approval_result') {
-              // Store CRM approval result - create new Map to trigger re-render
+            } else if (data.type === 'crm_approval_result' || data.type === 'tool_approval_result') {
+              // Store tool approval result - create new Map to trigger re-render
               setCrmApprovalResults((prev) => {
                 const next = new Map(prev);
                 next.set(data.operation_id as string, data);
@@ -283,10 +403,54 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
         }
         
         case 'task_complete': {
-          console.log('[AppLayout] Task complete:', parsed.task_id, 'status:', parsed.status);
-          setConversationActiveTask(parsed.conversation_id, null);
-          setConversationThinking(parsed.conversation_id, false);
-          markConversationMessageComplete(parsed.conversation_id);
+          const taskComplete = parsed as WsTaskComplete;
+          console.log('[AppLayout] Task complete:', taskComplete.task_id, 'status:', taskComplete.status);
+          setConversationActiveTask(taskComplete.conversation_id, null);
+          setConversationThinking(taskComplete.conversation_id, false);
+          markConversationMessageComplete(taskComplete.conversation_id);
+          
+          // If task failed, add an error block to the conversation
+          if (taskComplete.status === 'failed' && taskComplete.error) {
+            console.error('[AppLayout] Task failed with error:', taskComplete.error);
+            // Append error block to the last assistant message or create a new one
+            const state = useAppStore.getState();
+            const convState = state.conversations[taskComplete.conversation_id];
+            if (convState) {
+              const messages = [...convState.messages];
+              const lastMsg = messages[messages.length - 1];
+              
+              // Create error block with structured data
+              const errorBlock = {
+                type: 'error' as const,
+                message: taskComplete.error,
+              };
+              
+              if (lastMsg && lastMsg.role === 'assistant') {
+                // Append error block to existing assistant message
+                messages[messages.length - 1] = {
+                  ...lastMsg,
+                  contentBlocks: [
+                    ...lastMsg.contentBlocks,
+                    errorBlock,
+                  ],
+                };
+              } else {
+                // Create new error message
+                messages.push({
+                  id: `error-${Date.now()}`,
+                  role: 'assistant',
+                  contentBlocks: [errorBlock],
+                  timestamp: new Date(),
+                });
+              }
+              useAppStore.setState({
+                conversations: {
+                  ...state.conversations,
+                  [taskComplete.conversation_id]: { ...convState, messages },
+                },
+              });
+            }
+          }
           break;
         }
         
@@ -309,8 +473,9 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
           break;
         }
         
-        case 'crm_approval_result': {
-          console.log('[AppLayout] CRM approval result:', parsed.operation_id);
+        case 'crm_approval_result':
+        case 'tool_approval_result': {
+          console.log('[AppLayout] Tool approval result:', parsed.operation_id, parsed.type);
           setCrmApprovalResults((prev) => {
             const next = new Map(prev);
             next.set(parsed.operation_id, parsed);
@@ -329,9 +494,9 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
     setCurrentChatId
   ]);
 
-  // Global WebSocket connection
+  // Global WebSocket connection - authenticated via JWT token
   const { sendJson, isConnected, connectionState } = useWebSocket(
-    user ? `/ws/chat/${user.id}` : '',
+    user ? '/ws/chat' : '',
     {
       onMessage: handleWebSocketMessage,
       onConnect: () => console.log('[AppLayout] WebSocket connected'),
@@ -351,7 +516,7 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
     const handleNavigate = (event: Event): void => {
       const customEvent = event as CustomEvent<string>;
       if (customEvent.detail) {
-        setCurrentView(customEvent.detail as 'home' | 'chat' | 'data-sources' | 'search' | 'automations' | 'admin');
+        setCurrentView(customEvent.detail as 'home' | 'chat' | 'data-sources' | 'search' | 'workflows' | 'admin');
       }
     };
     window.addEventListener('navigate', handleNavigate);
@@ -382,7 +547,7 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
     chat: 'Chat',
     'data-sources': 'Data Sources',
     search: 'Search',
-    automations: 'Automations',
+    workflows: 'Workflows',
     admin: 'Admin',
   };
 
@@ -465,6 +630,7 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
           currentView={currentView}
           onViewChange={setCurrentView}
           connectedSourcesCount={connectedIntegrationsCount}
+          workflowCount={workflowCount}
           recentChats={recentChats.slice(0, 10)}
           onSelectChat={handleSelectChat}
           onDeleteChat={handleDeleteChat}
@@ -498,11 +664,14 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
         {currentView === 'data-sources' && (
           <DataSources />
         )}
+        {currentView === 'data' && (
+          <Data />
+        )}
         {currentView === 'search' && (
           <Search organizationId={organization.id} />
         )}
-        {currentView === 'automations' && (
-          <Automations />
+        {currentView === 'workflows' && (
+          <Workflows />
         )}
         {currentView === 'admin' && (
           <AdminPanel />

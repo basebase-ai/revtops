@@ -69,12 +69,27 @@ class Deal(Base):
     synced_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime, default=datetime.utcnow, nullable=True
     )
+    
+    # Sync status: 'pending' (local only), 'synced' (in CRM), 'failed' (sync error)
+    sync_status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="synced"
+    )
+    
+    # Change tracking columns (for local modifications)
+    updated_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    updated_by: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
 
     # Relationships
     account: Mapped[Optional["Account"]] = relationship(
         "Account", back_populates="deals"
     )
-    owner: Mapped[Optional["User"]] = relationship("User", back_populates="deals")
+    owner: Mapped[Optional["User"]] = relationship(
+        "User", back_populates="deals", foreign_keys=[owner_id]
+    )
     pipeline: Mapped[Optional["Pipeline"]] = relationship(
         "Pipeline", back_populates="deals"
     )
@@ -97,4 +112,5 @@ class Deal(Base):
             "custom_fields": self.custom_fields,
             "source_id": self.source_id,
             "source_system": self.source_system,
+            "sync_status": self.sync_status,
         }

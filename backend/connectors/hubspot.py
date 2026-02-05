@@ -17,6 +17,7 @@ from typing import Any, Optional
 import httpx
 from sqlalchemy import select
 
+from api.websockets import broadcast_sync_progress
 from connectors.base import BaseConnector
 from models.account import Account
 from models.activity import Activity
@@ -41,6 +42,24 @@ class HubSpotConnector(BaseConnector):
         self._owner_cache: dict[str, Optional[uuid.UUID]] = {}
         # Cache for HubSpot pipeline ID -> internal pipeline ID mapping
         self._pipeline_cache: dict[str, uuid.UUID] = {}
+
+    async def sync_all(self) -> dict[str, int]:
+        """Run all sync operations with progress broadcasting."""
+        # Call parent sync_all
+        result = await super().sync_all()
+        
+        # Calculate total synced items
+        total = sum(result.values())
+        
+        # Broadcast completion
+        await broadcast_sync_progress(
+            organization_id=self.organization_id,
+            provider=self.source_system,
+            count=total,
+            status="completed",
+        )
+        
+        return result
 
     async def _get_headers(self) -> dict[str, str]:
         """Get authorization headers for HubSpot API."""
@@ -102,6 +121,7 @@ class HubSpotConnector(BaseConnector):
         """Paginate through HubSpot API results."""
         all_results: list[dict[str, Any]] = []
         after: Optional[str] = None
+        page_count = 0
 
         while True:
             params: dict[str, Any] = {
@@ -116,6 +136,18 @@ class HubSpotConnector(BaseConnector):
             data = await self._make_request("GET", endpoint, params=params)
             results = data.get("results", [])
             all_results.extend(results)
+            page_count += 1
+            
+            # Log first page for debugging - include raw response keys on empty
+            if page_count == 1:
+                print(f"[HubSpot] {endpoint}: first page returned {len(results)} results")
+                if len(results) == 0:
+                    print(f"[HubSpot] {endpoint}: empty response, keys in data: {list(data.keys())}")
+                    # Check if there's an error or message field
+                    if "message" in data:
+                        print(f"[HubSpot] {endpoint}: message: {data.get('message')}")
+                    if "status" in data:
+                        print(f"[HubSpot] {endpoint}: status: {data.get('status')}")
 
             # Check for pagination
             paging = data.get("paging", {})
@@ -124,6 +156,9 @@ class HubSpotConnector(BaseConnector):
 
             if not after:
                 break
+        
+        if page_count > 1:
+            print(f"[HubSpot] {endpoint}: fetched {page_count} pages, {len(all_results)} total results")
 
         return all_results
 
@@ -136,7 +171,7 @@ class HubSpotConnector(BaseConnector):
         """
         pipelines_data = await self.get_pipelines()
 
-        async with get_session() as session:
+        async with get_session(organization_id=self.organization_id) as session:
             count = 0
             for hs_pipeline in pipelines_data:
                 hs_pipeline_id = hs_pipeline.get("id", "")
@@ -215,7 +250,7 @@ class HubSpotConnector(BaseConnector):
         if self._pipeline_cache:
             return
 
-        async with get_session() as session:
+        async with get_session(organization_id=self.organization_id) as session:
             result = await session.execute(
                 select(Pipeline).where(
                     Pipeline.organization_id == uuid.UUID(self.organization_id),
@@ -248,8 +283,16 @@ class HubSpotConnector(BaseConnector):
         raw_deals = await self._paginate_results(
             "/crm/v3/objects/deals", properties=properties
         )
+        
+        # Broadcast initial progress
+        await broadcast_sync_progress(
+            organization_id=self.organization_id,
+            provider=self.source_system,
+            count=0,
+            status="syncing",
+        )
 
-        async with get_session() as session:
+        async with get_session(organization_id=self.organization_id) as session:
             count = 0
             for raw_deal in raw_deals:
                 hs_id = raw_deal.get("id", "")
@@ -267,6 +310,15 @@ class HubSpotConnector(BaseConnector):
                 deal = await self._normalize_deal(raw_deal, existing_id=existing.id if existing else None)
                 await session.merge(deal)
                 count += 1
+                
+                # Broadcast progress every 10 deals
+                if count % 10 == 0:
+                    await broadcast_sync_progress(
+                        organization_id=self.organization_id,
+                        provider=self.source_system,
+                        count=count,
+                        status="syncing",
+                    )
             await session.commit()
 
         return count
@@ -362,8 +414,16 @@ class HubSpotConnector(BaseConnector):
         raw_companies = await self._paginate_results(
             "/crm/v3/objects/companies", properties=properties
         )
+        
+        # Broadcast progress
+        await broadcast_sync_progress(
+            organization_id=self.organization_id,
+            provider=self.source_system,
+            count=0,
+            status="syncing",
+        )
 
-        async with get_session() as session:
+        async with get_session(organization_id=self.organization_id) as session:
             count = 0
             for raw_company in raw_companies:
                 hs_id = raw_company.get("id", "")
@@ -381,6 +441,15 @@ class HubSpotConnector(BaseConnector):
                 account = await self._normalize_account(raw_company, existing_id=existing.id if existing else None)
                 await session.merge(account)
                 count += 1
+                
+                # Broadcast progress every 10 accounts
+                if count % 10 == 0:
+                    await broadcast_sync_progress(
+                        organization_id=self.organization_id,
+                        provider=self.source_system,
+                        count=count,
+                        status="syncing",
+                    )
             await session.commit()
 
         return count
@@ -430,28 +499,35 @@ class HubSpotConnector(BaseConnector):
 
     async def sync_contacts(self) -> int:
         """Sync all contacts from HubSpot."""
+        # Only request standard properties that exist in all HubSpot instances
+        # Removed 'company' as it's a custom/optional text field
         properties = [
             "firstname",
             "lastname",
             "email",
             "jobtitle",
             "phone",
-            "company",
             "hubspot_owner_id",
             "createdate",
             "hs_lastmodifieddate",
         ]
 
         # Fetch contacts with company associations
-        raw_contacts = await self._paginate_results(
-            "/crm/v3/objects/contacts",
-            properties=properties,
-            associations=["companies"],
-        )
+        print(f"[HubSpot] Fetching contacts for org {self.organization_id}...")
+        try:
+            raw_contacts = await self._paginate_results(
+                "/crm/v3/objects/contacts",
+                properties=properties,
+                associations=["companies"],
+            )
+            print(f"[HubSpot] Fetched {len(raw_contacts)} contacts from API")
+        except Exception as e:
+            print(f"[HubSpot] ERROR fetching contacts: {e}")
+            raise
 
         # Build a map of HubSpot company IDs to internal account IDs
         hs_company_id_to_account_id: dict[str, uuid.UUID] = {}
-        async with get_session() as session:
+        async with get_session(organization_id=self.organization_id) as session:
             result = await session.execute(
                 select(Account).where(
                     Account.organization_id == uuid.UUID(self.organization_id),
@@ -462,7 +538,15 @@ class HubSpotConnector(BaseConnector):
             for account in accounts:
                 hs_company_id_to_account_id[account.source_id] = account.id
 
-        async with get_session() as session:
+        # Broadcast progress
+        await broadcast_sync_progress(
+            organization_id=self.organization_id,
+            provider=self.source_system,
+            count=0,
+            status="syncing",
+        )
+
+        async with get_session(organization_id=self.organization_id) as session:
             count = 0
             for raw_contact in raw_contacts:
                 hs_id = raw_contact.get("id", "")
@@ -495,6 +579,15 @@ class HubSpotConnector(BaseConnector):
                 )
                 await session.merge(contact)
                 count += 1
+                
+                # Broadcast progress every 10 contacts
+                if count % 10 == 0:
+                    await broadcast_sync_progress(
+                        organization_id=self.organization_id,
+                        provider=self.source_system,
+                        count=count,
+                        status="syncing",
+                    )
             await session.commit()
 
         return count
@@ -549,7 +642,7 @@ class HubSpotConnector(BaseConnector):
                     f"/crm/v3/objects/{engagement_type}", properties=properties
                 )
 
-                async with get_session() as session:
+                async with get_session(organization_id=self.organization_id) as session:
                     for raw_engagement in raw_engagements:
                         activity = self._normalize_engagement(
                             raw_engagement, engagement_type
@@ -652,7 +745,7 @@ class HubSpotConnector(BaseConnector):
             return None
 
         # Look up user by email (email is globally unique, not per-org)
-        async with get_session() as session:
+        async with get_session(organization_id=self.organization_id) as session:
             result = await session.execute(
                 select(User).where(User.email == owner_email)
             )

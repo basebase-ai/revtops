@@ -10,7 +10,7 @@
  * Uses React Query for server state (integrations list).
  */
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import Nango from '@nangohq/frontend';
 import type { IconType } from 'react-icons';
 import {
@@ -25,9 +25,8 @@ import {
 import { HiOutlineCalendar, HiOutlineMail, HiGlobeAlt, HiUserGroup, HiExclamation, HiDeviceMobile, HiMicrophone, HiUpload } from 'react-icons/hi';
 import { SheetImporter } from './SheetImporter';
 import { API_BASE } from '../lib/api';
-import { useAppStore } from '../store';
-import { useIntegrations, useInvalidateIntegrations, type Integration } from '../hooks';
-import type { SyncStats } from '../hooks/useIntegrations';
+import { useAppStore, useIntegrations, useIntegrationsLoading, type Integration, type SyncStats } from '../store';
+import { useWebSocket } from '../hooks/useWebSocket';
 
 // Detect if user is on a mobile device
 function useIsMobile(): boolean {
@@ -104,26 +103,39 @@ interface DisplayIntegration extends Integration {
 /**
  * Format sync stats into a human-readable summary string.
  * Shows counts for different object types synced.
+ * Always shows stats for CRM providers (even zeros) for trust/debugging.
  */
 function formatSyncStats(stats: SyncStats | null, provider: string): string | null {
   if (!stats) return null;
 
   const parts: string[] = [];
 
-  // CRM-specific stats
-  if (stats.contacts && stats.contacts > 0) {
-    parts.push(`${stats.contacts.toLocaleString()} contacts`);
-  }
-  if (stats.accounts && stats.accounts > 0) {
-    parts.push(`${stats.accounts.toLocaleString()} accounts`);
-  }
-  if (stats.deals && stats.deals > 0) {
-    parts.push(`${stats.deals.toLocaleString()} deals`);
+  // CRM providers always show contact/account/deal counts (even if 0)
+  const isCrmProvider = provider === 'hubspot' || provider === 'salesforce';
+  
+  if (isCrmProvider) {
+    // Always show CRM stats for trust and debugging
+    const contacts = stats.contacts ?? 0;
+    const accounts = stats.accounts ?? 0;
+    const deals = stats.deals ?? 0;
+    parts.push(`${contacts.toLocaleString()} contacts`);
+    parts.push(`${accounts.toLocaleString()} accounts`);
+    parts.push(`${deals.toLocaleString()} deals`);
+  } else {
+    // Non-CRM: only show if > 0
+    if (stats.contacts && stats.contacts > 0) {
+      parts.push(`${stats.contacts.toLocaleString()} contacts`);
+    }
+    if (stats.accounts && stats.accounts > 0) {
+      parts.push(`${stats.accounts.toLocaleString()} accounts`);
+    }
+    if (stats.deals && stats.deals > 0) {
+      parts.push(`${stats.deals.toLocaleString()} deals`);
+    }
   }
 
   // Activity-based connectors (email, calendar, meetings)
-  if (stats.activities && stats.activities > 0) {
-    // Use provider-specific labels for activities
+  if (stats.activities !== undefined) {
     const activityLabel = getActivityLabel(provider, stats.activities);
     parts.push(activityLabel);
   }
@@ -150,6 +162,9 @@ function getActivityLabel(provider: string, count: number): string {
     case 'fireflies':
     case 'zoom':
       return `${formatted} recordings`;
+    case 'hubspot':
+    case 'salesforce':
+      return `${formatted} records`;
     default:
       return `${formatted} activities`;
   }
@@ -162,21 +177,71 @@ export function DataSources(): JSX.Element {
   // Check if on mobile device
   const isMobile = useIsMobile();
 
-  // React Query: Fetch integrations with automatic caching and refetch
-  const { 
-    data: rawIntegrations = [], 
-    isLoading: integrationsLoading,
-  } = useIntegrations(organization?.id ?? null, user?.id ?? null);
+  // Zustand: Get integrations state
+  const rawIntegrations = useIntegrations();
+  const integrationsLoading = useIntegrationsLoading();
+  const fetchIntegrations = useAppStore((state) => state.fetchIntegrations);
 
-  // Get invalidation function for manual refetch after connect/disconnect
-  const invalidateIntegrations = useInvalidateIntegrations();
+  // Fetch integrations when component mounts or user/org changes
+  useEffect(() => {
+    if (organization?.id && user?.id) {
+      void fetchIntegrations();
+    }
+  }, [organization?.id, user?.id, fetchIntegrations]);
 
   const [syncingProviders, setSyncingProviders] = useState<Set<string>>(new Set());
+  const [disconnectingProviders, setDisconnectingProviders] = useState<Set<string>>(new Set());
   const [connectingProvider, setConnectingProvider] = useState<string | null>(null);
   const [showSheetImporter, setShowSheetImporter] = useState(false);
+  
+  // Live sync progress from WebSocket
+  const [syncProgress, setSyncProgress] = useState<Record<string, number>>({});
 
   const organizationId = organization?.id ?? '';
   const userId = user?.id ?? '';
+  
+  // Handle WebSocket messages for sync progress
+  const handleWsMessage = useCallback((message: string) => {
+    try {
+      const data = JSON.parse(message) as { type: string; provider?: string; count?: number; status?: string };
+      if (data.type === 'sync_progress' && data.provider !== undefined && data.count !== undefined) {
+        setSyncProgress((prev) => ({
+          ...prev,
+          [data.provider as string]: data.count as number,
+        }));
+        
+        // If sync is in progress, add to syncingProviders to show spinner
+        if (data.status === 'syncing') {
+          setSyncingProviders((prev) => new Set(prev).add(data.provider as string));
+        }
+        
+        // If sync completed, refresh integrations to get final data
+        if (data.status === 'completed') {
+          void fetchIntegrations();
+          // Clear the progress for this provider after a short delay
+          setTimeout(() => {
+            setSyncProgress((prev) => {
+              const next = { ...prev };
+              delete next[data.provider as string];
+              return next;
+            });
+            setSyncingProviders((prev) => {
+              const next = new Set(prev);
+              next.delete(data.provider as string);
+              return next;
+            });
+          }, 1000);
+        }
+      }
+    } catch {
+      // Ignore non-JSON messages or parsing errors
+    }
+  }, [fetchIntegrations]);
+  
+  // Connect to WebSocket for sync progress updates - authenticated via JWT token
+  useWebSocket(userId ? '/ws/chat' : '', {
+    onMessage: handleWsMessage,
+  });
 
   // Transform raw integrations to display integrations with UI metadata
   // Filter out raw "microsoft" integration - it's a meta-integration from Nango's OAuth.
@@ -268,14 +333,19 @@ export function DataSources(): JSX.Element {
             eventType === 'success'
           ) {
             // Connection successful - confirm and create integration record
-            console.log('Connection successful, confirming integration');
+            // Extract the actual Nango connection_id from the event
+            // The event payload contains the real connection_id that Nango created
+            const eventData = event as { type: string; connectionId?: string; connection_id?: string; payload?: { connectionId?: string } };
+            const nangoConnectionId = eventData.connectionId || eventData.connection_id || eventData.payload?.connectionId || connection_id;
+            
+            console.log('Connection successful, confirming integration with connectionId:', nangoConnectionId);
             try {
               const confirmResponse = await fetch(`${API_BASE}/auth/integrations/confirm`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                   provider,
-                  connection_id,
+                  connection_id: nangoConnectionId,  // Use the actual Nango connection_id
                   organization_id: organizationId,
                   user_id: scope === 'user' ? userId : undefined,
                 }),
@@ -291,7 +361,7 @@ export function DataSources(): JSX.Element {
             }
             
             // Invalidate cache to refetch integrations
-            invalidateIntegrations(organizationId);
+            void fetchIntegrations();
             setConnectingProvider(null);
           } else if (eventType === 'close' || eventType === 'closed') {
             // User closed the popup
@@ -306,7 +376,7 @@ export function DataSources(): JSX.Element {
   };
 
   const handleDisconnect = async (provider: string): Promise<void> => {
-    if (!organizationId) return;
+    if (!organizationId || disconnectingProviders.has(provider)) return;
     
     // Derive scope from provider (source of truth) rather than trusting passed value
     const isUserScoped = USER_SCOPED_PROVIDERS.has(provider);
@@ -318,10 +388,23 @@ export function DataSources(): JSX.Element {
     }
     
     if (!confirm(`Are you sure you want to disconnect ${provider}?`)) return;
+    
+    // Ask if user wants to delete all synced data
+    const deleteData = confirm(
+      `Do you also want to delete all data synced from ${provider}?\n\n` +
+      `This includes activities, meetings, and other records imported from this integration.\n\n` +
+      `Click OK to delete data, or Cancel to keep the data.`
+    );
+
+    // Set disconnecting state immediately for instant UI feedback
+    setDisconnectingProviders((prev) => new Set(prev).add(provider));
 
     const params = new URLSearchParams({ organization_id: organizationId });
     if (isUserScoped && userId) {
       params.set('user_id', userId);
+    }
+    if (deleteData) {
+      params.set('delete_data', 'true');
     }
     const url = `${API_BASE}/auth/integrations/${provider}?${params.toString()}`;
     console.log('Disconnecting:', { provider, organizationId, userId, url });
@@ -342,12 +425,33 @@ export function DataSources(): JSX.Element {
         throw new Error(responseText);
       }
 
+      // Parse response to show deletion summary
+      try {
+        const data = JSON.parse(responseText) as { 
+          deleted_activities?: number; 
+          deleted_meetings?: number 
+        };
+        if (data.deleted_activities !== undefined || data.deleted_meetings !== undefined) {
+          const activities = data.deleted_activities ?? 0;
+          const meetings = data.deleted_meetings ?? 0;
+          alert(`Disconnected ${provider}.\n\nDeleted ${activities} activities and ${meetings} orphaned meetings.`);
+        }
+      } catch {
+        // Response wasn't JSON or didn't have deletion info, that's fine
+      }
+
       console.log('Disconnect successful, invalidating integrations cache...');
       // Invalidate cache to refetch integrations
-      invalidateIntegrations(organizationId);
+      void fetchIntegrations();
     } catch (error) {
       console.error('Failed to disconnect:', error);
       alert(`Failed to disconnect: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      // Remove from disconnecting state on error so user can retry
+      setDisconnectingProviders((prev) => {
+        const next = new Set(prev);
+        next.delete(provider);
+        return next;
+      });
     }
   };
 
@@ -378,7 +482,7 @@ export function DataSources(): JSX.Element {
 
           // Invalidate cache to get updated sync status
           if (status.status === 'completed' || status.status === 'failed') {
-            invalidateIntegrations(organizationId);
+            void fetchIntegrations();
           }
         } else {
           attempts++;
@@ -441,11 +545,14 @@ export function DataSources(): JSX.Element {
   ): JSX.Element => {
     const isConnecting = connectingProvider === integration.provider;
     const isSyncing = syncingProviders.has(integration.provider);
+    const isDisconnecting = disconnectingProviders.has(integration.provider);
 
-    // State-specific styling
+    // State-specific styling - fade card when disconnecting
     const cardClass = state === 'action-required'
       ? 'card p-4 border-amber-500/30 bg-amber-500/5'
-      : 'card p-4';
+      : isDisconnecting
+        ? 'card p-4 opacity-50 pointer-events-none transition-opacity duration-200'
+        : 'card p-4';
 
     const iconOpacity = state === 'available' ? 'opacity-60' : '';
 
@@ -553,9 +660,15 @@ export function DataSources(): JSX.Element {
                   Last synced: {new Date(integration.lastSyncAt).toLocaleString()}
                 </p>
               )}
-              {state === 'connected' && integration.syncStats && (
+              {state === 'connected' && (syncProgress[integration.provider] !== undefined || integration.syncStats) && (
                 <p className="text-xs text-surface-400 mt-1 hidden sm:block">
-                  {formatSyncStats(integration.syncStats, integration.provider)}
+                  {syncProgress[integration.provider] !== undefined ? (
+                    <span className="text-primary-400">
+                      Syncing... {getActivityLabel(integration.provider, syncProgress[integration.provider] ?? 0)}
+                    </span>
+                  ) : integration.syncStats ? (
+                    formatSyncStats(integration.syncStats, integration.provider)
+                  ) : null}
                 </p>
               )}
               {state === 'connected' && integration.lastError && (
@@ -598,9 +711,16 @@ export function DataSources(): JSX.Element {
             {state === 'connected' && (
               <button
                 onClick={() => void handleDisconnect(integration.provider)}
-                className="px-3 sm:px-4 py-2 text-sm font-medium text-red-400 hover:text-red-300 hover:bg-red-500/10 rounded-lg transition-colors"
+                disabled={isDisconnecting}
+                className="px-3 sm:px-4 py-2 text-sm font-medium text-red-400 hover:text-red-300 hover:bg-red-500/10 disabled:opacity-50 rounded-lg transition-colors flex items-center gap-2"
               >
-                Disconnect
+                {isDisconnecting && (
+                  <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                  </svg>
+                )}
+                {isDisconnecting ? 'Disconnecting...' : 'Disconnect'}
               </button>
             )}
           </div>
