@@ -223,3 +223,94 @@ async def process_slack_dm(
         "conversation_id": str(conversation.id),
         "response_length": len(response_text),
     }
+
+
+async def process_slack_mention(
+    team_id: str,
+    channel_id: str,
+    user_id: str,
+    message_text: str,
+    thread_ts: str,
+) -> dict[str, Any]:
+    """
+    Process an @mention of the bot in a Slack channel.
+    
+    Similar to process_slack_dm but replies in a thread.
+    
+    Args:
+        team_id: Slack workspace/team ID
+        channel_id: Slack channel ID where mention occurred
+        user_id: Slack user ID who mentioned the bot
+        message_text: Message text (with @mention stripped)
+        thread_ts: Thread timestamp to reply in
+        
+    Returns:
+        Dict with status and conversation details
+    """
+    logger.info(
+        "[slack_conversations] Processing @mention: team=%s, channel=%s, user=%s, thread=%s",
+        team_id,
+        channel_id,
+        user_id,
+        thread_ts,
+    )
+    
+    # Find the organization for this Slack workspace
+    organization_id = await find_organization_by_slack_team(team_id)
+    if not organization_id:
+        logger.warning("[slack_conversations] No organization found for team %s", team_id)
+        return {"status": "error", "error": f"No organization found for team {team_id}"}
+    
+    # For channel mentions, use a conversation keyed by channel+thread
+    # This allows threaded conversations to maintain context
+    source_channel_id = f"{channel_id}:{thread_ts}"
+    
+    conversation = await find_or_create_conversation(
+        organization_id=organization_id,
+        slack_channel_id=source_channel_id,
+        slack_user_id=user_id,
+    )
+    
+    # Process message through orchestrator
+    orchestrator = ChatOrchestrator(
+        user_id=None,  # No RevTops user for Slack conversations
+        organization_id=organization_id,
+        conversation_id=str(conversation.id),
+        user_email=None,
+        workflow_context=None,
+    )
+    
+    # Collect the full response
+    response_text = ""
+    try:
+        async for chunk in orchestrator.process_message(message_text):
+            if not chunk.startswith("{"):
+                response_text += chunk
+    except Exception as e:
+        logger.error("[slack_conversations] Error processing mention: %s", e, exc_info=True)
+        response_text = f"Sorry, I encountered an error: {str(e)}"
+    
+    # Post response back to Slack in the thread
+    if response_text.strip():
+        try:
+            connector = SlackConnector(organization_id=organization_id)
+            await connector.post_message(
+                channel=channel_id,
+                text=response_text.strip(),
+                thread_ts=thread_ts,  # Reply in thread
+            )
+            logger.info(
+                "[slack_conversations] Posted thread response to %s (thread %s, %d chars)",
+                channel_id,
+                thread_ts,
+                len(response_text)
+            )
+        except Exception as e:
+            logger.error("[slack_conversations] Error posting to Slack: %s", e, exc_info=True)
+            return {"status": "error", "error": f"Failed to post response: {str(e)}"}
+    
+    return {
+        "status": "success",
+        "conversation_id": str(conversation.id),
+        "response_length": len(response_text),
+    }

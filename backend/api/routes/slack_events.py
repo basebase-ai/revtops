@@ -4,6 +4,7 @@ Slack Events API webhook endpoint.
 Handles incoming events from Slack, including:
 - URL verification challenge (when setting up the webhook)
 - message.im events (DMs to the bot)
+- app_mention events (@mentions in channels)
 
 Security:
 - All requests are verified using HMAC-SHA256 signature
@@ -15,6 +16,7 @@ import asyncio
 import hashlib
 import hmac
 import logging
+import re
 import time
 from typing import Any
 
@@ -22,7 +24,7 @@ import redis.asyncio as redis
 from fastapi import APIRouter, HTTPException, Request, Response
 
 from config import settings
-from services.slack_conversations import process_slack_dm
+from services.slack_conversations import process_slack_dm, process_slack_mention
 
 logger = logging.getLogger(__name__)
 
@@ -210,6 +212,41 @@ async def handle_slack_events(request: Request) -> Response | dict[str, Any]:
                 )
                 
                 return {"ok": True}
+        
+        # Handle @mentions in channels
+        if inner_type == "app_mention":
+            channel_id = event.get("channel", "")
+            user_id = event.get("user", "")
+            text = event.get("text", "")
+            event_ts = event.get("event_ts", "")
+            thread_ts = event.get("thread_ts")  # Reply in thread if already in one
+            
+            # Strip the @mention from the text (e.g., "<@U123ABC> what's my pipeline?")
+            text = re.sub(r'<@[A-Z0-9]+>\s*', '', text).strip()
+            
+            if not text:
+                logger.debug("[slack_events] Skipping empty mention")
+                return {"ok": True}
+            
+            logger.info(
+                "[slack_events] Processing @mention from %s in %s: %s",
+                user_id,
+                channel_id,
+                text[:50]
+            )
+            
+            # Process asynchronously - reply in thread (use event_ts if not already in thread)
+            asyncio.create_task(
+                process_slack_mention(
+                    team_id=team_id,
+                    channel_id=channel_id,
+                    user_id=user_id,
+                    message_text=text,
+                    thread_ts=thread_ts or event_ts,  # Reply in thread
+                )
+            )
+            
+            return {"ok": True}
         
         # Log unhandled event types
         logger.debug("[slack_events] Unhandled event type: %s", inner_type)
