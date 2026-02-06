@@ -28,6 +28,7 @@ from config import settings, get_nango_integration_id, get_provider_scope
 from models.database import get_session
 from models.integration import Integration
 from models.user import User
+from services.permissions import can_access_resource, can_edit_resource, get_default_integration_tier
 from models.organization import Organization
 from services.nango import get_nango_client
 
@@ -75,6 +76,9 @@ class IntegrationResponse(BaseModel):
     team_total: int = 0
     # Sync statistics - counts of objects synced
     sync_stats: Optional[dict[str, int]] = None
+    access_tier: str = "team"
+    access_level: str = "edit"
+    can_edit: bool = False
 
 
 class IntegrationsListResponse(BaseModel):
@@ -450,6 +454,7 @@ class TeamMemberResponse(BaseModel):
     email: str
     role: Optional[str]
     avatar_url: Optional[str]
+    team_status: str = "org"
 
 
 class TeamMembersListResponse(BaseModel):
@@ -496,10 +501,51 @@ async def get_organization_members(
                     email=u.email,
                     role=u.role,
                     avatar_url=u.avatar_url,
+                    team_status=("team" if str(u.id) in (requesting_user.team_member_ids or []) else "org"),
                 )
                 for u in users
             ]
         )
+
+
+class TeamStatusUpdateRequest(BaseModel):
+    team_status: str
+
+
+@router.patch("/organizations/{org_id}/members/{member_id}/team-status")
+async def update_team_status(
+    org_id: str,
+    member_id: str,
+    request: TeamStatusUpdateRequest,
+    user_id: Optional[str] = None,
+) -> dict[str, str]:
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    if request.team_status not in {"team", "org"}:
+        raise HTTPException(status_code=400, detail="team_status must be 'team' or 'org'")
+    try:
+        org_uuid = UUID(org_id)
+        user_uuid = UUID(user_id)
+        member_uuid = UUID(member_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid ID format")
+
+    async with get_session() as session:
+        requester = await session.get(User, user_uuid)
+        member = await session.get(User, member_uuid)
+        if not requester or requester.organization_id != org_uuid:
+            raise HTTPException(status_code=403, detail="Not authorized")
+        if not member or member.organization_id != org_uuid:
+            raise HTTPException(status_code=404, detail="Member not found")
+        ids = set(requester.team_member_ids or [])
+        member_str = str(member_uuid)
+        if request.team_status == "team":
+            ids.add(member_str)
+        else:
+            ids.discard(member_str)
+        requester.team_member_ids = sorted(ids)
+        await session.commit()
+        return {"member_id": member_str, "team_status": request.team_status}
 
 
 class UpdateOrganizationRequest(BaseModel):
@@ -869,6 +915,8 @@ async def confirm_integration(
             existing.is_active = True
             existing.last_error = None
             existing.updated_at = datetime.utcnow()
+            if not existing.access_tier:
+                existing.access_tier = get_default_integration_tier(request.provider)
         else:
             # Create new integration with the actual Nango connection_id
             new_integration = Integration(
@@ -879,6 +927,8 @@ async def confirm_integration(
                 nango_connection_id=nango_connection_id,
                 connected_by_user_id=user_uuid,
                 is_active=True,
+                access_tier=get_default_integration_tier(request.provider),
+                access_level="edit",
             )
             session.add(new_integration)
         
@@ -1049,6 +1099,7 @@ async def list_integrations(
     # This avoids issues with inconsistent end_user.id values in Nango
 
     async with get_session(organization_id=str(org_uuid)) as db_session:
+        viewer = await db_session.get(User, current_user_uuid) if current_user_uuid else None
         # RLS context is set by get_session()
         
         # Get all integrations from our database for this org
@@ -1064,6 +1115,8 @@ async def list_integrations(
         user_scoped_integrations: dict[str, list[Integration]] = {}
         
         for i in all_integrations:
+            if viewer and not can_access_resource(owner_id=i.connected_by_user_id or i.user_id, viewer=viewer, tier=i.access_tier):
+                continue
             if i.scope == "user":
                 if i.provider not in user_scoped_integrations:
                     user_scoped_integrations[i.provider] = []
@@ -1110,6 +1163,9 @@ async def list_integrations(
                 team_connections=[],
                 team_total=team_total,
                 sync_stats=integration.sync_stats,
+                access_tier=integration.access_tier,
+                access_level=integration.access_level,
+                can_edit=(can_edit_resource(owner_id=integration.connected_by_user_id or integration.user_id, viewer=viewer, tier=integration.access_tier, access_level=integration.access_level) if viewer else False),
             ))
         
         # Add user-scoped integrations (aggregated by provider)
@@ -1155,6 +1211,9 @@ async def list_integrations(
                 team_connections=team_connections,
                 team_total=team_total,
                 sync_stats=ref_integration.sync_stats if ref_integration else None,
+                access_tier=ref_integration.access_tier if ref_integration else "team",
+                access_level=ref_integration.access_level if ref_integration else "edit",
+                can_edit=(can_edit_resource(owner_id=(ref_integration.connected_by_user_id if ref_integration else None) or (ref_integration.user_id if ref_integration else None), viewer=viewer, tier=(ref_integration.access_tier if ref_integration else "team"), access_level=(ref_integration.access_level if ref_integration else "edit")) if viewer else False),
             ))
 
         return IntegrationsListResponse(integrations=response_integrations)
@@ -1460,3 +1519,32 @@ async def run_initial_sync(
             await connector.record_error(str(e))
         except Exception:
             pass  # Ignore errors while recording error
+
+
+class IntegrationSharingUpdateRequest(BaseModel):
+    access_tier: str
+    access_level: str
+
+
+@router.patch("/integrations/{integration_id}/sharing")
+async def update_integration_sharing(
+    integration_id: str,
+    request: IntegrationSharingUpdateRequest,
+    user_id: str,
+) -> dict[str, str]:
+    try:
+        integration_uuid = UUID(integration_id)
+        user_uuid = UUID(user_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid ID format")
+    async with get_session() as session:
+        viewer = await session.get(User, user_uuid)
+        integration = await session.get(Integration, integration_uuid)
+        if not viewer or not integration or viewer.organization_id != integration.organization_id:
+            raise HTTPException(status_code=404, detail="Integration not found")
+        if not can_edit_resource(owner_id=integration.connected_by_user_id or integration.user_id, viewer=viewer, tier=integration.access_tier, access_level=integration.access_level):
+            raise HTTPException(status_code=403, detail="No edit permission")
+        integration.access_tier = request.access_tier
+        integration.access_level = request.access_level
+        await session.commit()
+        return {"status": "updated"}

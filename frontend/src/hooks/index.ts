@@ -8,6 +8,7 @@
 export {
   useTeamMembers,
   useUpdateOrganization,
+  updateTeamStatus,
   organizationKeys,
   type Organization,
   type TeamMember,

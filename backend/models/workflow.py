@@ -127,6 +127,8 @@ class Workflow(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
     )
+    access_tier: Mapped[str] = mapped_column(String(20), nullable=False, default="me")
+    access_level: Mapped[str] = mapped_column(String(20), nullable=False, default="edit")
 
     # Relationships
     runs: Mapped[list["WorkflowRun"]] = relationship(
@@ -159,6 +161,8 @@ class Workflow(Base):
             "last_error": self.last_error,
             "created_at": f"{self.created_at.isoformat()}Z",
             "updated_at": f"{self.updated_at.isoformat()}Z",
+            "access_tier": self.access_tier,
+            "access_level": self.access_level,
         }
     
     @property

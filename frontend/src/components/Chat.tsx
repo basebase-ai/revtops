@@ -17,7 +17,7 @@ import { ArtifactViewer, type FileArtifact } from './ArtifactViewer';
 import { ArtifactTile } from './ArtifactTile';
 import { PendingApprovalCard, type ApprovalResult } from './PendingApprovalCard';
 import { PendingChangesBar } from './PendingChangesBar';
-import { getConversation } from '../api/client';
+import { getConversation, copyConversation, updateConversationSharing } from '../api/client';
 import { 
   useAppStore,
   useConversationState,
@@ -106,6 +106,9 @@ export function Chat({
   const [pendingThinking, setPendingThinking] = useState<boolean>(false);
   const [conversationType, setConversationType] = useState<string | null>(null);
   const [isWorkflowPolling, setIsWorkflowPolling] = useState<boolean>(false);
+  const [canEdit, setCanEdit] = useState<boolean>(true);
+  const [accessTier, setAccessTier] = useState<"me" | "team" | "org" | "global">("me");
+  const [accessLevel, setAccessLevel] = useState<"read" | "edit">("edit");
   
   // Refs
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -301,6 +304,9 @@ export function Chat({
           setConversationMessages(chatId, loadedMessages);
           setConversationTitle(chatId, data.title ?? 'New Chat');
           setConversationType(data.type ?? null);
+        setCanEdit(data.can_edit ?? true);
+        setAccessTier((data.access_tier as "me" | "team" | "org" | "global") ?? "me");
+        setAccessLevel((data.access_level as "read" | "edit") ?? "edit");
           console.log('[Chat] Loaded', loadedMessages.length, 'messages, type:', data.type);
           
           // Scroll to bottom immediately after loading
@@ -629,7 +635,16 @@ export function Chat({
             </button>
           )}
         </div>
-        <ConnectionStatus state={connectionState} />
+        <div className="flex items-center gap-2">
+          <select value={accessTier} onChange={(e) => { const v=e.target.value as "me"|"team"|"org"|"global"; setAccessTier(v); if(chatId) void updateConversationSharing(chatId,v,accessLevel); }} disabled={!canEdit || !chatId} className="bg-surface-800 border border-surface-700 rounded px-2 py-1 text-xs">
+            <option value="me">Me</option><option value="team">Team</option><option value="org">Org</option><option value="global">Global</option>
+          </select>
+          <select value={accessLevel} onChange={(e) => { const v=e.target.value as "read"|"edit"; setAccessLevel(v); if(chatId) void updateConversationSharing(chatId,accessTier,v); }} disabled={!canEdit || !chatId} className="bg-surface-800 border border-surface-700 rounded px-2 py-1 text-xs">
+            <option value="read">Read</option><option value="edit">Edit</option>
+          </select>
+          {!canEdit && chatId && <button onClick={() => void copyConversation(chatId)} className="px-2 py-1 text-xs rounded bg-surface-800">Copy</button>}
+          <ConnectionStatus state={connectionState} />
+        </div>
       </header>
 
       {/* Content area with messages and optional artifact sidebar */}

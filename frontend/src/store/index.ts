@@ -69,6 +69,9 @@ export interface Integration {
   teamConnections: TeamConnection[];
   teamTotal: number;
   syncStats: SyncStats | null;
+  accessTier?: "me" | "team" | "org" | "global";
+  accessLevel?: "read" | "edit";
+  canEdit?: boolean;
 }
 
 export interface ChatSummary {
@@ -453,6 +456,9 @@ export const useAppStore = create<AppState>()(
             team_connections: Array<{ user_id: string; user_name: string }>;
             team_total: number;
             sync_stats: SyncStats | null;
+            access_tier?: "me" | "team" | "org" | "global";
+            access_level?: "read" | "edit";
+            can_edit?: boolean;
           }
 
           const data = (await response.json()) as {
@@ -475,6 +481,9 @@ export const useAppStore = create<AppState>()(
             })),
             teamTotal: i.team_total,
             syncStats: i.sync_stats,
+            accessTier: i.access_tier,
+            accessLevel: i.access_level,
+            canEdit: i.can_edit,
           }));
 
           console.log("[Store] Fetched", integrations.length, "integrations");

@@ -87,6 +87,8 @@ class Conversation(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
     )
+    access_tier: Mapped[str] = mapped_column(String(20), nullable=False, default="me")
+    access_level: Mapped[str] = mapped_column(String(20), nullable=False, default="edit")
 
     # Cached fields for fast list queries (denormalized)
     message_count: Mapped[int] = mapped_column(
@@ -118,6 +120,8 @@ class Conversation(Base):
             "summary": self.summary,
             "created_at": f"{self.created_at.isoformat()}Z" if self.created_at else None,
             "updated_at": f"{self.updated_at.isoformat()}Z" if self.updated_at else None,
+            "access_tier": self.access_tier,
+            "access_level": self.access_level,
         }
         if self.workflow_id:
             result["workflow_id"] = str(self.workflow_id)

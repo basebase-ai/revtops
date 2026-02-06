@@ -59,6 +59,8 @@ class User(Base):
         DateTime, default=datetime.utcnow, nullable=True
     )
     last_login: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    # Per-user team graph: list of org user IDs this user marks as "team"
+    team_member_ids: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
 
     # Relationships
     organization: Mapped[Optional["Organization"]] = relationship(
@@ -88,4 +90,5 @@ class User(Base):
             "status": self.status,
             "avatar_url": self.avatar_url,
             "organization_id": str(self.organization_id) if self.organization_id else None,
+            "team_member_ids": self.team_member_ids or [],
         }

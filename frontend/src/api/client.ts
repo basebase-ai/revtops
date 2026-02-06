@@ -48,6 +48,9 @@ export interface ConversationSummary {
   updated_at: string;
   message_count: number;
   last_message_preview: string | null;
+  access_tier?: "me" | "team" | "org" | "global";
+  access_level?: "read" | "edit";
+  can_edit?: boolean;
 }
 
 export interface ConversationListResponse {
@@ -63,6 +66,9 @@ export interface ConversationDetailResponse {
   created_at: string;
   updated_at: string;
   type: "chat" | "workflow" | null;
+  access_tier?: "me" | "team" | "org" | "global";
+  access_level?: "read" | "edit";
+  can_edit?: boolean;
   messages: ChatMessage[];
 }
 
@@ -312,4 +318,20 @@ export async function searchData(
     limit: limit.toString(),
   });
   return apiRequest<SearchResponse>(`/search?${params.toString()}`);
+}
+
+
+export async function copyConversation(conversationId: string): Promise<ApiResponse<ConversationSummary>> {
+  return apiRequest<ConversationSummary>(`/chat/conversations/${conversationId}/copy`, { method: "POST" });
+}
+
+export async function updateConversationSharing(
+  conversationId: string,
+  accessTier: "me" | "team" | "org" | "global",
+  accessLevel: "read" | "edit",
+): Promise<ApiResponse<ConversationSummary>> {
+  return apiRequest<ConversationSummary>(`/chat/conversations/${conversationId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ access_tier: accessTier, access_level: accessLevel }),
+  });
 }

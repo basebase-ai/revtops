@@ -14,7 +14,7 @@ import { useState, useRef } from 'react';
 import type { OrganizationInfo, UserProfile } from './AppLayout';
 import { supabase } from '../lib/supabase';
 import { useAppStore } from '../store';
-import { useTeamMembers, useUpdateOrganization } from '../hooks';
+import { useTeamMembers, useUpdateOrganization, updateTeamStatus } from '../hooks';
 
 interface OrganizationPanelProps {
   organization: OrganizationInfo;
@@ -31,6 +31,7 @@ export function OrganizationPanel({ organization, currentUser, onClose }: Organi
   const [logoUrl, setLogoUrl] = useState(organization.logoUrl);
   const [settingsSaved, setSettingsSaved] = useState(false);
   const [isUploadingLogo, setIsUploadingLogo] = useState(false);
+  const [updatingTeamMemberId, setUpdatingTeamMemberId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // React Query: Fetch team members with automatic caching and refetch
@@ -265,6 +266,23 @@ export function OrganizationPanel({ organization, currentUser, onClose }: Organi
                             </div>
                             <p className="text-sm text-surface-400 truncate">{member.email}</p>
                           </div>
+                          <button
+                            onClick={async () => {
+                              const next = member.teamStatus === 'team' ? 'org' : 'team';
+                              setUpdatingTeamMemberId(member.id);
+                              try {
+                                await updateTeamStatus(organization.id, currentUser.id, member.id, next);
+                                window.location.reload();
+                              } finally {
+                                setUpdatingTeamMemberId(null);
+                              }
+                            }}
+                            disabled={updatingTeamMemberId === member.id || member.id === currentUser.id}
+                            className={`px-2 py-1 text-xs rounded border ${member.teamStatus === 'team' ? 'border-primary-500 text-primary-400' : 'border-surface-600 text-surface-400'} disabled:opacity-50`}
+                            title={member.id === currentUser.id ? 'You are always in your own team' : 'Toggle team membership'}
+                          >
+                            {updatingTeamMemberId === member.id ? 'Saving...' : (member.teamStatus === 'team' ? 'Team' : 'Org')}
+                          </button>
                         </div>
                       );
                     })}

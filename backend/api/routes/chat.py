@@ -26,6 +26,8 @@ from api.auth_middleware import AuthContext, get_current_auth
 from models.database import get_session
 from models.chat_message import ChatMessage
 from models.conversation import Conversation
+from models.user import User
+from services.permissions import can_access_resource, can_edit_resource
 
 router = APIRouter()
 
@@ -37,11 +39,15 @@ router = APIRouter()
 class ConversationCreate(BaseModel):
     """Request model for creating a conversation."""
     title: Optional[str] = None
+    access_tier: Optional[str] = "me"
+    access_level: Optional[str] = "edit"
 
 
 class ConversationUpdate(BaseModel):
     """Request model for updating a conversation."""
     title: Optional[str] = None
+    access_tier: Optional[str] = None
+    access_level: Optional[str] = None
 
 
 class ConversationResponse(BaseModel):
@@ -54,6 +60,9 @@ class ConversationResponse(BaseModel):
     updated_at: str
     message_count: int = 0
     last_message_preview: Optional[str] = None
+    access_tier: str = "me"
+    access_level: str = "edit"
+    can_edit: bool = True
 
 
 class ConversationListResponse(BaseModel):
@@ -80,6 +89,9 @@ class ConversationDetailResponse(BaseModel):
     created_at: str
     updated_at: str
     type: Optional[str]
+    access_tier: str = "me"
+    access_level: str = "edit"
+    can_edit: bool = True
     messages: list[ChatMessageResponse]
 
 
@@ -118,41 +130,34 @@ async def list_conversations(
     org_id = auth.organization_id_str
 
     async with get_session(organization_id=org_id) as session:
-        # Simple query - message_count and last_message_preview are cached on the conversation
-        # Filter out workflow conversations - they're accessed via Automations tab, not chat list
+        me = await session.get(User, UUID(auth.user_id_str))
         result = await session.execute(
-            select(Conversation, func.count(Conversation.id).over().label("total_count"))
-            .where(Conversation.user_id == auth.user_id)
-            .where(Conversation.type != "workflow")
-            .order_by(Conversation.updated_at.desc())
-            .offset(offset)
-            .limit(limit)
+            select(Conversation)
+                        .order_by(Conversation.updated_at.desc())
         )
-        rows = result.all()
-
-        # Extract total from first row (window function returns same value for all rows)
-        total: int = rows[0][1] if rows else 0
-
-        # Build response using cached fields
+        all_rows = result.scalars().all()
+        visible = [
+            c for c in all_rows
+            if me and can_access_resource(owner_id=c.user_id, viewer=me, tier=c.access_tier)
+        ]
+        page = visible[offset:offset+limit]
         response_items: list[ConversationResponse] = []
-        for row in rows:
-            conv: Conversation = row[0]
-
+        for conv in page:
             response_items.append(ConversationResponse(
                 id=str(conv.id),
-                user_id=str(conv.user_id),
+                user_id=str(conv.user_id) if conv.user_id else "",
                 title=conv.title,
                 summary=conv.summary,
                 created_at=f"{conv.created_at.isoformat()}Z" if conv.created_at else "",
                 updated_at=f"{conv.updated_at.isoformat()}Z" if conv.updated_at else "",
                 message_count=conv.message_count,
                 last_message_preview=conv.last_message_preview[:100] if conv.last_message_preview else None,
+                access_tier=conv.access_tier,
+                access_level=conv.access_level,
+                can_edit=can_edit_resource(owner_id=conv.user_id, viewer=me, tier=conv.access_tier, access_level=conv.access_level) if me else False,
             ))
 
-        return ConversationListResponse(
-            conversations=response_items,
-            total=total,
-        )
+        return ConversationListResponse(conversations=response_items, total=len(visible))
 
 
 @router.post("/conversations", response_model=ConversationResponse)
@@ -168,6 +173,8 @@ async def create_conversation(
             user_id=auth.user_id,
             organization_id=auth.organization_id,
             title=request.title,
+            access_tier=request.access_tier or "me",
+            access_level=request.access_level or "edit",
         )
         session.add(conversation)
         # Capture values before commit (model defaults are set on instantiation)
@@ -186,8 +193,11 @@ async def create_conversation(
             summary=conv_summary,
             created_at=f"{conv_created_at.isoformat()}Z" if conv_created_at else "",
             updated_at=f"{conv_updated_at.isoformat()}Z" if conv_updated_at else "",
-            message_count=0,
-            last_message_preview=None,
+            message_count=conversation.message_count,
+            last_message_preview=conversation.last_message_preview[:100] if conversation.last_message_preview else None,
+            access_tier=conversation.access_tier,
+            access_level=conversation.access_level,
+            can_edit=True,
         )
 
 
@@ -208,11 +218,11 @@ async def get_conversation(
         result = await session.execute(
             select(Conversation)
             .where(Conversation.id == conv_uuid)
-            .where(Conversation.user_id == auth.user_id)
         )
         conversation = result.scalar_one_or_none()
+        me = await session.get(User, UUID(auth.user_id_str))
 
-        if not conversation:
+        if not conversation or not me or not can_access_resource(owner_id=conversation.user_id, viewer=me, tier=conversation.access_tier):
             raise HTTPException(status_code=404, detail="Conversation not found")
 
         # Get messages
@@ -231,6 +241,9 @@ async def get_conversation(
             created_at=f"{conversation.created_at.isoformat()}Z" if conversation.created_at else "",
             updated_at=f"{conversation.updated_at.isoformat()}Z" if conversation.updated_at else "",
             type=conversation.type,
+            access_tier=conversation.access_tier,
+            access_level=conversation.access_level,
+            can_edit=can_edit_resource(owner_id=conversation.user_id, viewer=me, tier=conversation.access_tier, access_level=conversation.access_level),
             messages=[
                 ChatMessageResponse(**msg.to_dict())
                 for msg in messages
@@ -256,16 +269,20 @@ async def update_conversation(
         result = await session.execute(
             select(Conversation)
             .where(Conversation.id == conv_uuid)
-            .where(Conversation.user_id == auth.user_id)
         )
         conversation = result.scalar_one_or_none()
+        me = await session.get(User, UUID(auth.user_id_str))
 
-        if not conversation:
+        if not conversation or not me or not can_access_resource(owner_id=conversation.user_id, viewer=me, tier=conversation.access_tier):
             raise HTTPException(status_code=404, detail="Conversation not found")
 
         # Update fields
         if request.title is not None:
             conversation.title = request.title
+        if request.access_tier is not None:
+            conversation.access_tier = request.access_tier
+        if request.access_level is not None:
+            conversation.access_level = request.access_level
         conversation.updated_at = datetime.utcnow()
         
         # Capture values before commit
@@ -286,8 +303,11 @@ async def update_conversation(
             summary=conv_summary,
             created_at=f"{conv_created_at.isoformat()}Z" if conv_created_at else "",
             updated_at=f"{conv_updated_at.isoformat()}Z" if conv_updated_at else "",
-            message_count=0,
-            last_message_preview=None,
+            message_count=conversation.message_count,
+            last_message_preview=conversation.last_message_preview[:100] if conversation.last_message_preview else None,
+            access_tier=conversation.access_tier,
+            access_level=conversation.access_level,
+            can_edit=True,
         )
 
 
@@ -308,11 +328,11 @@ async def delete_conversation(
         result = await session.execute(
             select(Conversation)
             .where(Conversation.id == conv_uuid)
-            .where(Conversation.user_id == auth.user_id)
         )
         conversation = result.scalar_one_or_none()
+        me = await session.get(User, UUID(auth.user_id_str))
 
-        if not conversation:
+        if not conversation or not me or not can_access_resource(owner_id=conversation.user_id, viewer=me, tier=conversation.access_tier):
             raise HTTPException(status_code=404, detail="Conversation not found")
 
         await session.delete(conversation)
@@ -428,4 +448,60 @@ async def send_message(
             user_message_id=user_msg_id,
             assistant_message_id=assistant_msg_id,
             assistant_content=response_content,
+        )
+
+@router.post("/conversations/{conversation_id}/copy", response_model=ConversationResponse)
+async def copy_conversation(
+    conversation_id: str,
+    auth: AuthContext = Depends(get_current_auth),
+) -> ConversationResponse:
+    try:
+        conv_uuid = UUID(conversation_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid conversation ID format")
+
+    org_id = auth.organization_id_str
+    async with get_session(organization_id=org_id) as session:
+        me = await session.get(User, UUID(auth.user_id_str))
+        result = await session.execute(select(Conversation).where(Conversation.id == conv_uuid))
+        source = result.scalar_one_or_none()
+        if not source or not me or not can_access_resource(owner_id=source.user_id, viewer=me, tier=source.access_tier):
+            raise HTTPException(status_code=404, detail="Conversation not found")
+
+        clone = Conversation(
+            user_id=auth.user_id,
+            organization_id=auth.organization_id,
+            type=source.type,
+            title=f"Copy of {source.title or 'Chat'}",
+            summary=source.summary,
+            access_tier="me",
+            access_level="edit",
+        )
+        session.add(clone)
+        await session.flush()
+
+        msg_rows = await session.execute(select(ChatMessage).where(ChatMessage.conversation_id == source.id).order_by(ChatMessage.created_at.asc()))
+        for msg in msg_rows.scalars().all():
+            session.add(ChatMessage(
+                user_id=auth.user_id,
+                organization_id=auth.organization_id,
+                conversation_id=clone.id,
+                role=msg.role,
+                content=msg.content,
+                content_blocks=msg.content_blocks,
+            ))
+        await session.commit()
+
+        return ConversationResponse(
+            id=str(clone.id),
+            user_id=auth.user_id_str,
+            title=clone.title,
+            summary=clone.summary,
+            created_at=f"{clone.created_at.isoformat()}Z" if clone.created_at else "",
+            updated_at=f"{clone.updated_at.isoformat()}Z" if clone.updated_at else "",
+            message_count=clone.message_count,
+            last_message_preview=clone.last_message_preview,
+            access_tier=clone.access_tier,
+            access_level=clone.access_level,
+            can_edit=True,
         )

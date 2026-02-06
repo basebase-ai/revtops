@@ -15,6 +15,8 @@ from sqlalchemy import select, and_
 
 from models.database import get_session
 from models.workflow import Workflow, WorkflowRun
+from models.user import User
+from services.permissions import can_access_resource, can_edit_resource
 
 router = APIRouter()
 
@@ -54,6 +56,8 @@ class CreateWorkflowRequest(BaseModel):
     child_workflows: list[str] = []  # IDs of workflows this can call
     output_config: Optional[dict[str, Any]] = None
     is_enabled: bool = True
+    access_tier: str = "me"
+    access_level: str = "edit"
 
 
 class UpdateWorkflowRequest(BaseModel):
@@ -71,6 +75,8 @@ class UpdateWorkflowRequest(BaseModel):
     child_workflows: Optional[list[str]] = None
     output_config: Optional[dict[str, Any]] = None
     is_enabled: Optional[bool] = None
+    access_tier: Optional[str] = None
+    access_level: Optional[str] = None
 
 
 class WorkflowResponse(BaseModel):
@@ -95,6 +101,9 @@ class WorkflowResponse(BaseModel):
     last_error: Optional[str]
     created_at: str
     updated_at: str
+    access_tier: str = "me"
+    access_level: str = "edit"
+    can_edit: bool = True
 
 
 class WorkflowRunResponse(BaseModel):
@@ -135,6 +144,7 @@ class TriggerWorkflowResponse(BaseModel):
 @router.get("/{organization_id}", response_model=WorkflowListResponse)
 async def list_workflows(
     organization_id: str,
+    user_id: str,
     enabled_only: bool = False,
 ) -> WorkflowListResponse:
     """List all workflows for an organization."""
@@ -144,22 +154,23 @@ async def list_workflows(
         raise HTTPException(status_code=400, detail="Invalid organization ID")
 
     async with get_session(organization_id=organization_id) as session:
+        me = await session.get(User, UUID(user_id))
         query = select(Workflow).where(Workflow.organization_id == org_uuid)
         if enabled_only:
             query = query.where(Workflow.is_enabled == True)
         query = query.order_by(Workflow.created_at.desc())
 
         result = await session.execute(query)
-        workflows = result.scalars().all()
-
+        all_workflows = result.scalars().all()
+        visible = [w for w in all_workflows if me and can_access_resource(owner_id=w.created_by_user_id, viewer=me, tier=w.access_tier)]
         return WorkflowListResponse(
-            workflows=[WorkflowResponse(**w.to_dict()) for w in workflows],
-            total=len(workflows),
+            workflows=[WorkflowResponse(**{**w.to_dict(), "can_edit": can_edit_resource(owner_id=w.created_by_user_id, viewer=me, tier=w.access_tier, access_level=w.access_level) if me else False}) for w in visible],
+            total=len(visible),
         )
 
 
 @router.get("/{organization_id}/{workflow_id}", response_model=WorkflowResponse)
-async def get_workflow(organization_id: str, workflow_id: str) -> WorkflowResponse:
+async def get_workflow(organization_id: str, workflow_id: str, user_id: str) -> WorkflowResponse:
     """Get a specific workflow."""
     try:
         org_uuid = UUID(organization_id)
@@ -178,10 +189,11 @@ async def get_workflow(organization_id: str, workflow_id: str) -> WorkflowRespon
         )
         workflow = result.scalar_one_or_none()
 
-        if not workflow:
+        me = await session.get(User, UUID(user_id))
+        if not workflow or not me or not can_access_resource(owner_id=workflow.created_by_user_id, viewer=me, tier=workflow.access_tier):
             raise HTTPException(status_code=404, detail="Workflow not found")
 
-        return WorkflowResponse(**workflow.to_dict())
+        return WorkflowResponse(**{**workflow.to_dict(), "can_edit": can_edit_resource(owner_id=workflow.created_by_user_id, viewer=me, tier=workflow.access_tier, access_level=workflow.access_level)})
 
 
 @router.post("/{organization_id}", response_model=WorkflowResponse)
@@ -243,18 +255,21 @@ async def create_workflow(
             child_workflows=request.child_workflows,
             output_config=request.output_config,
             is_enabled=request.is_enabled,
+            access_tier=request.access_tier or "me",
+            access_level=request.access_level or "edit",
         )
         session.add(workflow)
         await session.commit()
         await session.refresh(workflow)
 
-        return WorkflowResponse(**workflow.to_dict())
+        return WorkflowResponse(**{**workflow.to_dict(), "can_edit": True})
 
 
 @router.patch("/{organization_id}/{workflow_id}", response_model=WorkflowResponse)
 async def update_workflow(
     organization_id: str,
     workflow_id: str,
+    user_id: str,
     request: UpdateWorkflowRequest,
 ) -> WorkflowResponse:
     """Update a workflow."""
@@ -275,8 +290,11 @@ async def update_workflow(
         )
         workflow = result.scalar_one_or_none()
 
-        if not workflow:
+        me = await session.get(User, UUID(user_id))
+        if not workflow or not me:
             raise HTTPException(status_code=404, detail="Workflow not found")
+        if not can_edit_resource(owner_id=workflow.created_by_user_id, viewer=me, tier=workflow.access_tier, access_level=workflow.access_level):
+            raise HTTPException(status_code=403, detail="No edit permission")
 
         # Update fields
         if request.name is not None:
@@ -303,12 +321,16 @@ async def update_workflow(
             workflow.output_config = request.output_config
         if request.is_enabled is not None:
             workflow.is_enabled = request.is_enabled
+        if request.access_tier is not None:
+            workflow.access_tier = request.access_tier
+        if request.access_level is not None:
+            workflow.access_level = request.access_level
 
         workflow.updated_at = datetime.utcnow()
         await session.commit()
         await session.refresh(workflow)
 
-        return WorkflowResponse(**workflow.to_dict())
+        return WorkflowResponse(**{**workflow.to_dict(), "can_edit": True})
 
 
 @router.delete("/{organization_id}/{workflow_id}")
@@ -352,6 +374,7 @@ class TriggerWorkflowResponseV2(BaseModel):
 async def trigger_workflow(
     organization_id: str,
     workflow_id: str,
+    user_id: str,
 ) -> TriggerWorkflowResponseV2:
     """Manually trigger a workflow execution."""
     from models.conversation import Conversation
@@ -373,7 +396,8 @@ async def trigger_workflow(
         )
         workflow = result.scalar_one_or_none()
 
-        if not workflow:
+        me = await session.get(User, UUID(user_id))
+        if not workflow or not me or not can_edit_resource(owner_id=workflow.created_by_user_id, viewer=me, tier=workflow.access_tier, access_level=workflow.access_level):
             raise HTTPException(status_code=404, detail="Workflow not found")
 
         if not workflow.is_enabled:
@@ -410,6 +434,7 @@ async def trigger_workflow(
 async def list_workflow_runs(
     organization_id: str,
     workflow_id: str,
+    user_id: str,
     limit: int = 20,
 ) -> list[WorkflowRunResponse]:
     """List recent runs for a workflow."""
@@ -420,6 +445,12 @@ async def list_workflow_runs(
         raise HTTPException(status_code=400, detail="Invalid ID format")
 
     async with get_session(organization_id=organization_id) as session:
+        me = await session.get(User, UUID(user_id))
+        wf_result = await session.execute(select(Workflow).where(Workflow.id == wf_uuid, Workflow.organization_id == org_uuid))
+        workflow = wf_result.scalar_one_or_none()
+        if not workflow or not me or not can_access_resource(owner_id=workflow.created_by_user_id, viewer=me, tier=workflow.access_tier):
+            raise HTTPException(status_code=404, detail="Workflow not found")
+
         result = await session.execute(
             select(WorkflowRun)
             .where(
@@ -432,8 +463,16 @@ async def list_workflow_runs(
             .limit(limit)
         )
         runs = result.scalars().all()
+        visible_runs: list[WorkflowRunResponse] = []
+        for r in runs:
+            conv_id = (r.output or {}).get("conversation_id") if r.output else None
+            if conv_id:
+                conv = await session.get(Conversation, UUID(conv_id))
+                if conv and not can_access_resource(owner_id=conv.user_id, viewer=me, tier=conv.access_tier):
+                    continue
+            visible_runs.append(WorkflowRunResponse(**r.to_dict()))
 
-        return [WorkflowRunResponse(**r.to_dict()) for r in runs]
+        return visible_runs
 
 
 @router.delete("/{organization_id}/runs/{run_id}")
@@ -481,3 +520,41 @@ async def delete_workflow_run(
         await session.commit()
         
         return {"status": "deleted", "run_id": run_id}
+
+
+@router.post("/{organization_id}/{workflow_id}/copy", response_model=WorkflowResponse)
+async def copy_workflow(organization_id: str, workflow_id: str, user_id: str) -> WorkflowResponse:
+    try:
+        org_uuid = UUID(organization_id)
+        wf_uuid = UUID(workflow_id)
+        user_uuid = UUID(user_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid ID format")
+    async with get_session(organization_id=organization_id) as session:
+        me = await session.get(User, user_uuid)
+        result = await session.execute(select(Workflow).where(Workflow.id == wf_uuid, Workflow.organization_id == org_uuid))
+        source = result.scalar_one_or_none()
+        if not source or not me or not can_access_resource(owner_id=source.created_by_user_id, viewer=me, tier=source.access_tier):
+            raise HTTPException(status_code=404, detail="Workflow not found")
+        clone = Workflow(
+            organization_id=org_uuid,
+            created_by_user_id=user_uuid,
+            name=f"Copy of {source.name}",
+            description=source.description,
+            trigger_type=source.trigger_type,
+            trigger_config=source.trigger_config,
+            steps=source.steps,
+            prompt=source.prompt,
+            auto_approve_tools=source.auto_approve_tools,
+            input_schema=source.input_schema,
+            output_schema=source.output_schema,
+            child_workflows=source.child_workflows,
+            output_config=source.output_config,
+            is_enabled=source.is_enabled,
+            access_tier="me",
+            access_level="edit",
+        )
+        session.add(clone)
+        await session.commit()
+        await session.refresh(clone)
+        return WorkflowResponse(**{**clone.to_dict(), "can_edit": True})

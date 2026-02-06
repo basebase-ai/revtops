@@ -43,6 +43,9 @@ interface Workflow {
   last_error: string | null;
   created_at: string;
   updated_at: string;
+  access_tier?: "me" | "team" | "org" | "global";
+  access_level?: "read" | "edit";
+  can_edit?: boolean;
 }
 
 interface WorkflowRun {
@@ -72,16 +75,16 @@ interface WorkflowListResponse {
 }
 
 // Fetch workflows for the organization
-async function fetchWorkflows(orgId: string): Promise<Workflow[]> {
-  const response = await fetch(`${API_BASE}/workflows/${orgId}`);
+async function fetchWorkflows(orgId: string, userId: string): Promise<Workflow[]> {
+  const response = await fetch(`${API_BASE}/workflows/${orgId}?user_id=${userId}`);
   if (!response.ok) throw new Error('Failed to fetch workflows');
   const data: WorkflowListResponse = await response.json();
   return data.workflows;
 }
 
 // Fetch runs for a workflow
-async function fetchWorkflowRuns(orgId: string, workflowId: string): Promise<WorkflowRun[]> {
-  const response = await fetch(`${API_BASE}/workflows/${orgId}/${workflowId}/runs?limit=10`);
+async function fetchWorkflowRuns(orgId: string, workflowId: string, userId: string): Promise<WorkflowRun[]> {
+  const response = await fetch(`${API_BASE}/workflows/${orgId}/${workflowId}/runs?limit=10&user_id=${userId}`);
   if (!response.ok) throw new Error('Failed to fetch workflow runs');
   return response.json();
 }
@@ -93,8 +96,8 @@ interface TriggerResponse {
   conversation_id?: string;
 }
 
-async function triggerWorkflow(orgId: string, workflowId: string): Promise<TriggerResponse> {
-  const response = await fetch(`${API_BASE}/workflows/${orgId}/${workflowId}/trigger`, {
+async function triggerWorkflow(orgId: string, workflowId: string, userId: string): Promise<TriggerResponse> {
+  const response = await fetch(`${API_BASE}/workflows/${orgId}/${workflowId}/trigger?user_id=${userId}`, {
     method: 'POST',
   });
   if (!response.ok) throw new Error('Failed to trigger workflow');
@@ -128,6 +131,8 @@ interface CreateWorkflowParams {
   input_schema?: Record<string, unknown> | null;
   output_schema?: Record<string, unknown> | null;
   child_workflows?: string[];
+  access_tier?: "me" | "team" | "org" | "global";
+  access_level?: "read" | "edit";
 }
 
 async function createWorkflow(orgId: string, userId: string, params: CreateWorkflowParams): Promise<Workflow> {
@@ -148,6 +153,8 @@ async function createWorkflow(orgId: string, userId: string, params: CreateWorkf
       output_schema: params.output_schema ?? null,
       child_workflows: params.child_workflows ?? [],
       is_enabled: true,
+      access_tier: params.access_tier ?? "me",
+      access_level: params.access_level ?? "edit",
     }),
   });
   if (!response.ok) {
@@ -158,8 +165,8 @@ async function createWorkflow(orgId: string, userId: string, params: CreateWorkf
 }
 
 // Update workflow
-async function updateWorkflow(orgId: string, workflowId: string, params: CreateWorkflowParams): Promise<Workflow> {
-  const response = await fetch(`${API_BASE}/workflows/${orgId}/${workflowId}`, {
+async function updateWorkflow(orgId: string, workflowId: string, userId: string, params: CreateWorkflowParams): Promise<Workflow> {
+  const response = await fetch(`${API_BASE}/workflows/${orgId}/${workflowId}?user_id=${userId}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -174,6 +181,8 @@ async function updateWorkflow(orgId: string, workflowId: string, params: CreateW
       input_schema: params.input_schema,
       output_schema: params.output_schema,
       child_workflows: params.child_workflows,
+      access_tier: params.access_tier,
+      access_level: params.access_level,
     }),
   });
   if (!response.ok) {
@@ -184,8 +193,8 @@ async function updateWorkflow(orgId: string, workflowId: string, params: CreateW
 }
 
 // Toggle workflow enabled state
-async function toggleWorkflow(orgId: string, workflowId: string, enabled: boolean): Promise<Workflow> {
-  const response = await fetch(`${API_BASE}/workflows/${orgId}/${workflowId}`, {
+async function toggleWorkflow(orgId: string, workflowId: string, enabled: boolean, userId: string): Promise<Workflow> {
+  const response = await fetch(`${API_BASE}/workflows/${orgId}/${workflowId}?user_id=${userId}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ is_enabled: enabled }),
@@ -275,6 +284,7 @@ function WorkflowDetail({
   isTriggering: boolean;
 }): JSX.Element {
   const organization = useAppStore((state) => state.organization);
+  const user = useAppStore((state) => state.user);
   const setCurrentChatId = useAppStore((state) => state.setCurrentChatId);
   const setCurrentView = useAppStore((state) => state.setCurrentView);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
@@ -283,8 +293,8 @@ function WorkflowDetail({
   
   const { data: runs = [], isLoading: runsLoading } = useQuery({
     queryKey: ['workflow-runs', workflow.id],
-    queryFn: () => fetchWorkflowRuns(organization?.id ?? '', workflow.id),
-    enabled: !!organization?.id,
+    queryFn: () => fetchWorkflowRuns(organization?.id ?? '', workflow.id, user?.id ?? ''),
+    enabled: !!organization?.id && !!user?.id,
     // Refetch every 5s to catch status updates for running workflows
     refetchInterval: 5000,
   });
@@ -293,6 +303,35 @@ function WorkflowDetail({
     mutationFn: (runId: string) => deleteWorkflowRun(organization?.id ?? '', runId),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['workflow-runs', workflow.id] });
+    },
+  });
+
+
+  const copyMutation = useMutation({
+    mutationFn: () => copyWorkflow(organization?.id ?? '', workflow.id, user?.id ?? ''),
+    onSuccess: (copied) => {
+      void queryClient.invalidateQueries({ queryKey: ['workflows', organization?.id] });
+      setCurrentChatId(copied.id);
+    },
+  });
+
+  const sharingMutation = useMutation({
+    mutationFn: (payload: { access_tier?: string; access_level?: string }) =>
+      updateWorkflow(organization?.id ?? '', workflow.id, user?.id ?? '', {
+        name: workflow.name,
+        description: workflow.description ?? undefined,
+        prompt: workflow.prompt ?? '',
+        trigger_type: workflow.trigger_type === 'event' ? 'manual' : workflow.trigger_type,
+        cron: workflow.trigger_config.cron,
+        auto_approve_tools: workflow.auto_approve_tools,
+        input_schema: workflow.input_schema,
+        output_schema: workflow.output_schema,
+        child_workflows: workflow.child_workflows,
+        ...(payload.access_tier ? { access_tier: payload.access_tier } : {}),
+        ...(payload.access_level ? { access_level: payload.access_level } : {}),
+      } as unknown as CreateWorkflowParams),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['workflows', organization?.id] });
     },
   });
 
@@ -323,6 +362,27 @@ function WorkflowDetail({
             {workflow.description && (
               <p className="text-sm text-surface-400 mt-1">{workflow.description}</p>
             )}
+            <div className="mt-3 flex items-center gap-2">
+              <select
+                value={workflow.access_tier ?? "me"}
+                onChange={(e) => sharingMutation.mutate({ access_tier: e.target.value })}
+                disabled={!workflow.can_edit}
+                className="bg-surface-800 border border-surface-700 rounded px-2 py-1 text-xs"
+              >
+                <option value="me">Me</option><option value="team">Team</option><option value="org">Org</option><option value="global">Global</option>
+              </select>
+              <select
+                value={workflow.access_level ?? "edit"}
+                onChange={(e) => sharingMutation.mutate({ access_level: e.target.value })}
+                disabled={!workflow.can_edit}
+                className="bg-surface-800 border border-surface-700 rounded px-2 py-1 text-xs"
+              >
+                <option value="read">Read</option><option value="edit">Edit</option>
+              </select>
+              {!workflow.can_edit && (
+                <button onClick={() => copyMutation.mutate()} className="px-2 py-1 text-xs rounded bg-surface-700 hover:bg-surface-600">Copy</button>
+              )}
+            </div>
           </div>
           <button
             onClick={onClose}
@@ -350,7 +410,7 @@ function WorkflowDetail({
               <span className="text-sm text-surface-400">Active</span>
               <button
                 onClick={() => onToggle(!workflow.is_enabled)}
-                disabled={isToggling}
+                disabled={isToggling || !workflow.can_edit}
                 className={`relative w-10 h-6 rounded-full transition-colors ${
                   workflow.is_enabled ? 'bg-primary-600' : 'bg-surface-700'
                 } ${isToggling ? 'opacity-50' : ''}`}
@@ -567,13 +627,14 @@ function WorkflowDetail({
           <div className="flex items-center gap-2">
             <button
               onClick={onEdit}
+              disabled={!workflow.can_edit}
               className="px-4 py-2 bg-surface-700 hover:bg-surface-600 text-surface-200 rounded-lg text-sm font-medium transition-colors"
             >
               Edit
             </button>
             <button
               onClick={onTrigger}
-              disabled={!workflow.is_enabled || isTriggering}
+              disabled={!workflow.is_enabled || isTriggering || !workflow.can_edit}
               className="px-4 py-2 bg-primary-600 hover:bg-primary-700 disabled:bg-surface-700 disabled:text-surface-500 text-white rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
             >
               {isTriggering && (
@@ -636,10 +697,11 @@ function WorkflowModal({
 
   // Get all workflows for child workflow selection (exclude current workflow)
   const organization = useAppStore((state) => state.organization);
+  const user = useAppStore((state) => state.user);
   const { data: allWorkflows = [] } = useQuery({
     queryKey: ['workflows', organization?.id],
-    queryFn: () => fetchWorkflows(organization?.id ?? ''),
-    enabled: !!organization?.id,
+    queryFn: () => fetchWorkflows(organization?.id ?? '', user?.id ?? ''),
+    enabled: !!organization?.id && !!user?.id,
   });
   
   // Filter out the current workflow being edited
@@ -1012,8 +1074,8 @@ export function Workflows(): JSX.Element {
   // Fetch workflows
   const { data: workflows = [], isLoading, error, refetch } = useQuery({
     queryKey: ['workflows', organization?.id],
-    queryFn: () => fetchWorkflows(organization?.id ?? ''),
-    enabled: !!organization?.id,
+    queryFn: () => fetchWorkflows(organization?.id ?? '', user?.id ?? ''),
+    enabled: !!organization?.id && !!user?.id,
   });
 
   // Auto-refresh when navigating to this view or when workflows are modified via chat
@@ -1043,7 +1105,7 @@ export function Workflows(): JSX.Element {
   // Mutations
   const triggerMutation = useMutation({
     mutationFn: ({ workflowId }: { workflowId: string }) =>
-      triggerWorkflow(organization?.id ?? '', workflowId),
+      triggerWorkflow(organization?.id ?? '', workflowId, user?.id ?? ''),
     onSuccess: (data) => {
       void queryClient.invalidateQueries({ queryKey: ['workflow-runs'] });
       
@@ -1067,7 +1129,7 @@ export function Workflows(): JSX.Element {
 
   const toggleMutation = useMutation({
     mutationFn: ({ workflowId, enabled }: { workflowId: string; enabled: boolean }) =>
-      toggleWorkflow(organization?.id ?? '', workflowId, enabled),
+      toggleWorkflow(organization?.id ?? '', workflowId, enabled, user?.id ?? ''),
     onSuccess: (updatedWorkflow) => {
       void queryClient.invalidateQueries({ queryKey: ['workflows'] });
       // Update selectedWorkflow if we were viewing it
@@ -1094,7 +1156,7 @@ export function Workflows(): JSX.Element {
 
   const updateMutation = useMutation({
     mutationFn: ({ workflowId, params }: { workflowId: string; params: CreateWorkflowParams }) =>
-      updateWorkflow(organization?.id ?? '', workflowId, params),
+      updateWorkflow(organization?.id ?? '', workflowId, user?.id ?? '', params),
     onSuccess: (updatedWorkflow) => {
       void queryClient.invalidateQueries({ queryKey: ['workflows'] });
       setShowModal(false);
@@ -1296,4 +1358,11 @@ function WorkflowCard({
       )}
     </button>
   );
+}
+
+
+async function copyWorkflow(orgId: string, workflowId: string, userId: string): Promise<Workflow> {
+  const response = await fetch(`${API_BASE}/workflows/${orgId}/${workflowId}/copy?user_id=${userId}`, { method: "POST" });
+  if (!response.ok) throw new Error("Failed to copy workflow");
+  return response.json();
 }

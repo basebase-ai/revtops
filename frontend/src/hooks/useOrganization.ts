@@ -22,6 +22,7 @@ export interface TeamMember {
   email: string;
   role: string | null;
   avatarUrl: string | null;
+  teamStatus?: "team" | "org";
 }
 
 interface OrganizationApiResponse {
@@ -38,6 +39,7 @@ interface TeamMembersApiResponse {
     email: string;
     role: string | null;
     avatar_url: string | null;
+    team_status?: "team" | "org";
   }>;
 }
 
@@ -73,6 +75,7 @@ async function fetchTeamMembers(orgId: string, userId: string): Promise<TeamMemb
     email: m.email,
     role: m.role,
     avatarUrl: m.avatar_url,
+    teamStatus: m.team_status ?? "org",
   }));
 }
 
@@ -137,4 +140,14 @@ export function useUpdateOrganization() {
       });
     },
   });
+}
+
+
+export async function updateTeamStatus(orgId: string, userId: string, memberId: string, teamStatus: "team" | "org"): Promise<void> {
+  const response = await fetch(`${API_BASE}/auth/organizations/${orgId}/members/${memberId}/team-status?user_id=${userId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ team_status: teamStatus }),
+  });
+  if (!response.ok) throw new Error("Failed to update team status");
 }

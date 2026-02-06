@@ -95,6 +95,8 @@ class Integration(Base):
     updated_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=True
     )
+    access_tier: Mapped[str] = mapped_column(String(20), nullable=False, default="team")
+    access_level: Mapped[str] = mapped_column(String(20), nullable=False, default="edit")
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for API responses."""
@@ -107,4 +109,6 @@ class Integration(Base):
             "last_error": self.last_error,
             "created_at": f"{self.created_at.isoformat()}Z" if self.created_at else None,
             "sync_stats": self.sync_stats,
+            "access_tier": self.access_tier,
+            "access_level": self.access_level,
         }

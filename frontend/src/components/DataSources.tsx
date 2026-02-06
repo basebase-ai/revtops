@@ -197,6 +197,16 @@ export function DataSources(): JSX.Element {
   // Live sync progress from WebSocket
   const [syncProgress, setSyncProgress] = useState<Record<string, number>>({});
 
+  const updateSharing = async (integrationId: string, accessTier: string, accessLevel: string): Promise<void> => {
+    if (!userId) return;
+    await fetch(`${API_BASE}/auth/integrations/${integrationId}/sharing?user_id=${userId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ access_tier: accessTier, access_level: accessLevel }),
+    });
+    void fetchIntegrations();
+  };
+
   const organizationId = organization?.id ?? '';
   const userId = user?.id ?? '';
   
@@ -698,6 +708,26 @@ export function DataSources(): JSX.Element {
                 )}
                 {buttonConfig.text}
               </button>
+            )}
+            {state === 'connected' && (
+              <div className="flex items-center gap-2">
+                <select
+                  value={integration.accessTier ?? 'team'}
+                  onChange={(e) => void updateSharing(integration.id, e.target.value, integration.accessLevel ?? 'edit')}
+                  disabled={!integration.canEdit}
+                  className="px-2 py-1 text-xs rounded bg-surface-800 border border-surface-700"
+                >
+                  <option value="me">Me</option><option value="team">Team</option><option value="org">Org</option><option value="global">Global</option>
+                </select>
+                <select
+                  value={integration.accessLevel ?? 'edit'}
+                  onChange={(e) => void updateSharing(integration.id, integration.accessTier ?? 'team', e.target.value)}
+                  disabled={!integration.canEdit}
+                  className="px-2 py-1 text-xs rounded bg-surface-800 border border-surface-700"
+                >
+                  <option value="read">Read</option><option value="edit">Edit</option>
+                </select>
+              </div>
             )}
             {state === 'connected' && integration.provider === 'google_sheets' && (
               <button
