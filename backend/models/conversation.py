@@ -74,7 +74,13 @@ class Conversation(Base):
         UUID(as_uuid=True), ForeignKey("conversations.id", ondelete="SET NULL"),
         nullable=True, index=True
     )
-    
+    # Scope for change sessions: root of this conversation tree (same for parent + all child workflows).
+    # Null for ad-hoc chats; set for workflow convs so one run = one change session.
+    root_conversation_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("conversations.id", ondelete="SET NULL"),
+        nullable=True, index=True
+    )
+
     title: Mapped[Optional[str]] = mapped_column(
         String(255), nullable=True
     )  # Auto-generated from first message
@@ -123,6 +129,8 @@ class Conversation(Base):
             result["workflow_id"] = str(self.workflow_id)
         if self.parent_conversation_id:
             result["parent_conversation_id"] = str(self.parent_conversation_id)
+        if self.root_conversation_id:
+            result["root_conversation_id"] = str(self.root_conversation_id)
         if self.source_channel_id:
             result["source_channel_id"] = self.source_channel_id
         if self.source_user_id:

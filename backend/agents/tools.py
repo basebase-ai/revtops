@@ -234,7 +234,7 @@ async def execute_tool(
         return result
 
     elif tool_name == "run_sql_write":
-        result = await _run_sql_write(tool_input, organization_id, user_id)
+        result = await _run_sql_write(tool_input, organization_id, user_id, context)
         logger.info("[Tools] run_sql_write completed: %s", result)
         return result
 
@@ -737,7 +737,10 @@ def _parse_update_values(query: str) -> tuple[dict[str, Any], str] | None:
 
 
 async def _run_sql_write(
-    params: dict[str, Any], organization_id: str, user_id: str | None
+    params: dict[str, Any],
+    organization_id: str,
+    user_id: str | None,
+    context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     Execute a write SQL query (INSERT, UPDATE, DELETE) with safety rails.
@@ -781,12 +784,14 @@ async def _run_sql_write(
     # CRM Tables: Route through PendingOperation for review/commit workflow
     # ==========================================================================
     if table in CRM_TABLES:
+        conversation_id: str | None = (context or {}).get("conversation_id")
         return await _handle_crm_write_from_sql(
             query=query,
             table=table,
             operation=operation,
             organization_id=organization_id,
             user_id=user_id,
+            conversation_id=conversation_id,
         )
     
     # ==========================================================================
@@ -875,6 +880,7 @@ async def _handle_crm_write_from_sql(
     operation: str | None,
     organization_id: str,
     user_id: str,
+    conversation_id: str | None = None,
 ) -> dict[str, Any]:
     """
     Handle CRM table writes by creating PendingOperations for review.
@@ -923,12 +929,13 @@ async def _handle_crm_write_from_sql(
             return {"error": "DELETE requires WHERE id = '...' clause"}
         records = [{"id": id_match.group(1)}]
     
-    # Create PendingOperation
+    # Create PendingOperation (audit trail); then execute into change session immediately (no approval card)
     try:
         async with get_session(organization_id=organization_id) as session:
             pending_op = PendingOperation(
                 organization_id=UUID(organization_id),
                 user_id=UUID(user_id),
+                conversation_id=UUID(conversation_id) if conversation_id else None,
                 tool_name="run_sql_write",
                 tool_params={"query": query, "table": table},
                 target_system="hubspot",  # Default to HubSpot
@@ -941,30 +948,31 @@ async def _handle_crm_write_from_sql(
             session.add(pending_op)
             await session.commit()
             await session.refresh(pending_op)
-            
             logger.info(
                 "[Tools._handle_crm_write_from_sql] Created pending operation %s for %s %s",
                 pending_op.id,
                 crm_operation,
-                record_type
+                record_type,
             )
-            
-            return {
-                "type": "pending_approval",
-                "status": "pending_approval",
-                "operation_id": str(pending_op.id),
-                "tool_name": "run_sql_write",
-                "operation": crm_operation,
-                "target_system": "hubspot",
-                "record_type": record_type,
-                "records_count": len(records),
-                "message": f"Review and approve {len(records)} {record_type}(s) to sync to HubSpot.",
-                "preview": {"records": records[:5], "duplicate_warnings": []},
-            }
-            
     except Exception as e:
         logger.error("[Tools._handle_crm_write_from_sql] Failed: %s", str(e))
         return {"error": f"Failed to create pending operation: {str(e)}"}
+
+    result = await execute_crm_operation(
+        str(pending_op.id),
+        skip_duplicates=True,
+        organization_id=organization_id,
+    )
+    if "error" in result:
+        return result
+    return {
+        "success": True,
+        "operation": crm_operation,
+        "table": table,
+        "records_count": len(records),
+        "success_count": result.get("success_count", 0),
+        "message": f"Added {result.get('success_count', 0)} {record_type}(s) to pending changes. Commit or discard in the bar below when ready.",
+    }
 
 
 async def _search_activities(
@@ -1289,26 +1297,31 @@ async def execute_crm_operation(
     Returns:
         Result of the operation with success/failure details
     """
-    from services.change_session import start_change_session
-    
+    from services.change_session import (
+        get_or_start_change_session,
+        get_or_start_orphan_change_session,
+        start_change_session,
+    )
+    from models.conversation import Conversation
+
     async with get_session(organization_id=organization_id) as session:
         crm_op = await session.get(CrmOperation, UUID(operation_id))
-        
+
         if not crm_op:
             return {"status": "failed", "message": "Operation not found", "error": f"Operation {operation_id} not found"}
-        
+
         if crm_op.status != "pending":
             return {"status": "failed", "message": "Invalid state", "error": f"Operation is not pending (status: {crm_op.status})"}
-        
+
         if crm_op.is_expired:
             crm_op.status = "expired"
             await session.commit()
             return {"status": "expired", "message": "Operation expired", "error": "Operation has expired. Please start again."}
-        
+
         # Mark as executing
         crm_op.status = "executing"
         await session.commit()
-        
+
         # Capture needed values before session closes
         org_id = str(crm_op.organization_id)
         user_id = str(crm_op.user_id) if crm_op.user_id else None
@@ -1317,16 +1330,33 @@ async def execute_crm_operation(
         operation = crm_op.operation
         validated_records = crm_op.validated_records
         duplicate_warnings = crm_op.duplicate_warnings
-    
-    # Start a change session to track local DB modifications (stays pending until commit/discard)
-    change_session_id: str | None = None
+        op_conversation_id: str | None = str(crm_op.conversation_id) if crm_op.conversation_id else None
+
+    # Resolve scope: root of conversation tree so parent + all child workflows share one change session
+    scope_conversation_id: str | None = None
+    if op_conversation_id and user_id:
+        async with get_session(organization_id=org_id) as sess:
+            conv = await sess.get(Conversation, UUID(op_conversation_id))
+            if conv:
+                scope_conversation_id = str(conv.root_conversation_id or conv.id)
+
+    # Start or reuse a change session (one per run/chat, or one per org+user when no conversation)
+    change_session_id = None
     if user_id:
         try:
-            change_session = await start_change_session(
-                organization_id=org_id,
-                user_id=user_id,
-                description=f"CRM {operation} {record_type}(s) - pending sync to {target_system}",
-            )
+            if scope_conversation_id:
+                change_session = await get_or_start_change_session(
+                    organization_id=org_id,
+                    user_id=user_id,
+                    scope_conversation_id=scope_conversation_id,
+                    description=f"CRM {operation} {record_type}(s) - pending sync to {target_system}",
+                )
+            else:
+                change_session = await get_or_start_orphan_change_session(
+                    organization_id=org_id,
+                    user_id=user_id,
+                    description=f"CRM {operation} {record_type}(s) - pending sync to {target_system}",
+                )
             change_session_id = str(change_session.id)
         except Exception as e:
             logger.warning("[Tools.execute_crm_operation] Failed to start change session: %s", e)
@@ -1397,19 +1427,14 @@ async def _create_local_pending_records(
     target_system: str,
 ) -> dict[str, Any]:
     """
-    Create records locally with sync_status='pending' (no external API call).
-    
-    Records are created with a temporary source_id and marked as pending sync.
-    When user commits, these records will be pushed to the external CRM and
-    updated with the real external IDs.
+    Store proposed creates only (no local DB rows until user commits).
+    When user commits, we create locally and push to CRM; when they discard, we drop proposals.
     """
-    from datetime import datetime as dt, timezone as tz
-    from services.change_session import capture_snapshot, update_snapshot_after_data
-    
+    from services.change_session import add_proposed_create
+
     records_to_process = validated_records
     duplicate_ids: set[str] = set()
-    
-    # Get duplicate record identifiers to skip if needed
+
     if skip_duplicates and duplicate_warnings:
         for warning in duplicate_warnings:
             if record_type == "contact":
@@ -1418,8 +1443,7 @@ async def _create_local_pending_records(
                 duplicate_ids.add(warning["record"].get("domain", "").lower())
             elif record_type == "deal":
                 duplicate_ids.add(warning["record"].get("dealname", ""))
-    
-    # Filter out duplicates if skipping
+
     if skip_duplicates and duplicate_ids:
         filtered_records: list[dict[str, Any]] = []
         for record in records_to_process:
@@ -1430,11 +1454,10 @@ async def _create_local_pending_records(
                 identifier = record.get("domain", "").lower()
             elif record_type == "deal":
                 identifier = record.get("dealname", "")
-            
             if identifier not in duplicate_ids:
                 filtered_records.append(record)
         records_to_process = filtered_records
-    
+
     if not records_to_process:
         return {
             "status": "completed",
@@ -1445,146 +1468,48 @@ async def _create_local_pending_records(
             "created_local": [],
             "change_session_id": change_session_id,
         }
-    
-    # Map record_type to table name
-    table_map = {"contact": "contacts", "company": "accounts", "deal": "deals"}
+
+    table_map: dict[str, str] = {"contact": "contacts", "company": "accounts", "deal": "deals"}
     table_name = table_map.get(record_type)
-    
-    created_local: list[dict[str, Any]] = []
+    if not table_name or not change_session_id:
+        return {
+            "status": "failed",
+            "message": "Missing change session or table",
+            "success_count": 0,
+            "failure_count": len(records_to_process),
+            "errors": [{"error": "change_session_id or table required"}],
+        }
+
+    created_count = 0
     errors: list[dict[str, Any]] = []
-    now = dt.now(tz.utc)
-    user_uuid = UUID(user_id) if user_id else None
-    
     async with get_session(organization_id=str(organization_id)) as session:
         for record in records_to_process:
             try:
                 record_id = uuid4()
-                # Use a pending placeholder for source_id until we sync to external CRM
-                pending_source_id = f"pending_{record_id}"
-                snapshot_id: str | None = None
-                
-                # Capture snapshot before create (if tracking changes)
-                if change_session_id and table_name:
-                    snapshot = await capture_snapshot(
-                        change_session_id=change_session_id,
-                        table_name=table_name,
-                        record_id=str(record_id),
-                        operation="create",
-                        db_session=session,
-                    )
-                    snapshot_id = str(snapshot.id)
-                
-                if record_type == "contact":
-                    first_name = record.get("firstname") or ""
-                    last_name = record.get("lastname") or ""
-                    full_name = f"{first_name} {last_name}".strip()
-                    if not full_name:
-                        full_name = record.get("email") or f"Contact {record_id}"
-                    
-                    contact = Contact(
-                        id=record_id,
-                        organization_id=organization_id,
-                        source_system=target_system,
-                        source_id=pending_source_id,
-                        name=full_name,
-                        email=record.get("email"),
-                        title=record.get("jobtitle"),
-                        phone=record.get("phone"),
-                        sync_status="pending",
-                        updated_at=now,
-                        updated_by=user_uuid,
-                    )
-                    session.add(contact)
-                    
-                    local_record = contact.to_dict()
-                    local_record["_input"] = record  # Keep original input for later sync
-                    created_local.append(local_record)
-                    
-                    if snapshot_id:
-                        await update_snapshot_after_data(
-                            snapshot_id, contact.to_dict(), db_session=session
-                        )
-                        
-                elif record_type == "company":
-                    name = record.get("name")
-                    if not name:
-                        name = record.get("domain") or f"Company {record_id}"
-                    
-                    account = Account(
-                        id=record_id,
-                        organization_id=organization_id,
-                        source_system=target_system,
-                        source_id=pending_source_id,
-                        name=name,
-                        domain=record.get("domain"),
-                        industry=record.get("industry"),
-                        sync_status="pending",
-                        updated_at=now,
-                        updated_by=user_uuid,
-                    )
-                    session.add(account)
-                    
-                    local_record = account.to_dict()
-                    local_record["_input"] = record
-                    created_local.append(local_record)
-                    
-                    if snapshot_id:
-                        await update_snapshot_after_data(
-                            snapshot_id, account.to_dict(), db_session=session
-                        )
-                        
-                elif record_type == "deal":
-                    from decimal import Decimal
-                    
-                    amount = None
-                    if record.get("amount"):
-                        try:
-                            amount = Decimal(str(record["amount"]))
-                        except (ValueError, TypeError):
-                            pass
-                    
-                    deal = Deal(
-                        id=record_id,
-                        organization_id=organization_id,
-                        source_system=target_system,
-                        source_id=pending_source_id,
-                        name=record.get("dealname") or "Untitled Deal",
-                        amount=amount,
-                        stage=record.get("dealstage"),
-                        sync_status="pending",
-                        updated_at=now,
-                        updated_by=user_uuid,
-                    )
-                    session.add(deal)
-                    
-                    local_record = deal.to_dict()
-                    local_record["_input"] = record
-                    created_local.append(local_record)
-                    
-                    if snapshot_id:
-                        await update_snapshot_after_data(
-                            snapshot_id, deal.to_dict(), db_session=session
-                        )
-                        
+                await add_proposed_create(
+                    change_session_id=change_session_id,
+                    table_name=table_name,
+                    record_id=str(record_id),
+                    input_payload=record,
+                    db_session=session,
+                )
+                created_count += 1
             except Exception as e:
                 logger.warning(
-                    "[Tools._create_local_pending_records] Failed to create local %s: %s",
-                    record_type, str(e)
+                    "[Tools._create_local_pending_records] Failed to add proposal %s: %s",
+                    record_type, str(e),
                 )
                 errors.append({"record": record, "error": str(e)})
-                continue
-        
         await session.commit()
-    
+
     skipped_count = len(validated_records) - len(records_to_process)
-    
     return {
         "status": "pending_sync",
-        "message": f"Created {len(created_local)} {record_type}(s) locally. Click 'Commit' to sync to {target_system} or 'Undo' to discard.",
-        "success_count": len(created_local),
+        "message": f"Stored {created_count} {record_type}(s) for review. Commit to create in HubSpot and locally, or Undo to discard.",
+        "success_count": created_count,
         "failure_count": len(errors),
         "skipped_count": skipped_count,
-        "created_local": created_local,
+        "created_local": [],
         "change_session_id": change_session_id,
         "errors": errors if errors else None,
     }
@@ -1988,159 +1913,259 @@ async def cancel_crm_operation(operation_id: str, organization_id: str | None = 
         }
 
 
+# Fields that exist in our local models but NOT in HubSpot properties
+_INTERNAL_FIELDS: frozenset[str] = frozenset({
+    "id", "organization_id", "source_system", "source_id", "sync_status",
+    "synced_at", "updated_at", "updated_by", "custom_fields", "account_id",
+    "owner_id", "pipeline_id", "created_date", "last_modified_date",
+    "visible_to_user_ids", "employee_count", "annual_revenue", "probability",
+    "close_date", "_input",
+})
+
+
+def _to_hubspot_properties(table_name: str, raw: dict[str, Any]) -> dict[str, Any]:
+    """Map local DB column names to HubSpot property names and strip internal fields."""
+    # Start by stripping internal-only keys and None values
+    cleaned: dict[str, Any] = {
+        k: v for k, v in raw.items()
+        if k not in _INTERNAL_FIELDS and v is not None
+    }
+
+    if table_name == "contacts":
+        # local "title" -> HubSpot "jobtitle"
+        if "title" in cleaned:
+            cleaned.setdefault("jobtitle", cleaned.pop("title"))
+        # local "name" -> split into firstname / lastname (if they aren't already set)
+        if "name" in cleaned and "firstname" not in cleaned:
+            parts: list[str] = str(cleaned.pop("name")).split(None, 1)
+            cleaned["firstname"] = parts[0] if parts else ""
+            cleaned["lastname"] = parts[1] if len(parts) > 1 else ""
+        elif "name" in cleaned:
+            cleaned.pop("name")  # firstname/lastname already provided
+    elif table_name == "deals":
+        # local "name" -> HubSpot "dealname"
+        if "name" in cleaned and "dealname" not in cleaned:
+            cleaned["dealname"] = cleaned.pop("name")
+        elif "name" in cleaned:
+            cleaned.pop("name")
+        # local "stage" -> HubSpot "dealstage"
+        if "stage" in cleaned and "dealstage" not in cleaned:
+            cleaned["dealstage"] = cleaned.pop("stage")
+        elif "stage" in cleaned:
+            cleaned.pop("stage")
+    # accounts: "name", "domain", "industry" are the same in HubSpot — nothing to rename
+
+    return cleaned
+
+
 async def commit_change_session(
     change_session_id: str, 
     user_id: str,
     organization_id: str | None = None,
 ) -> dict[str, Any]:
     """
-    Commit a pending change session - push local records to external CRM.
-    
-    This takes all pending local records tracked by the change session and
-    pushes them to the external CRM (HubSpot), then updates the local records
-    with the real external IDs and marks them as synced.
-    
-    Args:
-        change_session_id: UUID of the ChangeSession to commit
-        user_id: User performing the commit (for audit)
-        organization_id: Organization ID for RLS context (optional)
-        
-    Returns:
-        Result with success/failure details
+    Commit a pending change session - push proposed records to HubSpot then
+    create local rows with the returned external IDs.
     """
     from models.change_session import ChangeSession
     from models.record_snapshot import RecordSnapshot
     from services.change_session import approve_change_session
     from connectors.hubspot import HubSpotConnector
-    
+
+    _log = logger  # alias for brevity
+    _log.info(
+        "[commit] Starting commit for session=%s user=%s org=%s",
+        change_session_id, user_id, organization_id,
+    )
+
+    # ── 1. Load change session & snapshots ──────────────────────────────────
     async with get_session(organization_id=organization_id) as session:
         change_session = await session.get(ChangeSession, UUID(change_session_id))
-        
+
         if not change_session:
+            _log.warning("[commit] Session %s not found", change_session_id)
             return {"status": "failed", "error": f"Change session {change_session_id} not found"}
-        
+
         if change_session.status != "pending":
+            _log.warning("[commit] Session %s is %s, not pending", change_session_id, change_session.status)
             return {"status": "failed", "error": f"Change session is not pending (status: {change_session.status})"}
-        
-        org_id = str(change_session.organization_id)
-        
-        # Get all snapshots for this session (these track the pending records)
+
+        org_id: str = str(change_session.organization_id)
+
         result = await session.execute(
             select(RecordSnapshot).where(RecordSnapshot.change_session_id == change_session.id)
         )
         snapshots = result.scalars().all()
-    
+
+    _log.info("[commit] Session %s: loaded %d snapshot(s), org=%s", change_session_id, len(snapshots), org_id)
+
     if not snapshots:
-        # No changes to commit, just approve
+        _log.info("[commit] No snapshots – marking session approved with 0 synced")
         await approve_change_session(change_session_id, user_id)
         return {"status": "completed", "message": "No pending changes to commit", "synced_count": 0}
-    
-    # Group snapshots by table (record type)
+
+    # ── 2. Build per-table sync lists ───────────────────────────────────────
     contacts_to_sync: list[tuple[UUID, dict[str, Any]]] = []
     accounts_to_sync: list[tuple[UUID, dict[str, Any]]] = []
     deals_to_sync: list[tuple[UUID, dict[str, Any]]] = []
-    
+
     for snapshot in snapshots:
         if snapshot.operation != "create" or not snapshot.after_data:
+            _log.debug("[commit] Skipping snapshot %s (op=%s, has_data=%s)",
+                       snapshot.id, snapshot.operation, bool(snapshot.after_data))
             continue
-        
-        # Get the original input data from the after_data (stored in _input key)
-        after_data = snapshot.after_data
-        input_data = after_data.get("_input") if isinstance(after_data, dict) else None
-        
-        if not input_data:
-            # Fallback: reconstruct input from after_data
-            if snapshot.table_name == "contacts":
-                input_data = {
-                    "email": after_data.get("email"),
-                    "firstname": after_data.get("name", "").split()[0] if after_data.get("name") else "",
-                    "lastname": " ".join(after_data.get("name", "").split()[1:]) if after_data.get("name") else "",
-                    "jobtitle": after_data.get("title"),
-                    "phone": after_data.get("phone"),
-                }
-            elif snapshot.table_name == "accounts":
-                input_data = {
-                    "name": after_data.get("name"),
-                    "domain": after_data.get("domain"),
-                    "industry": after_data.get("industry"),
-                }
-            elif snapshot.table_name == "deals":
-                input_data = {
-                    "dealname": after_data.get("name"),
-                    "amount": after_data.get("amount"),
-                    "dealstage": after_data.get("stage"),
-                }
-        
+
+        after_data: dict[str, Any] = snapshot.after_data
+        raw_input: dict[str, Any] | None = after_data.get("_input") if isinstance(after_data, dict) else None
+        source_data: dict[str, Any] = raw_input or after_data
+
+        _log.info(
+            "[commit] Snapshot %s: table=%s record=%s raw_keys=%s",
+            snapshot.id, snapshot.table_name, snapshot.record_id, list(source_data.keys()),
+        )
+
+        # Normalise to HubSpot property names and strip internal-only fields
+        input_data: dict[str, Any] = _to_hubspot_properties(snapshot.table_name, source_data)
+
+        _log.info(
+            "[commit] Snapshot %s: mapped HS properties=%s",
+            snapshot.id, {k: (v if k != "phone" else "***") for k, v in input_data.items()},
+        )
+
         record_id = snapshot.record_id
-        
         if snapshot.table_name == "contacts":
             contacts_to_sync.append((record_id, input_data))
         elif snapshot.table_name == "accounts":
             accounts_to_sync.append((record_id, input_data))
         elif snapshot.table_name == "deals":
             deals_to_sync.append((record_id, input_data))
-    
-    # Push to HubSpot and update local records
+
+    total_records: int = len(contacts_to_sync) + len(accounts_to_sync) + len(deals_to_sync)
+    _log.info(
+        "[commit] Records to push: %d contacts, %d accounts, %d deals (%d total)",
+        len(contacts_to_sync), len(accounts_to_sync), len(deals_to_sync), total_records,
+    )
+
+    # ── 3. Push to HubSpot & create local rows ─────────────────────────────
     connector = HubSpotConnector(org_id)
-    synced_count = 0
+    synced_count: int = 0
     errors: list[dict[str, Any]] = []
-    
+    org_uuid: UUID = UUID(org_id)
+    user_uuid: UUID | None = UUID(user_id) if user_id else None
+    now: datetime = datetime.utcnow()
+
     async with get_session(organization_id=org_id) as session:
-        # Sync contacts
+        # ── Contacts ────────────────────────────────────────────────────────
         for local_id, input_data in contacts_to_sync:
             try:
-                hs_result = await connector.create_contact(input_data)
-                hs_id = hs_result.get("id")
-                
+                _log.info("[commit] Pushing contact %s to HubSpot: %s", local_id, input_data)
+                hs_result: dict[str, Any] = await connector.create_contact(input_data)
+                hs_id: str | None = hs_result.get("id")
+                _log.info("[commit] HubSpot returned id=%s for contact %s", hs_id, local_id)
+
                 if hs_id:
-                    contact = await session.get(Contact, local_id)
-                    if contact:
-                        contact.source_id = hs_id
-                        contact.sync_status = "synced"
-                        synced_count += 1
+                    first_name: str = input_data.get("firstname") or ""
+                    last_name: str = input_data.get("lastname") or ""
+                    full_name: str = f"{first_name} {last_name}".strip() or input_data.get("email") or f"Contact {local_id}"
+                    contact = Contact(
+                        id=local_id,
+                        organization_id=org_uuid,
+                        source_system="hubspot",
+                        source_id=str(hs_id),
+                        name=full_name,
+                        email=input_data.get("email"),
+                        title=input_data.get("jobtitle"),
+                        phone=input_data.get("phone"),
+                        sync_status="synced",
+                        updated_at=now,
+                        updated_by=user_uuid,
+                    )
+                    session.add(contact)
+                    synced_count += 1
+                    _log.info("[commit] Created local contact %s (hs=%s, name=%s)", local_id, hs_id, full_name)
+                else:
+                    _log.warning("[commit] HubSpot did not return an id for contact %s – response: %s", local_id, hs_result)
             except Exception as e:
-                logger.error("[commit_change_session] Failed to sync contact %s: %s", local_id, e)
+                _log.error("[commit] FAILED contact %s: %s", local_id, e, exc_info=True)
                 errors.append({"table": "contacts", "record_id": str(local_id), "error": str(e)})
-        
-        # Sync accounts (companies)
+
+        # ── Accounts (companies) ────────────────────────────────────────────
         for local_id, input_data in accounts_to_sync:
             try:
+                _log.info("[commit] Pushing company %s to HubSpot: %s", local_id, input_data)
                 hs_result = await connector.create_company(input_data)
                 hs_id = hs_result.get("id")
-                
+                _log.info("[commit] HubSpot returned id=%s for company %s", hs_id, local_id)
+
                 if hs_id:
-                    account = await session.get(Account, local_id)
-                    if account:
-                        account.source_id = hs_id
-                        account.sync_status = "synced"
-                        synced_count += 1
+                    name: str = input_data.get("name") or input_data.get("domain") or f"Company {local_id}"
+                    account = Account(
+                        id=local_id,
+                        organization_id=org_uuid,
+                        source_system="hubspot",
+                        source_id=str(hs_id),
+                        name=name,
+                        domain=input_data.get("domain"),
+                        industry=input_data.get("industry"),
+                        sync_status="synced",
+                        updated_at=now,
+                        updated_by=user_uuid,
+                    )
+                    session.add(account)
+                    synced_count += 1
+                    _log.info("[commit] Created local account %s (hs=%s, name=%s)", local_id, hs_id, name)
+                else:
+                    _log.warning("[commit] HubSpot did not return an id for company %s – response: %s", local_id, hs_result)
             except Exception as e:
-                logger.error("[commit_change_session] Failed to sync account %s: %s", local_id, e)
+                _log.error("[commit] FAILED company %s: %s", local_id, e, exc_info=True)
                 errors.append({"table": "accounts", "record_id": str(local_id), "error": str(e)})
-        
-        # Sync deals
+
+        # ── Deals ───────────────────────────────────────────────────────────
         for local_id, input_data in deals_to_sync:
             try:
+                _log.info("[commit] Pushing deal %s to HubSpot: %s", local_id, input_data)
                 hs_result = await connector.create_deal(input_data)
                 hs_id = hs_result.get("id")
-                
+                _log.info("[commit] HubSpot returned id=%s for deal %s", hs_id, local_id)
+
                 if hs_id:
-                    deal = await session.get(Deal, local_id)
-                    if deal:
-                        deal.source_id = hs_id
-                        deal.sync_status = "synced"
-                        synced_count += 1
+                    amount: Decimal | None = None
+                    if input_data.get("amount") is not None:
+                        try:
+                            amount = Decimal(str(input_data["amount"]))
+                        except (ValueError, TypeError):
+                            pass
+                    deal = Deal(
+                        id=local_id,
+                        organization_id=org_uuid,
+                        source_system="hubspot",
+                        source_id=str(hs_id),
+                        name=input_data.get("dealname") or "Untitled Deal",
+                        amount=amount,
+                        stage=input_data.get("dealstage"),
+                        sync_status="synced",
+                        updated_at=now,
+                        updated_by=user_uuid,
+                    )
+                    session.add(deal)
+                    synced_count += 1
+                    _log.info("[commit] Created local deal %s (hs=%s, name=%s)", local_id, hs_id, deal.name)
+                else:
+                    _log.warning("[commit] HubSpot did not return an id for deal %s – response: %s", local_id, hs_result)
             except Exception as e:
-                logger.error("[commit_change_session] Failed to sync deal %s: %s", local_id, e)
+                _log.error("[commit] FAILED deal %s: %s", local_id, e, exc_info=True)
                 errors.append({"table": "deals", "record_id": str(local_id), "error": str(e)})
-        
+
         await session.commit()
-    
-    # Mark change session as approved (committed)
+        _log.info("[commit] DB commit complete – %d rows written", synced_count)
+
+    # ── 4. Mark session approved ────────────────────────────────────────────
     await approve_change_session(change_session_id, user_id)
-    
-    total_records = len(contacts_to_sync) + len(accounts_to_sync) + len(deals_to_sync)
-    
+    _log.info(
+        "[commit] Session %s approved. synced=%d errors=%d total=%d",
+        change_session_id, synced_count, len(errors), total_records,
+    )
+
     return {
         "status": "completed" if not errors else "partial",
         "message": f"Synced {synced_count}/{total_records} record(s) to HubSpot",
@@ -2151,83 +2176,24 @@ async def commit_change_session(
 
 
 async def discard_change_session(
-    change_session_id: str, 
+    change_session_id: str,
     user_id: str,
     organization_id: str | None = None,
 ) -> dict[str, Any]:
     """
-    Discard a pending change session - delete local pending records.
-    
-    This deletes all local records with sync_status='pending' that were
-    created as part of this change session.
-    
-    Args:
-        change_session_id: UUID of the ChangeSession to discard
-        user_id: User performing the discard (for audit)
-        organization_id: Organization ID for RLS context (optional)
-        
-    Returns:
-        Result with details of discarded records
+    Discard a pending change session. Proposals are dropped; no local rows to delete for creates.
     """
-    from models.change_session import ChangeSession
-    from models.record_snapshot import RecordSnapshot
     from services.change_session import discard_change_session as service_discard
-    
-    async with get_session(organization_id=organization_id) as session:
-        change_session = await session.get(ChangeSession, UUID(change_session_id))
-        
-        if not change_session:
-            return {"status": "failed", "error": f"Change session {change_session_id} not found"}
-        
-        if change_session.status != "pending":
-            return {"status": "failed", "error": f"Change session is not pending (status: {change_session.status})"}
-        
-        # Get all snapshots for this session
-        result = await session.execute(
-            select(RecordSnapshot).where(RecordSnapshot.change_session_id == change_session.id)
-        )
-        snapshots = result.scalars().all()
-        
-        deleted_count = 0
-        
-        for snapshot in snapshots:
-            if snapshot.operation != "create":
-                continue
-            
-            # Delete the pending local record
-            try:
-                if snapshot.table_name == "contacts":
-                    contact = await session.get(Contact, snapshot.record_id)
-                    if contact and contact.sync_status == "pending":
-                        await session.delete(contact)
-                        deleted_count += 1
-                elif snapshot.table_name == "accounts":
-                    account = await session.get(Account, snapshot.record_id)
-                    if account and account.sync_status == "pending":
-                        await session.delete(account)
-                        deleted_count += 1
-                elif snapshot.table_name == "deals":
-                    deal = await session.get(Deal, snapshot.record_id)
-                    if deal and deal.sync_status == "pending":
-                        await session.delete(deal)
-                        deleted_count += 1
-            except Exception as e:
-                logger.warning("[discard_change_session] Failed to delete record: %s", e)
-        
-        # Mark change session as discarded
-        change_session.status = "discarded"
-        change_session.resolved_at = datetime.utcnow()
-        change_session.resolved_by = UUID(user_id) if user_id else None
-        
-        await session.commit()
-    
-    logger.info("[discard_change_session] Discarded session %s, deleted %d records", 
-                change_session_id, deleted_count)
-    
+
+    result: dict[str, Any] = await service_discard(
+        change_session_id, user_id, organization_id=organization_id
+    )
+    if result.get("status") == "error":
+        return {"status": "failed", "error": result.get("error", "Unknown error")}
     return {
         "status": "discarded",
-        "message": f"Discarded {deleted_count} pending record(s)",
-        "deleted_count": deleted_count,
+        "message": f"Discarded {result.get('total_snapshots', 0)} proposed change(s)",
+        "deleted_count": result.get("rollback_count", 0),
     }
 
 
@@ -3050,12 +3016,13 @@ async def _run_workflow(
         # Build child context with updated call stack
         child_call_stack: list[str] = call_stack + [workflow_id]
         
-        # Build trigger_data with parent context info
+        # Build trigger_data with parent context (child workflow will set root_conversation_id from this)
         trigger_data: dict[str, Any] = {
             **input_data,
             "_parent_context": {
                 "call_stack": child_call_stack,
                 "parent_workflow_id": context.get("workflow_id") if context else None,
+                "parent_conversation_id": context.get("conversation_id") if context else None,
             },
         }
         

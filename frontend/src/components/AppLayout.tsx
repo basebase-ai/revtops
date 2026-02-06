@@ -42,10 +42,12 @@ import { Search } from './Search';
 import { Chat } from './Chat';
 import { Workflows } from './Workflows';
 import { AdminPanel } from './AdminPanel';
+import { PendingChangesPage } from './PendingChangesPage';
 import { OrganizationPanel } from './OrganizationPanel';
 import { ProfilePanel } from './ProfilePanel';
 import { useAppStore, useMasquerade, useIntegrations, type ActiveTask } from '../store';
 import { useTeamMembers, useWebSocket } from '../hooks';
+import { apiRequest } from '../lib/api';
 
 // Re-export types from store for backwards compatibility
 export type { UserProfile, OrganizationInfo, ChatSummary, View } from '../store';
@@ -171,6 +173,31 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
   });
   const workflowCount = workflows.length;
 
+  // Pending changes count (for sidebar badge)
+  const [pendingChangesCount, setPendingChangesCount] = useState<number>(0);
+
+  const fetchPendingCount = useCallback(async () => {
+    if (!user?.id) return;
+    try {
+      const { data: res } = await apiRequest<{ pending_count: number; sessions: unknown[] }>(
+        `/change-sessions/pending?user_id=${user.id}`,
+      );
+      if (res) {
+        setPendingChangesCount(res.pending_count);
+      }
+    } catch {
+      // swallow – badge just stays at current value
+    }
+  }, [user?.id]);
+
+  // Fetch on mount + listen for updates
+  useEffect(() => {
+    void fetchPendingCount();
+    const handle = (): void => { void fetchPendingCount(); };
+    window.addEventListener('pending-changes-updated', handle);
+    return () => window.removeEventListener('pending-changes-updated', handle);
+  }, [fetchPendingCount]);
+
   // React Query: Get team members for member count (single source of truth)
   const { data: teamMembers = [] } = useTeamMembers(
     organization?.id ?? null,
@@ -235,6 +262,7 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
       '/search': 'search',
       '/workflows': 'workflows',
       '/admin': 'admin',
+      '/changes': 'pending-changes',
     };
     
     const matchedView = viewPaths[path];
@@ -280,6 +308,7 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
         'search': '/search',
         'workflows': '/workflows',
         'admin': '/admin',
+        'pending-changes': '/changes',
       };
       newPath = viewPaths[currentView] || '/';
     }
@@ -517,6 +546,15 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
           }
           break;
         }
+
+        default: {
+          // Handle pending_changes_updated from backend WS broadcast
+          const msg = parsed as Record<string, unknown>;
+          if (msg.type === 'pending_changes_updated') {
+            window.dispatchEvent(new Event('pending-changes-updated'));
+          }
+          break;
+        }
       }
     } catch {
       // Not JSON, ignore
@@ -583,6 +621,7 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
     search: 'Search',
     workflows: 'Workflows',
     admin: 'Admin',
+    'pending-changes': 'Pending Changes',
   };
 
   return (
@@ -665,6 +704,7 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
           onViewChange={setCurrentView}
           connectedSourcesCount={connectedIntegrationsCount}
           workflowCount={workflowCount}
+          pendingChangesCount={pendingChangesCount}
           recentChats={recentChats.slice(0, 10)}
           onSelectChat={handleSelectChat}
           onDeleteChat={handleDeleteChat}
@@ -709,6 +749,9 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
         )}
         {currentView === 'admin' && (
           <AdminPanel />
+        )}
+        {currentView === 'pending-changes' && (
+          <PendingChangesPage />
         )}
       </main>
 

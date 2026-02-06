@@ -76,6 +76,91 @@ async def start_change_session(
         return change_session
 
 
+async def get_or_start_change_session(
+    organization_id: str,
+    user_id: str,
+    scope_conversation_id: str,
+    description: Optional[str] = None,
+) -> ChangeSession:
+    """
+    Get an existing pending change session for this scope, or create one.
+
+    Use this when multiple CRM operations (e.g. from one workflow run or chat) should
+    be grouped into a single change session for one "Commit all" / "Discard all" review.
+    scope_conversation_id is typically the root conversation of a workflow tree, or
+    the conversation id for a single chat.
+
+    Args:
+        organization_id: Organization UUID
+        user_id: User UUID who initiated the changes
+        scope_conversation_id: Conversation UUID to group by (root or current)
+        description: Optional description (used only when creating)
+
+    Returns:
+        The existing or newly created ChangeSession
+    """
+    async with get_session() as session:
+        result = await session.execute(
+            select(ChangeSession)
+            .where(
+                ChangeSession.organization_id == UUID(organization_id),
+                ChangeSession.conversation_id == UUID(scope_conversation_id),
+                ChangeSession.status == "pending",
+            )
+            .order_by(ChangeSession.created_at)
+            .limit(1)
+        )
+        existing: ChangeSession | None = result.scalar_one_or_none()
+        if existing:
+            await session.refresh(existing)
+            logger.debug(
+                "[ChangeSession] Reusing pending session %s for scope %s",
+                existing.id,
+                scope_conversation_id,
+            )
+            return existing
+
+    return await start_change_session(
+        organization_id=organization_id,
+        user_id=user_id,
+        conversation_id=scope_conversation_id,
+        description=description or f"CRM changes (scope {scope_conversation_id[:8]}...)",
+    )
+
+
+async def get_or_start_orphan_change_session(
+    organization_id: str,
+    user_id: str,
+    description: Optional[str] = None,
+) -> ChangeSession:
+    """
+    Get or create a pending change session for CRM ops with no conversation (e.g. API/orphan).
+    Batches all such ops for the same org+user into one session for one Commit/Discard.
+    """
+    async with get_session() as session:
+        result = await session.execute(
+            select(ChangeSession)
+            .where(
+                ChangeSession.organization_id == UUID(organization_id),
+                ChangeSession.user_id == UUID(user_id),
+                ChangeSession.conversation_id.is_(None),
+                ChangeSession.status == "pending",
+            )
+            .order_by(ChangeSession.created_at)
+            .limit(1)
+        )
+        existing: ChangeSession | None = result.scalar_one_or_none()
+        if existing:
+            await session.refresh(existing)
+            return existing
+    return await start_change_session(
+        organization_id=organization_id,
+        user_id=user_id,
+        conversation_id=None,
+        description=description or "CRM changes (no conversation)",
+    )
+
+
 async def capture_snapshot(
     change_session_id: str,
     table_name: str,
@@ -169,6 +254,42 @@ async def update_snapshot_after_data(
             await session.commit()
 
 
+async def add_proposed_create(
+    change_session_id: str,
+    table_name: str,
+    record_id: str,
+    input_payload: dict[str, Any],
+    db_session: Optional[AsyncSession] = None,
+) -> RecordSnapshot:
+    """
+    Store a proposed create (no local row yet). On commit we create locally and push to CRM.
+    after_data stores {"_input": input_payload} for HubSpot and local row creation.
+    """
+    if table_name not in TABLE_MODELS:
+        raise ValueError(f"Unknown table: {table_name}")
+
+    snapshot = RecordSnapshot(
+        change_session_id=UUID(change_session_id),
+        table_name=table_name,
+        record_id=UUID(record_id),
+        operation="create",
+        before_data=None,
+        after_data={"_input": input_payload},
+    )
+
+    async def _do_add(session: AsyncSession) -> RecordSnapshot:
+        session.add(snapshot)
+        await session.flush()
+        return snapshot
+
+    if db_session:
+        return await _do_add(db_session)
+    async with get_session() as session:
+        sn = await _do_add(session)
+        await session.commit()
+        return sn
+
+
 async def approve_change_session(
     change_session_id: str,
     resolved_by_user_id: str,
@@ -238,23 +359,13 @@ async def approve_change_session(
 async def discard_change_session(
     change_session_id: str,
     resolved_by_user_id: str,
+    organization_id: str | None = None,
 ) -> dict[str, Any]:
     """
     Discard a change session, rolling back all changes.
-    
-    Restores records to their before_data state:
-    - Creates: Delete the record
-    - Updates: Restore previous values
-    - Deletes: Re-insert the record (not implemented yet)
-    
-    Args:
-        change_session_id: The change session UUID
-        resolved_by_user_id: User UUID discarding the changes
-        
-    Returns:
-        Result dict with status and rollback count
+    For proposal-only creates there are no local rows; delete is a no-op.
     """
-    async with get_session() as session:
+    async with get_session(organization_id=organization_id) as session:
         # Get the change session
         change_session = await session.get(ChangeSession, UUID(change_session_id))
         if not change_session:

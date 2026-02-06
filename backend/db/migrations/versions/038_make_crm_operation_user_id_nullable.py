@@ -16,8 +16,9 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.alter_column('crm_operations', 'user_id', nullable=True)
+    # Table was renamed to pending_operations in 030
+    op.alter_column("pending_operations", "user_id", nullable=True)
 
 
 def downgrade() -> None:
-    op.alter_column('crm_operations', 'user_id', nullable=False)
+    op.alter_column("pending_operations", "user_id", nullable=False)

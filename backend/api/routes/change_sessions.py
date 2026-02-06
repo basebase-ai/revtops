@@ -15,9 +15,13 @@ from pydantic import BaseModel
 from sqlalchemy import select
 
 from models.change_session import ChangeSession
+from models.conversation import Conversation
 from models.record_snapshot import RecordSnapshot
 from models.user import User
+
+from models.workflow import Workflow
 from models.database import get_admin_session, get_session
+
 
 router = APIRouter(prefix="/change-sessions", tags=["change-sessions"])
 logger = logging.getLogger(__name__)
@@ -52,6 +56,9 @@ class ChangeSessionSummary(BaseModel):
     created_at: str
     record_count: int
     records: list[dict[str, Any]]
+    conversation_id: str | None = None
+    source_title: str | None = None
+    source_type: str | None = None  # 'workflow' | 'chat'
 
 
 class PendingChangesResponse(BaseModel):
@@ -138,20 +145,37 @@ async def get_pending_changes(
                     "record_id": str(snap.record_id),
                 }
                 
-                # Add summary info from after_data
+                # Summary from after_data; for proposal-only creates use _input payload
                 if snap.after_data and isinstance(snap.after_data, dict):
+                    data: dict[str, Any] = snap.after_data.get("_input", snap.after_data)
                     if snap.table_name == "contacts":
-                        record_info["name"] = snap.after_data.get("name")
-                        record_info["email"] = snap.after_data.get("email")
+                        fn, ln = data.get("firstname") or "", data.get("lastname") or ""
+                        record_info["name"] = f"{fn} {ln}".strip() or data.get("email")
+                        record_info["email"] = data.get("email")
                     elif snap.table_name == "accounts":
-                        record_info["name"] = snap.after_data.get("name")
-                        record_info["domain"] = snap.after_data.get("domain")
+                        record_info["name"] = data.get("name")
+                        record_info["domain"] = data.get("domain")
                     elif snap.table_name == "deals":
-                        record_info["name"] = snap.after_data.get("name")
-                        record_info["amount"] = snap.after_data.get("amount")
+                        record_info["name"] = data.get("dealname")
+                        record_info["amount"] = data.get("amount")
                 
                 records.append(record_info)
-            
+
+            # Optional: source conversation and workflow for "From: Chat / Workflow" in UI
+            conversation_id_str: str | None = str(cs.conversation_id) if cs.conversation_id else None
+            source_title: str | None = None
+            source_type: str | None = None
+            if cs.conversation_id:
+                conv = await session.get(Conversation, cs.conversation_id)
+                if conv:
+                    if conv.workflow_id:
+                        wf = await session.get(Workflow, conv.workflow_id)
+                        source_title = wf.name if wf else conv.title
+                        source_type = "workflow"
+                    else:
+                        source_title = conv.title
+                        source_type = "chat"
+
             sessions_summary.append(ChangeSessionSummary(
                 id=str(cs.id),
                 status=cs.status,
@@ -159,6 +183,9 @@ async def get_pending_changes(
                 created_at=cs.created_at.isoformat() if cs.created_at else "",
                 record_count=len(snapshots),
                 records=records,
+                conversation_id=conversation_id_str,
+                source_title=source_title,
+                source_type=source_type,
             ))
     
     return PendingChangesResponse(

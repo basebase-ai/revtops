@@ -137,7 +137,8 @@ export type View =
   | "data"
   | "search"
   | "workflows"
-  | "admin";
+  | "admin"
+  | "pending-changes";
 
 // Pending chunk for out-of-order handling
 export interface PendingChunk {

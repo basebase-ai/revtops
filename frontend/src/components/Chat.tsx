@@ -16,7 +16,6 @@ import { Message } from './Message';
 import { ArtifactViewer, type FileArtifact } from './ArtifactViewer';
 import { ArtifactTile } from './ArtifactTile';
 import { PendingApprovalCard, type ApprovalResult } from './PendingApprovalCard';
-import { PendingChangesBar } from './PendingChangesBar';
 import { getConversation } from '../api/client';
 import { 
   useAppStore,
@@ -71,13 +70,14 @@ interface ToolApprovalState {
 
 export function Chat({ 
   userId, 
-  organizationId,
+  organizationId: _organizationId,
   chatId, 
   sendMessage,
   isConnected,
   connectionState,
   crmApprovalResults,
 }: ChatProps): JSX.Element {
+  void _organizationId; // kept for API compatibility
   // Get per-conversation state from Zustand
   const conversationState = useConversationState(chatId ?? null);
   const chatTitle = conversationState?.title ?? 'New Chat';
@@ -725,9 +725,6 @@ export function Chat({
       {/* Input */}
       <div className="border-t border-surface-800 p-2 md:p-3">
         <div className="max-w-3xl mx-auto">
-          {/* Pending changes bar (local-first CRM changes) */}
-          <PendingChangesBar organizationId={organizationId} userId={userId} />
-          
           <div className="flex items-end gap-2">
             {/* Attach button - hidden on very small screens */}
             <button
