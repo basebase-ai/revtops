@@ -443,11 +443,19 @@ export function DataSources(): JSX.Element {
       console.log('Disconnect successful, invalidating integrations cache...');
       // Invalidate cache to refetch integrations
       void fetchIntegrations();
+      console.log('Disconnect complete, restoring UI state for provider:', provider);
     } catch (error) {
       console.error('Failed to disconnect:', error);
       alert(`Failed to disconnect: ${error instanceof Error ? error.message : 'Unknown error'}`);
       // Remove from disconnecting state on error so user can retry
       setDisconnectingProviders((prev) => {
+        const next = new Set(prev);
+        next.delete(provider);
+        return next;
+      });
+    } finally {
+      setDisconnectingProviders((prev) => {
+        if (!prev.has(provider)) return prev;
         const next = new Set(prev);
         next.delete(provider);
         return next;
