@@ -75,6 +75,8 @@ npm install plotly.js react-plotly.js @types/plotly.js @types/react-plotly.js --
 cp env.example .env
 # Edit .env with your credentials
 # Should all be in the .env or in Slack
+# Supabase values (SUPABASE_URL, SUPABASE_JWT_SECRET, VITE_SUPABASE_ANON_KEY)
+# should be copied from your Railway project variables.
 ```
 
 2. **Configure Nango integrations:**
@@ -420,6 +422,8 @@ We use [Nango](https://nango.dev) to handle all OAuth complexity:
 | `ANTHROPIC_API_KEY` | Anthropic API key for Claude        |
 | `SECRET_KEY`        | Application secret for sessions     |
 | `FRONTEND_URL`      | Frontend URL for CORS and redirects |
+| `SUPABASE_URL`      | Supabase project URL (from Railway) |
+| `SUPABASE_JWT_SECRET` | Supabase JWT secret (from Railway) |
 
 ### Nango Configuration
 
