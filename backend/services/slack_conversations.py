@@ -75,6 +75,25 @@ async def resolve_revtops_user_for_slack_actor(
             return ""
         return " ".join(value.strip().lower().split())
 
+    def _extract_slack_user_ids(extra_data: dict[str, Any]) -> set[str]:
+        """Extract possible Slack user IDs from integration metadata."""
+        candidates: set[str] = set()
+        if not extra_data:
+            return candidates
+
+        for key in ("authed_user_id", "user_id", "installer_user_id"):
+            value = extra_data.get(key)
+            if isinstance(value, str) and value:
+                candidates.add(value)
+
+        authed_user = extra_data.get("authed_user")
+        if isinstance(authed_user, dict):
+            authed_user_id = authed_user.get("id") or authed_user.get("user_id")
+            if isinstance(authed_user_id, str) and authed_user_id:
+                candidates.add(authed_user_id)
+
+        return candidates
+
     async with get_admin_session() as session:
         users_query = select(User).where(User.organization_id == UUID(organization_id))
         users_result = await session.execute(users_query)
@@ -91,6 +110,34 @@ async def resolve_revtops_user_for_slack_actor(
         )
         integrations_result = await session.execute(integrations_query)
         slack_integrations = integrations_result.scalars().all()
+
+    for integration in slack_integrations:
+        extra_data = integration.extra_data or {}
+        slack_user_ids = _extract_slack_user_ids(extra_data)
+        if slack_user_id in slack_user_ids:
+            target_user_id = integration.user_id or integration.connected_by_user_id
+            if not target_user_id:
+                logger.info(
+                    "[slack_conversations] Slack metadata matched user=%s but no linked user_id on integration %s",
+                    slack_user_id,
+                    integration.id,
+                )
+                continue
+
+            for user in org_users:
+                if user.id == target_user_id:
+                    logger.info(
+                        "[slack_conversations] Matched Slack user=%s via integration metadata to RevTops user=%s",
+                        slack_user_id,
+                        user.id,
+                    )
+                    return user
+
+            logger.info(
+                "[slack_conversations] Slack metadata matched user=%s but no org user found for %s",
+                slack_user_id,
+                target_user_id,
+            )
 
     users_with_connected_slack: set[UUID] = {
         integration.user_id
