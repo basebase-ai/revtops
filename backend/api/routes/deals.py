@@ -6,18 +6,20 @@ Endpoints:
 - GET /api/deals/pipelines - List pipelines
 """
 
+import logging
 from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import select, text
+from sqlalchemy import select
 
 from models.database import get_session
 from models.deal import Deal
 from models.pipeline import Pipeline, PipelineStage
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 class DealResponse(BaseModel):
@@ -76,12 +78,18 @@ async def list_deals(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid organization ID")
 
-    async with get_session() as session:
-        # Set org context for RLS
-        await session.execute(
-            text("SELECT set_config('app.current_org_id', :org_id, true)"),
-            {"org_id": organization_id}
-        )
+    logger.info(
+        "Listing deals",
+        extra={
+            "organization_id": str(org_uuid),
+            "pipeline_id": pipeline_id,
+            "default_only": default_only,
+            "open_only": open_only,
+            "limit": limit,
+        },
+    )
+
+    async with get_session(organization_id=str(org_uuid)) as session:
 
         # Subquery to get stage names by matching source_id within the same pipeline
         stage_name_subquery = (
@@ -146,6 +154,14 @@ async def list_deals(
         result = await session.execute(query)
         rows = result.fetchall()
 
+        logger.info(
+            "Fetched deals",
+            extra={
+                "organization_id": str(org_uuid),
+                "deal_count": len(rows),
+            },
+        )
+
         deals = [
             DealResponse(
                 id=str(row.id),
@@ -172,12 +188,14 @@ async def list_pipelines(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid organization ID")
 
-    async with get_session() as session:
-        # Set org context for RLS
-        await session.execute(
-            text("SELECT set_config('app.current_org_id', :org_id, true)"),
-            {"org_id": organization_id}
-        )
+    logger.info(
+        "Listing pipelines",
+        extra={
+            "organization_id": str(org_uuid),
+        },
+    )
+
+    async with get_session(organization_id=str(org_uuid)) as session:
 
         # Fetch pipelines with stages
         query = (
@@ -187,6 +205,13 @@ async def list_pipelines(
         )
         result = await session.execute(query)
         pipelines_db = result.scalars().all()
+        logger.info(
+            "Fetched pipelines",
+            extra={
+                "organization_id": str(org_uuid),
+                "pipeline_count": len(pipelines_db),
+            },
+        )
 
         pipelines: list[PipelineResponse] = []
         for p in pipelines_db:

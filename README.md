@@ -27,6 +27,46 @@ AI-powered revenue operations assistant that connects to HubSpot, Slack, Google 
 - Python 3.10+ (brew or venv; op-ed: use pyenv to force this globally)
 - Dependencies - python -m pip install -r requirements.txt (from the backend directory; again, be env mindful)
 
+#### Native dependencies for WeasyPrint (PDF generation)
+
+WeasyPrint requires system libraries in addition to the Python package. Install these before running `pip install -r requirements.txt`.
+
+**macOS (Homebrew):**
+
+```bash
+brew install cairo pango gdk-pixbuf libffi
+```
+
+**Ubuntu/Debian:**
+
+```bash
+sudo apt-get update
+sudo apt-get install -y \
+  build-essential \
+  python3-dev \
+  libcairo2 \
+  libpango-1.0-0 \
+  libpangocairo-1.0-0 \
+  libgdk-pixbuf-2.0-0 \
+  libffi-dev \
+  shared-mime-info
+```
+
+#### Plotly installation
+
+Plotly powers chart rendering in the frontend artifact viewer. It is installed via the frontend dependency set:
+
+```bash
+cd frontend
+npm install
+```
+
+If you need to install/refresh Plotly packages explicitly:
+
+```bash
+npm install plotly.js react-plotly.js @types/plotly.js @types/react-plotly.js --save
+```
+
 ### Setup
 
 1. **Clone and configure environment:**
@@ -84,6 +124,8 @@ cd frontend
 npm install
 npm run dev
 ```
+
+`npm install` will install Plotly dependencies defined in `frontend/package.json`.
 
 ## Railway Deployment
 

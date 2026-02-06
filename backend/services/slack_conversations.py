@@ -16,6 +16,7 @@ from connectors.slack import SlackConnector
 from models.conversation import Conversation
 from models.database import get_admin_session, get_session
 from models.integration import Integration
+from models.user import User
 
 logger = logging.getLogger(__name__)
 
@@ -23,19 +24,16 @@ logger = logging.getLogger(__name__)
 async def find_organization_by_slack_team(team_id: str) -> str | None:
     """
     Find the organization ID for a Slack team/workspace.
-    
-    Matches the team_id to an active Slack integration's external data.
-    Uses admin session to bypass RLS since we don't know the org yet.
-    
+
+    Matches the incoming team_id against metadata on active Slack integrations.
+
     Args:
         team_id: Slack workspace/team ID (e.g., "T04ABCDEF")
-        
+
     Returns:
         Organization ID string or None if not found
     """
     async with get_admin_session() as session:
-        # Find Slack integration with matching team_id in extra_data
-        # The team_id is stored when the integration is connected via Nango
         query = (
             select(Integration)
             .where(Integration.provider == "slack")
@@ -43,29 +41,155 @@ async def find_organization_by_slack_team(team_id: str) -> str | None:
         )
         result = await session.execute(query)
         integrations = result.scalars().all()
-        
+
         for integration in integrations:
-            # Check if team_id matches in extra_data
             extra_data = integration.extra_data or {}
             if extra_data.get("team_id") == team_id:
+                logger.info(
+                    "[slack_conversations] Matched Slack team %s to org %s via integration metadata",
+                    team_id,
+                    integration.organization_id,
+                )
                 return str(integration.organization_id)
-            
-            # Also check nango_connection_id which contains the org_id
-            # Format: "{org_id}" for org-scoped integrations
-            if integration.nango_connection_id:
-                # The connection ID itself is the org_id for org-scoped integrations
-                # We can use this to find which org owns this integration
-                return str(integration.organization_id)
-        
-        # Fallback: if there's only one Slack integration, use it
-        # This handles cases where team_id isn't stored
+
         if len(integrations) == 1:
             logger.warning(
-                "[slack_conversations] No team_id match, using only Slack integration for team %s",
-                team_id
+                "[slack_conversations] No team_id metadata match; using the only active Slack integration org=%s for team=%s",
+                integrations[0].organization_id,
+                team_id,
             )
             return str(integrations[0].organization_id)
-    
+
+    logger.warning("[slack_conversations] No Slack integration found for team=%s", team_id)
+    return None
+
+
+async def resolve_revtops_user_for_slack_actor(
+    organization_id: str,
+    slack_user_id: str,
+) -> User | None:
+    """Resolve the RevTops user linked to a Slack actor in this organization."""
+    def _normalize_name(value: str | None) -> str:
+        """Normalize a person name for case-insensitive equality matching."""
+        if not value:
+            return ""
+        return " ".join(value.strip().lower().split())
+
+    async with get_admin_session() as session:
+        users_query = select(User).where(User.organization_id == UUID(organization_id))
+        users_result = await session.execute(users_query)
+        org_users = users_result.scalars().all()
+
+        # "Connected their Slack" can be represented by either user-scoped Slack
+        # integrations (user_id) or organization-scoped Slack integrations that were
+        # authorized by a specific user (connected_by_user_id).
+        integrations_query = (
+            select(Integration)
+            .where(Integration.organization_id == UUID(organization_id))
+            .where(Integration.provider == "slack")
+            .where(Integration.is_active == True)
+        )
+        integrations_result = await session.execute(integrations_query)
+        slack_integrations = integrations_result.scalars().all()
+
+    users_with_connected_slack: set[UUID] = {
+        integration.user_id
+        for integration in slack_integrations
+        if integration.user_id is not None
+    }
+    users_with_connected_slack.update(
+        integration.connected_by_user_id
+        for integration in slack_integrations
+        if integration.connected_by_user_id is not None
+    )
+
+    if not org_users:
+        logger.info(
+            "[slack_conversations] No users found for org=%s when resolving Slack user=%s",
+            organization_id,
+            slack_user_id,
+        )
+        return None
+
+    try:
+        connector = SlackConnector(organization_id=organization_id)
+        slack_user = await connector.get_user_info(slack_user_id)
+        profile = slack_user.get("profile", {})
+        slack_email = (profile.get("email") or "").strip().lower()
+        slack_names = {
+            _normalize_name(slack_user.get("name")),
+            _normalize_name(slack_user.get("real_name")),
+            _normalize_name(profile.get("display_name")),
+            _normalize_name(profile.get("real_name")),
+            _normalize_name(profile.get("display_name_normalized")),
+            _normalize_name(profile.get("real_name_normalized")),
+        }
+        slack_names.discard("")
+
+        logger.info(
+            "[slack_conversations] Slack user resolution lookup user=%s has_email=%s candidate_names=%s users_with_connected_slack=%d",
+            slack_user_id,
+            bool(slack_email),
+            sorted(slack_names),
+            len(users_with_connected_slack),
+        )
+    except Exception as exc:
+        logger.warning(
+            "[slack_conversations] Failed Slack users.info lookup for user=%s org=%s: %s",
+            slack_user_id,
+            organization_id,
+            exc,
+            exc_info=True,
+        )
+        return None
+
+    # 1) email matching
+    if slack_email:
+        for user in org_users:
+            if user.email and user.email.strip().lower() == slack_email:
+                logger.info(
+                    "[slack_conversations] Matched Slack user=%s email=%s to RevTops user=%s",
+                    slack_user_id,
+                    slack_email,
+                    user.id,
+                )
+                return user
+
+        logger.info(
+            "[slack_conversations] No email match for Slack user=%s email=%s org=%s",
+            slack_user_id,
+            slack_email,
+            organization_id,
+        )
+
+    # 2) slack name matching for users who have connected Slack
+    if slack_names and users_with_connected_slack:
+        for user in org_users:
+            if user.id not in users_with_connected_slack:
+                continue
+
+            user_name = _normalize_name(user.name)
+            if user_name and user_name in slack_names:
+                logger.info(
+                    "[slack_conversations] Matched Slack user=%s by name=%s to connected RevTops user=%s",
+                    slack_user_id,
+                    user_name,
+                    user.id,
+                )
+                return user
+
+        logger.info(
+            "[slack_conversations] No connected Slack-name match for Slack user=%s org=%s candidate_names=%s",
+            slack_user_id,
+            organization_id,
+            sorted(slack_names),
+        )
+
+    logger.info(
+        "[slack_conversations] Failed to resolve RevTops user for Slack actor user=%s org=%s",
+        slack_user_id,
+        organization_id,
+    )
     return None
 
 
@@ -73,6 +197,7 @@ async def find_or_create_conversation(
     organization_id: str,
     slack_channel_id: str,
     slack_user_id: str,
+    revtops_user_id: str | None,
 ) -> Conversation:
     """
     Find an existing Slack conversation or create a new one.
@@ -83,6 +208,7 @@ async def find_or_create_conversation(
         organization_id: The organization this conversation belongs to
         slack_channel_id: Slack DM channel ID
         slack_user_id: Slack user ID who initiated the conversation
+        revtops_user_id: Linked RevTops user UUID string if available
         
     Returns:
         Existing or new Conversation instance
@@ -99,6 +225,15 @@ async def find_or_create_conversation(
         conversation = result.scalar_one_or_none()
         
         if conversation:
+            if revtops_user_id and conversation.user_id is None:
+                conversation.user_id = UUID(revtops_user_id)
+                await session.commit()
+                logger.info(
+                    "[slack_conversations] Linked existing conversation %s to user %s",
+                    conversation.id,
+                    revtops_user_id,
+                )
+
             logger.info(
                 "[slack_conversations] Found existing conversation %s for channel %s",
                 conversation.id,
@@ -109,7 +244,7 @@ async def find_or_create_conversation(
         # Create new conversation for this Slack DM
         conversation = Conversation(
             organization_id=UUID(organization_id),
-            user_id=None,  # No RevTops user for Slack conversations
+            user_id=UUID(revtops_user_id) if revtops_user_id else None,
             source="slack",
             source_channel_id=slack_channel_id,
             source_user_id=slack_user_id,
@@ -121,9 +256,11 @@ async def find_or_create_conversation(
         await session.refresh(conversation)
         
         logger.info(
-            "[slack_conversations] Created new conversation %s for channel %s",
+            "[slack_conversations] Created new conversation %s for channel %s user_id=%s source_user_id=%s",
             conversation.id,
-            slack_channel_id
+            slack_channel_id,
+            conversation.user_id,
+            slack_user_id,
         )
         return conversation
 
@@ -170,20 +307,25 @@ async def process_slack_dm(
             "error": f"No organization found for Slack team {team_id}"
         }
     
+    linked_user = await resolve_revtops_user_for_slack_actor(
+        organization_id=organization_id,
+        slack_user_id=user_id,
+    )
+
     # Find or create conversation
     conversation = await find_or_create_conversation(
         organization_id=organization_id,
         slack_channel_id=channel_id,
         slack_user_id=user_id,
+        revtops_user_id=str(linked_user.id) if linked_user else None,
     )
-    
+
     # Process message through orchestrator
-    # Note: user_id is None since we don't have a RevTops user for Slack DMs
     orchestrator = ChatOrchestrator(
-        user_id=None,  # No RevTops user for Slack conversations
+        user_id=str(linked_user.id) if linked_user else None,
         organization_id=organization_id,
         conversation_id=str(conversation.id),
-        user_email=None,  # We don't know the Slack user's email
+        user_email=linked_user.email if linked_user else None,
         workflow_context=None,
     )
     
@@ -265,18 +407,24 @@ async def process_slack_mention(
     # This allows threaded conversations to maintain context
     source_channel_id = f"{channel_id}:{thread_ts}"
     
+    linked_user = await resolve_revtops_user_for_slack_actor(
+        organization_id=organization_id,
+        slack_user_id=user_id,
+    )
+
     conversation = await find_or_create_conversation(
         organization_id=organization_id,
         slack_channel_id=source_channel_id,
         slack_user_id=user_id,
+        revtops_user_id=str(linked_user.id) if linked_user else None,
     )
-    
+
     # Process message through orchestrator
     orchestrator = ChatOrchestrator(
-        user_id=None,  # No RevTops user for Slack conversations
+        user_id=str(linked_user.id) if linked_user else None,
         organization_id=organization_id,
         conversation_id=str(conversation.id),
-        user_email=None,
+        user_email=linked_user.email if linked_user else None,
         workflow_context=None,
     )
     

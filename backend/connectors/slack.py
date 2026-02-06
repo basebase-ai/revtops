@@ -177,6 +177,15 @@ class SlackConnector(BaseConnector):
 
         return users
 
+    async def get_user_info(self, slack_user_id: str) -> dict[str, Any]:
+        """Get details for a specific Slack user via users.info."""
+        data = await self._make_request(
+            "GET",
+            "users.info",
+            params={"user": slack_user_id},
+        )
+        return data.get("user", {})
+
     async def sync_deals(self) -> int:
         """Slack doesn't have deals - return 0."""
         return 0
