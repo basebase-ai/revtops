@@ -54,6 +54,7 @@ export function ArtifactViewer({
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState<boolean>(false);
+  const [showDownloadMenu, setShowDownloadMenu] = useState<boolean>(false);
 
   // Fetch content for file artifacts
   useEffect(() => {
@@ -85,8 +86,9 @@ export function ArtifactViewer({
     void fetchContent();
   }, [artifact]);
 
-  const handleDownload = async (): Promise<void> => {
+  const handleDownload = async (format: "markdown" | "pdf"): Promise<void> => {
     if (!isFileArtifact(artifact)) return;
+    setShowDownloadMenu(false);
 
     try {
       // Get auth token for download request
@@ -94,7 +96,7 @@ export function ArtifactViewer({
       const token = session?.access_token;
       
       const response = await fetch(
-        `${API_BASE}/artifacts/${artifact.id}/download`,
+        `${API_BASE}/artifacts/${artifact.id}/download?format=${format}`,
         {
           headers: token ? { Authorization: `Bearer ${token}` } : {},
         }
@@ -107,7 +109,9 @@ export function ArtifactViewer({
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = artifact.filename;
+      const extension = format === "pdf" ? ".pdf" : ".md";
+      const baseName = artifact.filename.replace(/\.[^/.]+$/, "");
+      a.download = baseName + extension;
       document.body.appendChild(a);
       a.click();
       window.URL.revokeObjectURL(url);
@@ -136,19 +140,35 @@ export function ArtifactViewer({
       <div className="h-full flex flex-col">
         {/* Header with download button */}
         <div className="flex items-center justify-between mb-4 pb-3 border-b border-surface-700">
-          <div>
-            <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-surface-700 text-surface-300">
-              {getContentTypeLabel(artifact.contentType)}
-            </span>
-            <div className="text-xs text-surface-500 mt-1">{artifact.filename}</div>
+          <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-surface-700 text-surface-300">
+            {getContentTypeLabel(artifact.contentType)}
+          </span>
+          <div className="relative">
+            <button
+              onClick={() => setShowDownloadMenu(!showDownloadMenu)}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-primary-600 hover:bg-primary-500 text-white text-sm font-medium transition-colors"
+            >
+              <DownloadIcon />
+              Download
+              <ChevronDownIcon />
+            </button>
+            {showDownloadMenu && (
+              <div className="absolute right-0 mt-1 w-36 rounded-md bg-surface-800 border border-surface-700 shadow-lg z-10">
+                <button
+                  onClick={() => handleDownload("markdown")}
+                  className="flex items-center gap-2 w-full px-3 py-2 text-sm text-surface-200 hover:bg-surface-700 transition-colors"
+                >
+                  Markdown
+                </button>
+                <button
+                  onClick={() => handleDownload("pdf")}
+                  className="flex items-center gap-2 w-full px-3 py-2 text-sm text-surface-200 hover:bg-surface-700 transition-colors"
+                >
+                  PDF
+                </button>
+              </div>
+            )}
           </div>
-          <button
-            onClick={handleDownload}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-primary-600 hover:bg-primary-500 text-white text-sm font-medium transition-colors"
-          >
-            <DownloadIcon />
-            Download
-          </button>
         </div>
 
         {/* Content area */}
@@ -174,7 +194,7 @@ export function ArtifactViewer({
                 <MarkdownViewer content={content} />
               )}
               {artifact.contentType === "pdf" && (
-                <PdfViewer content={content} onDownload={handleDownload} />
+                <PdfViewer content={content} />
               )}
               {artifact.contentType === "chart" && <ChartViewer content={content} />}
             </>
@@ -239,35 +259,23 @@ function MarkdownViewer({ content }: { content: string }): JSX.Element {
 
 function PdfViewer({
   content,
-  onDownload,
 }: {
   content: string;
-  onDownload: () => void;
 }): JSX.Element {
   // Show markdown preview since we store markdown source
   return (
     <div className="space-y-4">
-      <div className="p-4 rounded-lg bg-surface-800 border border-surface-700">
-        <div className="flex items-center gap-2 text-surface-300 mb-2">
+      <div className="p-3 rounded-lg bg-surface-800 border border-surface-700">
+        <div className="flex items-center gap-2 text-surface-300">
           <PdfIcon />
-          <span className="font-medium">PDF Document</span>
+          <span className="text-sm text-surface-400">Use the Download button above to export as PDF</span>
         </div>
-        <p className="text-sm text-surface-400 mb-3">
-          Click the download button to generate and save the PDF file.
-        </p>
-        <button
-          onClick={onDownload}
-          className="flex items-center gap-1.5 px-3 py-2 rounded-md bg-red-600 hover:bg-red-500 text-white text-sm font-medium transition-colors"
-        >
-          <DownloadIcon />
-          Download PDF
-        </button>
       </div>
 
       {/* Show markdown preview */}
-      <div className="border-t border-surface-700 pt-4">
+      <div>
         <div className="text-xs text-surface-500 uppercase tracking-wider mb-2">
-          Preview (Markdown Source)
+          Preview
         </div>
         <MarkdownViewer content={content} />
       </div>
@@ -570,6 +578,14 @@ function PdfIcon(): JSX.Element {
         strokeWidth={1.5}
         d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"
       />
+    </svg>
+  );
+}
+
+function ChevronDownIcon(): JSX.Element {
+  return (
+    <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
     </svg>
   );
 }

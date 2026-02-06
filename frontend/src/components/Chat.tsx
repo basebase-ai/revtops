@@ -635,7 +635,7 @@ export function Chat({
       {/* Content area with messages and optional artifact sidebar */}
       <div className="flex-1 flex overflow-hidden">
         {/* Messages */}
-        <div className="flex-1 overflow-y-auto overflow-x-hidden p-3 md:p-6">
+        <div className={`overflow-y-auto overflow-x-hidden p-3 md:p-6 ${currentArtifact ? 'w-1/2' : 'flex-1'}`}>
           {messages.length === 0 && !isThinking ? (
             conversationType === 'workflow' ? (
               // Show loading state for workflow conversations waiting for agent to start
@@ -702,14 +702,14 @@ export function Chat({
               className="fixed inset-0 bg-black/50 z-40 md:hidden"
               onClick={() => setCurrentArtifact(null)}
             />
-            <div className="fixed inset-y-0 right-0 w-full max-w-md z-50 md:relative md:w-96 md:z-auto border-l border-surface-800 bg-surface-900 p-4 overflow-y-auto">
-              <div className="flex items-center justify-between mb-4">
+            <div className="fixed inset-y-0 right-0 w-full max-w-md z-50 md:relative md:w-1/2 md:z-auto border-l border-surface-800 bg-surface-900 p-4 overflow-y-auto">
+              <div className="flex items-center justify-between mb-2">
                 <h2 className="text-lg font-semibold text-surface-100 truncate">
                   {currentArtifact.title}
                 </h2>
                 <button
                   onClick={() => setCurrentArtifact(null)}
-                  className="text-surface-400 hover:text-surface-200 p-1"
+                  className="text-surface-400 hover:text-surface-200 p-1 -mr-1"
                 >
                   <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -1124,8 +1124,22 @@ function getToolStatusText(
       }
       return `Querying ${tableDesc}...`;
     }
-    case 'create_artifact':
-      return isComplete ? 'Created artifact' : 'Creating artifact...';
+    case 'create_artifact': {
+      const artifactTitle = typeof input?.title === 'string' ? input.title : 'artifact';
+      const artifactType = typeof input?.content_type === 'string' ? input.content_type : 'file';
+      if (isComplete) {
+        return `Created ${artifactType}: ${artifactTitle}`;
+      }
+      // Show progress message from result if available
+      const progressMsg = typeof result?.message === 'string' ? result.message : null;
+      const charsProcessed = typeof result?.chars_processed === 'number' ? result.chars_processed : 0;
+      const totalChars = typeof result?.total_chars === 'number' ? result.total_chars : 0;
+      if (progressMsg && totalChars > 0) {
+        const progress = Math.round((charsProcessed / totalChars) * 100);
+        return `${progressMsg} (${progress}%)`;
+      }
+      return progressMsg || `Creating ${artifactType}...`;
+    }
     case 'crm_write': {
       const recordType = typeof input?.record_type === 'string' ? input.record_type : 'record';
       const recordCount = Array.isArray(input?.records) ? input.records.length : 1;

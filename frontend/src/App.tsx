@@ -393,6 +393,20 @@ function App(): JSX.Element {
     return <OAuthCallback />;
   }
 
+  // Handle password reset callback - show Auth component with reset mode
+  if (path === '/auth') {
+    const hashParams = new URLSearchParams(window.location.hash.substring(1));
+    const isRecovery = hashParams.get('type') === 'recovery';
+    if (isRecovery) {
+      return (
+        <Auth
+          onBack={() => { window.location.href = WWW_URL; }}
+          onSuccess={() => setScreen('app')}
+        />
+      );
+    }
+  }
+
   // Handle admin waitlist route
   if (path === '/admin/waitlist') {
     const params = new URLSearchParams(window.location.search);
