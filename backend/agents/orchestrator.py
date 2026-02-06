@@ -458,24 +458,16 @@ class ChatOrchestrator:
         if not self.conversation_id:
             self.conversation_id = await self._create_conversation()
 
-        # Save user message immediately (so it's visible even if response fails/is interrupted)
+        # Load history and save user message in parallel — they're independent.
+        # The user message is appended to the messages list manually (not loaded from DB),
+        # so we don't need to wait for the save before loading history.
+        # User save is fire-and-forget: it's for persistence, not for the Claude call.
         if save_user_message:
-            await self._save_user_message(user_message)
+            asyncio.create_task(self._save_user_message_safe(user_message))
 
-        # Load conversation history (only from this conversation)
         history = await self._load_history(limit=20)
         
-        # Debug: log loaded history structure
         logger.info("[Orchestrator] Loaded %d history messages", len(history))
-        for i, msg in enumerate(history):
-            role = msg.get("role", "?")
-            content = msg.get("content", "")
-            if isinstance(content, str):
-                preview = content[:100] + "..." if len(content) > 100 else content
-                logger.info("[Orchestrator] History[%d] %s: %s", i, role, preview)
-            elif isinstance(content, list):
-                types = [b.get("type", "?") for b in content]
-                logger.info("[Orchestrator] History[%d] %s: %s", i, role, types)
 
         # Add user message to context for Claude
         messages: list[dict[str, Any]] = history + [
@@ -583,7 +575,7 @@ WHERE scheduled_start >= '2026-01-27'::date AND scheduled_start < '2026-01-28'::
                     
                     # Stream the response
                     async with self.client.messages.stream(
-                        model="claude-opus-4-5",
+                        model="claude-sonnet-4-5",
                         max_tokens=4096,
                         system=system_prompt,
                         tools=get_tools(),
@@ -699,16 +691,19 @@ WHERE scheduled_start >= '2026-01-27'::date AND scheduled_start < '2026-01-28'::
                     "status": "running",
                 })
             
-            # Save message early so tools can update their progress
+            # Early save: fire-and-forget so it doesn't block tool execution.
+            # This persists the "running" tool_use blocks for reconnect catchup,
+            # but the UI gets tool_call events via the yield above — no need to wait.
             if self.conversation_id:
                 logger.info(
-                    "[Orchestrator] Early save: %d blocks, _assistant_message_saved=%s",
+                    "[Orchestrator] Early save (background): %d blocks, _assistant_message_saved=%s",
                     len(content_blocks),
                     self._assistant_message_saved,
                 )
-                await self._save_assistant_message(content_blocks)
+                # Copy blocks snapshot for background save (list is mutated during tool execution)
+                blocks_snapshot: list[dict[str, Any]] = [dict(b) for b in content_blocks]
+                asyncio.create_task(self._save_assistant_message_safe(blocks_snapshot))
                 self._assistant_message_saved = True
-                logger.info("[Orchestrator] Early save complete")
             
             # === EXECUTE TOOLS: Process each tool and update results ===
             tool_results: list[dict[str, Any]] = []
@@ -750,18 +745,8 @@ WHERE scheduled_start >= '2026-01-27'::date AND scheduled_start < '2026-01-28'::
                 block_idx = tool_block_indices[tool_id]
                 content_blocks[block_idx]["result"] = tool_result
                 content_blocks[block_idx]["status"] = "complete"
-                
-                # Update the message in database with final result
-                if self.conversation_id:
-                    await update_tool_result(
-                        self.conversation_id,
-                        tool_id,
-                        tool_result,
-                        "complete",
-                        self.organization_id,
-                    )
 
-                # Send tool result for frontend
+                # Send tool result to frontend FIRST — don't block on DB write
                 yield json.dumps({
                     "type": "tool_result",
                     "tool_name": tool_name,
@@ -785,6 +770,13 @@ WHERE scheduled_start >= '2026-01-27'::date AND scheduled_start < '2026-01-28'::
                             "artifact": artifact_data,
                         })
 
+                # Persist tool result to DB in background (fire-and-forget).
+                # The final _save_assistant_message at the end is the authoritative save.
+                if self.conversation_id:
+                    asyncio.create_task(self._update_tool_result_safe(
+                        self.conversation_id, tool_id, tool_result, self.organization_id,
+                    ))
+
                 tool_results.append({
                     "type": "tool_result",
                     "tool_use_id": tool_id,
@@ -806,6 +798,29 @@ WHERE scheduled_start >= '2026-01-27'::date AND scheduled_start < '2026-01-28'::
                     })
             messages.append({"role": "assistant", "content": assistant_content})
             messages.append({"role": "user", "content": tool_results})
+
+    async def _save_user_message_safe(self, user_msg: str) -> None:
+        """Fire-and-forget wrapper for _save_user_message. Logs errors instead of raising."""
+        try:
+            await self._save_user_message(user_msg)
+        except Exception as e:
+            logger.warning("[Orchestrator] Background user message save failed: %s", e)
+
+    async def _save_assistant_message_safe(self, blocks: list[dict[str, Any]]) -> None:
+        """Fire-and-forget wrapper for _save_assistant_message. Logs errors instead of raising."""
+        try:
+            await self._save_assistant_message(blocks)
+        except Exception as e:
+            logger.warning("[Orchestrator] Background early save failed: %s", e)
+
+    async def _update_tool_result_safe(
+        self, conversation_id: str, tool_id: str, result: dict[str, Any], org_id: str | None,
+    ) -> None:
+        """Fire-and-forget wrapper for update_tool_result. Logs errors instead of raising."""
+        try:
+            await update_tool_result(conversation_id, tool_id, result, "complete", org_id)
+        except Exception as e:
+            logger.warning("[Orchestrator] Background tool result save failed: %s", e)
 
     async def _create_conversation(self) -> str:
         """Create a new conversation and return its ID."""

@@ -182,18 +182,19 @@ class TaskManager:
                     chunk_data["type"] = "text_delta"
                     chunk_data["data"] = chunk
                 
-                # Only persist important events to database (tool calls/results)
-                # Text deltas are ephemeral - the full message is saved at the end by orchestrator
-                if chunk_data["type"] != "text_delta":
-                    await self._append_chunk(task_id, chunk_data)
-                
-                # Broadcast ALL chunks to subscribers (including text deltas for live streaming)
+                # Broadcast FIRST — get the chunk to the UI as fast as possible
                 await self._broadcast(task_id, {
                     "type": "task_chunk",
                     "task_id": task_id,
                     "conversation_id": conversation_id,
                     "chunk": chunk_data,
                 })
+                
+                # Persist important events to database in the background (fire-and-forget).
+                # Text deltas are ephemeral — the full message is saved at the end by orchestrator.
+                # DB persistence is for catchup on reconnect, not the critical display path.
+                if chunk_data["type"] != "text_delta":
+                    asyncio.create_task(self._append_chunk_safe(task_id, chunk_data))
                 
                 chunk_index += 1
             
@@ -237,6 +238,13 @@ class TaskManager:
             self._running_tasks.pop(task_id, None)
             self._task_org_ids.pop(task_id, None)
     
+    async def _append_chunk_safe(self, task_id: str, chunk: dict[str, Any]) -> None:
+        """Fire-and-forget wrapper for _append_chunk that logs errors instead of raising."""
+        try:
+            await self._append_chunk(task_id, chunk)
+        except Exception as e:
+            logger.warning("Background chunk persist failed for task %s: %s", task_id, e)
+
     async def _append_chunk(self, task_id: str, chunk: dict[str, Any]) -> None:
         """Append a chunk to the task's output_chunks in the database."""
         org_id = self._task_org_ids.get(task_id)

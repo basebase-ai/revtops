@@ -4,15 +4,17 @@ Database connection and session management.
 Uses SQLAlchemy async with connection pooling optimized for Supabase's session pooler.
 
 Connection Pool Strategy:
-- Engine is created once (singleton) with a connection pool
+- Supabase session mode (port 5432): local connection pool keeps connections open
+- Supabase transaction mode (port 6543): NullPool (external pooler manages connections)
 - Sessions are lightweight wrappers that checkout connections from the pool
 - When a session closes, the connection returns to the pool for reuse
-- Connections are NOT created/destroyed per request - they're reused from the pool
+- RLS context (role + org_id) is set on checkout and cleaned up on return
 """
 
 import logging
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator, Optional
+from urllib.parse import urlparse
 
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, AsyncEngine, async_sessionmaker
 from sqlalchemy.orm import declarative_base
@@ -29,6 +31,13 @@ _db_url = settings.DATABASE_URL
 if _db_url and "+asyncpg" not in _db_url:
     _db_url = _db_url.replace("postgresql://", "postgresql+asyncpg://")
 
+# Detect Supabase pooler mode from port:
+# - Port 6543 = transaction mode (must use NullPool, SET commands don't persist)
+# - Port 5432 = session mode (local pooling is safe, connections are sticky)
+_parsed_url = urlparse(_db_url) if _db_url else None
+_db_port: int = _parsed_url.port if _parsed_url and _parsed_url.port else 5432
+_use_null_pool: bool = _db_port == 6543
+
 # Global singletons - created once, reused forever
 _engine: Optional[AsyncEngine] = None
 _session_factory: Optional[async_sessionmaker[AsyncSession]] = None
@@ -38,35 +47,42 @@ def get_engine() -> AsyncEngine:
     """Get the database engine (singleton - created once, reused)."""
     global _engine
     if _engine is None:
-        # Use NullPool in production when using external connection pooler (Supabase/PgBouncer)
-        # This lets the external pooler manage all connections
-        is_production = settings.ENVIRONMENT == "production"
+        is_production: bool = settings.ENVIRONMENT == "production"
         
-        # Disable prepared statement cache for pgbouncer/Supabase compatibility
-        # pgbouncer in transaction mode doesn't support prepared statements
-        connect_args = {
+        # Disable prepared statement cache for Supabase/pgbouncer compatibility
+        connect_args: dict[str, int] = {
             "statement_cache_size": 0,
             "prepared_statement_cache_size": 0,
         }
         
-        if is_production:
+        if _use_null_pool:
+            # Transaction mode (port 6543): external pooler manages connections
             _engine = create_async_engine(
                 _db_url,
                 echo=False,
                 future=True,
-                poolclass=NullPool,  # No local pooling - external pooler handles it
+                poolclass=NullPool,
                 connect_args=connect_args,
             )
-            logger.info("Database engine created with NullPool (external pooler manages connections)")
+            logger.info("Database engine created with NullPool (transaction mode, port %d)", _db_port)
         else:
+            # Session mode (port 5432): local pool keeps connections open and reusable
+            # This avoids TCP+TLS handshake on every query (~50-200ms savings per session)
             _engine = create_async_engine(
                 _db_url,
-                echo=True,
+                echo=False,
                 future=True,
-                poolclass=NullPool,  # NullPool since using Supabase session pooler
+                pool_size=5,        # Base connections kept warm
+                max_overflow=10,    # Up to 15 total under burst load
+                pool_recycle=300,   # Recycle connections every 5 min
+                pool_pre_ping=True, # Verify connection is alive before checkout
                 connect_args=connect_args,
             )
-            logger.info("Database engine created with NullPool")
+            logger.info(
+                "Database engine created with connection pool (session mode, port %d, "
+                "pool_size=5, max_overflow=10)",
+                _db_port,
+            )
     return _engine
 
 
@@ -146,9 +162,12 @@ async def get_session(organization_id: str | None = None) -> AsyncGenerator[Asyn
         await session.rollback()
         raise
     finally:
-        # Reset role before returning connection to pool
+        # Reset role AND org context before returning connection to pool.
+        # Without this, a pooled connection could leak one org's RLS context to another.
         try:
-            await session.execute(text("RESET ROLE"))
+            await session.execute(text(
+                "SELECT set_config('app.current_org_id', '', false); RESET ROLE"
+            ))
         except Exception:
             pass  # Connection might already be closed
         # This returns the connection to the pool, doesn't close it
@@ -212,17 +231,20 @@ async def close_db() -> None:
 
 
 def get_pool_status() -> dict[str, int | str]:
-    """
-    Get current connection pool status for monitoring.
+    """Get current connection pool status for monitoring."""
+    if _engine is None:
+        return {"pool_type": "not_initialized", "pool_size": 0, "checked_in": 0, "checked_out": 0, "overflow": 0}
     
-    Note: Using NullPool - pgbouncer handles actual connection pooling.
-    """
+    pool = _engine.pool
+    if isinstance(pool, NullPool):
+        return {"pool_type": "NullPool", "pool_size": 0, "checked_in": 0, "checked_out": 0, "overflow": 0}
+    
     return {
-        "pool_type": "NullPool",
-        "pool_size": 0,
-        "checked_in": 0,
-        "checked_out": 0,
-        "overflow": 0,
+        "pool_type": type(pool).__name__,
+        "pool_size": pool.size(),
+        "checked_in": pool.checkedin(),
+        "checked_out": pool.checkedout(),
+        "overflow": pool.overflow(),
     }
 
 

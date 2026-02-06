@@ -552,7 +552,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     }))
 
     except WebSocketDisconnect:
-        logger.info("User %s disconnected", user_id)
+        logger.info("User %s disconnected", user_id_str)
     finally:
         # Clean up subscriptions
         await task_manager.unsubscribe_all(websocket)
