@@ -20,7 +20,7 @@ from fastapi.responses import JSONResponse
 
 from api.websockets import websocket_endpoint
 from api.routes import artifacts, auth, change_sessions, chat, data, deals, search, sheets, slack_events, sync, tool_settings, waitlist, workflows
-from models.database import init_db, close_db, get_pool_status
+from models.database import init_db, close_db, get_pool_status, ensure_database_connection
 from config import log_missing_env_vars
 
 # Configure logging
@@ -117,7 +117,11 @@ async def startup() -> None:
     # Note: init_db() skipped - Alembic handles migrations
     # await init_db()
     log_missing_env_vars(logging.getLogger("config"))
-    logging.info("Database connection pool ready")
+    is_ready = await ensure_database_connection()
+    if is_ready:
+        logging.info("Database connection pool ready")
+    else:
+        logging.error("Database connection unavailable after retries; continuing startup")
 
 
 @app.on_event("shutdown")
