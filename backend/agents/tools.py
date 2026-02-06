@@ -1030,8 +1030,8 @@ async def _web_search(params: dict[str, Any]) -> dict[str, Any]:
     
     if not settings.PERPLEXITY_API_KEY:
         return {
-            "error": "Web search is not configured. PERPLEXITY_API_KEY is not set.",
-            "suggestion": "Add PERPLEXITY_API_KEY to your environment variables.",
+            "error": "We do not currently run external web interactions; coming soon!",
+            "suggestion": "Add PERPLEXITY_API_KEY to your environment variables to enable web search.",
         }
     
     try:
