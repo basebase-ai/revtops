@@ -69,7 +69,7 @@ def test_resolve_revtops_user_falls_back_to_connected_slack_name_match(monkeypat
         SimpleNamespace(id=jane_id, email="other@acme.com", name="  Jane   Doe  "),
     ]
     integrations = [
-        SimpleNamespace(user_id=jane_id, connected_by_user_id=None),
+        SimpleNamespace(user_id=jane_id, connected_by_user_id=None, extra_data={}, id="int-1"),
     ]
 
     monkeypatch.setattr(
@@ -83,6 +83,45 @@ def test_resolve_revtops_user_falls_back_to_connected_slack_name_match(monkeypat
         slack_conversations.resolve_revtops_user_for_slack_actor(
             organization_id=org_id,
             slack_user_id="U123",
+        )
+    )
+
+    assert resolved is not None
+    assert resolved.id == jane_id
+
+
+def test_resolve_revtops_user_matches_slack_metadata(monkeypatch):
+    org_id = "11111111-1111-1111-1111-111111111111"
+    jane_id = UUID("22222222-2222-2222-2222-222222222222")
+
+    users = [
+        SimpleNamespace(id=jane_id, email="jane@acme.com", name="Jane Doe"),
+    ]
+    integrations = [
+        SimpleNamespace(
+            user_id=None,
+            connected_by_user_id=jane_id,
+            extra_data={"authed_user": {"id": "U456"}},
+            id="int-2",
+        ),
+    ]
+
+    monkeypatch.setattr(
+        slack_conversations,
+        "get_admin_session",
+        lambda: _FakeAdminSessionContext([users, integrations]),
+    )
+
+    class _NoSlackConnector:
+        def __init__(self, organization_id: str):
+            raise AssertionError("SlackConnector should not be called when metadata matches")
+
+    monkeypatch.setattr(slack_conversations, "SlackConnector", _NoSlackConnector)
+
+    resolved = asyncio.run(
+        slack_conversations.resolve_revtops_user_for_slack_actor(
+            organization_id=org_id,
+            slack_user_id="U456",
         )
     )
 
