@@ -614,7 +614,22 @@ async def _execute_workflow_via_agent(
         )
         session.add(conversation)
         await session.flush()
-    
+
+    # Set root_conversation_id so change sessions group all CRM changes from this run (parent + children)
+    if conversation.parent_conversation_id:
+        parent_result = await session.execute(
+            select(Conversation).where(Conversation.id == conversation.parent_conversation_id)
+        )
+        parent_conv = parent_result.scalar_one_or_none()
+        if parent_conv:
+            conversation.root_conversation_id = (
+                parent_conv.root_conversation_id or parent_conv.id
+            )
+        else:
+            conversation.root_conversation_id = conversation.parent_conversation_id
+    else:
+        conversation.root_conversation_id = conversation.id
+
     # IMPORTANT: Commit the conversation so the orchestrator's separate session can see it
     # The orchestrator uses its own sessions for saving messages, which won't see uncommitted data
     await session.commit()
