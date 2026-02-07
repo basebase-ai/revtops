@@ -64,35 +64,69 @@ async def find_organization_by_slack_team(team_id: str) -> str | None:
     return None
 
 
+def _extract_slack_user_ids(extra_data: dict[str, Any]) -> set[str]:
+    """Extract possible Slack user IDs from integration metadata."""
+    candidates: set[str] = set()
+    if not extra_data:
+        return candidates
+
+    for key in ("authed_user_id", "user_id", "installer_user_id"):
+        value = extra_data.get(key)
+        if isinstance(value, str) and value:
+            candidates.add(value)
+
+    authed_user = extra_data.get("authed_user")
+    if isinstance(authed_user, dict):
+        authed_user_id = authed_user.get("id") or authed_user.get("user_id")
+        if isinstance(authed_user_id, str) and authed_user_id:
+            candidates.add(authed_user_id)
+
+    return candidates
+
+
+def _normalize_name(value: str | None) -> str:
+    """Normalize a person name for case-insensitive equality matching."""
+    if not value:
+        return ""
+    return " ".join(value.strip().lower().split())
+
+
+async def get_slack_user_ids_for_revtops_user(
+    organization_id: str,
+    user_id: str,
+) -> set[str]:
+    """Return Slack user IDs associated with a RevTops user in this org."""
+    user_uuid = UUID(user_id)
+    async with get_admin_session() as session:
+        integrations_query = (
+            select(Integration)
+            .where(Integration.organization_id == UUID(organization_id))
+            .where(Integration.provider == "slack")
+            .where(Integration.is_active == True)
+        )
+        integrations_result = await session.execute(integrations_query)
+        slack_integrations = integrations_result.scalars().all()
+
+    slack_user_ids: set[str] = set()
+    for integration in slack_integrations:
+        if integration.user_id != user_uuid and integration.connected_by_user_id != user_uuid:
+            continue
+        slack_user_ids.update(_extract_slack_user_ids(integration.extra_data or {}))
+
+    logger.info(
+        "[slack_conversations] Resolved %d Slack user IDs for org=%s user=%s",
+        len(slack_user_ids),
+        organization_id,
+        user_id,
+    )
+    return slack_user_ids
+
+
 async def resolve_revtops_user_for_slack_actor(
     organization_id: str,
     slack_user_id: str,
 ) -> User | None:
     """Resolve the RevTops user linked to a Slack actor in this organization."""
-    def _normalize_name(value: str | None) -> str:
-        """Normalize a person name for case-insensitive equality matching."""
-        if not value:
-            return ""
-        return " ".join(value.strip().lower().split())
-
-    def _extract_slack_user_ids(extra_data: dict[str, Any]) -> set[str]:
-        """Extract possible Slack user IDs from integration metadata."""
-        candidates: set[str] = set()
-        if not extra_data:
-            return candidates
-
-        for key in ("authed_user_id", "user_id", "installer_user_id"):
-            value = extra_data.get(key)
-            if isinstance(value, str) and value:
-                candidates.add(value)
-
-        authed_user = extra_data.get("authed_user")
-        if isinstance(authed_user, dict):
-            authed_user_id = authed_user.get("id") or authed_user.get("user_id")
-            if isinstance(authed_user_id, str) and authed_user_id:
-                candidates.add(authed_user_id)
-
-        return candidates
 
     async with get_admin_session() as session:
         users_query = select(User).where(User.organization_id == UUID(organization_id))
