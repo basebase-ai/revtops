@@ -15,7 +15,6 @@ from datetime import datetime
 from typing import Any, Optional
 
 import httpx
-from sqlalchemy import text as sa_text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 
@@ -268,6 +267,12 @@ class SlackConnector(BaseConnector):
                         activity = self._normalize_message(msg, channel_id, channel_name)
                         if activity:
                             now: datetime = datetime.utcnow()
+                            logger.debug(
+                                "[Slack Sync] Upserting message source_id=%s channel=%s ts=%s",
+                                activity.source_id,
+                                channel_id,
+                                msg.get("ts"),
+                            )
                             stmt = pg_insert(Activity).values(
                                 id=activity.id,
                                 organization_id=activity.organization_id,
@@ -280,12 +285,12 @@ class SlackConnector(BaseConnector):
                                 custom_fields=activity.custom_fields,
                                 synced_at=now,
                             ).on_conflict_do_update(
-                                index_elements=["organization_id", "source_system", "source_id"],
-                                index_where=sa_text("source_id IS NOT NULL"),
+                                constraint="uq_activities_org_source",
                                 set_={
                                     "subject": activity.subject,
                                     "description": activity.description,
                                     "custom_fields": activity.custom_fields,
+                                    "activity_date": activity.activity_date,
                                     "synced_at": now,
                                 },
                             )
