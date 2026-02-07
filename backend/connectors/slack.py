@@ -242,6 +242,13 @@ class SlackConnector(BaseConnector):
                     messages = await self.get_channel_messages(
                         channel_id, oldest=oldest, limit=100
                     )
+                    for msg in messages:
+                        logger.info(
+                            "[Slack Sync] Fetched message from channel=%s (%s): %s",
+                            channel_name,
+                            channel_id,
+                            msg,
+                        )
 
                     for msg in messages:
                         activity = self._normalize_message(msg, channel_id, channel_name)
