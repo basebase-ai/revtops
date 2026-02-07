@@ -232,6 +232,26 @@ async def resolve_revtops_user_for_slack_actor(
             sorted(slack_names),
         )
 
+    # 3) fallback name matching for any org user (helps when Slack email isn't available)
+    if slack_names:
+        for user in org_users:
+            user_name = _normalize_name(user.name)
+            if user_name and user_name in slack_names:
+                logger.info(
+                    "[slack_conversations] Matched Slack user=%s by name=%s to org user=%s (no connected Slack integration)",
+                    slack_user_id,
+                    user_name,
+                    user.id,
+                )
+                return user
+
+        logger.info(
+            "[slack_conversations] No org Slack-name match for Slack user=%s org=%s candidate_names=%s",
+            slack_user_id,
+            organization_id,
+            sorted(slack_names),
+        )
+
     logger.info(
         "[slack_conversations] Failed to resolve RevTops user for Slack actor user=%s org=%s",
         slack_user_id,
