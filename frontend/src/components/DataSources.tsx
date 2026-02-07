@@ -441,8 +441,20 @@ export function DataSources(): JSX.Element {
       }
 
       console.log('Disconnect successful, invalidating integrations cache...');
-      // Invalidate cache to refetch integrations
-      void fetchIntegrations();
+      // Invalidate cache to refetch integrations, keep UI in disconnecting state until refreshed
+      try {
+        await fetchIntegrations();
+        console.log('Integrations refreshed after disconnect for provider:', provider);
+      } catch (fetchError) {
+        console.error('Failed to refresh integrations after disconnect:', fetchError);
+      }
+      console.log('Disconnect complete, restoring UI state for provider:', provider);
+      setDisconnectingProviders((prev) => {
+        if (!prev.has(provider)) return prev;
+        const next = new Set(prev);
+        next.delete(provider);
+        return next;
+      });
     } catch (error) {
       console.error('Failed to disconnect:', error);
       alert(`Failed to disconnect: ${error instanceof Error ? error.message : 'Unknown error'}`);

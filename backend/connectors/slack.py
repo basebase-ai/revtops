@@ -8,6 +8,7 @@ Responsibilities:
 - Handle pagination and rate limits
 """
 
+import logging
 import re
 import uuid
 from datetime import datetime
@@ -63,6 +64,7 @@ from models.activity import Activity
 from models.database import get_session
 
 SLACK_API_BASE = "https://slack.com/api"
+logger = logging.getLogger(__name__)
 
 
 class SlackConnector(BaseConnector):
@@ -179,6 +181,15 @@ class SlackConnector(BaseConnector):
 
         return users
 
+    async def get_user_info(self, slack_user_id: str) -> dict[str, Any]:
+        """Get details for a specific Slack user via users.info."""
+        data = await self._make_request(
+            "GET",
+            "users.info",
+            params={"user": slack_user_id},
+        )
+        return data.get("user", {})
+
     async def sync_deals(self) -> int:
         """Slack doesn't have deals - return 0."""
         return 0
@@ -198,6 +209,7 @@ class SlackConnector(BaseConnector):
         This captures communication activity that can be correlated
         with deals and accounts.
         """
+        logger.info("[Slack Sync] Starting Slack activity sync for org=%s", self.organization_id)
         # Broadcast that we're starting
         await broadcast_sync_progress(
             organization_id=self.organization_id,
@@ -208,15 +220,26 @@ class SlackConnector(BaseConnector):
         
         # Get channels
         channels = await self.get_channels()
+        logger.info(
+            "[Slack Sync] Retrieved %d channels for org=%s",
+            len(channels),
+            self.organization_id,
+        )
 
         # Calculate timestamp for last 7 days
         oldest = (datetime.utcnow().timestamp()) - (7 * 24 * 60 * 60)
 
         count = 0
+        user_info_cache: dict[str, dict[str, Any]] = {}
         async with get_session(organization_id=self.organization_id) as session:
             for channel in channels:
                 channel_id = channel.get("id", "")
                 channel_name = channel.get("name", "unknown")
+                logger.debug(
+                    "[Slack Sync] Fetching messages for channel=%s (%s)",
+                    channel_name,
+                    channel_id,
+                )
 
                 try:
                     messages = await self.get_channel_messages(
@@ -224,6 +247,24 @@ class SlackConnector(BaseConnector):
                     )
 
                     for msg in messages:
+                        user_id = msg.get("user")
+                        if user_id and not msg.get("user_profile"):
+                            if user_id not in user_info_cache:
+                                try:
+                                    user_info_cache[user_id] = await self.get_user_info(user_id)
+                                except Exception as exc:
+                                    logger.warning(
+                                        "[Slack Sync] Failed users.info lookup for user=%s channel=%s: %s",
+                                        user_id,
+                                        channel_id,
+                                        exc,
+                                        exc_info=True,
+                                    )
+                                    user_info_cache[user_id] = {}
+                            profile = (user_info_cache[user_id] or {}).get("profile") or {}
+                            if profile:
+                                msg["user_profile"] = profile
+
                         activity = self._normalize_message(msg, channel_id, channel_name)
                         if activity:
                             now: datetime = datetime.utcnow()
@@ -262,12 +303,52 @@ class SlackConnector(BaseConnector):
 
                 except Exception as e:
                     # Skip channels we can't access
-                    print(f"Error fetching messages from {channel_name}: {e}")
+                    logger.warning(
+                        "[Slack Sync] Error fetching messages from channel=%s (%s): %s",
+                        channel_name,
+                        channel_id,
+                        e,
+                        exc_info=True,
+                    )
                     continue
 
             await session.commit()
 
         return count
+
+    def _extract_sender_fields(self, slack_msg: dict[str, Any]) -> dict[str, Any]:
+        user_id = slack_msg.get("user")
+        bot_id = slack_msg.get("bot_id")
+        user_profile = slack_msg.get("user_profile") or {}
+        sender_name = (
+            user_profile.get("display_name")
+            or user_profile.get("real_name")
+            or slack_msg.get("username")
+            or ""
+        ).strip()
+        sender_real_name = (user_profile.get("real_name") or "").strip()
+        sender_email = (user_profile.get("email") or "").strip()
+        sender_fields: dict[str, Any] = {
+            "sender_id": user_id or bot_id,
+            "sender_type": "user" if user_id else ("bot" if bot_id else "unknown"),
+            "sender_name": sender_name or None,
+            "sender_real_name": sender_real_name or None,
+            "sender_email": sender_email or None,
+        }
+        if not sender_fields["sender_id"]:
+            logger.debug(
+                "[Slack Sync] Missing sender id in message ts=%s channel=%s",
+                slack_msg.get("ts"),
+                slack_msg.get("channel"),
+            )
+        elif not sender_fields["sender_name"] and sender_fields["sender_type"] == "user":
+            logger.debug(
+                "[Slack Sync] Missing sender name in message ts=%s channel=%s user=%s",
+                slack_msg.get("ts"),
+                slack_msg.get("channel"),
+                sender_fields["sender_id"],
+            )
+        return sender_fields
 
     def _normalize_message(
         self,
@@ -298,6 +379,7 @@ class SlackConnector(BaseConnector):
         # Create a unique source ID from channel and timestamp
         source_id = f"{channel_id}:{msg_ts}"
 
+        sender_fields = self._extract_sender_fields(slack_msg)
         return Activity(
             id=uuid.uuid4(),
             organization_id=uuid.UUID(self.organization_id),
@@ -311,6 +393,7 @@ class SlackConnector(BaseConnector):
                 "channel_id": channel_id,
                 "channel_name": channel_name,
                 "user_id": slack_msg.get("user"),
+                **sender_fields,
                 "thread_ts": slack_msg.get("thread_ts"),
                 "has_attachments": len(slack_msg.get("attachments", [])) > 0,
                 "has_files": len(slack_msg.get("files", [])) > 0,
