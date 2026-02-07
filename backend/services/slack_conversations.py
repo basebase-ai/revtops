@@ -19,6 +19,15 @@ from models.integration import Integration
 from models.user import User
 
 logger = logging.getLogger(__name__)
+_UNACTIONABLE_SLACK_MESSAGE = (
+    "I'm sorry, I can't action that request. "
+    "Try connecting Slack to Revtops for your account."
+)
+
+
+def _build_unactionable_slack_message(reason: str) -> str:
+    logger.warning("[slack_conversations] Unactionable Slack request: %s", reason)
+    return _UNACTIONABLE_SLACK_MESSAGE
 
 
 async def find_organization_by_slack_team(team_id: str) -> str | None:
@@ -460,25 +469,30 @@ async def process_slack_dm(
         slack_user_name=slack_user_name,
     )
 
-    # Process message through orchestrator
-    orchestrator = ChatOrchestrator(
-        user_id=str(linked_user.id) if linked_user else None,
-        organization_id=organization_id,
-        conversation_id=str(conversation.id),
-        user_email=linked_user.email if linked_user else None,
-        workflow_context=None,
-    )
-    
-    # Collect the full response (don't stream to Slack)
     response_text = ""
-    try:
-        async for chunk in orchestrator.process_message(message_text):
-            # Skip JSON chunks (tool calls, etc.) - just collect text
-            if not chunk.startswith("{"):
-                response_text += chunk
-    except Exception as e:
-        logger.error("[slack_conversations] Error processing message: %s", e, exc_info=True)
-        response_text = f"Sorry, I encountered an error processing your message: {str(e)}"
+    if not linked_user:
+        response_text = _build_unactionable_slack_message(
+            f"no linked RevTops user for slack_user_id={user_id} org={organization_id}",
+        )
+    else:
+        # Process message through orchestrator
+        orchestrator = ChatOrchestrator(
+            user_id=str(linked_user.id),
+            organization_id=organization_id,
+            conversation_id=str(conversation.id),
+            user_email=linked_user.email,
+            workflow_context=None,
+        )
+
+        # Collect the full response (don't stream to Slack)
+        try:
+            async for chunk in orchestrator.process_message(message_text):
+                # Skip JSON chunks (tool calls, etc.) - just collect text
+                if not chunk.startswith("{"):
+                    response_text += chunk
+        except Exception as e:
+            logger.error("[slack_conversations] Error processing message: %s", e, exc_info=True)
+            response_text = f"Sorry, I encountered an error processing your message: {str(e)}"
     
     # Post response back to Slack (connector auto-converts markdown to mrkdwn)
     if response_text.strip():
@@ -564,24 +578,29 @@ async def process_slack_mention(
         slack_user_name=slack_user_name,
     )
 
-    # Process message through orchestrator
-    orchestrator = ChatOrchestrator(
-        user_id=str(linked_user.id) if linked_user else None,
-        organization_id=organization_id,
-        conversation_id=str(conversation.id),
-        user_email=linked_user.email if linked_user else None,
-        workflow_context=None,
-    )
-    
-    # Collect the full response
     response_text = ""
-    try:
-        async for chunk in orchestrator.process_message(message_text):
-            if not chunk.startswith("{"):
-                response_text += chunk
-    except Exception as e:
-        logger.error("[slack_conversations] Error processing mention: %s", e, exc_info=True)
-        response_text = f"Sorry, I encountered an error: {str(e)}"
+    if not linked_user:
+        response_text = _build_unactionable_slack_message(
+            f"no linked RevTops user for slack_user_id={user_id} org={organization_id}",
+        )
+    else:
+        # Process message through orchestrator
+        orchestrator = ChatOrchestrator(
+            user_id=str(linked_user.id),
+            organization_id=organization_id,
+            conversation_id=str(conversation.id),
+            user_email=linked_user.email,
+            workflow_context=None,
+        )
+
+        # Collect the full response
+        try:
+            async for chunk in orchestrator.process_message(message_text):
+                if not chunk.startswith("{"):
+                    response_text += chunk
+        except Exception as e:
+            logger.error("[slack_conversations] Error processing mention: %s", e, exc_info=True)
+            response_text = f"Sorry, I encountered an error: {str(e)}"
     
     # Post response back to Slack in the thread
     if response_text.strip():
