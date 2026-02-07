@@ -265,6 +265,7 @@ async def handle_slack_events(request: Request) -> Response | dict[str, Any]:
                         user_id=user_id,
                         message_text=text,
                         thread_ts=thread_ts,
+                        event_ts=event.get("ts", ""),
                     )
                 )
 

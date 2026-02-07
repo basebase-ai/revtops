@@ -365,6 +365,36 @@ class SlackConnector(BaseConnector):
             "auto_away": data.get("auto_away", False),
         }
 
+    async def add_reaction(
+        self,
+        channel: str,
+        timestamp: str,
+        emoji: str = "eyes",
+    ) -> None:
+        """Add an emoji reaction to a message."""
+        await self._make_request(
+            "POST",
+            "reactions.add",
+            json_data={"channel": channel, "timestamp": timestamp, "name": emoji},
+        )
+
+    async def remove_reaction(
+        self,
+        channel: str,
+        timestamp: str,
+        emoji: str = "eyes",
+    ) -> None:
+        """Remove an emoji reaction from a message."""
+        try:
+            await self._make_request(
+                "POST",
+                "reactions.remove",
+                json_data={"channel": channel, "timestamp": timestamp, "name": emoji},
+            )
+        except Exception:
+            # Silently ignore if reaction was already removed or doesn't exist
+            pass
+
     async def post_message(
         self,
         channel: str,

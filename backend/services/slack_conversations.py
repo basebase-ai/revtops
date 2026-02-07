@@ -280,38 +280,43 @@ async def process_slack_dm(
             "error": f"No organization found for Slack team {team_id}"
         }
     
+    connector = SlackConnector(organization_id=organization_id)
+
+    # Show a reaction so the user knows the bot is working
+    await connector.add_reaction(channel=channel_id, timestamp=event_ts)
+
     # Find or create conversation
     conversation = await find_or_create_conversation(
         organization_id=organization_id,
         slack_channel_id=channel_id,
         slack_user_id=user_id,
     )
-    
+
     # Process message through orchestrator
-    # Note: user_id is None since we don't have a RevTops user for Slack DMs
     orchestrator = ChatOrchestrator(
         user_id=None,  # No RevTops user for Slack conversations
         organization_id=organization_id,
         conversation_id=str(conversation.id),
-        user_email=None,  # We don't know the Slack user's email
+        user_email=None,
         workflow_context=None,
     )
-    
+
     # Collect the full response (don't stream to Slack)
-    response_text = ""
+    response_text: str = ""
     try:
         async for chunk in orchestrator.process_message(message_text):
-            # Skip JSON chunks (tool calls, etc.) - just collect text
             if not chunk.startswith("{"):
                 response_text += chunk
     except Exception as e:
         logger.error("[slack_conversations] Error processing message: %s", e, exc_info=True)
         response_text = f"Sorry, I encountered an error processing your message: {str(e)}"
-    
-    # Post response back to Slack (connector auto-converts markdown to mrkdwn)
+
+    # Remove the "thinking" reaction
+    await connector.remove_reaction(channel=channel_id, timestamp=event_ts)
+
+    # Post response back to Slack
     if response_text.strip():
         try:
-            connector = SlackConnector(organization_id=organization_id)
             await connector.post_message(
                 channel=channel_id,
                 text=response_text.strip(),
@@ -319,13 +324,13 @@ async def process_slack_dm(
             logger.info(
                 "[slack_conversations] Posted response to channel %s (%d chars)",
                 channel_id,
-                len(response_text)
+                len(response_text),
             )
         except Exception as e:
             logger.error("[slack_conversations] Error posting to Slack: %s", e, exc_info=True)
             return {
                 "status": "error",
-                "error": f"Failed to post response to Slack: {str(e)}"
+                "error": f"Failed to post response to Slack: {str(e)}",
             }
     
     return {
@@ -371,16 +376,21 @@ async def process_slack_mention(
         logger.warning("[slack_conversations] No organization found for team %s", team_id)
         return {"status": "error", "error": f"No organization found for team {team_id}"}
     
+    connector = SlackConnector(organization_id=organization_id)
+
+    # Show a reaction so the user knows the bot is working
+    await connector.add_reaction(channel=channel_id, timestamp=thread_ts)
+
     # For channel mentions, use a conversation keyed by channel+thread
     # This allows threaded conversations to maintain context
-    source_channel_id = f"{channel_id}:{thread_ts}"
-    
+    source_channel_id: str = f"{channel_id}:{thread_ts}"
+
     conversation = await find_or_create_conversation(
         organization_id=organization_id,
         slack_channel_id=source_channel_id,
         slack_user_id=user_id,
     )
-    
+
     # Process message through orchestrator
     orchestrator = ChatOrchestrator(
         user_id=None,  # No RevTops user for Slack conversations
@@ -389,9 +399,9 @@ async def process_slack_mention(
         user_email=None,
         workflow_context={"slack_channel_id": channel_id},
     )
-    
+
     # Collect the full response
-    response_text = ""
+    response_text: str = ""
     try:
         async for chunk in orchestrator.process_message(message_text):
             if not chunk.startswith("{"):
@@ -399,26 +409,28 @@ async def process_slack_mention(
     except Exception as e:
         logger.error("[slack_conversations] Error processing mention: %s", e, exc_info=True)
         response_text = f"Sorry, I encountered an error: {str(e)}"
-    
+
+    # Remove the "thinking" reaction now that we have a response
+    await connector.remove_reaction(channel=channel_id, timestamp=thread_ts)
+
     # Post response back to Slack in the thread
     if response_text.strip():
         try:
-            connector = SlackConnector(organization_id=organization_id)
             await connector.post_message(
                 channel=channel_id,
                 text=response_text.strip(),
-                thread_ts=thread_ts,  # Reply in thread
+                thread_ts=thread_ts,
             )
             logger.info(
                 "[slack_conversations] Posted thread response to %s (thread %s, %d chars)",
                 channel_id,
                 thread_ts,
-                len(response_text)
+                len(response_text),
             )
         except Exception as e:
             logger.error("[slack_conversations] Error posting to Slack: %s", e, exc_info=True)
             return {"status": "error", "error": f"Failed to post response: {str(e)}"}
-    
+
     return {
         "status": "success",
         "conversation_id": str(conversation.id),
@@ -432,6 +444,7 @@ async def process_slack_thread_reply(
     user_id: str,
     message_text: str,
     thread_ts: str,
+    event_ts: str,
 ) -> dict[str, Any]:
     """
     Process a thread reply in a channel where the bot is already participating.
@@ -446,6 +459,7 @@ async def process_slack_thread_reply(
         user_id: Slack user ID who sent the reply
         message_text: The reply text
         thread_ts: Parent thread timestamp
+        event_ts: Timestamp of the reply message itself (for reactions)
 
     Returns:
         Dict with status and conversation details
@@ -478,6 +492,11 @@ async def process_slack_thread_reply(
         )
         return {"status": "ignored", "reason": "bot not participating in thread"}
 
+    connector = SlackConnector(organization_id=organization_id)
+
+    # Show a reaction on the user's reply so they know the bot is working
+    await connector.add_reaction(channel=channel_id, timestamp=event_ts)
+
     # Process message through orchestrator
     orchestrator = ChatOrchestrator(
         user_id=None,
@@ -496,10 +515,12 @@ async def process_slack_thread_reply(
         logger.error("[slack_conversations] Error processing thread reply: %s", e, exc_info=True)
         response_text = f"Sorry, I encountered an error: {str(e)}"
 
+    # Remove the "thinking" reaction
+    await connector.remove_reaction(channel=channel_id, timestamp=event_ts)
+
     # Post response back in the same thread
     if response_text.strip():
         try:
-            connector = SlackConnector(organization_id=organization_id)
             await connector.post_message(
                 channel=channel_id,
                 text=response_text.strip(),
