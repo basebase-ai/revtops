@@ -12,11 +12,14 @@ to augment data from other sources (HubSpot, Salesforce, etc.).
 """
 
 import asyncio
+import logging
 from typing import Any, Optional
 
 import httpx
 
 from connectors.base import BaseConnector
+
+logger = logging.getLogger(__name__)
 
 APOLLO_API_BASE = "https://api.apollo.io/api/v1"
 
@@ -35,13 +38,10 @@ class ApolloConnector(BaseConnector):
         """Initialize Apollo connector."""
         super().__init__(organization_id)
 
-    async def _get_headers(self) -> dict[str, str]:
-        """Get authorization headers for Apollo API."""
+    async def _get_api_key(self) -> str:
+        """Get the Apollo API key from Nango."""
         token, _ = await self.get_oauth_token()  # Works for API keys too
-        return {
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-        }
+        return token
 
     async def _make_request(
         self,
@@ -52,6 +52,12 @@ class ApolloConnector(BaseConnector):
     ) -> dict[str, Any]:
         """
         Make an authenticated request to Apollo API.
+
+        Apollo accepts the API key via:
+        - Header: X-Api-Key (recommended per deprecation notice)
+        - Request body: api_key field (legacy but still supported)
+        
+        We send both for maximum compatibility.
 
         Args:
             method: HTTP method (GET, POST, etc.)
@@ -65,8 +71,18 @@ class ApolloConnector(BaseConnector):
         Raises:
             httpx.HTTPStatusError: On API errors
         """
-        headers = await self._get_headers()
-        url = f"{APOLLO_API_BASE}{endpoint}"
+        api_key: str = await self._get_api_key()
+        headers: dict[str, str] = {
+            "Content-Type": "application/json",
+            "Cache-Control": "no-cache",
+            "X-Api-Key": api_key,
+        }
+        url: str = f"{APOLLO_API_BASE}{endpoint}"
+
+        # Also include api_key in the request body (legacy auth, still works)
+        if json_data is None:
+            json_data = {}
+        json_data["api_key"] = api_key
 
         async with httpx.AsyncClient() as client:
             response = await client.request(
@@ -88,6 +104,11 @@ class ApolloConnector(BaseConnector):
                         error_detail = error_body["error"]
                 except Exception:
                     error_detail = response.text[:500] if response.text else ""
+
+                logger.error(
+                    "[Apollo] API error %d on %s %s: %s",
+                    response.status_code, method, endpoint, error_detail,
+                )
 
                 raise httpx.HTTPStatusError(
                     f"Apollo API error ({response.status_code}): {error_detail}",
@@ -235,7 +256,13 @@ class ApolloConnector(BaseConnector):
                         results.append({})
 
             except httpx.HTTPStatusError as e:
-                # On error, append empty results for this batch
+                # Auth/permission errors should propagate, not be silently swallowed
+                if e.response.status_code in (401, 403):
+                    raise ValueError(
+                        f"Apollo API authentication failed ({e.response.status_code}). "
+                        f"Check that your API key is valid and has the required permissions."
+                    )
+                # Other errors: append empty results for this batch
                 for _ in batch:
                     results.append({})
                 # Log but don't fail entire operation

@@ -653,12 +653,12 @@ async def _execute_workflow_via_agent(
         f"conversation {conversation.id}"
     )
     
-    # Extract user-facing trigger data (filter out internal context)
+    # Extract user-facing trigger data (filter out internal context and None values)
     user_trigger_data: dict[str, Any] | None = None
     if trigger_data:
         user_trigger_data = {
             k: v for k, v in trigger_data.items() 
-            if not k.startswith("_")  # Exclude internal keys like _parent_context
+            if not k.startswith("_") and v is not None  # Exclude internal keys and None values
         }
     
     # Validate input against schema if defined

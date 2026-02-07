@@ -3090,7 +3090,9 @@ async def _run_workflow(
     from workers.tasks.workflows import _execute_workflow
     
     workflow_id = params.get("workflow_id", "").strip()
-    input_data: dict[str, Any] = params.get("input_data", {}) or {}
+    raw_input: dict[str, Any] = params.get("input_data", {}) or {}
+    # Strip None values — the agent uses None to mean "not provided"
+    input_data: dict[str, Any] = {k: v for k, v in raw_input.items() if v is not None}
     wait_for_completion: bool = params.get("wait_for_completion", True)
     
     if not workflow_id:
