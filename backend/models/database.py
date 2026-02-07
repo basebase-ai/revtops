@@ -11,7 +11,6 @@ Connection Pool Strategy:
 - RLS context (role + org_id) is set on checkout and cleaned up on return
 """
 
-import asyncio
 import logging
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator, Optional
@@ -20,7 +19,6 @@ from urllib.parse import urlparse
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, AsyncEngine, async_sessionmaker
 from sqlalchemy.orm import declarative_base
 from sqlalchemy.pool import NullPool
-from sqlalchemy import text
 
 from config import settings
 
@@ -74,21 +72,16 @@ def get_engine() -> AsyncEngine:
                 _db_url,
                 echo=False,
                 future=True,
-                pool_size=settings.DB_POOL_SIZE,  # Base connections kept warm
-                max_overflow=settings.DB_MAX_OVERFLOW,  # Burst connections beyond pool_size
-                pool_recycle=settings.DB_POOL_RECYCLE_SECONDS,  # Recycle connections
-                pool_timeout=settings.DB_POOL_TIMEOUT_SECONDS,  # Wait for a connection before erroring
-                pool_pre_ping=True,  # Verify connection is alive before checkout
+                pool_size=5,        # Base connections kept warm
+                max_overflow=10,    # Up to 15 total under burst load
+                pool_recycle=300,   # Recycle connections every 5 min
+                pool_pre_ping=True, # Verify connection is alive before checkout
                 connect_args=connect_args,
             )
             logger.info(
                 "Database engine created with connection pool (session mode, port %d, "
-                "pool_size=%d, max_overflow=%d, pool_recycle=%ds, pool_timeout=%ds)",
+                "pool_size=5, max_overflow=10)",
                 _db_port,
-                settings.DB_POOL_SIZE,
-                settings.DB_MAX_OVERFLOW,
-                settings.DB_POOL_RECYCLE_SECONDS,
-                settings.DB_POOL_TIMEOUT_SECONDS,
             )
     return _engine
 
@@ -140,6 +133,7 @@ async def get_session(organization_id: str | None = None) -> AsyncGenerator[Asyn
     superusers bypass RLS entirely.
     """
     import traceback
+    from sqlalchemy import text
     
     if not organization_id:
         # Log warning with stack trace to help identify missing org_id calls
@@ -215,38 +209,6 @@ async def init_db() -> None:
     engine = get_engine()
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-
-
-async def ensure_database_connection() -> bool:
-    """Verify database connectivity with retries and backoff."""
-    attempts = max(settings.DB_CONNECTION_RETRY_ATTEMPTS, 1)
-    base_delay = max(settings.DB_CONNECTION_RETRY_BACKOFF_SECONDS, 0.1)
-    engine = get_engine()
-    logger.info(
-        "Verifying database connectivity (attempts=%d, base_delay=%.2fs)",
-        attempts,
-        base_delay,
-    )
-    for attempt in range(1, attempts + 1):
-        try:
-            async with engine.connect() as conn:
-                await conn.execute(text("SELECT 1"))
-            logger.info("Database connection verified on attempt %d", attempt)
-            return True
-        except Exception as exc:
-            logger.error(
-                "Database connection attempt %d/%d failed: %s",
-                attempt,
-                attempts,
-                exc,
-                exc_info=True,
-            )
-            if attempt < attempts:
-                delay = base_delay * (2 ** (attempt - 1))
-                logger.info("Retrying database connection in %.2f seconds", delay)
-                await asyncio.sleep(delay)
-    logger.critical("Database connection failed after %d attempts", attempts)
-    return False
 
 
 async def close_db() -> None:
