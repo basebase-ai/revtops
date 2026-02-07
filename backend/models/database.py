@@ -68,19 +68,28 @@ def get_engine() -> AsyncEngine:
         else:
             # Session mode (port 5432): local pool keeps connections open and reusable
             # This avoids TCP+TLS handshake on every query (~50-200ms savings per session)
+            #
+            # IMPORTANT: Keep pool sizes LOW because Supabase session pooler has limited
+            # connections (~20 for Pro plan) shared across ALL services:
+            # - API server: 1 process × 2 connections = 2
+            # - Celery worker: 4 processes × 2 connections = 8
+            # - Celery beat: 1 process × 1 connection = 1
+            # - Local dev: 1 process × 2 connections = 2
+            # Total: ~13 connections, leaving headroom for bursts
             _engine = create_async_engine(
                 _db_url,
                 echo=False,
                 future=True,
-                pool_size=5,        # Base connections kept warm
-                max_overflow=10,    # Up to 15 total under burst load
-                pool_recycle=300,   # Recycle connections every 5 min
+                pool_size=1,        # Minimal base connections
+                max_overflow=2,     # Up to 3 total under burst load
+                pool_recycle=60,    # Recycle connections every 1 min (release faster)
                 pool_pre_ping=True, # Verify connection is alive before checkout
+                pool_timeout=10,    # Fail fast if pool exhausted (don't hang)
                 connect_args=connect_args,
             )
             logger.info(
                 "Database engine created with connection pool (session mode, port %d, "
-                "pool_size=5, max_overflow=10)",
+                "pool_size=1, max_overflow=2)",
                 _db_port,
             )
     return _engine

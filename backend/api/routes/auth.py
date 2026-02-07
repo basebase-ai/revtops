@@ -1057,6 +1057,10 @@ async def list_integrations(
         )
         all_integrations = list(result.scalars().all())
         
+        # Use PROVIDER_SCOPES as the canonical source of truth for scope,
+        # not the stored scope field (which may be stale/incorrect for older records).
+        from config import PROVIDER_SCOPES
+
         # Build lookup structures
         # For org-scoped: key is provider
         # For user-scoped: key is (provider, user_id)
@@ -1064,7 +1068,8 @@ async def list_integrations(
         user_scoped_integrations: dict[str, list[Integration]] = {}
         
         for i in all_integrations:
-            if i.scope == "user":
+            canonical_scope: str = PROVIDER_SCOPES.get(i.provider, "organization")
+            if canonical_scope == "user":
                 if i.provider not in user_scoped_integrations:
                     user_scoped_integrations[i.provider] = []
                 user_scoped_integrations[i.provider].append(i)
@@ -1115,7 +1120,6 @@ async def list_integrations(
         # Add user-scoped integrations (aggregated by provider)
         all_user_scoped_providers = set(user_scoped_integrations.keys())
         # Also include providers that are user-scoped but have no connections yet
-        from config import PROVIDER_SCOPES
         for p, s in PROVIDER_SCOPES.items():
             if s == "user":
                 all_user_scoped_providers.add(p)
