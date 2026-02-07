@@ -13,7 +13,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from agents.orchestrator import ChatOrchestrator
@@ -227,6 +227,7 @@ async def persist_slack_message_activity(
                 synced_at=datetime.utcnow(),
             ).on_conflict_do_nothing(
                 index_elements=["organization_id", "source_system", "source_id"],
+                index_where=text("source_id IS NOT NULL"),
             )
             await session.execute(stmt)
             await session.commit()

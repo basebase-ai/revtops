@@ -14,6 +14,7 @@ from datetime import datetime
 from typing import Any, Optional
 
 import httpx
+from sqlalchemy import text as sa_text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 
@@ -239,6 +240,7 @@ class SlackConnector(BaseConnector):
                                 synced_at=now,
                             ).on_conflict_do_update(
                                 index_elements=["organization_id", "source_system", "source_id"],
+                                index_where=sa_text("source_id IS NOT NULL"),
                                 set_={
                                     "subject": activity.subject,
                                     "description": activity.description,
@@ -371,12 +373,17 @@ class SlackConnector(BaseConnector):
         timestamp: str,
         emoji: str = "eyes",
     ) -> None:
-        """Add an emoji reaction to a message."""
-        await self._make_request(
-            "POST",
-            "reactions.add",
-            json_data={"channel": channel, "timestamp": timestamp, "name": emoji},
-        )
+        """Add an emoji reaction to a message (best-effort)."""
+        try:
+            await self._make_request(
+                "POST",
+                "reactions.add",
+                json_data={"channel": channel, "timestamp": timestamp, "name": emoji},
+            )
+        except Exception:
+            # Silently ignore — reactions require the reactions:write scope
+            # which may not be granted yet.
+            pass
 
     async def remove_reaction(
         self,
