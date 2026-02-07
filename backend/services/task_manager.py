@@ -72,6 +72,7 @@ class TaskManager:
         user_email: str | None = None,
         local_time: str | None = None,
         timezone: str | None = None,
+        is_new_conversation: bool = False,
     ) -> str:
         """
         Start a new background agent task.
@@ -87,6 +88,7 @@ class TaskManager:
             user_email: User's email address
             local_time: User's local time (ISO format)
             timezone: User's timezone
+            is_new_conversation: If True, skip history loading (no messages exist yet)
             
         Returns:
             The task_id (UUID string)
@@ -123,6 +125,7 @@ class TaskManager:
                 user_email=user_email,
                 local_time=local_time,
                 timezone=timezone,
+                is_new_conversation=is_new_conversation,
             )
         )
         
@@ -141,6 +144,7 @@ class TaskManager:
         user_email: str | None,
         local_time: str | None,
         timezone: str | None,
+        is_new_conversation: bool = False,
     ) -> None:
         """
         Execute the agent task in the background.
@@ -160,7 +164,9 @@ class TaskManager:
             
             chunk_index = 0
             
-            async for chunk in orchestrator.process_message(user_message):
+            async for chunk in orchestrator.process_message(
+                user_message, skip_history=is_new_conversation,
+            ):
                 # Create chunk record
                 chunk_data: dict[str, Any] = {
                     "index": chunk_index,

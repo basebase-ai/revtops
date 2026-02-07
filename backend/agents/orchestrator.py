@@ -433,23 +433,18 @@ class ChatOrchestrator:
         self._assistant_message_saved = False
 
     async def process_message(
-        self, user_message: str, save_user_message: bool = True
+        self,
+        user_message: str,
+        save_user_message: bool = True,
+        skip_history: bool = False,
     ) -> AsyncGenerator[str, None]:
         """
         Process a user message and stream Claude's response with true streaming.
 
-        Flow:
-        1. Create conversation if needed
-        2. Load conversation history
-        3. Add user message
-        4. Stream Claude's response (yields text immediately as tokens arrive)
-        5. Handle tool calls if any
-        6. Save to database
-        7. Update conversation title if first message
-
         Args:
             user_message: The user's message text
             save_user_message: If False, don't save user_message to DB (for internal system messages)
+            skip_history: If True, skip loading history from DB (e.g. first message in a new conversation)
 
         Yields:
             String chunks of the assistant's response (text streams immediately)
@@ -458,16 +453,17 @@ class ChatOrchestrator:
         if not self.conversation_id:
             self.conversation_id = await self._create_conversation()
 
-        # Load history and save user message in parallel — they're independent.
-        # The user message is appended to the messages list manually (not loaded from DB),
-        # so we don't need to wait for the save before loading history.
-        # User save is fire-and-forget: it's for persistence, not for the Claude call.
+        # Fire-and-forget user message save — it's for persistence, not the Claude call.
         if save_user_message:
             asyncio.create_task(self._save_user_message_safe(user_message))
 
-        history = await self._load_history(limit=20)
-        
-        logger.info("[Orchestrator] Loaded %d history messages", len(history))
+        # Skip history DB call for new conversations (zero messages to load).
+        if skip_history:
+            history: list[dict[str, Any]] = []
+            logger.info("[Orchestrator] Skipped history load (new conversation)")
+        else:
+            history = await self._load_history(limit=20)
+            logger.info("[Orchestrator] Loaded %d history messages", len(history))
 
         # Add user message to context for Claude
         messages: list[dict[str, Any]] = history + [
