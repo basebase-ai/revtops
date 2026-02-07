@@ -238,6 +238,63 @@ async def persist_slack_message_activity(
         )
 
 
+async def _stream_and_post_responses(
+    orchestrator: ChatOrchestrator,
+    connector: SlackConnector,
+    message_text: str,
+    channel: str,
+    thread_ts: str | None = None,
+) -> int:
+    """
+    Stream orchestrator output and post each text segment to Slack
+    incrementally — flushing whenever a tool-call boundary (JSON chunk)
+    is encountered so the user sees early messages immediately.
+
+    Args:
+        orchestrator: Initialised ChatOrchestrator
+        connector: Authenticated SlackConnector
+        message_text: The user's message to process
+        channel: Slack channel to post responses in
+        thread_ts: Optional thread timestamp (None for DM top-level)
+
+    Returns:
+        Total character count of all posted text.
+    """
+    current_text: str = ""
+    total_length: int = 0
+
+    try:
+        async for chunk in orchestrator.process_message(message_text):
+            if chunk.startswith("{"):
+                # Tool-call boundary — send whatever text we have so far
+                if current_text.strip():
+                    await connector.post_message(
+                        channel=channel,
+                        text=current_text.strip(),
+                        thread_ts=thread_ts,
+                    )
+                    total_length += len(current_text)
+                    current_text = ""
+            else:
+                current_text += chunk
+    except Exception as e:
+        logger.error(
+            "[slack_conversations] Error during streaming: %s", e, exc_info=True,
+        )
+        current_text += f"\nSorry, I encountered an error: {str(e)}"
+
+    # Post any remaining text after the stream ends
+    if current_text.strip():
+        await connector.post_message(
+            channel=channel,
+            text=current_text.strip(),
+            thread_ts=thread_ts,
+        )
+        total_length += len(current_text)
+
+    return total_length
+
+
 async def process_slack_dm(
     team_id: str,
     channel_id: str,
@@ -292,51 +349,34 @@ async def process_slack_dm(
         slack_user_id=user_id,
     )
 
-    # Process message through orchestrator
+    # Process message through orchestrator, posting incrementally
     orchestrator = ChatOrchestrator(
-        user_id=None,  # No RevTops user for Slack conversations
+        user_id=None,
         organization_id=organization_id,
         conversation_id=str(conversation.id),
         user_email=None,
         workflow_context=None,
     )
 
-    # Collect the full response (don't stream to Slack)
-    response_text: str = ""
-    try:
-        async for chunk in orchestrator.process_message(message_text):
-            if not chunk.startswith("{"):
-                response_text += chunk
-    except Exception as e:
-        logger.error("[slack_conversations] Error processing message: %s", e, exc_info=True)
-        response_text = f"Sorry, I encountered an error processing your message: {str(e)}"
+    total_length: int = await _stream_and_post_responses(
+        orchestrator=orchestrator,
+        connector=connector,
+        message_text=message_text,
+        channel=channel_id,
+    )
 
     # Remove the "thinking" reaction
     await connector.remove_reaction(channel=channel_id, timestamp=event_ts)
 
-    # Post response back to Slack
-    if response_text.strip():
-        try:
-            await connector.post_message(
-                channel=channel_id,
-                text=response_text.strip(),
-            )
-            logger.info(
-                "[slack_conversations] Posted response to channel %s (%d chars)",
-                channel_id,
-                len(response_text),
-            )
-        except Exception as e:
-            logger.error("[slack_conversations] Error posting to Slack: %s", e, exc_info=True)
-            return {
-                "status": "error",
-                "error": f"Failed to post response to Slack: {str(e)}",
-            }
-    
+    logger.info(
+        "[slack_conversations] Posted response to channel %s (%d chars)",
+        channel_id,
+        total_length,
+    )
     return {
         "status": "success",
         "conversation_id": str(conversation.id),
-        "response_length": len(response_text),
+        "response_length": total_length,
     }
 
 
@@ -391,50 +431,36 @@ async def process_slack_mention(
         slack_user_id=user_id,
     )
 
-    # Process message through orchestrator
+    # Process message through orchestrator, posting incrementally
     orchestrator = ChatOrchestrator(
-        user_id=None,  # No RevTops user for Slack conversations
+        user_id=None,
         organization_id=organization_id,
         conversation_id=str(conversation.id),
         user_email=None,
         workflow_context={"slack_channel_id": channel_id},
     )
 
-    # Collect the full response
-    response_text: str = ""
-    try:
-        async for chunk in orchestrator.process_message(message_text):
-            if not chunk.startswith("{"):
-                response_text += chunk
-    except Exception as e:
-        logger.error("[slack_conversations] Error processing mention: %s", e, exc_info=True)
-        response_text = f"Sorry, I encountered an error: {str(e)}"
+    total_length: int = await _stream_and_post_responses(
+        orchestrator=orchestrator,
+        connector=connector,
+        message_text=message_text,
+        channel=channel_id,
+        thread_ts=thread_ts,
+    )
 
-    # Remove the "thinking" reaction now that we have a response
+    # Remove the "thinking" reaction
     await connector.remove_reaction(channel=channel_id, timestamp=thread_ts)
 
-    # Post response back to Slack in the thread
-    if response_text.strip():
-        try:
-            await connector.post_message(
-                channel=channel_id,
-                text=response_text.strip(),
-                thread_ts=thread_ts,
-            )
-            logger.info(
-                "[slack_conversations] Posted thread response to %s (thread %s, %d chars)",
-                channel_id,
-                thread_ts,
-                len(response_text),
-            )
-        except Exception as e:
-            logger.error("[slack_conversations] Error posting to Slack: %s", e, exc_info=True)
-            return {"status": "error", "error": f"Failed to post response: {str(e)}"}
-
+    logger.info(
+        "[slack_conversations] Posted thread response to %s (thread %s, %d chars)",
+        channel_id,
+        thread_ts,
+        total_length,
+    )
     return {
         "status": "success",
         "conversation_id": str(conversation.id),
-        "response_length": len(response_text),
+        "response_length": total_length,
     }
 
 
@@ -497,7 +523,7 @@ async def process_slack_thread_reply(
     # Show a reaction on the user's reply so they know the bot is working
     await connector.add_reaction(channel=channel_id, timestamp=event_ts)
 
-    # Process message through orchestrator
+    # Process message through orchestrator, posting incrementally
     orchestrator = ChatOrchestrator(
         user_id=None,
         organization_id=organization_id,
@@ -506,35 +532,23 @@ async def process_slack_thread_reply(
         workflow_context={"slack_channel_id": channel_id},
     )
 
-    response_text: str = ""
-    try:
-        async for chunk in orchestrator.process_message(message_text):
-            if not chunk.startswith("{"):
-                response_text += chunk
-    except Exception as e:
-        logger.error("[slack_conversations] Error processing thread reply: %s", e, exc_info=True)
-        response_text = f"Sorry, I encountered an error: {str(e)}"
+    total_length: int = await _stream_and_post_responses(
+        orchestrator=orchestrator,
+        connector=connector,
+        message_text=message_text,
+        channel=channel_id,
+        thread_ts=thread_ts,
+    )
 
     # Remove the "thinking" reaction
     await connector.remove_reaction(channel=channel_id, timestamp=event_ts)
 
-    # Post response back in the same thread
-    if response_text.strip():
-        try:
-            await connector.post_message(
-                channel=channel_id,
-                text=response_text.strip(),
-                thread_ts=thread_ts,
-            )
-            logger.info(
-                "[slack_conversations] Posted thread reply to %s (thread %s, %d chars)",
-                channel_id,
-                thread_ts,
-                len(response_text),
-            )
-        except Exception as e:
-            logger.error("[slack_conversations] Error posting to Slack: %s", e, exc_info=True)
-            return {"status": "error", "error": f"Failed to post thread reply: {str(e)}"}
+    logger.info(
+        "[slack_conversations] Posted thread reply to %s (thread %s, %d chars)",
+        channel_id,
+        thread_ts,
+        total_length,
+    )
 
     return {
         "status": "success",
