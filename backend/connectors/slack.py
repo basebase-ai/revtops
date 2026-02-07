@@ -228,6 +228,7 @@ class SlackConnector(BaseConnector):
         oldest = (datetime.utcnow().timestamp()) - (7 * 24 * 60 * 60)
 
         count = 0
+        user_info_cache: dict[str, dict[str, Any]] = {}
         async with get_session(organization_id=self.organization_id) as session:
             for channel in channels:
                 channel_id = channel.get("id", "")
@@ -244,6 +245,24 @@ class SlackConnector(BaseConnector):
                     )
 
                     for msg in messages:
+                        user_id = msg.get("user")
+                        if user_id and not msg.get("user_profile"):
+                            if user_id not in user_info_cache:
+                                try:
+                                    user_info_cache[user_id] = await self.get_user_info(user_id)
+                                except Exception as exc:
+                                    logger.warning(
+                                        "[Slack Sync] Failed users.info lookup for user=%s channel=%s: %s",
+                                        user_id,
+                                        channel_id,
+                                        exc,
+                                        exc_info=True,
+                                    )
+                                    user_info_cache[user_id] = {}
+                            profile = (user_info_cache[user_id] or {}).get("profile") or {}
+                            if profile:
+                                msg["user_profile"] = profile
+
                         activity = self._normalize_message(msg, channel_id, channel_name)
                         if activity:
                             await session.merge(activity)
@@ -297,6 +316,13 @@ class SlackConnector(BaseConnector):
                 "[Slack Sync] Missing sender id in message ts=%s channel=%s",
                 slack_msg.get("ts"),
                 slack_msg.get("channel"),
+            )
+        elif not sender_fields["sender_name"] and sender_fields["sender_type"] == "user":
+            logger.debug(
+                "[Slack Sync] Missing sender name in message ts=%s channel=%s user=%s",
+                slack_msg.get("ts"),
+                slack_msg.get("channel"),
+                sender_fields["sender_id"],
             )
         return sender_fields
 

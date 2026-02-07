@@ -274,11 +274,57 @@ async def resolve_revtops_user_for_slack_actor(
     return None
 
 
+async def _get_slack_user_display_name(
+    organization_id: str,
+    slack_user_id: str,
+) -> str | None:
+    try:
+        connector = SlackConnector(organization_id=organization_id)
+        slack_user = await connector.get_user_info(slack_user_id)
+    except Exception as exc:
+        logger.warning(
+            "[slack_conversations] Failed Slack users.info lookup for user=%s org=%s: %s",
+            slack_user_id,
+            organization_id,
+            exc,
+            exc_info=True,
+        )
+        return None
+
+    profile = slack_user.get("profile", {})
+    display_name = (
+        profile.get("display_name")
+        or profile.get("real_name")
+        or slack_user.get("real_name")
+        or slack_user.get("name")
+        or ""
+    ).strip()
+
+    if not display_name:
+        logger.info(
+            "[slack_conversations] Slack user lookup missing display name user=%s org=%s profile_keys=%s user_keys=%s",
+            slack_user_id,
+            organization_id,
+            sorted(profile.keys()),
+            sorted(slack_user.keys()),
+        )
+        return None
+
+    logger.debug(
+        "[slack_conversations] Slack user display name resolved user=%s org=%s name=%s",
+        slack_user_id,
+        organization_id,
+        display_name,
+    )
+    return display_name
+
+
 async def find_or_create_conversation(
     organization_id: str,
     slack_channel_id: str,
     slack_user_id: str,
     revtops_user_id: str | None,
+    slack_user_name: str | None = None,
 ) -> Conversation:
     """
     Find an existing Slack conversation or create a new one.
@@ -314,6 +360,14 @@ async def find_or_create_conversation(
                     conversation.id,
                     revtops_user_id,
                 )
+            if slack_user_name and (not conversation.title or conversation.title == "Slack DM"):
+                conversation.title = f"Slack DM - {slack_user_name}"
+                await session.commit()
+                logger.info(
+                    "[slack_conversations] Updated Slack conversation %s title to %s",
+                    conversation.id,
+                    conversation.title,
+                )
 
             logger.info(
                 "[slack_conversations] Found existing conversation %s for channel %s",
@@ -330,7 +384,7 @@ async def find_or_create_conversation(
             source_channel_id=slack_channel_id,
             source_user_id=slack_user_id,
             type="agent",
-            title=f"Slack DM",
+            title=f"Slack DM - {slack_user_name}" if slack_user_name else "Slack DM",
         )
         session.add(conversation)
         await session.commit()
@@ -392,6 +446,10 @@ async def process_slack_dm(
         organization_id=organization_id,
         slack_user_id=user_id,
     )
+    slack_user_name = await _get_slack_user_display_name(
+        organization_id=organization_id,
+        slack_user_id=user_id,
+    )
 
     # Find or create conversation
     conversation = await find_or_create_conversation(
@@ -399,6 +457,7 @@ async def process_slack_dm(
         slack_channel_id=channel_id,
         slack_user_id=user_id,
         revtops_user_id=str(linked_user.id) if linked_user else None,
+        slack_user_name=slack_user_name,
     )
 
     # Process message through orchestrator
@@ -492,12 +551,17 @@ async def process_slack_mention(
         organization_id=organization_id,
         slack_user_id=user_id,
     )
+    slack_user_name = await _get_slack_user_display_name(
+        organization_id=organization_id,
+        slack_user_id=user_id,
+    )
 
     conversation = await find_or_create_conversation(
         organization_id=organization_id,
         slack_channel_id=source_channel_id,
         slack_user_id=user_id,
         revtops_user_id=str(linked_user.id) if linked_user else None,
+        slack_user_name=slack_user_name,
     )
 
     # Process message through orchestrator
