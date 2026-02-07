@@ -1,18 +1,24 @@
 """
-Slack DM conversation service.
+Slack conversation service.
 
-Handles processing incoming Slack DMs and routing them through the agent orchestrator.
+Handles processing incoming Slack messages (DMs, @mentions, thread replies)
+and routing them through the agent orchestrator.  Also persists inbound
+channel messages as Activity rows for real-time queryability.
 """
 from __future__ import annotations
 
 import logging
+import uuid
+from datetime import datetime
 from typing import Any
 from uuid import UUID
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from agents.orchestrator import ChatOrchestrator
 from connectors.slack import SlackConnector
+from models.activity import Activity
 from models.conversation import Conversation
 from models.database import get_admin_session, get_session
 from models.integration import Integration
@@ -167,6 +173,71 @@ async def find_thread_conversation(
         return conversation
 
 
+async def persist_slack_message_activity(
+    team_id: str,
+    channel_id: str,
+    user_id: str,
+    text: str,
+    ts: str,
+    thread_ts: str | None,
+) -> None:
+    """
+    Persist an inbound Slack channel message as an Activity row.
+
+    Uses INSERT ... ON CONFLICT DO NOTHING so that duplicate messages
+    (e.g. from the hourly sync) are silently skipped.
+
+    Args:
+        team_id: Slack workspace/team ID
+        channel_id: Slack channel ID
+        user_id: Slack user ID who sent the message
+        text: Message text
+        ts: Message timestamp (unique per-message)
+        thread_ts: Parent thread timestamp, if this is a threaded reply
+    """
+    organization_id: str | None = await find_organization_by_slack_team(team_id)
+    if not organization_id:
+        return
+
+    source_id: str = f"{channel_id}:{ts}"
+
+    # Parse message timestamp into a datetime
+    activity_date: datetime | None = None
+    try:
+        activity_date = datetime.utcfromtimestamp(float(ts))
+    except (ValueError, TypeError):
+        pass
+
+    try:
+        async with get_session(organization_id=organization_id) as session:
+            stmt = pg_insert(Activity).values(
+                id=uuid.uuid4(),
+                organization_id=UUID(organization_id),
+                source_system="slack",
+                source_id=source_id,
+                type="slack_message",
+                subject=f"#{channel_id}",
+                description=text[:1000],
+                activity_date=activity_date,
+                custom_fields={
+                    "channel_id": channel_id,
+                    "user_id": user_id,
+                    "thread_ts": thread_ts,
+                },
+                synced_at=datetime.utcnow(),
+            ).on_conflict_do_nothing(
+                index_elements=["organization_id", "source_system", "source_id"],
+            )
+            await session.execute(stmt)
+            await session.commit()
+    except Exception as e:
+        logger.error(
+            "[slack_conversations] Failed to persist activity for %s: %s",
+            source_id,
+            e,
+        )
+
+
 async def process_slack_dm(
     team_id: str,
     channel_id: str,
@@ -316,7 +387,7 @@ async def process_slack_mention(
         organization_id=organization_id,
         conversation_id=str(conversation.id),
         user_email=None,
-        workflow_context=None,
+        workflow_context={"slack_channel_id": channel_id},
     )
     
     # Collect the full response
@@ -413,7 +484,7 @@ async def process_slack_thread_reply(
         organization_id=organization_id,
         conversation_id=str(conversation.id),
         user_email=None,
-        workflow_context=None,
+        workflow_context={"slack_channel_id": channel_id},
     )
 
     response_text: str = ""

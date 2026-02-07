@@ -30,6 +30,7 @@ from fastapi import APIRouter, HTTPException, Request, Response
 
 from config import settings
 from services.slack_conversations import (
+    persist_slack_message_activity,
     process_slack_dm,
     process_slack_mention,
     process_slack_thread_reply,
@@ -189,7 +190,21 @@ async def handle_slack_events(request: Request) -> Response | dict[str, Any]:
             if event.get("subtype") in ("message_changed", "message_deleted"):
                 logger.debug("[slack_events] Skipping message edit/delete")
                 return {"ok": True}
-            
+
+            # Persist every channel message as an activity in real-time
+            # so the bot always has up-to-date Slack data to query.
+            if channel_type != "im" and event.get("text", "").strip():
+                asyncio.create_task(
+                    persist_slack_message_activity(
+                        team_id=team_id,
+                        channel_id=event.get("channel", ""),
+                        user_id=event.get("user", ""),
+                        text=event.get("text", ""),
+                        ts=event.get("ts", ""),
+                        thread_ts=event.get("thread_ts"),
+                    )
+                )
+
             if channel_type == "im":
                 # --- Direct messages ---
                 channel_id: str = event.get("channel", "")

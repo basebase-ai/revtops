@@ -14,6 +14,7 @@ from datetime import datetime
 from typing import Any, Optional
 
 import httpx
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 
 def markdown_to_mrkdwn(text: str) -> str:
@@ -224,7 +225,28 @@ class SlackConnector(BaseConnector):
                     for msg in messages:
                         activity = self._normalize_message(msg, channel_id, channel_name)
                         if activity:
-                            await session.merge(activity)
+                            now: datetime = datetime.utcnow()
+                            stmt = pg_insert(Activity).values(
+                                id=activity.id,
+                                organization_id=activity.organization_id,
+                                source_system=activity.source_system,
+                                source_id=activity.source_id,
+                                type=activity.type,
+                                subject=activity.subject,
+                                description=activity.description,
+                                activity_date=activity.activity_date,
+                                custom_fields=activity.custom_fields,
+                                synced_at=now,
+                            ).on_conflict_do_update(
+                                index_elements=["organization_id", "source_system", "source_id"],
+                                set_={
+                                    "subject": activity.subject,
+                                    "description": activity.description,
+                                    "custom_fields": activity.custom_fields,
+                                    "synced_at": now,
+                                },
+                            )
+                            await session.execute(stmt)
                             count += 1
                             
                             # Broadcast progress every 10 messages

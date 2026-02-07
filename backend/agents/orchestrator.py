@@ -485,8 +485,22 @@ class ChatOrchestrator:
             user_context += "For example, to find the user's company, join the users table (filter by email) to the organizations table."
             system_prompt += user_context
         elif not self.user_id:
-            # Slack DM conversation - no specific user context
-            system_prompt += "\n\n## Current User\nThis conversation is from a Slack DM. The specific user is not identified in Revtops."
+            # Slack conversation - no specific RevTops user context
+            system_prompt += "\n\n## Current User\nThis conversation is from Slack. The specific user is not identified in Revtops."
+
+        # Add Slack channel context so the agent can scope queries to the right channel
+        slack_channel_id: str | None = (self.workflow_context or {}).get("slack_channel_id")
+        if slack_channel_id:
+            system_prompt += f"""
+
+## Slack Channel Context
+This conversation is happening in Slack channel ID: {slack_channel_id}
+
+When the user asks about activity in "this channel", query the activities table filtered by:
+```sql
+WHERE source_system = 'slack' AND custom_fields->>'channel_id' = '{slack_channel_id}'
+```
+The activities table contains synced Slack messages with these relevant custom_fields keys: channel_id, channel_name, user_id, thread_ts."""
         
         if self.local_time or self.timezone:
             time_context = "\n\n## Current Time Context\n"
