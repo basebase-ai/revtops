@@ -333,7 +333,17 @@ def extract_structured_output(response_text: str) -> dict[str, Any] | None:
 
 
 def run_async(coro: Any) -> Any:
-    """Run an async function in a sync context (for Celery tasks)."""
+    """Run an async function in a sync context (for Celery tasks).
+    
+    Creates a fresh event loop and disposes any existing database connections
+    to avoid 'Future attached to different loop' errors with asyncpg.
+    """
+    from models.database import dispose_engine
+    
+    # Dispose existing connections - they're tied to a previous (closed) event loop
+    # and will cause "Future attached to different loop" errors if reused
+    dispose_engine()
+    
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:

@@ -100,6 +100,26 @@ def get_session_factory() -> async_sessionmaker[AsyncSession]:
     return _session_factory
 
 
+def dispose_engine() -> None:
+    """Dispose the database engine and clear all pooled connections.
+    
+    Call this before creating a new event loop in Celery workers to avoid
+    'Future attached to different loop' errors with asyncpg. The connections
+    in the pool are tied to a specific event loop and become invalid when
+    that loop is closed.
+    
+    The engine and session factory will be lazily recreated on next use.
+    """
+    global _engine, _session_factory
+    if _engine is not None:
+        # Synchronously dispose - clears all connections from the pool
+        # Note: This is safe to call even with async engine, just doesn't await
+        _engine.sync_engine.dispose()
+        _engine = None
+        _session_factory = None
+        logger.debug("Database engine disposed (connections cleared for new event loop)")
+
+
 @asynccontextmanager
 async def get_session(organization_id: str | None = None) -> AsyncGenerator[AsyncSession, None]:
     """
