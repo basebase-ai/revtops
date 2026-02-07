@@ -273,26 +273,35 @@ class SlackConnector(BaseConnector):
                                 channel_id,
                                 msg.get("ts"),
                             )
-                            stmt = pg_insert(Activity).values(
-                                id=activity.id,
-                                organization_id=activity.organization_id,
-                                source_system=activity.source_system,
-                                source_id=activity.source_id,
-                                type=activity.type,
-                                subject=activity.subject,
-                                description=activity.description,
-                                activity_date=activity.activity_date,
-                                custom_fields=activity.custom_fields,
-                                synced_at=now,
-                            ).on_conflict_do_update(
-                                constraint="uq_activities_org_source",
-                                set_={
-                                    "subject": activity.subject,
-                                    "description": activity.description,
-                                    "custom_fields": activity.custom_fields,
-                                    "activity_date": activity.activity_date,
-                                    "synced_at": now,
-                                },
+                            stmt = (
+                                pg_insert(Activity)
+                                .values(
+                                    id=activity.id,
+                                    organization_id=activity.organization_id,
+                                    source_system=activity.source_system,
+                                    source_id=activity.source_id,
+                                    type=activity.type,
+                                    subject=activity.subject,
+                                    description=activity.description,
+                                    activity_date=activity.activity_date,
+                                    custom_fields=activity.custom_fields,
+                                    synced_at=now,
+                                )
+                                .on_conflict_do_update(
+                                    index_elements=[
+                                        "organization_id",
+                                        "source_system",
+                                        "source_id",
+                                    ],
+                                    index_where=Activity.source_id.is_not(None),
+                                    set_={
+                                        "subject": activity.subject,
+                                        "description": activity.description,
+                                        "custom_fields": activity.custom_fields,
+                                        "activity_date": activity.activity_date,
+                                        "synced_at": now,
+                                    },
+                                )
                             )
                             await session.execute(stmt)
                             count += 1
