@@ -122,19 +122,32 @@ async def get_pending_changes(
                     "record_id": str(snap.record_id),
                 }
                 
-                # Summary from after_data; for proposal-only creates use _input payload
+                # Summary from after_data._input; for updates fall back to before_data for display
+                input_data: dict[str, Any] = {}
                 if snap.after_data and isinstance(snap.after_data, dict):
-                    data: dict[str, Any] = snap.after_data.get("_input", snap.after_data)
-                    if snap.table_name == "contacts":
-                        fn, ln = data.get("firstname") or "", data.get("lastname") or ""
-                        record_info["name"] = f"{fn} {ln}".strip() or data.get("email")
-                        record_info["email"] = data.get("email")
-                    elif snap.table_name == "accounts":
-                        record_info["name"] = data.get("name")
-                        record_info["domain"] = data.get("domain")
-                    elif snap.table_name == "deals":
-                        record_info["name"] = data.get("dealname")
-                        record_info["amount"] = data.get("amount")
+                    input_data = snap.after_data.get("_input", snap.after_data)
+                before: dict[str, Any] = snap.before_data if isinstance(snap.before_data, dict) else {}
+
+                if snap.table_name == "contacts":
+                    fn: str = input_data.get("firstname") or ""
+                    ln: str = input_data.get("lastname") or ""
+                    display_name: str | None = f"{fn} {ln}".strip() or input_data.get("email")
+                    # For updates the _input only has changed fields; use before_data for name
+                    if not display_name and before:
+                        display_name = before.get("name") or before.get("email")
+                    record_info["name"] = display_name
+                    record_info["email"] = input_data.get("email") or before.get("email")
+                elif snap.table_name == "accounts":
+                    record_info["name"] = input_data.get("name") or before.get("name")
+                    record_info["domain"] = input_data.get("domain") or before.get("domain")
+                elif snap.table_name == "deals":
+                    record_info["name"] = input_data.get("dealname") or input_data.get("name") or before.get("name")
+                    record_info["amount"] = input_data.get("amount") or before.get("amount")
+
+                # For updates, show what's changing
+                if snap.operation == "update" and input_data:
+                    changes: list[str] = [f"{k} → {v}" for k, v in input_data.items() if k != "id"]
+                    record_info["changes"] = changes
                 
                 records.append(record_info)
 

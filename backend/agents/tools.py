@@ -1427,12 +1427,59 @@ async def _create_local_pending_records(
     target_system: str,
 ) -> dict[str, Any]:
     """
-    Store proposed creates only (no local DB rows until user commits).
-    When user commits, we create locally and push to CRM; when they discard, we drop proposals.
+    Store proposed creates or updates as snapshots (no side-effects until commit).
     """
-    from services.change_session import add_proposed_create
+    from services.change_session import add_proposed_create, add_proposed_update
 
-    records_to_process = validated_records
+    table_map: dict[str, str] = {"contact": "contacts", "company": "accounts", "deal": "deals"}
+    table_name: str | None = table_map.get(record_type)
+    if not table_name or not change_session_id:
+        return {
+            "status": "failed",
+            "message": "Missing change session or table",
+            "success_count": 0,
+            "failure_count": len(validated_records),
+            "errors": [{"error": "change_session_id or table required"}],
+        }
+
+    # ── Handle UPDATEs ──────────────────────────────────────────────────────
+    if operation == "update":
+        success_count: int = 0
+        errors: list[dict[str, Any]] = []
+        async with get_session(organization_id=str(organization_id)) as session:
+            for record in validated_records:
+                try:
+                    record_id: str | None = record.get("id")
+                    if not record_id:
+                        errors.append({"record": record, "error": "No id field for update"})
+                        continue
+                    # Fields to update = everything except the id
+                    update_fields: dict[str, Any] = {k: v for k, v in record.items() if k != "id"}
+                    await add_proposed_update(
+                        change_session_id=change_session_id,
+                        table_name=table_name,
+                        record_id=record_id,
+                        update_fields=update_fields,
+                        db_session=session,
+                    )
+                    success_count += 1
+                except Exception as e:
+                    logger.warning("[_create_local_pending_records] Failed update proposal: %s", e)
+                    errors.append({"record": record, "error": str(e)})
+            await session.commit()
+        return {
+            "status": "pending_sync",
+            "message": f"Stored {success_count} {record_type} update(s) for review.",
+            "success_count": success_count,
+            "failure_count": len(errors),
+            "skipped_count": 0,
+            "created_local": [],
+            "change_session_id": change_session_id,
+            "errors": errors if errors else None,
+        }
+
+    # ── Handle CREATEs ──────────────────────────────────────────────────────
+    records_to_process: list[dict[str, Any]] = validated_records
     duplicate_ids: set[str] = set()
 
     if skip_duplicates and duplicate_warnings:
@@ -1447,7 +1494,7 @@ async def _create_local_pending_records(
     if skip_duplicates and duplicate_ids:
         filtered_records: list[dict[str, Any]] = []
         for record in records_to_process:
-            identifier = ""
+            identifier: str = ""
             if record_type == "contact":
                 identifier = record.get("email", "").lower()
             elif record_type == "company":
@@ -1469,49 +1516,35 @@ async def _create_local_pending_records(
             "change_session_id": change_session_id,
         }
 
-    table_map: dict[str, str] = {"contact": "contacts", "company": "accounts", "deal": "deals"}
-    table_name = table_map.get(record_type)
-    if not table_name or not change_session_id:
-        return {
-            "status": "failed",
-            "message": "Missing change session or table",
-            "success_count": 0,
-            "failure_count": len(records_to_process),
-            "errors": [{"error": "change_session_id or table required"}],
-        }
-
-    created_count = 0
-    errors: list[dict[str, Any]] = []
+    created_count: int = 0
+    create_errors: list[dict[str, Any]] = []
     async with get_session(organization_id=str(organization_id)) as session:
         for record in records_to_process:
             try:
-                record_id = uuid4()
+                new_record_id: UUID = uuid4()
                 await add_proposed_create(
                     change_session_id=change_session_id,
                     table_name=table_name,
-                    record_id=str(record_id),
+                    record_id=str(new_record_id),
                     input_payload=record,
                     db_session=session,
                 )
                 created_count += 1
             except Exception as e:
-                logger.warning(
-                    "[Tools._create_local_pending_records] Failed to add proposal %s: %s",
-                    record_type, str(e),
-                )
-                errors.append({"record": record, "error": str(e)})
+                logger.warning("[_create_local_pending_records] Failed create proposal: %s", e)
+                create_errors.append({"record": record, "error": str(e)})
         await session.commit()
 
-    skipped_count = len(validated_records) - len(records_to_process)
+    skipped_count: int = len(validated_records) - len(records_to_process)
     return {
         "status": "pending_sync",
         "message": f"Stored {created_count} {record_type}(s) for review. Commit to create in HubSpot and locally, or Undo to discard.",
         "success_count": created_count,
-        "failure_count": len(errors),
+        "failure_count": len(create_errors),
         "skipped_count": skipped_count,
         "created_local": [],
         "change_session_id": change_session_id,
-        "errors": errors if errors else None,
+        "errors": create_errors if create_errors else None,
     }
 
 
@@ -2004,13 +2037,18 @@ async def commit_change_session(
         await approve_change_session(change_session_id, user_id)
         return {"status": "completed", "message": "No pending changes to commit", "synced_count": 0}
 
-    # ── 2. Build per-table sync lists ───────────────────────────────────────
-    contacts_to_sync: list[tuple[UUID, dict[str, Any]]] = []
-    accounts_to_sync: list[tuple[UUID, dict[str, Any]]] = []
-    deals_to_sync: list[tuple[UUID, dict[str, Any]]] = []
+    # ── 2. Build per-table sync lists (creates and updates) ────────────────
+    # Creates: (local_id, hs_properties)
+    contacts_to_create: list[tuple[UUID, dict[str, Any]]] = []
+    accounts_to_create: list[tuple[UUID, dict[str, Any]]] = []
+    deals_to_create: list[tuple[UUID, dict[str, Any]]] = []
+    # Updates: (local_id, hs_properties, raw_local_fields)
+    contacts_to_update: list[tuple[UUID, dict[str, Any], dict[str, Any]]] = []
+    accounts_to_update: list[tuple[UUID, dict[str, Any], dict[str, Any]]] = []
+    deals_to_update: list[tuple[UUID, dict[str, Any], dict[str, Any]]] = []
 
     for snapshot in snapshots:
-        if snapshot.operation != "create" or not snapshot.after_data:
+        if snapshot.operation not in ("create", "update") or not snapshot.after_data:
             _log.debug("[commit] Skipping snapshot %s (op=%s, has_data=%s)",
                        snapshot.id, snapshot.operation, bool(snapshot.after_data))
             continue
@@ -2020,33 +2058,47 @@ async def commit_change_session(
         source_data: dict[str, Any] = raw_input or after_data
 
         _log.info(
-            "[commit] Snapshot %s: table=%s record=%s raw_keys=%s",
-            snapshot.id, snapshot.table_name, snapshot.record_id, list(source_data.keys()),
+            "[commit] Snapshot %s: op=%s table=%s record=%s raw_keys=%s",
+            snapshot.id, snapshot.operation, snapshot.table_name,
+            snapshot.record_id, list(source_data.keys()),
         )
 
         # Normalise to HubSpot property names and strip internal-only fields
-        input_data: dict[str, Any] = _to_hubspot_properties(snapshot.table_name, source_data)
+        hs_props: dict[str, Any] = _to_hubspot_properties(snapshot.table_name, source_data)
 
         _log.info(
             "[commit] Snapshot %s: mapped HS properties=%s",
-            snapshot.id, {k: (v if k != "phone" else "***") for k, v in input_data.items()},
+            snapshot.id, {k: (v if k != "phone" else "***") for k, v in hs_props.items()},
         )
 
-        record_id = snapshot.record_id
-        if snapshot.table_name == "contacts":
-            contacts_to_sync.append((record_id, input_data))
-        elif snapshot.table_name == "accounts":
-            accounts_to_sync.append((record_id, input_data))
-        elif snapshot.table_name == "deals":
-            deals_to_sync.append((record_id, input_data))
+        record_id: UUID = snapshot.record_id
 
-    total_records: int = len(contacts_to_sync) + len(accounts_to_sync) + len(deals_to_sync)
+        if snapshot.operation == "create":
+            if snapshot.table_name == "contacts":
+                contacts_to_create.append((record_id, hs_props))
+            elif snapshot.table_name == "accounts":
+                accounts_to_create.append((record_id, hs_props))
+            elif snapshot.table_name == "deals":
+                deals_to_create.append((record_id, hs_props))
+        elif snapshot.operation == "update":
+            if snapshot.table_name == "contacts":
+                contacts_to_update.append((record_id, hs_props, source_data))
+            elif snapshot.table_name == "accounts":
+                accounts_to_update.append((record_id, hs_props, source_data))
+            elif snapshot.table_name == "deals":
+                deals_to_update.append((record_id, hs_props, source_data))
+
+    total_creates: int = len(contacts_to_create) + len(accounts_to_create) + len(deals_to_create)
+    total_updates: int = len(contacts_to_update) + len(accounts_to_update) + len(deals_to_update)
+    total_records: int = total_creates + total_updates
     _log.info(
-        "[commit] Records to push: %d contacts, %d accounts, %d deals (%d total)",
-        len(contacts_to_sync), len(accounts_to_sync), len(deals_to_sync), total_records,
+        "[commit] Creates: %d contacts, %d accounts, %d deals. Updates: %d contacts, %d accounts, %d deals. Total: %d",
+        len(contacts_to_create), len(accounts_to_create), len(deals_to_create),
+        len(contacts_to_update), len(accounts_to_update), len(deals_to_update),
+        total_records,
     )
 
-    # ── 3. Push to HubSpot & create local rows ─────────────────────────────
+    # ── 3. Push to HubSpot & write local rows ──────────────────────────────
     connector = HubSpotConnector(org_id)
     synced_count: int = 0
     errors: list[dict[str, Any]] = []
@@ -2054,110 +2106,201 @@ async def commit_change_session(
     user_uuid: UUID | None = UUID(user_id) if user_id else None
     now: datetime = datetime.utcnow()
 
+    # ── Helper: map local column names to model attrs for updates ────────
+    _CONTACT_FIELD_MAP: dict[str, str] = {
+        "title": "title", "jobtitle": "title",
+        "name": "name", "email": "email", "phone": "phone",
+    }
+    _ACCOUNT_FIELD_MAP: dict[str, str] = {
+        "name": "name", "domain": "domain", "industry": "industry",
+    }
+    _DEAL_FIELD_MAP: dict[str, str] = {
+        "name": "name", "dealname": "name",
+        "stage": "stage", "dealstage": "stage",
+        "amount": "amount",
+    }
+
     async with get_session(organization_id=org_id) as session:
-        # ── Contacts ────────────────────────────────────────────────────────
-        for local_id, input_data in contacts_to_sync:
+        # ══════════════════════════════════════════════════════════════════
+        # 3a. CREATES
+        # ══════════════════════════════════════════════════════════════════
+
+        # ── Create contacts ──────────────────────────────────────────────
+        for local_id, hs_props in contacts_to_create:
             try:
-                _log.info("[commit] Pushing contact %s to HubSpot: %s", local_id, input_data)
-                hs_result: dict[str, Any] = await connector.create_contact(input_data)
+                _log.info("[commit:create] Pushing contact %s to HubSpot: %s", local_id, hs_props)
+                hs_result: dict[str, Any] = await connector.create_contact(hs_props)
                 hs_id: str | None = hs_result.get("id")
-                _log.info("[commit] HubSpot returned id=%s for contact %s", hs_id, local_id)
+                _log.info("[commit:create] HubSpot returned id=%s for contact %s", hs_id, local_id)
 
                 if hs_id:
-                    first_name: str = input_data.get("firstname") or ""
-                    last_name: str = input_data.get("lastname") or ""
-                    full_name: str = f"{first_name} {last_name}".strip() or input_data.get("email") or f"Contact {local_id}"
+                    first_name: str = hs_props.get("firstname") or ""
+                    last_name: str = hs_props.get("lastname") or ""
+                    full_name: str = f"{first_name} {last_name}".strip() or hs_props.get("email") or f"Contact {local_id}"
                     contact = Contact(
-                        id=local_id,
-                        organization_id=org_uuid,
-                        source_system="hubspot",
-                        source_id=str(hs_id),
-                        name=full_name,
-                        email=input_data.get("email"),
-                        title=input_data.get("jobtitle"),
-                        phone=input_data.get("phone"),
-                        sync_status="synced",
-                        updated_at=now,
-                        updated_by=user_uuid,
+                        id=local_id, organization_id=org_uuid, source_system="hubspot",
+                        source_id=str(hs_id), name=full_name, email=hs_props.get("email"),
+                        title=hs_props.get("jobtitle"), phone=hs_props.get("phone"),
+                        sync_status="synced", updated_at=now, updated_by=user_uuid,
                     )
                     session.add(contact)
                     synced_count += 1
-                    _log.info("[commit] Created local contact %s (hs=%s, name=%s)", local_id, hs_id, full_name)
+                    _log.info("[commit:create] Local contact created %s (hs=%s)", local_id, hs_id)
                 else:
-                    _log.warning("[commit] HubSpot did not return an id for contact %s – response: %s", local_id, hs_result)
+                    _log.warning("[commit:create] No HS id for contact %s: %s", local_id, hs_result)
             except Exception as e:
-                _log.error("[commit] FAILED contact %s: %s", local_id, e, exc_info=True)
+                _log.error("[commit:create] FAILED contact %s: %s", local_id, e, exc_info=True)
                 errors.append({"table": "contacts", "record_id": str(local_id), "error": str(e)})
 
-        # ── Accounts (companies) ────────────────────────────────────────────
-        for local_id, input_data in accounts_to_sync:
+        # ── Create accounts ──────────────────────────────────────────────
+        for local_id, hs_props in accounts_to_create:
             try:
-                _log.info("[commit] Pushing company %s to HubSpot: %s", local_id, input_data)
-                hs_result = await connector.create_company(input_data)
+                _log.info("[commit:create] Pushing company %s to HubSpot: %s", local_id, hs_props)
+                hs_result = await connector.create_company(hs_props)
                 hs_id = hs_result.get("id")
-                _log.info("[commit] HubSpot returned id=%s for company %s", hs_id, local_id)
+                _log.info("[commit:create] HubSpot returned id=%s for company %s", hs_id, local_id)
 
                 if hs_id:
-                    name: str = input_data.get("name") or input_data.get("domain") or f"Company {local_id}"
+                    acct_name: str = hs_props.get("name") or hs_props.get("domain") or f"Company {local_id}"
                     account = Account(
-                        id=local_id,
-                        organization_id=org_uuid,
-                        source_system="hubspot",
-                        source_id=str(hs_id),
-                        name=name,
-                        domain=input_data.get("domain"),
-                        industry=input_data.get("industry"),
-                        sync_status="synced",
-                        updated_at=now,
-                        updated_by=user_uuid,
+                        id=local_id, organization_id=org_uuid, source_system="hubspot",
+                        source_id=str(hs_id), name=acct_name, domain=hs_props.get("domain"),
+                        industry=hs_props.get("industry"), sync_status="synced",
+                        updated_at=now, updated_by=user_uuid,
                     )
                     session.add(account)
                     synced_count += 1
-                    _log.info("[commit] Created local account %s (hs=%s, name=%s)", local_id, hs_id, name)
+                    _log.info("[commit:create] Local account created %s (hs=%s)", local_id, hs_id)
                 else:
-                    _log.warning("[commit] HubSpot did not return an id for company %s – response: %s", local_id, hs_result)
+                    _log.warning("[commit:create] No HS id for company %s: %s", local_id, hs_result)
             except Exception as e:
-                _log.error("[commit] FAILED company %s: %s", local_id, e, exc_info=True)
+                _log.error("[commit:create] FAILED company %s: %s", local_id, e, exc_info=True)
                 errors.append({"table": "accounts", "record_id": str(local_id), "error": str(e)})
 
-        # ── Deals ───────────────────────────────────────────────────────────
-        for local_id, input_data in deals_to_sync:
+        # ── Create deals ─────────────────────────────────────────────────
+        for local_id, hs_props in deals_to_create:
             try:
-                _log.info("[commit] Pushing deal %s to HubSpot: %s", local_id, input_data)
-                hs_result = await connector.create_deal(input_data)
+                _log.info("[commit:create] Pushing deal %s to HubSpot: %s", local_id, hs_props)
+                hs_result = await connector.create_deal(hs_props)
                 hs_id = hs_result.get("id")
-                _log.info("[commit] HubSpot returned id=%s for deal %s", hs_id, local_id)
+                _log.info("[commit:create] HubSpot returned id=%s for deal %s", hs_id, local_id)
 
                 if hs_id:
                     amount: Decimal | None = None
-                    if input_data.get("amount") is not None:
+                    if hs_props.get("amount") is not None:
                         try:
-                            amount = Decimal(str(input_data["amount"]))
+                            amount = Decimal(str(hs_props["amount"]))
                         except (ValueError, TypeError):
                             pass
                     deal = Deal(
-                        id=local_id,
-                        organization_id=org_uuid,
-                        source_system="hubspot",
-                        source_id=str(hs_id),
-                        name=input_data.get("dealname") or "Untitled Deal",
-                        amount=amount,
-                        stage=input_data.get("dealstage"),
-                        sync_status="synced",
-                        updated_at=now,
-                        updated_by=user_uuid,
+                        id=local_id, organization_id=org_uuid, source_system="hubspot",
+                        source_id=str(hs_id), name=hs_props.get("dealname") or "Untitled Deal",
+                        amount=amount, stage=hs_props.get("dealstage"),
+                        sync_status="synced", updated_at=now, updated_by=user_uuid,
                     )
                     session.add(deal)
                     synced_count += 1
-                    _log.info("[commit] Created local deal %s (hs=%s, name=%s)", local_id, hs_id, deal.name)
+                    _log.info("[commit:create] Local deal created %s (hs=%s)", local_id, hs_id)
                 else:
-                    _log.warning("[commit] HubSpot did not return an id for deal %s – response: %s", local_id, hs_result)
+                    _log.warning("[commit:create] No HS id for deal %s: %s", local_id, hs_result)
             except Exception as e:
-                _log.error("[commit] FAILED deal %s: %s", local_id, e, exc_info=True)
+                _log.error("[commit:create] FAILED deal %s: %s", local_id, e, exc_info=True)
+                errors.append({"table": "deals", "record_id": str(local_id), "error": str(e)})
+
+        # ══════════════════════════════════════════════════════════════════
+        # 3b. UPDATES – load existing record, push to HubSpot, apply local
+        # ══════════════════════════════════════════════════════════════════
+
+        # ── Update contacts ──────────────────────────────────────────────
+        for local_id, hs_props, raw_fields in contacts_to_update:
+            try:
+                existing = await session.get(Contact, local_id)
+                if not existing:
+                    _log.warning("[commit:update] Contact %s not found locally – skipping", local_id)
+                    errors.append({"table": "contacts", "record_id": str(local_id), "error": "Local record not found"})
+                    continue
+                hs_source_id: str | None = existing.source_id
+                _log.info("[commit:update] Contact %s (hs=%s) updating with: %s", local_id, hs_source_id, hs_props)
+
+                if hs_source_id and hs_props:
+                    await connector.update_contact(hs_source_id, hs_props)
+                    _log.info("[commit:update] HubSpot contact %s updated", hs_source_id)
+
+                # Apply locally using raw field names (map to model attrs)
+                for field_key, field_val in raw_fields.items():
+                    model_attr: str | None = _CONTACT_FIELD_MAP.get(field_key)
+                    if model_attr and hasattr(existing, model_attr):
+                        setattr(existing, model_attr, field_val)
+                existing.updated_at = now
+                existing.updated_by = user_uuid
+                synced_count += 1
+                _log.info("[commit:update] Local contact %s updated", local_id)
+            except Exception as e:
+                _log.error("[commit:update] FAILED contact %s: %s", local_id, e, exc_info=True)
+                errors.append({"table": "contacts", "record_id": str(local_id), "error": str(e)})
+
+        # ── Update accounts ──────────────────────────────────────────────
+        for local_id, hs_props, raw_fields in accounts_to_update:
+            try:
+                existing_acct = await session.get(Account, local_id)
+                if not existing_acct:
+                    _log.warning("[commit:update] Account %s not found locally – skipping", local_id)
+                    errors.append({"table": "accounts", "record_id": str(local_id), "error": "Local record not found"})
+                    continue
+                hs_source_id = existing_acct.source_id
+                _log.info("[commit:update] Account %s (hs=%s) updating with: %s", local_id, hs_source_id, hs_props)
+
+                if hs_source_id and hs_props:
+                    await connector.update_company(hs_source_id, hs_props)
+                    _log.info("[commit:update] HubSpot company %s updated", hs_source_id)
+
+                for field_key, field_val in raw_fields.items():
+                    model_attr = _ACCOUNT_FIELD_MAP.get(field_key)
+                    if model_attr and hasattr(existing_acct, model_attr):
+                        setattr(existing_acct, model_attr, field_val)
+                existing_acct.updated_at = now
+                existing_acct.updated_by = user_uuid
+                synced_count += 1
+                _log.info("[commit:update] Local account %s updated", local_id)
+            except Exception as e:
+                _log.error("[commit:update] FAILED account %s: %s", local_id, e, exc_info=True)
+                errors.append({"table": "accounts", "record_id": str(local_id), "error": str(e)})
+
+        # ── Update deals ─────────────────────────────────────────────────
+        for local_id, hs_props, raw_fields in deals_to_update:
+            try:
+                existing_deal = await session.get(Deal, local_id)
+                if not existing_deal:
+                    _log.warning("[commit:update] Deal %s not found locally – skipping", local_id)
+                    errors.append({"table": "deals", "record_id": str(local_id), "error": "Local record not found"})
+                    continue
+                hs_source_id = existing_deal.source_id
+                _log.info("[commit:update] Deal %s (hs=%s) updating with: %s", local_id, hs_source_id, hs_props)
+
+                if hs_source_id and hs_props:
+                    await connector.update_deal(hs_source_id, hs_props)
+                    _log.info("[commit:update] HubSpot deal %s updated", hs_source_id)
+
+                for field_key, field_val in raw_fields.items():
+                    model_attr = _DEAL_FIELD_MAP.get(field_key)
+                    if model_attr and hasattr(existing_deal, model_attr):
+                        if model_attr == "amount" and field_val is not None:
+                            try:
+                                setattr(existing_deal, model_attr, Decimal(str(field_val)))
+                            except (ValueError, TypeError):
+                                pass
+                        else:
+                            setattr(existing_deal, model_attr, field_val)
+                existing_deal.updated_at = now
+                existing_deal.updated_by = user_uuid
+                synced_count += 1
+                _log.info("[commit:update] Local deal %s updated", local_id)
+            except Exception as e:
+                _log.error("[commit:update] FAILED deal %s: %s", local_id, e, exc_info=True)
                 errors.append({"table": "deals", "record_id": str(local_id), "error": str(e)})
 
         await session.commit()
-        _log.info("[commit] DB commit complete – %d rows written", synced_count)
+        _log.info("[commit] DB commit complete – %d rows synced", synced_count)
 
     # ── 4. Mark session approved ────────────────────────────────────────────
     await approve_change_session(change_session_id, user_id)

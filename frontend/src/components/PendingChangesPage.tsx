@@ -19,6 +19,7 @@ interface RecordInfo {
   email?: string | null;
   domain?: string | null;
   amount?: number | null;
+  changes?: string[] | null;
 }
 
 interface ChangeSessionSummary {
@@ -360,19 +361,28 @@ export function PendingChangesPage(): JSX.Element {
                         {session.records.map((record, idx) => (
                           <div
                             key={`${record.record_id}-${idx}`}
-                            className="flex items-center gap-2 text-sm"
+                            className="flex flex-col gap-0.5 text-sm"
                           >
-                            <span className="text-green-500 text-xs">+</span>
-                            <span className="px-1.5 py-0.5 rounded bg-surface-800 text-surface-400 text-xs font-medium">
-                              {friendlyTable(record.table)}
-                            </span>
-                            <span className="text-surface-200 truncate">
-                              {recordLabel(record)}
-                            </span>
-                            {record.amount != null && (
-                              <span className="text-surface-400 text-xs ml-auto tabular-nums">
-                                ${Number(record.amount).toLocaleString()}
+                            <div className="flex items-center gap-2">
+                              <span className={`text-xs ${record.operation === 'update' ? 'text-amber-400' : 'text-green-500'}`}>
+                                {record.operation === 'update' ? '~' : '+'}
                               </span>
+                              <span className="px-1.5 py-0.5 rounded bg-surface-800 text-surface-400 text-xs font-medium">
+                                {friendlyTable(record.table)}
+                              </span>
+                              <span className="text-surface-200 truncate">
+                                {recordLabel(record)}
+                              </span>
+                              {record.amount != null && (
+                                <span className="text-surface-400 text-xs ml-auto tabular-nums">
+                                  ${Number(record.amount).toLocaleString()}
+                                </span>
+                              )}
+                            </div>
+                            {record.changes && record.changes.length > 0 && (
+                              <div className="ml-6 text-xs text-surface-400 italic">
+                                {record.changes.join(', ')}
+                              </div>
                             )}
                           </div>
                         ))}
