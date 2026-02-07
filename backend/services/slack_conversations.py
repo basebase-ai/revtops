@@ -27,6 +27,25 @@ from models.user import User
 logger = logging.getLogger(__name__)
 
 
+def _cannot_action_message() -> str:
+    return (
+        "I'm sorry, I can't help with that right now. "
+        "Try connecting Slack to RevTops for your account."
+    )
+
+
+async def _post_cannot_action_response(
+    connector: SlackConnector,
+    channel: str,
+    thread_ts: str | None = None,
+) -> None:
+    await connector.post_message(
+        channel=channel,
+        text=_cannot_action_message(),
+        thread_ts=thread_ts,
+    )
+
+
 async def find_organization_by_slack_team(team_id: str) -> str | None:
     """
     Find the organization ID for a Slack team/workspace.
@@ -554,7 +573,7 @@ async def _stream_and_post_responses(
         logger.error(
             "[slack_conversations] Error during streaming: %s", e, exc_info=True,
         )
-        current_text += f"\nSorry, I encountered an error: {str(e)}"
+        current_text += f"\n{_cannot_action_message()}"
 
     # Post any remaining text after the stream ends
     if current_text.strip():
@@ -622,6 +641,18 @@ async def process_slack_dm(
         organization_id=organization_id,
         slack_user_id=user_id,
     )
+    if not linked_user:
+        logger.warning(
+            "[slack_conversations] No linked RevTops user for Slack actor=%s org=%s",
+            user_id,
+            organization_id,
+        )
+        await _post_cannot_action_response(
+            connector=connector,
+            channel=channel_id,
+        )
+        await connector.remove_reaction(channel=channel_id, timestamp=event_ts)
+        return {"status": "error", "error": "No linked RevTops user for Slack actor"}
 
     # Find or create conversation
     conversation = await find_or_create_conversation(
@@ -716,6 +747,19 @@ async def process_slack_mention(
         organization_id=organization_id,
         slack_user_id=user_id,
     )
+    if not linked_user:
+        logger.warning(
+            "[slack_conversations] No linked RevTops user for Slack actor=%s org=%s",
+            user_id,
+            organization_id,
+        )
+        await _post_cannot_action_response(
+            connector=connector,
+            channel=channel_id,
+            thread_ts=thread_ts,
+        )
+        await connector.remove_reaction(channel=channel_id, timestamp=thread_ts)
+        return {"status": "error", "error": "No linked RevTops user for Slack actor"}
     conversation = await find_or_create_conversation(
         organization_id=organization_id,
         slack_channel_id=source_channel_id,
