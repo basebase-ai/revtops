@@ -37,12 +37,6 @@ class Settings(BaseSettings):
 
     # Database
     DATABASE_URL: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/revenue_copilot"
-    DB_POOL_SIZE: int = 10
-    DB_MAX_OVERFLOW: int = 0
-    DB_POOL_RECYCLE_SECONDS: int = 300
-    DB_POOL_TIMEOUT_SECONDS: int = 30
-    DB_CONNECTION_RETRY_ATTEMPTS: int = 5
-    DB_CONNECTION_RETRY_BACKOFF_SECONDS: float = 1.5
 
     # Redis
     REDIS_URL: str = "redis://localhost:6379"
@@ -110,12 +104,6 @@ settings = Settings()
 
 EXPECTED_ENV_VARS: tuple[str, ...] = (
     "DATABASE_URL",
-    "DB_POOL_SIZE",
-    "DB_MAX_OVERFLOW",
-    "DB_POOL_RECYCLE_SECONDS",
-    "DB_POOL_TIMEOUT_SECONDS",
-    "DB_CONNECTION_RETRY_ATTEMPTS",
-    "DB_CONNECTION_RETRY_BACKOFF_SECONDS",
     "REDIS_URL",
     "ANTHROPIC_API_KEY",
     "OPENAI_API_KEY",
