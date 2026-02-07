@@ -42,6 +42,12 @@ class ChatMessage(Base):
     role: Mapped[str] = mapped_column(
         String(20), nullable=False
     )  # 'user' or 'assistant'
+    source_user_id: Mapped[Optional[str]] = mapped_column(
+        String(100), nullable=True, index=True
+    )  # External sender ID (e.g. Slack user ID)
+    source_user_email: Mapped[Optional[str]] = mapped_column(
+        String(255), nullable=True
+    )  # External sender email (e.g. Slack profile email)
     
     # New: Array of content blocks [{type: 'text'|'tool_use', ...}]
     content_blocks: Mapped[Optional[list[dict[str, Any]]]] = mapped_column(

@@ -20,6 +20,11 @@ class _FakeExecuteResult:
     def scalars(self):
         return _FakeScalarResult(self._rows)
 
+    def scalar_one_or_none(self):
+        if not self._rows:
+            return None
+        return self._rows[0]
+
 
 class _FakeSession:
     def __init__(self, query_results):
@@ -75,7 +80,7 @@ def test_resolve_revtops_user_falls_back_to_connected_slack_name_match(monkeypat
     monkeypatch.setattr(
         slack_conversations,
         "get_admin_session",
-        lambda: _FakeAdminSessionContext([users, integrations]),
+        lambda: _FakeAdminSessionContext([users, integrations, []]),
     )
     monkeypatch.setattr(slack_conversations, "SlackConnector", _FakeSlackConnector)
 
@@ -109,7 +114,7 @@ def test_resolve_revtops_user_matches_slack_metadata(monkeypatch):
     monkeypatch.setattr(
         slack_conversations,
         "get_admin_session",
-        lambda: _FakeAdminSessionContext([users, integrations]),
+        lambda: _FakeAdminSessionContext([users, integrations, []]),
     )
 
     class _NoSlackConnector:
@@ -122,6 +127,41 @@ def test_resolve_revtops_user_matches_slack_metadata(monkeypatch):
         slack_conversations.resolve_revtops_user_for_slack_actor(
             organization_id=org_id,
             slack_user_id="U456",
+        )
+    )
+
+    assert resolved is not None
+    assert resolved.id == jane_id
+
+
+def test_resolve_revtops_user_uses_existing_mapping(monkeypatch):
+    org_id = "11111111-1111-1111-1111-111111111111"
+    jane_id = UUID("22222222-2222-2222-2222-222222222222")
+
+    users = [
+        SimpleNamespace(id=jane_id, email="jane@acme.com", name="Jane Doe"),
+    ]
+    integrations = []
+    mappings = [
+        SimpleNamespace(user_id=jane_id, slack_user_id="U999"),
+    ]
+
+    monkeypatch.setattr(
+        slack_conversations,
+        "get_admin_session",
+        lambda: _FakeAdminSessionContext([users, integrations, mappings]),
+    )
+
+    class _NoSlackConnector:
+        def __init__(self, organization_id: str):
+            raise AssertionError("SlackConnector should not be called when mapping exists")
+
+    monkeypatch.setattr(slack_conversations, "SlackConnector", _NoSlackConnector)
+
+    resolved = asyncio.run(
+        slack_conversations.resolve_revtops_user_for_slack_actor(
+            organization_id=org_id,
+            slack_user_id="U999",
         )
     )
 

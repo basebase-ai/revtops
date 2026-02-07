@@ -22,6 +22,7 @@ from models.activity import Activity
 from models.conversation import Conversation
 from models.database import get_admin_session, get_session
 from models.integration import Integration
+from models.slack_user_mapping import SlackUserMapping
 from models.user import User
 
 logger = logging.getLogger(__name__)
@@ -131,25 +132,125 @@ async def get_slack_user_ids_for_revtops_user(
         )
         integrations_result = await session.execute(integrations_query)
         slack_integrations = integrations_result.scalars().all()
+        mappings_query = (
+            select(SlackUserMapping)
+            .where(SlackUserMapping.organization_id == UUID(organization_id))
+            .where(SlackUserMapping.user_id == user_uuid)
+        )
+        mappings_result = await session.execute(mappings_query)
+        slack_mappings = mappings_result.scalars().all()
 
     slack_user_ids: set[str] = set()
     for integration in slack_integrations:
         if integration.user_id != user_uuid and integration.connected_by_user_id != user_uuid:
             continue
         slack_user_ids.update(_extract_slack_user_ids(integration.extra_data or {}))
+    for mapping in slack_mappings:
+        if mapping.slack_user_id:
+            slack_user_ids.add(mapping.slack_user_id)
 
     logger.info(
-        "[slack_conversations] Resolved %d Slack user IDs for org=%s user=%s",
+        "[slack_conversations] Resolved %d Slack user IDs for org=%s user=%s (mappings=%d)",
         len(slack_user_ids),
         organization_id,
         user_id,
+        len(slack_mappings),
     )
     return slack_user_ids
+
+
+async def _upsert_slack_user_mapping(
+    organization_id: str,
+    user_id: UUID,
+    slack_user_id: str,
+    slack_email: str | None,
+    match_source: str,
+) -> None:
+    now = datetime.utcnow()
+    try:
+        async with get_admin_session() as session:
+            stmt = pg_insert(SlackUserMapping).values(
+                id=uuid.uuid4(),
+                organization_id=UUID(organization_id),
+                user_id=user_id,
+                slack_user_id=slack_user_id,
+                slack_email=slack_email,
+                match_source=match_source,
+                created_at=now,
+                updated_at=now,
+            ).on_conflict_do_update(
+                index_elements=["organization_id", "slack_user_id"],
+                set_={
+                    "user_id": user_id,
+                    "slack_email": slack_email,
+                    "match_source": match_source,
+                    "updated_at": now,
+                },
+            )
+            await session.execute(stmt)
+            await session.commit()
+            logger.info(
+                "[slack_conversations] Upserted Slack user mapping org=%s user=%s slack_user=%s source=%s",
+                organization_id,
+                user_id,
+                slack_user_id,
+                match_source,
+            )
+    except Exception as exc:
+        logger.warning(
+            "[slack_conversations] Failed to upsert Slack user mapping org=%s user=%s slack_user=%s: %s",
+            organization_id,
+            user_id,
+            slack_user_id,
+            exc,
+            exc_info=True,
+        )
+
+
+async def _fetch_slack_user_info(
+    organization_id: str,
+    slack_user_id: str,
+) -> dict[str, Any] | None:
+    try:
+        connector = SlackConnector(organization_id=organization_id)
+        return await connector.get_user_info(slack_user_id)
+    except Exception as exc:
+        logger.warning(
+            "[slack_conversations] Failed Slack users.info lookup for user=%s org=%s: %s",
+            slack_user_id,
+            organization_id,
+            exc,
+            exc_info=True,
+        )
+        return None
+
+
+def _extract_slack_email(slack_user: dict[str, Any] | None) -> str | None:
+    if not slack_user:
+        return None
+    profile = slack_user.get("profile", {})
+    slack_email = (profile.get("email") or "").strip().lower()
+    return slack_email or None
+
+
+def _extract_slack_display_name(slack_user: dict[str, Any] | None) -> str | None:
+    if not slack_user:
+        return None
+    profile = slack_user.get("profile", {})
+    display_name = (
+        profile.get("display_name")
+        or profile.get("real_name")
+        or slack_user.get("real_name")
+        or slack_user.get("name")
+        or ""
+    ).strip()
+    return display_name or None
 
 
 async def resolve_revtops_user_for_slack_actor(
     organization_id: str,
     slack_user_id: str,
+    slack_user: dict[str, Any] | None = None,
 ) -> User | None:
     """Resolve the RevTops user linked to a Slack actor in this organization."""
 
@@ -170,6 +271,29 @@ async def resolve_revtops_user_for_slack_actor(
         integrations_result = await session.execute(integrations_query)
         slack_integrations = integrations_result.scalars().all()
 
+        mappings_query = (
+            select(SlackUserMapping)
+            .where(SlackUserMapping.organization_id == UUID(organization_id))
+            .where(SlackUserMapping.slack_user_id == slack_user_id)
+        )
+        mappings_result = await session.execute(mappings_query)
+        existing_mapping = mappings_result.scalar_one_or_none()
+
+    if existing_mapping:
+        for user in org_users:
+            if user.id == existing_mapping.user_id:
+                logger.info(
+                    "[slack_conversations] Resolved Slack user=%s via stored mapping to RevTops user=%s",
+                    slack_user_id,
+                    user.id,
+                )
+                return user
+        logger.info(
+            "[slack_conversations] Stored mapping for Slack user=%s references missing user=%s",
+            slack_user_id,
+            existing_mapping.user_id,
+        )
+
     for integration in slack_integrations:
         extra_data = integration.extra_data or {}
         slack_user_ids = _extract_slack_user_ids(extra_data)
@@ -189,6 +313,13 @@ async def resolve_revtops_user_for_slack_actor(
                         "[slack_conversations] Matched Slack user=%s via integration metadata to RevTops user=%s",
                         slack_user_id,
                         user.id,
+                    )
+                    await _upsert_slack_user_mapping(
+                        organization_id=organization_id,
+                        user_id=user.id,
+                        slack_user_id=slack_user_id,
+                        slack_email=None,
+                        match_source="slack_integration",
                     )
                     return user
 
@@ -218,8 +349,12 @@ async def resolve_revtops_user_for_slack_actor(
         return None
 
     try:
-        connector = SlackConnector(organization_id=organization_id)
-        slack_user = await connector.get_user_info(slack_user_id)
+        slack_user = slack_user or await _fetch_slack_user_info(
+            organization_id=organization_id,
+            slack_user_id=slack_user_id,
+        )
+        if not slack_user:
+            return None
         profile = slack_user.get("profile", {})
         slack_email = (profile.get("email") or "").strip().lower()
         slack_names = {
@@ -241,7 +376,7 @@ async def resolve_revtops_user_for_slack_actor(
         )
     except Exception as exc:
         logger.warning(
-            "[slack_conversations] Failed Slack users.info lookup for user=%s org=%s: %s",
+            "[slack_conversations] Failed Slack user resolution for user=%s org=%s: %s",
             slack_user_id,
             organization_id,
             exc,
@@ -258,6 +393,13 @@ async def resolve_revtops_user_for_slack_actor(
                     slack_user_id,
                     slack_email,
                     user.id,
+                )
+                await _upsert_slack_user_mapping(
+                    organization_id=organization_id,
+                    user_id=user.id,
+                    slack_user_id=slack_user_id,
+                    slack_email=slack_email,
+                    match_source="email",
                 )
                 return user
 
@@ -297,51 +439,6 @@ async def resolve_revtops_user_for_slack_actor(
         organization_id,
     )
     return None
-
-
-async def _get_slack_user_display_name(
-    organization_id: str,
-    slack_user_id: str,
-) -> str | None:
-    try:
-        connector = SlackConnector(organization_id=organization_id)
-        slack_user = await connector.get_user_info(slack_user_id)
-    except Exception as exc:
-        logger.warning(
-            "[slack_conversations] Failed Slack users.info lookup for user=%s org=%s: %s",
-            slack_user_id,
-            organization_id,
-            exc,
-            exc_info=True,
-        )
-        return None
-
-    profile = slack_user.get("profile", {})
-    display_name = (
-        profile.get("display_name")
-        or profile.get("real_name")
-        or slack_user.get("real_name")
-        or slack_user.get("name")
-        or ""
-    ).strip()
-
-    if not display_name:
-        logger.info(
-            "[slack_conversations] Slack user lookup missing display name user=%s org=%s profile_keys=%s user_keys=%s",
-            slack_user_id,
-            organization_id,
-            sorted(profile.keys()),
-            sorted(slack_user.keys()),
-        )
-        return None
-
-    logger.debug(
-        "[slack_conversations] Slack user display name resolved user=%s org=%s name=%s",
-        slack_user_id,
-        organization_id,
-        display_name,
-    )
-    return display_name
 
 
 async def find_or_create_conversation(
@@ -491,6 +588,11 @@ async def persist_slack_message_activity(
         return
 
     source_id: str = f"{channel_id}:{ts}"
+    slack_user = await _fetch_slack_user_info(
+        organization_id=organization_id,
+        slack_user_id=user_id,
+    )
+    slack_email = _extract_slack_email(slack_user)
 
     # Parse message timestamp into a datetime
     activity_date: datetime | None = None
@@ -513,6 +615,8 @@ async def persist_slack_message_activity(
                 custom_fields={
                     "channel_id": channel_id,
                     "user_id": user_id,
+                    "sender_slack_id": user_id,
+                    "sender_email": slack_email,
                     "thread_ts": thread_ts,
                 },
                 synced_at=datetime.utcnow(),
@@ -633,14 +737,17 @@ async def process_slack_dm(
 
     # Show a reaction so the user knows the bot is working
     await connector.add_reaction(channel=channel_id, timestamp=event_ts)
+    slack_user = await _fetch_slack_user_info(
+        organization_id=organization_id,
+        slack_user_id=user_id,
+    )
     linked_user = await resolve_revtops_user_for_slack_actor(
         organization_id=organization_id,
         slack_user_id=user_id,
+        slack_user=slack_user,
     )
-    slack_user_name = await _get_slack_user_display_name(
-        organization_id=organization_id,
-        slack_user_id=user_id,
-    )
+    slack_user_name = _extract_slack_display_name(slack_user)
+    slack_user_email = _extract_slack_email(slack_user)
     if not linked_user:
         logger.warning(
             "[slack_conversations] No linked RevTops user for Slack actor=%s org=%s",
@@ -669,6 +776,8 @@ async def process_slack_dm(
         organization_id=organization_id,
         conversation_id=str(conversation.id),
         user_email=linked_user.email if linked_user else None,
+        source_user_id=user_id,
+        source_user_email=slack_user_email,
         workflow_context=None,
     )
 
@@ -734,6 +843,10 @@ async def process_slack_mention(
 
     # Show a reaction so the user knows the bot is working
     await connector.add_reaction(channel=channel_id, timestamp=thread_ts)
+    slack_user = await _fetch_slack_user_info(
+        organization_id=organization_id,
+        slack_user_id=user_id,
+    )
 
     # For channel mentions, use a conversation keyed by channel+thread
     # This allows threaded conversations to maintain context
@@ -742,11 +855,10 @@ async def process_slack_mention(
     linked_user = await resolve_revtops_user_for_slack_actor(
         organization_id=organization_id,
         slack_user_id=user_id,
+        slack_user=slack_user,
     )
-    slack_user_name = await _get_slack_user_display_name(
-        organization_id=organization_id,
-        slack_user_id=user_id,
-    )
+    slack_user_name = _extract_slack_display_name(slack_user)
+    slack_user_email = _extract_slack_email(slack_user)
     if not linked_user:
         logger.warning(
             "[slack_conversations] No linked RevTops user for Slack actor=%s org=%s",
@@ -774,6 +886,8 @@ async def process_slack_mention(
         organization_id=organization_id,
         conversation_id=str(conversation.id),
         user_email=linked_user.email if linked_user else None,
+        source_user_id=user_id,
+        source_user_email=slack_user_email,
         workflow_context=None,
     )
 
@@ -859,6 +973,16 @@ async def process_slack_thread_reply(
 
     # Show a reaction on the user's reply so they know the bot is working
     await connector.add_reaction(channel=channel_id, timestamp=event_ts)
+    slack_user = await _fetch_slack_user_info(
+        organization_id=organization_id,
+        slack_user_id=user_id,
+    )
+    slack_user_email = _extract_slack_email(slack_user)
+    await resolve_revtops_user_for_slack_actor(
+        organization_id=organization_id,
+        slack_user_id=user_id,
+        slack_user=slack_user,
+    )
 
     # Process message through orchestrator, posting incrementally
     orchestrator = ChatOrchestrator(
@@ -866,6 +990,8 @@ async def process_slack_thread_reply(
         organization_id=organization_id,
         conversation_id=str(conversation.id),
         user_email=None,
+        source_user_id=user_id,
+        source_user_email=slack_user_email,
         workflow_context={"slack_channel_id": channel_id},
     )
 
@@ -890,5 +1016,5 @@ async def process_slack_thread_reply(
     return {
         "status": "success",
         "conversation_id": str(conversation.id),
-        "response_length": len(response_text),
+        "response_length": total_length,
     }

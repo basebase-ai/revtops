@@ -404,6 +404,8 @@ class ChatOrchestrator:
         user_email: str | None = None,
         local_time: str | None = None,
         timezone: str | None = None,
+        source_user_id: str | None = None,
+        source_user_email: str | None = None,
         workflow_context: dict[str, Any] | None = None,
     ) -> None:
         """
@@ -416,6 +418,8 @@ class ChatOrchestrator:
             user_email: Email of the authenticated user
             local_time: ISO timestamp of user's local time
             timezone: User's timezone (e.g., "America/New_York")
+            source_user_id: External sender ID (e.g. Slack user ID)
+            source_user_email: External sender email (e.g. Slack profile email)
             workflow_context: Optional workflow context for auto-approvals:
                 - is_workflow: bool
                 - workflow_id: str
@@ -427,6 +431,8 @@ class ChatOrchestrator:
         self.user_email = user_email
         self.local_time = local_time
         self.timezone = timezone
+        self.source_user_id = source_user_id
+        self.source_user_email = source_user_email
         self.workflow_context = workflow_context
         self.client = AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
         # Track if we've saved the assistant message (for early save during tool execution)
@@ -995,6 +1001,8 @@ WHERE scheduled_start >= '2026-01-27'::date AND scheduled_start < '2026-01-28'::
                     user_id=user_uuid,
                     organization_id=UUID(self.organization_id) if self.organization_id else None,
                     role="user",
+                    source_user_id=self.source_user_id,
+                    source_user_email=self.source_user_email,
                     content_blocks=[{"type": "text", "text": user_msg}],
                 )
             )
