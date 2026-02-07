@@ -1240,10 +1240,14 @@ async def _crm_write(
             # Continue without duplicate check - not a blocker
     
     # Create CrmOperation record
+    # Note: conversation_id should be passed via context, but _crm_write doesn't receive context
+    # For now, this is only used via run_sql_write which routes through _handle_crm_write_from_sql
+    # which properly sets conversation_id. If _crm_write is called directly, conversation_id will be None.
     async with get_session(organization_id=organization_id) as session:
         crm_operation = CrmOperation(
             organization_id=UUID(organization_id),
             user_id=UUID(user_id) if user_id else None,
+            conversation_id=None,  # Will be set by caller if needed
             target_system=target_system,
             record_type=record_type,
             operation=operation,
@@ -1351,15 +1355,34 @@ async def execute_crm_operation(
                     scope_conversation_id=scope_conversation_id,
                     description=f"CRM {operation} {record_type}(s) - pending sync to {target_system}",
                 )
+                change_session_id = str(change_session.id)
+                logger.info(
+                    "[Tools.execute_crm_operation] Using change session %s for scope %s",
+                    change_session_id,
+                    scope_conversation_id,
+                )
             else:
+                # No conversation scope - create orphan session
+                # This happens when conversation_id is None or conversation lookup fails
+                logger.warning(
+                    "[Tools.execute_crm_operation] No conversation scope (op_conversation_id=%s, scope=%s), "
+                    "creating orphan change session",
+                    op_conversation_id,
+                    scope_conversation_id,
+                )
                 change_session = await get_or_start_orphan_change_session(
                     organization_id=org_id,
                     user_id=user_id,
                     description=f"CRM {operation} {record_type}(s) - pending sync to {target_system}",
                 )
-            change_session_id = str(change_session.id)
+                change_session_id = str(change_session.id)
         except Exception as e:
-            logger.warning("[Tools.execute_crm_operation] Failed to start change session: %s", e)
+            logger.error(
+                "[Tools.execute_crm_operation] Failed to start change session: %s (op_conversation_id=%s, scope=%s)",
+                e,
+                op_conversation_id,
+                scope_conversation_id,
+            )
     
     try:
         # Create records locally only (don't push to external CRM yet)
@@ -3284,6 +3307,9 @@ async def _loop_over(
         })
         logger.info("[Tools._loop_over] Updating progress: %d/%d", completed_count, len(items))
     
+    # Send initial progress update (0 completed)
+    await send_progress()
+    
     async def process_item(index: int, item: dict[str, Any]) -> dict[str, Any]:
         """Process a single item through the workflow."""
         nonlocal completed_count
@@ -3474,6 +3500,7 @@ async def _create_artifact(
     
     # Get context for linking (already extracted above, but get message_id)
     message_id: str | None = context.get("message_id") if context else None
+    conversation_id: str | None = progress.conversation_id
     
     # Update progress before database save
     await progress.update({
@@ -3498,7 +3525,7 @@ async def _create_artifact(
             content_type=content_type,
             mime_type=mime_type,
             filename=filename,
-            conversation_id=conversation_id,
+            conversation_id=UUID(conversation_id) if conversation_id else None,
             message_id=message_id,
         )
         session.add(artifact)
@@ -3510,6 +3537,16 @@ async def _create_artifact(
             content_type,
             title,
         )
+    
+    # Send final completion update
+    await progress.update({
+        "message": f"Created {content_type} artifact: {title}",
+        "status": "complete",
+        "title": title,
+        "content_type": content_type,
+        "chars_processed": content_len,
+        "total_chars": content_len,
+    }, status="complete")
     
     # Return metadata for frontend (content excluded to keep response small)
     # Use camelCase for frontend compatibility

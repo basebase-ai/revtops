@@ -1181,8 +1181,8 @@ function getToolStatusText(
         return `Completed ${workflowName} for ${total} item${total === 1 ? '' : 's'}`;
       }
       
-      // Show progress while running
-      if (completed > 0 && total > 0) {
+      // Show progress while running (including when completed=0 to show "0/40")
+      if (total > 0) {
         const progressText = failed > 0 
           ? `${completed}/${total} (${succeeded} ok, ${failed} failed)`
           : `${completed}/${total}`;

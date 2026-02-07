@@ -56,7 +56,7 @@ async def start_change_session(
     Returns:
         The created ChangeSession
     """
-    async with get_session() as session:
+    async with get_session(organization_id=organization_id) as session:
         change_session = ChangeSession(
             organization_id=UUID(organization_id),
             user_id=UUID(user_id),
@@ -99,7 +99,7 @@ async def get_or_start_change_session(
     Returns:
         The existing or newly created ChangeSession
     """
-    async with get_session() as session:
+    async with get_session(organization_id=organization_id) as session:
         result = await session.execute(
             select(ChangeSession)
             .where(
@@ -137,7 +137,7 @@ async def get_or_start_orphan_change_session(
     Get or create a pending change session for CRM ops with no conversation (e.g. API/orphan).
     Batches all such ops for the same org+user into one session for one Commit/Discard.
     """
-    async with get_session() as session:
+    async with get_session(organization_id=organization_id) as session:
         result = await session.execute(
             select(ChangeSession)
             .where(

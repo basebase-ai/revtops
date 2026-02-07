@@ -76,23 +76,26 @@ async def update_tool_result(
                 return False
             
             # Find and update the tool_use block
+            # IMPORTANT: Deep-copy blocks to avoid in-place mutation of the original
+            # dicts. SQLAlchemy JSONB columns compare old vs new by value; if we mutate
+            # in-place the old value changes too, so SQLAlchemy sees no diff and skips
+            # the UPDATE statement entirely.
+            import copy
             updated = False
-            new_blocks: list[dict[str, Any]] = []
+            new_blocks: list[dict[str, Any]] = copy.deepcopy(message.content_blocks)
             
-            for block in message.content_blocks:
+            for block in new_blocks:
                 if block.get("type") == "tool_use" and block.get("id") == tool_id:
-                    # Update this block
                     block["result"] = result
                     block["status"] = status
                     updated = True
                     logger.info("[update_tool_result] Found and updating tool block")
-                new_blocks.append(block)
             
             if not updated:
                 logger.warning(f"[update_tool_result] Tool {tool_id} not found in message")
                 return False
             
-            # Save updated blocks
+            # Save updated blocks — new list with new dicts ensures SQLAlchemy detects the change
             message.content_blocks = new_blocks
             await session.commit()
             

@@ -920,9 +920,14 @@ export const useAppStore = create<AppState>()(
 
           const updatedBlocks = blocks.map((block) => {
             if (block.type === "tool_use" && block.id === toolId) {
+              // Merge result updates instead of replacing entirely (for progress updates)
+              const currentResult = (block.result as Record<string, unknown>) || {};
+              const newResult = updates.result 
+                ? { ...currentResult, ...updates.result }
+                : currentResult;
               return {
                 ...block,
-                result: updates.result ?? block.result,
+                result: newResult,
                 status:
                   (updates.status as
                     | "pending"

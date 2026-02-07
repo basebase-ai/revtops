@@ -579,8 +579,8 @@ export function DataSources(): JSX.Element {
     // Button config by state
     const getButtonConfig = (): { text: string; className: string; action: () => void; disabled: boolean; hidden?: boolean } => {
       if (state === 'connected') {
-        // Google Sheets uses on-demand import, not continuous sync
-        if (integration.provider === 'google_sheets') {
+        // Google Sheets uses on-demand import, Apollo.io is on-demand enrichment - no regular sync
+        if (integration.provider === 'google_sheets' || integration.provider === 'apollo') {
           return {
             text: '',
             className: '',
