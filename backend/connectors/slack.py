@@ -15,7 +15,6 @@ from datetime import datetime
 from typing import Any, Optional
 
 import httpx
-from sqlalchemy import text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 
@@ -286,12 +285,7 @@ class SlackConnector(BaseConnector):
                                 custom_fields=activity.custom_fields,
                                 synced_at=now,
                             ).on_conflict_do_update(
-                                index_elements=[
-                                    "organization_id",
-                                    "source_system",
-                                    "source_id",
-                                ],
-                                index_where=text("source_id IS NOT NULL"),
+                                constraint="uq_activities_org_source",
                                 set_={
                                     "subject": activity.subject,
                                     "description": activity.description,
