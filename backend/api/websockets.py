@@ -382,6 +382,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     continue
 
                 # Start background task
+                is_new_conversation: bool = not data.get("conversation_id")
                 task_id = await task_manager.start_task(
                     conversation_id=conversation_id,
                     user_id=user_id_str,
@@ -390,6 +391,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     user_email=user_email,
                     local_time=local_time,
                     timezone=timezone,
+                    is_new_conversation=is_new_conversation,
                 )
 
                 # Subscribe this websocket to the task

@@ -1,18 +1,24 @@
 """
-Slack DM conversation service.
+Slack conversation service.
 
-Handles processing incoming Slack DMs and routing them through the agent orchestrator.
+Handles processing incoming Slack messages (DMs, @mentions, thread replies)
+and routing them through the agent orchestrator.  Also persists inbound
+channel messages as Activity rows for real-time queryability.
 """
 from __future__ import annotations
 
 import logging
+import uuid
+from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import select, text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from agents.orchestrator import ChatOrchestrator
 from connectors.slack import SlackConnector
+from models.activity import Activity
 from models.conversation import Conversation
 from models.database import get_admin_session, get_session
 from models.integration import Integration
@@ -400,6 +406,168 @@ async def find_or_create_conversation(
         return conversation
 
 
+async def find_thread_conversation(
+    organization_id: str,
+    channel_id: str,
+    thread_ts: str,
+) -> Conversation | None:
+    """
+    Look up an existing conversation for a Slack channel thread.
+
+    Returns the conversation if the bot is already participating in this
+    thread, or None if not.  Unlike find_or_create_conversation this never
+    creates a new row.
+
+    Args:
+        organization_id: The organization this conversation belongs to
+        channel_id: Slack channel ID
+        thread_ts: Thread parent timestamp
+
+    Returns:
+        Existing Conversation or None
+    """
+    source_channel_id: str = f"{channel_id}:{thread_ts}"
+    async with get_session(organization_id=organization_id) as session:
+        query = (
+            select(Conversation)
+            .where(Conversation.organization_id == UUID(organization_id))
+            .where(Conversation.source == "slack")
+            .where(Conversation.source_channel_id == source_channel_id)
+        )
+        result = await session.execute(query)
+        conversation: Conversation | None = result.scalar_one_or_none()
+        if conversation:
+            logger.debug(
+                "[slack_conversations] Found thread conversation %s for %s",
+                conversation.id,
+                source_channel_id,
+            )
+        return conversation
+
+
+async def persist_slack_message_activity(
+    team_id: str,
+    channel_id: str,
+    user_id: str,
+    text: str,
+    ts: str,
+    thread_ts: str | None,
+) -> None:
+    """
+    Persist an inbound Slack channel message as an Activity row.
+
+    Uses INSERT ... ON CONFLICT DO NOTHING so that duplicate messages
+    (e.g. from the hourly sync) are silently skipped.
+
+    Args:
+        team_id: Slack workspace/team ID
+        channel_id: Slack channel ID
+        user_id: Slack user ID who sent the message
+        text: Message text
+        ts: Message timestamp (unique per-message)
+        thread_ts: Parent thread timestamp, if this is a threaded reply
+    """
+    organization_id: str | None = await find_organization_by_slack_team(team_id)
+    if not organization_id:
+        return
+
+    source_id: str = f"{channel_id}:{ts}"
+
+    # Parse message timestamp into a datetime
+    activity_date: datetime | None = None
+    try:
+        activity_date = datetime.utcfromtimestamp(float(ts))
+    except (ValueError, TypeError):
+        pass
+
+    try:
+        async with get_session(organization_id=organization_id) as session:
+            stmt = pg_insert(Activity).values(
+                id=uuid.uuid4(),
+                organization_id=UUID(organization_id),
+                source_system="slack",
+                source_id=source_id,
+                type="slack_message",
+                subject=f"#{channel_id}",
+                description=text[:1000],
+                activity_date=activity_date,
+                custom_fields={
+                    "channel_id": channel_id,
+                    "user_id": user_id,
+                    "thread_ts": thread_ts,
+                },
+                synced_at=datetime.utcnow(),
+            ).on_conflict_do_nothing(
+                index_elements=["organization_id", "source_system", "source_id"],
+                index_where=text("source_id IS NOT NULL"),
+            )
+            await session.execute(stmt)
+            await session.commit()
+    except Exception as e:
+        logger.error(
+            "[slack_conversations] Failed to persist activity for %s: %s",
+            source_id,
+            e,
+        )
+
+
+async def _stream_and_post_responses(
+    orchestrator: ChatOrchestrator,
+    connector: SlackConnector,
+    message_text: str,
+    channel: str,
+    thread_ts: str | None = None,
+) -> int:
+    """
+    Stream orchestrator output and post each text segment to Slack
+    incrementally — flushing whenever a tool-call boundary (JSON chunk)
+    is encountered so the user sees early messages immediately.
+
+    Args:
+        orchestrator: Initialised ChatOrchestrator
+        connector: Authenticated SlackConnector
+        message_text: The user's message to process
+        channel: Slack channel to post responses in
+        thread_ts: Optional thread timestamp (None for DM top-level)
+
+    Returns:
+        Total character count of all posted text.
+    """
+    current_text: str = ""
+    total_length: int = 0
+
+    try:
+        async for chunk in orchestrator.process_message(message_text):
+            if chunk.startswith("{"):
+                # Tool-call boundary — send whatever text we have so far
+                if current_text.strip():
+                    await connector.post_message(
+                        channel=channel,
+                        text=current_text.strip(),
+                        thread_ts=thread_ts,
+                    )
+                    total_length += len(current_text)
+                    current_text = ""
+            else:
+                current_text += chunk
+    except Exception as e:
+        logger.error(
+            "[slack_conversations] Error during streaming: %s", e, exc_info=True,
+        )
+        current_text += f"\nSorry, I encountered an error: {str(e)}"
+
+    # Post any remaining text after the stream ends
+    if current_text.strip():
+        await connector.post_message(
+            channel=channel,
+            text=current_text.strip(),
+            thread_ts=thread_ts,
+        )
+        total_length += len(current_text)
+
+    return total_length
+
+
 async def process_slack_dm(
     team_id: str,
     channel_id: str,
@@ -442,6 +610,10 @@ async def process_slack_dm(
             "error": f"No organization found for Slack team {team_id}"
         }
     
+    connector = SlackConnector(organization_id=organization_id)
+
+    # Show a reaction so the user knows the bot is working
+    await connector.add_reaction(channel=channel_id, timestamp=event_ts)
     linked_user = await resolve_revtops_user_for_slack_actor(
         organization_id=organization_id,
         slack_user_id=user_id,
@@ -468,42 +640,26 @@ async def process_slack_dm(
         user_email=linked_user.email if linked_user else None,
         workflow_context=None,
     )
-    
-    # Collect the full response (don't stream to Slack)
-    response_text = ""
-    try:
-        async for chunk in orchestrator.process_message(message_text):
-            # Skip JSON chunks (tool calls, etc.) - just collect text
-            if not chunk.startswith("{"):
-                response_text += chunk
-    except Exception as e:
-        logger.error("[slack_conversations] Error processing message: %s", e, exc_info=True)
-        response_text = f"Sorry, I encountered an error processing your message: {str(e)}"
-    
-    # Post response back to Slack (connector auto-converts markdown to mrkdwn)
-    if response_text.strip():
-        try:
-            connector = SlackConnector(organization_id=organization_id)
-            await connector.post_message(
-                channel=channel_id,
-                text=response_text.strip(),
-            )
-            logger.info(
-                "[slack_conversations] Posted response to channel %s (%d chars)",
-                channel_id,
-                len(response_text)
-            )
-        except Exception as e:
-            logger.error("[slack_conversations] Error posting to Slack: %s", e, exc_info=True)
-            return {
-                "status": "error",
-                "error": f"Failed to post response to Slack: {str(e)}"
-            }
-    
+
+    total_length: int = await _stream_and_post_responses(
+        orchestrator=orchestrator,
+        connector=connector,
+        message_text=message_text,
+        channel=channel_id,
+    )
+
+    # Remove the "thinking" reaction
+    await connector.remove_reaction(channel=channel_id, timestamp=event_ts)
+
+    logger.info(
+        "[slack_conversations] Posted response to channel %s (%d chars)",
+        channel_id,
+        total_length,
+    )
     return {
         "status": "success",
         "conversation_id": str(conversation.id),
-        "response_length": len(response_text),
+        "response_length": total_length,
     }
 
 
@@ -543,9 +699,14 @@ async def process_slack_mention(
         logger.warning("[slack_conversations] No organization found for team %s", team_id)
         return {"status": "error", "error": f"No organization found for team {team_id}"}
     
+    connector = SlackConnector(organization_id=organization_id)
+
+    # Show a reaction so the user knows the bot is working
+    await connector.add_reaction(channel=channel_id, timestamp=thread_ts)
+
     # For channel mentions, use a conversation keyed by channel+thread
     # This allows threaded conversations to maintain context
-    source_channel_id = f"{channel_id}:{thread_ts}"
+    source_channel_id: str = f"{channel_id}:{thread_ts}"
     
     linked_user = await resolve_revtops_user_for_slack_actor(
         organization_id=organization_id,
@@ -555,7 +716,6 @@ async def process_slack_mention(
         organization_id=organization_id,
         slack_user_id=user_id,
     )
-
     conversation = await find_or_create_conversation(
         organization_id=organization_id,
         slack_channel_id=source_channel_id,
@@ -572,36 +732,117 @@ async def process_slack_mention(
         user_email=linked_user.email if linked_user else None,
         workflow_context=None,
     )
-    
-    # Collect the full response
-    response_text = ""
-    try:
-        async for chunk in orchestrator.process_message(message_text):
-            if not chunk.startswith("{"):
-                response_text += chunk
-    except Exception as e:
-        logger.error("[slack_conversations] Error processing mention: %s", e, exc_info=True)
-        response_text = f"Sorry, I encountered an error: {str(e)}"
-    
-    # Post response back to Slack in the thread
-    if response_text.strip():
-        try:
-            connector = SlackConnector(organization_id=organization_id)
-            await connector.post_message(
-                channel=channel_id,
-                text=response_text.strip(),
-                thread_ts=thread_ts,  # Reply in thread
-            )
-            logger.info(
-                "[slack_conversations] Posted thread response to %s (thread %s, %d chars)",
-                channel_id,
-                thread_ts,
-                len(response_text)
-            )
-        except Exception as e:
-            logger.error("[slack_conversations] Error posting to Slack: %s", e, exc_info=True)
-            return {"status": "error", "error": f"Failed to post response: {str(e)}"}
-    
+
+    total_length: int = await _stream_and_post_responses(
+        orchestrator=orchestrator,
+        connector=connector,
+        message_text=message_text,
+        channel=channel_id,
+        thread_ts=thread_ts,
+    )
+
+    # Remove the "thinking" reaction
+    await connector.remove_reaction(channel=channel_id, timestamp=thread_ts)
+
+    logger.info(
+        "[slack_conversations] Posted thread response to %s (thread %s, %d chars)",
+        channel_id,
+        thread_ts,
+        total_length,
+    )
+    return {
+        "status": "success",
+        "conversation_id": str(conversation.id),
+        "response_length": total_length,
+    }
+
+
+async def process_slack_thread_reply(
+    team_id: str,
+    channel_id: str,
+    user_id: str,
+    message_text: str,
+    thread_ts: str,
+    event_ts: str,
+) -> dict[str, Any]:
+    """
+    Process a thread reply in a channel where the bot is already participating.
+
+    This handles the case where a user replies in a thread (without an
+    @mention) that the bot previously responded in.  If no existing
+    conversation is found for the thread, the message is silently ignored.
+
+    Args:
+        team_id: Slack workspace/team ID
+        channel_id: Slack channel ID containing the thread
+        user_id: Slack user ID who sent the reply
+        message_text: The reply text
+        thread_ts: Parent thread timestamp
+        event_ts: Timestamp of the reply message itself (for reactions)
+
+    Returns:
+        Dict with status and conversation details
+    """
+    logger.info(
+        "[slack_conversations] Processing thread reply: team=%s, channel=%s, user=%s, thread=%s",
+        team_id,
+        channel_id,
+        user_id,
+        thread_ts,
+    )
+
+    # Find the organization for this Slack workspace
+    organization_id: str | None = await find_organization_by_slack_team(team_id)
+    if not organization_id:
+        logger.warning("[slack_conversations] No organization found for team %s", team_id)
+        return {"status": "error", "error": f"No organization found for team {team_id}"}
+
+    # Only respond if the bot already has a conversation in this thread
+    conversation: Conversation | None = await find_thread_conversation(
+        organization_id=organization_id,
+        channel_id=channel_id,
+        thread_ts=thread_ts,
+    )
+    if conversation is None:
+        logger.debug(
+            "[slack_conversations] No existing conversation for thread %s:%s — ignoring",
+            channel_id,
+            thread_ts,
+        )
+        return {"status": "ignored", "reason": "bot not participating in thread"}
+
+    connector = SlackConnector(organization_id=organization_id)
+
+    # Show a reaction on the user's reply so they know the bot is working
+    await connector.add_reaction(channel=channel_id, timestamp=event_ts)
+
+    # Process message through orchestrator, posting incrementally
+    orchestrator = ChatOrchestrator(
+        user_id=None,
+        organization_id=organization_id,
+        conversation_id=str(conversation.id),
+        user_email=None,
+        workflow_context={"slack_channel_id": channel_id},
+    )
+
+    total_length: int = await _stream_and_post_responses(
+        orchestrator=orchestrator,
+        connector=connector,
+        message_text=message_text,
+        channel=channel_id,
+        thread_ts=thread_ts,
+    )
+
+    # Remove the "thinking" reaction
+    await connector.remove_reaction(channel=channel_id, timestamp=event_ts)
+
+    logger.info(
+        "[slack_conversations] Posted thread reply to %s (thread %s, %d chars)",
+        channel_id,
+        thread_ts,
+        total_length,
+    )
+
     return {
         "status": "success",
         "conversation_id": str(conversation.id),

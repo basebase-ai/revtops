@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Optional
 
-from sqlalchemy import DateTime, ForeignKey, Index, LargeBinary, String, Text
+from sqlalchemy import DateTime, ForeignKey, Index, LargeBinary, String, Text, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -33,7 +33,14 @@ class Activity(Base):
         Index("ix_activities_source_system", "source_system"),
         Index("ix_activities_org_source_system", "organization_id", "source_system"),
         Index("ix_activities_org_type", "organization_id", "type"),
-        Index("ix_activities_org_source_id", "organization_id", "source_system", "source_id"),
+        Index(
+            "uq_activities_org_source",
+            "organization_id",
+            "source_system",
+            "source_id",
+            unique=True,
+            postgresql_where=text("source_id IS NOT NULL"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(

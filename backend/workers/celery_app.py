@@ -28,6 +28,7 @@ if env_file.exists():
 
 from celery import Celery
 from celery.schedules import crontab
+from celery.signals import worker_process_shutdown
 from kombu import Exchange, Queue
 
 # Get Redis URL from environment
@@ -64,8 +65,10 @@ celery_app.conf.update(
     result_expires=60 * 60 * 24,  # Results expire after 24 hours
     
     # Worker settings
+    # Keep concurrency low to limit database connections
+    # Each worker process creates its own connection pool
     worker_prefetch_multiplier=1,  # One task at a time per worker
-    worker_concurrency=4,  # 4 concurrent tasks per worker
+    worker_concurrency=2,  # 2 concurrent tasks per worker (was 4)
     
     # Queue configuration
     task_queues=(
@@ -107,3 +110,18 @@ celery_app.conf.beat_schedule = {
         "options": {"queue": "workflows"},
     },
 }
+
+
+@worker_process_shutdown.connect
+def cleanup_db_connections(**kwargs) -> None:
+    """Clean up database connections when a Celery worker process shuts down.
+    
+    This ensures connections are properly released back to Supabase's pool
+    when worker processes exit (during shutdown or restarts).
+    """
+    try:
+        from models.database import dispose_engine
+        dispose_engine()
+        print("[Celery] Database connections cleaned up on worker shutdown")
+    except Exception as e:
+        print(f"[Celery] Error cleaning up database connections: {e}")

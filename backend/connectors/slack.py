@@ -15,6 +15,8 @@ from datetime import datetime
 from typing import Any, Optional
 
 import httpx
+from sqlalchemy import text as sa_text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 
 def markdown_to_mrkdwn(text: str) -> str:
@@ -265,7 +267,29 @@ class SlackConnector(BaseConnector):
 
                         activity = self._normalize_message(msg, channel_id, channel_name)
                         if activity:
-                            await session.merge(activity)
+                            now: datetime = datetime.utcnow()
+                            stmt = pg_insert(Activity).values(
+                                id=activity.id,
+                                organization_id=activity.organization_id,
+                                source_system=activity.source_system,
+                                source_id=activity.source_id,
+                                type=activity.type,
+                                subject=activity.subject,
+                                description=activity.description,
+                                activity_date=activity.activity_date,
+                                custom_fields=activity.custom_fields,
+                                synced_at=now,
+                            ).on_conflict_do_update(
+                                index_elements=["organization_id", "source_system", "source_id"],
+                                index_where=sa_text("source_id IS NOT NULL"),
+                                set_={
+                                    "subject": activity.subject,
+                                    "description": activity.description,
+                                    "custom_fields": activity.custom_fields,
+                                    "synced_at": now,
+                                },
+                            )
+                            await session.execute(stmt)
                             count += 1
                             
                             # Broadcast progress every 10 messages
@@ -425,6 +449,41 @@ class SlackConnector(BaseConnector):
             "online": data.get("online", False),
             "auto_away": data.get("auto_away", False),
         }
+
+    async def add_reaction(
+        self,
+        channel: str,
+        timestamp: str,
+        emoji: str = "eyes",
+    ) -> None:
+        """Add an emoji reaction to a message (best-effort)."""
+        try:
+            await self._make_request(
+                "POST",
+                "reactions.add",
+                json_data={"channel": channel, "timestamp": timestamp, "name": emoji},
+            )
+        except Exception:
+            # Silently ignore — reactions require the reactions:write scope
+            # which may not be granted yet.
+            pass
+
+    async def remove_reaction(
+        self,
+        channel: str,
+        timestamp: str,
+        emoji: str = "eyes",
+    ) -> None:
+        """Remove an emoji reaction from a message."""
+        try:
+            await self._make_request(
+                "POST",
+                "reactions.remove",
+                json_data={"channel": channel, "timestamp": timestamp, "name": emoji},
+            )
+        except Exception:
+            # Silently ignore if reaction was already removed or doesn't exist
+            pass
 
     async def post_message(
         self,

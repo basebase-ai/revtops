@@ -5,6 +5,11 @@ Handles incoming events from Slack, including:
 - URL verification challenge (when setting up the webhook)
 - message.im events (DMs to the bot)
 - app_mention events (@mentions in channels)
+- message events in threads where the bot is already participating
+
+NOTE: For thread replies to work, the Slack app must subscribe to
+``message.channels`` (and ``message.groups`` for private channels)
+under Event Subscriptions at https://api.slack.com/apps.
 
 Security:
 - All requests are verified using HMAC-SHA256 signature
@@ -24,7 +29,12 @@ import redis.asyncio as redis
 from fastapi import APIRouter, HTTPException, Request, Response
 
 from config import settings
-from services.slack_conversations import process_slack_dm, process_slack_mention
+from services.slack_conversations import (
+    persist_slack_message_activity,
+    process_slack_dm,
+    process_slack_mention,
+    process_slack_thread_reply,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -180,13 +190,27 @@ async def handle_slack_events(request: Request) -> Response | dict[str, Any]:
             if event.get("subtype") in ("message_changed", "message_deleted"):
                 logger.debug("[slack_events] Skipping message edit/delete")
                 return {"ok": True}
-            
-            # Only process DMs (im) or mentions in channels
+
+            # Persist every channel message as an activity in real-time
+            # so the bot always has up-to-date Slack data to query.
+            if channel_type != "im" and event.get("text", "").strip():
+                asyncio.create_task(
+                    persist_slack_message_activity(
+                        team_id=team_id,
+                        channel_id=event.get("channel", ""),
+                        user_id=event.get("user", ""),
+                        text=event.get("text", ""),
+                        ts=event.get("ts", ""),
+                        thread_ts=event.get("thread_ts"),
+                    )
+                )
+
             if channel_type == "im":
-                channel_id = event.get("channel", "")
-                user_id = event.get("user", "")
-                text = event.get("text", "")
-                event_ts = event.get("event_ts", "")
+                # --- Direct messages ---
+                channel_id: str = event.get("channel", "")
+                user_id: str = event.get("user", "")
+                text: str = event.get("text", "")
+                event_ts: str = event.get("event_ts", "")
                 
                 if not text.strip():
                     logger.debug("[slack_events] Skipping empty message")
@@ -211,6 +235,40 @@ async def handle_slack_events(request: Request) -> Response | dict[str, Any]:
                     )
                 )
                 
+                return {"ok": True}
+
+            # --- Thread replies in channels (no @mention required) ---
+            # Requires "message.channels" / "message.groups" event subscriptions
+            # in the Slack app configuration.
+            thread_ts: str | None = event.get("thread_ts")
+            if channel_type != "im" and thread_ts:
+                channel_id = event.get("channel", "")
+                user_id = event.get("user", "")
+                text = event.get("text", "")
+
+                if not text.strip():
+                    logger.debug("[slack_events] Skipping empty thread reply")
+                    return {"ok": True}
+
+                logger.info(
+                    "[slack_events] Processing thread reply from %s in %s (thread %s): %s",
+                    user_id,
+                    channel_id,
+                    thread_ts,
+                    text[:50],
+                )
+
+                asyncio.create_task(
+                    process_slack_thread_reply(
+                        team_id=team_id,
+                        channel_id=channel_id,
+                        user_id=user_id,
+                        message_text=text,
+                        thread_ts=thread_ts,
+                        event_ts=event.get("ts", ""),
+                    )
+                )
+
                 return {"ok": True}
         
         # Handle @mentions in channels

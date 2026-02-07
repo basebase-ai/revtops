@@ -290,6 +290,54 @@ async def add_proposed_create(
         return sn
 
 
+async def add_proposed_update(
+    change_session_id: str,
+    table_name: str,
+    record_id: str,
+    update_fields: dict[str, Any],
+    db_session: Optional[AsyncSession] = None,
+) -> RecordSnapshot:
+    """
+    Store a proposed update. Captures the current row as before_data and stores
+    the requested changes in after_data={"_input": update_fields}.
+    On commit we push the update to HubSpot and apply locally.
+    """
+    if table_name not in TABLE_MODELS:
+        raise ValueError(f"Unknown table: {table_name}")
+
+    model_class = TABLE_MODELS[table_name]
+
+    async def _do_add(session: AsyncSession) -> RecordSnapshot:
+        # Capture current state for before_data
+        record = await session.get(model_class, UUID(record_id))
+        before_data: Optional[dict[str, Any]] = None
+        if record:
+            before_data = {}
+            for col in record.__table__.columns:
+                val = getattr(record, col.key, None)
+                if val is not None:
+                    before_data[col.key] = str(val) if not isinstance(val, (str, int, float, bool)) else val
+
+        snapshot = RecordSnapshot(
+            change_session_id=UUID(change_session_id),
+            table_name=table_name,
+            record_id=UUID(record_id),
+            operation="update",
+            before_data=before_data,
+            after_data={"_input": update_fields},
+        )
+        session.add(snapshot)
+        await session.flush()
+        return snapshot
+
+    if db_session:
+        return await _do_add(db_session)
+    async with get_session() as session:
+        sn = await _do_add(session)
+        await session.commit()
+        return sn
+
+
 async def approve_change_session(
     change_session_id: str,
     resolved_by_user_id: str,
