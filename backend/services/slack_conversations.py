@@ -13,7 +13,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select, text
+from sqlalchemy import select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from agents.orchestrator import ChatOrchestrator
@@ -174,10 +174,26 @@ async def refresh_slack_user_mappings_for_org(organization_id: str) -> int:
         target_user_id = integration.user_id or integration.connected_by_user_id
         if not target_user_id:
             logger.warning(
-                "[slack_conversations] Slack integration %s has no user_id or connected_by_user_id; skipping mapping refresh",
+                "[slack_conversations] Slack integration %s has no user_id or connected_by_user_id; attempting resolution",
                 integration.id,
             )
-            continue
+            resolved_user = await _resolve_user_for_slack_integration(
+                organization_id=organization_id,
+                integration=integration,
+            )
+            if resolved_user:
+                target_user_id = resolved_user.id
+                logger.info(
+                    "[slack_conversations] Resolved integration %s to user %s for mapping refresh",
+                    integration.id,
+                    target_user_id,
+                )
+            else:
+                logger.warning(
+                    "[slack_conversations] Unable to resolve user for Slack integration %s; skipping mapping refresh",
+                    integration.id,
+                )
+                continue
         created_count = await upsert_slack_user_mappings_from_metadata(
             organization_id=organization_id,
             user_id=target_user_id,
@@ -197,6 +213,76 @@ async def refresh_slack_user_mappings_for_org(organization_id: str) -> int:
         organization_id,
     )
     return total_created
+
+
+async def _resolve_user_for_slack_integration(
+    organization_id: str,
+    integration: Integration,
+) -> User | None:
+    extra_data = integration.extra_data or {}
+    slack_user_ids = sorted(_extract_slack_user_ids(extra_data))
+    if not slack_user_ids:
+        logger.info(
+            "[slack_conversations] Slack integration %s has no Slack user IDs in metadata; cannot resolve user",
+            integration.id,
+        )
+        return None
+
+    logger.info(
+        "[slack_conversations] Attempting to resolve Slack integration %s user via Slack IDs=%s",
+        integration.id,
+        slack_user_ids,
+    )
+    for slack_user_id in slack_user_ids:
+        resolved_user = await resolve_revtops_user_for_slack_actor(
+            organization_id=organization_id,
+            slack_user_id=slack_user_id,
+        )
+        if resolved_user:
+            if not integration.connected_by_user_id:
+                await _update_integration_connected_user(
+                    integration_id=integration.id,
+                    user_id=resolved_user.id,
+                )
+            return resolved_user
+
+    logger.info(
+        "[slack_conversations] No RevTops user resolved for Slack integration %s via Slack IDs=%s",
+        integration.id,
+        slack_user_ids,
+    )
+    return None
+
+
+async def _update_integration_connected_user(
+    integration_id: UUID,
+    user_id: UUID,
+) -> None:
+    try:
+        async with get_admin_session() as session:
+            stmt = (
+                update(Integration)
+                .where(Integration.id == integration_id)
+                .values(
+                    connected_by_user_id=user_id,
+                    updated_at=datetime.utcnow(),
+                )
+            )
+            await session.execute(stmt)
+            await session.commit()
+            logger.info(
+                "[slack_conversations] Updated Slack integration %s connected_by_user_id=%s",
+                integration_id,
+                user_id,
+            )
+    except Exception as exc:
+        logger.warning(
+            "[slack_conversations] Failed to update Slack integration %s connected_by_user_id=%s: %s",
+            integration_id,
+            user_id,
+            exc,
+            exc_info=True,
+        )
 
 
 def _normalize_name(value: str | None) -> str:
