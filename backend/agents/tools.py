@@ -2470,11 +2470,16 @@ async def commit_change_session(
                 _log.error("[commit:update] FAILED deal %s: %s", local_id, e, exc_info=True)
                 errors.append({"table": "deals", "record_id": str(local_id), "error": str(e)})
 
-        await session.commit()
-        _log.info("[commit] DB commit complete – %d rows synced", synced_count)
+        # ── 4. Mark session approved in the SAME session (RLS context already set) ──
+        change_session_obj = await session.get(ChangeSession, UUID(change_session_id))
+        if change_session_obj:
+            change_session_obj.status = "approved"
+            change_session_obj.resolved_at = datetime.utcnow()
+            change_session_obj.resolved_by = UUID(user_id) if user_id else None
 
-    # ── 4. Mark session approved ────────────────────────────────────────────
-    await approve_change_session(change_session_id, user_id)
+        await session.commit()
+        _log.info("[commit] DB commit complete – %d rows synced, session marked approved", synced_count)
+
     _log.info(
         "[commit] Session %s approved. synced=%d errors=%d total=%d",
         change_session_id, synced_count, len(errors), total_records,

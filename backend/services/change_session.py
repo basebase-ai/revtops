@@ -342,6 +342,7 @@ async def approve_change_session(
     change_session_id: str,
     resolved_by_user_id: str,
     force: bool = False,
+    organization_id: str | None = None,
 ) -> dict[str, Any]:
     """
     Approve a change session, finalizing the changes.
@@ -353,11 +354,12 @@ async def approve_change_session(
         change_session_id: The change session UUID
         resolved_by_user_id: User UUID approving the changes
         force: If True, approve even with conflicts
+        organization_id: Organization UUID for RLS context
         
     Returns:
         Result dict with status, conflicts (if any), and snapshot count
     """
-    async with get_session() as session:
+    async with get_session(organization_id=organization_id) as session:
         # Get the change session
         change_session = await session.get(ChangeSession, UUID(change_session_id))
         if not change_session:

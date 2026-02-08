@@ -207,7 +207,7 @@ async def commit_change_session(
         if cs.organization_id != user.organization_id:
             raise HTTPException(status_code=403, detail="Access denied")
     
-    result = await do_commit(session_id, str(user.id))
+    result = await do_commit(session_id, str(user.id), organization_id=str(user.organization_id))
     
     return ActionResponse(
         status=result.get("status", "unknown"),
@@ -276,8 +276,9 @@ async def commit_all_pending(
     total_errors = 0
     all_errors: list[dict[str, Any]] = []
     
+    org_id_str: str = str(user.organization_id)
     for cs in pending_sessions:
-        commit_result = await do_commit(str(cs.id), str(user.id))
+        commit_result = await do_commit(str(cs.id), str(user.id), organization_id=org_id_str)
         total_synced += commit_result.get("synced_count", 0)
         total_errors += commit_result.get("error_count", 0)
         if commit_result.get("errors"):

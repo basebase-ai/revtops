@@ -131,14 +131,18 @@ export function PendingChangesPage(): JSX.Element {
         `/change-sessions/${sessionId}/commit?user_id=${userId}`,
         { method: 'POST', body: JSON.stringify({}) },
       );
-      if (apiErr) setError(apiErr);
-      else if (res?.error_count && res.error_count > 0) {
-        setError(`Synced ${res.synced_count ?? 0} records, but ${res.error_count} failed`);
+      if (apiErr) {
+        setError(apiErr);
+      } else if (res?.status === 'failed') {
+        setError(res.message || 'Commit failed');
+      } else if (res?.error_count && res.error_count > 0) {
+        setError(`Synced ${res.synced_count ?? 0} records, but ${res.error_count} failed. ${res.errors?.map((e) => e.error).join('; ') ?? ''}`);
       }
       await fetchPending();
       window.dispatchEvent(new Event('pending-changes-updated'));
-    } catch {
-      setError('Failed to commit session');
+    } catch (err: unknown) {
+      const msg: string = err instanceof Error ? err.message : 'Failed to commit session';
+      setError(msg);
     } finally {
       setBusySession(null);
     }
