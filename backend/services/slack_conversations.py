@@ -257,6 +257,14 @@ async def _upsert_slack_user_mapping(
 ) -> None:
     now = datetime.utcnow()
     try:
+        logger.info(
+            "[slack_conversations] Attempting Slack user mapping upsert org=%s user=%s slack_user=%s email=%s source=%s",
+            organization_id,
+            user_id,
+            slack_user_id,
+            slack_email,
+            match_source,
+        )
         async with get_admin_session() as session:
             stmt = pg_insert(SlackUserMapping).values(
                 id=uuid.uuid4(),
@@ -300,6 +308,11 @@ async def _fetch_slack_user_info(
     slack_user_id: str,
 ) -> dict[str, Any] | None:
     try:
+        logger.info(
+            "[slack_conversations] Fetching Slack user info for user=%s org=%s",
+            slack_user_id,
+            organization_id,
+        )
         connector = SlackConnector(organization_id=organization_id)
         return await connector.get_user_info(slack_user_id)
     except Exception as exc:
