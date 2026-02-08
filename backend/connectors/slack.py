@@ -416,10 +416,13 @@ class SlackConnector(BaseConnector):
 
     async def sync_all(self) -> dict[str, int]:
         """Run all sync operations."""
-        activities_count = await self.sync_activities()
         from services.slack_conversations import refresh_slack_user_mappings_for_org
 
         try:
+            logger.info(
+                "[Slack Sync] Refreshing Slack user mappings before activity sync for org=%s",
+                self.organization_id,
+            )
             refreshed_count = await refresh_slack_user_mappings_for_org(self.organization_id)
             logger.info(
                 "[Slack Sync] Refreshed %d Slack user mappings for org=%s",
@@ -433,6 +436,8 @@ class SlackConnector(BaseConnector):
                 exc,
                 exc_info=True,
             )
+
+        activities_count = await self.sync_activities()
 
         # Broadcast completion
         await broadcast_sync_progress(
