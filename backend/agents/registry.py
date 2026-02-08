@@ -102,6 +102,7 @@ Available tables:
 - pipeline_stages: Stages in pipelines (pipeline_id, name, probability)
 - integrations: Connected data sources (provider, is_active, last_sync_at)
 - users: Team members (email, name, role)
+- slack_user_mappings: Slack identity links (slack_user_id, slack_email, match_source)
 - organizations: User's company info (name, logo_url)
 
 IMPORTANT: Only SELECT queries are allowed. No INSERT, UPDATE, DELETE, DROP, etc.""",

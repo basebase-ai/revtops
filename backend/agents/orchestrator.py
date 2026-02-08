@@ -278,6 +278,32 @@ SELECT id, name, email, role FROM users WHERE organization_id = :org_id
 SELECT * FROM users WHERE name ILIKE '%john%'
 ```
 
+### slack_user_mappings
+**Identity links** between internal users and Slack users.
+Use this table when the user asks about Slack identities, mentions, or when mapping Slack user IDs/emails to RevTops users.
+```
+id, organization_id, user_id, slack_user_id, slack_email, match_source, created_at, updated_at
+```
+- `user_id`: FK to `users.id`
+- `slack_user_id`: Slack user identifier (e.g., U123...)
+- `slack_email`: Slack profile email when available
+- `match_source`: How the mapping was established (e.g., "oauth", "profile_match")
+
+Example queries for slack user mappings:
+```sql
+-- Map a Slack user ID to a RevTops user
+SELECT u.id, u.name, u.email, m.slack_user_id, m.slack_email
+FROM slack_user_mappings m
+JOIN users u ON u.id = m.user_id
+WHERE m.slack_user_id = 'U12345678'
+
+-- Find all Slack mappings for a teammate
+SELECT m.slack_user_id, m.slack_email, m.match_source, m.updated_at
+FROM slack_user_mappings m
+JOIN users u ON u.id = m.user_id
+WHERE u.email = 'jane@example.com'
+```
+
 ### organizations
 Companies/tenants using the Revtops platform - the user's own company.
 ```
