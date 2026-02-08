@@ -313,12 +313,13 @@ Use this when you need to read the actual content of a specific web page:
 - Extract structured data from a known URL
 - Get the raw HTML of a page for analysis
 
-This uses a proxy service to reliably fetch pages. Options:
-- render_js: Enable headless browser rendering for JavaScript-heavy pages (slower, costs more credits)
+By default this fetches directly (free, no proxy). Options:
 - extract_text: Return clean extracted text instead of raw HTML (recommended for most use cases)
-- premium_proxy: Use residential/mobile proxies for sites that block datacenter IPs
-- wait_ms: Wait time in ms after page load before capturing (useful with render_js for dynamic content)
+- render_js: Enable headless browser rendering for JS-heavy pages (uses ScrapingBee, costs credits)
+- premium_proxy: Use residential proxy for sites that block datacenter IPs (uses ScrapingBee, costs credits)
+- wait_ms: Wait time in ms after page load before capturing (only with render_js)
 
+Only enable render_js or premium_proxy when actually needed — plain fetches are free.
 For general web research where you don't have a specific URL, use web_search instead.""",
     input_schema={
         "type": "object",

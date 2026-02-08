@@ -1091,7 +1091,7 @@ async def _web_search(params: dict[str, Any]) -> dict[str, Any]:
 
 
 async def _fetch_url(params: dict[str, Any]) -> dict[str, Any]:
-    """Fetch a web page via ScrapingBee proxy, returning HTML or extracted text."""
+    """Fetch a web page, using direct httpx for simple requests or ScrapingBee for proxy/JS rendering."""
     url: str = params.get("url", "").strip()
     extract_text: bool = params.get("extract_text", True)
     render_js: bool = params.get("render_js", False)
@@ -1104,15 +1104,68 @@ async def _fetch_url(params: dict[str, Any]) -> dict[str, Any]:
     if not url.startswith(("http://", "https://")):
         return {"error": "URL must start with http:// or https://"}
 
-    if not settings.SCRAPINGBEE_API_KEY:
+    use_scrapingbee: bool = render_js or premium_proxy
+
+    if use_scrapingbee and not settings.SCRAPINGBEE_API_KEY:
         return {
-            "error": "fetch_url is not configured. SCRAPINGBEE_API_KEY is not set.",
-            "suggestion": "Add SCRAPINGBEE_API_KEY to your environment variables.",
+            "error": "ScrapingBee is required for render_js/premium_proxy but SCRAPINGBEE_API_KEY is not set.",
+            "suggestion": "Add SCRAPINGBEE_API_KEY to your environment variables, or disable render_js/premium_proxy.",
         }
 
-    # Build ScrapingBee request params
+    try:
+        if use_scrapingbee:
+            body = await _fetch_url_via_scrapingbee(url, extract_text, render_js, premium_proxy, wait_ms)
+        else:
+            body = await _fetch_url_direct(url)
+    except httpx.TimeoutException:
+        logger.error("[Tools._fetch_url] Request timed out for %s", url)
+        return {"error": "Request timed out. The page may be slow to respond.", "url": url}
+    except Exception as e:
+        logger.error("[Tools._fetch_url] Fetch failed: %s", str(e))
+        return {"error": f"Fetch failed: {str(e)}", "url": url}
+
+    # If ScrapingBee with extract_text, response is JSON with our extract_rules
+    if use_scrapingbee and extract_text:
+        try:
+            extracted: dict[str, Any] = json.loads(body)
+            text_content: str = extracted.get("text", body)
+            return _truncate_result(url, text_content, mode="extracted_text", max_chars=50_000)
+        except (json.JSONDecodeError, KeyError):
+            pass  # Fall through to raw handling
+
+    if extract_text and not use_scrapingbee:
+        # Simple tag stripping for direct fetches
+        text_content = _strip_html(body)
+        return _truncate_result(url, text_content, mode="extracted_text", max_chars=50_000)
+
+    return _truncate_result(url, body, mode="html", max_chars=100_000)
+
+
+async def _fetch_url_direct(url: str) -> str:
+    """Fetch a URL directly with httpx (no proxy, no cost)."""
+    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+        response = await client.get(
+            url,
+            headers={
+                "User-Agent": "Mozilla/5.0 (compatible; Revtops/1.0)",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            },
+        )
+        if response.status_code >= 400:
+            raise Exception(f"HTTP {response.status_code} from {url}")
+        return response.text
+
+
+async def _fetch_url_via_scrapingbee(
+    url: str,
+    extract_text: bool,
+    render_js: bool,
+    premium_proxy: bool,
+    wait_ms: int | None,
+) -> str:
+    """Fetch a URL via ScrapingBee proxy (costs credits)."""
     sb_params: dict[str, str] = {
-        "api_key": settings.SCRAPINGBEE_API_KEY,
+        "api_key": settings.SCRAPINGBEE_API_KEY,  # type: ignore[arg-type]
         "url": url,
     }
 
@@ -1128,70 +1181,48 @@ async def _fetch_url(params: dict[str, Any]) -> dict[str, Any]:
     if premium_proxy:
         sb_params["premium_proxy"] = "true"
 
-    try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            response = await client.get(
-                "https://app.scrapingbee.com/api/v1/",
-                params=sb_params,
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        response = await client.get(
+            "https://app.scrapingbee.com/api/v1/",
+            params=sb_params,
+        )
+
+        if response.status_code != 200:
+            logger.error(
+                "[Tools._fetch_url] ScrapingBee error: %s %s",
+                response.status_code,
+                response.text[:500],
             )
+            raise Exception(f"ScrapingBee returned status {response.status_code}")
 
-            if response.status_code != 200:
-                logger.error(
-                    "[Tools._fetch_url] ScrapingBee error: %s %s",
-                    response.status_code,
-                    response.text[:500],
-                )
-                return {
-                    "error": f"Failed to fetch URL (status {response.status_code})",
-                    "url": url,
-                }
+        return response.text
 
-            body: str = response.text
 
-            # If extract_text, ScrapingBee returns JSON with our extract_rules
-            if extract_text:
-                try:
-                    extracted: dict[str, Any] = json.loads(body)
-                    text_content: str = extracted.get("text", body)
-                    # Truncate very large pages to avoid blowing up context
-                    max_chars: int = 50_000
-                    truncated: bool = len(text_content) > max_chars
-                    if truncated:
-                        text_content = text_content[:max_chars]
-                    result: dict[str, Any] = {
-                        "url": url,
-                        "content": text_content,
-                        "mode": "extracted_text",
-                    }
-                    if truncated:
-                        result["truncated"] = True
-                        result["note"] = f"Content truncated to {max_chars} characters"
-                    return result
-                except (json.JSONDecodeError, KeyError):
-                    # Fall through to return raw body
-                    pass
+def _strip_html(html: str) -> str:
+    """Naive but fast HTML tag stripping for plain-text extraction."""
+    # Remove script/style blocks entirely
+    text: str = re.sub(r"<(script|style)[^>]*>.*?</\1>", "", html, flags=re.DOTALL | re.IGNORECASE)
+    # Strip remaining tags
+    text = re.sub(r"<[^>]+>", " ", text)
+    # Collapse whitespace
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
 
-            # Return raw HTML (also truncated for safety)
-            max_html_chars: int = 100_000
-            html_truncated: bool = len(body) > max_html_chars
-            if html_truncated:
-                body = body[:max_html_chars]
-            result = {
-                "url": url,
-                "content": body,
-                "mode": "html",
-            }
-            if html_truncated:
-                result["truncated"] = True
-                result["note"] = f"HTML truncated to {max_html_chars} characters"
-            return result
 
-    except httpx.TimeoutException:
-        logger.error("[Tools._fetch_url] Request timed out for %s", url)
-        return {"error": "Request timed out. The page may be slow to respond.", "url": url}
-    except Exception as e:
-        logger.error("[Tools._fetch_url] Fetch failed: %s", str(e))
-        return {"error": f"Fetch failed: {str(e)}", "url": url}
+def _truncate_result(url: str, content: str, *, mode: str, max_chars: int) -> dict[str, Any]:
+    """Build a fetch_url result dict, truncating content if needed."""
+    truncated: bool = len(content) > max_chars
+    if truncated:
+        content = content[:max_chars]
+    result: dict[str, Any] = {
+        "url": url,
+        "content": content,
+        "mode": mode,
+    }
+    if truncated:
+        result["truncated"] = True
+        result["note"] = f"Content truncated to {max_chars} characters"
+    return result
 
 
 async def _crm_write(
