@@ -20,10 +20,16 @@ class SlackUserMapping(Base):
     __tablename__ = "slack_user_mappings"
     __table_args__ = (
         Index(
-            "uq_slack_user_mappings_org_slack_user",
+            "uq_slack_user_mappings_org_user_slack_user",
             "organization_id",
+            "user_id",
             "slack_user_id",
             unique=True,
+        ),
+        Index(
+            "ix_slack_user_mappings_org_slack_user",
+            "organization_id",
+            "slack_user_id",
         ),
         Index(
             "ix_slack_user_mappings_org_user",

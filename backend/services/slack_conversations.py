@@ -219,9 +219,8 @@ async def _upsert_slack_user_mapping(
                 created_at=now,
                 updated_at=now,
             ).on_conflict_do_update(
-                index_elements=["organization_id", "slack_user_id"],
+                index_elements=["organization_id", "user_id", "slack_user_id"],
                 set_={
-                    "user_id": user_id,
                     "slack_email": slack_email,
                     "match_source": match_source,
                     "updated_at": now,
@@ -317,11 +316,22 @@ async def resolve_revtops_user_for_slack_actor(
             .where(SlackUserMapping.slack_user_id == slack_user_id)
         )
         mappings_result = await session.execute(mappings_query)
-        existing_mapping = mappings_result.scalar_one_or_none()
+        existing_mappings = mappings_result.scalars().all()
 
-    if existing_mapping:
+    if existing_mappings:
+        latest_mapping = max(
+            existing_mappings,
+            key=lambda mapping: getattr(mapping, "updated_at", datetime.min),
+        )
+        if len(existing_mappings) > 1:
+            logger.info(
+                "[slack_conversations] Multiple Slack mappings found for user=%s (count=%d); using latest user=%s",
+                slack_user_id,
+                len(existing_mappings),
+                latest_mapping.user_id,
+            )
         for user in org_users:
-            if user.id == existing_mapping.user_id:
+            if user.id == latest_mapping.user_id:
                 logger.info(
                     "[slack_conversations] Resolved Slack user=%s via stored mapping to RevTops user=%s",
                     slack_user_id,
@@ -331,7 +341,7 @@ async def resolve_revtops_user_for_slack_actor(
         logger.info(
             "[slack_conversations] Stored mapping for Slack user=%s references missing user=%s",
             slack_user_id,
-            existing_mapping.user_id,
+            latest_mapping.user_id,
         )
 
     for integration in slack_integrations:
