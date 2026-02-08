@@ -30,6 +30,7 @@ from models.integration import Integration
 from models.user import User
 from models.organization import Organization
 from services.nango import get_nango_client
+from services.slack_conversations import upsert_slack_user_mappings_from_metadata
 
 router = APIRouter()
 
@@ -835,6 +836,23 @@ async def confirm_integration(
     # We trust this value and store it directly
     nango_connection_id: str = request.connection_id
     print(f"[Confirm] Received connection_id from frontend: {nango_connection_id}")
+
+    connection_metadata: Optional[dict[str, Any]] = None
+    try:
+        nango = get_nango_client()
+        nango_integration_id = get_nango_integration_id(request.provider)
+        connection = await nango.get_connection(nango_integration_id, nango_connection_id)
+        connection_metadata = connection.get("metadata")
+        if connection_metadata:
+            print(
+                f"[Confirm] Retrieved Nango metadata for provider={request.provider}, "
+                f"connection_id={nango_connection_id}"
+            )
+    except Exception as exc:
+        print(
+            f"[Confirm] Failed to fetch Nango metadata for provider={request.provider}, "
+            f"connection_id={nango_connection_id}: {exc}"
+        )
     
     async with get_session() as session:
         # Set RLS context
@@ -869,6 +887,8 @@ async def confirm_integration(
             existing.is_active = True
             existing.last_error = None
             existing.updated_at = datetime.utcnow()
+            if connection_metadata:
+                existing.extra_data = connection_metadata
         else:
             # Create new integration with the actual Nango connection_id
             new_integration = Integration(
@@ -879,6 +899,7 @@ async def confirm_integration(
                 nango_connection_id=nango_connection_id,
                 connected_by_user_id=user_uuid,
                 is_active=True,
+                extra_data=connection_metadata,
             )
             session.add(new_integration)
         
@@ -888,6 +909,14 @@ async def confirm_integration(
     # For user-scoped integrations, pass user_id so the connector can find the right integration
     user_id_for_sync: Optional[str] = str(user_uuid) if scope == "user" and user_uuid else None
     background_tasks.add_task(run_initial_sync, str(org_uuid), request.provider, user_id_for_sync)
+
+    if request.provider == "slack" and user_uuid:
+        background_tasks.add_task(
+            upsert_slack_user_mappings_from_metadata,
+            str(org_uuid),
+            user_uuid,
+            connection_metadata,
+        )
     
     return {"status": "confirmed", "provider": request.provider}
 
