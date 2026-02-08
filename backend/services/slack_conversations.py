@@ -110,6 +110,46 @@ def _extract_slack_user_ids(extra_data: dict[str, Any]) -> set[str]:
     return candidates
 
 
+async def upsert_slack_user_mappings_from_metadata(
+    organization_id: str,
+    user_id: UUID,
+    integration_metadata: dict[str, Any] | None,
+) -> int:
+    """Upsert Slack user mappings based on integration metadata for a user."""
+    slack_user_ids = _extract_slack_user_ids(integration_metadata or {})
+    if not slack_user_ids:
+        logger.info(
+            "[slack_conversations] No Slack user IDs found in integration metadata for org=%s user=%s",
+            organization_id,
+            user_id,
+        )
+        return 0
+
+    created_count = 0
+    for slack_user_id in sorted(slack_user_ids):
+        slack_user = await _fetch_slack_user_info(
+            organization_id=organization_id,
+            slack_user_id=slack_user_id,
+        )
+        slack_email = _extract_slack_email(slack_user)
+        await _upsert_slack_user_mapping(
+            organization_id=organization_id,
+            user_id=user_id,
+            slack_user_id=slack_user_id,
+            slack_email=slack_email,
+            match_source="slack_integration_metadata",
+        )
+        created_count += 1
+
+    logger.info(
+        "[slack_conversations] Upserted %d Slack user mappings from integration metadata for org=%s user=%s",
+        created_count,
+        organization_id,
+        user_id,
+    )
+    return created_count
+
+
 def _normalize_name(value: str | None) -> str:
     """Normalize a person name for case-insensitive equality matching."""
     if not value:
