@@ -12,7 +12,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Message } from './Message';
+
 import { ArtifactViewer, type FileArtifact } from './ArtifactViewer';
 import { ArtifactTile } from './ArtifactTile';
 import { PendingApprovalCard, type ApprovalResult } from './PendingApprovalCard';
@@ -1478,7 +1478,7 @@ function getFileTypeLabel(filename: string, mimeType: string): string {
     json: 'JSON', md: 'Markdown', xml: 'XML', html: 'HTML', txt: 'Text',
     png: 'PNG', jpg: 'JPEG', jpeg: 'JPEG', gif: 'GIF', webp: 'WebP', svg: 'SVG',
   };
-  if (ext && ext in extMap) return extMap[ext];
+  if (ext && ext in extMap) return extMap[ext] as string;
   if (mimeType.startsWith('image/')) return 'Image';
   if (mimeType.startsWith('text/')) return 'Text';
   return ext.toUpperCase() || 'File';
