@@ -304,6 +304,57 @@ Do NOT use this for data that's in the user's database - use run_sql_query inste
 
 
 register_tool(
+    name="fetch_url",
+    description="""Fetch the content of a web page by URL.
+
+Use this when you need to read the actual content of a specific web page:
+- Scrape a company's website, pricing page, or blog post
+- Read a specific article or documentation page
+- Extract structured data from a known URL
+- Get the raw HTML of a page for analysis
+
+This uses a proxy service to reliably fetch pages. Options:
+- render_js: Enable headless browser rendering for JavaScript-heavy pages (slower, costs more credits)
+- extract_text: Return clean extracted text instead of raw HTML (recommended for most use cases)
+- premium_proxy: Use residential/mobile proxies for sites that block datacenter IPs
+- wait_ms: Wait time in ms after page load before capturing (useful with render_js for dynamic content)
+
+For general web research where you don't have a specific URL, use web_search instead.""",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "url": {
+                "type": "string",
+                "description": "The full URL to fetch (must start with http:// or https://)",
+            },
+            "extract_text": {
+                "type": "boolean",
+                "description": "If true, return clean extracted text instead of raw HTML. Recommended for readability.",
+                "default": True,
+            },
+            "render_js": {
+                "type": "boolean",
+                "description": "If true, render JavaScript using a headless browser. Use for SPAs and JS-heavy sites.",
+                "default": False,
+            },
+            "premium_proxy": {
+                "type": "boolean",
+                "description": "If true, use residential proxy. Use for sites that block datacenter IPs (e.g. LinkedIn).",
+                "default": False,
+            },
+            "wait_ms": {
+                "type": "integer",
+                "description": "Milliseconds to wait after page load before capturing (only with render_js=true, max 35000).",
+            },
+        },
+        "required": ["url"],
+    },
+    category=ToolCategory.EXTERNAL_READ,
+    default_requires_approval=False,
+)
+
+
+register_tool(
     name="enrich_contacts_with_apollo",
     description="""Enrich contacts using Apollo.io's database to get current job titles, companies, and contact info.
 

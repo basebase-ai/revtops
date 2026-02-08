@@ -4,7 +4,7 @@ Tool definitions and execution for Claude.
 Tools are organized by category (see registry.py):
 - LOCAL_READ: run_sql_query, search_activities
 - LOCAL_WRITE: create_artifact, create_workflow, trigger_workflow
-- EXTERNAL_READ: web_search, enrich_contacts_with_apollo, enrich_company_with_apollo
+- EXTERNAL_READ: web_search, fetch_url, enrich_contacts_with_apollo, enrich_company_with_apollo
 - EXTERNAL_WRITE: crm_write, send_email_from, send_slack, trigger_sync
 
 EXTERNAL_WRITE tools require user approval by default (can be overridden in settings).
@@ -261,6 +261,11 @@ async def execute_tool(
     elif tool_name == "loop_over":
         result = await _loop_over(tool_input, organization_id, user_id, context)
         logger.info("[Tools] loop_over completed: %d/%d successful", result.get("succeeded", 0), result.get("total", 0))
+        return result
+
+    elif tool_name == "fetch_url":
+        result = await _fetch_url(tool_input)
+        logger.info("[Tools] fetch_url completed: %s", result.get("url"))
         return result
 
     elif tool_name == "enrich_contacts_with_apollo":
@@ -1083,6 +1088,110 @@ async def _web_search(params: dict[str, Any]) -> dict[str, Any]:
     except Exception as e:
         logger.error("[Tools._web_search] Search failed: %s", str(e))
         return {"error": f"Search failed: {str(e)}"}
+
+
+async def _fetch_url(params: dict[str, Any]) -> dict[str, Any]:
+    """Fetch a web page via ScrapingBee proxy, returning HTML or extracted text."""
+    url: str = params.get("url", "").strip()
+    extract_text: bool = params.get("extract_text", True)
+    render_js: bool = params.get("render_js", False)
+    premium_proxy: bool = params.get("premium_proxy", False)
+    wait_ms: int | None = params.get("wait_ms")
+
+    if not url:
+        return {"error": "No URL provided"}
+
+    if not url.startswith(("http://", "https://")):
+        return {"error": "URL must start with http:// or https://"}
+
+    if not settings.SCRAPINGBEE_API_KEY:
+        return {
+            "error": "fetch_url is not configured. SCRAPINGBEE_API_KEY is not set.",
+            "suggestion": "Add SCRAPINGBEE_API_KEY to your environment variables.",
+        }
+
+    # Build ScrapingBee request params
+    sb_params: dict[str, str] = {
+        "api_key": settings.SCRAPINGBEE_API_KEY,
+        "url": url,
+    }
+
+    if extract_text:
+        sb_params["extract_rules"] = json.dumps({"text": {"selector": "body", "type": "text"}})
+
+    if render_js:
+        sb_params["render_js"] = "true"
+        if wait_ms is not None:
+            clamped_wait: int = max(0, min(wait_ms, 35000))
+            sb_params["wait"] = str(clamped_wait)
+
+    if premium_proxy:
+        sb_params["premium_proxy"] = "true"
+
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.get(
+                "https://app.scrapingbee.com/api/v1/",
+                params=sb_params,
+            )
+
+            if response.status_code != 200:
+                logger.error(
+                    "[Tools._fetch_url] ScrapingBee error: %s %s",
+                    response.status_code,
+                    response.text[:500],
+                )
+                return {
+                    "error": f"Failed to fetch URL (status {response.status_code})",
+                    "url": url,
+                }
+
+            body: str = response.text
+
+            # If extract_text, ScrapingBee returns JSON with our extract_rules
+            if extract_text:
+                try:
+                    extracted: dict[str, Any] = json.loads(body)
+                    text_content: str = extracted.get("text", body)
+                    # Truncate very large pages to avoid blowing up context
+                    max_chars: int = 50_000
+                    truncated: bool = len(text_content) > max_chars
+                    if truncated:
+                        text_content = text_content[:max_chars]
+                    result: dict[str, Any] = {
+                        "url": url,
+                        "content": text_content,
+                        "mode": "extracted_text",
+                    }
+                    if truncated:
+                        result["truncated"] = True
+                        result["note"] = f"Content truncated to {max_chars} characters"
+                    return result
+                except (json.JSONDecodeError, KeyError):
+                    # Fall through to return raw body
+                    pass
+
+            # Return raw HTML (also truncated for safety)
+            max_html_chars: int = 100_000
+            html_truncated: bool = len(body) > max_html_chars
+            if html_truncated:
+                body = body[:max_html_chars]
+            result = {
+                "url": url,
+                "content": body,
+                "mode": "html",
+            }
+            if html_truncated:
+                result["truncated"] = True
+                result["note"] = f"HTML truncated to {max_html_chars} characters"
+            return result
+
+    except httpx.TimeoutException:
+        logger.error("[Tools._fetch_url] Request timed out for %s", url)
+        return {"error": "Request timed out. The page may be slow to respond.", "url": url}
+    except Exception as e:
+        logger.error("[Tools._fetch_url] Fetch failed: %s", str(e))
+        return {"error": f"Fetch failed: {str(e)}", "url": url}
 
 
 async def _crm_write(
