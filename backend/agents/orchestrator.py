@@ -621,6 +621,13 @@ WHERE scheduled_start >= '2026-01-27'::date AND scheduled_start < '2026-01-28'::
                                         "input": {},
                                     }
                                     current_tool_input_json = ""
+                                    # Immediately notify frontend that a tool call is starting
+                                    # so it can show a spinner while the input JSON streams
+                                    yield json.dumps({
+                                        "type": "tool_call_start",
+                                        "tool_name": event.content_block.name,
+                                        "tool_id": event.content_block.id,
+                                    })
                             
                             elif event.type == "content_block_delta":
                                 if event.delta.type == "text_delta":

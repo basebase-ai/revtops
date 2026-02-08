@@ -92,7 +92,7 @@ export interface ToolUseBlock {
   name: string;
   input: Record<string, unknown>;
   result?: Record<string, unknown>;
-  status?: "pending" | "running" | "complete";
+  status?: "pending" | "running" | "complete" | "streaming";
 }
 
 export interface ErrorBlock {

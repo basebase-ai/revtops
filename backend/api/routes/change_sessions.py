@@ -6,7 +6,10 @@ Provides endpoints to:
 - Commit changes to external CRM
 - Discard/undo local changes
 """
+import logging
 from typing import Any, Optional
+
+logger: logging.Logger = logging.getLogger(__name__)
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query
@@ -145,10 +148,27 @@ async def get_pending_changes(
                     record_info["name"] = input_data.get("dealname") or input_data.get("name") or before.get("name")
                     record_info["amount"] = input_data.get("amount") or before.get("amount")
 
-                # For updates, show what's changing
+                # For updates, build structured field diffs (before → after)
                 if snap.operation == "update" and input_data:
+                    field_diffs: list[dict[str, Any]] = []
+                    for k, v in input_data.items():
+                        if k == "id":
+                            continue
+                        old_val: Any = before.get(k)
+                        field_diffs.append({"field": k, "before": old_val, "after": v})
+                    record_info["field_diffs"] = field_diffs
+                    # Keep legacy changes list for backward compatibility
                     changes: list[str] = [f"{k} → {v}" for k, v in input_data.items() if k != "id"]
                     record_info["changes"] = changes
+
+                # For creates, show all proposed fields
+                if snap.operation == "create" and input_data:
+                        field_diffs_create: list[dict[str, Any]] = []
+                        for k, v in input_data.items():
+                            if k == "id":
+                                continue
+                            field_diffs_create.append({"field": k, "before": None, "after": v})
+                        record_info["field_diffs"] = field_diffs_create
                 
                 records.append(record_info)
 

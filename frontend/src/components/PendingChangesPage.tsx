@@ -11,6 +11,12 @@ import { useAppStore } from '../store';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
+interface FieldDiff {
+  field: string;
+  before: string | number | null;
+  after: string | number | null;
+}
+
 interface RecordInfo {
   table: string;
   operation: string;
@@ -21,6 +27,7 @@ interface RecordInfo {
   domain?: string | null;
   amount?: number | null;
   changes?: string[] | null;
+  field_diffs?: FieldDiff[] | null;
 }
 
 interface ChangeSessionSummary {
@@ -280,8 +287,8 @@ export function PendingChangesPage(): JSX.Element {
       <div className="flex-1 overflow-y-auto p-6">
         {/* Error banner */}
         {error && (
-          <div className="mb-4 px-4 py-2 rounded-lg bg-red-500/10 border border-red-500/30 text-red-400 text-sm">
-            {error}
+          <div className="mb-4 px-4 py-2 rounded-lg bg-red-500/10 border border-red-500/30 text-red-400 text-sm max-h-24 overflow-y-auto break-words">
+            {error.length > 300 ? error.slice(0, 300) + '…' : error}
           </div>
         )}
 
@@ -362,31 +369,28 @@ export function PendingChangesPage(): JSX.Element {
                   {isExpanded && (
                     <div className="border-t border-surface-800 px-4 py-3 space-y-3">
                       {/* Record list */}
-                      <div className="space-y-1.5 max-h-64 overflow-y-auto">
+                      <div className="space-y-4 max-h-96 overflow-y-auto">
                         {session.records.map((record, idx) => (
                           <div
                             key={`${record.record_id}-${idx}`}
-                            className="flex flex-col gap-0.5 text-sm"
+                            className="rounded-lg border border-surface-800 overflow-hidden"
                           >
-                            <div className="flex items-center gap-2">
-                              <span className={`text-xs ${record.operation === 'update' ? 'text-amber-400' : 'text-green-500'}`}>
+                            {/* Record header */}
+                            <div className="flex items-center gap-2 px-3 py-2 bg-surface-800/50">
+                              <span className={`text-xs font-bold ${record.operation === 'update' ? 'text-amber-400' : 'text-green-500'}`}>
                                 {record.operation === 'update' ? '~' : '+'}
                               </span>
-                              <span className="px-1.5 py-0.5 rounded bg-surface-800 text-surface-400 text-xs font-medium">
+                              <span className="px-1.5 py-0.5 rounded bg-surface-700 text-surface-300 text-xs font-medium">
                                 {friendlyTable(record.table)}
                               </span>
-                              <span className="text-surface-200 truncate">
+                              <span className="text-sm text-surface-200 font-medium truncate">
                                 {recordLabel(record)}
                               </span>
                               {record.table === 'contacts' && record.company && (
-                                <span className="text-surface-400 text-xs truncate">
-                                  {record.company}
-                                </span>
+                                <span className="text-surface-400 text-xs truncate">{record.company}</span>
                               )}
                               {record.table === 'contacts' && record.email && record.name && (
-                                <span className="text-surface-500 text-xs truncate">
-                                  {record.email}
-                                </span>
+                                <span className="text-surface-500 text-xs truncate">{record.email}</span>
                               )}
                               {record.amount != null && (
                                 <span className="text-surface-400 text-xs ml-auto tabular-nums">
@@ -394,10 +398,40 @@ export function PendingChangesPage(): JSX.Element {
                                 </span>
                               )}
                             </div>
-                            {record.changes && record.changes.length > 0 && (
-                              <div className="ml-6 text-xs text-surface-400 italic">
-                                {record.changes.join(', ')}
-                              </div>
+
+                            {/* Field diffs table */}
+                            {record.field_diffs && record.field_diffs.length > 0 && (
+                              <table className="w-full text-xs">
+                                <thead>
+                                  <tr className="border-b border-surface-800">
+                                    <th className="px-3 py-1.5 text-left text-surface-500 font-medium w-1/4">Field</th>
+                                    {record.operation === 'update' && (
+                                      <th className="px-3 py-1.5 text-left text-surface-500 font-medium w-[37.5%]">Before</th>
+                                    )}
+                                    <th className="px-3 py-1.5 text-left text-surface-500 font-medium">
+                                      {record.operation === 'update' ? 'After' : 'Value'}
+                                    </th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {record.field_diffs.map((diff: FieldDiff) => {
+                                    const changed: boolean = record.operation === 'update' && String(diff.before ?? '') !== String(diff.after ?? '');
+                                    return (
+                                      <tr key={diff.field} className="border-b border-surface-800/50 last:border-0">
+                                        <td className="px-3 py-1.5 text-surface-400 font-medium">{diff.field}</td>
+                                        {record.operation === 'update' && (
+                                          <td className={`px-3 py-1.5 ${changed ? 'text-red-400/70 line-through' : 'text-surface-500'}`}>
+                                            {diff.before != null ? String(diff.before) : <span className="text-surface-600 italic">empty</span>}
+                                          </td>
+                                        )}
+                                        <td className={`px-3 py-1.5 ${changed ? 'text-green-400' : 'text-surface-300'}`}>
+                                          {diff.after != null ? String(diff.after) : <span className="text-surface-600 italic">empty</span>}
+                                        </td>
+                                      </tr>
+                                    );
+                                  })}
+                                </tbody>
+                              </table>
                             )}
                           </div>
                         ))}

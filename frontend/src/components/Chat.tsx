@@ -1268,7 +1268,11 @@ function getToolStatusText(
     }
     case 'crm_write': {
       const recordType = typeof input?.record_type === 'string' ? input.record_type : 'record';
-      const recordCount = Array.isArray(input?.records) ? input.records.length : 1;
+      const recordCount = Array.isArray(input?.records) ? input.records.length : 0;
+      if (recordCount === 0) {
+        // Input still streaming — we don't know the count yet
+        return `Preparing ${recordType}s for CRM...`;
+      }
       const pluralType = recordCount === 1 ? recordType : `${recordType}s`;
       if (isComplete) {
         return `Prepared ${recordCount} ${pluralType} for review`;
