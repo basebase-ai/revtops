@@ -16,7 +16,7 @@ import { Message } from './Message';
 import { ArtifactViewer, type FileArtifact } from './ArtifactViewer';
 import { ArtifactTile } from './ArtifactTile';
 import { PendingApprovalCard, type ApprovalResult } from './PendingApprovalCard';
-import { getConversation } from '../api/client';
+import { getConversation, uploadChatFile, type UploadResponse } from '../api/client';
 import { 
   useAppStore,
   useConversationState,
@@ -24,6 +24,7 @@ import {
   type ToolCallData,
   type ToolUseBlock,
   type ErrorBlock,
+  type AttachmentBlock,
 } from '../store';
 
 // Legacy data artifact format
@@ -107,11 +108,16 @@ export function Chat({
   const [conversationType, setConversationType] = useState<string | null>(null);
   const [isWorkflowPolling, setIsWorkflowPolling] = useState<boolean>(false);
   
+  // Attachment state
+  const [pendingAttachments, setPendingAttachments] = useState<UploadResponse[]>([]);
+  const [isUploading, setIsUploading] = useState<boolean>(false);
+  
   // Refs
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const isUserNearBottomRef = useRef<boolean>(true);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const pendingTitleRef = useRef<string | null>(null);
   const pendingMessagesRef = useRef<ChatMessage[]>([]);
   const pendingAutoSendRef = useRef<string | null>(null);
@@ -426,17 +432,29 @@ export function Chat({
   }, [messages, isThinking]);
 
   const sendChatMessage = useCallback((message: string, source: 'input' | 'suggestion' | 'auto'): void => {
-    if (!message.trim() || !isConnected) {
+    if ((!message.trim() && pendingAttachments.length === 0) || !isConnected) {
       console.log(`[Chat] sendChatMessage blocked (${source}) - empty or not connected`);
       return;
     }
 
     console.log(`[Chat] Sending message (${source}):`, message.substring(0, 30) + '...');
 
+    // Build content blocks for local display
+    const contentBlocks: ChatMessage['contentBlocks'] = [];
+    for (const att of pendingAttachments) {
+      contentBlocks.push({
+        type: 'attachment',
+        filename: att.filename,
+        mimeType: att.mime_type,
+        size: att.size,
+      } satisfies AttachmentBlock);
+    }
+    contentBlocks.push({ type: 'text', text: message });
+
     const userMessage: ChatMessage = {
       id: `user-${Date.now()}`,
       role: 'user',
-      contentBlocks: [{ type: 'text', text: message }],
+      contentBlocks,
       timestamp: new Date(),
     };
 
@@ -454,7 +472,8 @@ export function Chat({
       setPendingThinking(true);
     }
 
-    // Send message with conversation context and timezone info
+    // Send message with conversation context, timezone info, and attachment IDs
+    const attachmentIds: string[] = pendingAttachments.map((a) => a.upload_id);
     const now = new Date();
     sendMessage({
       type: 'send_message',
@@ -462,10 +481,12 @@ export function Chat({
       conversation_id: currentConvId,
       local_time: now.toISOString(),
       timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      ...(attachmentIds.length > 0 ? { attachment_ids: attachmentIds } : {}),
     });
 
-    console.log(`[Chat] Sent to WebSocket (${source})`);
+    console.log(`[Chat] Sent to WebSocket (${source}) with ${attachmentIds.length} attachment(s)`);
     setInput('');
+    setPendingAttachments([]);
 
     // Reset textarea height to default
     if (inputRef.current) {
@@ -478,6 +499,7 @@ export function Chat({
     chatId,
     addConversationMessage,
     setConversationThinking,
+    pendingAttachments,
   ]);
 
   // Consume pending chat input (from Search "Ask about" button or pipeline deal click)
@@ -546,6 +568,37 @@ export function Chat({
       handleSend();
     }
   };
+
+  const handleFileSelect = useCallback(async (e: React.ChangeEvent<HTMLInputElement>): Promise<void> => {
+    const files: FileList | null = e.target.files;
+    if (!files || files.length === 0) return;
+
+    setIsUploading(true);
+    try {
+      const uploads: UploadResponse[] = [];
+      for (const file of Array.from(files)) {
+        const { data, error } = await uploadChatFile(file);
+        if (error || !data) {
+          console.error(`[Chat] Upload failed for ${file.name}:`, error);
+          continue;
+        }
+        uploads.push(data);
+      }
+      if (uploads.length > 0) {
+        setPendingAttachments((prev) => [...prev, ...uploads]);
+      }
+    } finally {
+      setIsUploading(false);
+      // Reset the input so the same file can be re-selected
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+    }
+  }, []);
+
+  const removeAttachment = useCallback((uploadId: string): void => {
+    setPendingAttachments((prev) => prev.filter((a) => a.upload_id !== uploadId));
+  }, []);
 
   const handleStop = useCallback((): void => {
     if (!activeTaskId) {
@@ -744,19 +797,47 @@ export function Chat({
       {/* Input */}
       <div className="border-t border-surface-800 p-2 md:p-3">
         <div className="max-w-3xl mx-auto">
-          <div className="flex items-end gap-2">
-            {/* Attach button - hidden on very small screens */}
-            <button
-              type="button"
-              className="hidden sm:flex flex-shrink-0 w-8 h-8 mb-0.5 rounded-full border border-surface-600 text-surface-400 hover:text-surface-200 hover:border-surface-500 items-center justify-center transition-colors"
-              title="Attach file"
-            >
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-              </svg>
-            </button>
-            
-            {/* Text input */}
+          {/* Hidden file input */}
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            className="hidden"
+            accept="image/*,.pdf,.csv,.xlsx,.xls,.txt,.json,.md,.xml,.html"
+            onChange={handleFileSelect}
+          />
+
+          {/* Single container that looks like one input box */}
+          <div className={`rounded-2xl border bg-surface-900 transition-all duration-150 ${
+            (!isConnected || isThinking) ? 'border-surface-700 opacity-50' : 'border-surface-700 focus-within:ring-2 focus-within:ring-primary-500 focus-within:border-transparent'
+          }`}>
+            {/* Attachment chips */}
+            {pendingAttachments.length > 0 && (
+              <div className="flex flex-wrap gap-1.5 px-3 pt-2">
+                {pendingAttachments.map((att) => (
+                  <span
+                    key={att.upload_id}
+                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-surface-800 border border-surface-700 text-xs text-surface-300"
+                  >
+                    <svg className="w-3 h-3 text-surface-500 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+                    </svg>
+                    <span className="truncate max-w-[140px]">{att.filename}</span>
+                    <button
+                      type="button"
+                      onClick={() => removeAttachment(att.upload_id)}
+                      className="text-surface-500 hover:text-surface-200 transition-colors"
+                    >
+                      <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
+
+            {/* Textarea — no border/bg of its own */}
             <textarea
               ref={inputRef}
               value={input}
@@ -764,39 +845,59 @@ export function Chat({
                 setInput(e.target.value);
                 // Auto-resize textarea
                 e.target.style.height = 'auto';
-                e.target.style.height = `${Math.min(e.target.scrollHeight, 240)}px`; // 240px ≈ 10 lines
+                e.target.style.height = `${Math.min(e.target.scrollHeight, 240)}px`;
               }}
               onKeyDown={handleKeyDown}
               placeholder={isThinking ? 'Thinking...' : 'Ask about your pipeline...'}
-              className="flex-1 resize-none bg-surface-900 text-surface-100 rounded-2xl border border-surface-700 px-4 py-2 text-sm placeholder-surface-500 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all duration-150 leading-5 scrollbar-none disabled:opacity-50 disabled:cursor-not-allowed"
+              className="w-full resize-none bg-transparent text-surface-100 px-4 pt-3 pb-1 text-sm placeholder-surface-500 focus:outline-none leading-5 scrollbar-none disabled:cursor-not-allowed"
               style={{ minHeight: '36px', maxHeight: '240px' }}
               rows={1}
               disabled={!isConnected || isThinking}
               autoFocus={chatId === null}
             />
-            
-            {/* Send/Stop button */}
-            {isThinking ? (
+
+            {/* Bottom row: attach on left, send/stop on right */}
+            <div className="flex items-center justify-between px-2 pb-2">
+              {/* Attach button */}
               <button
-                onClick={handleStop}
-                className="flex-shrink-0 w-8 h-8 mb-0.5 rounded-full bg-red-600 text-white hover:bg-red-500 flex items-center justify-center transition-colors"
-                title="Stop"
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={isUploading || isThinking}
+                className="flex w-8 h-8 rounded-full text-surface-400 hover:text-surface-200 hover:bg-surface-800 items-center justify-center transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                title="Attach file"
               >
-                <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24">
-                  <rect x="6" y="6" width="12" height="12" rx="1" />
-                </svg>
+                {isUploading ? (
+                  <div className="w-4 h-4 border-2 border-surface-600 border-t-primary-500 rounded-full animate-spin" />
+                ) : (
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                  </svg>
+                )}
               </button>
-            ) : (
-              <button
-                onClick={handleSend}
-                disabled={!input.trim() || !isConnected}
-                className="flex-shrink-0 w-8 h-8 mb-0.5 rounded-full bg-primary-600 text-white hover:bg-primary-500 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center transition-colors"
-              >
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 10l7-7m0 0l7 7m-7-7v18" />
-                </svg>
-              </button>
-            )}
+
+              {/* Send/Stop button */}
+              {isThinking ? (
+                <button
+                  onClick={handleStop}
+                  className="flex-shrink-0 w-8 h-8 rounded-lg bg-red-600 text-white hover:bg-red-500 flex items-center justify-center transition-colors"
+                  title="Stop"
+                >
+                  <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24">
+                    <rect x="6" y="6" width="12" height="12" rx="1" />
+                  </svg>
+                </button>
+              ) : (
+                <button
+                  onClick={handleSend}
+                  disabled={(!input.trim() && pendingAttachments.length === 0) || !isConnected}
+                  className="flex-shrink-0 w-8 h-8 rounded-lg bg-primary-600 text-white hover:bg-primary-500 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center transition-colors"
+                >
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 10l7-7m0 0l7 7m-7-7v18" />
+                  </svg>
+                </button>
+              )}
+            </div>
           </div>
         </div>
       </div>
@@ -838,24 +939,46 @@ function MessageWithBlocks({
     return <></>;
   }
 
-  // For user messages, use the simple Message component
+  // For user messages, use the simple Message component (with attachment chips if any)
   if (isUser) {
     const textContent = blocks
       .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
       .map((b) => b.text)
       .join('');
+    const attachments = blocks.filter(
+      (b): b is AttachmentBlock => b.type === 'attachment',
+    );
     
     return (
-      <Message
-        message={{
-          id: message.id,
-          role: message.role,
-          content: textContent,
-          timestamp: message.timestamp,
-          isStreaming: message.isStreaming,
-        }}
-        onArtifactClick={onArtifactClick}
-      />
+      <div>
+        {attachments.length > 0 && (
+          <div className="flex justify-end mb-1">
+            <div className="flex flex-wrap gap-1 justify-end max-w-[85%]">
+              {attachments.map((att, i) => (
+                <span
+                  key={`att-${i}`}
+                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-primary-900/40 border border-primary-800/50 text-xs text-primary-300"
+                >
+                  <svg className="w-3 h-3 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+                  </svg>
+                  <span className="truncate max-w-[160px]">{att.filename}</span>
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+        <Message
+          message={{
+            id: message.id,
+            role: message.role,
+            content: textContent,
+            timestamp: message.timestamp,
+            isStreaming: message.isStreaming,
+          }}
+          onArtifactClick={onArtifactClick}
+        />
+      </div>
     );
   }
 

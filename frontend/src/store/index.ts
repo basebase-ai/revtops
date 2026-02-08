@@ -111,7 +111,14 @@ export interface ArtifactBlock {
   };
 }
 
-export type ContentBlock = TextBlock | ToolUseBlock | ErrorBlock | ArtifactBlock;
+export interface AttachmentBlock {
+  type: "attachment";
+  filename: string;
+  mimeType: string;
+  size: number;
+}
+
+export type ContentBlock = TextBlock | ToolUseBlock | ErrorBlock | ArtifactBlock | AttachmentBlock;
 
 // Legacy type for streaming compatibility
 export interface ToolCallData {

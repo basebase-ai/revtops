@@ -344,6 +344,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 conversation_id = data.get("conversation_id")
                 local_time = data.get("local_time")
                 timezone = data.get("timezone")
+                attachment_ids: list[str] | None = data.get("attachment_ids")
 
                 if not user_message:
                     continue
@@ -392,6 +393,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     local_time=local_time,
                     timezone=timezone,
                     is_new_conversation=is_new_conversation,
+                    attachment_ids=attachment_ids,
                 )
 
                 # Subscribe this websocket to the task

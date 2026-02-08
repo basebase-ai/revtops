@@ -295,6 +295,61 @@ export interface SearchResponse {
 }
 
 // =============================================================================
+// File Upload
+// =============================================================================
+
+export interface UploadResponse {
+  upload_id: string;
+  filename: string;
+  mime_type: string;
+  size: number;
+}
+
+/**
+ * Upload a file attachment for chat context.
+ * Uses multipart/form-data (not JSON) so we bypass apiRequest.
+ */
+export async function uploadChatFile(
+  file: File,
+): Promise<ApiResponse<UploadResponse>> {
+  const { supabase } = await import("../lib/supabase");
+  const {
+    data: { session },
+  } = await supabase.auth.getSession();
+  const token: string | undefined = session?.access_token;
+
+  if (!token) {
+    return { data: null, error: "Not authenticated" };
+  }
+
+  const formData = new FormData();
+  formData.append("file", file);
+
+  try {
+    const response = await fetch(`${API_BASE}/chat/upload`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: formData,
+    });
+
+    if (!response.ok) {
+      const err = (await response.json().catch(() => ({}))) as {
+        detail?: string;
+      };
+      return { data: null, error: err.detail ?? `HTTP ${response.status}` };
+    }
+
+    const data = (await response.json()) as UploadResponse;
+    return { data, error: null };
+  } catch (error) {
+    return {
+      data: null,
+      error: error instanceof Error ? error.message : "Upload failed",
+    };
+  }
+}
+
+// =============================================================================
 // Search API
 // =============================================================================
 

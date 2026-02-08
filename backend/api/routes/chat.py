@@ -12,13 +12,14 @@ Endpoints:
 - DELETE /api/chat/conversations/{id} - Delete a conversation
 - GET /api/chat/history - Get chat history for user (legacy, deprecated)
 - POST /api/chat/message - Send a message (non-streaming alternative)
+- POST /api/chat/upload - Upload a file attachment for chat context
 """
 
 from datetime import datetime
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from pydantic import BaseModel
 from sqlalchemy import select, func
 
@@ -26,6 +27,7 @@ from api.auth_middleware import AuthContext, get_current_auth
 from models.database import get_session
 from models.chat_message import ChatMessage
 from models.conversation import Conversation
+from services.file_handler import store_file, MAX_FILE_SIZE
 
 router = APIRouter()
 
@@ -429,3 +431,53 @@ async def send_message(
             assistant_message_id=assistant_msg_id,
             assistant_content=response_content,
         )
+
+
+# =============================================================================
+# File Upload
+# =============================================================================
+
+class UploadResponse(BaseModel):
+    upload_id: str
+    filename: str
+    mime_type: str
+    size: int
+
+
+@router.post("/upload", response_model=UploadResponse)
+async def upload_file(
+    file: UploadFile = File(...),
+    auth: AuthContext = Depends(get_current_auth),
+) -> UploadResponse:
+    """
+    Upload a file to attach to a chat message.
+
+    Files are stored temporarily in memory and consumed when the
+    message is sent via WebSocket. Max size: 10 MB.
+    """
+    if file.filename is None:
+        raise HTTPException(status_code=400, detail="Filename is required")
+
+    data: bytes = await file.read()
+
+    if len(data) > MAX_FILE_SIZE:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File exceeds maximum size of {MAX_FILE_SIZE // (1024 * 1024)} MB",
+        )
+
+    try:
+        stored = store_file(
+            filename=file.filename,
+            data=data,
+            content_type=file.content_type,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=413, detail=str(e))
+
+    return UploadResponse(
+        upload_id=stored.upload_id,
+        filename=stored.filename,
+        mime_type=stored.mime_type,
+        size=stored.size,
+    )

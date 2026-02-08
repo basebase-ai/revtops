@@ -440,6 +440,7 @@ class ChatOrchestrator:
         user_message: str,
         save_user_message: bool = True,
         skip_history: bool = False,
+        attachment_ids: list[str] | None = None,
     ) -> AsyncGenerator[str, None]:
         """
         Process a user message and stream Claude's response with true streaming.
@@ -448,6 +449,7 @@ class ChatOrchestrator:
             user_message: The user's message text
             save_user_message: If False, don't save user_message to DB (for internal system messages)
             skip_history: If True, skip loading history from DB (e.g. first message in a new conversation)
+            attachment_ids: Optional list of upload IDs for attached files
 
         Yields:
             String chunks of the assistant's response (text streams immediately)
@@ -468,9 +470,14 @@ class ChatOrchestrator:
             history = await self._load_history(limit=20)
             logger.info("[Orchestrator] Loaded %d history messages", len(history))
 
+        # Build user content — may include attachment blocks (images, PDFs, text)
+        user_content: str | list[dict[str, Any]] = self._build_user_content(
+            user_message, attachment_ids,
+        )
+
         # Add user message to context for Claude
         messages: list[dict[str, Any]] = history + [
-            {"role": "user", "content": user_message}
+            {"role": "user", "content": user_content}
         ]
 
         # Keep track of content blocks for saving (preserves interleaving order)
@@ -811,6 +818,54 @@ WHERE scheduled_start >= '2026-01-27'::date AND scheduled_start < '2026-01-28'::
                     })
             messages.append({"role": "assistant", "content": assistant_content})
             messages.append({"role": "user", "content": tool_results})
+
+    @staticmethod
+    def _build_user_content(
+        user_message: str,
+        attachment_ids: list[str] | None,
+    ) -> str | list[dict[str, Any]]:
+        """
+        Build the ``content`` value for a Claude user message.
+
+        If there are no attachments, returns a plain string (most common path).
+        If there are attachments, returns a list of content blocks (images,
+        documents, text) followed by the user's text message.
+        """
+        if not attachment_ids:
+            return user_message
+
+        from services.file_handler import (
+            retrieve_file,
+            remove_file,
+            build_claude_content_blocks,
+            StoredFile,
+        )
+
+        stored_files: list[StoredFile] = []
+        for aid in attachment_ids:
+            sf: StoredFile | None = retrieve_file(aid)
+            if sf is not None:
+                stored_files.append(sf)
+            else:
+                logger.warning("[Orchestrator] Attachment %s not found (expired?)", aid)
+
+        if not stored_files:
+            return user_message
+
+        blocks: list[dict[str, Any]] = build_claude_content_blocks(stored_files)
+
+        # Append the user's text as the final block
+        blocks.append({"type": "text", "text": user_message})
+
+        # Clean up temp storage now that we've consumed the files
+        for sf in stored_files:
+            remove_file(sf.upload_id)
+
+        logger.info(
+            "[Orchestrator] Built %d content block(s) from %d attachment(s)",
+            len(blocks), len(stored_files),
+        )
+        return blocks
 
     async def _save_user_message_safe(self, user_msg: str) -> None:
         """Fire-and-forget wrapper for _save_user_message. Logs errors instead of raising."""
