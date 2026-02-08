@@ -137,6 +137,7 @@ async def get_pending_changes(
                         display_name = before.get("name") or before.get("email")
                     record_info["name"] = display_name
                     record_info["email"] = input_data.get("email") or before.get("email")
+                    record_info["company"] = input_data.get("company") or before.get("company")
                 elif snap.table_name == "accounts":
                     record_info["name"] = input_data.get("name") or before.get("name")
                     record_info["domain"] = input_data.get("domain") or before.get("domain")

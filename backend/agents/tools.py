@@ -278,6 +278,12 @@ async def execute_tool(
         logger.info("[Tools] enrich_company_with_apollo completed")
         return result
 
+    elif tool_name == "crm_write":
+        conversation_id: str | None = (context or {}).get("conversation_id")
+        result = await _crm_write(tool_input, organization_id, user_id, skip_approval, conversation_id=conversation_id)
+        logger.info("[Tools] crm_write completed: %s", result.get("status", result.get("error", "unknown")))
+        return result
+
     elif tool_name == "send_email_from":
         result = await _send_email_from(tool_input, organization_id, user_id, skip_approval)
         logger.info("[Tools] send_email_from completed: %s", result.get("status"))
@@ -1226,7 +1232,11 @@ def _truncate_result(url: str, content: str, *, mode: str, max_chars: int) -> di
 
 
 async def _crm_write(
-    params: dict[str, Any], organization_id: str, user_id: str | None, skip_approval: bool = False
+    params: dict[str, Any],
+    organization_id: str,
+    user_id: str | None,
+    skip_approval: bool = False,
+    conversation_id: str | None = None,
 ) -> dict[str, Any]:
     """
     Create or update CRM records with user approval workflow.
@@ -1240,6 +1250,7 @@ async def _crm_write(
         organization_id: Organization UUID
         user_id: User UUID
         skip_approval: If True, execute immediately without approval
+        conversation_id: Conversation UUID for grouping into a ChangeSession
     """
     target_system = params.get("target_system", "").lower()
     record_type = params.get("record_type", "").lower()
@@ -1380,14 +1391,11 @@ async def _crm_write(
             # Continue without duplicate check - not a blocker
     
     # Create CrmOperation record
-    # Note: conversation_id should be passed via context, but _crm_write doesn't receive context
-    # For now, this is only used via run_sql_write which routes through _handle_crm_write_from_sql
-    # which properly sets conversation_id. If _crm_write is called directly, conversation_id will be None.
     async with get_session(organization_id=organization_id) as session:
         crm_operation = CrmOperation(
             organization_id=UUID(organization_id),
             user_id=UUID(user_id) if user_id else None,
-            conversation_id=None,  # Will be set by caller if needed
+            conversation_id=UUID(conversation_id) if conversation_id else None,
             target_system=target_system,
             record_type=record_type,
             operation=operation,

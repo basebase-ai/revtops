@@ -811,28 +811,17 @@ export function Chat({
           <div className={`rounded-2xl border bg-surface-900 transition-all duration-150 ${
             (!isConnected || isThinking) ? 'border-surface-700 opacity-50' : 'border-surface-700 focus-within:ring-2 focus-within:ring-primary-500 focus-within:border-transparent'
           }`}>
-            {/* Attachment chips */}
+            {/* Attachment cards */}
             {pendingAttachments.length > 0 && (
-              <div className="flex flex-wrap gap-1.5 px-3 pt-2">
+              <div className="flex flex-wrap gap-2 px-3 pt-3">
                 {pendingAttachments.map((att) => (
-                  <span
+                  <AttachmentCard
                     key={att.upload_id}
-                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-surface-800 border border-surface-700 text-xs text-surface-300"
-                  >
-                    <svg className="w-3 h-3 text-surface-500 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
-                    </svg>
-                    <span className="truncate max-w-[140px]">{att.filename}</span>
-                    <button
-                      type="button"
-                      onClick={() => removeAttachment(att.upload_id)}
-                      className="text-surface-500 hover:text-surface-200 transition-colors"
-                    >
-                      <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                      </svg>
-                    </button>
-                  </span>
+                    filename={att.filename}
+                    mimeType={att.mime_type}
+                    size={att.size}
+                    onRemove={() => removeAttachment(att.upload_id)}
+                  />
                 ))}
               </div>
             )}
@@ -939,7 +928,7 @@ function MessageWithBlocks({
     return <></>;
   }
 
-  // For user messages, use the simple Message component (with attachment chips if any)
+  // For user messages, use the simple Message component (with attachment cards if any)
   if (isUser) {
     const textContent = blocks
       .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
@@ -950,34 +939,32 @@ function MessageWithBlocks({
     );
     
     return (
-      <div>
-        {attachments.length > 0 && (
-          <div className="flex justify-end mb-1">
-            <div className="flex flex-wrap gap-1 justify-end max-w-[85%]">
+      <div className="flex gap-2 flex-row-reverse animate-slide-up">
+        {/* Avatar */}
+        <div className="flex-shrink-0 w-6 h-6 rounded-md flex items-center justify-center bg-primary-600">
+          <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+          </svg>
+        </div>
+
+        {/* Content: bubble + attachments + timestamp, all right-aligned */}
+        <div className="flex-1 max-w-[85%] text-right">
+          <div className="inline-block px-3 py-2 rounded-xl rounded-tr-sm bg-primary-600 text-white text-[13px] leading-relaxed">
+            <div className="whitespace-pre-wrap break-words text-left">{textContent}</div>
+          </div>
+          {attachments.length > 0 && (
+            <div className="flex flex-wrap gap-2 justify-end mt-1.5">
               {attachments.map((att, i) => (
-                <span
-                  key={`att-${i}`}
-                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-primary-900/40 border border-primary-800/50 text-xs text-primary-300"
-                >
-                  <svg className="w-3 h-3 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
-                  </svg>
-                  <span className="truncate max-w-[160px]">{att.filename}</span>
-                </span>
+                <AttachmentCard key={`att-${i}`} filename={att.filename} mimeType={att.mimeType} size={att.size} />
               ))}
             </div>
+          )}
+          <div className="mt-0.5">
+            <span className="text-[10px] text-surface-500">
+              {message.timestamp.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}
+            </span>
           </div>
-        )}
-        <Message
-          message={{
-            id: message.id,
-            role: message.role,
-            content: textContent,
-            timestamp: message.timestamp,
-            isStreaming: message.isStreaming,
-          }}
-          onArtifactClick={onArtifactClick}
-        />
+        </div>
       </div>
     );
   }
@@ -1477,6 +1464,89 @@ function ConnectionStatus({
     <div className="flex items-center gap-2 text-sm text-surface-400">
       <div className={`w-2 h-2 rounded-full ${config.color}`} />
       <span>{config.text}</span>
+    </div>
+  );
+}
+
+/**
+ * Get a short file-type label from a mime type or filename extension.
+ */
+function getFileTypeLabel(filename: string, mimeType: string): string {
+  const ext: string = filename.split('.').pop()?.toLowerCase() ?? '';
+  const extMap: Record<string, string> = {
+    pdf: 'PDF', csv: 'CSV', xlsx: 'Excel', xls: 'Excel',
+    json: 'JSON', md: 'Markdown', xml: 'XML', html: 'HTML', txt: 'Text',
+    png: 'PNG', jpg: 'JPEG', jpeg: 'JPEG', gif: 'GIF', webp: 'WebP', svg: 'SVG',
+  };
+  if (ext && ext in extMap) return extMap[ext];
+  if (mimeType.startsWith('image/')) return 'Image';
+  if (mimeType.startsWith('text/')) return 'Text';
+  return ext.toUpperCase() || 'File';
+}
+
+/**
+ * Format file size in human-readable form.
+ */
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/**
+ * File-type icon color based on extension.
+ */
+function getFileIconColor(filename: string, mimeType: string): string {
+  const ext: string = filename.split('.').pop()?.toLowerCase() ?? '';
+  if (['csv', 'xlsx', 'xls'].includes(ext)) return 'bg-emerald-700 text-emerald-200';
+  if (ext === 'pdf') return 'bg-red-800 text-red-200';
+  if (ext === 'json') return 'bg-yellow-800 text-yellow-200';
+  if (mimeType.startsWith('image/')) return 'bg-violet-800 text-violet-200';
+  return 'bg-surface-700 text-surface-300';
+}
+
+/**
+ * Attachment card — used in both pending input and sent message bubbles.
+ * Pass `onRemove` to show a dismiss button (for pending attachments).
+ */
+function AttachmentCard({
+  filename,
+  mimeType,
+  size,
+  onRemove,
+}: {
+  filename: string;
+  mimeType: string;
+  size: number;
+  onRemove?: () => void;
+}): JSX.Element {
+  const label: string = getFileTypeLabel(filename, mimeType);
+  const sizeStr: string = formatFileSize(size);
+  const iconColor: string = getFileIconColor(filename, mimeType);
+
+  return (
+    <div className="relative group inline-flex items-center gap-2.5 rounded-xl bg-surface-800 border border-surface-700 px-3 py-2 max-w-[220px]">
+      {/* File type icon */}
+      <div className={`flex-shrink-0 w-9 h-9 rounded-lg flex items-center justify-center text-[10px] font-bold ${iconColor}`}>
+        {label}
+      </div>
+      {/* Name + size */}
+      <div className="min-w-0 flex flex-col">
+        <span className="text-xs text-surface-200 font-medium truncate">{filename}</span>
+        <span className="text-[10px] text-surface-500">{sizeStr}</span>
+      </div>
+      {/* Remove button (only for pending) */}
+      {onRemove && (
+        <button
+          type="button"
+          onClick={onRemove}
+          className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-surface-700 border border-surface-600 text-surface-400 hover:text-surface-100 hover:bg-surface-600 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+        >
+          <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
+      )}
     </div>
   );
 }

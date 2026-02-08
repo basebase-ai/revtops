@@ -17,6 +17,7 @@ interface RecordInfo {
   record_id: string;
   name?: string | null;
   email?: string | null;
+  company?: string | null;
   domain?: string | null;
   amount?: number | null;
   changes?: string[] | null;
@@ -357,7 +358,7 @@ export function PendingChangesPage(): JSX.Element {
                   {isExpanded && (
                     <div className="border-t border-surface-800 px-4 py-3 space-y-3">
                       {/* Record list */}
-                      <div className="space-y-1.5">
+                      <div className="space-y-1.5 max-h-64 overflow-y-auto">
                         {session.records.map((record, idx) => (
                           <div
                             key={`${record.record_id}-${idx}`}
@@ -373,6 +374,16 @@ export function PendingChangesPage(): JSX.Element {
                               <span className="text-surface-200 truncate">
                                 {recordLabel(record)}
                               </span>
+                              {record.table === 'contacts' && record.company && (
+                                <span className="text-surface-400 text-xs truncate">
+                                  {record.company}
+                                </span>
+                              )}
+                              {record.table === 'contacts' && record.email && record.name && (
+                                <span className="text-surface-500 text-xs truncate">
+                                  {record.email}
+                                </span>
+                              )}
                               {record.amount != null && (
                                 <span className="text-surface-400 text-xs ml-auto tabular-nums">
                                   ${Number(record.amount).toLocaleString()}
@@ -400,32 +411,32 @@ export function PendingChangesPage(): JSX.Element {
                           View conversation &rarr;
                         </button>
                       )}
-
-                      {/* Per-session actions */}
-                      <div className="flex items-center gap-2 pt-2 border-t border-surface-800">
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            void discardSession(session.id);
-                          }}
-                          disabled={isBusy}
-                          className="px-3 py-1 text-xs font-medium rounded-md border border-surface-600 text-surface-300 hover:bg-surface-800 disabled:opacity-40 transition-colors"
-                        >
-                          Discard
-                        </button>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            void commitSession(session.id);
-                          }}
-                          disabled={isBusy}
-                          className="px-3 py-1 text-xs font-medium rounded-md bg-primary-600 hover:bg-primary-500 text-white disabled:opacity-40 transition-colors"
-                        >
-                          {busySession === session.id ? 'Working...' : 'Commit'}
-                        </button>
-                      </div>
                     </div>
                   )}
+
+                  {/* Per-session actions – always visible */}
+                  <div className="flex items-center gap-2 px-4 py-2.5 border-t border-surface-800">
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void discardSession(session.id);
+                      }}
+                      disabled={isBusy}
+                      className="px-3 py-1 text-xs font-medium rounded-md border border-surface-600 text-surface-300 hover:bg-surface-800 disabled:opacity-40 transition-colors"
+                    >
+                      Discard
+                    </button>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void commitSession(session.id);
+                      }}
+                      disabled={isBusy}
+                      className="px-3 py-1 text-xs font-medium rounded-md bg-primary-600 hover:bg-primary-500 text-white disabled:opacity-40 transition-colors"
+                    >
+                      {busySession === session.id ? `Committing ${session.record_count} record${session.record_count !== 1 ? 's' : ''}...` : 'Commit'}
+                    </button>
+                  </div>
                 </div>
               );
             })}

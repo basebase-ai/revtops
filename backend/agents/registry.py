@@ -437,6 +437,66 @@ Requires company domain (e.g., "acme.com") to look up.""",
 # -----------------------------------------------------------------------------
 
 register_tool(
+    name="crm_write",
+    description="""Create or update records in the CRM (HubSpot) in bulk.
+
+Use this when the user wants to add, update, or import contacts, companies, or deals.
+This tool accepts a batch of records (up to 100) and routes them through a review workflow:
+changes appear as "pending" in the Pending Changes panel where the user can Commit or Discard.
+
+Property names for each record type:
+- **contact**: email (required), firstname, lastname, company, jobtitle, phone
+- **company**: name (required), domain, industry, numberofemployees
+- **deal**: dealname (required), amount, dealstage, closedate, pipeline
+
+For updates, each record MUST include an "id" field with the existing record UUID.
+
+Example: create 3 contacts from a CSV:
+{
+  "target_system": "hubspot",
+  "record_type": "contact",
+  "operation": "create",
+  "records": [
+    {"email": "alice@acme.com", "firstname": "Alice", "lastname": "Smith", "company": "Acme"},
+    {"email": "bob@acme.com", "firstname": "Bob", "lastname": "Jones", "company": "Acme"},
+    {"email": "carol@acme.com", "firstname": "Carol", "lastname": "Lee", "company": "Acme"}
+  ]
+}
+
+IMPORTANT: Always explain what you're going to create/update BEFORE calling this tool.
+Do NOT add any text after the tool call - let the pending changes panel speak for itself.""",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "target_system": {
+                "type": "string",
+                "enum": ["hubspot"],
+                "description": "Target CRM system",
+            },
+            "record_type": {
+                "type": "string",
+                "enum": ["contact", "company", "deal"],
+                "description": "Type of CRM record",
+            },
+            "operation": {
+                "type": "string",
+                "enum": ["create", "update"],
+                "description": "Whether to create new records or update existing ones",
+            },
+            "records": {
+                "type": "array",
+                "items": {"type": "object"},
+                "description": "Array of record objects (max 100). For updates, each must include 'id'.",
+            },
+        },
+        "required": ["target_system", "record_type", "operation", "records"],
+    },
+    category=ToolCategory.EXTERNAL_WRITE,
+    default_requires_approval=False,  # Has its own review flow via ChangeSession
+)
+
+
+register_tool(
     name="send_email_from",
     description="""Send an email from your connected Gmail or Outlook account.
 
