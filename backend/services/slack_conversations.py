@@ -150,6 +150,55 @@ async def upsert_slack_user_mappings_from_metadata(
     return created_count
 
 
+async def refresh_slack_user_mappings_for_org(organization_id: str) -> int:
+    """Refresh Slack user mappings for active Slack integrations in an org."""
+    async with get_admin_session() as session:
+        integrations_query = (
+            select(Integration)
+            .where(Integration.organization_id == UUID(organization_id))
+            .where(Integration.provider == "slack")
+            .where(Integration.is_active == True)
+        )
+        integrations_result = await session.execute(integrations_query)
+        slack_integrations = integrations_result.scalars().all()
+
+    if not slack_integrations:
+        logger.info(
+            "[slack_conversations] No active Slack integrations found for org=%s when refreshing mappings",
+            organization_id,
+        )
+        return 0
+
+    total_created = 0
+    for integration in slack_integrations:
+        target_user_id = integration.user_id or integration.connected_by_user_id
+        if not target_user_id:
+            logger.warning(
+                "[slack_conversations] Slack integration %s has no user_id or connected_by_user_id; skipping mapping refresh",
+                integration.id,
+            )
+            continue
+        created_count = await upsert_slack_user_mappings_from_metadata(
+            organization_id=organization_id,
+            user_id=target_user_id,
+            integration_metadata=integration.extra_data or {},
+        )
+        total_created += created_count
+        logger.debug(
+            "[slack_conversations] Refreshed %d Slack user mappings for integration=%s user=%s",
+            created_count,
+            integration.id,
+            target_user_id,
+        )
+
+    logger.info(
+        "[slack_conversations] Refreshed %d Slack user mappings for org=%s",
+        total_created,
+        organization_id,
+    )
+    return total_created
+
+
 def _normalize_name(value: str | None) -> str:
     """Normalize a person name for case-insensitive equality matching."""
     if not value:
