@@ -647,6 +647,23 @@ async def _upsert_slack_user_mapping(
         )
 
 
+async def upsert_slack_user_mapping_for_user(
+    organization_id: str,
+    user_id: UUID,
+    slack_user_id: str,
+    slack_email: str | None,
+    match_source: str,
+) -> None:
+    """Public helper to upsert a Slack mapping for a specific user."""
+    await _upsert_slack_user_mapping(
+        organization_id=organization_id,
+        user_id=user_id,
+        slack_user_id=slack_user_id,
+        slack_email=slack_email,
+        match_source=match_source,
+    )
+
+
 async def _fetch_slack_user_info(
     organization_id: str,
     slack_user_id: str,

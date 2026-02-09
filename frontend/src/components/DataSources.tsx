@@ -111,6 +111,14 @@ interface DisplayIntegration extends Integration {
   connected: boolean;
 }
 
+interface SlackUserMapping {
+  id: string;
+  slack_user_id: string;
+  slack_email: string | null;
+  match_source: string;
+  created_at: string;
+}
+
 /**
  * Format sync stats into a human-readable summary string.
  * Shows counts for different object types synced.
@@ -204,12 +212,21 @@ export function DataSources(): JSX.Element {
   const [disconnectingProviders, setDisconnectingProviders] = useState<Set<string>>(new Set());
   const [connectingProvider, setConnectingProvider] = useState<string | null>(null);
   const [showSheetImporter, setShowSheetImporter] = useState(false);
+  const [slackMappings, setSlackMappings] = useState<SlackUserMapping[]>([]);
+  const [slackMappingsLoading, setSlackMappingsLoading] = useState(false);
+  const [slackMappingsError, setSlackMappingsError] = useState<string | null>(null);
+  const [slackEmailInput, setSlackEmailInput] = useState('');
+  const [slackCodeInput, setSlackCodeInput] = useState('');
+  const [slackMappingStatus, setSlackMappingStatus] = useState<string | null>(null);
   
   // Live sync progress from WebSocket
   const [syncProgress, setSyncProgress] = useState<Record<string, number>>({});
 
   const organizationId = organization?.id ?? '';
   const userId = user?.id ?? '';
+
+  const slackIntegration = rawIntegrations.find((integration) => integration.provider === 'slack');
+  const slackConnected = Boolean(slackIntegration?.isActive);
   
   // Handle WebSocket messages for sync progress
   const handleWsMessage = useCallback((message: string) => {
@@ -253,6 +270,33 @@ export function DataSources(): JSX.Element {
   useWebSocket(userId ? '/ws/chat' : '', {
     onMessage: handleWsMessage,
   });
+
+  const fetchSlackMappings = useCallback(async (): Promise<void> => {
+    if (!organizationId || !userId) return;
+    setSlackMappingsLoading(true);
+    setSlackMappingsError(null);
+    try {
+      const params = new URLSearchParams({ organization_id: organizationId, user_id: userId });
+      const response = await fetch(`${API_BASE}/slack/user-mappings?${params.toString()}`);
+      if (!response.ok) {
+        throw new Error(`Failed to load Slack mappings: ${response.status}`);
+      }
+      const data = (await response.json()) as { mappings: SlackUserMapping[] };
+      setSlackMappings(data.mappings);
+      console.log('[DataSources] Loaded Slack mappings:', data.mappings.length);
+    } catch (error) {
+      console.error('[DataSources] Failed to load Slack mappings:', error);
+      setSlackMappingsError(error instanceof Error ? error.message : 'Unknown error');
+    } finally {
+      setSlackMappingsLoading(false);
+    }
+  }, [organizationId, userId]);
+
+  useEffect(() => {
+    if (slackConnected) {
+      void fetchSlackMappings();
+    }
+  }, [fetchSlackMappings, slackConnected]);
 
   // Transform raw integrations to display integrations with UI metadata
   // Filter out raw "microsoft" integration - it's a meta-integration from Nango's OAuth.
@@ -524,6 +568,82 @@ export function DataSources(): JSX.Element {
     }
   };
 
+  const handleSlackRequestCode = async (): Promise<void> => {
+    if (!organizationId || !userId || !slackEmailInput.trim()) return;
+    setSlackMappingStatus(null);
+    try {
+      const response = await fetch(`${API_BASE}/slack/user-mappings/request-code`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          user_id: userId,
+          organization_id: organizationId,
+          email: slackEmailInput.trim(),
+        }),
+      });
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Error(text || `Failed to send code: ${response.status}`);
+      }
+      setSlackMappingStatus('Verification code sent via Slack DM.');
+    } catch (error) {
+      console.error('[DataSources] Failed to request Slack code:', error);
+      setSlackMappingStatus(
+        error instanceof Error ? error.message : 'Failed to send verification code.',
+      );
+    }
+  };
+
+  const handleSlackVerifyCode = async (): Promise<void> => {
+    if (!organizationId || !userId || !slackEmailInput.trim() || !slackCodeInput.trim()) return;
+    setSlackMappingStatus(null);
+    try {
+      const response = await fetch(`${API_BASE}/slack/user-mappings/verify-code`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          user_id: userId,
+          organization_id: organizationId,
+          email: slackEmailInput.trim(),
+          code: slackCodeInput.trim(),
+        }),
+      });
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Error(text || `Failed to verify code: ${response.status}`);
+      }
+      setSlackMappingStatus('Slack account connected.');
+      setSlackCodeInput('');
+      void fetchSlackMappings();
+    } catch (error) {
+      console.error('[DataSources] Failed to verify Slack code:', error);
+      setSlackMappingStatus(
+        error instanceof Error ? error.message : 'Failed to verify code.',
+      );
+    }
+  };
+
+  const handleSlackDeleteMapping = async (mappingId: string): Promise<void> => {
+    if (!organizationId || !userId) return;
+    try {
+      const params = new URLSearchParams({ organization_id: organizationId, user_id: userId });
+      const response = await fetch(
+        `${API_BASE}/slack/user-mappings/${mappingId}?${params.toString()}`,
+        { method: 'DELETE' },
+      );
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Error(text || `Failed to delete mapping: ${response.status}`);
+      }
+      void fetchSlackMappings();
+    } catch (error) {
+      console.error('[DataSources] Failed to delete Slack mapping:', error);
+      setSlackMappingStatus(
+        error instanceof Error ? error.message : 'Failed to delete Slack mapping.',
+      );
+    }
+  };
+
   // Separate integrations into three categories:
   // 1. Action Required: user-scoped where team has connected but current user hasn't
   // 2. Connected: org-scoped, or user-scoped where current user has connected
@@ -654,6 +774,98 @@ export function DataSources(): JSX.Element {
       );
     };
 
+    const renderSlackMapping = (): JSX.Element | null => {
+      if (integration.provider !== 'slack' || state !== 'connected') return null;
+
+      return (
+        <div className="mt-4 pt-4 border-t border-surface-700/50 space-y-3">
+          <div>
+            <h4 className="text-sm font-semibold text-surface-100">Connect your per-user email</h4>
+            <p className="text-xs text-surface-400 mt-1">
+              Add your Slack email to link your RevTops account. We'll DM a 6-digit code to confirm.
+            </p>
+          </div>
+
+          <div className="grid gap-2 sm:grid-cols-[1fr_auto]">
+            <input
+              type="email"
+              value={slackEmailInput}
+              onChange={(event) => setSlackEmailInput(event.target.value)}
+              placeholder="you@company.com"
+              className="w-full rounded-lg bg-surface-900 border border-surface-700 px-3 py-2 text-sm text-surface-100 placeholder:text-surface-500 focus:border-primary-500 focus:outline-none"
+            />
+            <button
+              onClick={() => void handleSlackRequestCode()}
+              disabled={!slackEmailInput.trim()}
+              className="px-4 py-2 text-sm font-medium text-primary-300 border border-primary-500/30 hover:bg-primary-500/10 disabled:opacity-50 rounded-lg transition-colors"
+            >
+              Send code
+            </button>
+          </div>
+
+          <div className="grid gap-2 sm:grid-cols-[1fr_auto]">
+            <input
+              type="text"
+              value={slackCodeInput}
+              onChange={(event) => setSlackCodeInput(event.target.value)}
+              placeholder="Enter 6-digit code"
+              className="w-full rounded-lg bg-surface-900 border border-surface-700 px-3 py-2 text-sm text-surface-100 placeholder:text-surface-500 focus:border-primary-500 focus:outline-none"
+            />
+            <button
+              onClick={() => void handleSlackVerifyCode()}
+              disabled={!slackEmailInput.trim() || !slackCodeInput.trim()}
+              className="px-4 py-2 text-sm font-medium text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/10 disabled:opacity-50 rounded-lg transition-colors"
+            >
+              Verify
+            </button>
+          </div>
+
+          {slackMappingStatus && (
+            <p className="text-xs text-surface-300">{slackMappingStatus}</p>
+          )}
+          {slackMappingsError && (
+            <p className="text-xs text-red-400">{slackMappingsError}</p>
+          )}
+
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <h5 className="text-xs font-semibold uppercase tracking-wide text-surface-400">
+                Linked Slack emails
+              </h5>
+              {slackMappingsLoading && (
+                <span className="text-xs text-surface-500">Loading...</span>
+              )}
+            </div>
+            {slackMappings.length === 0 ? (
+              <p className="text-xs text-surface-500">No linked Slack emails yet.</p>
+            ) : (
+              <ul className="space-y-2">
+                {slackMappings.map((mapping) => (
+                  <li
+                    key={mapping.id}
+                    className="flex items-center justify-between rounded-lg border border-surface-700/60 px-3 py-2 text-xs text-surface-200"
+                  >
+                    <div className="min-w-0">
+                      <div className="truncate">{mapping.slack_email ?? 'Unknown email'}</div>
+                      <div className="text-[11px] text-surface-500">
+                        {mapping.slack_user_id} · {mapping.match_source}
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => void handleSlackDeleteMapping(mapping.id)}
+                      className="ml-3 text-red-400 hover:text-red-300 text-xs"
+                    >
+                      Remove
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </div>
+      );
+    };
+
     return (
       <div key={integration.id} className={cardClass}>
         <div className="flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-4">
@@ -752,6 +964,7 @@ export function DataSources(): JSX.Element {
 
         {/* Team connections footer */}
         {renderTeamInfo()}
+        {renderSlackMapping()}
       </div>
     );
   };

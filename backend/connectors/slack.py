@@ -758,3 +758,26 @@ class SlackConnector(BaseConnector):
             "ts": data.get("ts"),
             "message": data.get("message"),
         }
+
+    async def send_direct_message(
+        self,
+        slack_user_id: str,
+        text: str,
+    ) -> dict[str, Any]:
+        """Open a DM channel and send a direct message."""
+        logger.info("[SlackConnector] Opening DM for slack_user_id=%s", slack_user_id)
+        open_data = await self._make_request(
+            "POST",
+            "conversations.open",
+            json_data={"users": slack_user_id},
+        )
+        channel_id = (open_data.get("channel") or {}).get("id")
+        if not channel_id:
+            raise ValueError("Slack API error: missing DM channel id")
+
+        logger.info(
+            "[SlackConnector] Posting DM to slack_user_id=%s channel=%s",
+            slack_user_id,
+            channel_id,
+        )
+        return await self.post_message(channel=channel_id, text=text)
