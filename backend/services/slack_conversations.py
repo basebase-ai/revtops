@@ -10,8 +10,7 @@ from __future__ import annotations
 import logging
 import uuid
 from datetime import datetime
-import re
-from typing import Any, Iterable
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy import select, text, update
@@ -111,94 +110,6 @@ def _extract_slack_user_ids(extra_data: dict[str, Any]) -> set[str]:
             candidates.add(authed_user_id)
 
     return candidates
-
-
-_EMAIL_REGEX = re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.IGNORECASE)
-
-
-def _collect_emails_from_value(value: Any, emails: set[str]) -> None:
-    if value is None:
-        return
-    if isinstance(value, str):
-        for match in _EMAIL_REGEX.findall(value):
-            emails.add(match.strip().lower())
-        return
-    if isinstance(value, dict):
-        for item in value.values():
-            _collect_emails_from_value(item, emails)
-        return
-    if isinstance(value, Iterable) and not isinstance(value, (bytes, bytearray)):
-        for item in value:
-            _collect_emails_from_value(item, emails)
-
-
-def _extract_emails_from_payload(payload: dict[str, Any] | None) -> set[str]:
-    emails: set[str] = set()
-    if not payload:
-        return emails
-    _collect_emails_from_value(payload, emails)
-    return emails
-
-
-def _find_slack_user_payload(payload: dict[str, Any] | None) -> dict[str, Any] | None:
-    if not payload:
-        return None
-    if isinstance(payload.get("user"), dict):
-        return payload["user"]
-    data = payload.get("data")
-    if isinstance(data, dict) and isinstance(data.get("user"), dict):
-        return data["user"]
-    if isinstance(data, dict):
-        return data
-    return payload
-
-
-def _extract_slack_user_id_from_payload(payload: dict[str, Any] | None) -> str | None:
-    if not payload:
-        return None
-    for key in ("id", "user_id", "slack_user_id"):
-        value = payload.get(key)
-        if isinstance(value, str) and value:
-            return value
-    return None
-
-
-async def upsert_slack_user_mapping_from_nango_action(
-    organization_id: str,
-    user_id: UUID,
-    action_result: dict[str, Any],
-    match_source: str = "slack_nango_get_user_info",
-) -> int:
-    slack_user_payload = _find_slack_user_payload(action_result)
-    slack_user_id = _extract_slack_user_id_from_payload(slack_user_payload) or _extract_slack_user_id_from_payload(
-        action_result
-    )
-    if not slack_user_id:
-        logger.warning(
-            "[slack_conversations] Nango Slack user info missing user id org=%s user=%s keys=%s",
-            organization_id,
-            user_id,
-            sorted(action_result.keys()),
-        )
-        return 0
-
-    emails = _extract_emails_from_payload(slack_user_payload or action_result)
-    slack_email = ",".join(sorted(emails)) if emails else None
-    logger.info(
-        "[slack_conversations] Upserting Slack mapping from Nango action org=%s user=%s slack_user=%s emails=%s",
-        organization_id,
-        user_id,
-        slack_user_id,
-        sorted(emails),
-    )
-    await _upsert_slack_user_mapping(
-        organization_id=organization_id,
-        user_id=user_id,
-        slack_user_id=slack_user_id,
-        slack_email=slack_email,
-        match_source=match_source,
-    )
-    return 1
 
 
 async def upsert_slack_user_mappings_from_metadata(
