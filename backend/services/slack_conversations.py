@@ -218,6 +218,127 @@ async def refresh_slack_user_mappings_for_org(organization_id: str) -> int:
     return total_created
 
 
+async def refresh_slack_user_mappings_from_directory(
+    organization_id: str,
+    connector: SlackConnector,
+) -> int:
+    """Refresh Slack user mappings by matching Slack directory emails to RevTops users."""
+    logger.info(
+        "[slack_conversations] Starting Slack directory mapping refresh for org=%s",
+        organization_id,
+    )
+    async with get_admin_session() as session:
+        users_query = select(User).where(User.organization_id == UUID(organization_id))
+        users_result = await session.execute(users_query)
+        org_users = users_result.scalars().all()
+
+    email_to_user: dict[str, User] = {}
+    for user in org_users:
+        if user.email:
+            email_to_user[user.email.strip().lower()] = user
+
+    logger.info(
+        "[slack_conversations] Loaded %d org users with %d emails for org=%s",
+        len(org_users),
+        len(email_to_user),
+        organization_id,
+    )
+
+    slack_users = await connector.get_users()
+    logger.info(
+        "[slack_conversations] Retrieved %d Slack users for org=%s",
+        len(slack_users),
+        organization_id,
+    )
+
+    mapped_count = 0
+    for slack_user in slack_users:
+        slack_user_id = slack_user.get("id")
+        if not slack_user_id:
+            logger.info(
+                "[slack_conversations] Skipping Slack user without id org=%s payload_keys=%s",
+                organization_id,
+                sorted(slack_user.keys()),
+            )
+            continue
+
+        if slack_user.get("deleted"):
+            logger.info(
+                "[slack_conversations] Skipping deleted Slack user=%s org=%s",
+                slack_user_id,
+                organization_id,
+            )
+            continue
+
+        if slack_user.get("is_bot"):
+            logger.info(
+                "[slack_conversations] Skipping bot Slack user=%s org=%s",
+                slack_user_id,
+                organization_id,
+            )
+            continue
+
+        logger.info(
+            "[slack_conversations] Fetching Slack profile for user=%s org=%s",
+            slack_user_id,
+            organization_id,
+        )
+        slack_user_payload = slack_user
+        if not slack_user.get("profile"):
+            slack_user_payload = await _fetch_slack_user_info(
+                organization_id=organization_id,
+                slack_user_id=slack_user_id,
+            )
+        slack_email = _extract_slack_email(slack_user_payload)
+        logger.info(
+            "[slack_conversations] Slack user=%s org=%s has_email=%s",
+            slack_user_id,
+            organization_id,
+            bool(slack_email),
+        )
+
+        if not slack_email:
+            logger.info(
+                "[slack_conversations] Skipping Slack user=%s org=%s due to missing email",
+                slack_user_id,
+                organization_id,
+            )
+            continue
+
+        matched_user = email_to_user.get(slack_email)
+        if not matched_user:
+            logger.info(
+                "[slack_conversations] No RevTops email match for Slack user=%s email=%s org=%s",
+                slack_user_id,
+                slack_email,
+                organization_id,
+            )
+            continue
+
+        logger.info(
+            "[slack_conversations] Matched Slack user=%s email=%s to RevTops user=%s org=%s",
+            slack_user_id,
+            slack_email,
+            matched_user.id,
+            organization_id,
+        )
+        await _upsert_slack_user_mapping(
+            organization_id=organization_id,
+            user_id=matched_user.id,
+            slack_user_id=slack_user_id,
+            slack_email=slack_email,
+            match_source="slack_directory_email",
+        )
+        mapped_count += 1
+
+    logger.info(
+        "[slack_conversations] Completed Slack directory mapping refresh for org=%s mapped=%d",
+        organization_id,
+        mapped_count,
+    )
+    return mapped_count
+
+
 async def upsert_slack_user_mapping_from_current_profile(
     organization_id: str,
     connector: SlackConnector,

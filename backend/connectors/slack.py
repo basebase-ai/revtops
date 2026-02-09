@@ -422,6 +422,7 @@ class SlackConnector(BaseConnector):
     async def sync_all(self) -> dict[str, int]:
         """Run all sync operations."""
         from services.slack_conversations import (
+            refresh_slack_user_mappings_from_directory,
             refresh_slack_user_mappings_for_org,
             upsert_slack_user_mapping_from_current_profile,
         )
@@ -454,6 +455,19 @@ class SlackConnector(BaseConnector):
         try:
             logger.info(
                 "[Slack Sync] Refreshing Slack user mappings before activity sync for org=%s",
+                self.organization_id,
+            )
+            logger.info(
+                "[Slack Sync] Refreshing Slack directory user mappings for org=%s",
+                self.organization_id,
+            )
+            directory_count = await refresh_slack_user_mappings_from_directory(
+                organization_id=self.organization_id,
+                connector=self,
+            )
+            logger.info(
+                "[Slack Sync] Refreshed %d Slack directory user mappings for org=%s",
+                directory_count,
                 self.organization_id,
             )
             refreshed_count = await refresh_slack_user_mappings_for_org(self.organization_id)
