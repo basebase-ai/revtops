@@ -24,7 +24,7 @@ from models.database import get_admin_session, get_session
 from models.integration import Integration
 from models.slack_user_mapping import SlackUserMapping
 from models.user import User
-from services.nango import get_nango_client
+from services.nango import extract_connection_metadata, get_nango_client
 from config import get_nango_integration_id
 
 logger = logging.getLogger(__name__)
@@ -418,11 +418,12 @@ async def _hydrate_slack_integration_metadata(integration: Integration) -> None:
         nango = get_nango_client()
         integration_id = get_nango_integration_id("slack")
         connection = await nango.get_connection(integration_id, integration.nango_connection_id)
-        connection_metadata = connection.get("metadata") or {}
+        connection_metadata = extract_connection_metadata(connection) or {}
         if not connection_metadata:
             logger.info(
-                "[slack_conversations] Slack integration %s has no metadata in Nango connection",
+                "[slack_conversations] Slack integration %s has no metadata in Nango connection keys=%s",
                 integration.id,
+                sorted(connection.keys()),
             )
             return
 
