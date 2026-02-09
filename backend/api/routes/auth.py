@@ -29,7 +29,7 @@ from models.database import get_admin_session, get_session
 from models.integration import Integration
 from models.user import User
 from models.organization import Organization
-from services.nango import get_nango_client
+from services.nango import extract_connection_metadata, get_nango_client
 from services.slack_conversations import upsert_slack_user_mappings_from_metadata
 
 router = APIRouter()
@@ -842,11 +842,16 @@ async def confirm_integration(
         nango = get_nango_client()
         nango_integration_id = get_nango_integration_id(request.provider)
         connection = await nango.get_connection(nango_integration_id, nango_connection_id)
-        connection_metadata = connection.get("metadata")
+        connection_metadata = extract_connection_metadata(connection)
         if connection_metadata:
             print(
                 f"[Confirm] Retrieved Nango metadata for provider={request.provider}, "
                 f"connection_id={nango_connection_id}"
+            )
+        else:
+            print(
+                f"[Confirm] No Nango metadata found for provider={request.provider}, "
+                f"connection_id={nango_connection_id} keys={sorted(connection.keys())}"
             )
     except Exception as exc:
         print(

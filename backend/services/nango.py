@@ -20,6 +20,25 @@ NANGO_API_BASE = settings.NANGO_HOST
 logger = logging.getLogger(__name__)
 
 
+def extract_connection_metadata(connection: dict[str, Any]) -> dict[str, Any] | None:
+    """Return metadata dict from a Nango connection payload, if present."""
+    for key in ("metadata", "connection_metadata", "connectionMetadata"):
+        value = connection.get(key)
+        if isinstance(value, dict) and value:
+            return value
+
+    for config_key in ("connection_config", "connectionConfig"):
+        config_value = connection.get(config_key)
+        if not isinstance(config_value, dict):
+            continue
+        for key in ("metadata", "connection_metadata", "connectionMetadata"):
+            value = config_value.get(key)
+            if isinstance(value, dict) and value:
+                return value
+
+    return None
+
+
 class NangoClient:
     """Client for interacting with Nango API."""
 
