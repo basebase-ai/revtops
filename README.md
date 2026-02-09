@@ -65,7 +65,7 @@ alembic upgrade head
 - API: http://localhost:8000
 - API Docs: http://localhost:8000/docs
 
-### Development Setup (without Docker)
+### Development Setup (without Docker - Most common)
 
 **Backend:**
 
@@ -74,6 +74,8 @@ cd backend                        # Navigate into the backend directory
 python3 -m venv venv              # Create an isolated Python environment called "venv"
 source venv/bin/activate          # Activate the virtual environment (use `venv\Scripts\activate` on Windows)
 pip install -r requirements.txt   # Install all required Python packages listed in requirements.txt
+brew install redis                # Optional - you may need redis running locally                       
+brew services start redis         # More redis.
 uvicorn api.main:app --reload     # Start the FastAPI server with auto-reload on code changes
 ```
 
