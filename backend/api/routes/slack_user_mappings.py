@@ -12,13 +12,13 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select, text
 
-from config import settings
-from connectors.slack import SlackConnector
+from config import settings, get_nango_integration_id
 from models.database import get_admin_session, get_session
 from models.integration import Integration
 from models.slack_user_mapping import SlackUserMapping
 from models.user import User
 from services import slack_conversations
+from services.nango import get_nango_client
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -103,7 +103,21 @@ async def _require_slack_integration(organization_id: UUID) -> Integration:
 
 
 def _normalize_email(email: str) -> str:
-    normalized = email.strip().lower()
+    normalized = "".join(email.split()).lower()
+    original = email
+    if "@" in normalized:
+        local_part, domain = normalized.split("@", 1)
+        if "+" in local_part:
+            local_part = local_part.split("+", 1)[0]
+        if domain in {"gmail.com", "googlemail.com"}:
+            local_part = local_part.replace(".", "")
+        normalized = f"{local_part}@{domain}"
+    if normalized != original:
+        logger.debug(
+            "[slack_user_mappings] Normalized email from '%s' to '%s'",
+            original,
+            normalized,
+        )
     if not slack_conversations.EMAIL_PATTERN.fullmatch(normalized):
         raise HTTPException(status_code=400, detail="Invalid email address")
     return normalized
@@ -150,21 +164,7 @@ async def request_slack_user_mapping_code(
         request.organization_id,
     )
     email = _normalize_email(request.email)
-    await _require_slack_integration(org_uuid)
-
-    redis_client = await _get_redis()
-    cooldown_key = f"revtops:slack-email-verify:{org_uuid}:{user_uuid}:cooldown"
-    was_set = await redis_client.set(
-        cooldown_key,
-        "1",
-        nx=True,
-        ex=int(_SEND_COOLDOWN.total_seconds()),
-    )
-    if not was_set:
-        raise HTTPException(
-            status_code=429,
-            detail="Please wait at least one minute before requesting another code.",
-        )
+    integration = await _require_slack_integration(org_uuid)
 
     async with get_session(organization_id=str(org_uuid)) as session:
         await session.execute(
@@ -179,13 +179,46 @@ async def request_slack_user_mapping_code(
         )
         matched_mapping = result.scalars().first()
 
+    logger.info(
+        "[slack_user_mappings] Lookup Slack mapping for org=%s user=%s email=%s matched=%s",
+        org_uuid,
+        user_uuid,
+        email,
+        bool(matched_mapping),
+    )
+
     if not matched_mapping or not matched_mapping.slack_user_id:
+        logger.warning(
+            "[slack_user_mappings] No Slack mapping found for org=%s user=%s email=%s",
+            org_uuid,
+            user_uuid,
+            email,
+        )
         raise HTTPException(
             status_code=404,
             detail=(
                 "No matching Slack user found for that email. "
                 "If you're new, try running a Slack sync and try again."
             ),
+        )
+
+    redis_client = await _get_redis()
+    cooldown_key = f"revtops:slack-email-verify:{org_uuid}:{user_uuid}:cooldown"
+    was_set = await redis_client.set(
+        cooldown_key,
+        "1",
+        nx=True,
+        ex=int(_SEND_COOLDOWN.total_seconds()),
+    )
+    if not was_set:
+        logger.info(
+            "[slack_user_mappings] Slack verification code cooldown active org=%s user=%s",
+            org_uuid,
+            user_uuid,
+        )
+        raise HTTPException(
+            status_code=429,
+            detail="Please wait at least one minute before requesting another code.",
         )
     matched_user = {
         "id": matched_mapping.slack_user_id,
@@ -209,13 +242,35 @@ async def request_slack_user_mapping_code(
         user_uuid,
         matched_user["id"],
     )
-    connector = SlackConnector(organization_id=str(org_uuid))
-    await connector.send_direct_message(
-        slack_user_id=matched_user["id"],
-        text=(
-            "Your RevTops verification code is: "
-            f"{code}\n\nIf you didn't request this, you can ignore it."
-        ),
+    if not integration.nango_connection_id:
+        logger.warning(
+            "[slack_user_mappings] Missing Slack Nango connection org=%s integration=%s",
+            org_uuid,
+            integration.id,
+        )
+        raise HTTPException(status_code=404, detail="Slack integration not connected")
+
+    message_text = (
+        "Your RevTops verification code is: "
+        f"{code}\n\nIf you didn't request this, you can ignore it."
+    )
+    nango = get_nango_client()
+    action_response = await nango.execute_action(
+        integration_id=get_nango_integration_id("slack"),
+        connection_id=integration.nango_connection_id,
+        action_name="send-message",
+        input_payload={
+            "user_id": matched_user["id"],
+            "message": message_text,
+            "text": message_text,
+        },
+    )
+    logger.info(
+        "[slack_user_mappings] Nango send-message response org=%s user=%s slack_user=%s keys=%s",
+        org_uuid,
+        user_uuid,
+        matched_user["id"],
+        sorted(action_response.keys()) if isinstance(action_response, dict) else "n/a",
     )
 
     return {"status": "sent"}
