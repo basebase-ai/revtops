@@ -2,6 +2,7 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import App from './App';
+import { logMissingEnvVars } from './lib/env';
 import './index.css';
 
 // Configure React Query with sensible defaults
@@ -24,6 +25,8 @@ const rootElement = document.getElementById('root');
 if (!rootElement) {
   throw new Error('Root element not found');
 }
+
+logMissingEnvVars();
 
 ReactDOM.createRoot(rootElement).render(
   <React.StrictMode>

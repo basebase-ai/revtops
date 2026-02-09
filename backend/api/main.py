@@ -21,6 +21,7 @@ from fastapi.responses import JSONResponse
 from api.websockets import websocket_endpoint
 from api.routes import artifacts, auth, change_sessions, chat, data, deals, search, sheets, slack_events, sync, tool_settings, waitlist, workflows
 from models.database import init_db, close_db, get_pool_status
+from config import log_missing_env_vars
 
 # Configure logging
 logging.basicConfig(
@@ -115,6 +116,7 @@ async def startup() -> None:
     """Initialize database on startup."""
     # Note: init_db() skipped - Alembic handles migrations
     # await init_db()
+    log_missing_env_vars(logging.getLogger("config"))
     logging.info("Database connection pool ready")
 
 

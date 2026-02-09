@@ -19,6 +19,7 @@ from models.sheet_import import SheetImport
 from models.user_tool_setting import UserToolSetting
 from models.change_session import ChangeSession
 from models.record_snapshot import RecordSnapshot
+from models.slack_user_mapping import SlackUserMapping
 
 __all__ = [
     "Base",
@@ -46,4 +47,5 @@ __all__ = [
     "UserToolSetting",
     "ChangeSession",
     "RecordSnapshot",
+    "SlackUserMapping",
 ]

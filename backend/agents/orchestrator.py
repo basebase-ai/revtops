@@ -285,6 +285,32 @@ SELECT id, name, email, role FROM users WHERE organization_id = :org_id
 SELECT * FROM users WHERE name ILIKE '%john%'
 ```
 
+### slack_user_mappings
+**Identity links** between internal users and Slack users.
+Use this table when the user asks about Slack identities, mentions, or when mapping Slack user IDs/emails to RevTops users.
+```
+id, organization_id, user_id, slack_user_id, slack_email, match_source, created_at, updated_at
+```
+- `user_id`: FK to `users.id`
+- `slack_user_id`: Slack user identifier (e.g., U123...)
+- `slack_email`: Slack profile email when available
+- `match_source`: How the mapping was established (e.g., "oauth", "profile_match")
+
+Example queries for slack user mappings:
+```sql
+-- Map a Slack user ID to a RevTops user
+SELECT u.id, u.name, u.email, m.slack_user_id, m.slack_email
+FROM slack_user_mappings m
+JOIN users u ON u.id = m.user_id
+WHERE m.slack_user_id = 'U12345678'
+
+-- Find all Slack mappings for a teammate
+SELECT m.slack_user_id, m.slack_email, m.match_source, m.updated_at
+FROM slack_user_mappings m
+JOIN users u ON u.id = m.user_id
+WHERE u.email = 'jane@example.com'
+```
+
 ### organizations
 Companies/tenants using the Revtops platform - the user's own company.
 ```
@@ -411,6 +437,8 @@ class ChatOrchestrator:
         user_email: str | None = None,
         local_time: str | None = None,
         timezone: str | None = None,
+        source_user_id: str | None = None,
+        source_user_email: str | None = None,
         workflow_context: dict[str, Any] | None = None,
     ) -> None:
         """
@@ -423,6 +451,8 @@ class ChatOrchestrator:
             user_email: Email of the authenticated user
             local_time: ISO timestamp of user's local time
             timezone: User's timezone (e.g., "America/New_York")
+            source_user_id: External sender ID (e.g. Slack user ID)
+            source_user_email: External sender email (e.g. Slack profile email)
             workflow_context: Optional workflow context for auto-approvals:
                 - is_workflow: bool
                 - workflow_id: str
@@ -434,6 +464,8 @@ class ChatOrchestrator:
         self.user_email = user_email
         self.local_time = local_time
         self.timezone = timezone
+        self.source_user_id = source_user_id
+        self.source_user_email = source_user_email
         self.workflow_context = workflow_context
         self.client = AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
         # Track if we've saved the assistant message (for early save during tool execution)
@@ -1093,6 +1125,9 @@ WHERE scheduled_start >= '2026-01-27'::date AND scheduled_start < '2026-01-28'::
                     organization_id=UUID(self.organization_id) if self.organization_id else None,
                     role="user",
                     content_blocks=blocks,
+                    source_user_id=self.source_user_id,
+                    source_user_email=self.source_user_email,
+
                 )
             )
 

@@ -21,7 +21,7 @@ from models.account import Account
 from models.activity import Activity
 from models.change_session import ChangeSession
 from models.contact import Contact
-from models.database import get_session
+from models.database import get_admin_session, get_session
 from models.deal import Deal
 from models.record_snapshot import RecordSnapshot
 
@@ -167,6 +167,7 @@ async def capture_snapshot(
     record_id: str,
     operation: Literal["create", "update", "delete"],
     db_session: Optional[AsyncSession] = None,
+    organization_id: str | None = None,
 ) -> RecordSnapshot:
     """
     Capture a snapshot of a record before modification.
@@ -218,7 +219,7 @@ async def capture_snapshot(
     if db_session:
         return await _do_capture(db_session)
     else:
-        async with get_session() as session:
+        async with get_session(organization_id=organization_id) as session:
             snapshot = await _do_capture(session)
             await session.commit()
             return snapshot
@@ -228,6 +229,7 @@ async def update_snapshot_after_data(
     snapshot_id: str,
     after_data: dict[str, Any],
     db_session: Optional[AsyncSession] = None,
+    organization_id: str | None = None,
 ) -> None:
     """
     Update a snapshot with the after_data after modification.
@@ -249,7 +251,7 @@ async def update_snapshot_after_data(
     if db_session:
         await _do_update(db_session)
     else:
-        async with get_session() as session:
+        async with get_session(organization_id=organization_id) as session:
             await _do_update(session)
             await session.commit()
 
@@ -260,6 +262,7 @@ async def add_proposed_create(
     record_id: str,
     input_payload: dict[str, Any],
     db_session: Optional[AsyncSession] = None,
+    organization_id: str | None = None,
 ) -> RecordSnapshot:
     """
     Store a proposed create (no local row yet). On commit we create locally and push to CRM.
@@ -284,7 +287,7 @@ async def add_proposed_create(
 
     if db_session:
         return await _do_add(db_session)
-    async with get_session() as session:
+    async with get_session(organization_id=organization_id) as session:
         sn = await _do_add(session)
         await session.commit()
         return sn
@@ -296,6 +299,7 @@ async def add_proposed_update(
     record_id: str,
     update_fields: dict[str, Any],
     db_session: Optional[AsyncSession] = None,
+    organization_id: str | None = None,
 ) -> RecordSnapshot:
     """
     Store a proposed update. Captures the current row as before_data and stores
@@ -332,7 +336,7 @@ async def add_proposed_update(
 
     if db_session:
         return await _do_add(db_session)
-    async with get_session() as session:
+    async with get_session(organization_id=organization_id) as session:
         sn = await _do_add(session)
         await session.commit()
         return sn
@@ -359,7 +363,17 @@ async def approve_change_session(
     Returns:
         Result dict with status, conflicts (if any), and snapshot count
     """
+
+    org_id = organization_id
+    if not org_id:
+        async with get_admin_session() as admin_session:
+            change_session = await admin_session.get(ChangeSession, UUID(change_session_id))
+            if not change_session:
+                return {"status": "error", "error": "Change session not found"}
+            org_id = str(change_session.organization_id)
+
     async with get_session(organization_id=organization_id) as session:
+
         # Get the change session
         change_session = await session.get(ChangeSession, UUID(change_session_id))
         if not change_session:
@@ -479,7 +493,7 @@ async def get_change_session(change_session_id: str) -> Optional[dict[str, Any]]
     Returns:
         Dict with session info and snapshots, or None if not found
     """
-    async with get_session() as session:
+    async with get_admin_session() as session:
         change_session = await session.get(ChangeSession, UUID(change_session_id))
         if not change_session:
             return None
@@ -509,7 +523,7 @@ async def get_pending_sessions_for_conversation(
     Returns:
         List of change session dicts
     """
-    async with get_session() as session:
+    async with get_admin_session() as session:
         result = await session.execute(
             select(ChangeSession)
             .where(

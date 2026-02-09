@@ -20,25 +20,32 @@ from models.change_session import ChangeSession
 from models.conversation import Conversation
 from models.record_snapshot import RecordSnapshot
 from models.user import User
+
 from models.workflow import Workflow
-from models.database import get_session
+from models.database import get_admin_session, get_session
+
 
 router = APIRouter(prefix="/change-sessions", tags=["change-sessions"])
+logger = logging.getLogger(__name__)
 
 
 async def _get_user(user_id: Optional[str]) -> User:
     """Get and validate user from user_id query parameter."""
     if not user_id:
+        logger.warning("[change_sessions] Missing user_id query parameter")
         raise HTTPException(status_code=401, detail="Not authenticated")
     
     try:
         user_uuid = UUID(user_id)
     except ValueError:
+        logger.warning("[change_sessions] Invalid user_id provided: %s", user_id)
         raise HTTPException(status_code=400, detail="Invalid user ID")
     
-    async with get_session() as session:
+    logger.debug("[change_sessions] Looking up user %s with admin session", user_id)
+    async with get_admin_session() as session:
         user = await session.get(User, user_uuid)
         if not user:
+            logger.warning("[change_sessions] User not found: %s", user_id)
             raise HTTPException(status_code=404, detail="User not found")
         return user
 
@@ -93,9 +100,14 @@ async def get_pending_changes(
     """
     user = await _get_user(user_id)
     if not user.organization_id:
+        logger.warning("[change_sessions] User %s has no organization", user.id)
         raise HTTPException(status_code=400, detail="User not associated with an organization")
     
-    async with get_session() as session:
+    logger.debug(
+        "[change_sessions] Fetching pending change sessions for org %s",
+        user.organization_id,
+    )
+    async with get_session(str(user.organization_id)) as session:
         # Get all pending change sessions for this org
         result = await session.execute(
             select(ChangeSession)
@@ -106,6 +118,11 @@ async def get_pending_changes(
             .order_by(ChangeSession.created_at.desc())
         )
         change_sessions = result.scalars().all()
+        logger.info(
+            "[change_sessions] Found %d pending change session(s) for org %s",
+            len(change_sessions),
+            user.organization_id,
+        )
         
         sessions_summary: list[ChangeSessionSummary] = []
         
@@ -116,6 +133,11 @@ async def get_pending_changes(
                 .where(RecordSnapshot.change_session_id == cs.id)
             )
             snapshots = snap_result.scalars().all()
+            logger.debug(
+                "[change_sessions] Change session %s has %d snapshots",
+                cs.id,
+                len(snapshots),
+            )
             
             records: list[dict[str, Any]] = []
             for snap in snapshots:
@@ -217,14 +239,20 @@ async def commit_change_session(
     
     user = await _get_user(user_id)
     if not user.organization_id:
+        logger.warning("[change_sessions] User %s has no organization", user.id)
         raise HTTPException(status_code=400, detail="User not associated with an organization")
     
     # Verify the session belongs to this org
-    async with get_session() as session:
+    async with get_session(str(user.organization_id)) as session:
         cs = await session.get(ChangeSession, UUID(session_id))
         if not cs:
+            logger.warning("[change_sessions] Change session not found: %s", session_id)
             raise HTTPException(status_code=404, detail="Change session not found")
         if cs.organization_id != user.organization_id:
+            logger.warning(
+                "[change_sessions] Access denied for session %s (org mismatch)",
+                session_id,
+            )
             raise HTTPException(status_code=403, detail="Access denied")
     
     result = await do_commit(session_id, str(user.id), organization_id=str(user.organization_id))
@@ -250,14 +278,20 @@ async def discard_change_session(
     
     user = await _get_user(user_id)
     if not user.organization_id:
+        logger.warning("[change_sessions] User %s has no organization", user.id)
         raise HTTPException(status_code=400, detail="User not associated with an organization")
     
     # Verify the session belongs to this org
-    async with get_session() as session:
+    async with get_session(str(user.organization_id)) as session:
         cs = await session.get(ChangeSession, UUID(session_id))
         if not cs:
+            logger.warning("[change_sessions] Change session not found: %s", session_id)
             raise HTTPException(status_code=404, detail="Change session not found")
         if cs.organization_id != user.organization_id:
+            logger.warning(
+                "[change_sessions] Access denied for session %s (org mismatch)",
+                session_id,
+            )
             raise HTTPException(status_code=403, detail="Access denied")
     
     result = await do_discard(session_id, str(user.id))
@@ -280,9 +314,10 @@ async def commit_all_pending(
     
     user = await _get_user(user_id)
     if not user.organization_id:
+        logger.warning("[change_sessions] User %s has no organization", user.id)
         raise HTTPException(status_code=400, detail="User not associated with an organization")
     
-    async with get_session() as session:
+    async with get_session(str(user.organization_id)) as session:
         result = await session.execute(
             select(ChangeSession)
             .where(
@@ -291,6 +326,11 @@ async def commit_all_pending(
             )
         )
         pending_sessions = result.scalars().all()
+        logger.info(
+            "[change_sessions] Committing %d pending session(s) for org %s",
+            len(pending_sessions),
+            user.organization_id,
+        )
     
     total_synced = 0
     total_errors = 0
@@ -324,9 +364,10 @@ async def discard_all_pending(
     
     user = await _get_user(user_id)
     if not user.organization_id:
+        logger.warning("[change_sessions] User %s has no organization", user.id)
         raise HTTPException(status_code=400, detail="User not associated with an organization")
     
-    async with get_session() as session:
+    async with get_session(str(user.organization_id)) as session:
         result = await session.execute(
             select(ChangeSession)
             .where(
@@ -335,6 +376,11 @@ async def discard_all_pending(
             )
         )
         pending_sessions = result.scalars().all()
+        logger.info(
+            "[change_sessions] Discarding %d pending session(s) for org %s",
+            len(pending_sessions),
+            user.organization_id,
+        )
     
     total_deleted = 0
     
