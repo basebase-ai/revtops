@@ -352,6 +352,78 @@ class NangoClient:
             )
             return response.status_code == 200
 
+    async def execute_action(
+        self,
+        integration_id: str,
+        connection_id: str,
+        action_name: str,
+        input_data: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        """
+        Execute a Nango action for a connection.
+
+        Args:
+            integration_id: The Nango integration ID (provider config key).
+            connection_id: The connection identifier.
+            action_name: The action/function name to run.
+            input_data: Optional input payload for the action.
+
+        Returns:
+            Action response payload.
+        """
+        payload = {
+            "provider_config_key": integration_id,
+            "connection_id": connection_id,
+            "action_name": action_name,
+            "input": input_data or {},
+        }
+        endpoints = ("/v1/execute", "/execute")
+        async with httpx.AsyncClient() as client:
+            for endpoint in endpoints:
+                url = f"{NANGO_API_BASE}{endpoint}"
+                logger.info(
+                    "Executing Nango action",
+                    extra={
+                        "integration_id": integration_id,
+                        "connection_id": connection_id,
+                        "action_name": action_name,
+                        "endpoint": url,
+                    },
+                )
+                response = await client.post(
+                    url,
+                    headers=self._get_headers(),
+                    json=payload,
+                    timeout=30.0,
+                )
+                if response.status_code == 404:
+                    logger.warning(
+                        "Nango execute endpoint not found, trying fallback",
+                        extra={
+                            "endpoint": url,
+                            "integration_id": integration_id,
+                            "connection_id": connection_id,
+                            "action_name": action_name,
+                        },
+                    )
+                    continue
+                if response.status_code not in (200, 201):
+                    logger.error(
+                        "Nango execute action failed",
+                        extra={
+                            "endpoint": url,
+                            "integration_id": integration_id,
+                            "connection_id": connection_id,
+                            "action_name": action_name,
+                            "status_code": response.status_code,
+                            "response_text": response.text,
+                        },
+                    )
+                    response.raise_for_status()
+                return response.json()
+
+        raise ValueError("Nango execute endpoint not found")
+
     async def create_connect_session(
         self,
         integration_id: str,
