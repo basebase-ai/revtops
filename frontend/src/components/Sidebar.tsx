@@ -330,11 +330,6 @@ export function Sidebar({
                       </svg>
                     )}
                     <div className="truncate text-sm">{chat.title}</div>
-                    {isPinned && (
-                      <svg className="w-3.5 h-3.5 text-primary-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7l-4-4-4 4m4-4v18m0 0l-4-4m4 4l4-4" />
-                      </svg>
-                    )}
                     {hasActiveTask && (
                       <svg className="w-3 h-3 text-primary-400 flex-shrink-0 animate-spin" fill="none" viewBox="0 0 24 24">
                         <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
@@ -350,11 +345,23 @@ export function Sidebar({
                       e.stopPropagation();
                       togglePinChat(chat.id);
                     }}
-                    className="absolute right-7 top-1/2 -translate-y-1/2 p-1 rounded opacity-0 group-hover:opacity-100 hover:bg-surface-700 text-surface-500 hover:text-surface-300 transition-all"
+                    className={`absolute right-7 top-1/2 -translate-y-1/2 p-1 rounded ${
+                      isPinned ? 'opacity-100 text-primary-400' : 'opacity-0 text-surface-500'
+                    } group-hover:opacity-100 hover:bg-surface-700 hover:text-surface-300 transition-all`}
                     title={isPinned ? "Unpin conversation" : "Pin conversation"}
                   >
-                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7l-4-4-4 4m4-4v18m0 0l-4-4m4 4l4-4" />
+                    <svg
+                      className={`w-3.5 h-3.5 ${isPinned ? 'text-primary-400' : ''}`}
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M12 21v-6m0 0l-3-3m3 3l3-3m-6.364-2.364L6 8m0 0l3.636-3.636a3 3 0 014.243 0L18 8m-12 0h12"
+                      />
                     </svg>
                   </button>
                   {/* Delete button - appears on hover */}
