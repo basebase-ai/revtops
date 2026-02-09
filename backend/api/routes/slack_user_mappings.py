@@ -260,9 +260,8 @@ async def request_slack_user_mapping_code(
         connection_id=integration.nango_connection_id,
         action_name="send-message",
         input_payload={
-            "user_id": matched_user["id"],
+            "channel": matched_user["id"],
             "message": message_text,
-            "text": message_text,
         },
     )
     logger.info(
