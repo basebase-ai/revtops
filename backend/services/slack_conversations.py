@@ -7,7 +7,9 @@ channel messages as Activity rows for real-time queryability.
 """
 from __future__ import annotations
 
+import json
 import logging
+import re
 import uuid
 from datetime import datetime
 from typing import Any
@@ -28,6 +30,7 @@ from services.nango import extract_connection_metadata, get_nango_client
 from config import get_nango_integration_id
 
 logger = logging.getLogger(__name__)
+EMAIL_PATTERN = re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.IGNORECASE)
 
 
 def _cannot_action_message() -> str:
@@ -673,6 +676,69 @@ def _extract_slack_email(slack_user: dict[str, Any] | None) -> str | None:
     profile = slack_user.get("profile", {})
     slack_email = (profile.get("email") or "").strip().lower()
     return slack_email or None
+
+
+def _extract_slack_emails(slack_user: dict[str, Any] | None) -> list[str]:
+    if not slack_user:
+        return []
+    try:
+        payload = json.dumps(slack_user)
+    except TypeError:
+        payload = str(slack_user)
+    emails = {
+        match.strip().lower()
+        for match in EMAIL_PATTERN.findall(payload)
+        if match and isinstance(match, str)
+    }
+    return sorted(email for email in emails if email)
+
+
+async def upsert_slack_user_mapping_from_nango_action(
+    organization_id: str,
+    user_id: UUID,
+    slack_user_payload: dict[str, Any] | None,
+    match_source: str = "nango_slack_action",
+) -> int:
+    """Upsert Slack user mapping from a Nango action response."""
+    if not slack_user_payload:
+        logger.info(
+            "[slack_conversations] Nango Slack user payload missing for org=%s user=%s",
+            organization_id,
+            user_id,
+        )
+        return 0
+
+    slack_user_id = (
+        slack_user_payload.get("id")
+        or slack_user_payload.get("user_id")
+        or slack_user_payload.get("user", {}).get("id")
+    )
+    if not slack_user_id:
+        logger.warning(
+            "[slack_conversations] Nango Slack user payload missing id for org=%s user=%s payload_keys=%s",
+            organization_id,
+            user_id,
+            sorted(slack_user_payload.keys()),
+        )
+        return 0
+
+    emails = _extract_slack_emails(slack_user_payload)
+    slack_email = ",".join(emails) if emails else None
+    logger.info(
+        "[slack_conversations] Upserting Slack mapping from Nango action org=%s user=%s slack_user=%s emails=%s",
+        organization_id,
+        user_id,
+        slack_user_id,
+        emails,
+    )
+    await _upsert_slack_user_mapping(
+        organization_id=organization_id,
+        user_id=user_id,
+        slack_user_id=slack_user_id,
+        slack_email=slack_email,
+        match_source=match_source,
+    )
+    return 1
 
 
 def _extract_slack_display_name(slack_user: dict[str, Any] | None) -> str | None:
