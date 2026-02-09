@@ -12,13 +12,13 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select, text
 
-from config import settings, get_nango_integration_id
+from config import settings
+from connectors.slack import SlackConnector
 from models.database import get_admin_session, get_session
 from models.integration import Integration
 from models.slack_user_mapping import SlackUserMapping
 from models.user import User
 from services import slack_conversations
-from services.nango import get_nango_client
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -164,7 +164,7 @@ async def request_slack_user_mapping_code(
         request.organization_id,
     )
     email = _normalize_email(request.email)
-    integration = await _require_slack_integration(org_uuid)
+    await _require_slack_integration(org_uuid)
 
     async with get_session(organization_id=str(org_uuid)) as session:
         await session.execute(
@@ -242,30 +242,17 @@ async def request_slack_user_mapping_code(
         user_uuid,
         matched_user["id"],
     )
-    if not integration.nango_connection_id:
-        logger.warning(
-            "[slack_user_mappings] Missing Slack Nango connection org=%s integration=%s",
-            org_uuid,
-            integration.id,
-        )
-        raise HTTPException(status_code=404, detail="Slack integration not connected")
-
     message_text = (
         "Your RevTops verification code is: "
         f"{code}\n\nIf you didn't request this, you can ignore it."
     )
-    nango = get_nango_client()
-    action_response = await nango.execute_action(
-        integration_id=get_nango_integration_id("slack"),
-        connection_id=integration.nango_connection_id,
-        action_name="send-message",
-        input_payload={
-            "channel": matched_user["id"],
-            "message": message_text,
-        },
+    connector = SlackConnector(organization_id=str(org_uuid))
+    action_response = await connector.send_direct_message(
+        slack_user_id=matched_user["id"],
+        text=message_text,
     )
     logger.info(
-        "[slack_user_mappings] Nango send-message response org=%s user=%s slack_user=%s keys=%s",
+        "[slack_user_mappings] Slack DM send response org=%s user=%s slack_user=%s keys=%s",
         org_uuid,
         user_uuid,
         matched_user["id"],
