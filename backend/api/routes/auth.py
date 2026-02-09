@@ -32,7 +32,10 @@ from models.integration import Integration
 from models.user import User
 from models.organization import Organization
 from services.nango import extract_connection_metadata, get_nango_client
-from services.slack_conversations import upsert_slack_user_mappings_from_metadata
+from services.slack_conversations import (
+    upsert_slack_user_mapping_from_nango_action,
+    upsert_slack_user_mappings_from_metadata,
+)
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -92,6 +95,8 @@ async def _log_slack_user_info_action(
     nango: Any,
     integration_id: str,
     connection_id: str,
+    organization_id: str,
+    user_id: UUID | None,
 ) -> None:
     logger.info(
         "[Confirm] Executing Nango Slack get-user-info action for connection_id=%s",
@@ -112,6 +117,18 @@ async def _log_slack_user_info_action(
         print(
             f"[Confirm] Nango Slack get-user-info action result for connection_id={connection_id}: {result}"
         )
+        if user_id:
+            await upsert_slack_user_mapping_from_nango_action(
+                organization_id=organization_id,
+                user_id=user_id,
+                action_result=result,
+            )
+        else:
+            logger.info(
+                "[Confirm] Skipping Slack user mapping because no user_id is available org=%s connection_id=%s",
+                organization_id,
+                connection_id,
+            )
     except Exception as exc:
         logger.warning(
             "[Confirm] Failed to execute Nango Slack get-user-info action for connection_id=%s: %s",
@@ -933,6 +950,8 @@ async def confirm_integration(
                 nango=nango,
                 integration_id=nango_integration_id,
                 connection_id=nango_connection_id,
+                organization_id=str(org_uuid),
+                user_id=user_uuid,
             )
         connection_metadata = extract_connection_metadata(connection)
         if request.provider == "slack":
@@ -1092,6 +1111,8 @@ async def nango_callback(
                 nango=nango,
                 integration_id=nango_integration_id,
                 connection_id=connection_id,
+                organization_id=str(org_uuid),
+                user_id=user_uuid,
             )
     except Exception as e:
         raise HTTPException(

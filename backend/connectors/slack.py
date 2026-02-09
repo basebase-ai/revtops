@@ -424,10 +424,66 @@ class SlackConnector(BaseConnector):
         from services.slack_conversations import (
             refresh_slack_user_mappings_from_directory,
             refresh_slack_user_mappings_for_org,
+            upsert_slack_user_mapping_from_nango_action,
             upsert_slack_user_mapping_from_current_profile,
         )
+        from services.nango import get_nango_client
+        from config import get_nango_integration_id
 
         await self.ensure_sync_active("sync_all:start")
+
+        try:
+            integration = self._integration
+            if not integration:
+                logger.info(
+                    "[Slack Sync] No Slack integration loaded for org=%s when running Nango user info action",
+                    self.organization_id,
+                )
+            else:
+                connection_id = integration.nango_connection_id
+                target_user_id = integration.user_id or integration.connected_by_user_id
+                if not connection_id:
+                    logger.info(
+                        "[Slack Sync] Slack integration missing connection_id for org=%s",
+                        self.organization_id,
+                    )
+                elif not target_user_id:
+                    logger.info(
+                        "[Slack Sync] Slack integration missing user linkage for org=%s integration=%s",
+                        self.organization_id,
+                        integration.id,
+                    )
+                else:
+                    logger.info(
+                        "[Slack Sync] Executing Nango Slack get-user-info action org=%s connection_id=%s",
+                        self.organization_id,
+                        connection_id,
+                    )
+                    nango = get_nango_client()
+                    result = await nango.execute_action(
+                        integration_id=get_nango_integration_id("slack"),
+                        connection_id=connection_id,
+                        action_name="get-user-info",
+                        input_data={},
+                    )
+                    logger.info(
+                        "[Slack Sync] Nango Slack get-user-info action returned for org=%s connection_id=%s",
+                        self.organization_id,
+                        connection_id,
+                    )
+                    await upsert_slack_user_mapping_from_nango_action(
+                        organization_id=self.organization_id,
+                        user_id=target_user_id,
+                        action_result=result,
+                        match_source="slack_sync_nango_get_user_info",
+                    )
+        except Exception as exc:
+            logger.warning(
+                "[Slack Sync] Failed to map Slack user via Nango action for org=%s: %s",
+                self.organization_id,
+                exc,
+                exc_info=True,
+            )
 
         try:
             logger.info(
