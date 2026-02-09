@@ -15,6 +15,7 @@ from datetime import datetime
 from typing import Any, Optional
 
 import httpx
+from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 
@@ -61,6 +62,7 @@ from api.websockets import broadcast_sync_progress
 from connectors.base import BaseConnector
 from models.activity import Activity
 from models.database import get_session
+from models.user import User
 
 SLACK_API_BASE = "https://slack.com/api"
 logger = logging.getLogger(__name__)
@@ -193,6 +195,83 @@ class SlackConnector(BaseConnector):
         """Get the authenticated user's profile via users.profile.get."""
         data = await self._make_request("GET", "users.profile.get")
         return data.get("profile", {})
+
+    async def _fetch_current_user_id_for_mapping(self) -> Optional[str]:
+        """Fetch the current RevTops user ID for Slack mapping."""
+        if not self._integration:
+            logger.warning(
+                "[Slack Sync] Missing integration context when fetching current user id for org=%s",
+                self.organization_id,
+            )
+            return None
+
+        candidate_ids: list[str] = []
+        if self.user_id:
+            candidate_ids.append(self.user_id)
+        if self._integration.user_id:
+            candidate_ids.append(str(self._integration.user_id))
+        if self._integration.connected_by_user_id:
+            candidate_ids.append(str(self._integration.connected_by_user_id))
+
+        deduped_candidates = list(dict.fromkeys(candidate_ids))
+        logger.info(
+            "[Slack Sync] Candidate RevTops user IDs for mapping org=%s integration=%s candidates=%s",
+            self.organization_id,
+            self._integration.id,
+            deduped_candidates,
+        )
+
+        if not deduped_candidates:
+            logger.warning(
+                "[Slack Sync] No RevTops user ID candidates found for org=%s integration=%s",
+                self.organization_id,
+                self._integration.id,
+            )
+            return None
+
+        preferred_id = deduped_candidates[0]
+        try:
+            user_uuid = uuid.UUID(preferred_id)
+        except ValueError:
+            logger.warning(
+                "[Slack Sync] Invalid RevTops user ID candidate %s for org=%s integration=%s",
+                preferred_id,
+                self.organization_id,
+                self._integration.id,
+            )
+            return None
+
+        async with get_session(organization_id=self.organization_id) as session:
+            result = await session.execute(select(User).where(User.id == user_uuid))
+            user = result.scalar_one_or_none()
+
+        if not user:
+            logger.warning(
+                "[Slack Sync] RevTops user %s not found for org=%s integration=%s",
+                preferred_id,
+                self.organization_id,
+                self._integration.id,
+            )
+            return None
+
+        if self.user_id != str(user.id):
+            logger.info(
+                "[Slack Sync] Updating connector user_id from %s to %s for org=%s integration=%s",
+                self.user_id,
+                user.id,
+                self.organization_id,
+                self._integration.id,
+            )
+            self.user_id = str(user.id)
+
+        logger.info(
+            "[Slack Sync] Resolved current RevTops user id=%s email=%s org=%s integration=%s",
+            user.id,
+            user.email,
+            self.organization_id,
+            self._integration.id,
+        )
+        return str(user.id)
 
     async def sync_deals(self) -> int:
         """Slack doesn't have deals - return 0."""
@@ -433,50 +512,64 @@ class SlackConnector(BaseConnector):
         await self.ensure_sync_active("sync_all:start")
 
         try:
+            current_user_id = await self._fetch_current_user_id_for_mapping()
             if not self._integration or not self._integration.nango_connection_id:
                 logger.warning(
                     "[Slack Sync] Missing Nango connection for org=%s when fetching Slack user info",
                     self.organization_id,
                 )
             else:
-                if not self.user_id:
+                logger.info(
+                    "[Slack Sync] Executing Nango get-user-info action for org=%s integration=%s",
+                    self.organization_id,
+                    self._integration.id,
+                )
+                nango = get_nango_client()
+                action_response = await nango.execute_action(
+                    integration_id=get_nango_integration_id(self.source_system),
+                    connection_id=self._integration.nango_connection_id,
+                    action_name="get-user-info",
+                    input_payload={},
+                )
+                slack_user_payload: dict[str, Any] | None = None
+                if isinstance(action_response, dict):
+                    slack_user_payload = (
+                        action_response.get("user")
+                        or action_response.get("data", {}).get("user")
+                        or action_response.get("data")
+                        or action_response.get("result")
+                    )
+                logger.info(
+                    "[Slack Sync] Nango get-user-info response org=%s integration=%s payload_keys=%s",
+                    self.organization_id,
+                    self._integration.id,
+                    sorted(action_response.keys()) if isinstance(action_response, dict) else "n/a",
+                )
+                if not slack_user_payload or not isinstance(slack_user_payload, dict):
                     logger.warning(
-                        "[Slack Sync] Missing current user id for Slack sync integration %s org=%s; skipping Nango user info mapping",
-                        self._integration.id,
+                        "[Slack Sync] Nango get-user-info payload not usable org=%s integration=%s payload_type=%s",
                         self.organization_id,
+                        self._integration.id,
+                        type(slack_user_payload).__name__ if slack_user_payload is not None else "none",
+                    )
+                elif not current_user_id:
+                    logger.warning(
+                        "[Slack Sync] Missing current RevTops user id for mapping org=%s integration=%s",
+                        self.organization_id,
+                        self._integration.id,
                     )
                 else:
-                    target_user_id = uuid.UUID(self.user_id)
                     logger.info(
-                        "[Slack Sync] Executing Nango get-user-info action for org=%s integration=%s",
+                        "[Slack Sync] Upserting Slack mapping from Nango action org=%s integration=%s user_id=%s payload_keys=%s",
                         self.organization_id,
                         self._integration.id,
-                    )
-                    nango = get_nango_client()
-                    action_response = await nango.execute_action(
-                        integration_id=get_nango_integration_id(self.source_system),
-                        connection_id=self._integration.nango_connection_id,
-                        action_name="get-user-info",
-                        input_payload={},
-                    )
-                    slack_user_payload = None
-                    if isinstance(action_response, dict):
-                        slack_user_payload = (
-                            action_response.get("user")
-                            or action_response.get("data", {}).get("user")
-                            or action_response.get("data")
-                            or action_response.get("result")
-                        )
-                    logger.info(
-                        "[Slack Sync] Nango get-user-info response org=%s integration=%s payload_keys=%s",
-                        self.organization_id,
-                        self._integration.id,
-                        sorted(action_response.keys()) if isinstance(action_response, dict) else "n/a",
+                        current_user_id,
+                        sorted(slack_user_payload.keys()),
                     )
                     await upsert_slack_user_mapping_from_nango_action(
                         organization_id=self.organization_id,
-                        user_id=target_user_id,
-                        slack_user_payload=slack_user_payload if isinstance(slack_user_payload, dict) else None,
+                        user_id=uuid.UUID(current_user_id),
+                        slack_user_payload=slack_user_payload,
                     )
         except Exception as exc:
             logger.warning(
