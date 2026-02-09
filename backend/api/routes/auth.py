@@ -87,6 +87,39 @@ def _log_slack_nango_connection(connection: dict[str, Any], connection_id: str) 
             sorted(_NANGO_HIGHLIGHT_KEYS),
         )
 
+
+async def _log_slack_user_info_action(
+    nango: Any,
+    integration_id: str,
+    connection_id: str,
+) -> None:
+    logger.info(
+        "[Confirm] Executing Nango Slack get-user-info action for connection_id=%s",
+        connection_id,
+    )
+    try:
+        result = await nango.execute_action(
+            integration_id=integration_id,
+            connection_id=connection_id,
+            action_name="get-user-info",
+            input_data={},
+        )
+        logger.info(
+            "[Confirm] Nango Slack get-user-info action result for connection_id=%s: %s",
+            connection_id,
+            result,
+        )
+        print(
+            f"[Confirm] Nango Slack get-user-info action result for connection_id={connection_id}: {result}"
+        )
+    except Exception as exc:
+        logger.warning(
+            "[Confirm] Failed to execute Nango Slack get-user-info action for connection_id=%s: %s",
+            connection_id,
+            exc,
+            exc_info=True,
+        )
+
 # =============================================================================
 # Response Models
 # =============================================================================
@@ -896,6 +929,11 @@ async def confirm_integration(
         connection = await nango.get_connection(nango_integration_id, nango_connection_id)
         if request.provider == "slack":
             _log_slack_nango_connection(connection, nango_connection_id)
+            await _log_slack_user_info_action(
+                nango=nango,
+                integration_id=nango_integration_id,
+                connection_id=nango_connection_id,
+            )
         connection_metadata = extract_connection_metadata(connection)
         if request.provider == "slack":
             connection_data = connection.get("data") or {}
@@ -1049,6 +1087,12 @@ async def nango_callback(
 
     try:
         connection = await nango.get_connection(nango_integration_id, connection_id)
+        if provider == "slack":
+            await _log_slack_user_info_action(
+                nango=nango,
+                integration_id=nango_integration_id,
+                connection_id=connection_id,
+            )
     except Exception as e:
         raise HTTPException(
             status_code=400,
