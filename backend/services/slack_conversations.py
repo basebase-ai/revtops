@@ -355,13 +355,13 @@ async def upsert_slack_user_mapping_from_current_profile(
         )
         return 0
 
-    target_user_id = integration.user_id or integration.connected_by_user_id
-    if not target_user_id:
+    if not connector.user_id:
         logger.warning(
-            "[slack_conversations] Slack integration %s missing user_id for current profile mapping",
+            "[slack_conversations] Slack integration %s missing current user id for profile mapping",
             integration.id,
         )
         return 0
+    target_user_id = UUID(connector.user_id)
 
     slack_user_ids = _extract_slack_user_ids(integration.extra_data or {})
     if not slack_user_ids:

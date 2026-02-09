@@ -439,14 +439,14 @@ class SlackConnector(BaseConnector):
                     self.organization_id,
                 )
             else:
-                target_user_id = self._integration.user_id or self._integration.connected_by_user_id
-                if not target_user_id:
+                if not self.user_id:
                     logger.warning(
-                        "[Slack Sync] Missing user reference for Slack integration %s org=%s; skipping Nango user info mapping",
+                        "[Slack Sync] Missing current user id for Slack sync integration %s org=%s; skipping Nango user info mapping",
                         self._integration.id,
                         self.organization_id,
                     )
                 else:
+                    target_user_id = uuid.UUID(self.user_id)
                     logger.info(
                         "[Slack Sync] Executing Nango get-user-info action for org=%s integration=%s",
                         self.organization_id,
