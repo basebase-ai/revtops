@@ -25,7 +25,7 @@ from pydantic import BaseModel
 from sqlalchemy import select, text
 
 from config import settings, get_nango_integration_id, get_provider_scope
-from models.database import get_session
+from models.database import get_admin_session, get_session
 from models.integration import Integration
 from models.user import User
 from models.organization import Organization
@@ -122,7 +122,7 @@ async def get_current_user(user_id: Optional[str] = None) -> UserResponse:
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid user ID")
 
-    async with get_session() as session:
+    async with get_admin_session() as session:
         user = await session.get(User, user_uuid)
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
@@ -158,7 +158,7 @@ async def update_profile(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid user ID")
 
-    async with get_session() as session:
+    async with get_admin_session() as session:
         user = await session.get(User, user_uuid)
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
@@ -255,7 +255,7 @@ async def sync_user(request: SyncUserRequest) -> SyncUserResponse:
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid organization ID")
 
-    async with get_session() as session:
+    async with get_admin_session() as session:
         # Check if user already exists by ID
         existing = await session.get(User, user_uuid)
         
@@ -373,7 +373,7 @@ async def get_organization_by_domain(email_domain: str) -> OrganizationResponse:
     
     Used to check if an organization exists for a domain when a new user signs up.
     """
-    async with get_session() as session:
+    async with get_admin_session() as session:
         result = await session.execute(
             select(Organization).where(Organization.email_domain == email_domain)
         )
