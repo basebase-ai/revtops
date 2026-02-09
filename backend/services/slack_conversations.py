@@ -24,6 +24,8 @@ from models.database import get_admin_session, get_session
 from models.integration import Integration
 from models.slack_user_mapping import SlackUserMapping
 from models.user import User
+from services.nango import get_nango_client
+from config import get_nango_integration_id
 
 logger = logging.getLogger(__name__)
 
@@ -171,6 +173,7 @@ async def refresh_slack_user_mappings_for_org(organization_id: str) -> int:
 
     total_created = 0
     for integration in slack_integrations:
+        await _hydrate_slack_integration_metadata(integration)
         target_user_id = integration.user_id or integration.connected_by_user_id
         if not target_user_id:
             logger.warning(
@@ -213,6 +216,74 @@ async def refresh_slack_user_mappings_for_org(organization_id: str) -> int:
         organization_id,
     )
     return total_created
+
+
+async def _hydrate_slack_integration_metadata(integration: Integration) -> None:
+    extra_data = integration.extra_data or {}
+    slack_user_ids = _extract_slack_user_ids(extra_data)
+    if slack_user_ids:
+        return
+
+    if not integration.nango_connection_id:
+        logger.info(
+            "[slack_conversations] Slack integration %s missing metadata and nango_connection_id",
+            integration.id,
+        )
+        return
+
+    try:
+        nango = get_nango_client()
+        integration_id = get_nango_integration_id("slack")
+        connection = await nango.get_connection(integration_id, integration.nango_connection_id)
+        connection_metadata = connection.get("metadata") or {}
+        if not connection_metadata:
+            logger.info(
+                "[slack_conversations] Slack integration %s has no metadata in Nango connection",
+                integration.id,
+            )
+            return
+
+        slack_user_ids = _extract_slack_user_ids(connection_metadata)
+        if not slack_user_ids:
+            logger.info(
+                "[slack_conversations] Slack integration %s metadata missing Slack user IDs keys=%s",
+                integration.id,
+                sorted(connection_metadata.keys()),
+            )
+        await _update_integration_metadata(
+            integration_id=integration.id,
+            metadata=connection_metadata,
+        )
+        integration.extra_data = connection_metadata
+        logger.info(
+            "[slack_conversations] Refreshed Slack integration %s metadata from Nango keys=%s",
+            integration.id,
+            sorted(connection_metadata.keys()),
+        )
+    except Exception as exc:
+        logger.warning(
+            "[slack_conversations] Failed to hydrate Slack integration %s metadata from Nango: %s",
+            integration.id,
+            exc,
+            exc_info=True,
+        )
+
+
+async def _update_integration_metadata(
+    integration_id: UUID,
+    metadata: dict[str, Any],
+) -> None:
+    async with get_admin_session() as session:
+        stmt = (
+            update(Integration)
+            .where(Integration.id == integration_id)
+            .values(
+                extra_data=metadata,
+                updated_at=datetime.utcnow(),
+            )
+        )
+        await session.execute(stmt)
+        await session.commit()
 
 
 async def _resolve_user_for_slack_integration(
