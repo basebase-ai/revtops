@@ -189,6 +189,11 @@ class SlackConnector(BaseConnector):
         )
         return data.get("user", {})
 
+    async def get_current_user_profile(self) -> dict[str, Any]:
+        """Get the authenticated user's profile via users.profile.get."""
+        data = await self._make_request("GET", "users.profile.get")
+        return data.get("profile", {})
+
     async def sync_deals(self) -> int:
         """Slack doesn't have deals - return 0."""
         return 0
@@ -416,7 +421,35 @@ class SlackConnector(BaseConnector):
 
     async def sync_all(self) -> dict[str, int]:
         """Run all sync operations."""
-        from services.slack_conversations import refresh_slack_user_mappings_for_org
+        from services.slack_conversations import (
+            refresh_slack_user_mappings_for_org,
+            upsert_slack_user_mapping_from_current_profile,
+        )
+
+        await self.ensure_sync_active("sync_all:start")
+
+        try:
+            logger.info(
+                "[Slack Sync] Fetching current Slack user profile for org=%s",
+                self.organization_id,
+            )
+            mapped_count = await upsert_slack_user_mapping_from_current_profile(
+                organization_id=self.organization_id,
+                connector=self,
+                integration=self._integration,
+            )
+            logger.info(
+                "[Slack Sync] Upserted %d Slack user mappings from current profile for org=%s",
+                mapped_count,
+                self.organization_id,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[Slack Sync] Failed to map current Slack user profile for org=%s: %s",
+                self.organization_id,
+                exc,
+                exc_info=True,
+            )
 
         try:
             logger.info(
