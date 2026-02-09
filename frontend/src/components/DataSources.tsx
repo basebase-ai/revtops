@@ -802,7 +802,9 @@ export function DataSources(): JSX.Element {
       return (
         <div className="mt-4 pt-4 border-t border-surface-700/50 space-y-3">
           <div>
-            <h4 className="text-sm font-semibold text-surface-100">Connect your per-user email</h4>
+            <h4 className="text-sm font-semibold text-surface-100">
+              Connect your Slack email (it's on your profile in Slack!)
+            </h4>
             <p className="text-xs text-surface-400 mt-1">
               Add your Slack email to link your RevTops account. We'll DM a 6-digit code to confirm.
             </p>
