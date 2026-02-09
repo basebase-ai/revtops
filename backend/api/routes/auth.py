@@ -16,6 +16,7 @@ Endpoints:
 from __future__ import annotations
 
 from datetime import datetime
+import json
 import logging
 from typing import Any, Optional
 from uuid import UUID
@@ -36,6 +37,55 @@ from services.slack_conversations import upsert_slack_user_mappings_from_metadat
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
+_NANGO_SENSITIVE_KEYS = {"credentials", "access_token", "refresh_token", "api_key", "apiKey", "token"}
+_NANGO_HIGHLIGHT_KEYS = {"end_user", "errors", "id", "last_fetched_at", "metadata"}
+
+
+def _truncate_nango_value(value: str, limit: int = 500) -> str:
+    if len(value) <= limit:
+        return value
+    return f"{value[:limit]}... (truncated {len(value) - limit} chars)"
+
+
+def _format_nango_value(key: str, value: Any) -> str:
+    if key in _NANGO_SENSITIVE_KEYS:
+        return "<redacted>"
+    if isinstance(value, str):
+        return _truncate_nango_value(value)
+    try:
+        serialized = json.dumps(value, default=str, ensure_ascii=False)
+    except TypeError:
+        serialized = repr(value)
+    return _truncate_nango_value(serialized)
+
+
+def _log_slack_nango_connection(connection: dict[str, Any], connection_id: str) -> None:
+    keys = sorted(connection.keys())
+    logger.info(
+        "[Confirm] Nango Slack connection payload keys for connection_id=%s: %s",
+        connection_id,
+        keys,
+    )
+    for key in keys:
+        logger.info(
+            "[Confirm] Nango Slack connection field connection_id=%s key=%s value=%s",
+            connection_id,
+            key,
+            _format_nango_value(key, connection.get(key)),
+        )
+    missing_highlights = sorted(_NANGO_HIGHLIGHT_KEYS - set(keys))
+    if missing_highlights:
+        logger.info(
+            "[Confirm] Nango Slack connection missing expected keys connection_id=%s missing=%s",
+            connection_id,
+            missing_highlights,
+        )
+    else:
+        logger.info(
+            "[Confirm] Nango Slack connection contains all highlight keys connection_id=%s keys=%s",
+            connection_id,
+            sorted(_NANGO_HIGHLIGHT_KEYS),
+        )
 
 # =============================================================================
 # Response Models
@@ -844,6 +894,8 @@ async def confirm_integration(
         nango = get_nango_client()
         nango_integration_id = get_nango_integration_id(request.provider)
         connection = await nango.get_connection(nango_integration_id, nango_connection_id)
+        if request.provider == "slack":
+            _log_slack_nango_connection(connection, nango_connection_id)
         connection_metadata = extract_connection_metadata(connection)
         if request.provider == "slack":
             connection_data = connection.get("data") or {}
