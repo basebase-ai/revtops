@@ -32,7 +32,10 @@ from models.integration import Integration
 from models.user import User
 from models.organization import Organization
 from services.nango import extract_connection_metadata, get_nango_client
-from services.slack_conversations import upsert_slack_user_mappings_from_metadata
+from services.slack_conversations import (
+    upsert_slack_user_mapping_from_nango_action,
+    upsert_slack_user_mappings_from_metadata,
+)
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
