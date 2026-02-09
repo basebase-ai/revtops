@@ -762,23 +762,59 @@ export const useAppStore = create<AppState>()(
           });
         } else if (chunkIndex > expectedIndex) {
           // Chunk arrived out of order - buffer it
-          console.log(
-            `[Store] Buffering out-of-order chunk ${chunkIndex} (expected ${expectedIndex}) for conversation:`,
-            conversationId,
-          );
           const newPendingChunks = [
             ...current.pendingChunks,
             { index: chunkIndex, content },
           ];
-          set({
-            conversations: {
-              ...conversations,
-              [conversationId]: {
-                ...current,
-                pendingChunks: newPendingChunks,
+
+          // If we've buffered too many chunks, the expected one is likely lost.
+          // Skip ahead: treat the lowest buffered chunk as the next expected one.
+          const MAX_BUFFER_SIZE: number = 5;
+          if (newPendingChunks.length >= MAX_BUFFER_SIZE) {
+            console.warn(
+              `[Store] Skipping lost chunk(s) ${expectedIndex}-${chunkIndex - 1} for conversation:`,
+              conversationId,
+            );
+            newPendingChunks.sort((a, b) => a.index - b.index);
+            let updated = current.messages;
+            let newLastIndex = current.lastChunkIndex;
+            const remaining: typeof newPendingChunks = [];
+
+            for (const pending of newPendingChunks) {
+              updated = applyContent(
+                updated,
+                current.streamingMessageId,
+                pending.content,
+              );
+              newLastIndex = pending.index;
+            }
+
+            set({
+              conversations: {
+                ...conversations,
+                [conversationId]: {
+                  ...current,
+                  messages: updated,
+                  lastChunkIndex: newLastIndex,
+                  pendingChunks: remaining,
+                },
               },
-            },
-          });
+            });
+          } else {
+            console.log(
+              `[Store] Buffering out-of-order chunk ${chunkIndex} (expected ${expectedIndex}) for conversation:`,
+              conversationId,
+            );
+            set({
+              conversations: {
+                ...conversations,
+                [conversationId]: {
+                  ...current,
+                  pendingChunks: newPendingChunks,
+                },
+              },
+            });
+          }
         }
         // If chunkIndex < expectedIndex, it's a duplicate - ignore it
       },

@@ -164,6 +164,18 @@ This helps users understand what you're thinking and what to expect.
 - **enrich_contacts_with_apollo**: Enrich contacts with Apollo.io data (titles, companies, emails). After enrichment, use **crm_write** to update the contacts with the enriched fields.
 - **enrich_company_with_apollo**: Enrich a single company with Apollo.io data.
 
+### IMPORTANT: Creating Deals
+When creating deals via **crm_write**, the `dealstage` field MUST be a valid HubSpot pipeline stage **source_id** — NOT a human-readable name.
+Before creating deals, ALWAYS:
+1. Query: `SELECT ps.source_id, ps.name, ps.display_order, p.name as pipeline_name, p.source_id as pipeline_source_id FROM pipeline_stages ps JOIN pipelines p ON ps.pipeline_id = p.id ORDER BY p.name, ps.display_order`
+2. Use the stage **source_id** (e.g. "appointmentscheduled" or "2967830202") in the `dealstage` field.
+3. Use the pipeline **source_id** in the `pipeline` field.
+4. Use your judgment to map any CSV/user-provided stage names to the closest matching real stage.
+If the query returns 0 rows, do NOT proceed — tell the user no pipelines are synced yet.
+
+### IMPORTANT: Importing Data from CSV/Files
+When the user provides a CSV or file for import, include ALL available fields from the data — do not cherry-pick a subset. Map column names to the appropriate CRM field names, but preserve every column that has a reasonable CRM mapping.
+
 ### When to use which tool (common scenarios):
 | User wants to... | Use |
 |---|---|

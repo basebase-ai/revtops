@@ -2157,7 +2157,10 @@ def _to_hubspot_properties(table_name: str, raw: dict[str, Any]) -> dict[str, An
             cleaned["dealstage"] = cleaned.pop("stage")
         elif "stage" in cleaned:
             cleaned.pop("stage")
-    # accounts: "name", "domain", "industry" are the same in HubSpot — nothing to rename
+    elif table_name == "accounts":
+        # HubSpot "industry" is a strict enum (e.g. ELECTRICAL_ELECTRONIC_MANUFACTURING).
+        # Always drop it to avoid validation errors — store locally only.
+        cleaned.pop("industry", None)
 
     return cleaned
 
@@ -2326,7 +2329,11 @@ async def commit_change_session(
         # ── Create accounts ──────────────────────────────────────────────
         for local_id, hs_props in accounts_to_create:
             try:
-                _log.info("[commit:create] Pushing company %s to HubSpot: %s", local_id, hs_props)
+                _log.info(
+                    "[commit:create] Pushing company %s to HubSpot: name=%r domain=%r industry=%r all_keys=%s full=%s",
+                    local_id, hs_props.get("name"), hs_props.get("domain"),
+                    hs_props.get("industry"), list(hs_props.keys()), hs_props,
+                )
                 hs_result = await connector.create_company(hs_props)
                 hs_id = hs_result.get("id")
                 _log.info("[commit:create] HubSpot returned id=%s for company %s", hs_id, local_id)
