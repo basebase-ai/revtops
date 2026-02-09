@@ -16,6 +16,7 @@ Endpoints:
 from __future__ import annotations
 
 from datetime import datetime
+import logging
 from typing import Any, Optional
 from uuid import UUID
 
@@ -33,6 +34,7 @@ from services.nango import get_nango_client
 from services.slack_conversations import upsert_slack_user_mappings_from_metadata
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 # =============================================================================
@@ -843,6 +845,14 @@ async def confirm_integration(
         nango_integration_id = get_nango_integration_id(request.provider)
         connection = await nango.get_connection(nango_integration_id, nango_connection_id)
         connection_metadata = connection.get("metadata")
+        if request.provider == "slack":
+            connection_data = connection.get("data") or {}
+            slack_user_payload = connection_data.get("user")
+            logger.info(
+                "[Confirm] Nango Slack response.data user payload for connection_id=%s: %s",
+                nango_connection_id,
+                slack_user_payload,
+            )
         if connection_metadata:
             print(
                 f"[Confirm] Retrieved Nango metadata for provider={request.provider}, "
