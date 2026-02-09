@@ -582,8 +582,19 @@ export function DataSources(): JSX.Element {
         }),
       });
       if (!response.ok) {
-        const text = await response.text();
-        throw new Error(text || `Failed to send code: ${response.status}`);
+        let message = `Failed to send code: ${response.status}`;
+        try {
+          const data = await response.json();
+          if (data && typeof data.detail === 'string') {
+            message = data.detail;
+          } else if (typeof data === 'string') {
+            message = data;
+          }
+        } catch {
+          const text = await response.text();
+          if (text) message = text;
+        }
+        throw new Error(message);
       }
       setSlackMappingStatus('Verification code sent via Slack DM.');
     } catch (error) {
@@ -609,8 +620,19 @@ export function DataSources(): JSX.Element {
         }),
       });
       if (!response.ok) {
-        const text = await response.text();
-        throw new Error(text || `Failed to verify code: ${response.status}`);
+        let message = `Failed to verify code: ${response.status}`;
+        try {
+          const data = await response.json();
+          if (data && typeof data.detail === 'string') {
+            message = data.detail;
+          } else if (typeof data === 'string') {
+            message = data;
+          }
+        } catch {
+          const text = await response.text();
+          if (text) message = text;
+        }
+        throw new Error(message);
       }
       setSlackMappingStatus('Slack account connected.');
       setSlackCodeInput('');

@@ -30,7 +30,7 @@ _CODE_TTL = timedelta(minutes=10)
 
 class SlackMappingResponse(BaseModel):
     id: str
-    slack_user_id: str
+    slack_user_id: str | None
     slack_email: str | None
     match_source: str
     created_at: str
@@ -166,32 +166,31 @@ async def request_slack_user_mapping_code(
             detail="Please wait at least one minute before requesting another code.",
         )
 
-    connector = SlackConnector(organization_id=str(org_uuid))
-    slack_users = await connector.get_users()
-    logger.info(
-        "[slack_user_mappings] Loaded %d Slack users for org=%s",
-        len(slack_users),
-        org_uuid,
-    )
+    async with get_session(organization_id=str(org_uuid)) as session:
+        await session.execute(
+            text("SELECT set_config('app.current_org_id', :org_id, true)"),
+            {"org_id": str(org_uuid)},
+        )
+        result = await session.execute(
+            select(SlackUserMapping)
+            .where(SlackUserMapping.organization_id == org_uuid)
+            .where(SlackUserMapping.slack_email == email)
+            .order_by(SlackUserMapping.updated_at.desc())
+        )
+        matched_mapping = result.scalars().first()
 
-    matched_user: dict[str, str] | None = None
-    for slack_user in slack_users:
-        slack_user_id = slack_user.get("id")
-        if not slack_user_id:
-            continue
-        slack_user_payload = slack_user
-        if not slack_user.get("profile"):
-            slack_user_payload = await connector.get_user_info(slack_user_id)
-        slack_email = slack_conversations._extract_slack_email(slack_user_payload)
-        if slack_email and slack_email == email:
-            matched_user = {
-                "id": slack_user_payload.get("id", slack_user_id),
-                "email": slack_email,
-            }
-            break
-
-    if not matched_user or not matched_user.get("id"):
-        raise HTTPException(status_code=404, detail="No Slack user found for that email")
+    if not matched_mapping or not matched_mapping.slack_user_id:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "No matching Slack user found for that email. "
+                "If you're new, try running a Slack sync and try again."
+            ),
+        )
+    matched_user = {
+        "id": matched_mapping.slack_user_id,
+        "email": matched_mapping.slack_email or email,
+    }
 
     code = f"{secrets.randbelow(1000000):06d}"
     payload = json.dumps(
@@ -210,6 +209,7 @@ async def request_slack_user_mapping_code(
         user_uuid,
         matched_user["id"],
     )
+    connector = SlackConnector(organization_id=str(org_uuid))
     await connector.send_direct_message(
         slack_user_id=matched_user["id"],
         text=(
