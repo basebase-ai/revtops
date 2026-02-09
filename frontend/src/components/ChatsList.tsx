@@ -9,9 +9,9 @@
  * - Visual indicators for chats with active background tasks
  */
 
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import type { ChatSummary } from './AppLayout';
-import { useActiveTasksByConversation } from '../store';
+import { useActiveTasksByConversation, useAppStore } from '../store';
 
 interface ChatsListProps {
   chats: ChatSummary[];
@@ -23,18 +23,29 @@ export function ChatsList({ chats, onSelectChat, onNewChat }: ChatsListProps): J
   const [searchQuery, setSearchQuery] = useState('');
   const [sortBy, setSortBy] = useState<'recent' | 'oldest'>('recent');
   const activeTasksByConversation = useActiveTasksByConversation();
+  const pinnedChatIds = useAppStore((state) => state.pinnedChatIds);
+  const togglePinChat = useAppStore((state) => state.togglePinChat);
 
-  const filteredChats = chats
-    .filter((chat) =>
-      chat.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      chat.previewText.toLowerCase().includes(searchQuery.toLowerCase())
-    )
-    .sort((a, b) => {
-      if (sortBy === 'recent') {
-        return b.lastMessageAt.getTime() - a.lastMessageAt.getTime();
-      }
-      return a.lastMessageAt.getTime() - b.lastMessageAt.getTime();
-    });
+  const filteredChats = useMemo(() => {
+    const sortedChats = chats
+      .filter((chat) =>
+        chat.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        chat.previewText.toLowerCase().includes(searchQuery.toLowerCase())
+      )
+      .sort((a, b) => {
+        if (sortBy === 'recent') {
+          return b.lastMessageAt.getTime() - a.lastMessageAt.getTime();
+        }
+        return a.lastMessageAt.getTime() - b.lastMessageAt.getTime();
+      });
+    if (pinnedChatIds.length === 0) {
+      return sortedChats;
+    }
+    const pinnedSet = new Set(pinnedChatIds);
+    const pinned = sortedChats.filter((chat) => pinnedSet.has(chat.id));
+    const unpinned = sortedChats.filter((chat) => !pinnedSet.has(chat.id));
+    return [...pinned, ...unpinned];
+  }, [chats, pinnedChatIds, searchQuery, sortBy]);
 
   return (
     <div className="flex-1 overflow-y-auto">
@@ -125,11 +136,12 @@ export function ChatsList({ chats, onSelectChat, onNewChat }: ChatsListProps): J
           <div className="space-y-2">
             {filteredChats.map((chat) => {
               const hasActiveTask = chat.id in activeTasksByConversation;
+              const isPinned = pinnedChatIds.includes(chat.id);
               return (
                 <button
                   key={chat.id}
                   onClick={() => onSelectChat(chat.id)}
-                  className="w-full text-left p-4 rounded-xl bg-surface-900 hover:bg-surface-800 border border-surface-800 hover:border-surface-700 transition-colors group"
+                  className="relative w-full text-left p-4 rounded-xl bg-surface-900 hover:bg-surface-800 border border-surface-800 hover:border-surface-700 transition-colors group"
                 >
                   <div className="flex items-start justify-between gap-4">
                     {/* Icon - different for workflow vs chat */}
@@ -150,6 +162,11 @@ export function ChatsList({ chats, onSelectChat, onNewChat }: ChatsListProps): J
                         <h3 className="font-medium text-surface-100 truncate group-hover:text-white transition-colors">
                           {chat.title}
                         </h3>
+                        {isPinned && (
+                          <svg className="w-4 h-4 text-primary-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7l-4-4-4 4m4-4v18m0 0l-4-4m4 4l4-4" />
+                          </svg>
+                        )}
                         {chat.type === 'workflow' && (
                           <span className="flex-shrink-0 px-1.5 py-0.5 rounded text-xs bg-amber-500/20 text-amber-400">
                             Workflow
@@ -173,6 +190,18 @@ export function ChatsList({ chats, onSelectChat, onNewChat }: ChatsListProps): J
                       {formatDate(chat.lastMessageAt)}
                     </div>
                   </div>
+                  <button
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      togglePinChat(chat.id);
+                    }}
+                    className="absolute right-3 top-3 p-1.5 rounded opacity-0 group-hover:opacity-100 hover:bg-surface-700 text-surface-500 hover:text-surface-200 transition-all"
+                    title={isPinned ? "Unpin conversation" : "Pin conversation"}
+                  >
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7l-4-4-4 4m4-4v18m0 0l-4-4m4 4l4-4" />
+                    </svg>
+                  </button>
                 </button>
               );
             })}
