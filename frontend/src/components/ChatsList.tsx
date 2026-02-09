@@ -164,7 +164,12 @@ export function ChatsList({ chats, onSelectChat, onNewChat }: ChatsListProps): J
                         </h3>
                         {isPinned && (
                           <svg className="w-4 h-4 text-primary-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7l-4-4-4 4m4-4v18m0 0l-4-4m4 4l4-4" />
+                            <path
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              strokeWidth={2}
+                              d="M12 21v-6m0 0l-3-3m3 3l3-3m-6.364-2.364L6 8m0 0l3.636-3.636a3 3 0 014.243 0L18 8m-12 0h12"
+                            />
                           </svg>
                         )}
                         {chat.type === 'workflow' && (
@@ -198,8 +203,18 @@ export function ChatsList({ chats, onSelectChat, onNewChat }: ChatsListProps): J
                     className="absolute right-3 top-3 p-1.5 rounded opacity-0 group-hover:opacity-100 hover:bg-surface-700 text-surface-500 hover:text-surface-200 transition-all"
                     title={isPinned ? "Unpin conversation" : "Pin conversation"}
                   >
-                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7l-4-4-4 4m4-4v18m0 0l-4-4m4 4l4-4" />
+                    <svg
+                      className={`w-4 h-4 ${isPinned ? "text-primary-400" : ""}`}
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M12 21v-6m0 0l-3-3m3 3l3-3m-6.364-2.364L6 8m0 0l3.636-3.636a3 3 0 014.243 0L18 8m-12 0h12"
+                      />
                     </svg>
                   </button>
                 </button>

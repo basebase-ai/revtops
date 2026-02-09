@@ -37,6 +37,38 @@ from services.slack_conversations import get_slack_user_ids_for_revtops_user
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
+async def _get_slack_user_ids(auth: AuthContext) -> set[str]:
+    org_id = auth.organization_id_str
+    if not org_id:
+        return set()
+    try:
+        return await get_slack_user_ids_for_revtops_user(org_id, auth.user_id_str)
+    except Exception as exc:
+        logger.warning(
+            "[chat] Failed to resolve Slack user IDs for org=%s user=%s: %s",
+            org_id,
+            auth.user_id_str,
+            exc,
+            exc_info=True,
+        )
+    return set()
+
+
+def _build_conversation_access_filter(
+    auth: AuthContext,
+    slack_user_ids: set[str],
+):
+    base_filter = Conversation.user_id == auth.user_id
+    if not slack_user_ids:
+        return base_filter
+    slack_filter = and_(
+        Conversation.source == "slack",
+        Conversation.source_user_id.in_(slack_user_ids),
+    )
+    if auth.organization_id:
+        slack_filter = and_(slack_filter, Conversation.organization_id == auth.organization_id)
+    return or_(base_filter, slack_filter)
+
 
 # =============================================================================
 # Request/Response Models
@@ -124,18 +156,7 @@ async def list_conversations(
 ) -> ConversationListResponse:
     """List conversations for the authenticated user, ordered by most recent."""
     org_id = auth.organization_id_str
-    slack_user_ids: set[str] = set()
-    if org_id:
-        try:
-            slack_user_ids = await get_slack_user_ids_for_revtops_user(org_id, auth.user_id_str)
-        except Exception as exc:
-            logger.warning(
-                "[chat] Failed to resolve Slack user IDs for org=%s user=%s: %s",
-                org_id,
-                auth.user_id_str,
-                exc,
-                exc_info=True,
-            )
+    slack_user_ids = await _get_slack_user_ids(auth)
 
     async with get_session(organization_id=org_id) as session:
         # Simple query - message_count and last_message_preview are cached on the conversation
@@ -144,24 +165,13 @@ async def list_conversations(
             select(Conversation, func.count(Conversation.id).over().label("total_count"))
             .where(Conversation.type != "workflow")
         )
+        query = query.where(_build_conversation_access_filter(auth, slack_user_ids))
         if slack_user_ids:
-            slack_filter = and_(
-                Conversation.source == "slack",
-                Conversation.source_user_id.in_(slack_user_ids),
-            )
-            if auth.organization_id:
-                slack_filter = and_(
-                    slack_filter,
-                    Conversation.organization_id == auth.organization_id,
-                )
-            query = query.where(or_(Conversation.user_id == auth.user_id, slack_filter))
             logger.info(
                 "[chat] Listing conversations for user=%s with Slack IDs %s",
                 auth.user_id_str,
                 sorted(slack_user_ids),
             )
-        else:
-            query = query.where(Conversation.user_id == auth.user_id)
         result = await session.execute(
             query.order_by(Conversation.updated_at.desc())
             .offset(offset)
@@ -176,6 +186,22 @@ async def list_conversations(
         response_items: list[ConversationResponse] = []
         for row in rows:
             conv: Conversation = row[0]
+
+            if conv.source == "slack":
+                preview_length = len(conv.last_message_preview or "")
+                logger.debug(
+                    "[chat] Slack conversation preview: id=%s source_user=%s length=%d message_count=%d",
+                    conv.id,
+                    conv.source_user_id,
+                    preview_length,
+                    conv.message_count,
+                )
+                if not conv.last_message_preview:
+                    logger.info(
+                        "[chat] Slack conversation missing preview: id=%s source_channel=%s",
+                        conv.id,
+                        conv.source_channel_id,
+                    )
 
             response_items.append(ConversationResponse(
                 id=str(conv.id),
@@ -243,11 +269,12 @@ async def get_conversation(
 
     org_id = auth.organization_id_str
 
+    slack_user_ids = await _get_slack_user_ids(auth)
     async with get_session(organization_id=org_id) as session:
         result = await session.execute(
             select(Conversation)
             .where(Conversation.id == conv_uuid)
-            .where(Conversation.user_id == auth.user_id)
+            .where(_build_conversation_access_filter(auth, slack_user_ids))
         )
         conversation = result.scalar_one_or_none()
 
@@ -291,11 +318,12 @@ async def update_conversation(
 
     org_id = auth.organization_id_str
 
+    slack_user_ids = await _get_slack_user_ids(auth)
     async with get_session(organization_id=org_id) as session:
         result = await session.execute(
             select(Conversation)
             .where(Conversation.id == conv_uuid)
-            .where(Conversation.user_id == auth.user_id)
+            .where(_build_conversation_access_filter(auth, slack_user_ids))
         )
         conversation = result.scalar_one_or_none()
 
@@ -343,11 +371,12 @@ async def delete_conversation(
 
     org_id = auth.organization_id_str
 
+    slack_user_ids = await _get_slack_user_ids(auth)
     async with get_session(organization_id=org_id) as session:
         result = await session.execute(
             select(Conversation)
             .where(Conversation.id == conv_uuid)
-            .where(Conversation.user_id == auth.user_id)
+            .where(_build_conversation_access_filter(auth, slack_user_ids))
         )
         conversation = result.scalar_one_or_none()
 
@@ -379,12 +408,15 @@ async def get_chat_history(
 
     org_id = auth.organization_id_str
 
+    slack_user_ids = await _get_slack_user_ids(auth)
     async with get_session(organization_id=org_id) as session:
-        query = select(ChatMessage).where(ChatMessage.user_id == auth.user_id)
-        
+        query = (
+            select(ChatMessage)
+            .join(Conversation, ChatMessage.conversation_id == Conversation.id)
+            .where(_build_conversation_access_filter(auth, slack_user_ids))
+        )
         if conv_uuid:
             query = query.where(ChatMessage.conversation_id == conv_uuid)
-        
         query = query.order_by(ChatMessage.created_at.desc()).offset(offset).limit(limit)
         
         result = await session.execute(query)

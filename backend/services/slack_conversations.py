@@ -559,6 +559,13 @@ async def get_slack_user_ids_for_revtops_user(
     """Return Slack user IDs associated with a RevTops user in this org."""
     user_uuid = UUID(user_id)
     async with get_admin_session() as session:
+        mappings_query = (
+            select(SlackUserMapping)
+            .where(SlackUserMapping.organization_id == UUID(organization_id))
+            .where(SlackUserMapping.user_id == user_uuid)
+        )
+        mappings_result = await session.execute(mappings_query)
+        slack_mappings = mappings_result.scalars().all()
         integrations_query = (
             select(Integration)
             .where(Integration.organization_id == UUID(organization_id))
@@ -567,19 +574,8 @@ async def get_slack_user_ids_for_revtops_user(
         )
         integrations_result = await session.execute(integrations_query)
         slack_integrations = integrations_result.scalars().all()
-        mappings_query = (
-            select(SlackUserMapping)
-            .where(SlackUserMapping.organization_id == UUID(organization_id))
-            .where(SlackUserMapping.user_id == user_uuid)
-        )
-        mappings_result = await session.execute(mappings_query)
-        slack_mappings = mappings_result.scalars().all()
 
     slack_user_ids: set[str] = set()
-    for integration in slack_integrations:
-        if integration.user_id != user_uuid and integration.connected_by_user_id != user_uuid:
-            continue
-        slack_user_ids.update(_extract_slack_user_ids(integration.extra_data or {}))
     for mapping in slack_mappings:
         if mapping.slack_user_id:
             slack_user_ids.add(mapping.slack_user_id)
@@ -591,6 +587,13 @@ async def get_slack_user_ids_for_revtops_user(
         user_id,
         len(slack_mappings),
     )
+    if not slack_user_ids and slack_integrations:
+        logger.info(
+            "[slack_conversations] No Slack user mappings found for org=%s user=%s with %d active Slack integrations",
+            organization_id,
+            user_id,
+            len(slack_integrations),
+        )
     return slack_user_ids
 
 
