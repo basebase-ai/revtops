@@ -8,6 +8,8 @@ Provides endpoints to:
 """
 import logging
 from typing import Any, Optional
+
+logger: logging.Logger = logging.getLogger(__name__)
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query
@@ -160,6 +162,7 @@ async def get_pending_changes(
                         display_name = before.get("name") or before.get("email")
                     record_info["name"] = display_name
                     record_info["email"] = input_data.get("email") or before.get("email")
+                    record_info["company"] = input_data.get("company") or before.get("company")
                 elif snap.table_name == "accounts":
                     record_info["name"] = input_data.get("name") or before.get("name")
                     record_info["domain"] = input_data.get("domain") or before.get("domain")
@@ -167,10 +170,27 @@ async def get_pending_changes(
                     record_info["name"] = input_data.get("dealname") or input_data.get("name") or before.get("name")
                     record_info["amount"] = input_data.get("amount") or before.get("amount")
 
-                # For updates, show what's changing
+                # For updates, build structured field diffs (before → after)
                 if snap.operation == "update" and input_data:
+                    field_diffs: list[dict[str, Any]] = []
+                    for k, v in input_data.items():
+                        if k == "id":
+                            continue
+                        old_val: Any = before.get(k)
+                        field_diffs.append({"field": k, "before": old_val, "after": v})
+                    record_info["field_diffs"] = field_diffs
+                    # Keep legacy changes list for backward compatibility
                     changes: list[str] = [f"{k} → {v}" for k, v in input_data.items() if k != "id"]
                     record_info["changes"] = changes
+
+                # For creates, show all proposed fields
+                if snap.operation == "create" and input_data:
+                        field_diffs_create: list[dict[str, Any]] = []
+                        for k, v in input_data.items():
+                            if k == "id":
+                                continue
+                            field_diffs_create.append({"field": k, "before": None, "after": v})
+                        record_info["field_diffs"] = field_diffs_create
                 
                 records.append(record_info)
 
@@ -235,7 +255,7 @@ async def commit_change_session(
             )
             raise HTTPException(status_code=403, detail="Access denied")
     
-    result = await do_commit(session_id, str(user.id))
+    result = await do_commit(session_id, str(user.id), organization_id=str(user.organization_id))
     
     return ActionResponse(
         status=result.get("status", "unknown"),
@@ -316,8 +336,9 @@ async def commit_all_pending(
     total_errors = 0
     all_errors: list[dict[str, Any]] = []
     
+    org_id_str: str = str(user.organization_id)
     for cs in pending_sessions:
-        commit_result = await do_commit(str(cs.id), str(user.id))
+        commit_result = await do_commit(str(cs.id), str(user.id), organization_id=org_id_str)
         total_synced += commit_result.get("synced_count", 0)
         total_errors += commit_result.get("error_count", 0)
         if commit_result.get("errors"):

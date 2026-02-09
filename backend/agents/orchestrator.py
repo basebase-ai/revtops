@@ -76,23 +76,26 @@ async def update_tool_result(
                 return False
             
             # Find and update the tool_use block
+            # IMPORTANT: Deep-copy blocks to avoid in-place mutation of the original
+            # dicts. SQLAlchemy JSONB columns compare old vs new by value; if we mutate
+            # in-place the old value changes too, so SQLAlchemy sees no diff and skips
+            # the UPDATE statement entirely.
+            import copy
             updated = False
-            new_blocks: list[dict[str, Any]] = []
+            new_blocks: list[dict[str, Any]] = copy.deepcopy(message.content_blocks)
             
-            for block in message.content_blocks:
+            for block in new_blocks:
                 if block.get("type") == "tool_use" and block.get("id") == tool_id:
-                    # Update this block
                     block["result"] = result
                     block["status"] = status
                     updated = True
                     logger.info("[update_tool_result] Found and updating tool block")
-                new_blocks.append(block)
             
             if not updated:
                 logger.warning(f"[update_tool_result] Tool {tool_id} not found in message")
                 return False
             
-            # Save updated blocks
+            # Save updated blocks — new list with new dicts ensures SQLAlchemy detects the change
             message.content_blocks = new_blocks
             await session.commit()
             
@@ -139,47 +142,51 @@ This helps users understand what you're thinking and what to expect.
 
 ## Available Tools
 
-You have access to powerful tools:
-- **run_sql_query**: Execute arbitrary SELECT queries against the database. Use this for structured data analysis, exact text matching, and complex joins.
-- **search_activities**: Semantic search across emails, meetings, and messages. Use this when users want to find activities by meaning/concept rather than exact text (e.g., "find emails about pricing discussions").
-- **create_artifact**: Save dashboards, reports, or analyses for the user.
-- **web_search**: Search the web for external information not in the user's data. Use this for industry benchmarks, company research, market trends, news, and sales methodologies.
-- **crm_write**: Create or update records in the CRM (HubSpot). This shows a preview and requires user approval before executing.
-- **create_workflow**: Create automated workflows that run on schedules or events.
-- **trigger_workflow**: Manually run a workflow to test it.
+### Reading & Analyzing Data
+- **run_sql_query**: Execute SELECT queries against the database. Use for structured analysis, filtering, joins, aggregations, exact text matching (ILIKE). Always prefer this for questions that can be answered with SQL.
+- **search_activities**: Semantic search across emails, meetings, and messages. Use when the user wants to find activities by meaning rather than exact text (e.g., "emails about pricing discussions", "meetings where we talked about renewal").
+- **web_search**: Search the web for external information not in the user's data. Use for industry benchmarks, company research, market trends, news, and sales methodologies.
 
-### When to use which tool:
-- **search_activities**: For conceptual/semantic queries like "emails about contract renewal", "meetings discussing budget"
-- **run_sql_query with ILIKE**: For exact patterns like "emails from @acmecorp.com", "meetings with John Smith"
-- **web_search**: For external context like "typical enterprise SaaS close rates", "what does Acme Corp do", "MEDDIC qualification framework"
-- **crm_write**: When the user wants to create contacts, companies, or deals in their CRM from prospect lists or other data
+### Writing & Modifying Data
+- **crm_write**: Create or update contacts, companies, or deals in the CRM (HubSpot). Accepts a batch of records (up to 100 at a time). Changes go to the Pending Changes panel where the user can review, then Commit to push to HubSpot or Discard. **Use this for any bulk operation** — CSV imports, enrichment results, prospect lists, data cleanup.
+- **run_sql_write**: Execute INSERT/UPDATE/DELETE SQL. Use this for **internal tables** (workflows, artifacts) or **ad-hoc single-record CRM edits**. CRM table writes (contacts, deals, accounts) also go through the Pending Changes review flow. Prefer crm_write over run_sql_write for CRM operations, especially when handling multiple records.
 
-### CRM Write Operations
+### Creating Outputs
+- **create_artifact**: Save a file the user can view and download — reports (.md/.pdf), charts (.html with Plotly), or data exports (.txt).
+- **send_email_from**: Send an email as the user from their connected Gmail/Outlook.
+- **send_slack**: Post a message to a Slack channel.
 
-When users want to create or update CRM records, use the **crm_write** tool. This tool:
-1. Validates the input data
-2. Checks for duplicates in the CRM
-3. Shows the user a preview with Approve/Cancel buttons
-4. Only executes after user approval
+### Automation
+- **create_workflow** / **run_workflow**: Create or run automated workflows on schedules or events.
+- **trigger_workflow**: Manually trigger an existing workflow to test it.
 
-**IMPORTANT: Always explain what you're going to create BEFORE calling the crm_write tool.**
+### Enrichment
+- **enrich_contacts_with_apollo**: Enrich contacts with Apollo.io data (titles, companies, emails). After enrichment, use **crm_write** to update the contacts with the enriched fields.
+- **enrich_company_with_apollo**: Enrich a single company with Apollo.io data.
 
-Follow this sequence:
-1. First, write a brief message explaining what records you'll create (e.g., "I'll create a contact for John Smith and a company for Acme Corp in HubSpot.")
-2. Then call the crm_write tool(s)
-3. The tool will show the user an approval card - they'll click Approve or Cancel
+### IMPORTANT: Creating Deals
+When creating deals via **crm_write**, the `dealstage` field MUST be a valid HubSpot pipeline stage **source_id** — NOT a human-readable name.
+Before creating deals, ALWAYS:
+1. Query: `SELECT ps.source_id, ps.name, ps.display_order, p.name as pipeline_name, p.source_id as pipeline_source_id FROM pipeline_stages ps JOIN pipelines p ON ps.pipeline_id = p.id ORDER BY p.name, ps.display_order`
+2. Use the stage **source_id** (e.g. "appointmentscheduled" or "2967830202") in the `dealstage` field.
+3. Use the pipeline **source_id** in the `pipeline` field.
+4. Use your judgment to map any CSV/user-provided stage names to the closest matching real stage.
+If the query returns 0 rows, do NOT proceed — tell the user no pipelines are synced yet.
 
-Example usage:
-- User provides a list of prospects → explain what you'll create → then call crm_write
-- User wants to create a company → explain → then call crm_write with company record_type
-- User wants to create deals → explain → then call crm_write with deal record_type
+### IMPORTANT: Importing Data from CSV/Files
+When the user provides a CSV or file for import, include ALL available fields from the data — do not cherry-pick a subset. Map column names to the appropriate CRM field names, but preserve every column that has a reasonable CRM mapping.
 
-Property names for each record type:
-- **contact**: email (required), firstname, lastname, company, jobtitle, phone
-- **company**: name (required), domain, industry, numberofemployees
-- **deal**: dealname (required), amount, dealstage, closedate, pipeline
-
-The tool returns a "pending_approval" status. Do NOT add any text after the tool call - just let the approval card speak for itself.
+### When to use which tool (common scenarios):
+| User wants to... | Use |
+|---|---|
+| Ask a question about their data | **run_sql_query** |
+| Find emails/meetings by topic | **search_activities** |
+| Import contacts from a CSV | **crm_write** (batch create) |
+| Update a deal amount | **crm_write** (single update) or **run_sql_write** |
+| Enrich contacts then save results | **enrich_contacts_with_apollo** → **crm_write** |
+| Create a report or chart | **run_sql_query** → **create_artifact** |
+| Set up a recurring task | **run_sql_write** (INSERT INTO workflows) |
+| Research a company externally | **web_search** |
 
 ### Workflow Automations
 
@@ -469,6 +476,7 @@ class ChatOrchestrator:
         user_message: str,
         save_user_message: bool = True,
         skip_history: bool = False,
+        attachment_ids: list[str] | None = None,
     ) -> AsyncGenerator[str, None]:
         """
         Process a user message and stream Claude's response with true streaming.
@@ -477,6 +485,7 @@ class ChatOrchestrator:
             user_message: The user's message text
             save_user_message: If False, don't save user_message to DB (for internal system messages)
             skip_history: If True, skip loading history from DB (e.g. first message in a new conversation)
+            attachment_ids: Optional list of upload IDs for attached files
 
         Yields:
             String chunks of the assistant's response (text streams immediately)
@@ -485,9 +494,23 @@ class ChatOrchestrator:
         if not self.conversation_id:
             self.conversation_id = await self._create_conversation()
 
+        # Resolve attachment metadata before save (files are consumed by _build_user_content)
+        attachment_meta: list[dict[str, Any]] = []
+        if attachment_ids:
+            from services.file_handler import retrieve_file, StoredFile
+            for aid in attachment_ids:
+                sf: StoredFile | None = retrieve_file(aid)
+                if sf is not None:
+                    attachment_meta.append({
+                        "type": "attachment",
+                        "filename": sf.filename,
+                        "mimeType": sf.mime_type,
+                        "size": sf.size,
+                    })
+
         # Fire-and-forget user message save — it's for persistence, not the Claude call.
         if save_user_message:
-            asyncio.create_task(self._save_user_message_safe(user_message))
+            asyncio.create_task(self._save_user_message_safe(user_message, attachment_meta))
 
         # Skip history DB call for new conversations (zero messages to load).
         if skip_history:
@@ -497,9 +520,14 @@ class ChatOrchestrator:
             history = await self._load_history(limit=20)
             logger.info("[Orchestrator] Loaded %d history messages", len(history))
 
+        # Build user content — may include attachment blocks (images, PDFs, text)
+        user_content: str | list[dict[str, Any]] = self._build_user_content(
+            user_message, attachment_ids,
+        )
+
         # Add user message to context for Claude
         messages: list[dict[str, Any]] = history + [
-            {"role": "user", "content": user_message}
+            {"role": "user", "content": user_content}
         ]
 
         # Keep track of content blocks for saving (preserves interleaving order)
@@ -618,7 +646,7 @@ WHERE scheduled_start >= '2026-01-27'::date AND scheduled_start < '2026-01-28'::
                     # Stream the response
                     async with self.client.messages.stream(
                         model="claude-sonnet-4-5",
-                        max_tokens=4096,
+                        max_tokens=16384,
                         system=system_prompt,
                         tools=get_tools(),
                         messages=messages,
@@ -637,6 +665,13 @@ WHERE scheduled_start >= '2026-01-27'::date AND scheduled_start < '2026-01-28'::
                                         "input": {},
                                     }
                                     current_tool_input_json = ""
+                                    # Immediately notify frontend that a tool call is starting
+                                    # so it can show a spinner while the input JSON streams
+                                    yield json.dumps({
+                                        "type": "tool_call_start",
+                                        "tool_name": event.content_block.name,
+                                        "tool_id": event.content_block.id,
+                                    })
                             
                             elif event.type == "content_block_delta":
                                 if event.delta.type == "text_delta":
@@ -841,10 +876,62 @@ WHERE scheduled_start >= '2026-01-27'::date AND scheduled_start < '2026-01-28'::
             messages.append({"role": "assistant", "content": assistant_content})
             messages.append({"role": "user", "content": tool_results})
 
-    async def _save_user_message_safe(self, user_msg: str) -> None:
+    @staticmethod
+    def _build_user_content(
+        user_message: str,
+        attachment_ids: list[str] | None,
+    ) -> str | list[dict[str, Any]]:
+        """
+        Build the ``content`` value for a Claude user message.
+
+        If there are no attachments, returns a plain string (most common path).
+        If there are attachments, returns a list of content blocks (images,
+        documents, text) followed by the user's text message.
+        """
+        if not attachment_ids:
+            return user_message
+
+        from services.file_handler import (
+            retrieve_file,
+            remove_file,
+            build_claude_content_blocks,
+            StoredFile,
+        )
+
+        stored_files: list[StoredFile] = []
+        for aid in attachment_ids:
+            sf: StoredFile | None = retrieve_file(aid)
+            if sf is not None:
+                stored_files.append(sf)
+            else:
+                logger.warning("[Orchestrator] Attachment %s not found (expired?)", aid)
+
+        if not stored_files:
+            return user_message
+
+        blocks: list[dict[str, Any]] = build_claude_content_blocks(stored_files)
+
+        # Append the user's text as the final block
+        blocks.append({"type": "text", "text": user_message})
+
+        # Clean up temp storage now that we've consumed the files
+        for sf in stored_files:
+            remove_file(sf.upload_id)
+
+        logger.info(
+            "[Orchestrator] Built %d content block(s) from %d attachment(s)",
+            len(blocks), len(stored_files),
+        )
+        return blocks
+
+    async def _save_user_message_safe(
+        self,
+        user_msg: str,
+        attachment_meta: list[dict[str, Any]] | None = None,
+    ) -> None:
         """Fire-and-forget wrapper for _save_user_message. Logs errors instead of raising."""
         try:
-            await self._save_user_message(user_msg)
+            await self._save_user_message(user_msg, attachment_meta)
         except Exception as e:
             logger.warning("[Orchestrator] Background user message save failed: %s", e)
 
@@ -1015,10 +1102,20 @@ WHERE scheduled_start >= '2026-01-27'::date AND scheduled_start < '2026-01-28'::
             
             return history
 
-    async def _save_user_message(self, user_msg: str) -> None:
+    async def _save_user_message(
+        self,
+        user_msg: str,
+        attachment_meta: list[dict[str, Any]] | None = None,
+    ) -> None:
         """Save user message to database immediately."""
         conv_uuid = UUID(self.conversation_id) if self.conversation_id else None
         user_uuid = UUID(self.user_id) if self.user_id else None
+
+        # Build content blocks: attachment metadata first, then text
+        blocks: list[dict[str, Any]] = []
+        if attachment_meta:
+            blocks.extend(attachment_meta)
+        blocks.append({"type": "text", "text": user_msg})
 
         async with get_session(organization_id=self.organization_id) as session:
             session.add(
@@ -1027,9 +1124,10 @@ WHERE scheduled_start >= '2026-01-27'::date AND scheduled_start < '2026-01-28'::
                     user_id=user_uuid,
                     organization_id=UUID(self.organization_id) if self.organization_id else None,
                     role="user",
+                    content_blocks=blocks,
                     source_user_id=self.source_user_id,
                     source_user_email=self.source_user_email,
-                    content_blocks=[{"type": "text", "text": user_msg}],
+
                 )
             )
 

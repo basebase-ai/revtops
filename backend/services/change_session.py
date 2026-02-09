@@ -358,10 +358,12 @@ async def approve_change_session(
         change_session_id: The change session UUID
         resolved_by_user_id: User UUID approving the changes
         force: If True, approve even with conflicts
+        organization_id: Organization UUID for RLS context
         
     Returns:
         Result dict with status, conflicts (if any), and snapshot count
     """
+
     org_id = organization_id
     if not org_id:
         async with get_admin_session() as admin_session:
@@ -370,7 +372,8 @@ async def approve_change_session(
                 return {"status": "error", "error": "Change session not found"}
             org_id = str(change_session.organization_id)
 
-    async with get_session(organization_id=org_id) as session:
+    async with get_session(organization_id=organization_id) as session:
+
         # Get the change session
         change_session = await session.get(ChangeSession, UUID(change_session_id))
         if not change_session:

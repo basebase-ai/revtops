@@ -93,6 +93,9 @@ class Settings(BaseSettings):
     
     # Slack Events API (for receiving DMs)
     SLACK_SIGNING_SECRET: Optional[str] = None
+    
+    # ScrapingBee (for fetch_url tool - web scraping with proxy support)
+    SCRAPINGBEE_API_KEY: Optional[str] = None
 
     class Config:
         env_file = str(_env_file)

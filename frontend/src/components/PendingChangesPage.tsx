@@ -11,15 +11,23 @@ import { useAppStore } from '../store';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
+interface FieldDiff {
+  field: string;
+  before: string | number | null;
+  after: string | number | null;
+}
+
 interface RecordInfo {
   table: string;
   operation: string;
   record_id: string;
   name?: string | null;
   email?: string | null;
+  company?: string | null;
   domain?: string | null;
   amount?: number | null;
   changes?: string[] | null;
+  field_diffs?: FieldDiff[] | null;
 }
 
 interface ChangeSessionSummary {
@@ -130,14 +138,18 @@ export function PendingChangesPage(): JSX.Element {
         `/change-sessions/${sessionId}/commit?user_id=${userId}`,
         { method: 'POST', body: JSON.stringify({}) },
       );
-      if (apiErr) setError(apiErr);
-      else if (res?.error_count && res.error_count > 0) {
-        setError(`Synced ${res.synced_count ?? 0} records, but ${res.error_count} failed`);
+      if (apiErr) {
+        setError(apiErr);
+      } else if (res?.status === 'failed') {
+        setError(res.message || 'Commit failed');
+      } else if (res?.error_count && res.error_count > 0) {
+        setError(`Synced ${res.synced_count ?? 0} records, but ${res.error_count} failed. ${res.errors?.map((e) => e.error).join('; ') ?? ''}`);
       }
       await fetchPending();
       window.dispatchEvent(new Event('pending-changes-updated'));
-    } catch {
-      setError('Failed to commit session');
+    } catch (err: unknown) {
+      const msg: string = err instanceof Error ? err.message : 'Failed to commit session';
+      setError(msg);
     } finally {
       setBusySession(null);
     }
@@ -275,8 +287,8 @@ export function PendingChangesPage(): JSX.Element {
       <div className="flex-1 overflow-y-auto p-6">
         {/* Error banner */}
         {error && (
-          <div className="mb-4 px-4 py-2 rounded-lg bg-red-500/10 border border-red-500/30 text-red-400 text-sm">
-            {error}
+          <div className="mb-4 px-4 py-2 rounded-lg bg-red-500/10 border border-red-500/30 text-red-400 text-sm max-h-24 overflow-y-auto break-words">
+            {error.length > 300 ? error.slice(0, 300) + '…' : error}
           </div>
         )}
 
@@ -357,32 +369,69 @@ export function PendingChangesPage(): JSX.Element {
                   {isExpanded && (
                     <div className="border-t border-surface-800 px-4 py-3 space-y-3">
                       {/* Record list */}
-                      <div className="space-y-1.5">
+                      <div className="space-y-4 max-h-96 overflow-y-auto">
                         {session.records.map((record, idx) => (
                           <div
                             key={`${record.record_id}-${idx}`}
-                            className="flex flex-col gap-0.5 text-sm"
+                            className="rounded-lg border border-surface-800 overflow-hidden"
                           >
-                            <div className="flex items-center gap-2">
-                              <span className={`text-xs ${record.operation === 'update' ? 'text-amber-400' : 'text-green-500'}`}>
+                            {/* Record header */}
+                            <div className="flex items-center gap-2 px-3 py-2 bg-surface-800/50">
+                              <span className={`text-xs font-bold ${record.operation === 'update' ? 'text-amber-400' : 'text-green-500'}`}>
                                 {record.operation === 'update' ? '~' : '+'}
                               </span>
-                              <span className="px-1.5 py-0.5 rounded bg-surface-800 text-surface-400 text-xs font-medium">
+                              <span className="px-1.5 py-0.5 rounded bg-surface-700 text-surface-300 text-xs font-medium">
                                 {friendlyTable(record.table)}
                               </span>
-                              <span className="text-surface-200 truncate">
+                              <span className="text-sm text-surface-200 font-medium truncate">
                                 {recordLabel(record)}
                               </span>
+                              {record.table === 'contacts' && record.company && (
+                                <span className="text-surface-400 text-xs truncate">{record.company}</span>
+                              )}
+                              {record.table === 'contacts' && record.email && record.name && (
+                                <span className="text-surface-500 text-xs truncate">{record.email}</span>
+                              )}
                               {record.amount != null && (
                                 <span className="text-surface-400 text-xs ml-auto tabular-nums">
                                   ${Number(record.amount).toLocaleString()}
                                 </span>
                               )}
                             </div>
-                            {record.changes && record.changes.length > 0 && (
-                              <div className="ml-6 text-xs text-surface-400 italic">
-                                {record.changes.join(', ')}
-                              </div>
+
+                            {/* Field diffs table */}
+                            {record.field_diffs && record.field_diffs.length > 0 && (
+                              <table className="w-full text-xs">
+                                <thead>
+                                  <tr className="border-b border-surface-800">
+                                    <th className="px-3 py-1.5 text-left text-surface-500 font-medium w-1/4">Field</th>
+                                    {record.operation === 'update' && (
+                                      <th className="px-3 py-1.5 text-left text-surface-500 font-medium w-[37.5%]">Before</th>
+                                    )}
+                                    <th className="px-3 py-1.5 text-left text-surface-500 font-medium">
+                                      {record.operation === 'update' ? 'After' : 'Value'}
+                                    </th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {record.field_diffs.map((diff: FieldDiff) => {
+                                    const changed: boolean = record.operation === 'update' && String(diff.before ?? '') !== String(diff.after ?? '');
+                                    return (
+                                      <tr key={diff.field} className="border-b border-surface-800/50 last:border-0">
+                                        <td className="px-3 py-1.5 text-surface-400 font-medium">{diff.field}</td>
+                                        {record.operation === 'update' && (
+                                          <td className={`px-3 py-1.5 ${changed ? 'text-red-400/70 line-through' : 'text-surface-500'}`}>
+                                            {diff.before != null ? String(diff.before) : <span className="text-surface-600 italic">empty</span>}
+                                          </td>
+                                        )}
+                                        <td className={`px-3 py-1.5 ${changed ? 'text-green-400' : 'text-surface-300'}`}>
+                                          {diff.after != null ? String(diff.after) : <span className="text-surface-600 italic">empty</span>}
+                                        </td>
+                                      </tr>
+                                    );
+                                  })}
+                                </tbody>
+                              </table>
                             )}
                           </div>
                         ))}
@@ -400,32 +449,32 @@ export function PendingChangesPage(): JSX.Element {
                           View conversation &rarr;
                         </button>
                       )}
-
-                      {/* Per-session actions */}
-                      <div className="flex items-center gap-2 pt-2 border-t border-surface-800">
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            void discardSession(session.id);
-                          }}
-                          disabled={isBusy}
-                          className="px-3 py-1 text-xs font-medium rounded-md border border-surface-600 text-surface-300 hover:bg-surface-800 disabled:opacity-40 transition-colors"
-                        >
-                          Discard
-                        </button>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            void commitSession(session.id);
-                          }}
-                          disabled={isBusy}
-                          className="px-3 py-1 text-xs font-medium rounded-md bg-primary-600 hover:bg-primary-500 text-white disabled:opacity-40 transition-colors"
-                        >
-                          {busySession === session.id ? 'Working...' : 'Commit'}
-                        </button>
-                      </div>
                     </div>
                   )}
+
+                  {/* Per-session actions – always visible */}
+                  <div className="flex items-center gap-2 px-4 py-2.5 border-t border-surface-800">
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void discardSession(session.id);
+                      }}
+                      disabled={isBusy}
+                      className="px-3 py-1 text-xs font-medium rounded-md border border-surface-600 text-surface-300 hover:bg-surface-800 disabled:opacity-40 transition-colors"
+                    >
+                      Discard
+                    </button>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void commitSession(session.id);
+                      }}
+                      disabled={isBusy}
+                      className="px-3 py-1 text-xs font-medium rounded-md bg-primary-600 hover:bg-primary-500 text-white disabled:opacity-40 transition-colors"
+                    >
+                      {busySession === session.id ? `Committing ${session.record_count} record${session.record_count !== 1 ? 's' : ''}...` : 'Commit'}
+                    </button>
+                  </div>
                 </div>
               );
             })}

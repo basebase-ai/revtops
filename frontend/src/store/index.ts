@@ -92,7 +92,7 @@ export interface ToolUseBlock {
   name: string;
   input: Record<string, unknown>;
   result?: Record<string, unknown>;
-  status?: "pending" | "running" | "complete";
+  status?: "pending" | "running" | "complete" | "streaming";
 }
 
 export interface ErrorBlock {
@@ -111,7 +111,14 @@ export interface ArtifactBlock {
   };
 }
 
-export type ContentBlock = TextBlock | ToolUseBlock | ErrorBlock | ArtifactBlock;
+export interface AttachmentBlock {
+  type: "attachment";
+  filename: string;
+  mimeType: string;
+  size: number;
+}
+
+export type ContentBlock = TextBlock | ToolUseBlock | ErrorBlock | ArtifactBlock | AttachmentBlock;
 
 // Legacy type for streaming compatibility
 export interface ToolCallData {
@@ -755,23 +762,59 @@ export const useAppStore = create<AppState>()(
           });
         } else if (chunkIndex > expectedIndex) {
           // Chunk arrived out of order - buffer it
-          console.log(
-            `[Store] Buffering out-of-order chunk ${chunkIndex} (expected ${expectedIndex}) for conversation:`,
-            conversationId,
-          );
           const newPendingChunks = [
             ...current.pendingChunks,
             { index: chunkIndex, content },
           ];
-          set({
-            conversations: {
-              ...conversations,
-              [conversationId]: {
-                ...current,
-                pendingChunks: newPendingChunks,
+
+          // If we've buffered too many chunks, the expected one is likely lost.
+          // Skip ahead: treat the lowest buffered chunk as the next expected one.
+          const MAX_BUFFER_SIZE: number = 5;
+          if (newPendingChunks.length >= MAX_BUFFER_SIZE) {
+            console.warn(
+              `[Store] Skipping lost chunk(s) ${expectedIndex}-${chunkIndex - 1} for conversation:`,
+              conversationId,
+            );
+            newPendingChunks.sort((a, b) => a.index - b.index);
+            let updated = current.messages;
+            let newLastIndex = current.lastChunkIndex;
+            const remaining: typeof newPendingChunks = [];
+
+            for (const pending of newPendingChunks) {
+              updated = applyContent(
+                updated,
+                current.streamingMessageId,
+                pending.content,
+              );
+              newLastIndex = pending.index;
+            }
+
+            set({
+              conversations: {
+                ...conversations,
+                [conversationId]: {
+                  ...current,
+                  messages: updated,
+                  lastChunkIndex: newLastIndex,
+                  pendingChunks: remaining,
+                },
               },
-            },
-          });
+            });
+          } else {
+            console.log(
+              `[Store] Buffering out-of-order chunk ${chunkIndex} (expected ${expectedIndex}) for conversation:`,
+              conversationId,
+            );
+            set({
+              conversations: {
+                ...conversations,
+                [conversationId]: {
+                  ...current,
+                  pendingChunks: newPendingChunks,
+                },
+              },
+            });
+          }
         }
         // If chunkIndex < expectedIndex, it's a duplicate - ignore it
       },
@@ -920,9 +963,14 @@ export const useAppStore = create<AppState>()(
 
           const updatedBlocks = blocks.map((block) => {
             if (block.type === "tool_use" && block.id === toolId) {
+              // Merge result updates instead of replacing entirely (for progress updates)
+              const currentResult = (block.result as Record<string, unknown>) || {};
+              const newResult = updates.result 
+                ? { ...currentResult, ...updates.result }
+                : currentResult;
               return {
                 ...block,
-                result: updates.result ?? block.result,
+                result: newResult,
                 status:
                   (updates.status as
                     | "pending"

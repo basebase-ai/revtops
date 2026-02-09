@@ -23,6 +23,15 @@ import {
   SiGooglesheets,
 } from 'react-icons/si';
 import { HiOutlineCalendar, HiOutlineMail, HiGlobeAlt, HiUserGroup, HiExclamation, HiDeviceMobile, HiMicrophone, HiUpload } from 'react-icons/hi';
+// Custom Apollo.io icon - 8-ray starburst matching their brand
+const ApolloIcon: IconType = ({ className, ...props }) => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className={className} {...props}>
+    <line x1="12" y1="2" x2="12" y2="22" />
+    <line x1="2" y1="12" x2="22" y2="12" />
+    <line x1="4.93" y1="4.93" x2="19.07" y2="19.07" />
+    <line x1="19.07" y1="4.93" x2="4.93" y2="19.07" />
+  </svg>
+);
 import { SheetImporter } from './SheetImporter';
 import { API_BASE } from '../lib/api';
 import { useAppStore, useIntegrations, useIntegrationsLoading, type Integration, type SyncStats } from '../store';
@@ -64,6 +73,7 @@ const ICON_MAP: Record<string, IconType> = {
   microsoft_mail: HiOutlineMail,
   fireflies: HiMicrophone,
   google_sheets: SiGooglesheets,
+  apollo: ApolloIcon,
 };
 
 // User-scoped providers (each user connects individually vs org-wide connection)
@@ -89,6 +99,7 @@ const INTEGRATION_CONFIG: Record<string, { name: string; description: string; ic
   microsoft_mail: { name: 'Microsoft Mail', description: 'Outlook emails and communications', icon: 'microsoft_mail', color: 'from-sky-500 to-sky-600' },
   fireflies: { name: 'Fireflies', description: 'Meeting transcriptions and notes', icon: 'fireflies', color: 'from-violet-500 to-violet-600' },
   google_sheets: { name: 'Google Sheets', description: 'Import contacts, accounts, deals from spreadsheets', icon: 'google_sheets', color: 'from-emerald-500 to-emerald-600' },
+  apollo: { name: 'Apollo.io', description: 'Data enrichment - Contact titles, companies, emails', icon: 'apollo', color: 'from-yellow-400 to-yellow-500' },
 };
 
 // Extended integration type with display info
@@ -543,6 +554,7 @@ export function DataSources(): JSX.Element {
       'from-red-500 to-red-600': 'bg-red-500',
       'from-violet-500 to-violet-600': 'bg-violet-500',
       'from-emerald-500 to-emerald-600': 'bg-emerald-500',
+      'from-yellow-400 to-yellow-500': 'bg-yellow-400',
     };
     return colorMap[color] ?? 'bg-surface-600';
   };
@@ -579,8 +591,8 @@ export function DataSources(): JSX.Element {
     // Button config by state
     const getButtonConfig = (): { text: string; className: string; action: () => void; disabled: boolean; hidden?: boolean } => {
       if (state === 'connected') {
-        // Google Sheets uses on-demand import, not continuous sync
-        if (integration.provider === 'google_sheets') {
+        // Google Sheets uses on-demand import, Apollo.io is on-demand enrichment - no regular sync
+        if (integration.provider === 'google_sheets' || integration.provider === 'apollo') {
           return {
             text: '',
             className: '',

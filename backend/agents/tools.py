@@ -4,7 +4,7 @@ Tool definitions and execution for Claude.
 Tools are organized by category (see registry.py):
 - LOCAL_READ: run_sql_query, search_activities
 - LOCAL_WRITE: create_artifact, create_workflow, trigger_workflow
-- EXTERNAL_READ: web_search, enrich_contacts_with_apollo, enrich_company_with_apollo
+- EXTERNAL_READ: web_search, fetch_url, enrich_contacts_with_apollo, enrich_company_with_apollo
 - EXTERNAL_WRITE: crm_write, send_email_from, send_slack, trigger_sync
 
 EXTERNAL_WRITE tools require user approval by default (can be overridden in settings).
@@ -263,6 +263,11 @@ async def execute_tool(
         logger.info("[Tools] loop_over completed: %d/%d successful", result.get("succeeded", 0), result.get("total", 0))
         return result
 
+    elif tool_name == "fetch_url":
+        result = await _fetch_url(tool_input)
+        logger.info("[Tools] fetch_url completed: %s", result.get("url"))
+        return result
+
     elif tool_name == "enrich_contacts_with_apollo":
         result = await _enrich_contacts_with_apollo(tool_input, organization_id)
         logger.info("[Tools] enrich_contacts_with_apollo completed: %d results", len(result.get("enriched", [])))
@@ -271,6 +276,12 @@ async def execute_tool(
     elif tool_name == "enrich_company_with_apollo":
         result = await _enrich_company_with_apollo(tool_input, organization_id)
         logger.info("[Tools] enrich_company_with_apollo completed")
+        return result
+
+    elif tool_name == "crm_write":
+        conversation_id: str | None = (context or {}).get("conversation_id")
+        result = await _crm_write(tool_input, organization_id, user_id, skip_approval, conversation_id=conversation_id)
+        logger.info("[Tools] crm_write completed: %s", result.get("status", result.get("error", "unknown")))
         return result
 
     elif tool_name == "send_email_from":
@@ -1085,8 +1096,147 @@ async def _web_search(params: dict[str, Any]) -> dict[str, Any]:
         return {"error": f"Search failed: {str(e)}"}
 
 
+async def _fetch_url(params: dict[str, Any]) -> dict[str, Any]:
+    """Fetch a web page, using direct httpx for simple requests or ScrapingBee for proxy/JS rendering."""
+    url: str = params.get("url", "").strip()
+    extract_text: bool = params.get("extract_text", True)
+    render_js: bool = params.get("render_js", False)
+    premium_proxy: bool = params.get("premium_proxy", False)
+    wait_ms: int | None = params.get("wait_ms")
+
+    if not url:
+        return {"error": "No URL provided"}
+
+    if not url.startswith(("http://", "https://")):
+        return {"error": "URL must start with http:// or https://"}
+
+    use_scrapingbee: bool = render_js or premium_proxy
+
+    if use_scrapingbee and not settings.SCRAPINGBEE_API_KEY:
+        return {
+            "error": "ScrapingBee is required for render_js/premium_proxy but SCRAPINGBEE_API_KEY is not set.",
+            "suggestion": "Add SCRAPINGBEE_API_KEY to your environment variables, or disable render_js/premium_proxy.",
+        }
+
+    try:
+        if use_scrapingbee:
+            body = await _fetch_url_via_scrapingbee(url, extract_text, render_js, premium_proxy, wait_ms)
+        else:
+            body = await _fetch_url_direct(url)
+    except httpx.TimeoutException:
+        logger.error("[Tools._fetch_url] Request timed out for %s", url)
+        return {"error": "Request timed out. The page may be slow to respond.", "url": url}
+    except Exception as e:
+        logger.error("[Tools._fetch_url] Fetch failed: %s", str(e))
+        return {"error": f"Fetch failed: {str(e)}", "url": url}
+
+    # If ScrapingBee with extract_text, response is JSON with our extract_rules
+    if use_scrapingbee and extract_text:
+        try:
+            extracted: dict[str, Any] = json.loads(body)
+            text_content: str = extracted.get("text", body)
+            return _truncate_result(url, text_content, mode="extracted_text", max_chars=50_000)
+        except (json.JSONDecodeError, KeyError):
+            pass  # Fall through to raw handling
+
+    if extract_text and not use_scrapingbee:
+        # Simple tag stripping for direct fetches
+        text_content = _strip_html(body)
+        return _truncate_result(url, text_content, mode="extracted_text", max_chars=50_000)
+
+    return _truncate_result(url, body, mode="html", max_chars=100_000)
+
+
+async def _fetch_url_direct(url: str) -> str:
+    """Fetch a URL directly with httpx (no proxy, no cost)."""
+    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+        response = await client.get(
+            url,
+            headers={
+                "User-Agent": "Mozilla/5.0 (compatible; Revtops/1.0)",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            },
+        )
+        if response.status_code >= 400:
+            raise Exception(f"HTTP {response.status_code} from {url}")
+        return response.text
+
+
+async def _fetch_url_via_scrapingbee(
+    url: str,
+    extract_text: bool,
+    render_js: bool,
+    premium_proxy: bool,
+    wait_ms: int | None,
+) -> str:
+    """Fetch a URL via ScrapingBee proxy (costs credits)."""
+    sb_params: dict[str, str] = {
+        "api_key": settings.SCRAPINGBEE_API_KEY,  # type: ignore[arg-type]
+        "url": url,
+    }
+
+    if extract_text:
+        sb_params["extract_rules"] = json.dumps({"text": {"selector": "body", "type": "text"}})
+
+    if render_js:
+        sb_params["render_js"] = "true"
+        if wait_ms is not None:
+            clamped_wait: int = max(0, min(wait_ms, 35000))
+            sb_params["wait"] = str(clamped_wait)
+
+    if premium_proxy:
+        sb_params["premium_proxy"] = "true"
+
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        response = await client.get(
+            "https://app.scrapingbee.com/api/v1/",
+            params=sb_params,
+        )
+
+        if response.status_code != 200:
+            logger.error(
+                "[Tools._fetch_url] ScrapingBee error: %s %s",
+                response.status_code,
+                response.text[:500],
+            )
+            raise Exception(f"ScrapingBee returned status {response.status_code}")
+
+        return response.text
+
+
+def _strip_html(html: str) -> str:
+    """Naive but fast HTML tag stripping for plain-text extraction."""
+    # Remove script/style blocks entirely
+    text: str = re.sub(r"<(script|style)[^>]*>.*?</\1>", "", html, flags=re.DOTALL | re.IGNORECASE)
+    # Strip remaining tags
+    text = re.sub(r"<[^>]+>", " ", text)
+    # Collapse whitespace
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def _truncate_result(url: str, content: str, *, mode: str, max_chars: int) -> dict[str, Any]:
+    """Build a fetch_url result dict, truncating content if needed."""
+    truncated: bool = len(content) > max_chars
+    if truncated:
+        content = content[:max_chars]
+    result: dict[str, Any] = {
+        "url": url,
+        "content": content,
+        "mode": mode,
+    }
+    if truncated:
+        result["truncated"] = True
+        result["note"] = f"Content truncated to {max_chars} characters"
+    return result
+
+
 async def _crm_write(
-    params: dict[str, Any], organization_id: str, user_id: str | None, skip_approval: bool = False
+    params: dict[str, Any],
+    organization_id: str,
+    user_id: str | None,
+    skip_approval: bool = False,
+    conversation_id: str | None = None,
 ) -> dict[str, Any]:
     """
     Create or update CRM records with user approval workflow.
@@ -1100,6 +1250,7 @@ async def _crm_write(
         organization_id: Organization UUID
         user_id: User UUID
         skip_approval: If True, execute immediately without approval
+        conversation_id: Conversation UUID for grouping into a ChangeSession
     """
     target_system = params.get("target_system", "").lower()
     record_type = params.get("record_type", "").lower()
@@ -1244,6 +1395,7 @@ async def _crm_write(
         crm_operation = CrmOperation(
             organization_id=UUID(organization_id),
             user_id=UUID(user_id) if user_id else None,
+            conversation_id=UUID(conversation_id) if conversation_id else None,
             target_system=target_system,
             record_type=record_type,
             operation=operation,
@@ -1351,15 +1503,34 @@ async def execute_crm_operation(
                     scope_conversation_id=scope_conversation_id,
                     description=f"CRM {operation} {record_type}(s) - pending sync to {target_system}",
                 )
+                change_session_id = str(change_session.id)
+                logger.info(
+                    "[Tools.execute_crm_operation] Using change session %s for scope %s",
+                    change_session_id,
+                    scope_conversation_id,
+                )
             else:
+                # No conversation scope - create orphan session
+                # This happens when conversation_id is None or conversation lookup fails
+                logger.warning(
+                    "[Tools.execute_crm_operation] No conversation scope (op_conversation_id=%s, scope=%s), "
+                    "creating orphan change session",
+                    op_conversation_id,
+                    scope_conversation_id,
+                )
                 change_session = await get_or_start_orphan_change_session(
                     organization_id=org_id,
                     user_id=user_id,
                     description=f"CRM {operation} {record_type}(s) - pending sync to {target_system}",
                 )
-            change_session_id = str(change_session.id)
+                change_session_id = str(change_session.id)
         except Exception as e:
-            logger.warning("[Tools.execute_crm_operation] Failed to start change session: %s", e)
+            logger.error(
+                "[Tools.execute_crm_operation] Failed to start change session: %s (op_conversation_id=%s, scope=%s)",
+                e,
+                op_conversation_id,
+                scope_conversation_id,
+            )
     
     try:
         # Create records locally only (don't push to external CRM yet)
@@ -1986,7 +2157,10 @@ def _to_hubspot_properties(table_name: str, raw: dict[str, Any]) -> dict[str, An
             cleaned["dealstage"] = cleaned.pop("stage")
         elif "stage" in cleaned:
             cleaned.pop("stage")
-    # accounts: "name", "domain", "industry" are the same in HubSpot — nothing to rename
+    elif table_name == "accounts":
+        # HubSpot "industry" is a strict enum (e.g. ELECTRICAL_ELECTRONIC_MANUFACTURING).
+        # Always drop it to avoid validation errors — store locally only.
+        cleaned.pop("industry", None)
 
     return cleaned
 
@@ -2155,7 +2329,11 @@ async def commit_change_session(
         # ── Create accounts ──────────────────────────────────────────────
         for local_id, hs_props in accounts_to_create:
             try:
-                _log.info("[commit:create] Pushing company %s to HubSpot: %s", local_id, hs_props)
+                _log.info(
+                    "[commit:create] Pushing company %s to HubSpot: name=%r domain=%r industry=%r all_keys=%s full=%s",
+                    local_id, hs_props.get("name"), hs_props.get("domain"),
+                    hs_props.get("industry"), list(hs_props.keys()), hs_props,
+                )
                 hs_result = await connector.create_company(hs_props)
                 hs_id = hs_result.get("id")
                 _log.info("[commit:create] HubSpot returned id=%s for company %s", hs_id, local_id)
@@ -2299,11 +2477,16 @@ async def commit_change_session(
                 _log.error("[commit:update] FAILED deal %s: %s", local_id, e, exc_info=True)
                 errors.append({"table": "deals", "record_id": str(local_id), "error": str(e)})
 
-        await session.commit()
-        _log.info("[commit] DB commit complete – %d rows synced", synced_count)
+        # ── 4. Mark session approved in the SAME session (RLS context already set) ──
+        change_session_obj = await session.get(ChangeSession, UUID(change_session_id))
+        if change_session_obj:
+            change_session_obj.status = "approved"
+            change_session_obj.resolved_at = datetime.utcnow()
+            change_session_obj.resolved_by = UUID(user_id) if user_id else None
 
-    # ── 4. Mark session approved ────────────────────────────────────────────
-    await approve_change_session(change_session_id, user_id, organization_id=org_id)
+        await session.commit()
+        _log.info("[commit] DB commit complete – %d rows synced, session marked approved", synced_count)
+
     _log.info(
         "[commit] Session %s approved. synced=%d errors=%d total=%d",
         change_session_id, synced_count, len(errors), total_records,
@@ -3090,7 +3273,9 @@ async def _run_workflow(
     from workers.tasks.workflows import _execute_workflow
     
     workflow_id = params.get("workflow_id", "").strip()
-    input_data: dict[str, Any] = params.get("input_data", {}) or {}
+    raw_input: dict[str, Any] = params.get("input_data", {}) or {}
+    # Strip None values — the agent uses None to mean "not provided"
+    input_data: dict[str, Any] = {k: v for k, v in raw_input.items() if v is not None}
     wait_for_completion: bool = params.get("wait_for_completion", True)
     
     if not workflow_id:
@@ -3282,6 +3467,9 @@ async def _loop_over(
         })
         logger.info("[Tools._loop_over] Updating progress: %d/%d", completed_count, len(items))
     
+    # Send initial progress update (0 completed)
+    await send_progress()
+    
     async def process_item(index: int, item: dict[str, Any]) -> dict[str, Any]:
         """Process a single item through the workflow."""
         nonlocal completed_count
@@ -3472,6 +3660,7 @@ async def _create_artifact(
     
     # Get context for linking (already extracted above, but get message_id)
     message_id: str | None = context.get("message_id") if context else None
+    conversation_id: str | None = progress.conversation_id
     
     # Update progress before database save
     await progress.update({
@@ -3496,7 +3685,7 @@ async def _create_artifact(
             content_type=content_type,
             mime_type=mime_type,
             filename=filename,
-            conversation_id=conversation_id,
+            conversation_id=UUID(conversation_id) if conversation_id else None,
             message_id=message_id,
         )
         session.add(artifact)
@@ -3508,6 +3697,16 @@ async def _create_artifact(
             content_type,
             title,
         )
+    
+    # Send final completion update
+    await progress.update({
+        "message": f"Created {content_type} artifact: {title}",
+        "status": "complete",
+        "title": title,
+        "content_type": content_type,
+        "chars_processed": content_len,
+        "total_chars": content_len,
+    }, status="complete")
     
     # Return metadata for frontend (content excluded to keep response small)
     # Use camelCase for frontend compatibility

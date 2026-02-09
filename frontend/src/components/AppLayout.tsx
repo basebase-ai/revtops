@@ -364,28 +364,22 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
           } else if (typeof chunkData === 'object' && chunkData !== null) {
             const data = chunkData as Record<string, unknown>;
             
-            if (data.type === 'tool_call') {
-              // Tool call starting
+            if (data.type === 'tool_call_start') {
+              // Tool call STARTING — LLM is still streaming the input JSON.
+              // Show a placeholder block immediately so the user sees activity.
+              const toolBlock = {
+                type: 'tool_use' as const,
+                id: data.tool_id as string,
+                name: data.tool_name as string,
+                input: {} as Record<string, unknown>,
+                status: 'streaming' as const,
+              };
               const state = useAppStore.getState();
               const convState = state.conversations[conversation_id];
-              
               if (convState?.streamingMessageId) {
-                // Add tool_use block to existing streaming message
                 const updated = convState.messages.map((msg) => {
                   if (msg.id !== convState.streamingMessageId) return msg;
-                  return {
-                    ...msg,
-                    contentBlocks: [
-                      ...msg.contentBlocks,
-                      {
-                        type: 'tool_use' as const,
-                        id: data.tool_id as string,
-                        name: data.tool_name as string,
-                        input: data.tool_input as Record<string, unknown>,
-                        status: 'running' as const,
-                      },
-                    ],
-                  };
+                  return { ...msg, contentBlocks: [...msg.contentBlocks, toolBlock] };
                 });
                 useAppStore.setState({
                   conversations: {
@@ -394,19 +388,91 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
                   },
                 });
               } else {
-                // Create new message with tool_use block
                 addConversationMessage(conversation_id, {
                   id: `assistant-${Date.now()}`,
                   role: 'assistant',
-                  contentBlocks: [{
-                    type: 'tool_use',
-                    id: data.tool_id as string,
-                    name: data.tool_name as string,
-                    input: data.tool_input as Record<string, unknown>,
-                    status: 'running',
-                  }],
+                  contentBlocks: [toolBlock],
                   timestamp: new Date(),
                 });
+              }
+            } else if (data.type === 'tool_call') {
+              // Tool call fully parsed — find and update the streaming placeholder
+              const state = useAppStore.getState();
+              const convState = state.conversations[conversation_id];
+              const toolId = data.tool_id as string;
+
+              if (convState) {
+                // Search ALL messages for a matching tool_use block to update
+                let found = false;
+                const updated = convState.messages.map((msg) => {
+                  const hasBlock = msg.contentBlocks.some(
+                    (b) => b.type === 'tool_use' && b.id === toolId,
+                  );
+                  if (!hasBlock) return msg;
+                  found = true;
+                  return {
+                    ...msg,
+                    contentBlocks: msg.contentBlocks.map((block) => {
+                      if (block.type === 'tool_use' && block.id === toolId) {
+                        return {
+                          ...block,
+                          input: data.tool_input as Record<string, unknown>,
+                          status: 'running' as const,
+                        };
+                      }
+                      return block;
+                    }),
+                  };
+                });
+
+                if (found) {
+                  useAppStore.setState({
+                    conversations: {
+                      ...state.conversations,
+                      [conversation_id]: { ...convState, messages: updated },
+                    },
+                  });
+                } else {
+                  // No placeholder found — add block to streaming message or create new
+                  const targetMsgId = convState.streamingMessageId;
+                  if (targetMsgId) {
+                    const updated2 = convState.messages.map((msg) => {
+                      if (msg.id !== targetMsgId) return msg;
+                      return {
+                        ...msg,
+                        contentBlocks: [
+                          ...msg.contentBlocks,
+                          {
+                            type: 'tool_use' as const,
+                            id: toolId,
+                            name: data.tool_name as string,
+                            input: data.tool_input as Record<string, unknown>,
+                            status: 'running' as const,
+                          },
+                        ],
+                      };
+                    });
+                    useAppStore.setState({
+                      conversations: {
+                        ...state.conversations,
+                        [conversation_id]: { ...convState, messages: updated2 },
+                      },
+                    });
+                  } else {
+                    addConversationMessage(conversation_id, {
+                      id: `assistant-${Date.now()}`,
+                      role: 'assistant',
+                      contentBlocks: [{
+                        type: 'tool_use',
+                        id: toolId,
+                        name: data.tool_name as string,
+                        input: data.tool_input as Record<string, unknown>,
+                        status: 'running',
+                      }],
+                      timestamp: new Date(),
+                    });
+                  }
+                }
               }
             } else if (data.type === 'tool_result') {
               // Tool result received
@@ -427,8 +493,22 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
                 window.dispatchEvent(new Event('pending-changes-updated'));
               }
             } else if (data.type === 'text_block_complete') {
-              // Text block complete, tools incoming
-              markConversationMessageComplete(conversation_id);
+              // Text block complete, tools may be incoming.
+              // Mark isStreaming=false but keep streamingMessageId so tool blocks
+              // can still be appended to the same message.
+              const tbcState = useAppStore.getState();
+              const tbcConv = tbcState.conversations[conversation_id];
+              if (tbcConv) {
+                const updatedMsgs = tbcConv.messages.map((msg) =>
+                  msg.isStreaming ? { ...msg, isStreaming: false } : msg,
+                );
+                useAppStore.setState({
+                  conversations: {
+                    ...tbcState.conversations,
+                    [conversation_id]: { ...tbcConv, messages: updatedMsgs },
+                  },
+                });
+              }
             } else if (data.type === 'crm_approval_result' || data.type === 'tool_approval_result') {
               // Store tool approval result - create new Map to trigger re-render
               setCrmApprovalResults((prev) => {

@@ -73,6 +73,7 @@ class TaskManager:
         local_time: str | None = None,
         timezone: str | None = None,
         is_new_conversation: bool = False,
+        attachment_ids: list[str] | None = None,
     ) -> str:
         """
         Start a new background agent task.
@@ -89,6 +90,7 @@ class TaskManager:
             local_time: User's local time (ISO format)
             timezone: User's timezone
             is_new_conversation: If True, skip history loading (no messages exist yet)
+            attachment_ids: Optional list of upload IDs for attached files
             
         Returns:
             The task_id (UUID string)
@@ -126,6 +128,7 @@ class TaskManager:
                 local_time=local_time,
                 timezone=timezone,
                 is_new_conversation=is_new_conversation,
+                attachment_ids=attachment_ids,
             )
         )
         
@@ -145,6 +148,7 @@ class TaskManager:
         local_time: str | None,
         timezone: str | None,
         is_new_conversation: bool = False,
+        attachment_ids: list[str] | None = None,
     ) -> None:
         """
         Execute the agent task in the background.
@@ -165,7 +169,9 @@ class TaskManager:
             chunk_index = 0
             
             async for chunk in orchestrator.process_message(
-                user_message, skip_history=is_new_conversation,
+                user_message,
+                skip_history=is_new_conversation,
+                attachment_ids=attachment_ids,
             ):
                 # Create chunk record
                 chunk_data: dict[str, Any] = {
