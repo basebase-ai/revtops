@@ -2034,7 +2034,7 @@ async def commit_change_session(
 
     if not snapshots:
         _log.info("[commit] No snapshots – marking session approved with 0 synced")
-        await approve_change_session(change_session_id, user_id)
+        await approve_change_session(change_session_id, user_id, organization_id=org_id)
         return {"status": "completed", "message": "No pending changes to commit", "synced_count": 0}
 
     # ── 2. Build per-table sync lists (creates and updates) ────────────────
@@ -2303,7 +2303,7 @@ async def commit_change_session(
         _log.info("[commit] DB commit complete – %d rows synced", synced_count)
 
     # ── 4. Mark session approved ────────────────────────────────────────────
-    await approve_change_session(change_session_id, user_id)
+    await approve_change_session(change_session_id, user_id, organization_id=org_id)
     _log.info(
         "[commit] Session %s approved. synced=%d errors=%d total=%d",
         change_session_id, synced_count, len(errors), total_records,

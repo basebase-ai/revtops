@@ -185,7 +185,7 @@ async def _get_org_integrations(organization_id: str) -> list[str]:
     from models.database import get_session
     from models.integration import Integration
 
-    async with get_session() as session:
+    async with get_session(organization_id=organization_id) as session:
         result = await session.execute(
             select(Integration).where(
                 Integration.organization_id == UUID(organization_id),
