@@ -594,6 +594,21 @@ export const useAppStore = create<AppState>()(
             data.conversations.length,
             "conversations",
           );
+          const slackPreviewGaps = data.conversations.filter(
+            (conv) =>
+              (conv.title ?? "").toLowerCase().includes("slack") &&
+              !conv.last_message_preview,
+          );
+          if (slackPreviewGaps.length > 0) {
+            console.debug(
+              "[Store] Slack conversations missing previews:",
+              slackPreviewGaps.map((conv) => ({
+                id: conv.id,
+                title: conv.title,
+                updated_at: conv.updated_at,
+              })),
+            );
+          }
 
           const recentChats: ChatSummary[] = data.conversations.map((conv) => ({
             id: conv.id,
