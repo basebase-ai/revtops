@@ -44,7 +44,7 @@ export function OrganizationPanel({ organization, currentUser, onClose }: Organi
 
   const members: TeamMember[] = teamData?.members ?? [];
   const unmappedIdentities: IdentityMapping[] = teamData?.unmappedIdentities ?? [];
-  const canManageIdentityLinks: boolean = members.some((member) => member.id === currentUser.id && member.role === 'admin');
+  const canLinkIdentityInOrg: boolean = members.some((member) => member.id === currentUser.id);
 
   // React Query: Mutation for updating organization
   const updateOrgMutation = useUpdateOrganization();
@@ -288,6 +288,7 @@ export function OrganizationPanel({ organization, currentUser, onClose }: Organi
                       const isAdmin: boolean = member.role === 'admin' || member.id === currentUser.id;
                       const isExpanded: boolean = expandedMemberId === member.id;
                       const identities: IdentityMapping[] = member.identities;
+                      const canUnlinkForMember: boolean = member.id === currentUser.id || canLinkIdentityInOrg;
 
                       return (
                         <div key={member.id} className="rounded-lg bg-surface-800/50 overflow-hidden">
@@ -366,7 +367,7 @@ export function OrganizationPanel({ organization, currentUser, onClose }: Organi
                                         <span className="text-surface-500">
                                           {identity.matchSource.replace(/_/g, ' ')}
                                         </span>
-                                        {canManageIdentityLinks && (
+                                        {canUnlinkForMember && (
                                           <button
                                             onClick={() => void handleUnlinkIdentity(identity.id)}
                                             disabled={unlinkIdentityMutation.isPending}

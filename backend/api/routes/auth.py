@@ -709,7 +709,12 @@ async def unlink_identity(
     request: UnlinkIdentityRequest,
     user_id: Optional[str] = None,
 ) -> dict[str, str]:
-    """Admin action to unlink an identity mapping from any user in the org."""
+    """Unlink an identity mapping from a user in the org.
+
+    Access rules:
+    - Users can always unlink identities currently linked to themselves.
+    - Users with link-identity permission can unlink any identity in the org.
+    """
     from models.slack_user_mapping import SlackUserMapping
 
     if not user_id:
@@ -726,23 +731,27 @@ async def unlink_identity(
         requester: User | None = await session.get(User, requester_uuid)
         if not requester or requester.organization_id != org_uuid:
             raise HTTPException(status_code=403, detail="Not authorized to modify this organization")
-        if requester.role != "admin":
-            raise HTTPException(status_code=403, detail="Only admins can unlink identities")
 
         mapping: SlackUserMapping | None = await session.get(SlackUserMapping, mapping_uuid)
         if not mapping or mapping.organization_id != org_uuid:
             raise HTTPException(status_code=404, detail="Identity mapping not found")
 
+        is_unlinking_own_identity = mapping.user_id == requester_uuid
+        can_link_identities_in_org = True  # Mirrors current link-identity access for org members.
+        if not is_unlinking_own_identity and not can_link_identities_in_org:
+            raise HTTPException(status_code=403, detail="Not authorized to unlink this identity")
+
         mapping.user_id = None
         mapping.revtops_email = None
-        mapping.match_source = "admin_manual_unlink"
+        mapping.match_source = "manual_unlink"
         await session.commit()
 
         logger.info(
-            "Unlinked identity mapping id=%s org=%s by_admin=%s",
+            "Unlinked identity mapping id=%s org=%s by_user=%s own_identity=%s",
             mapping_uuid,
             org_uuid,
             requester_uuid,
+            is_unlinking_own_identity,
         )
 
     return {"status": "unlinked"}
