@@ -100,7 +100,7 @@ export function PendingChangesPage(): JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const [commitResult, setCommitResult] = useState<CommitResult | null>(null);
   const autoFadeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [busySession, setBusySession] = useState<string | null>(null); // session id being acted on
+  const [busySession, setBusySession] = useState<{ id: string; action: 'commit' | 'discard' } | null>(null);
   const [busyAll, setBusyAll] = useState<'commit' | 'discard' | null>(null);
   const [expandedSessions, setExpandedSessions] = useState<Set<string>>(new Set());
 
@@ -190,7 +190,7 @@ export function PendingChangesPage(): JSX.Element {
   // ── Per-session actions ─────────────────────────────────────────────────
 
   const commitSession = async (sessionId: string): Promise<void> => {
-    setBusySession(sessionId);
+    setBusySession({ id: sessionId, action: 'commit' });
     setError(null);
     setCommitResult(null);
     if (autoFadeTimer.current) clearTimeout(autoFadeTimer.current);
@@ -215,7 +215,7 @@ export function PendingChangesPage(): JSX.Element {
   };
 
   const discardSession = async (sessionId: string): Promise<void> => {
-    setBusySession(sessionId);
+    setBusySession({ id: sessionId, action: 'discard' });
     setError(null);
     try {
       const { error: apiErr } = await apiRequest<ActionResponse>(
@@ -403,7 +403,7 @@ export function PendingChangesPage(): JSX.Element {
           <div className="max-w-3xl mx-auto space-y-3">
             {data.sessions.map((session) => {
               const isExpanded: boolean = expandedSessions.has(session.id);
-              const isBusy: boolean = busySession === session.id || busyAll !== null;
+              const isBusy: boolean = (busySession?.id === session.id) || busyAll !== null;
 
               return (
                 <div
@@ -553,7 +553,7 @@ export function PendingChangesPage(): JSX.Element {
                       disabled={isBusy}
                       className="px-3 py-1 text-xs font-medium rounded-md border border-surface-600 text-surface-300 hover:bg-surface-800 disabled:opacity-40 transition-colors"
                     >
-                      Discard
+                      {busySession?.id === session.id && busySession?.action === 'discard' ? 'Discarding...' : 'Discard'}
                     </button>
                     <button
                       onClick={(e) => {
@@ -563,7 +563,7 @@ export function PendingChangesPage(): JSX.Element {
                       disabled={isBusy}
                       className="px-3 py-1 text-xs font-medium rounded-md bg-primary-600 hover:bg-primary-500 text-white disabled:opacity-40 transition-colors"
                     >
-                      {busySession === session.id ? `Committing ${session.record_count} record${session.record_count !== 1 ? 's' : ''}...` : 'Commit'}
+                      {busySession?.id === session.id && busySession?.action === 'commit' ? `Committing ${session.record_count} record${session.record_count !== 1 ? 's' : ''}...` : 'Commit'}
                     </button>
                   </div>
                 </div>
