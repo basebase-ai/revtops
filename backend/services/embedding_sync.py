@@ -152,6 +152,10 @@ async def search_activities_by_embedding(
             type_filter = f"AND type IN ({types_str})"
 
         # Use raw SQL for vector similarity search
+        # NOTE: We must use CAST(:param AS vector) instead of :param::vector
+        # because asyncpg's positional-parameter compilation gets confused
+        # when a named-parameter token is immediately followed by the
+        # PostgreSQL ``::`` cast operator.
         sql = text(f"""
             SELECT 
                 id,
@@ -164,12 +168,12 @@ async def search_activities_by_embedding(
                 activity_date,
                 custom_fields,
                 searchable_text,
-                1 - (embedding::vector(1536) <=> :query_embedding::vector(1536)) as similarity
+                1 - (embedding::vector(1536) <=> CAST(:query_embedding AS vector(1536))) as similarity
             FROM activities
             WHERE organization_id = :org_id
               AND embedding IS NOT NULL
               {type_filter}
-            ORDER BY embedding::vector(1536) <=> :query_embedding::vector(1536)
+            ORDER BY embedding::vector(1536) <=> CAST(:query_embedding AS vector(1536))
             LIMIT :limit
         """)
 
