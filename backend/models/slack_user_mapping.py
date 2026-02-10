@@ -17,29 +17,32 @@ from models.database import Base
 class SlackUserMapping(Base):
     """Persisted mapping between RevTops users and Slack users."""
 
-    __tablename__ = "slack_user_mappings"
+    __tablename__ = "user_mappings_for_identity"
     __table_args__ = (
         Index(
-            "uq_slack_user_mappings_org_user_slack_user",
+            "uq_identity_mappings_org_user_external_user_source",
             "organization_id",
             "user_id",
-            "slack_user_id",
+            "external_userid",
+            "source",
             unique=True,
         ),
         Index(
-            "ix_slack_user_mappings_org_slack_user",
+            "ix_identity_mappings_org_external_user_source",
             "organization_id",
-            "slack_user_id",
+            "external_userid",
+            "source",
         ),
         Index(
-            "ix_slack_user_mappings_org_user",
+            "ix_identity_mappings_org_user",
             "organization_id",
             "user_id",
         ),
         Index(
-            "ix_slack_user_mappings_org_slack_email",
+            "ix_identity_mappings_org_external_email_source",
             "organization_id",
-            "slack_email",
+            "external_email",
+            "source",
         ),
     )
 
@@ -53,8 +56,9 @@ class SlackUserMapping(Base):
         UUID(as_uuid=True), ForeignKey("users.id"), nullable=True, index=True
     )
     revtops_email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    slack_user_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
-    slack_email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    external_userid: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    external_email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    source: Mapped[str] = mapped_column(String(50), nullable=False, default="slack")
     match_source: Mapped[str] = mapped_column(String(50), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, nullable=False

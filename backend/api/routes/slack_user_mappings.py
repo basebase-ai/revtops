@@ -30,8 +30,8 @@ _CODE_TTL = timedelta(minutes=10)
 
 class SlackMappingResponse(BaseModel):
     id: str
-    slack_user_id: str | None
-    slack_email: str | None
+    external_userid: str | None
+    external_email: str | None
     match_source: str
     created_at: str
 
@@ -138,6 +138,7 @@ async def list_slack_user_mappings(
             select(SlackUserMapping)
             .where(SlackUserMapping.organization_id == org_uuid)
             .where(SlackUserMapping.user_id == user_uuid)
+            .where(SlackUserMapping.source == slack_conversations.SOURCE_SLACK)
             .order_by(SlackUserMapping.created_at.desc())
         )
         mappings = result.scalars().all()
@@ -145,8 +146,8 @@ async def list_slack_user_mappings(
     response = [
         SlackMappingResponse(
             id=str(mapping.id),
-            slack_user_id=mapping.slack_user_id,
-            slack_email=mapping.slack_email,
+            external_userid=mapping.external_userid,
+            external_email=mapping.external_email,
             match_source=mapping.match_source,
             created_at=mapping.created_at.isoformat() + "Z",
         )
@@ -174,7 +175,8 @@ async def request_slack_user_mapping_code(
         result = await session.execute(
             select(SlackUserMapping)
             .where(SlackUserMapping.organization_id == org_uuid)
-            .where(SlackUserMapping.slack_email == email)
+            .where(SlackUserMapping.external_email == email)
+            .where(SlackUserMapping.source == slack_conversations.SOURCE_SLACK)
             .order_by(SlackUserMapping.updated_at.desc())
         )
         matched_mapping = result.scalars().first()
@@ -187,7 +189,7 @@ async def request_slack_user_mapping_code(
         bool(matched_mapping),
     )
 
-    if not matched_mapping or not matched_mapping.slack_user_id:
+    if not matched_mapping or not matched_mapping.external_userid:
         logger.warning(
             "[slack_user_mappings] No Slack mapping found for org=%s user=%s email=%s",
             org_uuid,
@@ -221,15 +223,15 @@ async def request_slack_user_mapping_code(
             detail="Please wait at least one minute before requesting another code.",
         )
     matched_user = {
-        "id": matched_mapping.slack_user_id,
-        "email": matched_mapping.slack_email or email,
+        "id": matched_mapping.external_userid,
+        "email": matched_mapping.external_email or email,
     }
 
     code = f"{secrets.randbelow(1000000):06d}"
     payload = json.dumps(
         {
-            "slack_user_id": matched_user["id"],
-            "email": matched_user["email"],
+            "external_userid": matched_user["id"],
+            "external_email": matched_user["email"],
             "code": code,
         }
     )
@@ -284,7 +286,7 @@ async def verify_slack_user_mapping_code(
     if expected_code != request.code.strip():
         raise HTTPException(status_code=400, detail="Invalid verification code")
 
-    slack_user_id = data.get("slack_user_id")
+    slack_user_id = data.get("external_userid")
     if not slack_user_id:
         raise HTTPException(status_code=400, detail="Slack user information missing")
 
@@ -328,6 +330,7 @@ async def delete_slack_user_mapping(
             .where(SlackUserMapping.id == mapping_uuid)
             .where(SlackUserMapping.organization_id == org_uuid)
             .where(SlackUserMapping.user_id == user_uuid)
+            .where(SlackUserMapping.source == slack_conversations.SOURCE_SLACK)
         )
         mapping = result.scalar_one_or_none()
         if not mapping:

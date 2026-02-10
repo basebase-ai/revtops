@@ -139,7 +139,11 @@ class ToolProgressUpdater:
 # Note: Row-Level Security (RLS) handles organization filtering at the database level
 ALLOWED_TABLES: set[str] = {
     "deals", "accounts", "contacts", "activities", "meetings", "integrations", "users", "organizations",
-    "pipelines", "pipeline_stages", "workflows", "workflow_runs", "slack_user_mappings"
+    "pipelines",
+    "pipeline_stages",
+    "workflows",
+    "workflow_runs",
+    "user_mappings_for_identity",
 }
 
 
