@@ -143,7 +143,7 @@ def test_resolve_revtops_user_uses_existing_mapping(monkeypatch):
     ]
     integrations = []
     mappings = [
-        SimpleNamespace(user_id=jane_id, slack_user_id="U999"),
+        SimpleNamespace(user_id=jane_id, external_userid="U999"),
     ]
 
     monkeypatch.setattr(

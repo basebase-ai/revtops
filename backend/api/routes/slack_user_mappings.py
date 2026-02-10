@@ -30,8 +30,8 @@ _CODE_TTL = timedelta(minutes=10)
 
 class SlackMappingResponse(BaseModel):
     id: str
-    slack_user_id: str | None
-    slack_email: str | None
+    external_userid: str | None
+    external_email: str | None
     match_source: str
     created_at: str
 
@@ -114,7 +114,7 @@ def _normalize_email(email: str) -> str:
         normalized = f"{local_part}@{domain}"
     if normalized != original:
         logger.debug(
-            "[slack_user_mappings] Normalized email from '%s' to '%s'",
+            "[user_mappings_for_identity] Normalized email from '%s' to '%s'",
             original,
             normalized,
         )
@@ -124,7 +124,7 @@ def _normalize_email(email: str) -> str:
 
 
 @router.get("/user-mappings", response_model=SlackMappingListResponse)
-async def list_slack_user_mappings(
+async def list_user_mappings_for_identity(
     user_id: str,
     organization_id: str | None = None,
 ) -> SlackMappingListResponse:
@@ -137,6 +137,7 @@ async def list_slack_user_mappings(
         result = await session.execute(
             select(SlackUserMapping)
             .where(SlackUserMapping.organization_id == org_uuid)
+            .where(SlackUserMapping.source == "slack")
             .where(SlackUserMapping.user_id == user_uuid)
             .order_by(SlackUserMapping.created_at.desc())
         )
@@ -145,8 +146,8 @@ async def list_slack_user_mappings(
     response = [
         SlackMappingResponse(
             id=str(mapping.id),
-            slack_user_id=mapping.slack_user_id,
-            slack_email=mapping.slack_email,
+            external_userid=mapping.external_userid,
+            external_email=mapping.external_email,
             match_source=mapping.match_source,
             created_at=mapping.created_at.isoformat() + "Z",
         )
@@ -174,22 +175,23 @@ async def request_slack_user_mapping_code(
         result = await session.execute(
             select(SlackUserMapping)
             .where(SlackUserMapping.organization_id == org_uuid)
-            .where(SlackUserMapping.slack_email == email)
+            .where(SlackUserMapping.source == "slack")
+            .where(SlackUserMapping.external_email == email)
             .order_by(SlackUserMapping.updated_at.desc())
         )
         matched_mapping = result.scalars().first()
 
     logger.info(
-        "[slack_user_mappings] Lookup Slack mapping for org=%s user=%s email=%s matched=%s",
+        "[user_mappings_for_identity] Lookup Slack mapping for org=%s user=%s email=%s matched=%s",
         org_uuid,
         user_uuid,
         email,
         bool(matched_mapping),
     )
 
-    if not matched_mapping or not matched_mapping.slack_user_id:
+    if not matched_mapping or not matched_mapping.external_userid:
         logger.warning(
-            "[slack_user_mappings] No Slack mapping found for org=%s user=%s email=%s",
+            "[user_mappings_for_identity] No Slack mapping found for org=%s user=%s email=%s",
             org_uuid,
             user_uuid,
             email,
@@ -212,7 +214,7 @@ async def request_slack_user_mapping_code(
     )
     if not was_set:
         logger.info(
-            "[slack_user_mappings] Slack verification code cooldown active org=%s user=%s",
+            "[user_mappings_for_identity] Slack verification code cooldown active org=%s user=%s",
             org_uuid,
             user_uuid,
         )
@@ -221,8 +223,8 @@ async def request_slack_user_mapping_code(
             detail="Please wait at least one minute before requesting another code.",
         )
     matched_user = {
-        "id": matched_mapping.slack_user_id,
-        "email": matched_mapping.slack_email or email,
+        "id": matched_mapping.external_userid,
+        "email": matched_mapping.external_email or email,
     }
 
     code = f"{secrets.randbelow(1000000):06d}"
@@ -237,7 +239,7 @@ async def request_slack_user_mapping_code(
     await redis_client.set(code_key, payload, ex=int(_CODE_TTL.total_seconds()))
 
     logger.info(
-        "[slack_user_mappings] Sending Slack verification code org=%s user=%s slack_user=%s",
+        "[user_mappings_for_identity] Sending Slack verification code org=%s user=%s slack_user=%s",
         org_uuid,
         user_uuid,
         matched_user["id"],
@@ -252,7 +254,7 @@ async def request_slack_user_mapping_code(
         text=message_text,
     )
     logger.info(
-        "[slack_user_mappings] Slack DM send response org=%s user=%s slack_user=%s keys=%s",
+        "[user_mappings_for_identity] Slack DM send response org=%s user=%s slack_user=%s keys=%s",
         org_uuid,
         user_uuid,
         matched_user["id"],
@@ -298,7 +300,7 @@ async def verify_slack_user_mapping_code(
     await redis_client.delete(code_key)
 
     logger.info(
-        "[slack_user_mappings] Verified Slack user mapping org=%s user=%s slack_user=%s",
+        "[user_mappings_for_identity] Verified Slack user mapping org=%s user=%s slack_user=%s",
         org_uuid,
         user_uuid,
         slack_user_id,
@@ -327,6 +329,7 @@ async def delete_slack_user_mapping(
             select(SlackUserMapping)
             .where(SlackUserMapping.id == mapping_uuid)
             .where(SlackUserMapping.organization_id == org_uuid)
+            .where(SlackUserMapping.source == "slack")
             .where(SlackUserMapping.user_id == user_uuid)
         )
         mapping = result.scalar_one_or_none()
@@ -337,7 +340,7 @@ async def delete_slack_user_mapping(
         await session.commit()
 
     logger.info(
-        "[slack_user_mappings] Deleted mapping id=%s org=%s user=%s",
+        "[user_mappings_for_identity] Deleted mapping id=%s org=%s user=%s",
         mapping_id,
         org_uuid,
         user_uuid,

@@ -1,14 +1,14 @@
 """Allow multiple Slack user mappings per RevTops user and vice versa.
 
-Revision ID: 042
-Revises: 041
+Revision ID: 043
+Revises: 042
 Create Date: 2026-02-10
 """
 from alembic import op
 import sqlalchemy as sa
 
-revision = "042"
-down_revision = "041"
+revision = "043"
+down_revision = "042"
 branch_labels = None
 depends_on = None
 
