@@ -16,6 +16,7 @@ import { useEffect, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { apiRequest, API_BASE } from "../lib/api";
+import { formatDateOnly } from "../lib/dates";
 import { supabase } from "../lib/supabase";
 
 // New file-based artifact format
@@ -395,7 +396,7 @@ function DealsView({ data }: { data: DealsData }): JSX.Element {
               {deal.stage && <span className="text-surface-400">{deal.stage}</span>}
               {deal.close_date && (
                 <span className="text-surface-500">
-                  Closes {new Date(deal.close_date).toLocaleDateString()}
+                  Closes {formatDateOnly(deal.close_date)}
                 </span>
               )}
             </div>

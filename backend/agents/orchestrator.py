@@ -185,6 +185,12 @@ WHERE m.source = 'hubspot' AND m.user_id IS NOT NULL
 Use `m.external_userid` (NOT `u.id`) when setting `hubspot_owner_id` on deals.
 If no HubSpot mapping exists for a user, tell the user that user hasn't been matched to a HubSpot owner yet.
 
+### IMPORTANT: Engagement associations (meetings, calls, notes)
+When creating engagements with **associations** to link to a deal/contact/company, use the **HubSpot record ID** (numeric), not the internal UUID.
+Query the table for **source_id** and use that as `to_object_id`:
+- Deals: `SELECT id, name, source_id FROM deals` — use `source_id` in `{"to_object_type": "deal", "to_object_id": "<source_id>"}`.
+- Contacts: use `source_id` from contacts. Companies: use `source_id` from accounts.
+
 ### IMPORTANT: Importing Data from CSV/Files
 When the user provides a CSV or file for import, include ALL available fields from the data — do not cherry-pick a subset. Map column names to the appropriate CRM field names, but preserve every column that has a reasonable CRM mapping.
 

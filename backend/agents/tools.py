@@ -2183,13 +2183,17 @@ async def _sync_created_records_to_db(
                         or properties.get("hs_note_body")
                         or None
                     )
-                    # Parse activity date from hs_timestamp
+                    # Parse activity date from hs_timestamp (store naive UTC for DB column)
                     activity_date: datetime | None = None
-                    ts_raw: str | None = properties.get("hs_timestamp")
+                    ts_raw = properties.get("hs_timestamp")
                     if ts_raw:
                         try:
                             from dateutil.parser import parse as parse_dt
-                            activity_date = parse_dt(ts_raw)
+                            parsed = parse_dt(str(ts_raw))
+                            if getattr(parsed, "tzinfo", None) is not None:
+                                activity_date = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+                            else:
+                                activity_date = parsed
                         except Exception:
                             pass
 
@@ -2540,11 +2544,55 @@ async def commit_change_session(
                 errors.append({"table": "deals", "record_id": str(local_id), "error": str(e)})
 
         # ── Create engagements (calls, emails, meetings, notes) ─────────
+        def _is_uuid(s: str) -> bool:
+            if not s or len(s) != 36:
+                return False
+            try:
+                UUID(s)
+                return True
+            except (ValueError, TypeError):
+                return False
+
+        async def _resolve_association_ids(
+            sess: Any,
+            raw: list[dict[str, Any]],
+        ) -> list[dict[str, Any]]:
+            """Resolve internal UUIDs in to_object_id to HubSpot source_id."""
+            resolved: list[dict[str, Any]] = []
+            for assoc in raw:
+                to_type: str = (assoc.get("to_object_type") or "").lower()
+                to_id: str = str(assoc.get("to_object_id", ""))
+                if not to_id:
+                    continue
+                if _is_uuid(to_id):
+                    try:
+                        uid = UUID(to_id)
+                        if to_type == "deal":
+                            row = await sess.get(Deal, uid)
+                            if row and getattr(row, "source_id", None):
+                                to_id = str(row.source_id)
+                        elif to_type == "contact":
+                            row = await sess.get(Contact, uid)
+                            if row and getattr(row, "source_id", None):
+                                to_id = str(row.source_id)
+                        elif to_type == "company":
+                            row = await sess.get(Account, uid)
+                            if row and getattr(row, "source_id", None):
+                                to_id = str(row.source_id)
+                    except (ValueError, TypeError):
+                        pass
+                resolved.append({"to_object_type": to_type, "to_object_id": to_id})
+            return resolved
+
         for local_id, eng_type, hs_props, raw_assocs in engagements_to_create:
             try:
-                hs_associations: list[dict[str, Any]] = (
-                    connector.build_engagement_associations(eng_type, raw_assocs)
+                resolved_assocs: list[dict[str, Any]] = (
+                    await _resolve_association_ids(session, raw_assocs)
                     if raw_assocs else []
+                )
+                hs_associations: list[dict[str, Any]] = (
+                    connector.build_engagement_associations(eng_type, resolved_assocs)
+                    if resolved_assocs else []
                 )
                 _log.info(
                     "[commit:create] Pushing %s %s to HubSpot: props=%s assocs=%d",
@@ -2579,7 +2627,12 @@ async def commit_change_session(
                     if ts_raw:
                         try:
                             from dateutil.parser import parse as parse_dt
-                            activity_date_val = parse_dt(str(ts_raw))
+                            parsed: datetime = parse_dt(str(ts_raw))
+                            # Store as naive UTC for TIMESTAMP WITHOUT TIME ZONE column
+                            if getattr(parsed, "tzinfo", None) is not None:
+                                activity_date_val = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+                            else:
+                                activity_date_val = parsed
                         except Exception:
                             pass
 

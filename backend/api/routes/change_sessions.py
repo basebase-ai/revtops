@@ -201,7 +201,18 @@ async def get_pending_changes(
                         for k, v in input_data.items():
                             if k == "id":
                                 continue
-                            field_diffs_create.append({"field": k, "before": None, "after": v})
+                            display_v: Any = v
+                            if k == "associations" and isinstance(v, list):
+                                # Human-readable summary for UI (e.g. "Deal: 290757395158")
+                                parts: list[str] = []
+                                for item in v:
+                                    if isinstance(item, dict):
+                                        otype: str = str(item.get("to_object_type", ""))
+                                        oid: str = str(item.get("to_object_id", ""))
+                                        if otype and oid:
+                                            parts.append(f"{otype.capitalize()}: {oid}")
+                                display_v = ", ".join(parts) if parts else v
+                            field_diffs_create.append({"field": k, "before": None, "after": display_v})
                         record_info["field_diffs"] = field_diffs_create
                 
                 records.append(record_info)
