@@ -30,6 +30,8 @@ from services.nango import extract_connection_metadata, get_nango_client
 from config import get_nango_integration_id
 
 logger = logging.getLogger(__name__)
+IDENTITY_SOURCE_SLACK = "slack"
+IDENTITY_SOURCE_REVTOPS_UNKNOWN = "revtops_unknown"
 EMAIL_PATTERN = re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.IGNORECASE)
 
 
@@ -143,6 +145,7 @@ async def upsert_slack_user_mappings_from_metadata(
             slack_user_id=slack_user_id,
             slack_email=slack_email,
             match_source="slack_integration_metadata",
+            source=IDENTITY_SOURCE_SLACK,
         )
         created_count += 1
 
@@ -318,6 +321,7 @@ async def refresh_slack_user_mappings_from_directory(
                 slack_user_id=slack_user_id,
                 slack_email=slack_email,
                 match_source="slack_directory_email",
+                source=IDENTITY_SOURCE_SLACK,
                 revtops_email=matched_user.email,
             )
             mapped_count += 1
@@ -334,6 +338,7 @@ async def refresh_slack_user_mappings_from_directory(
                 slack_user_id=slack_user_id,
                 slack_email=slack_email,
                 match_source="slack_directory_unmapped",
+                source=IDENTITY_SOURCE_SLACK,
             )
 
     logger.info(
@@ -395,6 +400,7 @@ async def upsert_slack_user_mapping_from_current_profile(
             slack_user_id=slack_user_id,
             slack_email=slack_email,
             match_source="slack_current_user_profile",
+            source=IDENTITY_SOURCE_SLACK,
         )
         created_count += 1
 
@@ -563,6 +569,7 @@ async def get_slack_user_ids_for_revtops_user(
             select(SlackUserMapping)
             .where(SlackUserMapping.organization_id == UUID(organization_id))
             .where(SlackUserMapping.user_id == user_uuid)
+            .where(SlackUserMapping.source == IDENTITY_SOURCE_SLACK)
         )
         mappings_result = await session.execute(mappings_query)
         slack_mappings = mappings_result.scalars().all()
@@ -577,8 +584,8 @@ async def get_slack_user_ids_for_revtops_user(
 
     slack_user_ids: set[str] = set()
     for mapping in slack_mappings:
-        if mapping.slack_user_id:
-            slack_user_ids.add(mapping.slack_user_id)
+        if mapping.external_userid:
+            slack_user_ids.add(mapping.external_userid)
 
     logger.info(
         "[slack_conversations] Resolved %d Slack user IDs for org=%s user=%s (mappings=%d)",
@@ -603,6 +610,7 @@ async def _upsert_slack_user_mapping(
     slack_user_id: str | None,
     slack_email: str | None,
     match_source: str,
+    source: str = IDENTITY_SOURCE_REVTOPS_UNKNOWN,
     revtops_email: str | None = None,
 ) -> None:
     now = datetime.utcnow()
@@ -636,7 +644,8 @@ async def _upsert_slack_user_mapping(
                 existing_result = await session.execute(
                     select(SlackUserMapping)
                     .where(SlackUserMapping.organization_id == UUID(organization_id))
-                    .where(SlackUserMapping.slack_user_id == slack_user_id)
+                    .where(SlackUserMapping.external_userid == slack_user_id)
+                    .where(SlackUserMapping.source == source)
                     .where(SlackUserMapping.user_id.is_(None))
                     .limit(1)
                 )
@@ -644,8 +653,9 @@ async def _upsert_slack_user_mapping(
                 if existing_mapping:
                     existing_mapping.user_id = user_id
                     existing_mapping.revtops_email = resolved_revtops_email
-                    existing_mapping.slack_email = slack_email
+                    existing_mapping.external_email = slack_email
                     existing_mapping.match_source = match_source
+                    existing_mapping.source = source
                     existing_mapping.updated_at = now
                     await session.commit()
                     logger.info(
@@ -662,17 +672,19 @@ async def _upsert_slack_user_mapping(
                     organization_id=UUID(organization_id),
                     user_id=user_id,
                     revtops_email=resolved_revtops_email,
-                    slack_user_id=slack_user_id,
-                    slack_email=slack_email,
+                    external_userid=slack_user_id,
+                    external_email=slack_email,
                     match_source=match_source,
+                    source=source,
                     created_at=now,
                     updated_at=now,
                 ).on_conflict_do_update(
-                    index_elements=["organization_id", "user_id", "slack_user_id"],
+                    index_elements=["organization_id", "user_id", "external_userid"],
                     set_={
                         "revtops_email": resolved_revtops_email,
-                        "slack_email": slack_email,
+                        "external_email": slack_email,
                         "match_source": match_source,
+                        "source": source,
                         "updated_at": now,
                     },
                 )
@@ -690,14 +702,16 @@ async def _upsert_slack_user_mapping(
             existing_result = await session.execute(
                 select(SlackUserMapping)
                 .where(SlackUserMapping.organization_id == UUID(organization_id))
-                .where(SlackUserMapping.slack_user_id == slack_user_id)
+                .where(SlackUserMapping.external_userid == slack_user_id)
+                    .where(SlackUserMapping.source == source)
                 .where(SlackUserMapping.user_id.is_(None))
                 .limit(1)
             )
             existing_mapping = existing_result.scalar_one_or_none()
             if existing_mapping:
-                existing_mapping.slack_email = slack_email
+                existing_mapping.external_email = slack_email
                 existing_mapping.match_source = match_source
+                existing_mapping.source = source
                 existing_mapping.updated_at = now
                 await session.commit()
                 logger.info(
@@ -713,9 +727,10 @@ async def _upsert_slack_user_mapping(
                 organization_id=UUID(organization_id),
                 user_id=None,
                 revtops_email=resolved_revtops_email,
-                slack_user_id=slack_user_id,
-                slack_email=slack_email,
+                external_userid=slack_user_id,
+                external_email=slack_email,
                 match_source=match_source,
+                source=source,
                 created_at=now,
                 updated_at=now,
             )
@@ -744,6 +759,7 @@ async def upsert_slack_user_mapping_for_user(
     slack_user_id: str,
     slack_email: str | None,
     match_source: str,
+    source: str = IDENTITY_SOURCE_REVTOPS_UNKNOWN,
 ) -> None:
     """Public helper to upsert a Slack mapping for a specific user."""
     await _upsert_slack_user_mapping(
@@ -752,6 +768,7 @@ async def upsert_slack_user_mapping_for_user(
         slack_user_id=slack_user_id,
         slack_email=slack_email,
         match_source=match_source,
+        source=source,
     )
 
 
@@ -845,6 +862,7 @@ async def upsert_slack_user_mapping_from_nango_action(
         slack_user_id=slack_user_id,
         slack_email=slack_email,
         match_source=match_source,
+        source=IDENTITY_SOURCE_SLACK,
     )
     return 1
 
@@ -890,7 +908,8 @@ async def resolve_revtops_user_for_slack_actor(
         mappings_query = (
             select(SlackUserMapping)
             .where(SlackUserMapping.organization_id == UUID(organization_id))
-            .where(SlackUserMapping.slack_user_id == slack_user_id)
+            .where(SlackUserMapping.external_userid == slack_user_id)
+            .where(SlackUserMapping.source == IDENTITY_SOURCE_SLACK)
         )
         mappings_result = await session.execute(mappings_query)
         existing_mappings = mappings_result.scalars().all()
@@ -947,6 +966,7 @@ async def resolve_revtops_user_for_slack_actor(
                         slack_user_id=slack_user_id,
                         slack_email=None,
                         match_source="slack_integration",
+                        source=IDENTITY_SOURCE_SLACK,
                     )
                     return user
 
@@ -1027,6 +1047,7 @@ async def resolve_revtops_user_for_slack_actor(
                     slack_user_id=slack_user_id,
                     slack_email=slack_email,
                     match_source="email",
+                    source=IDENTITY_SOURCE_SLACK,
                 )
                 return user
 
