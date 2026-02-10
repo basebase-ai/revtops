@@ -16,6 +16,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { API_BASE } from '../lib/api';
+import { crossTab, subscribeCrossTab } from '../lib/crossTab';
 
 // Hook to detect mobile viewport
 function useIsMobile(): boolean {
@@ -325,10 +326,34 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
   // CRM approval results (shared across chats) - use state to trigger re-renders
   const [crmApprovalResults, setCrmApprovalResults] = useState<Map<string, unknown>>(() => new Map());
 
+  const shouldBroadcastWebSocket = useCallback((type: string | undefined): boolean => {
+    if (!type) {
+      return false;
+    }
+    return [
+      'task_started',
+      'task_chunk',
+      'task_complete',
+      'conversation_created',
+      'tool_progress',
+      'crm_approval_result',
+      'tool_approval_result',
+    ].includes(type);
+  }, []);
+
   // Handle WebSocket messages
-  const handleWebSocketMessage = useCallback((message: string) => {
+  const handleWebSocketMessage = useCallback((message: string, source: 'ws' | 'broadcast' = 'ws') => {
     try {
       const parsed = JSON.parse(message) as WsMessage;
+      if (source === 'ws' && shouldBroadcastWebSocket(parsed.type)) {
+        if (crossTab.isAvailable) {
+          console.log('[AppLayout] Broadcasting WebSocket event to other tabs:', parsed.type);
+          crossTab.postMessage({
+            kind: 'ws-event',
+            payload: { message },
+          });
+        }
+      }
       
       switch (parsed.type) {
         case 'active_tasks': {
@@ -589,8 +614,10 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
           const title = parsed.title || 'New Chat';
           console.log('[AppLayout] Conversation created:', parsed.conversation_id, 'title:', title);
           addConversation(parsed.conversation_id, title);
-          // Update currentChatId so Chat component knows about the new conversation
-          setCurrentChatId(parsed.conversation_id);
+          if (source === 'ws') {
+            // Update currentChatId so Chat component knows about the new conversation
+            setCurrentChatId(parsed.conversation_id);
+          }
           break;
         }
         
@@ -640,17 +667,49 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
       // Not JSON, ignore
     }
   }, [
+    shouldBroadcastWebSocket,
     setActiveTasks, setConversationActiveTask, setConversationThinking,
     addConversation, addConversationMessage, appendToConversationStreaming,
     startConversationStreaming, markConversationMessageComplete, updateConversationToolMessage,
     addConversationArtifactBlock, setCurrentChatId
   ]);
 
+  // Cross-tab sync for optimistic UI and streamed updates
+  useEffect(() => {
+    if (!crossTab.isAvailable) {
+      console.log('[AppLayout] Cross-tab sync unavailable (BroadcastChannel not supported)');
+      return;
+    }
+    return subscribeCrossTab((event) => {
+      if (event.kind === 'ws-event') {
+        console.log('[AppLayout] Cross-tab WebSocket event received:', event.payload.message);
+        handleWebSocketMessage(event.payload.message, 'broadcast');
+        return;
+      }
+
+      if (event.kind === 'optimistic_message') {
+        const { conversationId, message, setThinking } = event.payload;
+        const state = useAppStore.getState();
+        const existingMessages = state.conversations[conversationId]?.messages ?? [];
+        const alreadyPresent = existingMessages.some((msg) => msg.id === message.id);
+        if (alreadyPresent) {
+          console.log('[AppLayout] Skipping duplicate optimistic message:', message.id);
+          return;
+        }
+        console.log('[AppLayout] Applying optimistic message from another tab:', message.id);
+        addConversationMessage(conversationId, message);
+        if (setThinking) {
+          setConversationThinking(conversationId, true);
+        }
+      }
+    });
+  }, [addConversationMessage, handleWebSocketMessage, setConversationThinking]);
+
   // Global WebSocket connection - authenticated via JWT token
   const { sendJson, isConnected, connectionState } = useWebSocket(
     user ? '/ws/chat' : '',
     {
-      onMessage: handleWebSocketMessage,
+      onMessage: (message) => handleWebSocketMessage(message, 'ws'),
       onConnect: () => console.log('[AppLayout] WebSocket connected'),
       onDisconnect: () => console.log('[AppLayout] WebSocket disconnected'),
     }
