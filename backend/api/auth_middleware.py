@@ -275,14 +275,31 @@ async def _get_user_from_token(payload: dict) -> User:
     # Use admin session to bypass RLS for user lookup
     from models.database import get_admin_session
     async with get_admin_session() as session:
-        user = await session.get(User, user_uuid)
+        user: Optional[User] = await session.get(User, user_uuid)
         
         if not user:
-            logger.warning(f"User not found for JWT subject: {sub}")
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="User not found",
-            )
+            # Fallback: look up by email from JWT payload.
+            # This handles users who were created (e.g. via waitlist/invite) with a
+            # different DB ID before they signed in via OAuth with a new Supabase ID.
+            email: Optional[str] = payload.get("email")
+            if email:
+                result = await session.execute(
+                    select(User).where(User.email == email)
+                )
+                user = result.scalar_one_or_none()
+                if user:
+                    logger.warning(
+                        f"User found by email fallback: JWT sub={sub}, "
+                        f"DB id={user.id}, email={email}. "
+                        f"IDs should be aligned via /auth/users/sync."
+                    )
+            
+            if not user:
+                logger.warning(f"User not found for JWT subject: {sub}")
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="User not found",
+                )
         
         if user.status == "crm_only":
             raise HTTPException(

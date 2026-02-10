@@ -320,6 +320,59 @@ async def sync_user(request: SyncUserRequest) -> SyncUserResponse:
             existing = result.scalar_one_or_none()
         
         if existing:
+            # If the user was found by email but has a different DB ID than the
+            # Supabase ID, migrate the ID so JWT auth works without fallback.
+            # This happens for waitlist/invited users who later sign in via OAuth.
+            old_id: Optional[UUID] = None
+            if existing.id != user_uuid:
+                old_id = existing.id
+                logger.warning(
+                    f"User ID mismatch during sync: DB id={existing.id}, "
+                    f"Supabase id={user_uuid}, email={request.email}. "
+                    f"Migrating user ID to match Supabase."
+                )
+                # Update all FK references to this user, then update the PK.
+                # Order: children first, then the user row itself.
+                _fk_updates: list[str] = [
+                    "UPDATE conversations SET user_id = :new_id WHERE user_id = :old_id",
+                    "UPDATE chat_messages SET user_id = :new_id WHERE user_id = :old_id",
+                    "UPDATE deals SET owner_id = :new_id WHERE owner_id = :old_id",
+                    "UPDATE accounts SET owner_id = :new_id WHERE owner_id = :old_id",
+                    "UPDATE activities SET created_by_id = :new_id WHERE created_by_id = :old_id",
+                    "UPDATE artifacts SET user_id = :new_id WHERE user_id = :old_id",
+                    "UPDATE integrations SET user_id = :new_id WHERE user_id = :old_id",
+                    "UPDATE integrations SET connected_by_user_id = :new_id WHERE connected_by_user_id = :old_id",
+                    "UPDATE sheet_imports SET user_id = :new_id WHERE user_id = :old_id",
+                    "UPDATE change_sessions SET user_id = :new_id WHERE user_id = :old_id",
+                    "UPDATE change_sessions SET resolved_by = :new_id WHERE resolved_by = :old_id",
+                    "UPDATE organizations SET token_owner_user_id = :new_id WHERE token_owner_user_id = :old_id",
+                    "UPDATE crm_operations SET user_id = :new_id WHERE user_id = :old_id",
+                    "UPDATE pending_operations SET user_id = :new_id WHERE user_id = :old_id",
+                    "UPDATE workflows SET created_by_user_id = :new_id WHERE created_by_user_id = :old_id",
+                    "UPDATE user_tool_settings SET user_id = :new_id WHERE user_id = :old_id",
+                    "UPDATE user_mappings_for_identity SET user_id = :new_id WHERE user_id = :old_id",
+                ]
+                params = {"new_id": str(user_uuid), "old_id": str(old_id)}
+                for stmt in _fk_updates:
+                    await session.execute(text(stmt), params)
+                # Now update the user's primary key
+                await session.execute(
+                    text("UPDATE users SET id = :new_id WHERE id = :old_id"),
+                    params,
+                )
+                # Expire the ORM object so we re-fetch with the new PK
+                await session.flush()
+                session.expire(existing)
+                existing = await session.get(User, user_uuid)
+                if not existing:
+                    raise HTTPException(
+                        status_code=500,
+                        detail="Failed to migrate user ID",
+                    )
+                logger.info(
+                    f"Successfully migrated user ID from {old_id} to {user_uuid}"
+                )
+
             # Always update last_login on sync (user just logged in)
             existing.last_login = datetime.utcnow()
             
