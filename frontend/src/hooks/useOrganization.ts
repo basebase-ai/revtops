@@ -197,6 +197,38 @@ export function useLinkIdentity() {
 }
 
 /**
+ * Hook to unlink an identity mapping from any user (admin action).
+ */
+export function useUnlinkIdentity() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (params: { orgId: string; userId: string; mappingId: string }) => {
+      const response = await fetch(
+        `${API_BASE}/auth/organizations/${params.orgId}/members/unlink-identity?user_id=${params.userId}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            mapping_id: params.mappingId,
+          }),
+        }
+      );
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({})) as { detail?: string };
+        throw new Error(err.detail ?? `Failed to unlink identity: ${response.status}`);
+      }
+      return (await response.json()) as { status: string };
+    },
+    onSuccess: (_data, variables) => {
+      void queryClient.invalidateQueries({
+        queryKey: organizationKeys.members(variables.orgId),
+      });
+    },
+  });
+}
+
+/**
  * Hook to update organization settings.
  * Automatically invalidates the organization cache on success.
  */

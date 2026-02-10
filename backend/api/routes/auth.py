@@ -532,6 +532,12 @@ class LinkIdentityRequest(BaseModel):
     mapping_id: str
 
 
+class UnlinkIdentityRequest(BaseModel):
+    """Request to unlink an external identity mapping from a user."""
+
+    mapping_id: str
+
+
 @router.get("/organizations/{org_id}/members", response_model=TeamMembersListResponse)
 async def get_organization_members(
     org_id: str,
@@ -609,6 +615,34 @@ async def get_organization_members(
 
         # Collect unmapped identity rows (user_id is NULL)
         unmapped_mappings: list[SlackUserMapping] = mappings_by_user.get(None, [])
+
+        # Avoid showing stale "unmapped" rows when the same external account
+        # is already linked to a team user via the same source + external identity.
+        linked_identity_keys: set[tuple[str, str]] = set()
+        for mapping in all_mappings:
+            if mapping.user_id is None:
+                continue
+            identity_value = mapping.external_email or mapping.external_userid
+            if identity_value:
+                linked_identity_keys.add((mapping.source, identity_value.lower()))
+
+        filtered_unmapped_mappings: list[SlackUserMapping] = []
+        for mapping in unmapped_mappings:
+            identity_value = mapping.external_email or mapping.external_userid
+            if not identity_value:
+                filtered_unmapped_mappings.append(mapping)
+                continue
+            if (mapping.source, identity_value.lower()) in linked_identity_keys:
+                logger.info(
+                    "Skipping unmapped identity id=%s org=%s source=%s identity=%s because it is already linked",
+                    mapping.id,
+                    org_id,
+                    mapping.source,
+                    identity_value,
+                )
+                continue
+            filtered_unmapped_mappings.append(mapping)
+
         unmapped_identities: list[IdentityMappingResponse] = [
             IdentityMappingResponse(
                 id=str(m.id),
@@ -618,7 +652,7 @@ async def get_organization_members(
                 match_source=m.match_source,
                 updated_at=m.updated_at.isoformat() if m.updated_at else None,
             )
-            for m in unmapped_mappings
+            for m in filtered_unmapped_mappings
         ]
 
         return TeamMembersListResponse(
@@ -667,6 +701,51 @@ async def link_identity(
         await session.commit()
 
     return {"status": "linked"}
+
+
+@router.post("/organizations/{org_id}/members/unlink-identity")
+async def unlink_identity(
+    org_id: str,
+    request: UnlinkIdentityRequest,
+    user_id: Optional[str] = None,
+) -> dict[str, str]:
+    """Admin action to unlink an identity mapping from any user in the org."""
+    from models.slack_user_mapping import SlackUserMapping
+
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        org_uuid = UUID(org_id)
+        requester_uuid = UUID(user_id)
+        mapping_uuid = UUID(request.mapping_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid ID format")
+
+    async with get_session() as session:
+        requester: User | None = await session.get(User, requester_uuid)
+        if not requester or requester.organization_id != org_uuid:
+            raise HTTPException(status_code=403, detail="Not authorized to modify this organization")
+        if requester.role != "admin":
+            raise HTTPException(status_code=403, detail="Only admins can unlink identities")
+
+        mapping: SlackUserMapping | None = await session.get(SlackUserMapping, mapping_uuid)
+        if not mapping or mapping.organization_id != org_uuid:
+            raise HTTPException(status_code=404, detail="Identity mapping not found")
+
+        mapping.user_id = None
+        mapping.revtops_email = None
+        mapping.match_source = "admin_manual_unlink"
+        await session.commit()
+
+        logger.info(
+            "Unlinked identity mapping id=%s org=%s by_admin=%s",
+            mapping_uuid,
+            org_uuid,
+            requester_uuid,
+        )
+
+    return {"status": "unlinked"}
 
 
 class UpdateOrganizationRequest(BaseModel):
