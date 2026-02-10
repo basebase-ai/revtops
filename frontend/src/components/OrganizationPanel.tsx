@@ -362,18 +362,20 @@ export function OrganizationPanel({ organization, currentUser, onClose }: Organi
                                       <span className="text-surface-300 truncate">
                                         {identity.externalEmail ?? identity.externalUserid ?? 'Unknown'}
                                       </span>
-                                      <span className="text-surface-500 ml-auto whitespace-nowrap">
-                                        {identity.matchSource.replace(/_/g, ' ')}
-                                      </span>
-                                      {canManageIdentityLinks && (
-                                        <button
-                                          onClick={() => void handleUnlinkIdentity(identity.id)}
-                                          disabled={unlinkIdentityMutation.isPending}
-                                          className="text-red-400 hover:text-red-300 disabled:opacity-50 ml-2"
-                                        >
-                                          Unlink
-                                        </button>
-                                      )}
+                                      <div className="ml-auto flex items-center gap-2 whitespace-nowrap">
+                                        <span className="text-surface-500">
+                                          {identity.matchSource.replace(/_/g, ' ')}
+                                        </span>
+                                        {canManageIdentityLinks && (
+                                          <button
+                                            onClick={() => void handleUnlinkIdentity(identity.id)}
+                                            disabled={unlinkIdentityMutation.isPending}
+                                            className="text-primary-400 hover:text-primary-300 disabled:opacity-50"
+                                          >
+                                            Unlink
+                                          </button>
+                                        )}
+                                      </div>
                                     </div>
                                   ))}
                                 </div>
