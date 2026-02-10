@@ -14,7 +14,8 @@ import { useState, useRef } from 'react';
 import type { OrganizationInfo, UserProfile } from './AppLayout';
 import { supabase } from '../lib/supabase';
 import { useAppStore } from '../store';
-import { useTeamMembers, useUpdateOrganization } from '../hooks';
+import { useTeamMembers, useUpdateOrganization, useLinkIdentity } from '../hooks';
+import type { TeamMember, IdentityMapping } from '../hooks';
 
 interface OrganizationPanelProps {
   organization: OrganizationInfo;
@@ -33,14 +34,47 @@ export function OrganizationPanel({ organization, currentUser, onClose }: Organi
   const [isUploadingLogo, setIsUploadingLogo] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  const [expandedMemberId, setExpandedMemberId] = useState<string | null>(null);
+
   // React Query: Fetch team members with automatic caching and refetch
   const { 
-    data: teamMembers = [], 
+    data: teamData,
     isLoading: isLoadingMembers 
   } = useTeamMembers(organization.id, currentUser.id);
 
+  const members: TeamMember[] = teamData?.members ?? [];
+  const unmappedIdentities: IdentityMapping[] = teamData?.unmappedIdentities ?? [];
+
   // React Query: Mutation for updating organization
   const updateOrgMutation = useUpdateOrganization();
+  const linkIdentityMutation = useLinkIdentity();
+
+  const sourceLabel = (source: string): string => {
+    const labels: Record<string, string> = { slack: 'Slack', hubspot: 'HubSpot', salesforce: 'Salesforce' };
+    return labels[source] ?? source;
+  };
+
+  const sourceColor = (source: string): string => {
+    const colors: Record<string, string> = {
+      slack: 'bg-purple-500/20 text-purple-400',
+      hubspot: 'bg-orange-500/20 text-orange-400',
+      salesforce: 'bg-blue-500/20 text-blue-400',
+    };
+    return colors[source] ?? 'bg-surface-600/20 text-surface-300';
+  };
+
+  const handleLinkIdentity = async (targetUserId: string, mappingId: string): Promise<void> => {
+    try {
+      await linkIdentityMutation.mutateAsync({
+        orgId: organization.id,
+        userId: currentUser.id,
+        targetUserId,
+        mappingId,
+      });
+    } catch (error) {
+      alert(`Link failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  };
 
   const handleInvite = async (): Promise<void> => {
     if (!inviteEmail.trim()) return;
@@ -225,7 +259,7 @@ export function OrganizationPanel({ organization, currentUser, onClose }: Organi
               {/* Team List */}
               <div>
                 <h3 className="text-sm font-medium text-surface-200 mb-3">
-                  Team members ({teamMembers.length})
+                  Team members ({members.length})
                 </h3>
                 {isLoadingMembers ? (
                   <div className="flex items-center justify-center py-8">
@@ -233,44 +267,159 @@ export function OrganizationPanel({ organization, currentUser, onClose }: Organi
                   </div>
                 ) : (
                   <div className="space-y-2">
-                    {teamMembers.map((member) => {
-                      const displayName = member.name ?? member.email.split('@')[0] ?? 'Unknown';
-                      const isAdmin = member.role === 'admin' || member.id === currentUser.id;
+                    {members.map((member) => {
+                      const displayName: string = member.name ?? member.email.split('@')[0] ?? 'Unknown';
+                      const isAdmin: boolean = member.role === 'admin' || member.id === currentUser.id;
+                      const isExpanded: boolean = expandedMemberId === member.id;
+                      const identities: IdentityMapping[] = member.identities;
+
                       return (
-                        <div
-                          key={member.id}
-                          className="flex items-center gap-3 p-3 rounded-lg bg-surface-800/50"
-                        >
-                          {member.avatarUrl ? (
-                            <img
-                              src={member.avatarUrl}
-                              alt={displayName}
-                              className="w-10 h-10 rounded-full object-cover"
-                            />
-                          ) : (
-                            <div className="w-10 h-10 rounded-full bg-primary-600 flex items-center justify-center text-white font-medium">
-                              {displayName.charAt(0).toUpperCase()}
-                            </div>
-                          )}
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-2">
-                              <span className="font-medium text-surface-100 truncate">
-                                {displayName}
-                              </span>
-                              {isAdmin && (
-                                <span className="px-2 py-0.5 text-xs font-medium bg-primary-500/20 text-primary-400 rounded-full">
-                                  Admin
+                        <div key={member.id} className="rounded-lg bg-surface-800/50 overflow-hidden">
+                          {/* Member row */}
+                          <button
+                            onClick={() => setExpandedMemberId(isExpanded ? null : member.id)}
+                            className="flex items-center gap-3 p-3 w-full text-left hover:bg-surface-800/80 transition-colors"
+                          >
+                            {member.avatarUrl ? (
+                              <img
+                                src={member.avatarUrl}
+                                alt={displayName}
+                                className="w-10 h-10 rounded-full object-cover"
+                              />
+                            ) : (
+                              <div className="w-10 h-10 rounded-full bg-primary-600 flex items-center justify-center text-white font-medium">
+                                {displayName.charAt(0).toUpperCase()}
+                              </div>
+                            )}
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2">
+                                <span className="font-medium text-surface-100 truncate">
+                                  {displayName}
                                 </span>
+                                {isAdmin && (
+                                  <span className="px-2 py-0.5 text-xs font-medium bg-primary-500/20 text-primary-400 rounded-full">
+                                    Admin
+                                  </span>
+                                )}
+                              </div>
+                              <p className="text-sm text-surface-400 truncate">{member.email}</p>
+                            </div>
+                            {/* Identity count badges */}
+                            <div className="flex items-center gap-1">
+                              {identities.length > 0 ? (
+                                [...new Set(identities.map((i) => i.source))].map((src) => (
+                                  <span
+                                    key={src}
+                                    className={`px-1.5 py-0.5 text-[10px] font-medium rounded ${sourceColor(src)}`}
+                                  >
+                                    {sourceLabel(src)}
+                                  </span>
+                                ))
+                              ) : (
+                                <span className="text-xs text-surface-500">No links</span>
                               )}
                             </div>
-                            <p className="text-sm text-surface-400 truncate">{member.email}</p>
-                          </div>
+                            <svg
+                              className={`w-4 h-4 text-surface-400 transition-transform ${isExpanded ? 'rotate-180' : ''}`}
+                              fill="none"
+                              viewBox="0 0 24 24"
+                              stroke="currentColor"
+                            >
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                            </svg>
+                          </button>
+
+                          {/* Expanded identity details */}
+                          {isExpanded && (
+                            <div className="px-3 pb-3 pt-1 border-t border-surface-700/50">
+                              <p className="text-xs text-surface-500 mb-2">Linked identities</p>
+                              {identities.length > 0 ? (
+                                <div className="space-y-1.5">
+                                  {identities.map((identity) => (
+                                    <div
+                                      key={identity.id}
+                                      className="flex items-center gap-2 text-xs px-2 py-1.5 rounded bg-surface-700/30"
+                                    >
+                                      <span className={`px-1.5 py-0.5 font-medium rounded ${sourceColor(identity.source)}`}>
+                                        {sourceLabel(identity.source)}
+                                      </span>
+                                      <span className="text-surface-300 truncate">
+                                        {identity.externalEmail ?? identity.externalUserid ?? 'Unknown'}
+                                      </span>
+                                      <span className="text-surface-500 ml-auto whitespace-nowrap">
+                                        {identity.matchSource.replace(/_/g, ' ')}
+                                      </span>
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : (
+                                <p className="text-xs text-surface-500 italic">
+                                  No external accounts linked yet.
+                                </p>
+                              )}
+
+                              {/* Show unmapped identities that could be linked to this user */}
+                              {unmappedIdentities.length > 0 && (
+                                <div className="mt-3">
+                                  <p className="text-xs text-surface-500 mb-1.5">Link an unmatched account:</p>
+                                  <div className="space-y-1">
+                                    {unmappedIdentities.map((ui) => (
+                                      <button
+                                        key={ui.id}
+                                        onClick={() => void handleLinkIdentity(member.id, ui.id)}
+                                        disabled={linkIdentityMutation.isPending}
+                                        className="flex items-center gap-2 text-xs px-2 py-1.5 rounded bg-surface-700/20 hover:bg-surface-700/50 transition-colors w-full text-left disabled:opacity-50"
+                                      >
+                                        <span className={`px-1.5 py-0.5 font-medium rounded ${sourceColor(ui.source)}`}>
+                                          {sourceLabel(ui.source)}
+                                        </span>
+                                        <span className="text-surface-400 truncate">
+                                          {ui.externalEmail ?? ui.externalUserid}
+                                        </span>
+                                        <span className="ml-auto text-primary-400 whitespace-nowrap">+ Link</span>
+                                      </button>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          )}
                         </div>
                       );
                     })}
                   </div>
                 )}
               </div>
+
+              {/* Unmapped external identities */}
+              {unmappedIdentities.length > 0 && (
+                <div>
+                  <h3 className="text-sm font-medium text-surface-200 mb-1">
+                    Unmatched accounts ({unmappedIdentities.length})
+                  </h3>
+                  <p className="text-xs text-surface-500 mb-3">
+                    Found during sync but not yet linked to a team member. Expand a member above to link.
+                  </p>
+                  <div className="space-y-1.5">
+                    {unmappedIdentities.map((ui) => (
+                      <div
+                        key={ui.id}
+                        className="flex items-center gap-2 px-3 py-2 rounded-lg bg-surface-800/30 border border-surface-700/50"
+                      >
+                        <span className={`px-1.5 py-0.5 text-[10px] font-medium rounded ${sourceColor(ui.source)}`}>
+                          {sourceLabel(ui.source)}
+                        </span>
+                        <span className="text-sm text-surface-300 truncate">
+                          {ui.externalEmail ?? ui.externalUserid}
+                        </span>
+                        <span className="px-2 py-0.5 text-[10px] font-medium bg-yellow-500/20 text-yellow-400 rounded-full ml-auto">
+                          Unmatched
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           )}
 

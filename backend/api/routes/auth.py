@@ -495,6 +495,17 @@ async def create_organization(request: CreateOrganizationRequest) -> Organizatio
         )
 
 
+class IdentityMappingResponse(BaseModel):
+    """A single external identity mapping."""
+
+    id: str
+    source: str  # 'slack', 'hubspot', 'salesforce', ...
+    external_userid: Optional[str]
+    external_email: Optional[str]
+    match_source: str
+    updated_at: Optional[str]
+
+
 class TeamMemberResponse(BaseModel):
     """Response model for a team member."""
 
@@ -503,12 +514,22 @@ class TeamMemberResponse(BaseModel):
     email: str
     role: Optional[str]
     avatar_url: Optional[str]
+    status: Optional[str] = None  # 'active', 'crm_only', etc.
+    identities: list[IdentityMappingResponse] = []
 
 
 class TeamMembersListResponse(BaseModel):
     """Response model for list of team members."""
 
     members: list[TeamMemberResponse]
+    unmapped_identities: list[IdentityMappingResponse] = []
+
+
+class LinkIdentityRequest(BaseModel):
+    """Request to manually link a user to an external identity."""
+
+    target_user_id: str
+    mapping_id: str
 
 
 @router.get("/organizations/{org_id}/members", response_model=TeamMembersListResponse)
@@ -516,10 +537,12 @@ async def get_organization_members(
     org_id: str,
     user_id: Optional[str] = None,
 ) -> TeamMembersListResponse:
-    """Get all team members for an organization.
-    
+    """Get all team members for an organization, including identity mappings.
+
     Only accessible by members of that organization.
     """
+    from models.slack_user_mapping import SlackUserMapping
+
     if not user_id:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
@@ -539,20 +562,111 @@ async def get_organization_members(
         result = await session.execute(
             select(User).where(User.organization_id == org_uuid)
         )
-        users = result.scalars().all()
+        users: list[User] = list(result.scalars().all())
 
-        return TeamMembersListResponse(
-            members=[
+        # Fetch all identity mappings for this org in one query
+        mappings_result = await session.execute(
+            select(SlackUserMapping).where(
+                SlackUserMapping.organization_id == org_uuid,
+            )
+        )
+        all_mappings: list[SlackUserMapping] = list(mappings_result.scalars().all())
+
+        # Group mappings by user_id
+        mappings_by_user: dict[UUID | None, list[SlackUserMapping]] = {}
+        for m in all_mappings:
+            mappings_by_user.setdefault(m.user_id, []).append(m)
+
+        members: list[TeamMemberResponse] = []
+        for u in users:
+            # Skip crm_only stub users entirely — they shouldn't appear in the team list
+            if u.status == "crm_only":
+                continue
+
+            user_mappings: list[SlackUserMapping] = mappings_by_user.get(u.id, [])
+            identities: list[IdentityMappingResponse] = [
+                IdentityMappingResponse(
+                    id=str(m.id),
+                    source=m.source,
+                    external_userid=m.external_userid,
+                    external_email=m.external_email,
+                    match_source=m.match_source,
+                    updated_at=m.updated_at.isoformat() if m.updated_at else None,
+                )
+                for m in user_mappings
+            ]
+            members.append(
                 TeamMemberResponse(
                     id=str(u.id),
                     name=u.name,
                     email=u.email,
                     role=u.role,
                     avatar_url=u.avatar_url,
+                    status=u.status,
+                    identities=identities,
                 )
-                for u in users
-            ]
+            )
+
+        # Collect unmapped identity rows (user_id is NULL)
+        unmapped_mappings: list[SlackUserMapping] = mappings_by_user.get(None, [])
+        unmapped_identities: list[IdentityMappingResponse] = [
+            IdentityMappingResponse(
+                id=str(m.id),
+                source=m.source,
+                external_userid=m.external_userid,
+                external_email=m.external_email,
+                match_source=m.match_source,
+                updated_at=m.updated_at.isoformat() if m.updated_at else None,
+            )
+            for m in unmapped_mappings
+        ]
+
+        return TeamMembersListResponse(
+            members=members,
+            unmapped_identities=unmapped_identities,
         )
+
+
+@router.post("/organizations/{org_id}/members/link-identity")
+async def link_identity(
+    org_id: str,
+    request: LinkIdentityRequest,
+    user_id: Optional[str] = None,
+) -> dict[str, str]:
+    """Manually link an unmatched identity mapping to a user.
+
+    Reassigns the mapping's ``user_id`` and ``revtops_email`` to the target user.
+    """
+    from models.slack_user_mapping import SlackUserMapping
+
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        org_uuid = UUID(org_id)
+        target_uuid = UUID(request.target_user_id)
+        mapping_uuid = UUID(request.mapping_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid ID format")
+
+    async with get_session() as session:
+        # Verify target user belongs to this org
+        target_user: User | None = await session.get(User, target_uuid)
+        if not target_user or target_user.organization_id != org_uuid:
+            raise HTTPException(status_code=404, detail="Target user not found in this organization")
+
+        # Fetch the mapping
+        mapping: SlackUserMapping | None = await session.get(SlackUserMapping, mapping_uuid)
+        if not mapping or mapping.organization_id != org_uuid:
+            raise HTTPException(status_code=404, detail="Identity mapping not found")
+
+        # Set user_id on the mapping
+        mapping.user_id = target_uuid
+        mapping.revtops_email = target_user.email
+        mapping.match_source = "admin_manual_link"
+        await session.commit()
+
+    return {"status": "linked"}
 
 
 class UpdateOrganizationRequest(BaseModel):

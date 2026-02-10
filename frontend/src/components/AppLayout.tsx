@@ -200,7 +200,7 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
   }, [fetchPendingCount]);
 
   // React Query: Get team members for member count (single source of truth)
-  const { data: teamMembers = [] } = useTeamMembers(
+  const { data: teamData } = useTeamMembers(
     organization?.id ?? null,
     user?.id ?? null
   );
@@ -850,7 +850,7 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
           currentChatId={currentChatId}
           onNewChat={startNewChat}
           organization={organization}
-          memberCount={teamMembers.length}
+          memberCount={teamData?.members.length ?? 0}
           onOpenOrgPanel={() => setShowOrgPanel(true)}
           onOpenProfilePanel={() => setShowProfilePanel(true)}
           isMobile={isMobile}

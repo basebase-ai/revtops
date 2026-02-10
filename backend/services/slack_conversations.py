@@ -692,27 +692,37 @@ async def _upsert_slack_user_mapping(
                 )
                 return
 
-            existing_result = await session.execute(
+            # Check if ANY row already exists for this identity (mapped or unmapped)
+            any_existing_result = await session.execute(
                 select(SlackUserMapping)
                 .where(SlackUserMapping.organization_id == UUID(organization_id))
                 .where(SlackUserMapping.source == "slack")
                 .where(SlackUserMapping.external_userid == slack_user_id)
-                .where(SlackUserMapping.user_id.is_(None))
                 .limit(1)
             )
-            existing_mapping = existing_result.scalar_one_or_none()
-            if existing_mapping:
-                existing_mapping.external_email = slack_email
-                existing_mapping.source = "slack"
-                existing_mapping.match_source = match_source
-                existing_mapping.updated_at = now
-                await session.commit()
-                logger.info(
-                    "[slack_conversations] Updated unmapped Slack user mapping org=%s slack_user=%s source=%s",
-                    organization_id,
-                    slack_user_id,
-                    match_source,
-                )
+            any_existing: SlackUserMapping | None = any_existing_result.scalar_one_or_none()
+            if any_existing:
+                # A row exists — only update if it's still unmapped
+                if any_existing.user_id is None:
+                    any_existing.external_email = slack_email
+                    any_existing.source = "slack"
+                    any_existing.match_source = match_source
+                    any_existing.updated_at = now
+                    await session.commit()
+                    logger.info(
+                        "[slack_conversations] Updated unmapped Slack user mapping org=%s slack_user=%s source=%s",
+                        organization_id,
+                        slack_user_id,
+                        match_source,
+                    )
+                else:
+                    # Already mapped to a user — skip, don't create a duplicate
+                    logger.info(
+                        "[slack_conversations] Skipping unmapped upsert — Slack user already mapped org=%s slack_user=%s user=%s",
+                        organization_id,
+                        slack_user_id,
+                        any_existing.user_id,
+                    )
                 return
 
             mapping = SlackUserMapping(

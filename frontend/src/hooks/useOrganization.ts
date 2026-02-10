@@ -16,12 +16,23 @@ export interface Organization {
   emailDomain: string | null;
 }
 
+export interface IdentityMapping {
+  id: string;
+  source: string;
+  externalUserid: string | null;
+  externalEmail: string | null;
+  matchSource: string;
+  updatedAt: string | null;
+}
+
 export interface TeamMember {
   id: string;
   name: string | null;
   email: string;
   role: string | null;
   avatarUrl: string | null;
+  status: string | null;
+  identities: IdentityMapping[];
 }
 
 interface OrganizationApiResponse {
@@ -31,6 +42,15 @@ interface OrganizationApiResponse {
   email_domain: string | null;
 }
 
+interface IdentityMappingApiResponse {
+  id: string;
+  source: string;
+  external_userid: string | null;
+  external_email: string | null;
+  match_source: string;
+  updated_at: string | null;
+}
+
 interface TeamMembersApiResponse {
   members: Array<{
     id: string;
@@ -38,7 +58,15 @@ interface TeamMembersApiResponse {
     email: string;
     role: string | null;
     avatar_url: string | null;
+    status: string | null;
+    identities: IdentityMappingApiResponse[];
   }>;
+  unmapped_identities: IdentityMappingApiResponse[];
+}
+
+export interface TeamMembersResult {
+  members: TeamMember[];
+  unmappedIdentities: IdentityMapping[];
 }
 
 interface UpdateOrganizationParams {
@@ -56,7 +84,7 @@ export const organizationKeys = {
 };
 
 // Fetch team members
-async function fetchTeamMembers(orgId: string, userId: string): Promise<TeamMember[]> {
+async function fetchTeamMembers(orgId: string, userId: string): Promise<TeamMembersResult> {
   const response = await fetch(
     `${API_BASE}/auth/organizations/${orgId}/members?user_id=${userId}`
   );
@@ -66,14 +94,28 @@ async function fetchTeamMembers(orgId: string, userId: string): Promise<TeamMemb
   }
   
   const data = (await response.json()) as TeamMembersApiResponse;
+
+  const mapIdentity = (i: IdentityMappingApiResponse): IdentityMapping => ({
+    id: i.id,
+    source: i.source,
+    externalUserid: i.external_userid,
+    externalEmail: i.external_email,
+    matchSource: i.match_source,
+    updatedAt: i.updated_at,
+  });
   
-  return data.members.map((m) => ({
-    id: m.id,
-    name: m.name,
-    email: m.email,
-    role: m.role,
-    avatarUrl: m.avatar_url,
-  }));
+  return {
+    members: data.members.map((m) => ({
+      id: m.id,
+      name: m.name,
+      email: m.email,
+      role: m.role,
+      avatarUrl: m.avatar_url,
+      status: m.status ?? null,
+      identities: (m.identities ?? []).map(mapIdentity),
+    })),
+    unmappedIdentities: (data.unmapped_identities ?? []).map(mapIdentity),
+  };
 }
 
 // Update organization
@@ -118,6 +160,39 @@ export function useTeamMembers(orgId: string | null, userId: string | null) {
       return fetchTeamMembers(orgId, userId);
     },
     enabled: Boolean(orgId && userId),
+  });
+}
+
+/**
+ * Hook to link an identity mapping to a user (admin action).
+ */
+export function useLinkIdentity() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (params: { orgId: string; userId: string; targetUserId: string; mappingId: string }) => {
+      const response = await fetch(
+        `${API_BASE}/auth/organizations/${params.orgId}/members/link-identity?user_id=${params.userId}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            target_user_id: params.targetUserId,
+            mapping_id: params.mappingId,
+          }),
+        }
+      );
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({})) as { detail?: string };
+        throw new Error(err.detail ?? `Failed to link identity: ${response.status}`);
+      }
+      return (await response.json()) as { status: string };
+    },
+    onSuccess: (_data, variables) => {
+      void queryClient.invalidateQueries({
+        queryKey: organizationKeys.members(variables.orgId),
+      });
+    },
   });
 }
 
