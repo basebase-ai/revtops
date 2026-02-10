@@ -441,7 +441,8 @@ register_tool(
     name="crm_write",
     description="""Create or update records in the CRM (HubSpot) in bulk.
 
-Use this when the user wants to add, update, or import contacts, companies, or deals.
+Use this when the user wants to add, update, or import contacts, companies, deals, or
+engagement activities (calls, emails, meetings, notes).
 This tool accepts a batch of records (up to 100) and routes them through a review workflow:
 changes appear as "pending" in the Pending Changes panel where the user can Commit or Discard.
 
@@ -449,8 +450,27 @@ Property names for each record type:
 - **contact**: email (required), firstname, lastname, company, jobtitle, phone
 - **company**: name (required), domain, industry, numberofemployees
 - **deal**: dealname (required), amount, dealstage, closedate, pipeline
+- **call**: hs_timestamp (required), hs_call_title, hs_call_body, hs_call_duration (ms),
+  hs_call_direction (INBOUND/OUTBOUND), hs_call_status (COMPLETED/NO_ANSWER/BUSY/etc),
+  hs_call_disposition, hubspot_owner_id
+- **email**: hs_timestamp (required), hs_email_subject, hs_email_text,
+  hs_email_direction (EMAIL=outbound/INCOMING_EMAIL/FORWARDED_EMAIL),
+  hs_email_status (SENT/BOUNCED/etc), hubspot_owner_id
+- **meeting**: hs_timestamp (required), hs_meeting_title, hs_meeting_body,
+  hs_meeting_start_time, hs_meeting_end_time, hs_meeting_location,
+  hs_meeting_outcome (SCHEDULED/COMPLETED/RESCHEDULED/NO_SHOW/CANCELED), hubspot_owner_id
+- **note**: hs_timestamp (required), hs_note_body (max 65536 chars), hubspot_owner_id
 
-For updates, each record MUST include an "id" field with the existing record UUID.
+For engagements (call/email/meeting/note), each record can include an "associations" array
+to link the activity to existing HubSpot records:
+  "associations": [
+    {"to_object_type": "contact", "to_object_id": "12345"},
+    {"to_object_type": "deal", "to_object_id": "67890"}
+  ]
+Valid to_object_type values: contact, company, deal.
+The to_object_id must be a HubSpot record ID (use crm_search to find IDs).
+
+For updates (contacts/companies/deals only), each record MUST include an "id" field with the existing record UUID.
 
 Example: create 3 contacts from a CSV:
 {
@@ -461,6 +481,24 @@ Example: create 3 contacts from a CSV:
     {"email": "alice@acme.com", "firstname": "Alice", "lastname": "Smith", "company": "Acme"},
     {"email": "bob@acme.com", "firstname": "Bob", "lastname": "Jones", "company": "Acme"},
     {"email": "carol@acme.com", "firstname": "Carol", "lastname": "Lee", "company": "Acme"}
+  ]
+}
+
+Example: log a call on a deal:
+{
+  "target_system": "hubspot",
+  "record_type": "call",
+  "operation": "create",
+  "records": [
+    {
+      "hs_timestamp": "2025-03-17T10:30:00Z",
+      "hs_call_title": "Discovery Call",
+      "hs_call_body": "Discussed product needs and timeline",
+      "hs_call_duration": "1800000",
+      "hs_call_direction": "OUTBOUND",
+      "hs_call_status": "COMPLETED",
+      "associations": [{"to_object_type": "deal", "to_object_id": "67890"}]
+    }
   ]
 }
 
@@ -476,18 +514,18 @@ Do NOT add any text after the tool call - let the pending changes panel speak fo
             },
             "record_type": {
                 "type": "string",
-                "enum": ["contact", "company", "deal"],
-                "description": "Type of CRM record",
+                "enum": ["contact", "company", "deal", "call", "email", "meeting", "note"],
+                "description": "Type of CRM record or engagement",
             },
             "operation": {
                 "type": "string",
                 "enum": ["create", "update"],
-                "description": "Whether to create new records or update existing ones",
+                "description": "Whether to create new records or update existing ones. Engagements only support 'create'.",
             },
             "records": {
                 "type": "array",
                 "items": {"type": "object"},
-                "description": "Array of record objects (max 100). For updates, each must include 'id'.",
+                "description": "Array of record objects (max 100). For updates, each must include 'id'. For engagements, each can include 'associations'.",
             },
         },
         "required": ["target_system", "record_type", "operation", "records"],

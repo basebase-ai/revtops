@@ -644,8 +644,22 @@ class HubSpotConnector(BaseConnector):
 
                 async with get_session(organization_id=self.organization_id) as session:
                     for raw_engagement in raw_engagements:
+                        hs_id: str = raw_engagement.get("id", "")
+
+                        # Look up existing activity to preserve primary key on re-sync
+                        result = await session.execute(
+                            select(Activity).where(
+                                Activity.organization_id == uuid.UUID(self.organization_id),
+                                Activity.source_system == self.source_system,
+                                Activity.source_id == hs_id,
+                            )
+                        )
+                        existing: Optional[Activity] = result.scalar_one_or_none()
+
                         activity = self._normalize_engagement(
-                            raw_engagement, engagement_type
+                            raw_engagement,
+                            engagement_type,
+                            existing_id=existing.id if existing else None,
                         )
                         await session.merge(activity)
                         count += 1
@@ -657,7 +671,10 @@ class HubSpotConnector(BaseConnector):
         return count
 
     def _normalize_engagement(
-        self, hs_engagement: dict[str, Any], engagement_type: str
+        self,
+        hs_engagement: dict[str, Any],
+        engagement_type: str,
+        existing_id: Optional[uuid.UUID] = None,
     ) -> Activity:
         """Transform HubSpot engagement to our Activity model."""
         props = hs_engagement.get("properties", {})
@@ -699,7 +716,7 @@ class HubSpotConnector(BaseConnector):
         }
 
         return Activity(
-            id=uuid.uuid4(),
+            id=existing_id or uuid.uuid4(),
             organization_id=uuid.UUID(self.organization_id),
             source_system=self.source_system,
             source_id=hs_id,
@@ -754,6 +771,10 @@ class HubSpotConnector(BaseConnector):
             if user:
                 # User exists - check if they belong to this organization
                 if user.organization_id == uuid.UUID(self.organization_id):
+                    # Also store the HubSpot owner ID on the user for reverse lookups
+                    if not user.hubspot_user_id:
+                        user.hubspot_user_id = hs_owner_id
+                        await session.commit()
                     self._owner_cache[hs_owner_id] = user.id
                     return user.id
                 else:
@@ -774,6 +795,73 @@ class HubSpotConnector(BaseConnector):
             
             self._owner_cache[hs_owner_id] = stub_user.id
             return stub_user.id
+
+    async def fetch_owners(self) -> list[dict[str, Any]]:
+        """
+        Fetch all HubSpot owners (users) from the account.
+
+        Returns:
+            List of owner dicts with id, email, firstName, lastName
+        """
+        data: dict[str, Any] = await self._make_request("GET", "/crm/v3/owners")
+        results: list[dict[str, Any]] = data.get("results", [])
+        return [
+            {
+                "id": str(o.get("id", "")),
+                "email": o.get("email"),
+                "firstName": o.get("firstName"),
+                "lastName": o.get("lastName"),
+            }
+            for o in results
+        ]
+
+    async def match_owners_to_users(self) -> list[dict[str, Any]]:
+        """
+        Fetch all HubSpot owners, match them by email to local users,
+        and store the HubSpot owner ID on matching User records.
+
+        Returns:
+            List of match results: {email, hubspot_owner_id, user_id, matched}
+        """
+        hs_owners: list[dict[str, Any]] = await self.fetch_owners()
+        results: list[dict[str, Any]] = []
+
+        async with get_session(organization_id=self.organization_id) as session:
+            for owner in hs_owners:
+                owner_email: str | None = owner.get("email")
+                hs_owner_id: str = owner.get("id", "")
+                if not owner_email or not hs_owner_id:
+                    continue
+
+                result = await session.execute(
+                    select(User).where(
+                        User.email == owner_email.lower(),
+                        User.organization_id == uuid.UUID(self.organization_id),
+                    )
+                )
+                user: User | None = result.scalar_one_or_none()
+
+                if user:
+                    user.hubspot_user_id = hs_owner_id
+                    results.append({
+                        "email": owner_email,
+                        "hubspot_owner_id": hs_owner_id,
+                        "user_id": str(user.id),
+                        "user_name": user.name,
+                        "matched": True,
+                    })
+                else:
+                    results.append({
+                        "email": owner_email,
+                        "hubspot_owner_id": hs_owner_id,
+                        "user_id": None,
+                        "user_name": None,
+                        "matched": False,
+                    })
+
+            await session.commit()
+
+        return results
 
     async def fetch_deal(self, deal_id: str) -> dict[str, Any]:
         """Fetch single deal on-demand."""
@@ -1090,6 +1178,141 @@ class HubSpotConnector(BaseConnector):
             return None
         except httpx.HTTPStatusError:
             return None
+
+    # =========================================================================
+    # Engagement Write Operations (calls, emails, meetings, notes)
+    # =========================================================================
+
+    # HubSpot V3 engagement object type to API path mapping
+    _ENGAGEMENT_OBJECT_PATHS: dict[str, str] = {
+        "call": "calls",
+        "email": "emails",
+        "meeting": "meetings",
+        "note": "notes",
+    }
+
+    # Default association type IDs: engagement → CRM object
+    # Source: https://developers.hubspot.com/docs/api-reference/crm-associations-v4/guide
+    _ENGAGEMENT_ASSOC_TYPE_IDS: dict[str, dict[str, int]] = {
+        "call":    {"contact": 194, "company": 182, "deal": 206},
+        "email":   {"contact": 198, "company": 186, "deal": 210},
+        "meeting": {"contact": 200, "company": 188, "deal": 212},
+        "note":    {"contact": 202, "company": 190, "deal": 214},
+    }
+
+    async def create_engagement(
+        self,
+        engagement_type: str,
+        properties: dict[str, Any],
+        associations: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """
+        Create a single engagement (call, email, meeting, or note) in HubSpot.
+
+        Args:
+            engagement_type: One of 'call', 'email', 'meeting', 'note'
+            properties: HubSpot engagement properties (hs_timestamp required)
+            associations: Optional list of association dicts for the v3 API, each with
+                          ``{"to": {"id": <hs_id>}, "types": [{"associationCategory": ..., "associationTypeId": ...}]}``
+
+        Returns:
+            Created engagement data with HubSpot ID
+        """
+        object_path: str = self._ENGAGEMENT_OBJECT_PATHS[engagement_type]
+        json_data: dict[str, Any] = {"properties": properties}
+        if associations:
+            json_data["associations"] = associations
+
+        data: dict[str, Any] = await self._make_request(
+            "POST",
+            f"/crm/v3/objects/{object_path}",
+            json_data=json_data,
+        )
+        return {
+            "id": data.get("id"),
+            "properties": data.get("properties", {}),
+        }
+
+    async def create_engagements_batch(
+        self,
+        engagement_type: str,
+        engagements: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """
+        Batch create engagements in HubSpot (up to 100 per call).
+
+        Each item in *engagements* should be a dict with a ``properties`` key
+        and an optional ``associations`` key.
+
+        Args:
+            engagement_type: One of 'call', 'email', 'meeting', 'note'
+            engagements: List of engagement input dicts
+
+        Returns:
+            Batch result with created engagements and any errors
+        """
+        if len(engagements) > 100:
+            raise ValueError("HubSpot batch limit is 100 records per call")
+
+        object_path: str = self._ENGAGEMENT_OBJECT_PATHS[engagement_type]
+        inputs: list[dict[str, Any]] = []
+        for eng in engagements:
+            item: dict[str, Any] = {"properties": eng.get("properties", eng)}
+            if eng.get("associations"):
+                item["associations"] = eng["associations"]
+            inputs.append(item)
+
+        data: dict[str, Any] = await self._make_request(
+            "POST",
+            f"/crm/v3/objects/{object_path}/batch/create",
+            json_data={"inputs": inputs},
+        )
+        return {
+            "status": data.get("status", "COMPLETE"),
+            "results": [
+                {"id": r.get("id"), "properties": r.get("properties", {})}
+                for r in data.get("results", [])
+            ],
+            "errors": data.get("errors", []),
+        }
+
+    def build_engagement_associations(
+        self,
+        engagement_type: str,
+        raw_associations: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """
+        Convert simplified association dicts into HubSpot v3 association format.
+
+        Each item in *raw_associations* should have:
+        - ``to_object_type``: 'contact', 'company', or 'deal'
+        - ``to_object_id``: HubSpot record ID (string)
+
+        Returns:
+            List of HubSpot v3 association objects ready for the API
+        """
+        hs_associations: list[dict[str, Any]] = []
+        type_ids: dict[str, int] = self._ENGAGEMENT_ASSOC_TYPE_IDS.get(engagement_type, {})
+
+        for assoc in raw_associations:
+            to_type: str = assoc.get("to_object_type", "")
+            to_id: str = str(assoc.get("to_object_id", ""))
+            assoc_type_id: int | None = type_ids.get(to_type)
+
+            if not to_id or assoc_type_id is None:
+                continue
+
+            hs_associations.append({
+                "to": {"id": to_id},
+                "types": [
+                    {
+                        "associationCategory": "HUBSPOT_DEFINED",
+                        "associationTypeId": assoc_type_id,
+                    }
+                ],
+            })
+
+        return hs_associations
 
     async def get_pipelines(self) -> list[dict[str, Any]]:
         """

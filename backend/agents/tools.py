@@ -1261,11 +1261,20 @@ async def _crm_write(
     if target_system not in ["hubspot"]:
         return {"error": f"Unsupported CRM system: {target_system}. Currently only 'hubspot' is supported."}
     
-    if record_type not in ["contact", "company", "deal"]:
-        return {"error": f"Invalid record_type: {record_type}. Must be 'contact', 'company', or 'deal'."}
+    _ENGAGEMENT_TYPES: frozenset[str] = frozenset({"call", "email", "meeting", "note"})
+    _CRM_RECORD_TYPES: frozenset[str] = frozenset({"contact", "company", "deal"})
+    _ALL_RECORD_TYPES: frozenset[str] = _CRM_RECORD_TYPES | _ENGAGEMENT_TYPES
+
+    if record_type not in _ALL_RECORD_TYPES:
+        return {"error": f"Invalid record_type: {record_type}. Must be one of: {', '.join(sorted(_ALL_RECORD_TYPES))}."}
     
+    is_engagement: bool = record_type in _ENGAGEMENT_TYPES
+
     if operation not in ["create", "update", "upsert"]:
         return {"error": f"Invalid operation: {operation}. Must be 'create', 'update', or 'upsert'."}
+    
+    if is_engagement and operation != "create":
+        return {"error": f"Engagements (call/email/meeting/note) only support 'create' operation, got '{operation}'."}
     
     if not records or not isinstance(records, list):
         return {"error": "No records provided. 'records' must be a non-empty array."}
@@ -1299,7 +1308,23 @@ async def _crm_write(
             validation_errors.append(f"Record {i+1} is not an object")
             continue
         
-        # Validate required fields based on record type
+        # For updates, the only required field is 'id' — skip create-specific checks
+        if operation == "update":
+            if not record.get("id"):
+                validation_errors.append(f"Record {i+1}: 'id' is required for updates")
+                continue
+            # Still normalise email/domain if provided
+            if record_type == "contact" and record.get("email"):
+                record["email"] = record["email"].lower().strip()
+            if record_type == "company" and record.get("domain"):
+                domain: str = record["domain"].lower().strip()
+                domain = domain.replace("https://", "").replace("http://", "")
+                domain = domain.split("/")[0]
+                record["domain"] = domain
+            validated_records.append(record)
+            continue
+
+        # Validate required fields based on record type (create / upsert)
         if record_type == "contact":
             if not record.get("email"):
                 validation_errors.append(f"Record {i+1}: 'email' is required for contacts")
@@ -1324,6 +1349,27 @@ async def _crm_write(
             if not record.get("dealname"):
                 validation_errors.append(f"Record {i+1}: 'dealname' is required for deals")
                 continue
+
+        elif is_engagement:
+            # All engagement types require hs_timestamp
+            if not record.get("hs_timestamp"):
+                validation_errors.append(f"Record {i+1}: 'hs_timestamp' is required for {record_type}s")
+                continue
+            # Validate associations format if present
+            raw_assocs: list[dict[str, Any]] | Any = record.get("associations")
+            if raw_assocs is not None:
+                if not isinstance(raw_assocs, list):
+                    validation_errors.append(f"Record {i+1}: 'associations' must be an array")
+                    continue
+                for j, assoc in enumerate(raw_assocs):
+                    if not isinstance(assoc, dict):
+                        validation_errors.append(f"Record {i+1}, association {j+1}: must be an object")
+                        continue
+                    if not assoc.get("to_object_type") or not assoc.get("to_object_id"):
+                        validation_errors.append(
+                            f"Record {i+1}, association {j+1}: 'to_object_type' and 'to_object_id' are required"
+                        )
+                        continue
         
         validated_records.append(record)
     
@@ -1336,9 +1382,10 @@ async def _crm_write(
     if not validated_records:
         return {"error": "No valid records after validation"}
     
-    # Check for duplicates in HubSpot (for create/upsert operations)
+    # Check for duplicates in HubSpot (for create/upsert operations on CRM record types)
+    # Engagements don't have duplicate detection
     # Only check first 10 records to avoid API rate limits and connection pool exhaustion
-    if operation in ["create", "upsert"] and target_system == "hubspot":
+    if operation in ["create", "upsert"] and target_system == "hubspot" and not is_engagement:
         try:
             from connectors.hubspot import HubSpotConnector
             connector = HubSpotConnector(organization_id)
@@ -1602,7 +1649,15 @@ async def _create_local_pending_records(
     """
     from services.change_session import add_proposed_create, add_proposed_update
 
-    table_map: dict[str, str] = {"contact": "contacts", "company": "accounts", "deal": "deals"}
+    table_map: dict[str, str] = {
+        "contact": "contacts",
+        "company": "accounts",
+        "deal": "deals",
+        "call": "activities",
+        "email": "activities",
+        "meeting": "activities",
+        "note": "activities",
+    }
     table_name: str | None = table_map.get(record_type)
     if not table_name or not change_session_id:
         return {
@@ -1687,17 +1742,25 @@ async def _create_local_pending_records(
             "change_session_id": change_session_id,
         }
 
+    # For engagements, inject _engagement_type metadata so the commit flow
+    # knows which HubSpot engagement object type (call/email/meeting/note) to use.
+    _engagement_record_types: frozenset[str] = frozenset({"call", "email", "meeting", "note"})
+    is_engagement_create: bool = record_type in _engagement_record_types
+
     created_count: int = 0
     create_errors: list[dict[str, Any]] = []
     async with get_session(organization_id=str(organization_id)) as session:
         for record in records_to_process:
             try:
                 new_record_id: UUID = uuid4()
+                payload: dict[str, Any] = dict(record)
+                if is_engagement_create:
+                    payload["_engagement_type"] = record_type
                 await add_proposed_create(
                     change_session_id=change_session_id,
                     table_name=table_name,
                     record_id=str(new_record_id),
-                    input_payload=record,
+                    input_payload=payload,
                     db_session=session,
                 )
                 created_count += 1
@@ -1794,13 +1857,37 @@ async def _execute_hubspot_operation(
             "created": [],
         }
     
+    # Determine if this is an engagement type
+    _engagement_types: frozenset[str] = frozenset({"call", "email", "meeting", "note"})
+    is_engagement: bool = crm_op.record_type in _engagement_types
+
     # Execute based on record type and operation
     created: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
     
     try:
         if crm_op.operation == "create":
-            if crm_op.record_type == "contact":
+            if is_engagement:
+                # ── Engagement creation (calls, emails, meetings, notes) ──
+                engagement_type: str = crm_op.record_type
+                for record in records_to_process:
+                    try:
+                        # Separate properties from associations
+                        raw_assocs: list[dict[str, Any]] = record.pop("associations", []) or []
+                        hs_associations: list[dict[str, Any]] = (
+                            connector.build_engagement_associations(engagement_type, raw_assocs)
+                            if raw_assocs else []
+                        )
+                        eng_result: dict[str, Any] = await connector.create_engagement(
+                            engagement_type=engagement_type,
+                            properties=record,
+                            associations=hs_associations if hs_associations else None,
+                        )
+                        created.append(eng_result)
+                    except Exception as eng_err:
+                        errors.append({"record": record, "error": str(eng_err)})
+
+            elif crm_op.record_type == "contact":
                 if len(records_to_process) == 1:
                     result = await connector.create_contact(records_to_process[0])
                     created.append(result)
@@ -1963,8 +2050,11 @@ async def _sync_created_records_to_db(
     user_uuid = UUID(user_id) if user_id else None
     
     # Map record_type to table name
-    table_map = {"contact": "contacts", "company": "accounts", "deal": "deals"}
-    table_name = table_map.get(record_type)
+    table_map: dict[str, str] = {
+        "contact": "contacts", "company": "accounts", "deal": "deals",
+        "call": "activities", "email": "activities", "meeting": "activities", "note": "activities",
+    }
+    table_name: str | None = table_map.get(record_type)
     
     async with get_session(organization_id=str(organization_id)) as session:
         for hs_record in created_records:
@@ -2074,6 +2164,55 @@ async def _sync_created_records_to_db(
                             snapshot_id, deal.to_dict(), db_session=session
                         )
                     synced += 1
+
+                elif record_type in ("call", "email", "meeting", "note"):
+                    # Build Activity from HubSpot engagement response
+                    from models.activity import Activity as ActivityModel
+
+                    # Derive subject from type-specific title properties
+                    subject: str | None = (
+                        properties.get("hs_call_title")
+                        or properties.get("hs_email_subject")
+                        or properties.get("hs_meeting_title")
+                        or None
+                    )
+                    description: str | None = (
+                        properties.get("hs_call_body")
+                        or properties.get("hs_email_text")
+                        or properties.get("hs_meeting_body")
+                        or properties.get("hs_note_body")
+                        or None
+                    )
+                    # Parse activity date from hs_timestamp
+                    activity_date: datetime | None = None
+                    ts_raw: str | None = properties.get("hs_timestamp")
+                    if ts_raw:
+                        try:
+                            from dateutil.parser import parse as parse_dt
+                            activity_date = parse_dt(ts_raw)
+                        except Exception:
+                            pass
+
+                    activity = ActivityModel(
+                        id=record_id,
+                        organization_id=organization_id,
+                        source_system="hubspot",
+                        source_id=hs_id,
+                        type=record_type,
+                        subject=subject,
+                        description=description,
+                        activity_date=activity_date,
+                        custom_fields=properties,
+                        updated_at=now,
+                        updated_by=user_uuid,
+                    )
+                    await session.merge(activity)
+
+                    if snapshot_id:
+                        await update_snapshot_after_data(
+                            snapshot_id, activity.to_dict(), db_session=session
+                        )
+                    synced += 1
                     
             except Exception as e:
                 logger.warning(
@@ -2161,6 +2300,12 @@ def _to_hubspot_properties(table_name: str, raw: dict[str, Any]) -> dict[str, An
         # HubSpot "industry" is a strict enum (e.g. ELECTRICAL_ELECTRONIC_MANUFACTURING).
         # Always drop it to avoid validation errors — store locally only.
         cleaned.pop("industry", None)
+    elif table_name == "activities":
+        # Engagements: strip the "associations" key (handled separately) and
+        # the "_engagement_type" metadata key — everything else is passed through
+        # as HubSpot engagement properties (hs_timestamp, hs_call_body, etc.)
+        cleaned.pop("associations", None)
+        cleaned.pop("_engagement_type", None)
 
     return cleaned
 
@@ -2216,6 +2361,8 @@ async def commit_change_session(
     contacts_to_create: list[tuple[UUID, dict[str, Any]]] = []
     accounts_to_create: list[tuple[UUID, dict[str, Any]]] = []
     deals_to_create: list[tuple[UUID, dict[str, Any]]] = []
+    # Engagements: (local_id, engagement_type, hs_properties, raw_associations)
+    engagements_to_create: list[tuple[UUID, str, dict[str, Any], list[dict[str, Any]]]] = []
     # Updates: (local_id, hs_properties, raw_local_fields)
     contacts_to_update: list[tuple[UUID, dict[str, Any], dict[str, Any]]] = []
     accounts_to_update: list[tuple[UUID, dict[str, Any], dict[str, Any]]] = []
@@ -2254,6 +2401,11 @@ async def commit_change_session(
                 accounts_to_create.append((record_id, hs_props))
             elif snapshot.table_name == "deals":
                 deals_to_create.append((record_id, hs_props))
+            elif snapshot.table_name == "activities":
+                # Engagement: extract the _engagement_type and raw associations from source_data
+                eng_type: str = source_data.get("_engagement_type", "note")
+                raw_assocs: list[dict[str, Any]] = source_data.get("associations", []) or []
+                engagements_to_create.append((record_id, eng_type, hs_props, raw_assocs))
         elif snapshot.operation == "update":
             if snapshot.table_name == "contacts":
                 contacts_to_update.append((record_id, hs_props, source_data))
@@ -2262,12 +2414,14 @@ async def commit_change_session(
             elif snapshot.table_name == "deals":
                 deals_to_update.append((record_id, hs_props, source_data))
 
-    total_creates: int = len(contacts_to_create) + len(accounts_to_create) + len(deals_to_create)
+    total_creates: int = len(contacts_to_create) + len(accounts_to_create) + len(deals_to_create) + len(engagements_to_create)
     total_updates: int = len(contacts_to_update) + len(accounts_to_update) + len(deals_to_update)
     total_records: int = total_creates + total_updates
     _log.info(
-        "[commit] Creates: %d contacts, %d accounts, %d deals. Updates: %d contacts, %d accounts, %d deals. Total: %d",
+        "[commit] Creates: %d contacts, %d accounts, %d deals, %d engagements. "
+        "Updates: %d contacts, %d accounts, %d deals. Total: %d",
         len(contacts_to_create), len(accounts_to_create), len(deals_to_create),
+        len(engagements_to_create),
         len(contacts_to_update), len(accounts_to_update), len(deals_to_update),
         total_records,
     )
@@ -2384,6 +2538,66 @@ async def commit_change_session(
             except Exception as e:
                 _log.error("[commit:create] FAILED deal %s: %s", local_id, e, exc_info=True)
                 errors.append({"table": "deals", "record_id": str(local_id), "error": str(e)})
+
+        # ── Create engagements (calls, emails, meetings, notes) ─────────
+        for local_id, eng_type, hs_props, raw_assocs in engagements_to_create:
+            try:
+                hs_associations: list[dict[str, Any]] = (
+                    connector.build_engagement_associations(eng_type, raw_assocs)
+                    if raw_assocs else []
+                )
+                _log.info(
+                    "[commit:create] Pushing %s %s to HubSpot: props=%s assocs=%d",
+                    eng_type, local_id, list(hs_props.keys()), len(hs_associations),
+                )
+                hs_result = await connector.create_engagement(
+                    engagement_type=eng_type,
+                    properties=hs_props,
+                    associations=hs_associations if hs_associations else None,
+                )
+                hs_id = hs_result.get("id")
+                _log.info("[commit:create] HubSpot returned id=%s for %s %s", hs_id, eng_type, local_id)
+
+                if hs_id:
+                    from models.activity import Activity as ActivityModel
+
+                    subject_val: str | None = (
+                        hs_props.get("hs_call_title")
+                        or hs_props.get("hs_email_subject")
+                        or hs_props.get("hs_meeting_title")
+                        or None
+                    )
+                    description_val: str | None = (
+                        hs_props.get("hs_call_body")
+                        or hs_props.get("hs_email_text")
+                        or hs_props.get("hs_meeting_body")
+                        or hs_props.get("hs_note_body")
+                        or None
+                    )
+                    activity_date_val: datetime | None = None
+                    ts_raw: str | None = hs_props.get("hs_timestamp")
+                    if ts_raw:
+                        try:
+                            from dateutil.parser import parse as parse_dt
+                            activity_date_val = parse_dt(str(ts_raw))
+                        except Exception:
+                            pass
+
+                    activity = ActivityModel(
+                        id=local_id, organization_id=org_uuid, source_system="hubspot",
+                        source_id=str(hs_id), type=eng_type,
+                        subject=subject_val, description=description_val,
+                        activity_date=activity_date_val, custom_fields=hs_props,
+                        updated_at=now, updated_by=user_uuid,
+                    )
+                    session.add(activity)
+                    synced_count += 1
+                    _log.info("[commit:create] Local activity created %s (hs=%s)", local_id, hs_id)
+                else:
+                    _log.warning("[commit:create] No HS id for %s %s: %s", eng_type, local_id, hs_result)
+            except Exception as e:
+                _log.error("[commit:create] FAILED %s %s: %s", eng_type, local_id, e, exc_info=True)
+                errors.append({"table": "activities", "record_id": str(local_id), "error": str(e)})
 
         # ══════════════════════════════════════════════════════════════════
         # 3b. UPDATES – load existing record, push to HubSpot, apply local

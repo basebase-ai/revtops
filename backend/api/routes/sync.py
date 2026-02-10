@@ -9,7 +9,7 @@ Endpoints:
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
@@ -474,6 +474,77 @@ async def sync_integration_data(organization_id: str, provider: str) -> None:
             )
         except Exception:
             pass
+
+
+class OwnerMatchResult(BaseModel):
+    """Single owner match result."""
+
+    email: str
+    hubspot_owner_id: str
+    user_id: str | None
+    user_name: str | None
+    matched: bool
+
+
+class OwnerMatchResponse(BaseModel):
+    """Response model for HubSpot owner matching."""
+
+    matched: int
+    unmatched: int
+    results: list[OwnerMatchResult]
+
+
+@router.post(
+    "/{organization_id}/hubspot/match-owners",
+    response_model=OwnerMatchResponse,
+)
+async def match_hubspot_owners(organization_id: str) -> OwnerMatchResponse:
+    """
+    Fetch all HubSpot owners and match them to local users by email.
+
+    Populates ``users.hubspot_user_id`` for every match found.
+    """
+    try:
+        UUID(organization_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid organization ID")
+
+    # Verify HubSpot integration is active
+    async with get_session(organization_id=organization_id) as session:
+        result = await session.execute(
+            select(Integration).where(
+                Integration.organization_id == UUID(organization_id),
+                Integration.provider == "hubspot",
+                Integration.is_active == True,
+            )
+        )
+        integration: Integration | None = result.scalar_one_or_none()
+        if not integration:
+            raise HTTPException(
+                status_code=404, detail="No active HubSpot integration found"
+            )
+
+    connector: HubSpotConnector = HubSpotConnector(organization_id)
+    raw_results: list[dict[str, Any]] = await connector.match_owners_to_users()
+
+    results: list[OwnerMatchResult] = [
+        OwnerMatchResult(
+            email=r["email"],
+            hubspot_owner_id=r["hubspot_owner_id"],
+            user_id=r.get("user_id"),
+            user_name=r.get("user_name"),
+            matched=r["matched"],
+        )
+        for r in raw_results
+    ]
+    matched_count: int = sum(1 for r in results if r.matched)
+    unmatched_count: int = len(results) - matched_count
+
+    return OwnerMatchResponse(
+        matched=matched_count,
+        unmatched=unmatched_count,
+        results=results,
+    )
 
 
 # Legacy endpoint for backwards compatibility

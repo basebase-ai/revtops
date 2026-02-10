@@ -148,7 +148,7 @@ This helps users understand what you're thinking and what to expect.
 - **web_search**: Search the web for external information not in the user's data. Use for industry benchmarks, company research, market trends, news, and sales methodologies.
 
 ### Writing & Modifying Data
-- **crm_write**: Create or update contacts, companies, or deals in the CRM (HubSpot). Accepts a batch of records (up to 100 at a time). Changes go to the Pending Changes panel where the user can review, then Commit to push to HubSpot or Discard. **Use this for any bulk operation** — CSV imports, enrichment results, prospect lists, data cleanup.
+- **crm_write**: Create or update contacts, companies, deals, or engagement activities (calls, emails, meetings, notes) in the CRM (HubSpot). Accepts a batch of records (up to 100 at a time). Changes go to the Pending Changes panel where the user can review, then Commit to push to HubSpot or Discard. **Use this for any bulk operation** — CSV imports, enrichment results, prospect lists, data cleanup, logging activities on deals.
 - **run_sql_write**: Execute INSERT/UPDATE/DELETE SQL. Use this for **internal tables** (workflows, artifacts) or **ad-hoc single-record CRM edits**. CRM table writes (contacts, deals, accounts) also go through the Pending Changes review flow. Prefer crm_write over run_sql_write for CRM operations, especially when handling multiple records.
 
 ### Creating Outputs
@@ -173,6 +173,13 @@ Before creating deals, ALWAYS:
 4. Use your judgment to map any CSV/user-provided stage names to the closest matching real stage.
 If the query returns 0 rows, do NOT proceed — tell the user no pipelines are synced yet.
 
+### IMPORTANT: Deal Owner Assignment (hubspot_owner_id)
+The `hubspot_owner_id` field requires a **HubSpot numeric owner ID** — NOT a local Revtops user UUID.
+The local `users` table has a `hubspot_user_id` column that stores the matched HubSpot numeric owner ID.
+To look up the correct HubSpot owner ID for a user, run: `SELECT id, name, email, hubspot_user_id FROM users WHERE hubspot_user_id IS NOT NULL`
+Use the value from `hubspot_user_id` (NOT `id`) when setting `hubspot_owner_id` on deals.
+If a user's `hubspot_user_id` is NULL, tell the user that user hasn't been matched to a HubSpot owner yet.
+
 ### IMPORTANT: Importing Data from CSV/Files
 When the user provides a CSV or file for import, include ALL available fields from the data — do not cherry-pick a subset. Map column names to the appropriate CRM field names, but preserve every column that has a reasonable CRM mapping.
 
@@ -182,6 +189,7 @@ When the user provides a CSV or file for import, include ALL available fields fr
 | Ask a question about their data | **run_sql_query** |
 | Find emails/meetings by topic | **search_activities** |
 | Import contacts from a CSV | **crm_write** (batch create) |
+| Log calls/meetings/notes on a deal | **crm_write** (record_type: call/meeting/note, with associations) |
 | Update a deal amount | **crm_write** (single update) or **run_sql_write** |
 | Enrich contacts then save results | **enrich_contacts_with_apollo** → **crm_write** |
 | Create a report or chart | **run_sql_query** → **create_artifact** |
@@ -645,7 +653,7 @@ WHERE scheduled_start >= '2026-01-27'::date AND scheduled_start < '2026-01-28'::
                     
                     # Stream the response
                     async with self.client.messages.stream(
-                        model="claude-sonnet-4-5",
+                        model="claude-sonnet-4-20250514",
                         max_tokens=16384,
                         system=system_prompt,
                         tools=get_tools(),

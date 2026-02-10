@@ -37,6 +37,9 @@ class User(Base):
     salesforce_user_id: Mapped[Optional[str]] = mapped_column(
         String(255), nullable=True
     )
+    hubspot_user_id: Mapped[Optional[str]] = mapped_column(
+        String(255), nullable=True
+    )
     role: Mapped[Optional[str]] = mapped_column(
         String(50), nullable=True
     )  # 'ae', 'sales_manager', 'cro', 'admin'

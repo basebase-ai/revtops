@@ -171,12 +171,24 @@ async def get_pending_changes(
                     record_info["amount"] = input_data.get("amount") or before.get("amount")
 
                 # For updates, build structured field diffs (before → after)
+                # Map HubSpot property names back to local DB column names so we can
+                # look up the correct "before" value from the captured DB snapshot.
+                _HS_TO_LOCAL: dict[str, str] = {
+                    "dealname": "name",
+                    "dealstage": "stage",
+                    "jobtitle": "title",
+                    "firstname": "name",  # fallback — before_data stores full name
+                    "lastname": "name",
+                }
                 if snap.operation == "update" and input_data:
                     field_diffs: list[dict[str, Any]] = []
                     for k, v in input_data.items():
                         if k == "id":
                             continue
                         old_val: Any = before.get(k)
+                        # If not found under the HubSpot key, try the local column name
+                        if old_val is None and k in _HS_TO_LOCAL:
+                            old_val = before.get(_HS_TO_LOCAL[k])
                         field_diffs.append({"field": k, "before": old_val, "after": v})
                     record_info["field_diffs"] = field_diffs
                     # Keep legacy changes list for backward compatibility
