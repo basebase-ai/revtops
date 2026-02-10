@@ -32,6 +32,7 @@ class SlackMappingResponse(BaseModel):
     id: str
     external_userid: str | None
     external_email: str | None
+    source: str
     match_source: str
     created_at: str
 
@@ -148,6 +149,7 @@ async def list_user_mappings_for_identity(
             id=str(mapping.id),
             external_userid=mapping.external_userid,
             external_email=mapping.external_email,
+            source=mapping.source,
             match_source=mapping.match_source,
             created_at=mapping.created_at.isoformat() + "Z",
         )
