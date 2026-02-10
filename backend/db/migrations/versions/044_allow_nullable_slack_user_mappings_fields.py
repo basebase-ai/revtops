@@ -1,15 +1,15 @@
 """Allow nullable Slack user mapping fields and store RevTops email.
 
-Revision ID: 043
-Revises: 042
+Revision ID: 044
+Revises: 043
 Create Date: 2026-02-10
 """
 from alembic import op
 import sqlalchemy as sa
 
 
-revision = "043"
-down_revision = "042"
+revision = "044"
+down_revision = "043"
 branch_labels = None
 depends_on = None
 

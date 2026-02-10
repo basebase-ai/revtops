@@ -293,28 +293,28 @@ SELECT id, name, email, role FROM users WHERE organization_id = :org_id
 SELECT * FROM users WHERE name ILIKE '%john%'
 ```
 
-### slack_user_mappings
+### user_mappings_for_identity
 **Identity links** between internal users and Slack users.
 Use this table when the user asks about Slack identities, mentions, or when mapping Slack user IDs/emails to RevTops users.
 ```
-id, organization_id, user_id, slack_user_id, slack_email, match_source, created_at, updated_at
+id, organization_id, user_id, external_userid, external_email, match_source, created_at, updated_at
 ```
 - `user_id`: FK to `users.id`
-- `slack_user_id`: Slack user identifier (e.g., U123...)
-- `slack_email`: Slack profile email when available
+- `external_userid`: Slack user identifier (e.g., U123...)
+- `external_email`: Slack profile email when available
 - `match_source`: How the mapping was established (e.g., "oauth", "profile_match")
 
 Example queries for slack user mappings:
 ```sql
 -- Map a Slack user ID to a RevTops user
-SELECT u.id, u.name, u.email, m.slack_user_id, m.slack_email
-FROM slack_user_mappings m
+SELECT u.id, u.name, u.email, m.external_userid, m.external_email
+FROM user_mappings_for_identity m
 JOIN users u ON u.id = m.user_id
-WHERE m.slack_user_id = 'U12345678'
+WHERE m.external_userid = 'U12345678'
 
 -- Find all Slack mappings for a teammate
-SELECT m.slack_user_id, m.slack_email, m.match_source, m.updated_at
-FROM slack_user_mappings m
+SELECT m.external_userid, m.external_email, m.match_source, m.updated_at
+FROM user_mappings_for_identity m
 JOIN users u ON u.id = m.user_id
 WHERE u.email = 'jane@example.com'
 ```

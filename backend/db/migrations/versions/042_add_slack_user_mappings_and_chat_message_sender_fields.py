@@ -1,14 +1,14 @@
 """Add Slack user mappings + sender fields on chat messages.
 
-Revision ID: 041
-Revises: 040
+Revision ID: 042
+Revises: 041
 Create Date: 2026-02-10
 """
 from alembic import op
 import sqlalchemy as sa
 
-revision = "041"
-down_revision = "040"
+revision = "042"
+down_revision = "041"
 branch_labels = None
 depends_on = None
 
