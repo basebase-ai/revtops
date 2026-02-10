@@ -9,6 +9,7 @@ export {
   useTeamMembers,
   useUpdateOrganization,
   useLinkIdentity,
+  useUnlinkIdentity,
   organizationKeys,
   type Organization,
   type TeamMember,

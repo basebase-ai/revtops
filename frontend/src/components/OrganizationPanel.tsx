@@ -14,7 +14,7 @@ import { useState, useRef } from 'react';
 import type { OrganizationInfo, UserProfile } from './AppLayout';
 import { supabase } from '../lib/supabase';
 import { useAppStore } from '../store';
-import { useTeamMembers, useUpdateOrganization, useLinkIdentity } from '../hooks';
+import { useTeamMembers, useUpdateOrganization, useLinkIdentity, useUnlinkIdentity } from '../hooks';
 import type { TeamMember, IdentityMapping } from '../hooks';
 
 interface OrganizationPanelProps {
@@ -44,10 +44,12 @@ export function OrganizationPanel({ organization, currentUser, onClose }: Organi
 
   const members: TeamMember[] = teamData?.members ?? [];
   const unmappedIdentities: IdentityMapping[] = teamData?.unmappedIdentities ?? [];
+  const canLinkIdentityInOrg: boolean = members.some((member) => member.id === currentUser.id);
 
   // React Query: Mutation for updating organization
   const updateOrgMutation = useUpdateOrganization();
   const linkIdentityMutation = useLinkIdentity();
+  const unlinkIdentityMutation = useUnlinkIdentity();
 
   const sourceLabel = (source: string): string => {
     const labels: Record<string, string> = { slack: 'Slack', hubspot: 'HubSpot', salesforce: 'Salesforce' };
@@ -73,6 +75,20 @@ export function OrganizationPanel({ organization, currentUser, onClose }: Organi
       });
     } catch (error) {
       alert(`Link failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  };
+
+
+
+  const handleUnlinkIdentity = async (mappingId: string): Promise<void> => {
+    try {
+      await unlinkIdentityMutation.mutateAsync({
+        orgId: organization.id,
+        userId: currentUser.id,
+        mappingId,
+      });
+    } catch (error) {
+      alert(`Unlink failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   };
 
@@ -271,7 +287,14 @@ export function OrganizationPanel({ organization, currentUser, onClose }: Organi
                       const displayName: string = member.name ?? member.email.split('@')[0] ?? 'Unknown';
                       const isAdmin: boolean = member.role === 'admin' || member.id === currentUser.id;
                       const isExpanded: boolean = expandedMemberId === member.id;
-                      const identities: IdentityMapping[] = member.identities;
+                      const identities: IdentityMapping[] = [...member.identities].sort((a, b) => {
+                        const sourceCompare = sourceLabel(a.source).localeCompare(sourceLabel(b.source));
+                        if (sourceCompare !== 0) return sourceCompare;
+                        const aTarget = (a.externalEmail ?? a.externalUserid ?? '').toLowerCase();
+                        const bTarget = (b.externalEmail ?? b.externalUserid ?? '').toLowerCase();
+                        return aTarget.localeCompare(bTarget);
+                      });
+                      const canUnlinkForMember: boolean = member.id === currentUser.id || canLinkIdentityInOrg;
 
                       return (
                         <div key={member.id} className="rounded-lg bg-surface-800/50 overflow-hidden">
@@ -346,9 +369,20 @@ export function OrganizationPanel({ organization, currentUser, onClose }: Organi
                                       <span className="text-surface-300 truncate">
                                         {identity.externalEmail ?? identity.externalUserid ?? 'Unknown'}
                                       </span>
-                                      <span className="text-surface-500 ml-auto whitespace-nowrap">
-                                        {identity.matchSource.replace(/_/g, ' ')}
-                                      </span>
+                                      <div className="ml-auto flex items-center gap-2 whitespace-nowrap">
+                                        <span className="text-surface-500">
+                                          {identity.matchSource.replace(/_/g, ' ')}
+                                        </span>
+                                        {canUnlinkForMember && (
+                                          <button
+                                            onClick={() => void handleUnlinkIdentity(identity.id)}
+                                            disabled={unlinkIdentityMutation.isPending}
+                                            className="text-primary-400 hover:text-primary-300 disabled:opacity-50"
+                                          >
+                                            Unlink
+                                          </button>
+                                        )}
+                                      </div>
                                     </div>
                                   ))}
                                 </div>
@@ -367,7 +401,7 @@ export function OrganizationPanel({ organization, currentUser, onClose }: Organi
                                       <button
                                         key={ui.id}
                                         onClick={() => void handleLinkIdentity(member.id, ui.id)}
-                                        disabled={linkIdentityMutation.isPending}
+                                        disabled={linkIdentityMutation.isPending || unlinkIdentityMutation.isPending}
                                         className="flex items-center gap-2 text-xs px-2 py-1.5 rounded bg-surface-700/20 hover:bg-surface-700/50 transition-colors w-full text-left disabled:opacity-50"
                                       >
                                         <span className={`px-1.5 py-0.5 font-medium rounded ${sourceColor(ui.source)}`}>
