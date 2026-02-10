@@ -34,12 +34,6 @@ class User(Base):
     organization_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=True
     )
-    salesforce_user_id: Mapped[Optional[str]] = mapped_column(
-        String(255), nullable=True
-    )
-    hubspot_user_id: Mapped[Optional[str]] = mapped_column(
-        String(255), nullable=True
-    )
     role: Mapped[Optional[str]] = mapped_column(
         String(50), nullable=True
     )  # 'ae', 'sales_manager', 'cro', 'admin'

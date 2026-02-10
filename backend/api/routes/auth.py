@@ -1276,7 +1276,7 @@ async def disconnect_integration(
         provider: The integration provider to disconnect
         user_id: User ID (required for user-scoped integrations)
         organization_id: Organization ID
-        delete_data: If True, also deletes all synced data (activities, orphaned meetings)
+        delete_data: If True, also deletes all synced data (activities, contacts, accounts, deals, pipelines, orphaned meetings)
     """
     org_uuid: Optional[UUID] = None
     current_user_uuid: Optional[UUID] = None
@@ -1381,24 +1381,27 @@ async def disconnect_integration(
             print("Disconnect: No nango_connection_id, skipping Nango deletion")
 
         # Optionally delete all synced data from this provider
-        deleted_activities = 0
-        deleted_meetings = 0
+        deleted_activities: int = 0
+        deleted_contacts: int = 0
+        deleted_accounts: int = 0
+        deleted_deals: int = 0
+        deleted_pipelines: int = 0
+        deleted_meetings: int = 0
         
         if delete_data:
             print(f"Disconnect: Deleting all data from source_system={provider}")
             
             # Map provider names to source_system values
             # Some providers have different names in the activities table
-            source_system = provider
+            source_system: str = provider
             if provider == "google-calendar":
                 source_system = "google_calendar"
             elif provider == "google-mail":
                 source_system = "gmail"
             
-            from models.activity import Activity
-            from models.meeting import Meeting
+            params: dict[str, str] = {"org_id": str(org_uuid), "source_system": source_system}
             
-            # Delete all activities from this source_system
+            # 1. Delete all activities from this source_system
             result = await db_session.execute(
                 text("""
                     DELETE FROM activities 
@@ -1406,20 +1409,97 @@ async def disconnect_integration(
                       AND source_system = :source_system
                     RETURNING id
                 """),
-                {"org_id": str(org_uuid), "source_system": source_system}
+                params,
             )
             deleted_activities = len(result.fetchall())
             print(f"Disconnect: Deleted {deleted_activities} activities")
             
-            # Clean up orphaned meetings (meetings with no linked activities)
+            # 2. Null out FK references in remaining activities that point to
+            #    CRM objects we're about to delete (e.g. a Google Calendar activity
+            #    linked to a HubSpot contact). This avoids FK constraint violations.
+            for fk_col, table in [
+                ("deal_id", "deals"),
+                ("contact_id", "contacts"),
+                ("account_id", "accounts"),
+            ]:
+                await db_session.execute(
+                    text(f"""
+                        UPDATE activities
+                        SET {fk_col} = NULL
+                        WHERE organization_id = :org_id
+                          AND {fk_col} IN (
+                              SELECT id FROM {table}
+                              WHERE organization_id = :org_id
+                                AND source_system = :source_system
+                          )
+                    """),
+                    params,
+                )
+            
+            # 3. Delete deals (references accounts and pipelines via FK)
+            result = await db_session.execute(
+                text("""
+                    DELETE FROM deals
+                    WHERE organization_id = :org_id
+                      AND source_system = :source_system
+                    RETURNING id
+                """),
+                params,
+            )
+            deleted_deals = len(result.fetchall())
+            print(f"Disconnect: Deleted {deleted_deals} deals")
+            
+            # 4. Delete contacts (references accounts via FK)
+            result = await db_session.execute(
+                text("""
+                    DELETE FROM contacts
+                    WHERE organization_id = :org_id
+                      AND source_system = :source_system
+                    RETURNING id
+                """),
+                params,
+            )
+            deleted_contacts = len(result.fetchall())
+            print(f"Disconnect: Deleted {deleted_contacts} contacts")
+            
+            # 5. Delete accounts (companies)
+            result = await db_session.execute(
+                text("""
+                    DELETE FROM accounts
+                    WHERE organization_id = :org_id
+                      AND source_system = :source_system
+                    RETURNING id
+                """),
+                params,
+            )
+            deleted_accounts = len(result.fetchall())
+            print(f"Disconnect: Deleted {deleted_accounts} accounts")
+            
+            # 6. Delete pipelines (stages cascade via ON DELETE CASCADE)
+            result = await db_session.execute(
+                text("""
+                    DELETE FROM pipelines
+                    WHERE organization_id = :org_id
+                      AND source_system = :source_system
+                    RETURNING id
+                """),
+                params,
+            )
+            deleted_pipelines = len(result.fetchall())
+            print(f"Disconnect: Deleted {deleted_pipelines} pipelines")
+            
+            # 7. Clean up orphaned meetings (meetings with no linked activities)
             result = await db_session.execute(
                 text("""
                     DELETE FROM meetings
                     WHERE organization_id = :org_id
-                      AND id NOT IN (SELECT DISTINCT meeting_id FROM activities WHERE meeting_id IS NOT NULL)
+                      AND id NOT IN (
+                          SELECT DISTINCT meeting_id FROM activities
+                          WHERE meeting_id IS NOT NULL
+                      )
                     RETURNING id
                 """),
-                {"org_id": str(org_uuid)}
+                {"org_id": str(org_uuid)},
             )
             deleted_meetings = len(result.fetchall())
             print(f"Disconnect: Deleted {deleted_meetings} orphaned meetings")
@@ -1432,6 +1512,10 @@ async def disconnect_integration(
     response: dict[str, Any] = {"status": "disconnected", "provider": provider}
     if delete_data:
         response["deleted_activities"] = deleted_activities
+        response["deleted_contacts"] = deleted_contacts
+        response["deleted_accounts"] = deleted_accounts
+        response["deleted_deals"] = deleted_deals
+        response["deleted_pipelines"] = deleted_pipelines
         response["deleted_meetings"] = deleted_meetings
     return response
 

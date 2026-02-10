@@ -25,6 +25,7 @@ from models.contact import Contact
 from models.database import get_session
 from models.deal import Deal
 from models.pipeline import Pipeline, PipelineStage
+from models.slack_user_mapping import SlackUserMapping
 from models.user import User
 
 HUBSPOT_API_BASE = "https://api.hubapi.com"
@@ -726,12 +727,59 @@ class HubSpotConnector(BaseConnector):
             activity_date=activity_date,
         )
 
+    async def _ensure_identity_mapping(
+        self,
+        session: Any,
+        *,
+        user_id: uuid.UUID,
+        revtops_email: str,
+        hs_owner_id: str,
+        hs_email: str | None,
+    ) -> None:
+        """
+        Upsert a row in ``user_mappings_for_identity`` for a HubSpot owner.
+
+        If a mapping already exists for this (org, user, external_userid, source)
+        combination it is left untouched; otherwise a new row is inserted.
+        """
+        org_uuid: uuid.UUID = uuid.UUID(self.organization_id)
+        existing = await session.execute(
+            select(SlackUserMapping).where(
+                SlackUserMapping.organization_id == org_uuid,
+                SlackUserMapping.external_userid == hs_owner_id,
+                SlackUserMapping.source == "hubspot",
+            )
+        )
+        mapping: SlackUserMapping | None = existing.scalar_one_or_none()
+
+        if mapping:
+            # Update if user was previously unmapped
+            if not mapping.user_id and user_id:
+                mapping.user_id = user_id
+                mapping.revtops_email = revtops_email
+                mapping.match_source = "hubspot_owner_email_match"
+        else:
+            session.add(
+                SlackUserMapping(
+                    id=uuid.uuid4(),
+                    organization_id=org_uuid,
+                    user_id=user_id,
+                    revtops_email=revtops_email,
+                    external_userid=hs_owner_id,
+                    external_email=hs_email,
+                    source="hubspot",
+                    match_source="hubspot_owner_email_match",
+                )
+            )
+
     async def _map_hs_owner_to_user(
         self, hs_owner_id: Optional[str]
     ) -> Optional[uuid.UUID]:
         """
         Map HubSpot owner ID to our internal user ID by fetching owner email.
-        
+
+        Also persists the mapping in ``user_mappings_for_identity``.
+
         If no matching user exists, creates a stub user with status='crm_only'
         that can be upgraded when the person signs up for Revtops.
         """
@@ -751,7 +799,7 @@ class HubSpotConnector(BaseConnector):
             if not owner_email:
                 self._owner_cache[hs_owner_id] = None
                 return None
-            
+
             # Build owner name from firstName/lastName
             first_name: str = owner_data.get("firstName") or ""
             last_name: str = owner_data.get("lastName") or ""
@@ -767,21 +815,26 @@ class HubSpotConnector(BaseConnector):
                 select(User).where(User.email == owner_email)
             )
             user = result.scalar_one_or_none()
-            
+
             if user:
                 # User exists - check if they belong to this organization
                 if user.organization_id == uuid.UUID(self.organization_id):
-                    # Also store the HubSpot owner ID on the user for reverse lookups
-                    if not user.hubspot_user_id:
-                        user.hubspot_user_id = hs_owner_id
-                        await session.commit()
+                    # Persist the identity mapping
+                    await self._ensure_identity_mapping(
+                        session,
+                        user_id=user.id,
+                        revtops_email=user.email,
+                        hs_owner_id=hs_owner_id,
+                        hs_email=owner_email,
+                    )
+                    await session.commit()
                     self._owner_cache[hs_owner_id] = user.id
                     return user.id
                 else:
                     # User exists but in different org - can't assign cross-org ownership
                     self._owner_cache[hs_owner_id] = None
                     return None
-            
+
             # No user with this email exists - create a stub user for this CRM owner
             stub_user = User(
                 id=uuid.uuid4(),
@@ -791,60 +844,101 @@ class HubSpotConnector(BaseConnector):
                 status="crm_only",  # Stub user from CRM sync, not yet signed up
             )
             session.add(stub_user)
+            await session.flush()  # Ensure stub user row exists before FK reference
+
+            # Also create unmapped identity row
+            await self._ensure_identity_mapping(
+                session,
+                user_id=stub_user.id,
+                revtops_email=owner_email,
+                hs_owner_id=hs_owner_id,
+                hs_email=owner_email,
+            )
             await session.commit()
-            
+
             self._owner_cache[hs_owner_id] = stub_user.id
             return stub_user.id
 
     async def fetch_owners(self) -> list[dict[str, Any]]:
         """
-        Fetch all HubSpot owners (users) from the account.
+        Fetch all HubSpot owners from the account.
+
+        Requires the ``crm.objects.owners.read`` scope.
 
         Returns:
-            List of owner dicts with id, email, firstName, lastName
+            List of owner dicts with id, email, firstName, lastName.
         """
-        data: dict[str, Any] = await self._make_request("GET", "/crm/v3/owners")
-        results: list[dict[str, Any]] = data.get("results", [])
-        return [
-            {
-                "id": str(o.get("id", "")),
-                "email": o.get("email"),
-                "firstName": o.get("firstName"),
-                "lastName": o.get("lastName"),
-            }
-            for o in results
-        ]
+        results: list[dict[str, Any]] = []
+        after: str | None = None
+
+        while True:
+            params: dict[str, str | int] = {"limit": 100}
+            if after:
+                params["after"] = after
+
+            data: dict[str, Any] = await self._make_request(
+                "GET", "/crm/v3/owners", params=params
+            )
+            for o in data.get("results", []):
+                results.append({
+                    "id": str(o.get("id", "")),
+                    "email": o.get("email"),
+                    "firstName": o.get("firstName"),
+                    "lastName": o.get("lastName"),
+                })
+
+            paging: dict[str, Any] | None = data.get("paging")
+            if paging and paging.get("next", {}).get("after"):
+                after = paging["next"]["after"]
+            else:
+                break
+
+        return results
 
     async def match_owners_to_users(self) -> list[dict[str, Any]]:
         """
         Fetch all HubSpot owners, match them by email to local users,
-        and store the HubSpot owner ID on matching User records.
+        and persist mappings in ``user_mappings_for_identity``.
+
+        Requires the ``crm.objects.owners.read`` scope.
 
         Returns:
-            List of match results: {email, hubspot_owner_id, user_id, matched}
+            List of match results.
         """
         hs_owners: list[dict[str, Any]] = await self.fetch_owners()
+
+        # Build email -> (hs_owner_id, hs_email) map
+        owner_email_map: dict[str, str] = {}
+        owner_raw_emails: dict[str, str] = {}
+        for owner in hs_owners:
+            email: str | None = owner.get("email")
+            oid: str = owner.get("id", "")
+            if email and oid:
+                owner_email_map[email.lower()] = oid
+                owner_raw_emails[oid] = email
+
         results: list[dict[str, Any]] = []
-
         async with get_session(organization_id=self.organization_id) as session:
-            for owner in hs_owners:
-                owner_email: str | None = owner.get("email")
-                hs_owner_id: str = owner.get("id", "")
-                if not owner_email or not hs_owner_id:
-                    continue
-
-                result = await session.execute(
-                    select(User).where(
-                        User.email == owner_email.lower(),
-                        User.organization_id == uuid.UUID(self.organization_id),
-                    )
+            db_result = await session.execute(
+                select(User).where(
+                    User.organization_id == uuid.UUID(self.organization_id),
                 )
-                user: User | None = result.scalar_one_or_none()
+            )
+            users: list[User] = list(db_result.scalars().all())
 
-                if user:
-                    user.hubspot_user_id = hs_owner_id
+            for user in users:
+                hs_owner_id: str | None = owner_email_map.get(user.email.lower())
+                if hs_owner_id:
+                    # Persist to user_mappings_for_identity
+                    await self._ensure_identity_mapping(
+                        session,
+                        user_id=user.id,
+                        revtops_email=user.email,
+                        hs_owner_id=hs_owner_id,
+                        hs_email=owner_raw_emails.get(hs_owner_id),
+                    )
                     results.append({
-                        "email": owner_email,
+                        "email": user.email,
                         "hubspot_owner_id": hs_owner_id,
                         "user_id": str(user.id),
                         "user_name": user.name,
@@ -852,10 +946,10 @@ class HubSpotConnector(BaseConnector):
                     })
                 else:
                     results.append({
-                        "email": owner_email,
-                        "hubspot_owner_id": hs_owner_id,
-                        "user_id": None,
-                        "user_name": None,
+                        "email": user.email,
+                        "hubspot_owner_id": None,
+                        "user_id": str(user.id),
+                        "user_name": user.name,
                         "matched": False,
                     })
 

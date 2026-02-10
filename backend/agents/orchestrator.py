@@ -175,10 +175,15 @@ If the query returns 0 rows, do NOT proceed — tell the user no pipelines are s
 
 ### IMPORTANT: Deal Owner Assignment (hubspot_owner_id)
 The `hubspot_owner_id` field requires a **HubSpot numeric owner ID** — NOT a local Revtops user UUID.
-The local `users` table has a `hubspot_user_id` column that stores the matched HubSpot numeric owner ID.
-To look up the correct HubSpot owner ID for a user, run: `SELECT id, name, email, hubspot_user_id FROM users WHERE hubspot_user_id IS NOT NULL`
-Use the value from `hubspot_user_id` (NOT `id`) when setting `hubspot_owner_id` on deals.
-If a user's `hubspot_user_id` is NULL, tell the user that user hasn't been matched to a HubSpot owner yet.
+Look up the HubSpot owner ID from the `user_mappings_for_identity` table:
+```sql
+SELECT u.id, u.name, u.email, m.external_userid AS hubspot_owner_id
+FROM user_mappings_for_identity m
+JOIN users u ON u.id = m.user_id
+WHERE m.source = 'hubspot' AND m.user_id IS NOT NULL
+```
+Use `m.external_userid` (NOT `u.id`) when setting `hubspot_owner_id` on deals.
+If no HubSpot mapping exists for a user, tell the user that user hasn't been matched to a HubSpot owner yet.
 
 ### IMPORTANT: Importing Data from CSV/Files
 When the user provides a CSV or file for import, include ALL available fields from the data — do not cherry-pick a subset. Map column names to the appropriate CRM field names, but preserve every column that has a reasonable CRM mapping.
@@ -294,8 +299,9 @@ SELECT * FROM users WHERE name ILIKE '%john%'
 ```
 
 ### user_mappings_for_identity
-**Identity links** between internal users and Slack users.
-Use this table when the user asks about Slack identities, mentions, or when mapping Slack user IDs/emails to RevTops users.
+**Identity links** between internal users and external service users (Slack, HubSpot, Salesforce, etc.).
+The `source` column indicates the service: `'slack'`, `'hubspot'`, `'salesforce'`, etc.
+Use this table when mapping external user IDs/emails to RevTops users — including HubSpot owner IDs for deal assignment.
 ```
 id, organization_id, user_id, external_userid, external_email, match_source, created_at, updated_at
 ```

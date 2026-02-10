@@ -23,6 +23,7 @@ from models.activity import Activity
 from models.contact import Contact
 from models.database import get_session
 from models.deal import Deal
+from models.slack_user_mapping import SlackUserMapping
 from models.user import User
 
 # Salesforce API version
@@ -519,30 +520,33 @@ class SalesforceConnector(BaseConnector):
     async def _map_sf_owner_to_user(
         self, sf_user_id: Optional[str]
     ) -> Optional[uuid.UUID]:
-        """Map Salesforce user ID to our internal user ID."""
+        """Map Salesforce user ID to our internal user ID via user_mappings_for_identity."""
         if not sf_user_id:
             return None
 
+        org_uuid: uuid.UUID = uuid.UUID(self.organization_id)
+
         async with get_session(organization_id=self.organization_id) as session:
-            # First try to match by salesforce_user_id within the organization
+            # Look up by external_userid in user_mappings_for_identity
             result = await session.execute(
-                select(User).where(
-                    User.organization_id == uuid.UUID(self.organization_id),
-                    User.salesforce_user_id == sf_user_id,
+                select(SlackUserMapping).where(
+                    SlackUserMapping.organization_id == org_uuid,
+                    SlackUserMapping.external_userid == sf_user_id,
+                    SlackUserMapping.source == "salesforce",
                 )
             )
-            user = result.scalar_one_or_none()
+            mapping: SlackUserMapping | None = result.scalar_one_or_none()
 
-            if user:
-                return user.id
+            if mapping and mapping.user_id:
+                return mapping.user_id
 
             # Fallback: return first user in organization (for MVP)
             result = await session.execute(
                 select(User).where(
-                    User.organization_id == uuid.UUID(self.organization_id),
+                    User.organization_id == org_uuid,
                 )
             )
-            user = result.scalars().first()
+            user: User | None = result.scalars().first()
             return user.id if user else None
 
     async def _map_sf_account_to_our_account(

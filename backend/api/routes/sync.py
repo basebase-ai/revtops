@@ -480,7 +480,7 @@ class OwnerMatchResult(BaseModel):
     """Single owner match result."""
 
     email: str
-    hubspot_owner_id: str
+    hubspot_owner_id: str | None
     user_id: str | None
     user_name: str | None
     matched: bool
@@ -502,7 +502,7 @@ async def match_hubspot_owners(organization_id: str) -> OwnerMatchResponse:
     """
     Fetch all HubSpot owners and match them to local users by email.
 
-    Populates ``users.hubspot_user_id`` for every match found.
+    Persists mappings in ``user_mappings_for_identity`` for every match found.
     """
     try:
         UUID(organization_id)
