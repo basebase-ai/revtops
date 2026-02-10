@@ -1314,6 +1314,217 @@ export const useAppStore = create<AppState>()(
 );
 
 // =============================================================================
+// Cross-tab chat sync (BroadcastChannel)
+// =============================================================================
+
+type SerializedChatMessage = Omit<ChatMessage, "timestamp"> & {
+  timestamp: string;
+};
+
+type SerializedConversationState = Omit<ConversationState, "messages"> & {
+  messages: SerializedChatMessage[];
+};
+
+type SerializedChatSummary = Omit<ChatSummary, "lastMessageAt"> & {
+  lastMessageAt: string;
+};
+
+type ChatSyncMessage = {
+  type: "chat_sync";
+  sourceId: string;
+  updatedConversations?: Record<string, SerializedConversationState>;
+  removedConversationIds?: string[];
+  activeTasksByConversation?: Record<string, string>;
+  recentChats?: SerializedChatSummary[];
+};
+
+const createTabId = (): string => {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return crypto.randomUUID();
+  }
+  return `tab-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+};
+
+const TAB_ID = createTabId();
+const CHAT_SYNC_CHANNEL_NAME = "revtops-chat-sync";
+const chatSyncChannel =
+  typeof window !== "undefined" && "BroadcastChannel" in window
+    ? new BroadcastChannel(CHAT_SYNC_CHANNEL_NAME)
+    : null;
+
+let isApplyingRemoteUpdate = false;
+let hasWarnedNoChannel = false;
+
+const serializeConversationState = (
+  state: ConversationState,
+): SerializedConversationState => ({
+  ...state,
+  messages: state.messages.map((message) => ({
+    ...message,
+    timestamp: message.timestamp.toISOString(),
+  })),
+});
+
+const deserializeConversationState = (
+  state: SerializedConversationState,
+): ConversationState => ({
+  ...state,
+  messages: state.messages.map((message) => ({
+    ...message,
+    timestamp: new Date(message.timestamp),
+  })),
+});
+
+const serializeChatSummary = (summary: ChatSummary): SerializedChatSummary => ({
+  ...summary,
+  lastMessageAt: summary.lastMessageAt.toISOString(),
+});
+
+const deserializeChatSummary = (
+  summary: SerializedChatSummary,
+): ChatSummary => ({
+  ...summary,
+  lastMessageAt: new Date(summary.lastMessageAt),
+});
+
+const broadcastChatSync = (payload: Omit<ChatSyncMessage, "sourceId">): void => {
+  if (!chatSyncChannel) {
+    if (!hasWarnedNoChannel) {
+      console.warn("[ChatSync] BroadcastChannel unavailable, skipping sync");
+      hasWarnedNoChannel = true;
+    }
+    return;
+  }
+  if (isApplyingRemoteUpdate) {
+    console.debug("[ChatSync] Skipping broadcast during remote apply");
+    return;
+  }
+  const message: ChatSyncMessage = { ...payload, sourceId: TAB_ID };
+  console.debug("[ChatSync] Broadcasting update", {
+    hasConversations: Boolean(payload.updatedConversations),
+    removed: payload.removedConversationIds?.length ?? 0,
+    hasActiveTasks: Boolean(payload.activeTasksByConversation),
+    hasRecentChats: Boolean(payload.recentChats),
+  });
+  chatSyncChannel.postMessage(message);
+};
+
+if (chatSyncChannel) {
+  chatSyncChannel.onmessage = (event: MessageEvent<ChatSyncMessage>): void => {
+    const data = event.data;
+    if (!data || data.type !== "chat_sync") return;
+    if (data.sourceId === TAB_ID) return;
+
+    console.debug("[ChatSync] Received update", {
+      sourceId: data.sourceId,
+      updatedConversations: Object.keys(data.updatedConversations ?? {}).length,
+      removed: data.removedConversationIds?.length ?? 0,
+      hasActiveTasks: Boolean(data.activeTasksByConversation),
+      hasRecentChats: Boolean(data.recentChats),
+    });
+
+    isApplyingRemoteUpdate = true;
+    try {
+      useAppStore.setState((state) => {
+        let nextConversations = state.conversations;
+        if (data.updatedConversations) {
+          nextConversations = {
+            ...nextConversations,
+          };
+          for (const [id, convo] of Object.entries(
+            data.updatedConversations,
+          )) {
+            nextConversations[id] = deserializeConversationState(convo);
+          }
+        }
+
+        if (data.removedConversationIds?.length) {
+          if (nextConversations === state.conversations) {
+            nextConversations = { ...nextConversations };
+          }
+          for (const id of data.removedConversationIds) {
+            delete nextConversations[id];
+          }
+        }
+
+        return {
+          conversations: nextConversations,
+          ...(data.activeTasksByConversation
+            ? { activeTasksByConversation: data.activeTasksByConversation }
+            : {}),
+          ...(data.recentChats
+            ? {
+                recentChats: data.recentChats.map(deserializeChatSummary),
+              }
+            : {}),
+        };
+      });
+    } finally {
+      isApplyingRemoteUpdate = false;
+    }
+  };
+}
+
+useAppStore.subscribe(
+  (state) => state.conversations,
+  (conversations, previousConversations) => {
+    const updatedConversations: Record<string, SerializedConversationState> = {};
+    const removedConversationIds: string[] = [];
+    const allIds = new Set([
+      ...Object.keys(conversations),
+      ...Object.keys(previousConversations ?? {}),
+    ]);
+
+    for (const id of allIds) {
+      const current = conversations[id];
+      const previous = previousConversations?.[id];
+      if (!current && previous) {
+        removedConversationIds.push(id);
+        continue;
+      }
+      if (current && current !== previous) {
+        updatedConversations[id] = serializeConversationState(current);
+      }
+    }
+
+    if (
+      Object.keys(updatedConversations).length > 0 ||
+      removedConversationIds.length > 0
+    ) {
+      broadcastChatSync({
+        type: "chat_sync",
+        updatedConversations,
+        removedConversationIds: removedConversationIds.length
+          ? removedConversationIds
+          : undefined,
+      });
+    }
+  },
+);
+
+useAppStore.subscribe(
+  (state) => state.activeTasksByConversation,
+  (activeTasksByConversation, previousActiveTasks) => {
+    if (activeTasksByConversation === previousActiveTasks) return;
+    broadcastChatSync({
+      type: "chat_sync",
+      activeTasksByConversation,
+    });
+  },
+);
+
+useAppStore.subscribe(
+  (state) => state.recentChats,
+  (recentChats, previousChats) => {
+    if (recentChats === previousChats) return;
+    broadcastChatSync({
+      type: "chat_sync",
+      recentChats: recentChats.map(serializeChatSummary),
+    });
+  },
+);
+
+// =============================================================================
 // Selector Hooks (for convenience)
 // =============================================================================
 
