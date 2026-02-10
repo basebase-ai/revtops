@@ -21,6 +21,7 @@ import { AppLayout } from './components/AppLayout';
 import { OAuthCallback } from './components/OAuthCallback';
 import { AdminWaitlist } from './components/AdminWaitlist';
 import type { User, AuthChangeEvent, Session } from '@supabase/supabase-js';
+import { queryClient } from './lib/queryClient';
 
 type Screen = 'auth' | 'blocked-email' | 'not-registered' | 'waitlist' | 'company-setup' | 'app';
 
@@ -172,7 +173,7 @@ function App(): JSX.Element {
           await handleAuthenticatedUser(session.user);
           setIsLoading(false);
         } else if (event === 'SIGNED_OUT') {
-          storeLogout();
+          clearAllLocalData();
           // Redirect to public website on sign out
           window.location.href = WWW_URL;
         }
@@ -381,11 +382,38 @@ function App(): JSX.Element {
 
   const handleLogout = async (): Promise<void> => {
     await supabase.auth.signOut();
-    localStorage.removeItem('user_id');
-    storeLogout();
+    clearAllLocalData();
     // Redirect to public website
     window.location.href = WWW_URL;
   };
+
+  /**
+   * Nuke every piece of client-side state so a different user can sign in
+   * cleanly: localStorage, sessionStorage, React Query cache, Zustand, and
+   * cookies.
+   */
+  function clearAllLocalData(): void {
+    // 1. Reset Zustand in-memory state
+    storeLogout();
+
+    // 2. Wipe all localStorage (covers revtops-store, revtops_companies,
+    //    user_id, and any Supabase-managed keys)
+    localStorage.clear();
+
+    // 3. Wipe sessionStorage (Supabase may store tokens here too)
+    sessionStorage.clear();
+
+    // 4. Clear React Query in-memory cache
+    queryClient.clear();
+
+    // 5. Clear all cookies for this domain
+    document.cookie.split(';').forEach((cookie) => {
+      const name: string = cookie.split('=')[0]?.trim() ?? '';
+      if (name) {
+        document.cookie = `${name}=;expires=${new Date(0).toUTCString()};path=/`;
+      }
+    });
+  }
 
   // Handle OAuth callback route
   const path = window.location.pathname;
