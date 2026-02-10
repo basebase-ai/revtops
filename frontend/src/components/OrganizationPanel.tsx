@@ -287,7 +287,13 @@ export function OrganizationPanel({ organization, currentUser, onClose }: Organi
                       const displayName: string = member.name ?? member.email.split('@')[0] ?? 'Unknown';
                       const isAdmin: boolean = member.role === 'admin' || member.id === currentUser.id;
                       const isExpanded: boolean = expandedMemberId === member.id;
-                      const identities: IdentityMapping[] = member.identities;
+                      const identities: IdentityMapping[] = [...member.identities].sort((a, b) => {
+                        const sourceCompare = sourceLabel(a.source).localeCompare(sourceLabel(b.source));
+                        if (sourceCompare !== 0) return sourceCompare;
+                        const aTarget = (a.externalEmail ?? a.externalUserid ?? '').toLowerCase();
+                        const bTarget = (b.externalEmail ?? b.externalUserid ?? '').toLowerCase();
+                        return aTarget.localeCompare(bTarget);
+                      });
                       const canUnlinkForMember: boolean = member.id === currentUser.id || canLinkIdentityInOrg;
 
                       return (
