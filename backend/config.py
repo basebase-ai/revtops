@@ -1,6 +1,8 @@
 """Configuration management using Pydantic settings."""
 
 from datetime import date, datetime
+import logging
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -102,6 +104,35 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+EXPECTED_ENV_VARS: tuple[str, ...] = (
+    "DATABASE_URL",
+    "REDIS_URL",
+    "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
+    "PERPLEXITY_API_KEY",
+    "NANGO_SECRET_KEY",
+    "NANGO_PUBLIC_KEY",
+    "SECRET_KEY",
+    "ENVIRONMENT",
+    "FRONTEND_URL",
+    "SUPABASE_URL",
+    "SUPABASE_JWT_SECRET",
+    "ADMIN_KEY",
+    "RESEND_API_KEY",
+    "EMAIL_FROM",
+)
+
+
+def log_missing_env_vars(logger: logging.Logger) -> None:
+    """Log debug warnings for expected environment variables that are unset."""
+    for var_name in EXPECTED_ENV_VARS:
+        value = os.environ.get(var_name)
+        if value is None or value == "":
+            logger.debug(
+                "Warning: expected environment variable %s is not set.",
+                var_name,
+            )
 
 
 # Nango integration ID mapping

@@ -51,7 +51,7 @@ async def generate_embeddings_for_organization(
     org_uuid = UUID(organization_id)
     total_processed = 0
 
-    async with get_session() as session:
+    async with get_session(organization_id=organization_id) as session:
         # Find activities without embeddings
         query = (
             select(Activity)
@@ -143,7 +143,7 @@ async def search_activities_by_embedding(
     query_embedding = await embedding_service.generate_embedding(query_text)
     query_bytes = embedding_service.embedding_to_bytes(query_embedding)
 
-    async with get_session() as session:
+    async with get_session(organization_id=organization_id) as session:
         # Build the similarity search query
         # Using pgvector's <=> operator for cosine distance
         type_filter = ""

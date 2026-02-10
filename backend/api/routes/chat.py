@@ -20,16 +20,22 @@ from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+import logging
+
+
 from pydantic import BaseModel
-from sqlalchemy import select, func
+from sqlalchemy import and_, func, or_, select
 
 from api.auth_middleware import AuthContext, get_current_auth
 from models.database import get_session
 from models.chat_message import ChatMessage
 from models.conversation import Conversation
 from services.file_handler import store_file, MAX_FILE_SIZE
+from services.slack_conversations import get_slack_user_ids_for_revtops_user
+
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 # =============================================================================
@@ -118,15 +124,46 @@ async def list_conversations(
 ) -> ConversationListResponse:
     """List conversations for the authenticated user, ordered by most recent."""
     org_id = auth.organization_id_str
+    slack_user_ids: set[str] = set()
+    if org_id:
+        try:
+            slack_user_ids = await get_slack_user_ids_for_revtops_user(org_id, auth.user_id_str)
+        except Exception as exc:
+            logger.warning(
+                "[chat] Failed to resolve Slack user IDs for org=%s user=%s: %s",
+                org_id,
+                auth.user_id_str,
+                exc,
+                exc_info=True,
+            )
 
     async with get_session(organization_id=org_id) as session:
         # Simple query - message_count and last_message_preview are cached on the conversation
         # Filter out workflow conversations - they're accessed via Automations tab, not chat list
-        result = await session.execute(
+        query = (
             select(Conversation, func.count(Conversation.id).over().label("total_count"))
-            .where(Conversation.user_id == auth.user_id)
             .where(Conversation.type != "workflow")
-            .order_by(Conversation.updated_at.desc())
+        )
+        if slack_user_ids:
+            slack_filter = and_(
+                Conversation.source == "slack",
+                Conversation.source_user_id.in_(slack_user_ids),
+            )
+            if auth.organization_id:
+                slack_filter = and_(
+                    slack_filter,
+                    Conversation.organization_id == auth.organization_id,
+                )
+            query = query.where(or_(Conversation.user_id == auth.user_id, slack_filter))
+            logger.info(
+                "[chat] Listing conversations for user=%s with Slack IDs %s",
+                auth.user_id_str,
+                sorted(slack_user_ids),
+            )
+        else:
+            query = query.where(Conversation.user_id == auth.user_id)
+        result = await session.execute(
+            query.order_by(Conversation.updated_at.desc())
             .offset(offset)
             .limit(limit)
         )

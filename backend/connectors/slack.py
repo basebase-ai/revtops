@@ -8,13 +8,14 @@ Responsibilities:
 - Handle pagination and rate limits
 """
 
+import logging
 import re
 import uuid
 from datetime import datetime
 from typing import Any, Optional
 
 import httpx
-from sqlalchemy import text as sa_text
+from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 
@@ -61,8 +62,10 @@ from api.websockets import broadcast_sync_progress
 from connectors.base import BaseConnector
 from models.activity import Activity
 from models.database import get_session
+from models.user import User
 
 SLACK_API_BASE = "https://slack.com/api"
+logger = logging.getLogger(__name__)
 
 
 class SlackConnector(BaseConnector):
@@ -179,6 +182,97 @@ class SlackConnector(BaseConnector):
 
         return users
 
+    async def get_user_info(self, slack_user_id: str) -> dict[str, Any]:
+        """Get details for a specific Slack user via users.info."""
+        data = await self._make_request(
+            "GET",
+            "users.info",
+            params={"user": slack_user_id},
+        )
+        return data.get("user", {})
+
+    async def get_current_user_profile(self) -> dict[str, Any]:
+        """Get the authenticated user's profile via users.profile.get."""
+        data = await self._make_request("GET", "users.profile.get")
+        return data.get("profile", {})
+
+    async def _fetch_current_user_id_for_mapping(self) -> Optional[str]:
+        """Fetch the current RevTops user ID for Slack mapping."""
+        if not self._integration:
+            logger.warning(
+                "[Slack Sync] Missing integration context when fetching current user id for org=%s",
+                self.organization_id,
+            )
+            return None
+
+        candidate_ids: list[str] = []
+        if self.user_id:
+            candidate_ids.append(self.user_id)
+        if self._integration.user_id:
+            candidate_ids.append(str(self._integration.user_id))
+        if self._integration.connected_by_user_id:
+            candidate_ids.append(str(self._integration.connected_by_user_id))
+
+        deduped_candidates = list(dict.fromkeys(candidate_ids))
+        logger.info(
+            "[Slack Sync] Candidate RevTops user IDs for mapping org=%s integration=%s candidates=%s",
+            self.organization_id,
+            self._integration.id,
+            deduped_candidates,
+        )
+
+        if not deduped_candidates:
+            logger.warning(
+                "[Slack Sync] No RevTops user ID candidates found for org=%s integration=%s",
+                self.organization_id,
+                self._integration.id,
+            )
+            return None
+
+        preferred_id = deduped_candidates[0]
+        try:
+            user_uuid = uuid.UUID(preferred_id)
+        except ValueError:
+            logger.warning(
+                "[Slack Sync] Invalid RevTops user ID candidate %s for org=%s integration=%s",
+                preferred_id,
+                self.organization_id,
+                self._integration.id,
+            )
+            return None
+
+        async with get_session(organization_id=self.organization_id) as session:
+            result = await session.execute(select(User).where(User.id == user_uuid))
+            user = result.scalar_one_or_none()
+
+        if not user:
+            logger.warning(
+                "[Slack Sync] RevTops user %s not found for org=%s integration=%s",
+                preferred_id,
+                self.organization_id,
+                self._integration.id,
+            )
+            return None
+
+        if self.user_id != str(user.id):
+            logger.info(
+                "[Slack Sync] Updating connector user_id from %s to %s for org=%s integration=%s",
+                self.user_id,
+                user.id,
+                self.organization_id,
+                self._integration.id,
+            )
+            self.user_id = str(user.id)
+
+        logger.info(
+            "[Slack Sync] Resolved current RevTops user id=%s email=%s org=%s integration=%s",
+            user.id,
+            user.email,
+            self.organization_id,
+            self._integration.id,
+        )
+        return str(user.id)
+
     async def sync_deals(self) -> int:
         """Slack doesn't have deals - return 0."""
         return 0
@@ -198,6 +292,7 @@ class SlackConnector(BaseConnector):
         This captures communication activity that can be correlated
         with deals and accounts.
         """
+        logger.info("[Slack Sync] Starting Slack activity sync for org=%s", self.organization_id)
         # Broadcast that we're starting
         await broadcast_sync_progress(
             organization_id=self.organization_id,
@@ -208,15 +303,26 @@ class SlackConnector(BaseConnector):
         
         # Get channels
         channels = await self.get_channels()
+        logger.info(
+            "[Slack Sync] Retrieved %d channels for org=%s",
+            len(channels),
+            self.organization_id,
+        )
 
         # Calculate timestamp for last 7 days
         oldest = (datetime.utcnow().timestamp()) - (7 * 24 * 60 * 60)
 
         count = 0
+        user_info_cache: dict[str, dict[str, Any]] = {}
         async with get_session(organization_id=self.organization_id) as session:
             for channel in channels:
                 channel_id = channel.get("id", "")
                 channel_name = channel.get("name", "unknown")
+                logger.debug(
+                    "[Slack Sync] Fetching messages for channel=%s (%s)",
+                    channel_name,
+                    channel_id,
+                )
 
                 try:
                     messages = await self.get_channel_messages(
@@ -224,29 +330,62 @@ class SlackConnector(BaseConnector):
                     )
 
                     for msg in messages:
+                        user_id = msg.get("user")
+                        if user_id and not msg.get("user_profile"):
+                            if user_id not in user_info_cache:
+                                try:
+                                    user_info_cache[user_id] = await self.get_user_info(user_id)
+                                except Exception as exc:
+                                    logger.warning(
+                                        "[Slack Sync] Failed users.info lookup for user=%s channel=%s: %s",
+                                        user_id,
+                                        channel_id,
+                                        exc,
+                                        exc_info=True,
+                                    )
+                                    user_info_cache[user_id] = {}
+                            profile = (user_info_cache[user_id] or {}).get("profile") or {}
+                            if profile:
+                                msg["user_profile"] = profile
+
                         activity = self._normalize_message(msg, channel_id, channel_name)
                         if activity:
                             now: datetime = datetime.utcnow()
-                            stmt = pg_insert(Activity).values(
-                                id=activity.id,
-                                organization_id=activity.organization_id,
-                                source_system=activity.source_system,
-                                source_id=activity.source_id,
-                                type=activity.type,
-                                subject=activity.subject,
-                                description=activity.description,
-                                activity_date=activity.activity_date,
-                                custom_fields=activity.custom_fields,
-                                synced_at=now,
-                            ).on_conflict_do_update(
-                                index_elements=["organization_id", "source_system", "source_id"],
-                                index_where=sa_text("source_id IS NOT NULL"),
-                                set_={
-                                    "subject": activity.subject,
-                                    "description": activity.description,
-                                    "custom_fields": activity.custom_fields,
-                                    "synced_at": now,
-                                },
+                            logger.debug(
+                                "[Slack Sync] Upserting message source_id=%s channel=%s ts=%s",
+                                activity.source_id,
+                                channel_id,
+                                msg.get("ts"),
+                            )
+                            stmt = (
+                                pg_insert(Activity)
+                                .values(
+                                    id=activity.id,
+                                    organization_id=activity.organization_id,
+                                    source_system=activity.source_system,
+                                    source_id=activity.source_id,
+                                    type=activity.type,
+                                    subject=activity.subject,
+                                    description=activity.description,
+                                    activity_date=activity.activity_date,
+                                    custom_fields=activity.custom_fields,
+                                    synced_at=now,
+                                )
+                                .on_conflict_do_update(
+                                    index_elements=[
+                                        "organization_id",
+                                        "source_system",
+                                        "source_id",
+                                    ],
+                                    index_where=Activity.source_id.is_not(None),
+                                    set_={
+                                        "subject": activity.subject,
+                                        "description": activity.description,
+                                        "custom_fields": activity.custom_fields,
+                                        "activity_date": activity.activity_date,
+                                        "synced_at": now,
+                                    },
+                                )
                             )
                             await session.execute(stmt)
                             count += 1
@@ -262,12 +401,52 @@ class SlackConnector(BaseConnector):
 
                 except Exception as e:
                     # Skip channels we can't access
-                    print(f"Error fetching messages from {channel_name}: {e}")
+                    logger.warning(
+                        "[Slack Sync] Error fetching messages from channel=%s (%s): %s",
+                        channel_name,
+                        channel_id,
+                        e,
+                        exc_info=True,
+                    )
                     continue
 
             await session.commit()
 
         return count
+
+    def _extract_sender_fields(self, slack_msg: dict[str, Any]) -> dict[str, Any]:
+        user_id = slack_msg.get("user")
+        bot_id = slack_msg.get("bot_id")
+        user_profile = slack_msg.get("user_profile") or {}
+        sender_name = (
+            user_profile.get("display_name")
+            or user_profile.get("real_name")
+            or slack_msg.get("username")
+            or ""
+        ).strip()
+        sender_real_name = (user_profile.get("real_name") or "").strip()
+        sender_email = (user_profile.get("email") or "").strip()
+        sender_fields: dict[str, Any] = {
+            "sender_id": user_id or bot_id,
+            "sender_type": "user" if user_id else ("bot" if bot_id else "unknown"),
+            "sender_name": sender_name or None,
+            "sender_real_name": sender_real_name or None,
+            "sender_email": sender_email or None,
+        }
+        if not sender_fields["sender_id"]:
+            logger.debug(
+                "[Slack Sync] Missing sender id in message ts=%s channel=%s",
+                slack_msg.get("ts"),
+                slack_msg.get("channel"),
+            )
+        elif not sender_fields["sender_name"] and sender_fields["sender_type"] == "user":
+            logger.debug(
+                "[Slack Sync] Missing sender name in message ts=%s channel=%s user=%s",
+                slack_msg.get("ts"),
+                slack_msg.get("channel"),
+                sender_fields["sender_id"],
+            )
+        return sender_fields
 
     def _normalize_message(
         self,
@@ -298,6 +477,7 @@ class SlackConnector(BaseConnector):
         # Create a unique source ID from channel and timestamp
         source_id = f"{channel_id}:{msg_ts}"
 
+        sender_fields = self._extract_sender_fields(slack_msg)
         return Activity(
             id=uuid.uuid4(),
             organization_id=uuid.UUID(self.organization_id),
@@ -311,6 +491,7 @@ class SlackConnector(BaseConnector):
                 "channel_id": channel_id,
                 "channel_name": channel_name,
                 "user_id": slack_msg.get("user"),
+                **sender_fields,
                 "thread_ts": slack_msg.get("thread_ts"),
                 "has_attachments": len(slack_msg.get("attachments", [])) > 0,
                 "has_files": len(slack_msg.get("files", [])) > 0,
@@ -319,6 +500,140 @@ class SlackConnector(BaseConnector):
 
     async def sync_all(self) -> dict[str, int]:
         """Run all sync operations."""
+        from services.slack_conversations import (
+            refresh_slack_user_mappings_from_directory,
+            refresh_slack_user_mappings_for_org,
+            upsert_slack_user_mapping_from_nango_action,
+            upsert_slack_user_mapping_from_current_profile,
+        )
+        from services.nango import get_nango_client
+        from config import get_nango_integration_id
+
+        await self.ensure_sync_active("sync_all:start")
+
+        try:
+            current_user_id = await self._fetch_current_user_id_for_mapping()
+            if not self._integration or not self._integration.nango_connection_id:
+                logger.warning(
+                    "[Slack Sync] Missing Nango connection for org=%s when fetching Slack user info",
+                    self.organization_id,
+                )
+            else:
+                logger.info(
+                    "[Slack Sync] Executing Nango get-user-info action for org=%s integration=%s",
+                    self.organization_id,
+                    self._integration.id,
+                )
+                nango = get_nango_client()
+                action_response = await nango.execute_action(
+                    integration_id=get_nango_integration_id(self.source_system),
+                    connection_id=self._integration.nango_connection_id,
+                    action_name="get-user-info",
+                    input_payload={},
+                )
+                slack_user_payload: dict[str, Any] | None = None
+                if isinstance(action_response, dict):
+                    slack_user_payload = (
+                        action_response.get("user")
+                        or action_response.get("data", {}).get("user")
+                        or action_response.get("data")
+                        or action_response.get("result")
+                    )
+                logger.info(
+                    "[Slack Sync] Nango get-user-info response org=%s integration=%s payload_keys=%s",
+                    self.organization_id,
+                    self._integration.id,
+                    sorted(action_response.keys()) if isinstance(action_response, dict) else "n/a",
+                )
+                if not slack_user_payload or not isinstance(slack_user_payload, dict):
+                    logger.warning(
+                        "[Slack Sync] Nango get-user-info payload not usable org=%s integration=%s payload_type=%s",
+                        self.organization_id,
+                        self._integration.id,
+                        type(slack_user_payload).__name__ if slack_user_payload is not None else "none",
+                    )
+                elif not current_user_id:
+                    logger.warning(
+                        "[Slack Sync] Missing current RevTops user id for mapping org=%s integration=%s",
+                        self.organization_id,
+                        self._integration.id,
+                    )
+                else:
+                    logger.info(
+                        "[Slack Sync] Upserting Slack mapping from Nango action org=%s integration=%s user_id=%s payload_keys=%s",
+                        self.organization_id,
+                        self._integration.id,
+                        current_user_id,
+                        sorted(slack_user_payload.keys()),
+                    )
+                    await upsert_slack_user_mapping_from_nango_action(
+                        organization_id=self.organization_id,
+                        user_id=uuid.UUID(current_user_id),
+                        slack_user_payload=slack_user_payload,
+                    )
+        except Exception as exc:
+            logger.warning(
+                "[Slack Sync] Failed to map Slack user via Nango action for org=%s: %s",
+                self.organization_id,
+                exc,
+                exc_info=True,
+            )
+
+        try:
+            logger.info(
+                "[Slack Sync] Fetching current Slack user profile for org=%s",
+                self.organization_id,
+            )
+            mapped_count = await upsert_slack_user_mapping_from_current_profile(
+                organization_id=self.organization_id,
+                connector=self,
+                integration=self._integration,
+            )
+            logger.info(
+                "[Slack Sync] Upserted %d Slack user mappings from current profile for org=%s",
+                mapped_count,
+                self.organization_id,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[Slack Sync] Failed to map current Slack user profile for org=%s: %s",
+                self.organization_id,
+                exc,
+                exc_info=True,
+            )
+
+        try:
+            logger.info(
+                "[Slack Sync] Refreshing Slack user mappings before activity sync for org=%s",
+                self.organization_id,
+            )
+            logger.info(
+                "[Slack Sync] Refreshing Slack directory user mappings for org=%s",
+                self.organization_id,
+            )
+            directory_count = await refresh_slack_user_mappings_from_directory(
+                organization_id=self.organization_id,
+                connector=self,
+            )
+            logger.info(
+                "[Slack Sync] Refreshed %d Slack directory user mappings for org=%s",
+                directory_count,
+                self.organization_id,
+            )
+            refreshed_count = await refresh_slack_user_mappings_for_org(self.organization_id)
+            logger.info(
+                "[Slack Sync] Refreshed %d Slack user mappings for org=%s",
+                refreshed_count,
+                self.organization_id,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[Slack Sync] Failed to refresh Slack user mappings for org=%s: %s",
+                self.organization_id,
+                exc,
+                exc_info=True,
+            )
+
         activities_count = await self.sync_activities()
 
         # Broadcast completion

@@ -139,7 +139,7 @@ class ToolProgressUpdater:
 # Note: Row-Level Security (RLS) handles organization filtering at the database level
 ALLOWED_TABLES: set[str] = {
     "deals", "accounts", "contacts", "activities", "meetings", "integrations", "users", "organizations",
-    "pipelines", "pipeline_stages", "workflows", "workflow_runs"
+    "pipelines", "pipeline_stages", "workflows", "workflow_runs", "slack_user_mappings"
 }
 
 
@@ -1041,8 +1041,8 @@ async def _web_search(params: dict[str, Any]) -> dict[str, Any]:
     
     if not settings.PERPLEXITY_API_KEY:
         return {
-            "error": "Web search is not configured. PERPLEXITY_API_KEY is not set.",
-            "suggestion": "Add PERPLEXITY_API_KEY to your environment variables.",
+            "error": "We do not currently run external web interactions; coming soon!",
+            "suggestion": "Add PERPLEXITY_API_KEY to your environment variables to enable web search.",
         }
     
     try:
@@ -2208,7 +2208,7 @@ async def commit_change_session(
 
     if not snapshots:
         _log.info("[commit] No snapshots – marking session approved with 0 synced")
-        await approve_change_session(change_session_id, user_id)
+        await approve_change_session(change_session_id, user_id, organization_id=org_id)
         return {"status": "completed", "message": "No pending changes to commit", "synced_count": 0}
 
     # ── 2. Build per-table sync lists (creates and updates) ────────────────

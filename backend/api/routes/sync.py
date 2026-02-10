@@ -16,6 +16,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
 
+from connectors.base import SyncCancelledError
 from connectors.fireflies import FirefliesConnector
 from connectors.gmail import GmailConnector
 from connectors.google_calendar import GoogleCalendarConnector
@@ -417,6 +418,29 @@ async def sync_integration_data(organization_id: str, provider: str) -> None:
             )
         except Exception as event_err:
             print(f"Warning: Event emission failed: {event_err}")
+
+    except SyncCancelledError as e:
+        cancel_msg = str(e)
+        print(f"[Sync] CANCELLED syncing {provider} for org {organization_id}: {cancel_msg}")
+
+        _sync_status[status_key]["status"] = "cancelled"
+        _sync_status[status_key]["error"] = cancel_msg
+        _sync_status[status_key]["completed_at"] = datetime.utcnow()
+
+        # Emit sync cancelled event (best effort)
+        try:
+            from workers.events import emit_event
+            await emit_event(
+                event_type="sync.cancelled",
+                organization_id=organization_id,
+                data={
+                    "provider": provider,
+                    "message": cancel_msg,
+                    "cancelled_at": datetime.utcnow().isoformat(),
+                },
+            )
+        except Exception:
+            pass
 
     except Exception as e:
         import traceback

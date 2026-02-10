@@ -27,6 +27,46 @@ AI-powered revenue operations assistant that connects to HubSpot, Slack, Google 
 - Python 3.10+ (brew or venv; op-ed: use pyenv to force this globally)
 - Dependencies - python -m pip install -r requirements.txt (from the backend directory; again, be env mindful)
 
+#### Native dependencies for WeasyPrint (PDF generation)
+
+WeasyPrint requires system libraries in addition to the Python package. Install these before running `pip install -r requirements.txt`.
+
+**macOS (Homebrew):**
+
+```bash
+brew install cairo pango gdk-pixbuf libffi
+```
+
+**Ubuntu/Debian:**
+
+```bash
+sudo apt-get update
+sudo apt-get install -y \
+  build-essential \
+  python3-dev \
+  libcairo2 \
+  libpango-1.0-0 \
+  libpangocairo-1.0-0 \
+  libgdk-pixbuf-2.0-0 \
+  libffi-dev \
+  shared-mime-info
+```
+
+#### Plotly installation
+
+Plotly powers chart rendering in the frontend artifact viewer. It is installed via the frontend dependency set:
+
+```bash
+cd frontend
+npm install
+```
+
+If you need to install/refresh Plotly packages explicitly:
+
+```bash
+npm install plotly.js react-plotly.js @types/plotly.js @types/react-plotly.js --save
+```
+
 ### Setup
 
 1. **Clone and configure environment:**
@@ -35,6 +75,8 @@ AI-powered revenue operations assistant that connects to HubSpot, Slack, Google 
 cp env.example .env
 # Edit .env with your credentials
 # Should all be in the .env or in Slack
+# Supabase values (SUPABASE_URL, SUPABASE_JWT_SECRET, VITE_SUPABASE_ANON_KEY)
+# should be copied from your Railway project variables.
 ```
 
 2. **Configure Nango integrations:**
@@ -86,6 +128,8 @@ cd frontend
 npm install
 npm run dev
 ```
+
+`npm install` will install Plotly dependencies defined in `frontend/package.json`.
 
 ## Railway Deployment
 
@@ -380,6 +424,8 @@ We use [Nango](https://nango.dev) to handle all OAuth complexity:
 | `ANTHROPIC_API_KEY` | Anthropic API key for Claude        |
 | `SECRET_KEY`        | Application secret for sessions     |
 | `FRONTEND_URL`      | Frontend URL for CORS and redirects |
+| `SUPABASE_URL`      | Supabase project URL (from Railway) |
+| `SUPABASE_JWT_SECRET` | Supabase JWT secret (from Railway) |
 
 ### Nango Configuration
 

@@ -20,6 +20,25 @@ NANGO_API_BASE = settings.NANGO_HOST
 logger = logging.getLogger(__name__)
 
 
+def extract_connection_metadata(connection: dict[str, Any]) -> dict[str, Any] | None:
+    """Return metadata dict from a Nango connection payload, if present."""
+    for key in ("metadata", "connection_metadata", "connectionMetadata"):
+        value = connection.get(key)
+        if isinstance(value, dict) and value:
+            return value
+
+    for config_key in ("connection_config", "connectionConfig"):
+        config_value = connection.get(config_key)
+        if not isinstance(config_value, dict):
+            continue
+        for key in ("metadata", "connection_metadata", "connectionMetadata"):
+            value = config_value.get(key)
+            if isinstance(value, dict) and value:
+                return value
+
+    return None
+
+
 class NangoClient:
     """Client for interacting with Nango API."""
 
@@ -305,6 +324,61 @@ class NangoClient:
         """
         connection = await self.get_connection(integration_id, connection_id)
         return connection.get("metadata", {})
+
+    async def execute_action(
+        self,
+        integration_id: str,
+        connection_id: str,
+        action_name: str,
+        input_payload: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        """
+        Execute a Nango action (function) for a connection.
+
+        Args:
+            integration_id: The Nango integration ID (e.g., 'slack')
+            connection_id: The unique connection identifier
+            action_name: Nango action name (e.g., 'get-user-info')
+            input_payload: Optional input payload for the action
+
+        Returns:
+            Dict with action execution response data
+        """
+        payload: dict[str, Any] = {
+            "provider_config_key": integration_id,
+            "connection_id": connection_id,
+            "action_name": action_name,
+            "input": input_payload or {},
+        }
+        logger.info(
+            "Executing Nango action",
+            extra={
+                "integration_id": integration_id,
+                "connection_id": connection_id,
+                "action_name": action_name,
+                "input_keys": sorted(payload["input"].keys()),
+            },
+        )
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{NANGO_API_BASE}/v1/execute",
+                headers=self._get_headers(),
+                json=payload,
+                timeout=30.0,
+            )
+            if response.status_code >= 400:
+                logger.warning(
+                    "Nango action execution failed",
+                    extra={
+                        "integration_id": integration_id,
+                        "connection_id": connection_id,
+                        "action_name": action_name,
+                        "status_code": response.status_code,
+                        "response_text": response.text,
+                    },
+                )
+            response.raise_for_status()
+            return response.json()
 
     async def set_integration_metadata(
         self,

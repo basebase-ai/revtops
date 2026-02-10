@@ -16,6 +16,8 @@ Endpoints:
 from __future__ import annotations
 
 from datetime import datetime
+import json
+import logging
 from typing import Any, Optional
 from uuid import UUID
 
@@ -25,14 +27,65 @@ from pydantic import BaseModel
 from sqlalchemy import select, text
 
 from config import settings, get_nango_integration_id, get_provider_scope
-from models.database import get_session
+from models.database import get_admin_session, get_session
 from models.integration import Integration
 from models.user import User
 from models.organization import Organization
-from services.nango import get_nango_client
+from services.nango import extract_connection_metadata, get_nango_client
+from services.slack_conversations import upsert_slack_user_mappings_from_metadata
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
+_NANGO_SENSITIVE_KEYS = {"credentials", "access_token", "refresh_token", "api_key", "apiKey", "token"}
+_NANGO_HIGHLIGHT_KEYS = {"end_user", "errors", "id", "last_fetched_at", "metadata"}
+
+
+def _truncate_nango_value(value: str, limit: int = 500) -> str:
+    if len(value) <= limit:
+        return value
+    return f"{value[:limit]}... (truncated {len(value) - limit} chars)"
+
+
+def _format_nango_value(key: str, value: Any) -> str:
+    if key in _NANGO_SENSITIVE_KEYS:
+        return "<redacted>"
+    if isinstance(value, str):
+        return _truncate_nango_value(value)
+    try:
+        serialized = json.dumps(value, default=str, ensure_ascii=False)
+    except TypeError:
+        serialized = repr(value)
+    return _truncate_nango_value(serialized)
+
+
+def _log_slack_nango_connection(connection: dict[str, Any], connection_id: str) -> None:
+    keys = sorted(connection.keys())
+    logger.info(
+        "[Confirm] Nango Slack connection payload keys for connection_id=%s: %s",
+        connection_id,
+        keys,
+    )
+    for key in keys:
+        logger.info(
+            "[Confirm] Nango Slack connection field connection_id=%s key=%s value=%s",
+            connection_id,
+            key,
+            _format_nango_value(key, connection.get(key)),
+        )
+    missing_highlights = sorted(_NANGO_HIGHLIGHT_KEYS - set(keys))
+    if missing_highlights:
+        logger.info(
+            "[Confirm] Nango Slack connection missing expected keys connection_id=%s missing=%s",
+            connection_id,
+            missing_highlights,
+        )
+    else:
+        logger.info(
+            "[Confirm] Nango Slack connection contains all highlight keys connection_id=%s keys=%s",
+            connection_id,
+            sorted(_NANGO_HIGHLIGHT_KEYS),
+        )
 
 # =============================================================================
 # Response Models
@@ -121,7 +174,7 @@ async def get_current_user(user_id: Optional[str] = None) -> UserResponse:
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid user ID")
 
-    async with get_session() as session:
+    async with get_admin_session() as session:
         user = await session.get(User, user_uuid)
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
@@ -157,7 +210,7 @@ async def update_profile(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid user ID")
 
-    async with get_session() as session:
+    async with get_admin_session() as session:
         user = await session.get(User, user_uuid)
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
@@ -254,7 +307,7 @@ async def sync_user(request: SyncUserRequest) -> SyncUserResponse:
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid organization ID")
 
-    async with get_session() as session:
+    async with get_admin_session() as session:
         # Check if user already exists by ID
         existing = await session.get(User, user_uuid)
         
@@ -372,7 +425,7 @@ async def get_organization_by_domain(email_domain: str) -> OrganizationResponse:
     
     Used to check if an organization exists for a domain when a new user signs up.
     """
-    async with get_session() as session:
+    async with get_admin_session() as session:
         result = await session.execute(
             select(Organization).where(Organization.email_domain == email_domain)
         )
@@ -835,6 +888,38 @@ async def confirm_integration(
     # We trust this value and store it directly
     nango_connection_id: str = request.connection_id
     print(f"[Confirm] Received connection_id from frontend: {nango_connection_id}")
+
+    connection_metadata: Optional[dict[str, Any]] = None
+    try:
+        nango = get_nango_client()
+        nango_integration_id = get_nango_integration_id(request.provider)
+        connection = await nango.get_connection(nango_integration_id, nango_connection_id)
+        if request.provider == "slack":
+            _log_slack_nango_connection(connection, nango_connection_id)
+        connection_metadata = extract_connection_metadata(connection)
+        if request.provider == "slack":
+            connection_data = connection.get("data") or {}
+            slack_user_payload = connection_data.get("user")
+            logger.info(
+                "[Confirm] Nango Slack response.data user payload for connection_id=%s: %s",
+                nango_connection_id,
+                slack_user_payload,
+            )
+        if connection_metadata:
+            print(
+                f"[Confirm] Retrieved Nango metadata for provider={request.provider}, "
+                f"connection_id={nango_connection_id}"
+            )
+        else:
+            print(
+                f"[Confirm] No Nango metadata found for provider={request.provider}, "
+                f"connection_id={nango_connection_id} keys={sorted(connection.keys())}"
+            )
+    except Exception as exc:
+        print(
+            f"[Confirm] Failed to fetch Nango metadata for provider={request.provider}, "
+            f"connection_id={nango_connection_id}: {exc}"
+        )
     
     async with get_session() as session:
         # Set RLS context
@@ -869,6 +954,8 @@ async def confirm_integration(
             existing.is_active = True
             existing.last_error = None
             existing.updated_at = datetime.utcnow()
+            if connection_metadata:
+                existing.extra_data = connection_metadata
         else:
             # Create new integration with the actual Nango connection_id
             new_integration = Integration(
@@ -879,6 +966,7 @@ async def confirm_integration(
                 nango_connection_id=nango_connection_id,
                 connected_by_user_id=user_uuid,
                 is_active=True,
+                extra_data=connection_metadata,
             )
             session.add(new_integration)
         
@@ -888,6 +976,14 @@ async def confirm_integration(
     # For user-scoped integrations, pass user_id so the connector can find the right integration
     user_id_for_sync: Optional[str] = str(user_uuid) if scope == "user" and user_uuid else None
     background_tasks.add_task(run_initial_sync, str(org_uuid), request.provider, user_id_for_sync)
+
+    if request.provider == "slack" and user_uuid:
+        background_tasks.add_task(
+            upsert_slack_user_mappings_from_metadata,
+            str(org_uuid),
+            user_uuid,
+            connection_metadata,
+        )
     
     return {"status": "confirmed", "provider": request.provider}
 
