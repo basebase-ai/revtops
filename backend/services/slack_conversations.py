@@ -300,39 +300,41 @@ async def refresh_slack_user_mappings_from_directory(
             bool(slack_email),
         )
 
-        if not slack_email:
+        matched_user = None
+        if slack_email:
+            matched_user = email_to_user.get(slack_email)
+
+        if matched_user:
             logger.info(
-                "[slack_conversations] Skipping Slack user=%s org=%s due to missing email",
+                "[slack_conversations] Matched Slack user=%s email=%s to RevTops user=%s org=%s",
                 slack_user_id,
+                slack_email,
+                matched_user.id,
                 organization_id,
             )
-            continue
-
-        matched_user = email_to_user.get(slack_email)
-        if not matched_user:
+            await _upsert_slack_user_mapping(
+                organization_id=organization_id,
+                user_id=matched_user.id,
+                slack_user_id=slack_user_id,
+                slack_email=slack_email,
+                match_source="slack_directory_email",
+                revtops_email=matched_user.email,
+            )
+            mapped_count += 1
+        else:
             logger.info(
-                "[slack_conversations] No RevTops email match for Slack user=%s email=%s org=%s",
+                "[slack_conversations] Storing unmapped Slack user=%s email=%s org=%s",
                 slack_user_id,
                 slack_email,
                 organization_id,
             )
-            continue
-
-        logger.info(
-            "[slack_conversations] Matched Slack user=%s email=%s to RevTops user=%s org=%s",
-            slack_user_id,
-            slack_email,
-            matched_user.id,
-            organization_id,
-        )
-        await _upsert_slack_user_mapping(
-            organization_id=organization_id,
-            user_id=matched_user.id,
-            slack_user_id=slack_user_id,
-            slack_email=slack_email,
-            match_source="slack_directory_email",
-        )
-        mapped_count += 1
+            await _upsert_slack_user_mapping(
+                organization_id=organization_id,
+                user_id=None,
+                slack_user_id=slack_user_id,
+                slack_email=slack_email,
+                match_source="slack_directory_unmapped",
+            )
 
     logger.info(
         "[slack_conversations] Completed Slack directory mapping refresh for org=%s mapped=%d",
@@ -557,6 +559,13 @@ async def get_slack_user_ids_for_revtops_user(
     """Return Slack user IDs associated with a RevTops user in this org."""
     user_uuid = UUID(user_id)
     async with get_admin_session() as session:
+        mappings_query = (
+            select(SlackUserMapping)
+            .where(SlackUserMapping.organization_id == UUID(organization_id))
+            .where(SlackUserMapping.user_id == user_uuid)
+        )
+        mappings_result = await session.execute(mappings_query)
+        slack_mappings = mappings_result.scalars().all()
         integrations_query = (
             select(Integration)
             .where(Integration.organization_id == UUID(organization_id))
@@ -565,19 +574,8 @@ async def get_slack_user_ids_for_revtops_user(
         )
         integrations_result = await session.execute(integrations_query)
         slack_integrations = integrations_result.scalars().all()
-        mappings_query = (
-            select(SlackUserMapping)
-            .where(SlackUserMapping.organization_id == UUID(organization_id))
-            .where(SlackUserMapping.user_id == user_uuid)
-        )
-        mappings_result = await session.execute(mappings_query)
-        slack_mappings = mappings_result.scalars().all()
 
     slack_user_ids: set[str] = set()
-    for integration in slack_integrations:
-        if integration.user_id != user_uuid and integration.connected_by_user_id != user_uuid:
-            continue
-        slack_user_ids.update(_extract_slack_user_ids(integration.extra_data or {}))
     for mapping in slack_mappings:
         if mapping.slack_user_id:
             slack_user_ids.add(mapping.slack_user_id)
@@ -589,17 +587,32 @@ async def get_slack_user_ids_for_revtops_user(
         user_id,
         len(slack_mappings),
     )
+    if not slack_user_ids and slack_integrations:
+        logger.info(
+            "[slack_conversations] No Slack user mappings found for org=%s user=%s with %d active Slack integrations",
+            organization_id,
+            user_id,
+            len(slack_integrations),
+        )
     return slack_user_ids
 
 
 async def _upsert_slack_user_mapping(
     organization_id: str,
-    user_id: UUID,
-    slack_user_id: str,
+    user_id: UUID | None,
+    slack_user_id: str | None,
     slack_email: str | None,
     match_source: str,
+    revtops_email: str | None = None,
 ) -> None:
     now = datetime.utcnow()
+    if not slack_user_id:
+        logger.warning(
+            "[slack_conversations] Skipping Slack user mapping upsert org=%s user=%s due to missing slack_user_id",
+            organization_id,
+            user_id,
+        )
+        return
     try:
         logger.info(
             "[slack_conversations] Attempting Slack user mapping upsert org=%s user=%s slack_user=%s email=%s source=%s",
@@ -610,29 +623,107 @@ async def _upsert_slack_user_mapping(
             match_source,
         )
         async with get_admin_session() as session:
-            stmt = pg_insert(SlackUserMapping).values(
+            resolved_revtops_email = revtops_email
+            if user_id and not resolved_revtops_email:
+                result = await session.execute(
+                    select(User.email).where(User.id == user_id)
+                )
+                user_email = result.scalar_one_or_none()
+                if isinstance(user_email, str) and user_email.strip():
+                    resolved_revtops_email = user_email.strip().lower()
+
+            if user_id:
+                existing_result = await session.execute(
+                    select(SlackUserMapping)
+                    .where(SlackUserMapping.organization_id == UUID(organization_id))
+                    .where(SlackUserMapping.slack_user_id == slack_user_id)
+                    .where(SlackUserMapping.user_id.is_(None))
+                    .limit(1)
+                )
+                existing_mapping = existing_result.scalar_one_or_none()
+                if existing_mapping:
+                    existing_mapping.user_id = user_id
+                    existing_mapping.revtops_email = resolved_revtops_email
+                    existing_mapping.slack_email = slack_email
+                    existing_mapping.match_source = match_source
+                    existing_mapping.updated_at = now
+                    await session.commit()
+                    logger.info(
+                        "[slack_conversations] Promoted Slack user mapping org=%s slack_user=%s to user=%s source=%s",
+                        organization_id,
+                        slack_user_id,
+                        user_id,
+                        match_source,
+                    )
+                    return
+
+                stmt = pg_insert(SlackUserMapping).values(
+                    id=uuid.uuid4(),
+                    organization_id=UUID(organization_id),
+                    user_id=user_id,
+                    revtops_email=resolved_revtops_email,
+                    slack_user_id=slack_user_id,
+                    slack_email=slack_email,
+                    match_source=match_source,
+                    created_at=now,
+                    updated_at=now,
+                ).on_conflict_do_update(
+                    index_elements=["organization_id", "user_id", "slack_user_id"],
+                    set_={
+                        "revtops_email": resolved_revtops_email,
+                        "slack_email": slack_email,
+                        "match_source": match_source,
+                        "updated_at": now,
+                    },
+                )
+                await session.execute(stmt)
+                await session.commit()
+                logger.info(
+                    "[slack_conversations] Upserted Slack user mapping org=%s user=%s slack_user=%s source=%s",
+                    organization_id,
+                    user_id,
+                    slack_user_id,
+                    match_source,
+                )
+                return
+
+            existing_result = await session.execute(
+                select(SlackUserMapping)
+                .where(SlackUserMapping.organization_id == UUID(organization_id))
+                .where(SlackUserMapping.slack_user_id == slack_user_id)
+                .where(SlackUserMapping.user_id.is_(None))
+                .limit(1)
+            )
+            existing_mapping = existing_result.scalar_one_or_none()
+            if existing_mapping:
+                existing_mapping.slack_email = slack_email
+                existing_mapping.match_source = match_source
+                existing_mapping.updated_at = now
+                await session.commit()
+                logger.info(
+                    "[slack_conversations] Updated unmapped Slack user mapping org=%s slack_user=%s source=%s",
+                    organization_id,
+                    slack_user_id,
+                    match_source,
+                )
+                return
+
+            mapping = SlackUserMapping(
                 id=uuid.uuid4(),
                 organization_id=UUID(organization_id),
-                user_id=user_id,
+                user_id=None,
+                revtops_email=resolved_revtops_email,
                 slack_user_id=slack_user_id,
                 slack_email=slack_email,
                 match_source=match_source,
                 created_at=now,
                 updated_at=now,
-            ).on_conflict_do_update(
-                index_elements=["organization_id", "user_id", "slack_user_id"],
-                set_={
-                    "slack_email": slack_email,
-                    "match_source": match_source,
-                    "updated_at": now,
-                },
             )
-            await session.execute(stmt)
+            session.add(mapping)
             await session.commit()
             logger.info(
-                "[slack_conversations] Upserted Slack user mapping org=%s user=%s slack_user=%s source=%s",
+                "[slack_conversations] Created unmapped Slack user mapping org=%s slack_user=%s source=%s",
                 organization_id,
-                user_id,
                 slack_user_id,
                 match_source,
             )
@@ -645,6 +736,23 @@ async def _upsert_slack_user_mapping(
             exc,
             exc_info=True,
         )
+
+
+async def upsert_slack_user_mapping_for_user(
+    organization_id: str,
+    user_id: UUID,
+    slack_user_id: str,
+    slack_email: str | None,
+    match_source: str,
+) -> None:
+    """Public helper to upsert a Slack mapping for a specific user."""
+    await _upsert_slack_user_mapping(
+        organization_id=organization_id,
+        user_id=user_id,
+        slack_user_id=slack_user_id,
+        slack_email=slack_email,
+        match_source=match_source,
+    )
 
 
 async def _fetch_slack_user_info(

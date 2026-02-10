@@ -11,7 +11,7 @@
  * - Profile section
  */
 
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import type { View, ChatSummary, OrganizationInfo } from './AppLayout';
 import { useAppStore, useIsGlobalAdmin, useActiveTasksByConversation, type UserProfile } from '../store';
 
@@ -81,9 +81,20 @@ export function Sidebar({
 }: SidebarProps): JSX.Element {
   // Read user directly from store to ensure we always have the latest value
   const user = useAppStore((state) => state.user);
+  const pinnedChatIds = useAppStore((state) => state.pinnedChatIds);
+  const togglePinChat = useAppStore((state) => state.togglePinChat);
   const isGlobalAdmin = useIsGlobalAdmin();
   const activeTasksByConversation = useActiveTasksByConversation();
   const sidebarWidth = collapsed ? 'w-16' : 'w-64';
+  const orderedChats = useMemo(() => {
+    if (pinnedChatIds.length === 0) {
+      return recentChats;
+    }
+    const pinnedSet = new Set(pinnedChatIds);
+    const pinned = recentChats.filter((chat) => pinnedSet.has(chat.id));
+    const unpinned = recentChats.filter((chat) => !pinnedSet.has(chat.id));
+    return [...pinned, ...unpinned];
+  }, [pinnedChatIds, recentChats]);
 
   return (
     <aside
@@ -298,8 +309,9 @@ export function Sidebar({
             Recent
           </h3>
           <div className="space-y-0.5">
-            {recentChats.map((chat) => {
+            {orderedChats.map((chat) => {
               const hasActiveTask = chat.id in activeTasksByConversation;
+              const isPinned = pinnedChatIds.includes(chat.id);
               return (
                 <div
                   key={chat.id}
@@ -310,7 +322,7 @@ export function Sidebar({
                   }`}
                   onClick={() => onSelectChat(chat.id)}
                 >
-                  <div className="flex items-center gap-1.5 pr-6">
+                  <div className="flex items-center gap-1.5 pr-10">
                     {/* Workflow icon for automated conversations */}
                     {chat.type === 'workflow' && (
                       <svg className="w-3.5 h-3.5 text-amber-500 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -328,6 +340,30 @@ export function Sidebar({
                   <div className="text-xs text-surface-500 truncate mt-0.5">
                     {formatRelativeTime(chat.lastMessageAt)}
                   </div>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      togglePinChat(chat.id);
+                    }}
+                    className={`absolute right-7 top-1/2 -translate-y-1/2 p-1 rounded ${
+                      isPinned ? 'opacity-100 text-primary-400' : 'opacity-0 text-surface-500'
+                    } group-hover:opacity-100 hover:bg-surface-700 hover:text-surface-300 transition-all`}
+                    title={isPinned ? "Unpin conversation" : "Pin conversation"}
+                  >
+                    <svg
+                      className={`w-3.5 h-3.5 ${isPinned ? 'text-primary-400' : ''}`}
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M12 21v-6m0 0l-3-3m3 3l3-3m-6.364-2.364L6 8m0 0l3.636-3.636a3 3 0 014.243 0L18 8m-12 0h12"
+                      />
+                    </svg>
+                  </button>
                   {/* Delete button - appears on hover */}
                   <button
                     onClick={(e) => {
