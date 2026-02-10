@@ -113,8 +113,9 @@ interface DisplayIntegration extends Integration {
 
 interface SlackUserMapping {
   id: string;
-  slack_user_id: string;
-  slack_email: string | null;
+  external_userid: string | null;
+  external_email: string | null;
+  source: string;
   match_source: string;
   created_at: string;
 }
@@ -282,8 +283,18 @@ export function DataSources(): JSX.Element {
         throw new Error(`Failed to load Slack mappings: ${response.status}`);
       }
       const data = (await response.json()) as { mappings: SlackUserMapping[] };
-      setSlackMappings(data.mappings);
-      console.log('[DataSources] Loaded Slack mappings:', data.mappings.length);
+      const mappingsFromIdentityTable = data.mappings
+        .map((mapping) => ({
+          id: mapping.id,
+          external_userid: mapping.external_userid,
+          external_email: mapping.external_email,
+          source: mapping.source,
+          match_source: mapping.match_source,
+          created_at: mapping.created_at,
+        }))
+        .filter((mapping) => mapping.source.toLowerCase().includes('slack'));
+      setSlackMappings(mappingsFromIdentityTable);
+      console.log('[DataSources] Loaded Slack mappings from user_mappings_for_identity:', mappingsFromIdentityTable.length);
     } catch (error) {
       console.error('[DataSources] Failed to load Slack mappings:', error);
       setSlackMappingsError(error instanceof Error ? error.message : 'Unknown error');
@@ -870,9 +881,9 @@ export function DataSources(): JSX.Element {
                     className="flex items-center justify-between rounded-lg border border-surface-700/60 px-3 py-2 text-xs text-surface-200"
                   >
                     <div className="min-w-0">
-                      <div className="truncate">{mapping.slack_email ?? 'Unknown email'}</div>
+                      <div className="truncate">{mapping.external_email ?? 'Unknown email'}</div>
                       <div className="text-[11px] text-surface-500">
-                        {mapping.slack_user_id} · {mapping.match_source}
+                        {mapping.external_userid} · {mapping.match_source}
                       </div>
                     </div>
                     <button
