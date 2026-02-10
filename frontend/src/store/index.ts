@@ -195,6 +195,7 @@ interface AppState {
   currentView: View;
   currentChatId: string | null;
   recentChats: ChatSummary[];
+  pinnedChatIds: string[];
   pendingChatInput: string | null; // Pre-filled input for new chats
   pendingChatAutoSend: boolean; // Auto-send pending input when chat opens
 
@@ -240,6 +241,7 @@ interface AppState {
   startNewChat: () => void;
   setPendingChatInput: (input: string | null) => void;
   setPendingChatAutoSend: (autoSend: boolean) => void;
+  togglePinChat: (id: string) => void;
 
   // Actions - Conversations
   addConversation: (id: string, title: string) => void;
@@ -335,6 +337,7 @@ export const useAppStore = create<AppState>()(
       currentView: "home",
       currentChatId: null,
       recentChats: [],
+      pinnedChatIds: [],
       pendingChatInput: null,
       pendingChatAutoSend: false,
 
@@ -371,6 +374,7 @@ export const useAppStore = create<AppState>()(
           masquerade: null,
           currentChatId: null,
           recentChats: [],
+          pinnedChatIds: [],
           conversations: {},
           activeTasksByConversation: {},
           integrations: [],
@@ -404,6 +408,7 @@ export const useAppStore = create<AppState>()(
           // Clear chat state when switching users
           currentChatId: null,
           recentChats: [],
+          pinnedChatIds: [],
           conversations: {},
           activeTasksByConversation: {},
         });
@@ -424,6 +429,7 @@ export const useAppStore = create<AppState>()(
           // Clear chat state when switching back
           currentChatId: null,
           recentChats: [],
+          pinnedChatIds: [],
           conversations: {},
           activeTasksByConversation: {},
         });
@@ -525,6 +531,20 @@ export const useAppStore = create<AppState>()(
       setPendingChatInput: (pendingChatInput) => set({ pendingChatInput }),
       setPendingChatAutoSend: (pendingChatAutoSend) =>
         set({ pendingChatAutoSend }),
+      togglePinChat: (id) => {
+        const { pinnedChatIds } = get();
+        const isPinned = pinnedChatIds.includes(id);
+        const updated = isPinned
+          ? pinnedChatIds.filter((chatId) => chatId !== id)
+          : [id, ...pinnedChatIds];
+        console.log(
+          "[Store] Toggling chat pin:",
+          id,
+          "Pinned:",
+          !isPinned,
+        );
+        set({ pinnedChatIds: updated });
+      },
 
       // Conversation actions
       addConversation: (id, title) => {
@@ -574,6 +594,21 @@ export const useAppStore = create<AppState>()(
             data.conversations.length,
             "conversations",
           );
+          const slackPreviewGaps = data.conversations.filter(
+            (conv) =>
+              (conv.title ?? "").toLowerCase().includes("slack") &&
+              !conv.last_message_preview,
+          );
+          if (slackPreviewGaps.length > 0) {
+            console.debug(
+              "[Store] Slack conversations missing previews:",
+              slackPreviewGaps.map((conv) => ({
+                id: conv.id,
+                title: conv.title,
+                updated_at: conv.updated_at,
+              })),
+            );
+          }
 
           const recentChats: ChatSummary[] = data.conversations.map((conv) => ({
             id: conv.id,
@@ -594,6 +629,7 @@ export const useAppStore = create<AppState>()(
         const {
           user,
           recentChats,
+          pinnedChatIds,
           currentChatId,
           conversationId,
           conversations,
@@ -615,8 +651,12 @@ export const useAppStore = create<AppState>()(
         const remainingConversations = { ...conversations };
         delete remainingConversations[id];
 
+        const filteredPinnedChats = pinnedChatIds.filter(
+          (chatId) => chatId !== id,
+        );
         set({
           recentChats: updated,
+          pinnedChatIds: filteredPinnedChats,
           conversations: remainingConversations,
           ...(shouldClearChat
             ? {
@@ -1266,6 +1306,7 @@ export const useAppStore = create<AppState>()(
         organization: state.organization,
         isAuthenticated: state.isAuthenticated,
         sidebarCollapsed: state.sidebarCollapsed,
+        pinnedChatIds: state.pinnedChatIds,
         masquerade: state.masquerade, // Persist masquerade state so admin can exit after reload
       }),
     },

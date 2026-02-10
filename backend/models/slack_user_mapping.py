@@ -36,6 +36,11 @@ class SlackUserMapping(Base):
             "organization_id",
             "user_id",
         ),
+        Index(
+            "ix_slack_user_mappings_org_slack_email",
+            "organization_id",
+            "slack_email",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -44,10 +49,11 @@ class SlackUserMapping(Base):
     organization_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True
     )
-    user_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True
+    user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id"), nullable=True, index=True
     )
-    slack_user_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    revtops_email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    slack_user_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     slack_email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     match_source: Mapped[str] = mapped_column(String(50), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
