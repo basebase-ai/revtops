@@ -1211,7 +1211,7 @@ async def persist_slack_message_activity(
     team_id: str,
     channel_id: str,
     user_id: str,
-    text: str,
+    message_text: str,
     ts: str,
     thread_ts: str | None,
 ) -> None:
@@ -1225,7 +1225,7 @@ async def persist_slack_message_activity(
         team_id: Slack workspace/team ID
         channel_id: Slack channel ID
         user_id: Slack user ID who sent the message
-        text: Message text
+        message_text: Message text
         ts: Message timestamp (unique per-message)
         thread_ts: Parent thread timestamp, if this is a threaded reply
     """
@@ -1238,7 +1238,7 @@ async def persist_slack_message_activity(
         organization_id=organization_id,
         slack_user_id=user_id,
     )
-    slack_email = _extract_slack_email(slack_user)
+    slack_email: str | None = _extract_slack_email(slack_user)
 
     # Parse message timestamp into a datetime
     activity_date: datetime | None = None
@@ -1256,7 +1256,7 @@ async def persist_slack_message_activity(
                 source_id=source_id,
                 type="slack_message",
                 subject=f"#{channel_id}",
-                description=text[:1000],
+                description=message_text[:1000],
                 activity_date=activity_date,
                 custom_fields={
                     "channel_id": channel_id,
