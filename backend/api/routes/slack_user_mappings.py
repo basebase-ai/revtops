@@ -12,7 +12,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select, text
 
-from config import settings
+from config import get_redis_connection_kwargs, settings
 from connectors.slack import SlackConnector
 from models.database import get_admin_session, get_session
 from models.integration import Integration
@@ -57,7 +57,9 @@ class SlackMappingVerifyRequest(BaseModel):
 async def _get_redis() -> redis.Redis:
     global _redis_client
     if _redis_client is None:
-        _redis_client = redis.from_url(settings.REDIS_URL, decode_responses=True)
+        _redis_client = redis.from_url(
+            settings.REDIS_URL, **get_redis_connection_kwargs(decode_responses=True)
+        )
     return _redis_client
 
 

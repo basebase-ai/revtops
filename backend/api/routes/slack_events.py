@@ -28,7 +28,7 @@ from typing import Any
 import redis.asyncio as redis
 from fastapi import APIRouter, HTTPException, Request, Response
 
-from config import settings
+from config import get_redis_connection_kwargs, settings
 from services.slack_conversations import (
     persist_slack_message_activity,
     process_slack_dm,
@@ -48,7 +48,9 @@ async def get_redis() -> redis.Redis:
     """Get or create Redis client for event deduplication."""
     global _redis_client
     if _redis_client is None:
-        _redis_client = redis.from_url(settings.REDIS_URL)
+        _redis_client = redis.from_url(
+            settings.REDIS_URL, **get_redis_connection_kwargs()
+        )
     return _redis_client
 
 

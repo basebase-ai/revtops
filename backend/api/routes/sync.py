@@ -18,6 +18,7 @@ from sqlalchemy import select
 
 from connectors.base import SyncCancelledError
 from connectors.fireflies import FirefliesConnector
+from connectors.github import GitHubConnector
 from connectors.gmail import GmailConnector
 from connectors.google_calendar import GoogleCalendarConnector
 from connectors.hubspot import HubSpotConnector
@@ -43,6 +44,7 @@ CONNECTORS = {
     "microsoft_calendar": MicrosoftCalendarConnector,
     "microsoft_mail": MicrosoftMailConnector,
     "zoom": ZoomConnector,
+    "github": GitHubConnector,
 }
 
 # Simple in-memory sync status tracking (use Redis in production)
@@ -544,6 +546,160 @@ async def match_hubspot_owners(organization_id: str) -> OwnerMatchResponse:
         matched=matched_count,
         unmatched=unmatched_count,
         results=results,
+    )
+
+
+# =============================================================================
+# GitHub-specific endpoints
+# =============================================================================
+
+
+class GitHubRepoResponse(BaseModel):
+    """A GitHub repository."""
+
+    github_repo_id: int
+    owner: str
+    name: str
+    full_name: str
+    description: Optional[str] = None
+    default_branch: str = "main"
+    is_private: bool = False
+    language: Optional[str] = None
+    url: str
+
+
+class GitHubAvailableReposResponse(BaseModel):
+    """Available repos from the GitHub token."""
+
+    repos: list[GitHubRepoResponse]
+
+
+class GitHubTrackedRepoResponse(BaseModel):
+    """A tracked repository record."""
+
+    id: str
+    organization_id: str
+    github_repo_id: int
+    owner: str
+    name: str
+    full_name: str
+    description: Optional[str] = None
+    default_branch: str
+    is_private: bool
+    language: Optional[str] = None
+    url: str
+    is_tracked: bool
+    last_sync_at: Optional[str] = None
+    created_at: Optional[str] = None
+
+
+class GitHubTrackedReposResponse(BaseModel):
+    """List of tracked repos."""
+
+    repos: list[GitHubTrackedRepoResponse]
+
+
+class GitHubTrackReposRequest(BaseModel):
+    """Request to track specific repos."""
+
+    github_repo_ids: list[int]
+
+
+@router.get(
+    "/{organization_id}/github/repos",
+    response_model=GitHubAvailableReposResponse,
+)
+async def list_github_repos(organization_id: str) -> GitHubAvailableReposResponse:
+    """List all GitHub repos accessible to the connected token."""
+    try:
+        UUID(organization_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid organization ID")
+
+    async with get_session(organization_id=organization_id) as session:
+        result = await session.execute(
+            select(Integration).where(
+                Integration.organization_id == UUID(organization_id),
+                Integration.provider == "github",
+                Integration.is_active == True,
+            )
+        )
+        if not result.scalar_one_or_none():
+            raise HTTPException(
+                status_code=404, detail="No active GitHub integration found"
+            )
+
+    connector: GitHubConnector = GitHubConnector(organization_id)
+    repos: list[dict[str, Any]] = await connector.list_available_repos()
+    return GitHubAvailableReposResponse(
+        repos=[GitHubRepoResponse(**r) for r in repos]
+    )
+
+
+@router.post(
+    "/{organization_id}/github/repos/track",
+    response_model=GitHubTrackedReposResponse,
+)
+async def track_github_repos(
+    organization_id: str, body: GitHubTrackReposRequest
+) -> GitHubTrackedReposResponse:
+    """Select specific repos to track for this organization."""
+    try:
+        UUID(organization_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid organization ID")
+
+    if not body.github_repo_ids:
+        raise HTTPException(status_code=400, detail="No repo IDs provided")
+
+    connector: GitHubConnector = GitHubConnector(organization_id)
+    tracked: list[dict[str, Any]] = await connector.track_repos(body.github_repo_ids)
+    return GitHubTrackedReposResponse(
+        repos=[GitHubTrackedRepoResponse(**r) for r in tracked]
+    )
+
+
+@router.post("/{organization_id}/github/repos/untrack")
+async def untrack_github_repos(
+    organization_id: str, body: GitHubTrackReposRequest
+) -> dict[str, str]:
+    """Stop tracking specific repos (data is preserved)."""
+    try:
+        UUID(organization_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid organization ID")
+
+    connector: GitHubConnector = GitHubConnector(organization_id)
+    await connector.untrack_repos(body.github_repo_ids)
+    return {"status": "ok"}
+
+
+@router.get(
+    "/{organization_id}/github/repos/tracked",
+    response_model=GitHubTrackedReposResponse,
+)
+async def get_tracked_github_repos(
+    organization_id: str,
+) -> GitHubTrackedReposResponse:
+    """Get all currently tracked repos for this organization."""
+    from models.github_repository import GitHubRepository
+
+    try:
+        org_uuid: UUID = UUID(organization_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid organization ID")
+
+    async with get_session(organization_id=organization_id) as session:
+        result = await session.execute(
+            select(GitHubRepository).where(
+                GitHubRepository.organization_id == org_uuid,
+                GitHubRepository.is_tracked == True,
+            )
+        )
+        repos = result.scalars().all()
+
+    return GitHubTrackedReposResponse(
+        repos=[GitHubTrackedRepoResponse(**r.to_dict()) for r in repos]
     )
 
 

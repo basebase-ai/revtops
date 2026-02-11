@@ -2,6 +2,7 @@
 from connectors.apollo import ApolloConnector
 from connectors.base import BaseConnector
 from connectors.fireflies import FirefliesConnector
+from connectors.github import GitHubConnector
 from connectors.gmail import GmailConnector
 from connectors.google_calendar import GoogleCalendarConnector
 from connectors.hubspot import HubSpotConnector
@@ -15,6 +16,7 @@ __all__ = [
     "ApolloConnector",
     "BaseConnector",
     "FirefliesConnector",
+    "GitHubConnector",
     "GmailConnector",
     "GoogleCalendarConnector",
     "HubSpotConnector",

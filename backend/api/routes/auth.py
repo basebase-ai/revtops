@@ -956,6 +956,7 @@ async def get_available_integrations() -> AvailableIntegrationsResponse:
             {"id": "salesforce", "name": "Salesforce", "description": "CRM - Opportunities, Accounts"},
             {"id": "google_sheets", "name": "Google Sheets", "description": "Import contacts, accounts, deals from spreadsheets"},
             {"id": "apollo", "name": "Apollo.io", "description": "Data enrichment - Update contact job titles, companies, emails"},
+            {"id": "github", "name": "GitHub", "description": "Track repos, commits, and pull requests by team"},
         ]
     )
 
@@ -1867,6 +1868,7 @@ async def run_initial_sync(
     from connectors.microsoft_mail import MicrosoftMailConnector
     from connectors.fireflies import FirefliesConnector
     from connectors.zoom import ZoomConnector
+    from connectors.github import GitHubConnector
 
     connectors = {
         "hubspot": HubSpotConnector,
@@ -1878,6 +1880,7 @@ async def run_initial_sync(
         "microsoft_mail": MicrosoftMailConnector,
         "fireflies": FirefliesConnector,
         "zoom": ZoomConnector,
+        "github": GitHubConnector,
     }
 
     connector_class = connectors.get(provider)
