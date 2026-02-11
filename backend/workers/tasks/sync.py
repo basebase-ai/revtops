@@ -52,6 +52,7 @@ async def _sync_integration(organization_id: str, provider: str) -> dict[str, An
     Returns sync results including counts and any errors.
     """
     from connectors.fireflies import FirefliesConnector
+    from connectors.github import GitHubConnector
     from connectors.gmail import GmailConnector
     from connectors.google_calendar import GoogleCalendarConnector
     from connectors.hubspot import HubSpotConnector
@@ -72,6 +73,7 @@ async def _sync_integration(organization_id: str, provider: str) -> dict[str, An
         "gmail": GmailConnector,
         "microsoft_calendar": MicrosoftCalendarConnector,
         "microsoft_mail": MicrosoftMailConnector,
+        "github": GitHubConnector,
     }
 
     connector_class = connectors.get(provider)

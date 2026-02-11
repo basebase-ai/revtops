@@ -18,7 +18,7 @@ from uuid import uuid4
 
 import redis.asyncio as redis
 
-from config import settings
+from config import get_redis_connection_kwargs, settings
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +29,9 @@ EVENT_HISTORY_KEY = "revtops:events:history:{org_id}"
 
 async def get_redis_client() -> redis.Redis:
     """Get an async Redis client."""
-    return redis.from_url(settings.REDIS_URL, decode_responses=True)
+    return redis.from_url(
+        settings.REDIS_URL, **get_redis_connection_kwargs(decode_responses=True)
+    )
 
 
 async def emit_event(
