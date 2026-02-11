@@ -3004,23 +3004,27 @@ async def _enrich_contacts_with_apollo(
             }
     
     try:
+        import asyncio
+
         connector = ApolloConnector(organization_id)
-        
-        # Enrich contacts in bulk
-        enriched_results = await connector.bulk_enrich_people(
-            people=contacts,
-            reveal_personal_emails=reveal_personal_emails,
-            reveal_phone_number=reveal_phone_numbers,
-        )
-        
-        # Pair original contacts with enrichment results
+
+        # Use single-person /people/match (free-plan compatible); bulk_match requires paid plan
         enriched_contacts: list[dict[str, Any]] = []
         match_count = 0
         no_match_count = 0
-        
-        for i, enrichment in enumerate(enriched_results):
-            original = contacts[i] if i < len(contacts) else {}
-            
+
+        for i, person in enumerate(contacts):
+            original: dict[str, Any] = person if isinstance(person, dict) else {}
+            enrichment: dict[str, Any] | None = await connector.enrich_person(
+                email=original.get("email"),
+                first_name=original.get("first_name"),
+                last_name=original.get("last_name"),
+                domain=original.get("domain"),
+                linkedin_url=original.get("linkedin_url"),
+                organization_name=original.get("organization_name"),
+                reveal_personal_emails=reveal_personal_emails,
+                reveal_phone_number=reveal_phone_numbers,
+            )
             if enrichment and enrichment.get("name"):
                 match_count += 1
                 enriched_contacts.append({
@@ -3035,7 +3039,10 @@ async def _enrich_contacts_with_apollo(
                     "enriched": None,
                     "matched": False,
                 })
-        
+            # Brief pause between calls to respect rate limits
+            if i < len(contacts) - 1:
+                await asyncio.sleep(0.5)
+
         return {
             "success": True,
             "total": len(contacts),
@@ -3045,7 +3052,7 @@ async def _enrich_contacts_with_apollo(
             "message": f"Enriched {match_count} of {len(contacts)} contacts. "
                        f"{'Use crm_write to update these contacts in your CRM.' if match_count > 0 else 'No matches found - try providing more identifying info (email, domain).'}",
         }
-        
+
     except Exception as e:
         logger.error("[Tools._enrich_contacts_with_apollo] Failed: %s", str(e))
         return {"error": f"Apollo enrichment failed: {str(e)}"}
