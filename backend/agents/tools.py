@@ -4110,11 +4110,6 @@ async def _read_cloud_file(
     if not external_id:
         return {"error": "external_id is required."}
 
-    if not user_id:
-        return {
-            "error": "Cloud file read requires a user context (not available in Slack DM).",
-        }
-
     try:
         from uuid import UUID as _UUID
         from sqlalchemy import select, and_
