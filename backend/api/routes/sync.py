@@ -703,6 +703,34 @@ async def get_tracked_github_repos(
     )
 
 
+@router.post("/{organization_id}/github/match-users")
+async def match_github_users(
+    organization_id: str,
+) -> dict[str, Any]:
+    """
+    Match GitHub commit authors to internal users by email and persist
+    identity mappings. Also backfills user_id on existing commits/PRs.
+    """
+    try:
+        UUID(organization_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid organization ID")
+
+    connector: GitHubConnector = GitHubConnector(organization_id)
+    match_results: list[dict[str, Any]] = (
+        await connector.match_github_users_to_team()
+    )
+    backfilled: int = await connector._backfill_user_ids()
+
+    return {
+        "status": "ok",
+        "matched": sum(1 for r in match_results if r["matched"]),
+        "unmatched": sum(1 for r in match_results if not r["matched"]),
+        "backfilled_rows": backfilled,
+        "details": match_results,
+    }
+
+
 # Legacy endpoint for backwards compatibility
 @router.post("/{organization_id}")
 async def trigger_sync_legacy(

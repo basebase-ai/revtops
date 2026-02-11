@@ -954,7 +954,7 @@ async def get_available_integrations() -> AvailableIntegrationsResponse:
             {"id": "microsoft_calendar", "name": "Microsoft Calendar", "description": "Outlook calendar events and meetings"},
             {"id": "microsoft_mail", "name": "Microsoft Mail", "description": "Outlook emails and communications"},
             {"id": "salesforce", "name": "Salesforce", "description": "CRM - Opportunities, Accounts"},
-            {"id": "google_sheets", "name": "Google Sheets", "description": "Import contacts, accounts, deals from spreadsheets"},
+            {"id": "google_drive", "name": "Google Drive", "description": "Sync files from Google Drive — search and read Docs, Sheets, Slides"},
             {"id": "apollo", "name": "Apollo.io", "description": "Data enrichment - Update contact job titles, companies, emails"},
             {"id": "github", "name": "GitHub", "description": "Track repos, commits, and pull requests by team"},
         ]

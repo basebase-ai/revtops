@@ -68,7 +68,7 @@ class Settings(BaseSettings):
     NANGO_MICROSOFT_MAIL_INTEGRATION_ID: str = "microsoft"
     NANGO_FIREFLIES_INTEGRATION_ID: str = "fireflies"
     NANGO_ZOOM_INTEGRATION_ID: str = "zoom"
-    NANGO_GOOGLE_SHEETS_INTEGRATION_ID: str = "google-sheet"
+    NANGO_GOOGLE_DRIVE_INTEGRATION_ID: str = "google-drive"
     NANGO_APOLLO_INTEGRATION_ID: str = "apollo"
     NANGO_GITHUB_INTEGRATION_ID: str = "github"
 
@@ -165,7 +165,7 @@ NANGO_INTEGRATION_IDS: dict[str, str] = {
     "microsoft_mail": settings.NANGO_MICROSOFT_MAIL_INTEGRATION_ID,
     "fireflies": settings.NANGO_FIREFLIES_INTEGRATION_ID,
     "zoom": settings.NANGO_ZOOM_INTEGRATION_ID,
-    "google_sheets": settings.NANGO_GOOGLE_SHEETS_INTEGRATION_ID,
+    "google_drive": settings.NANGO_GOOGLE_DRIVE_INTEGRATION_ID,
     "apollo": settings.NANGO_APOLLO_INTEGRATION_ID,
     "github": settings.NANGO_GITHUB_INTEGRATION_ID,
 }
@@ -183,7 +183,7 @@ PROVIDER_SCOPES: dict[str, str] = {
     "microsoft_mail": "user",
     "fireflies": "user",
     "zoom": "user",
-    "google_sheets": "user",
+    "google_drive": "user",
     "apollo": "organization",
     "github": "organization",
 }

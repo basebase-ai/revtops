@@ -20,9 +20,10 @@ import {
   SiZoom,
   SiGooglecalendar,
   SiGmail,
-  SiGooglesheets,
+  SiGoogledrive,
+  SiGithub,
 } from 'react-icons/si';
-import { HiOutlineCalendar, HiOutlineMail, HiGlobeAlt, HiUserGroup, HiExclamation, HiDeviceMobile, HiMicrophone, HiUpload } from 'react-icons/hi';
+import { HiOutlineCalendar, HiOutlineMail, HiGlobeAlt, HiUserGroup, HiExclamation, HiDeviceMobile, HiMicrophone } from 'react-icons/hi';
 // Custom Apollo.io icon - 8-ray starburst matching their brand
 const ApolloIcon: IconType = ({ className, ...props }) => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className={className} {...props}>
@@ -32,7 +33,6 @@ const ApolloIcon: IconType = ({ className, ...props }) => (
     <line x1="19.07" y1="4.93" x2="4.93" y2="19.07" />
   </svg>
 );
-import { SheetImporter } from './SheetImporter';
 import { API_BASE } from '../lib/api';
 import { useAppStore, useIntegrations, useIntegrationsLoading, type Integration, type SyncStats } from '../store';
 import { useWebSocket } from '../hooks/useWebSocket';
@@ -72,8 +72,9 @@ const ICON_MAP: Record<string, IconType> = {
   'microsoft-mail': HiOutlineMail,
   microsoft_mail: HiOutlineMail,
   fireflies: HiMicrophone,
-  google_sheets: SiGooglesheets,
+  google_drive: SiGoogledrive,
   apollo: ApolloIcon,
+  github: SiGithub,
 };
 
 // User-scoped providers (each user connects individually vs org-wide connection)
@@ -84,7 +85,7 @@ const USER_SCOPED_PROVIDERS = new Set([
   'microsoft_mail',
   'zoom',
   'fireflies',
-  'google_sheets',
+  'google_drive',
 ]);
 
 // Integration display config (colors, icons, descriptions)
@@ -98,8 +99,9 @@ const INTEGRATION_CONFIG: Record<string, { name: string; description: string; ic
   microsoft_calendar: { name: 'Microsoft Calendar', description: 'Outlook calendar events and meetings', icon: 'microsoft_calendar', color: 'from-sky-500 to-sky-600' },
   microsoft_mail: { name: 'Microsoft Mail', description: 'Outlook emails and communications', icon: 'microsoft_mail', color: 'from-sky-500 to-sky-600' },
   fireflies: { name: 'Fireflies', description: 'Meeting transcriptions and notes', icon: 'fireflies', color: 'from-violet-500 to-violet-600' },
-  google_sheets: { name: 'Google Sheets', description: 'Import contacts, accounts, deals from spreadsheets', icon: 'google_sheets', color: 'from-emerald-500 to-emerald-600' },
+  google_drive: { name: 'Google Drive', description: 'Sync files — search and read Docs, Sheets, Slides from Drive', icon: 'google_drive', color: 'from-yellow-500 to-amber-500' },
   apollo: { name: 'Apollo.io', description: 'Data enrichment - Contact titles, companies, emails', icon: 'apollo', color: 'from-yellow-400 to-yellow-500' },
+  github: { name: 'GitHub', description: 'Track repos, commits, and pull requests by team', icon: 'github', color: 'from-gray-600 to-gray-700' },
 };
 
 // Extended integration type with display info
@@ -130,9 +132,26 @@ function formatSyncStats(stats: SyncStats | null, provider: string): string | nu
 
   const parts: string[] = [];
 
+  // GitHub: show repos, commits, PRs
+  if (provider === 'github') {
+    const repos = stats.repositories ?? 0;
+    const commits = stats.commits ?? 0;
+    const prs = stats.pull_requests ?? 0;
+    if (repos > 0) parts.push(`${repos} repos`);
+    if (commits > 0) parts.push(`${commits.toLocaleString()} commits`);
+    if (prs > 0) parts.push(`${prs} PRs`);
+  } else if (provider === 'google_drive') {
+    const total = stats.total_files ?? 0;
+    const docs = stats.docs ?? 0;
+    const sheets = stats.sheets ?? 0;
+    const slides = stats.slides ?? 0;
+    if (total > 0) parts.push(`${total.toLocaleString()} files`);
+    if (docs > 0) parts.push(`${docs} docs`);
+    if (sheets > 0) parts.push(`${sheets} sheets`);
+    if (slides > 0) parts.push(`${slides} slides`);
+  } else {
   // CRM providers always show contact/account/deal counts (even if 0)
   const isCrmProvider = provider === 'hubspot' || provider === 'salesforce';
-  
   if (isCrmProvider) {
     // Always show CRM stats for trust and debugging
     const contacts = stats.contacts ?? 0;
@@ -152,6 +171,7 @@ function formatSyncStats(stats: SyncStats | null, provider: string): string | nu
     if (stats.deals && stats.deals > 0) {
       parts.push(`${stats.deals.toLocaleString()} deals`);
     }
+  }
   }
 
   // Activity-based connectors (email, calendar, meetings)
@@ -212,7 +232,6 @@ export function DataSources(): JSX.Element {
   const [syncingProviders, setSyncingProviders] = useState<Set<string>>(new Set());
   const [disconnectingProviders, setDisconnectingProviders] = useState<Set<string>>(new Set());
   const [connectingProvider, setConnectingProvider] = useState<string | null>(null);
-  const [showSheetImporter, setShowSheetImporter] = useState(false);
   const [slackMappings, setSlackMappings] = useState<SlackUserMapping[]>([]);
   const [slackMappingsLoading, setSlackMappingsLoading] = useState(false);
   const [slackMappingsError, setSlackMappingsError] = useState<string | null>(null);
@@ -220,6 +239,27 @@ export function DataSources(): JSX.Element {
   const [slackCodeInput, setSlackCodeInput] = useState('');
   const [slackMappingStatus, setSlackMappingStatus] = useState<string | null>(null);
   const [slackShowAddForm, setSlackShowAddForm] = useState(false);
+
+  // GitHub: available repos (from token), tracked repo ids, selection, loading
+  interface GitHubRepo {
+    github_repo_id: number;
+    owner: string;
+    name: string;
+    full_name: string;
+    description?: string;
+    default_branch: string;
+    is_private: boolean;
+    language?: string;
+    url: string;
+  }
+  const [githubAvailableRepos, setGithubAvailableRepos] = useState<GitHubRepo[]>([]);
+  const [githubTrackedIds, setGithubTrackedIds] = useState<Set<number>>(new Set());
+  const [githubTrackedNames, setGithubTrackedNames] = useState<string[]>([]);
+  const [githubReposLoading, setGithubReposLoading] = useState(false);
+  const [githubReposError, setGithubReposError] = useState<string | null>(null);
+  const [githubSelectedIds, setGithubSelectedIds] = useState<Set<number>>(new Set());
+  const [githubSaving, setGithubSaving] = useState(false);
+  const [githubReposExpanded, setGithubReposExpanded] = useState(false);
   
   // Live sync progress from WebSocket
   const [syncProgress, setSyncProgress] = useState<Record<string, number>>({});
@@ -229,6 +269,9 @@ export function DataSources(): JSX.Element {
 
   const slackIntegration = rawIntegrations.find((integration) => integration.provider === 'slack');
   const slackConnected = Boolean(slackIntegration?.isActive);
+
+  const githubIntegration = rawIntegrations.find((integration) => integration.provider === 'github');
+  const githubConnected = Boolean(githubIntegration?.isActive);
   
   // Handle WebSocket messages for sync progress
   const handleWsMessage = useCallback((message: string) => {
@@ -309,6 +352,72 @@ export function DataSources(): JSX.Element {
       void fetchSlackMappings();
     }
   }, [fetchSlackMappings, slackConnected]);
+
+  const fetchGitHubAvailableRepos = useCallback(async (): Promise<void> => {
+    if (!organizationId) return;
+    setGithubReposLoading(true);
+    setGithubReposError(null);
+    try {
+      const res = await fetch(`${API_BASE}/sync/${organizationId}/github/repos`);
+      if (!res.ok) throw new Error(`Failed to load repos: ${res.status}`);
+      const data = (await res.json()) as { repos: GitHubRepo[] };
+      setGithubAvailableRepos(data.repos ?? []);
+    } catch (e) {
+      setGithubReposError(e instanceof Error ? e.message : 'Failed to load repos');
+      setGithubAvailableRepos([]);
+    } finally {
+      setGithubReposLoading(false);
+    }
+  }, [organizationId]);
+
+  const fetchGitHubTrackedRepos = useCallback(async (): Promise<void> => {
+    if (!organizationId) return;
+    try {
+      const res = await fetch(`${API_BASE}/sync/${organizationId}/github/repos/tracked`);
+      if (!res.ok) return;
+      const data = (await res.json()) as { repos: { github_repo_id: number; full_name?: string }[] };
+      const repos = data.repos ?? [];
+      const ids = new Set(repos.map((r) => r.github_repo_id));
+      setGithubTrackedIds(ids);
+      setGithubSelectedIds(ids);
+      setGithubTrackedNames(repos.map((r) => r.full_name ?? '').filter(Boolean));
+    } catch {
+      setGithubTrackedIds(new Set());
+      setGithubSelectedIds(new Set());
+      setGithubTrackedNames([]);
+    }
+  }, [organizationId]);
+
+  useEffect(() => {
+    if (githubConnected && organizationId) {
+      void fetchGitHubAvailableRepos();
+      void fetchGitHubTrackedRepos();
+    }
+  }, [githubConnected, organizationId, fetchGitHubAvailableRepos, fetchGitHubTrackedRepos]);
+
+  const handleGitHubTrackRepos = useCallback(async (): Promise<void> => {
+    if (!organizationId || githubSaving) return;
+    setGithubSaving(true);
+    setGithubReposError(null);
+    try {
+      const res = await fetch(`${API_BASE}/sync/${organizationId}/github/repos/track`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ github_repo_ids: Array.from(githubSelectedIds) }),
+      });
+      if (!res.ok) {
+        const err = (await res.json()) as { detail?: string };
+        throw new Error(err.detail ?? `Failed to save: ${res.status}`);
+      }
+      await fetchGitHubTrackedRepos();
+      void fetchIntegrations();
+      setGithubReposExpanded(false);
+    } catch (e) {
+      setGithubReposError(e instanceof Error ? e.message : 'Failed to save');
+    } finally {
+      setGithubSaving(false);
+    }
+  }, [organizationId, githubSelectedIds, githubSaving, fetchGitHubTrackedRepos, fetchIntegrations]);
 
   // Transform raw integrations to display integrations with UI metadata
   // Filter out raw "microsoft" integration - it's a meta-integration from Nango's OAuth.
@@ -540,6 +649,23 @@ export function DataSources(): JSX.Element {
     setSyncingProviders((prev) => new Set(prev).add(provider));
 
     try {
+      // Google Drive uses its own sync endpoint (user-scoped)
+      if (provider === 'google_drive') {
+        const params = new URLSearchParams({ organization_id: organizationId, user_id: userId });
+        const response = await fetch(`${API_BASE}/drive/sync?${params.toString()}`, { method: 'POST' });
+        if (!response.ok) throw new Error('Drive sync failed');
+        // Drive sync runs in background — wait a bit then refresh integrations
+        setTimeout(() => {
+          setSyncingProviders((prev) => {
+            const next = new Set(prev);
+            next.delete(provider);
+            return next;
+          });
+          void fetchIntegrations();
+        }, 15000);
+        return;
+      }
+
       const response = await fetch(`${API_BASE}/sync/${organizationId}/${provider}`, {
         method: 'POST',
       });
@@ -709,8 +835,8 @@ export function DataSources(): JSX.Element {
       'from-sky-500 to-sky-600': 'bg-sky-500',
       'from-red-500 to-red-600': 'bg-red-500',
       'from-violet-500 to-violet-600': 'bg-violet-500',
-      'from-emerald-500 to-emerald-600': 'bg-emerald-500',
       'from-yellow-400 to-yellow-500': 'bg-yellow-400',
+      'from-yellow-500 to-amber-500': 'bg-yellow-500',
     };
     return colorMap[color] ?? 'bg-surface-600';
   };
@@ -747,8 +873,8 @@ export function DataSources(): JSX.Element {
     // Button config by state
     const getButtonConfig = (): { text: string; className: string; action: () => void; disabled: boolean; hidden?: boolean } => {
       if (state === 'connected') {
-        // Google Sheets uses on-demand import, Apollo.io is on-demand enrichment - no regular sync
-        if (integration.provider === 'google_sheets' || integration.provider === 'apollo') {
+        // Apollo.io is on-demand enrichment - no regular sync
+        if (integration.provider === 'apollo') {
           return {
             text: '',
             className: '',
@@ -919,6 +1045,134 @@ export function DataSources(): JSX.Element {
       );
     };
 
+    const renderGitHubRepos = (): JSX.Element | null => {
+      if (integration.provider !== 'github' || state !== 'connected') return null;
+      const trackedCount = githubTrackedIds.size;
+      const trackedNames =
+        githubTrackedNames.length > 0
+          ? githubTrackedNames
+          : githubAvailableRepos
+              .filter((r) => githubTrackedIds.has(r.github_repo_id))
+              .map((r) => r.full_name);
+      const showCompact = trackedCount > 0 && !githubReposExpanded;
+
+      const toggleRepo = (id: number): void => {
+        setGithubSelectedIds((prev) => {
+          const next = new Set(prev);
+          if (next.has(id)) next.delete(id);
+          else next.add(id);
+          return next;
+        });
+      };
+      const selectAll = (): void => setGithubSelectedIds(new Set(githubAvailableRepos.map((r) => r.github_repo_id)));
+      const selectNone = (): void => setGithubSelectedIds(new Set());
+
+      return (
+        <div className="mt-4 pt-4 border-t border-surface-700/50 space-y-3">
+          <div className="flex items-start justify-between gap-2">
+            <div>
+              <h4 className="text-sm font-semibold text-surface-100">
+                Repos to track
+              </h4>
+              <p className="text-xs text-surface-400 mt-0.5">
+                {showCompact
+                  ? `${trackedCount} repo${trackedCount !== 1 ? 's' : ''} tracked`
+                  : 'Select which repositories to sync. Tracking for this organization.'}
+              </p>
+            </div>
+            {showCompact && (
+              <button
+                type="button"
+                onClick={() => setGithubReposExpanded(true)}
+                className="text-xs font-medium text-primary-400 hover:text-primary-300 whitespace-nowrap"
+              >
+                Change
+              </button>
+            )}
+          </div>
+          {showCompact ? (
+            <p className="text-sm text-surface-300">
+              {trackedNames.length > 0 ? trackedNames.join(', ') : '—'}
+            </p>
+          ) : (
+            <>
+              {githubReposError && (
+                <p className="text-xs text-red-400">{githubReposError}</p>
+              )}
+              {githubReposLoading ? (
+                <p className="text-sm text-surface-500">Loading repos…</p>
+              ) : githubAvailableRepos.length === 0 ? (
+                <p className="text-sm text-surface-500">No repos found. Check GitHub scopes (e.g. repo).</p>
+              ) : (
+                <>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={selectAll}
+                      className="text-xs text-primary-400 hover:text-primary-300"
+                    >
+                      Select all
+                    </button>
+                    <span className="text-surface-600">|</span>
+                    <button
+                      type="button"
+                      onClick={selectNone}
+                      className="text-xs text-primary-400 hover:text-primary-300"
+                    >
+                      Select none
+                    </button>
+                    {trackedCount > 0 && (
+                      <>
+                        <span className="text-surface-600">|</span>
+                        <button
+                          type="button"
+                          onClick={() => setGithubReposExpanded(false)}
+                          className="text-xs text-primary-400 hover:text-primary-300"
+                        >
+                          Done
+                        </button>
+                      </>
+                    )}
+                  </div>
+                  <ul className="max-h-48 overflow-y-auto space-y-1.5 rounded-lg border border-surface-700/60 p-2">
+                    {githubAvailableRepos.map((repo) => {
+                      const id = repo.github_repo_id;
+                      const checked = githubSelectedIds.has(id);
+                      return (
+                        <li key={id} className="flex items-center gap-2">
+                          <input
+                            type="checkbox"
+                            id={`gh-repo-${id}`}
+                            checked={checked}
+                            onChange={() => toggleRepo(id)}
+                            className="rounded border-surface-600 bg-surface-800 text-primary-500 focus:ring-primary-500"
+                          />
+                          <label htmlFor={`gh-repo-${id}`} className="text-sm text-surface-200 cursor-pointer truncate flex-1 min-w-0">
+                            <span className="font-medium">{repo.full_name}</span>
+                            {repo.is_private && (
+                              <span className="ml-2 text-xs text-surface-500">Private</span>
+                            )}
+                          </label>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                  <button
+                    type="button"
+                    onClick={() => void handleGitHubTrackRepos()}
+                    disabled={githubSaving}
+                    className="px-3 py-2 text-sm font-medium text-primary-300 border border-primary-500/30 hover:bg-primary-500/10 disabled:opacity-50 rounded-lg"
+                  >
+                    {githubSaving ? 'Saving…' : 'Save tracked repos'}
+                  </button>
+                </>
+              )}
+            </>
+          )}
+        </div>
+      );
+    };
+
     return (
       <div key={integration.id} className={cardClass}>
         <div className="flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-4">
@@ -988,15 +1242,6 @@ export function DataSources(): JSX.Element {
                 {buttonConfig.text}
               </button>
             )}
-            {state === 'connected' && integration.provider === 'google_sheets' && (
-              <button
-                onClick={() => setShowSheetImporter(true)}
-                className="px-3 sm:px-4 py-2 text-sm font-medium text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/10 rounded-lg transition-colors flex items-center gap-2"
-              >
-                <HiUpload className="w-4 h-4" />
-                Import
-              </button>
-            )}
             {state === 'connected' && (
               <button
                 onClick={() => void handleDisconnect(integration.provider)}
@@ -1018,6 +1263,7 @@ export function DataSources(): JSX.Element {
         {/* Team connections footer */}
         {renderTeamInfo()}
         {renderSlackMapping()}
+        {renderGitHubRepos()}
       </div>
     );
   };
@@ -1106,10 +1352,6 @@ export function DataSources(): JSX.Element {
         </section>
       </div>
 
-      {/* Sheet Importer Modal */}
-      {showSheetImporter && (
-        <SheetImporter onClose={() => setShowSheetImporter(false)} />
-      )}
     </div>
   );
 }

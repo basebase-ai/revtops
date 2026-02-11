@@ -175,15 +175,17 @@ async def _process_event_callback_impl(payload: dict[str, Any]) -> None:
             user_id = event.get("user", "")
             text = event.get("text", "")
             event_ts = event.get("event_ts", "")
-            if not text.strip():
+            files: list[dict[str, Any]] = event.get("files", [])
+            if not text.strip() and not files:
                 return
-            logger.info("[slack_events] Processing DM from %s in %s: %s", user_id, channel_id, text[:50])
+            logger.info("[slack_events] Processing DM from %s in %s: %s (files=%d)", user_id, channel_id, text[:50], len(files))
             await process_slack_dm(
                 team_id=team_id,
                 channel_id=channel_id,
                 user_id=user_id,
                 message_text=text,
                 event_ts=event_ts,
+                files=files,
             )
             return
 
@@ -192,11 +194,12 @@ async def _process_event_callback_impl(payload: dict[str, Any]) -> None:
             channel_id = event.get("channel", "")
             user_id = event.get("user", "")
             text = event.get("text", "")
-            if not text.strip():
+            files: list[dict[str, Any]] = event.get("files", [])
+            if not text.strip() and not files:
                 return
             logger.info(
-                "[slack_events] Processing thread reply from %s in %s (thread %s): %s",
-                user_id, channel_id, thread_ts, text[:50],
+                "[slack_events] Processing thread reply from %s in %s (thread %s): %s (files=%d)",
+                user_id, channel_id, thread_ts, text[:50], len(files),
             )
             await process_slack_thread_reply(
                 team_id=team_id,
@@ -205,6 +208,7 @@ async def _process_event_callback_impl(payload: dict[str, Any]) -> None:
                 message_text=text,
                 thread_ts=thread_ts,
                 event_ts=event.get("ts", ""),
+                files=files,
             )
             return
 
@@ -214,15 +218,17 @@ async def _process_event_callback_impl(payload: dict[str, Any]) -> None:
         text = re.sub(r"<@[A-Z0-9]+>\s*", "", event.get("text", "")).strip()
         event_ts = event.get("event_ts", "")
         thread_ts = event.get("thread_ts")
-        if not text:
+        files: list[dict[str, Any]] = event.get("files", [])
+        if not text and not files:
             return
-        logger.info("[slack_events] Processing @mention from %s in %s: %s", user_id, channel_id, text[:50])
+        logger.info("[slack_events] Processing @mention from %s in %s: %s (files=%d)", user_id, channel_id, text[:50], len(files))
         await process_slack_mention(
             team_id=team_id,
             channel_id=channel_id,
             user_id=user_id,
             message_text=text,
             thread_ts=thread_ts or event_ts,
+            files=files,
         )
 
 

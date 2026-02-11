@@ -139,7 +139,8 @@ class ToolProgressUpdater:
 # Note: Row-Level Security (RLS) handles organization filtering at the database level
 ALLOWED_TABLES: set[str] = {
     "deals", "accounts", "contacts", "activities", "meetings", "integrations", "users", "organizations",
-    "pipelines", "pipeline_stages", "workflows", "workflow_runs", "user_mappings_for_identity"
+    "pipelines", "pipeline_stages", "workflows", "workflow_runs", "user_mappings_for_identity",
+    "github_repositories", "github_commits", "github_pull_requests",
 }
 
 
@@ -297,6 +298,16 @@ async def execute_tool(
     elif tool_name == "trigger_sync":
         result = await _trigger_sync(tool_input, organization_id)
         logger.info("[Tools] trigger_sync completed: %s", result.get("status"))
+        return result
+
+    elif tool_name == "search_google_drive":
+        result = await _search_google_drive(tool_input, organization_id, user_id)
+        logger.info("[Tools] search_google_drive returned %d results", len(result.get("files", [])))
+        return result
+
+    elif tool_name == "read_google_drive_file":
+        result = await _read_google_drive_file(tool_input, organization_id, user_id)
+        logger.info("[Tools] read_google_drive_file completed: %s", result.get("file_name", "unknown"))
         return result
 
     elif tool_name == "create_artifact":
@@ -3004,23 +3015,27 @@ async def _enrich_contacts_with_apollo(
             }
     
     try:
+        import asyncio
+
         connector = ApolloConnector(organization_id)
-        
-        # Enrich contacts in bulk
-        enriched_results = await connector.bulk_enrich_people(
-            people=contacts,
-            reveal_personal_emails=reveal_personal_emails,
-            reveal_phone_number=reveal_phone_numbers,
-        )
-        
-        # Pair original contacts with enrichment results
+
+        # Use single-person /people/match (free-plan compatible); bulk_match requires paid plan
         enriched_contacts: list[dict[str, Any]] = []
         match_count = 0
         no_match_count = 0
-        
-        for i, enrichment in enumerate(enriched_results):
-            original = contacts[i] if i < len(contacts) else {}
-            
+
+        for i, person in enumerate(contacts):
+            original: dict[str, Any] = person if isinstance(person, dict) else {}
+            enrichment: dict[str, Any] | None = await connector.enrich_person(
+                email=original.get("email"),
+                first_name=original.get("first_name"),
+                last_name=original.get("last_name"),
+                domain=original.get("domain"),
+                linkedin_url=original.get("linkedin_url"),
+                organization_name=original.get("organization_name"),
+                reveal_personal_emails=reveal_personal_emails,
+                reveal_phone_number=reveal_phone_numbers,
+            )
             if enrichment and enrichment.get("name"):
                 match_count += 1
                 enriched_contacts.append({
@@ -3035,7 +3050,10 @@ async def _enrich_contacts_with_apollo(
                     "enriched": None,
                     "matched": False,
                 })
-        
+            # Brief pause between calls to respect rate limits
+            if i < len(contacts) - 1:
+                await asyncio.sleep(0.5)
+
         return {
             "success": True,
             "total": len(contacts),
@@ -3045,7 +3063,7 @@ async def _enrich_contacts_with_apollo(
             "message": f"Enriched {match_count} of {len(contacts)} contacts. "
                        f"{'Use crm_write to update these contacts in your CRM.' if match_count > 0 else 'No matches found - try providing more identifying info (email, domain).'}",
         }
-        
+
     except Exception as e:
         logger.error("[Tools._enrich_contacts_with_apollo] Failed: %s", str(e))
         return {"error": f"Apollo enrichment failed: {str(e)}"}
@@ -3989,3 +4007,89 @@ async def _create_artifact(
         },
         "message": f"Created {content_type} artifact: {title}",
     }
+
+
+# =============================================================================
+# Google Drive Tools
+# =============================================================================
+
+
+async def _search_google_drive(
+    params: dict[str, Any], organization_id: str, user_id: str | None
+) -> dict[str, Any]:
+    """
+    Search the user's synced Google Drive files by name.
+
+    Queries the local google_drive_files table (populated by sync).
+    """
+    name_query: str = params.get("name_query", "").strip()
+    limit: int = min(params.get("limit", 20), 50)
+
+    if not name_query:
+        return {"error": "name_query is required."}
+
+    if not user_id:
+        return {
+            "error": "Google Drive search requires a user context (not available in Slack DM).",
+        }
+
+    try:
+        from connectors.google_drive import GoogleDriveConnector
+
+        connector = GoogleDriveConnector(organization_id, user_id)
+        files: list[dict[str, Any]] = await connector.search_files(
+            name_query, limit=limit
+        )
+
+        if not files:
+            return {
+                "files": [],
+                "count": 0,
+                "message": (
+                    f"No files matching '{name_query}' found. "
+                    "Make sure Google Drive has been synced from the Data Sources page."
+                ),
+            }
+
+        return {
+            "files": files,
+            "count": len(files),
+        }
+    except ValueError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        logger.error("[Tools._search_google_drive] Failed: %s", e)
+        return {"error": f"Failed to search Google Drive: {str(e)}"}
+
+
+async def _read_google_drive_file(
+    params: dict[str, Any], organization_id: str, user_id: str | None
+) -> dict[str, Any]:
+    """
+    Read the text content of a Google Drive file via the Google API.
+    """
+    google_file_id: str = params.get("google_file_id", "").strip()
+
+    if not google_file_id:
+        return {"error": "google_file_id is required."}
+
+    if not user_id:
+        return {
+            "error": "Google Drive read requires a user context (not available in Slack DM).",
+        }
+
+    try:
+        from connectors.google_drive import GoogleDriveConnector
+
+        connector = GoogleDriveConnector(organization_id, user_id)
+        result: dict[str, Any] = await connector.get_file_content(google_file_id)
+
+        if "error" in result:
+            return result
+
+        return result
+    except ValueError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        logger.error("[Tools._read_google_drive_file] Failed: %s", e)
+        return {"error": f"Failed to read Google Drive file: {str(e)}"}

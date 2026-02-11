@@ -1280,12 +1280,82 @@ async def persist_slack_message_activity(
         )
 
 
+async def _download_and_store_slack_files(
+    connector: SlackConnector,
+    files: list[dict[str, Any]],
+) -> list[str]:
+    """
+    Download Slack file attachments and store them in the temp file store.
+
+    Each file in *files* is a Slack file object (from the ``files`` array in
+    a Slack event payload).  The bot token is used to authenticate the download.
+
+    Returns:
+        List of ``upload_id`` strings suitable for passing as
+        ``attachment_ids`` to :meth:`ChatOrchestrator.process_message`.
+    """
+    from services.file_handler import store_file, MAX_FILE_SIZE
+
+    attachment_ids: list[str] = []
+
+    for slack_file in files:
+        file_name: str = slack_file.get("name", "untitled")
+        file_size: int = slack_file.get("size", 0)
+        file_mimetype: str = slack_file.get("mimetype", "application/octet-stream")
+        download_url: str = (
+            slack_file.get("url_private_download")
+            or slack_file.get("url_private", "")
+        )
+
+        if not download_url:
+            logger.warning(
+                "[slack_conversations] Slack file %s has no download URL — skipping",
+                slack_file.get("id", "?"),
+            )
+            continue
+
+        if file_size > MAX_FILE_SIZE:
+            logger.warning(
+                "[slack_conversations] Slack file %s (%s, %d bytes) exceeds max size — skipping",
+                file_name,
+                slack_file.get("id", "?"),
+                file_size,
+            )
+            continue
+
+        try:
+            data: bytes = await connector.download_file(download_url)
+            stored = store_file(
+                filename=file_name,
+                data=data,
+                content_type=file_mimetype,
+            )
+            attachment_ids.append(stored.upload_id)
+            logger.info(
+                "[slack_conversations] Downloaded Slack file %s (%s, %d bytes) → %s",
+                file_name,
+                file_mimetype,
+                len(data),
+                stored.upload_id,
+            )
+        except Exception as e:
+            logger.error(
+                "[slack_conversations] Failed to download Slack file %s (%s): %s",
+                file_name,
+                slack_file.get("id", "?"),
+                e,
+            )
+
+    return attachment_ids
+
+
 async def _stream_and_post_responses(
     orchestrator: ChatOrchestrator,
     connector: SlackConnector,
     message_text: str,
     channel: str,
     thread_ts: str | None = None,
+    attachment_ids: list[str] | None = None,
 ) -> int:
     """
     Stream orchestrator output and post each text segment to Slack
@@ -1298,6 +1368,7 @@ async def _stream_and_post_responses(
         message_text: The user's message to process
         channel: Slack channel to post responses in
         thread_ts: Optional thread timestamp (None for DM top-level)
+        attachment_ids: Optional upload IDs for attached files
 
     Returns:
         Total character count of all posted text.
@@ -1306,7 +1377,9 @@ async def _stream_and_post_responses(
     total_length: int = 0
 
     try:
-        async for chunk in orchestrator.process_message(message_text):
+        async for chunk in orchestrator.process_message(
+            message_text, attachment_ids=attachment_ids,
+        ):
             if chunk.startswith("{"):
                 # Tool-call boundary — send whatever text we have so far
                 if current_text.strip():
@@ -1343,6 +1416,7 @@ async def process_slack_dm(
     user_id: str,
     message_text: str,
     event_ts: str,
+    files: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """
     Process an incoming Slack DM and generate a response.
@@ -1359,6 +1433,7 @@ async def process_slack_dm(
         user_id: Slack user ID who sent the message
         message_text: The message content
         event_ts: Event timestamp for deduplication
+        files: Optional list of Slack file objects attached to the message
         
     Returns:
         Result dict with status and any error details
@@ -1416,6 +1491,11 @@ async def process_slack_dm(
         slack_user_name=slack_user_name,
     )
 
+    # Download any attached Slack files
+    attachment_ids: list[str] = []
+    if files:
+        attachment_ids = await _download_and_store_slack_files(connector, files)
+
     # Process message through orchestrator
     orchestrator = ChatOrchestrator(
         user_id=str(linked_user.id) if linked_user else None,
@@ -1430,8 +1510,9 @@ async def process_slack_dm(
     total_length: int = await _stream_and_post_responses(
         orchestrator=orchestrator,
         connector=connector,
-        message_text=message_text,
+        message_text=message_text or "(see attached files)",
         channel=channel_id,
+        attachment_ids=attachment_ids or None,
     )
 
     # Remove the "thinking" reaction
@@ -1455,6 +1536,7 @@ async def process_slack_mention(
     user_id: str,
     message_text: str,
     thread_ts: str,
+    files: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """
     Process an @mention of the bot in a Slack channel.
@@ -1467,6 +1549,7 @@ async def process_slack_mention(
         user_id: Slack user ID who mentioned the bot
         message_text: Message text (with @mention stripped)
         thread_ts: Thread timestamp to reply in
+        files: Optional list of Slack file objects attached to the message
         
     Returns:
         Dict with status and conversation details
@@ -1526,6 +1609,11 @@ async def process_slack_mention(
         slack_user_name=slack_user_name,
     )
 
+    # Download any attached Slack files
+    attachment_ids: list[str] = []
+    if files:
+        attachment_ids = await _download_and_store_slack_files(connector, files)
+
     # Process message through orchestrator
     orchestrator = ChatOrchestrator(
         user_id=str(linked_user.id) if linked_user else None,
@@ -1540,9 +1628,10 @@ async def process_slack_mention(
     total_length: int = await _stream_and_post_responses(
         orchestrator=orchestrator,
         connector=connector,
-        message_text=message_text,
+        message_text=message_text or "(see attached files)",
         channel=channel_id,
         thread_ts=thread_ts,
+        attachment_ids=attachment_ids or None,
     )
 
     # Remove the "thinking" reaction
@@ -1568,6 +1657,7 @@ async def process_slack_thread_reply(
     message_text: str,
     thread_ts: str,
     event_ts: str,
+    files: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """
     Process a thread reply in a channel where the bot is already participating.
@@ -1583,6 +1673,7 @@ async def process_slack_thread_reply(
         message_text: The reply text
         thread_ts: Parent thread timestamp
         event_ts: Timestamp of the reply message itself (for reactions)
+        files: Optional list of Slack file objects attached to the message
 
     Returns:
         Dict with status and conversation details
@@ -1630,6 +1721,11 @@ async def process_slack_thread_reply(
         slack_user=slack_user,
     )
 
+    # Download any attached Slack files
+    attachment_ids: list[str] = []
+    if files:
+        attachment_ids = await _download_and_store_slack_files(connector, files)
+
     # Process message through orchestrator, posting incrementally
     orchestrator = ChatOrchestrator(
         user_id=None,
@@ -1644,9 +1740,10 @@ async def process_slack_thread_reply(
     total_length: int = await _stream_and_post_responses(
         orchestrator=orchestrator,
         connector=connector,
-        message_text=message_text,
+        message_text=message_text or "(see attached files)",
         channel=channel_id,
         thread_ts=thread_ts,
+        attachment_ids=attachment_ids or None,
     )
 
     # Remove the "thinking" reaction
