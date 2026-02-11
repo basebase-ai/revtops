@@ -10,12 +10,13 @@ OAuth is handled through Nango (GitHub App or OAuth App).
 from __future__ import annotations
 
 import logging
+import uuid as uuid_mod
 from datetime import datetime
 from typing import Any, Optional
 from uuid import UUID
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from connectors.base import BaseConnector
@@ -23,6 +24,7 @@ from models.database import get_session
 from models.github_commit import GitHubCommit
 from models.github_pull_request import GitHubPullRequest
 from models.github_repository import GitHubRepository
+from models.slack_user_mapping import SlackUserMapping
 from models.user import User
 
 logger = logging.getLogger(__name__)
@@ -39,7 +41,10 @@ class GitHubConnector(BaseConnector):
         self, organization_id: str, user_id: Optional[str] = None
     ) -> None:
         super().__init__(organization_id, user_id)
-        self._user_email_cache: dict[str, UUID | None] = {}
+        # Cache: GitHub login → internal user UUID (or None)
+        self._login_cache: dict[str, UUID | None] = {}
+        # Cache: email → internal user UUID (or None)
+        self._email_cache: dict[str, UUID | None] = {}
 
     # ── HTTP helpers ─────────────────────────────────────────────────────
 
@@ -117,26 +122,250 @@ class GitHubConnector(BaseConnector):
                 return segment[url_start:url_end]
         return None
 
-    # ── User mapping ─────────────────────────────────────────────────────
+    # ── User mapping (identity table) ───────────────────────────────────
 
-    async def _resolve_user_by_email(self, email: str | None) -> UUID | None:
-        """Map an email address to an internal user_id, with caching."""
-        if not email:
+    async def _resolve_user_by_login(
+        self, login: str | None, email: str | None = None
+    ) -> UUID | None:
+        """
+        Resolve a GitHub login to an internal user_id.
+
+        Lookup order:
+        1. In-memory cache (login)
+        2. ``user_mappings_for_identity`` where source='github' and external_userid=login
+        3. Fall back to matching by email in the users table
+        """
+        if not login:
             return None
-        if email in self._user_email_cache:
-            return self._user_email_cache[email]
+        if login in self._login_cache:
+            return self._login_cache[login]
 
+        org_uuid: UUID = UUID(self.organization_id)
+
+        # 1. Check existing mapping
         async with get_session(organization_id=self.organization_id) as session:
             result = await session.execute(
-                select(User.id).where(
-                    User.organization_id == UUID(self.organization_id),
-                    User.email == email,
+                select(SlackUserMapping.user_id).where(
+                    SlackUserMapping.organization_id == org_uuid,
+                    SlackUserMapping.external_userid == login,
+                    SlackUserMapping.source == "github",
                 )
             )
-            user_id: UUID | None = result.scalar_one_or_none()
+            mapping_user_id: UUID | None = result.scalar_one_or_none()
 
-        self._user_email_cache[email] = user_id
-        return user_id
+        if mapping_user_id is not None:
+            self._login_cache[login] = mapping_user_id
+            return mapping_user_id
+
+        # 2. Try email match against users table
+        if email:
+            async with get_session(organization_id=self.organization_id) as session:
+                result = await session.execute(
+                    select(User.id).where(
+                        User.organization_id == org_uuid,
+                        User.email == email,
+                    )
+                )
+                matched_user_id: UUID | None = result.scalar_one_or_none()
+
+            if matched_user_id is not None:
+                self._login_cache[login] = matched_user_id
+                return matched_user_id
+
+        # Not resolved — cache as None
+        self._login_cache[login] = None
+        return None
+
+    async def _ensure_github_identity_mapping(
+        self,
+        session: Any,
+        *,
+        github_login: str,
+        github_email: str | None,
+        user_id: UUID | None = None,
+        revtops_email: str | None = None,
+        match_source: str = "github_email_match",
+    ) -> None:
+        """
+        Upsert a row in ``user_mappings_for_identity`` for a GitHub user.
+
+        If a mapping already exists for (org, login, source='github') it is
+        updated only when upgrading from unmapped → mapped.
+        """
+        org_uuid: UUID = UUID(self.organization_id)
+        existing = await session.execute(
+            select(SlackUserMapping).where(
+                SlackUserMapping.organization_id == org_uuid,
+                SlackUserMapping.external_userid == github_login,
+                SlackUserMapping.source == "github",
+            )
+        )
+        mapping: SlackUserMapping | None = existing.scalar_one_or_none()
+
+        if mapping:
+            if not mapping.user_id and user_id:
+                mapping.user_id = user_id
+                mapping.revtops_email = revtops_email
+                mapping.match_source = match_source
+            # Also update email if we now have one and didn't before
+            if not mapping.external_email and github_email:
+                mapping.external_email = github_email
+        else:
+            session.add(
+                SlackUserMapping(
+                    id=uuid_mod.uuid4(),
+                    organization_id=org_uuid,
+                    user_id=user_id,
+                    revtops_email=revtops_email,
+                    external_userid=github_login,
+                    external_email=github_email,
+                    source="github",
+                    match_source=(
+                        match_source if user_id else "github_unmapped"
+                    ),
+                )
+            )
+
+    async def match_github_users_to_team(self) -> list[dict[str, Any]]:
+        """
+        Match GitHub commit authors to internal users by email and persist
+        mappings in ``user_mappings_for_identity``.
+
+        Returns a list of match results (matched + unmatched).
+        """
+        org_uuid: UUID = UUID(self.organization_id)
+        results: list[dict[str, Any]] = []
+
+        # Collect unique (login, email) pairs from synced commits
+        async with get_session(organization_id=self.organization_id) as session:
+            rows = await session.execute(
+                select(
+                    GitHubCommit.author_login,
+                    GitHubCommit.author_email,
+                    func.count().label("commit_count"),
+                )
+                .where(
+                    GitHubCommit.organization_id == org_uuid,
+                    GitHubCommit.author_login.isnot(None),
+                )
+                .group_by(GitHubCommit.author_login, GitHubCommit.author_email)
+            )
+            author_pairs: list[tuple[str, str | None, int]] = [
+                (r[0], r[1], r[2]) for r in rows.all()
+            ]
+
+        if not author_pairs:
+            return results
+
+        # Load all org users for email matching
+        async with get_session(organization_id=self.organization_id) as session:
+            user_result = await session.execute(
+                select(User).where(
+                    User.organization_id == org_uuid,
+                    User.status != "crm_only",
+                )
+            )
+            users: list[User] = list(user_result.scalars().all())
+            user_by_email: dict[str, User] = {
+                u.email.lower(): u for u in users if u.email
+            }
+
+            # For each unique author, try to match and persist
+            for login, email, commit_count in author_pairs:
+                matched_user: User | None = None
+                if email:
+                    matched_user = user_by_email.get(email.lower())
+
+                await self._ensure_github_identity_mapping(
+                    session,
+                    github_login=login,
+                    github_email=email,
+                    user_id=matched_user.id if matched_user else None,
+                    revtops_email=matched_user.email if matched_user else None,
+                )
+                self._login_cache[login] = (
+                    matched_user.id if matched_user else None
+                )
+
+                results.append({
+                    "github_login": login,
+                    "github_email": email,
+                    "user_id": str(matched_user.id) if matched_user else None,
+                    "user_name": matched_user.name if matched_user else None,
+                    "matched": matched_user is not None,
+                    "commit_count": commit_count,
+                })
+
+            await session.commit()
+
+        matched_count: int = sum(1 for r in results if r["matched"])
+        logger.info(
+            "GitHub user matching: %d/%d authors matched to team members",
+            matched_count,
+            len(results),
+        )
+        return results
+
+    async def _backfill_user_ids(self) -> int:
+        """
+        Update user_id on github_commits and github_pull_requests from
+        the identity mappings table. Returns count of rows updated.
+        """
+        org_uuid: UUID = UUID(self.organization_id)
+        updated: int = 0
+
+        # Build login → user_id map from identity mappings
+        async with get_session(organization_id=self.organization_id) as session:
+            result = await session.execute(
+                select(
+                    SlackUserMapping.external_userid,
+                    SlackUserMapping.user_id,
+                ).where(
+                    SlackUserMapping.organization_id == org_uuid,
+                    SlackUserMapping.source == "github",
+                    SlackUserMapping.user_id.isnot(None),
+                )
+            )
+            login_to_user: dict[str, UUID] = {
+                row[0]: row[1] for row in result.all() if row[0] and row[1]
+            }
+
+        if not login_to_user:
+            return 0
+
+        # Update commits
+        async with get_session(organization_id=self.organization_id) as session:
+            for login, uid in login_to_user.items():
+                stmt = (
+                    update(GitHubCommit)
+                    .where(
+                        GitHubCommit.organization_id == org_uuid,
+                        GitHubCommit.author_login == login,
+                        GitHubCommit.user_id.is_(None),
+                    )
+                    .values(user_id=uid)
+                )
+                res = await session.execute(stmt)
+                updated += res.rowcount
+
+            # Update PRs
+            for login, uid in login_to_user.items():
+                stmt = (
+                    update(GitHubPullRequest)
+                    .where(
+                        GitHubPullRequest.organization_id == org_uuid,
+                        GitHubPullRequest.author_login == login,
+                        GitHubPullRequest.user_id.is_(None),
+                    )
+                    .values(user_id=uid)
+                )
+                res = await session.execute(stmt)
+                updated += res.rowcount
+
+            await session.commit()
+
+        logger.info("Backfilled user_id on %d commit/PR rows", updated)
+        return updated
 
     # ── Repo listing (for UI to pick repos) ──────────────────────────────
 
@@ -368,8 +597,8 @@ class GitHubConnector(BaseConnector):
                 author_login: str | None = (
                     gh_author["login"] if gh_author else None
                 )
-                user_id: UUID | None = await self._resolve_user_by_email(
-                    author_email
+                user_id: UUID | None = await self._resolve_user_by_login(
+                    author_login, author_email
                 )
 
                 # Parse dates
@@ -394,8 +623,11 @@ class GitHubConnector(BaseConnector):
                     committed_date=committed_date,
                     url=c.get("html_url", ""),
                     user_id=user_id,
-                ).on_conflict_do_nothing(
-                    index_elements=["organization_id", "repository_id", "sha"]
+                ).on_conflict_do_update(
+                    index_elements=["organization_id", "repository_id", "sha"],
+                    set_={
+                        "user_id": user_id,
+                    },
                 )
                 await session.execute(stmt)
                 count += 1
@@ -480,6 +712,11 @@ class GitHubConnector(BaseConnector):
                     if "login" in rev
                 ]
 
+                # Resolve PR author to internal user
+                pr_user_id: UUID | None = await self._resolve_user_by_login(
+                    author_login
+                )
+
                 stmt = pg_insert(GitHubPullRequest).values(
                     organization_id=org_uuid,
                     repository_id=repo.id,
@@ -511,7 +748,7 @@ class GitHubConnector(BaseConnector):
                     labels=labels or None,
                     reviewers=reviewers or None,
                     url=pr.get("html_url", ""),
-                    user_id=None,  # TODO: map via identity once login→email resolved
+                    user_id=pr_user_id,
                 ).on_conflict_do_update(
                     index_elements=[
                         "organization_id",
@@ -541,6 +778,7 @@ class GitHubConnector(BaseConnector):
                         "commits_count": pr.get("commits"),
                         "labels": labels or None,
                         "reviewers": reviewers or None,
+                        "user_id": pr_user_id,
                     },
                 )
                 await session.execute(stmt)
@@ -598,7 +836,7 @@ class GitHubConnector(BaseConnector):
         """
         Run all GitHub sync operations.
 
-        Order: repositories metadata → commits → pull requests.
+        Order: repos → commits → PRs → match users → backfill user_id.
         """
         await self.ensure_sync_active("sync_all:start")
 
@@ -611,9 +849,21 @@ class GitHubConnector(BaseConnector):
         prs_count: int = await self.sync_pull_requests()
         await self.ensure_sync_active("sync_all:after_pull_requests")
 
+        # Match GitHub authors → internal users and persist identity mappings
+        match_results: list[dict[str, Any]] = (
+            await self.match_github_users_to_team()
+        )
+        matched_users: int = sum(1 for r in match_results if r["matched"])
+
+        # Backfill user_id on any commits/PRs that were inserted before
+        # the identity mapping existed
+        backfilled: int = await self._backfill_user_ids()
+
         result: dict[str, int] = {
             "repositories": repos_count,
             "commits": commits_count,
             "pull_requests": prs_count,
+            "matched_users": matched_users,
+            "backfilled_user_ids": backfilled,
         }
         return result

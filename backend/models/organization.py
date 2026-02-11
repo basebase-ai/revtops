@@ -15,7 +15,6 @@ from models.database import Base
 
 if TYPE_CHECKING:
     from models.user import User
-    from models.sheet_import import SheetImport
     from models.change_session import ChangeSession
 
 
@@ -60,9 +59,6 @@ class Organization(Base):
     )
     token_owner: Mapped[Optional["User"]] = relationship(
         "User", foreign_keys=[token_owner_user_id]
-    )
-    sheet_imports: Mapped[list["SheetImport"]] = relationship(
-        "SheetImport", back_populates="organization", cascade="all, delete-orphan"
     )
     change_sessions: Mapped[list["ChangeSession"]] = relationship(
         "ChangeSession", back_populates="organization", cascade="all, delete-orphan"

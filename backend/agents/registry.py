@@ -104,6 +104,10 @@ Available tables:
 - users: Team members (email, name, role)
 - user_mappings_for_identity: Slack identity links (external_userid, external_email, match_source)
 - organizations: User's company info (name, logo_url)
+- github_repositories: Tracked GitHub repos (full_name, owner, name, is_tracked, last_sync_at). Join to commits/PRs via repository_id.
+- github_commits: Commits on tracked repos (repository_id, sha, message, author_name, author_email, author_login, author_date, additions, deletions, user_id). Use organization_id in WHERE.
+- github_pull_requests: PRs on tracked repos (repository_id, number, title, state, author_login, created_date, merged_date, additions, deletions, user_id). Use organization_id in WHERE.
+- google_drive_files: Synced Google Drive file metadata (google_file_id, name, mime_type, folder_path, web_view_link, file_size, google_modified_at). Filter by organization_id AND user_id. Use search_google_drive tool instead for name-based searches.
 
 IMPORTANT: Only SELECT queries are allowed. No INSERT, UPDATE, DELETE, DROP, etc.""",
     input_schema={
@@ -637,6 +641,76 @@ The sync runs in the background and may take a few minutes to complete.""",
     },
     category=ToolCategory.EXTERNAL_WRITE,
     default_requires_approval=False,  # Syncing is safe, just refreshes data
+)
+
+
+# -----------------------------------------------------------------------------
+# Google Drive Tools
+# -----------------------------------------------------------------------------
+
+register_tool(
+    name="search_google_drive",
+    description="""Search the user's synced Google Drive files by name.
+
+Use this when the user wants to find a file in their Google Drive, or when you need
+to locate a specific document (Doc, Sheet, or Slides) to read its content.
+
+Returns matching file metadata including name, MIME type, folder path, and file ID.
+Use the returned google_file_id with read_google_drive_file to get the text content.
+
+NOTE: Files must have been synced first. If no results are found, suggest the user
+sync their Drive from the Data Sources page.
+
+Examples:
+- "Find the Q4 planning doc in my Drive"
+- "Search for spreadsheets with 'revenue' in the name"
+- "Look for the sales deck in Google Drive"
+""",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "name_query": {
+                "type": "string",
+                "description": "File name to search for (case-insensitive substring match)",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Max results to return (default 20)",
+                "default": 20,
+            },
+        },
+        "required": ["name_query"],
+    },
+    category=ToolCategory.LOCAL_READ,
+    default_requires_approval=False,
+)
+
+
+register_tool(
+    name="read_google_drive_file",
+    description="""Read the text content of a Google Drive file.
+
+Extracts text from Google Workspace files:
+- Google Docs → plain text
+- Google Sheets → CSV (all sheets combined)
+- Google Slides → plain text
+
+Use search_google_drive first to find the file's google_file_id, then use this tool
+to read its content into the conversation context.
+
+Content is truncated at ~100K characters for very large files.""",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "google_file_id": {
+                "type": "string",
+                "description": "The Google Drive file ID (from search_google_drive results)",
+            },
+        },
+        "required": ["google_file_id"],
+    },
+    category=ToolCategory.EXTERNAL_READ,
+    default_requires_approval=False,
 )
 
 

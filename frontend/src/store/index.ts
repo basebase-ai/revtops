@@ -54,6 +54,14 @@ export interface SyncStats {
   contacts?: number;
   activities?: number;
   pipelines?: number;
+  repositories?: number;
+  commits?: number;
+  pull_requests?: number;
+  total_files?: number;
+  docs?: number;
+  sheets?: number;
+  slides?: number;
+  folders?: number;
 }
 
 export interface Integration {
