@@ -351,6 +351,8 @@ async def sync_user(request: SyncUserRequest) -> SyncUserResponse:
                     "UPDATE workflows SET created_by_user_id = :new_id WHERE created_by_user_id = :old_id",
                     "UPDATE user_tool_settings SET user_id = :new_id WHERE user_id = :old_id",
                     "UPDATE user_mappings_for_identity SET user_id = :new_id WHERE user_id = :old_id",
+                    "UPDATE organization_memberships SET user_id = :new_id WHERE user_id = :old_id",
+                    "UPDATE organization_memberships SET invited_by_user_id = :new_id WHERE invited_by_user_id = :old_id",
                 ]
                 params = {"new_id": str(user_uuid), "old_id": str(old_id)}
                 for stmt in _fk_updates:
@@ -373,12 +375,29 @@ async def sync_user(request: SyncUserRequest) -> SyncUserResponse:
                     f"Successfully migrated user ID from {old_id} to {user_uuid}"
                 )
 
+            from models.organization_membership import OrganizationMembership
+
             # Always update last_login on sync (user just logged in)
             existing.last_login = datetime.utcnow()
             
             # Update organization if provided and different
             if org_uuid and existing.organization_id != org_uuid:
                 existing.organization_id = org_uuid
+                # Ensure a membership exists for the new org
+                existing_membership_result = await session.execute(
+                    select(OrganizationMembership).where(
+                        OrganizationMembership.user_id == existing.id,
+                        OrganizationMembership.organization_id == org_uuid,
+                    )
+                )
+                if not existing_membership_result.scalar_one_or_none():
+                    session.add(OrganizationMembership(
+                        user_id=existing.id,
+                        organization_id=org_uuid,
+                        role=existing.role or "member",
+                        status="active",
+                        joined_at=datetime.utcnow(),
+                    ))
             
             # If user was invited or a CRM stub, upgrade to active on signin
             if existing.status in ("invited", "crm_only"):
@@ -395,6 +414,29 @@ async def sync_user(request: SyncUserRequest) -> SyncUserResponse:
             # Update email if user had a placeholder email
             if existing.email.endswith("@placeholder.local") and request.email:
                 existing.email = request.email
+
+            # Auto-activate any pending invitation memberships on login
+            pending_result = await session.execute(
+                select(OrganizationMembership).where(
+                    OrganizationMembership.user_id == existing.id,
+                    OrganizationMembership.status == "invited",
+                )
+            )
+            pending_memberships: list[OrganizationMembership] = list(
+                pending_result.scalars().all()
+            )
+            for pm in pending_memberships:
+                pm.status = "active"
+                pm.joined_at = datetime.utcnow()
+                logger.info(
+                    "Auto-activated membership for user=%s org=%s on login",
+                    existing.id,
+                    pm.organization_id,
+                )
+                # If user has no active org, set this one as active
+                if not existing.organization_id:
+                    existing.organization_id = pm.organization_id
+                    existing.role = pm.role
             
             await session.commit()
             await session.refresh(existing)
@@ -421,7 +463,29 @@ async def sync_user(request: SyncUserRequest) -> SyncUserResponse:
                 roles=existing.roles or [],
             )
 
-        # User doesn't exist - check if their email domain has an approved org
+        from models.organization_membership import OrganizationMembership
+
+        # User doesn't exist — check for pending invitation first
+        invite_result = await session.execute(
+            select(OrganizationMembership).where(
+                OrganizationMembership.status == "invited",
+            )
+        )
+        # We need to find invitations that match this email, but the membership
+        # points to a stub user. Look up stub users by email to find invites.
+        invite_user_result = await session.execute(
+            select(User).where(User.email == request.email, User.status == "invited")
+        )
+        invited_stub: Optional[User] = invite_user_result.scalar_one_or_none()
+
+        if invited_stub:
+            # There's a stub user from an invitation — this case is already
+            # handled by the "existing user" path above (found by email).
+            # This branch shouldn't normally be reached because of the earlier
+            # email lookup, but included for safety.
+            pass
+
+        # Check if their email domain has an approved org
         email_domain = request.email.split("@")[1].lower() if "@" in request.email else None
         
         if email_domain:
@@ -444,6 +508,17 @@ async def sync_user(request: SyncUserRequest) -> SyncUserResponse:
                     last_login=datetime.utcnow(),
                 )
                 session.add(new_user)
+                await session.flush()
+
+                # Also create membership record
+                new_membership = OrganizationMembership(
+                    user_id=new_user.id,
+                    organization_id=existing_org.id,
+                    role="member",
+                    status="active",
+                    joined_at=datetime.utcnow(),
+                )
+                session.add(new_membership)
                 await session.commit()
                 await session.refresh(new_user)
                 
@@ -599,8 +674,10 @@ async def get_organization_members(
     """Get all team members for an organization, including identity mappings.
 
     Only accessible by members of that organization.
+    Uses organization_memberships table for membership lookups.
     """
     from models.slack_user_mapping import SlackUserMapping
+    from models.organization_membership import OrganizationMembership
 
     if not user_id:
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -611,17 +688,30 @@ async def get_organization_members(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid ID format")
 
-    async with get_session() as session:
-        # Verify requesting user belongs to this organization
-        requesting_user = await session.get(User, user_uuid)
-        if not requesting_user or requesting_user.organization_id != org_uuid:
+    # Use admin session so we can join across users + memberships without RLS issues
+    async with get_admin_session() as session:
+        # Verify requesting user has an active membership in this org
+        requester_check = await session.execute(
+            select(OrganizationMembership).where(
+                OrganizationMembership.user_id == user_uuid,
+                OrganizationMembership.organization_id == org_uuid,
+                OrganizationMembership.status == "active",
+            )
+        )
+        if not requester_check.scalar_one_or_none():
             raise HTTPException(status_code=403, detail="Not authorized to view this organization's members")
 
-        # Fetch all users in the organization
-        result = await session.execute(
-            select(User).where(User.organization_id == org_uuid)
+        # Fetch members via memberships (active and invited)
+        membership_result = await session.execute(
+            select(User, OrganizationMembership)
+            .join(OrganizationMembership, User.id == OrganizationMembership.user_id)
+            .where(
+                OrganizationMembership.organization_id == org_uuid,
+                OrganizationMembership.status.in_(["active", "invited"]),
+            )
         )
-        users: list[User] = list(result.scalars().all())
+        member_rows = membership_result.all()
+        users: list[User] = [row[0] for row in member_rows]
 
         # Fetch all identity mappings for this org in one query
         mappings_result = await session.execute(
@@ -808,6 +898,344 @@ async def unlink_identity(
         )
 
     return {"status": "unlinked"}
+
+
+# =============================================================================
+# Multi-Org Membership Endpoints
+# =============================================================================
+
+
+class InviteToOrgRequest(BaseModel):
+    """Request model for inviting a user to an organization."""
+
+    email: str
+    role: str = "member"
+
+
+class InviteToOrgResponse(BaseModel):
+    """Response model for org invitation."""
+
+    membership_id: str
+    user_id: str
+    email: str
+    status: str
+
+
+@router.post("/organizations/{org_id}/invitations", response_model=InviteToOrgResponse)
+async def invite_to_organization(
+    org_id: str,
+    request: InviteToOrgRequest,
+    background_tasks: BackgroundTasks,
+    user_id: Optional[str] = None,
+) -> InviteToOrgResponse:
+    """Invite a user to an organization by email.
+
+    Creates a membership with status='invited'. If the user doesn't exist
+    yet, creates a stub user with status='invited'. Sends an invitation email.
+    """
+    from models.organization_membership import OrganizationMembership
+    from services.email import send_org_invitation_email
+
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        org_uuid = UUID(org_id)
+        inviter_uuid = UUID(user_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid ID format")
+
+    invite_email: str = request.email.strip().lower()
+    if not invite_email or "@" not in invite_email:
+        raise HTTPException(status_code=400, detail="Invalid email address")
+
+    async with get_admin_session() as session:
+        # Verify inviter belongs to this org
+        inviter: Optional[User] = await session.get(User, inviter_uuid)
+        if not inviter:
+            raise HTTPException(status_code=403, detail="Not authorized")
+
+        # Check inviter has an active membership in this org
+        result = await session.execute(
+            select(OrganizationMembership).where(
+                OrganizationMembership.user_id == inviter_uuid,
+                OrganizationMembership.organization_id == org_uuid,
+                OrganizationMembership.status == "active",
+            )
+        )
+        inviter_membership: Optional[OrganizationMembership] = result.scalar_one_or_none()
+        if not inviter_membership:
+            raise HTTPException(status_code=403, detail="Not a member of this organization")
+
+        # Load the org for the email
+        org: Optional[Organization] = await session.get(Organization, org_uuid)
+        if not org:
+            raise HTTPException(status_code=404, detail="Organization not found")
+
+        # Find or create the target user
+        result = await session.execute(
+            select(User).where(User.email == invite_email)
+        )
+        target_user: Optional[User] = result.scalar_one_or_none()
+
+        if not target_user:
+            # Create stub user
+            target_user = User(
+                email=invite_email,
+                status="invited",
+                role="member",
+                invited_at=datetime.utcnow(),
+            )
+            session.add(target_user)
+            await session.flush()
+
+        # Check for existing membership
+        result = await session.execute(
+            select(OrganizationMembership).where(
+                OrganizationMembership.user_id == target_user.id,
+                OrganizationMembership.organization_id == org_uuid,
+            )
+        )
+        existing_membership: Optional[OrganizationMembership] = result.scalar_one_or_none()
+
+        if existing_membership:
+            if existing_membership.status == "active":
+                raise HTTPException(
+                    status_code=409,
+                    detail="User is already a member of this organization",
+                )
+            if existing_membership.status == "invited":
+                raise HTTPException(
+                    status_code=409,
+                    detail="User has already been invited to this organization",
+                )
+            # Re-invite a deactivated member
+            existing_membership.status = "invited"
+            existing_membership.invited_by_user_id = inviter_uuid
+            existing_membership.invited_at = datetime.utcnow()
+            existing_membership.role = request.role
+            await session.commit()
+            membership_id_str: str = str(existing_membership.id)
+        else:
+            new_membership = OrganizationMembership(
+                user_id=target_user.id,
+                organization_id=org_uuid,
+                role=request.role,
+                status="invited",
+                invited_by_user_id=inviter_uuid,
+                invited_at=datetime.utcnow(),
+            )
+            session.add(new_membership)
+            await session.commit()
+            membership_id_str = str(new_membership.id)
+
+        # Send invitation email in background
+        inviter_name: str = inviter.name or inviter.email
+        background_tasks.add_task(
+            send_org_invitation_email,
+            invite_email,
+            org.name,
+            inviter_name,
+        )
+
+        return InviteToOrgResponse(
+            membership_id=membership_id_str,
+            user_id=str(target_user.id),
+            email=invite_email,
+            status="invited",
+        )
+
+
+class UserOrganizationResponse(BaseModel):
+    """A single organization the user belongs to."""
+
+    id: str
+    name: str
+    logo_url: Optional[str] = None
+    role: str
+    is_active: bool
+
+
+class UserOrganizationsListResponse(BaseModel):
+    """List of organizations the current user belongs to."""
+
+    organizations: list[UserOrganizationResponse]
+
+
+@router.get("/users/me/organizations", response_model=UserOrganizationsListResponse)
+async def list_user_organizations(
+    user_id: Optional[str] = None,
+) -> UserOrganizationsListResponse:
+    """List all organizations the authenticated user belongs to."""
+    from models.organization_membership import OrganizationMembership
+
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        user_uuid = UUID(user_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid user ID")
+
+    # Cross-org query — must bypass RLS
+    async with get_admin_session() as session:
+        user: Optional[User] = await session.get(User, user_uuid)
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        result = await session.execute(
+            select(OrganizationMembership, Organization)
+            .join(Organization, OrganizationMembership.organization_id == Organization.id)
+            .where(
+                OrganizationMembership.user_id == user_uuid,
+                OrganizationMembership.status == "active",
+            )
+        )
+        rows = result.all()
+
+        orgs: list[UserOrganizationResponse] = [
+            UserOrganizationResponse(
+                id=str(org.id),
+                name=org.name,
+                logo_url=org.logo_url,
+                role=membership.role,
+                is_active=(user.organization_id == org.id),
+            )
+            for membership, org in rows
+        ]
+
+        return UserOrganizationsListResponse(organizations=orgs)
+
+
+class SwitchActiveOrgRequest(BaseModel):
+    """Request to switch the user's active organization."""
+
+    organization_id: str
+
+
+@router.patch("/users/me/active-organization", response_model=SyncUserResponse)
+async def switch_active_organization(
+    request: SwitchActiveOrgRequest,
+    user_id: Optional[str] = None,
+) -> SyncUserResponse:
+    """Switch the user's active organization.
+
+    Validates that the user has an active membership in the target org,
+    then updates User.organization_id.
+    """
+    from models.organization_membership import OrganizationMembership
+
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        user_uuid = UUID(user_id)
+        target_org_uuid = UUID(request.organization_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid ID format")
+
+    async with get_admin_session() as session:
+        user: Optional[User] = await session.get(User, user_uuid)
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        # Validate membership
+        result = await session.execute(
+            select(OrganizationMembership).where(
+                OrganizationMembership.user_id == user_uuid,
+                OrganizationMembership.organization_id == target_org_uuid,
+                OrganizationMembership.status == "active",
+            )
+        )
+        membership: Optional[OrganizationMembership] = result.scalar_one_or_none()
+        if not membership:
+            raise HTTPException(
+                status_code=403,
+                detail="You are not an active member of this organization",
+            )
+
+        # Update active org
+        user.organization_id = target_org_uuid
+        # Sync the role from the membership for this org
+        user.role = membership.role
+        await session.commit()
+        await session.refresh(user)
+
+        # Load org data
+        org: Optional[Organization] = await session.get(Organization, target_org_uuid)
+        org_data: Optional[SyncOrganizationData] = None
+        if org:
+            org_data = SyncOrganizationData(
+                id=str(org.id),
+                name=org.name,
+                logo_url=org.logo_url,
+            )
+
+        return SyncUserResponse(
+            id=str(user.id),
+            email=user.email,
+            name=user.name,
+            avatar_url=user.avatar_url,
+            organization_id=str(user.organization_id) if user.organization_id else None,
+            organization=org_data,
+            status=user.status,
+            roles=user.roles or [],
+        )
+
+
+@router.delete("/organizations/{org_id}/members/{target_user_id}")
+async def remove_organization_member(
+    org_id: str,
+    target_user_id: str,
+    user_id: Optional[str] = None,
+) -> dict[str, str]:
+    """Remove a member from an organization (deactivate membership)."""
+    from models.organization_membership import OrganizationMembership
+
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        org_uuid = UUID(org_id)
+        target_uuid = UUID(target_user_id)
+        requester_uuid = UUID(user_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid ID format")
+
+    async with get_admin_session() as session:
+        # Verify requester is a member of the org
+        result = await session.execute(
+            select(OrganizationMembership).where(
+                OrganizationMembership.user_id == requester_uuid,
+                OrganizationMembership.organization_id == org_uuid,
+                OrganizationMembership.status == "active",
+            )
+        )
+        requester_membership: Optional[OrganizationMembership] = result.scalar_one_or_none()
+        if not requester_membership:
+            raise HTTPException(status_code=403, detail="Not authorized")
+
+        # Find target membership
+        result = await session.execute(
+            select(OrganizationMembership).where(
+                OrganizationMembership.user_id == target_uuid,
+                OrganizationMembership.organization_id == org_uuid,
+            )
+        )
+        target_membership: Optional[OrganizationMembership] = result.scalar_one_or_none()
+        if not target_membership:
+            raise HTTPException(status_code=404, detail="Member not found")
+
+        target_membership.status = "deactivated"
+
+        # If this was the user's active org, clear it
+        target_user: Optional[User] = await session.get(User, target_uuid)
+        if target_user and target_user.organization_id == org_uuid:
+            target_user.organization_id = None
+
+        await session.commit()
+
+    return {"status": "removed"}
 
 
 class UpdateOrganizationRequest(BaseModel):
@@ -1816,6 +2244,8 @@ async def register_user(request: CreateUserRequest) -> CreateUserResponse:
                 organization_id=str(existing_user.organization_id) if existing_user.organization_id else "",
             )
 
+        from models.organization_membership import OrganizationMembership
+
         # Create customer
         organization = Organization(
             name=request.company_name or f"{request.email}'s Company",
@@ -1831,6 +2261,17 @@ async def register_user(request: CreateUserRequest) -> CreateUserResponse:
             role="admin",
         )
         session.add(user)
+        await session.flush()
+
+        # Create membership
+        membership = OrganizationMembership(
+            user_id=user.id,
+            organization_id=organization.id,
+            role="admin",
+            status="active",
+            joined_at=datetime.utcnow(),
+        )
+        session.add(membership)
         await session.commit()
 
         return CreateUserResponse(

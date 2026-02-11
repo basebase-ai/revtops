@@ -603,14 +603,24 @@ export function DataSources(): JSX.Element {
 
       // Parse response to show deletion summary
       try {
-        const data = JSON.parse(responseText) as { 
-          deleted_activities?: number; 
-          deleted_meetings?: number 
+        const data = JSON.parse(responseText) as {
+          deleted_activities?: number;
+          deleted_contacts?: number;
+          deleted_accounts?: number;
+          deleted_deals?: number;
+          deleted_pipelines?: number;
+          deleted_meetings?: number;
         };
-        if (data.deleted_activities !== undefined || data.deleted_meetings !== undefined) {
-          const activities = data.deleted_activities ?? 0;
-          const meetings = data.deleted_meetings ?? 0;
-          alert(`Disconnected ${provider}.\n\nDeleted ${activities} activities and ${meetings} orphaned meetings.`);
+        const counts: string[] = [];
+        if (data.deleted_activities)  counts.push(`${data.deleted_activities} activities`);
+        if (data.deleted_deals)       counts.push(`${data.deleted_deals} deals`);
+        if (data.deleted_contacts)    counts.push(`${data.deleted_contacts} contacts`);
+        if (data.deleted_accounts)    counts.push(`${data.deleted_accounts} accounts`);
+        if (data.deleted_pipelines)   counts.push(`${data.deleted_pipelines} pipelines`);
+        if (data.deleted_meetings)    counts.push(`${data.deleted_meetings} orphaned meetings`);
+
+        if (counts.length > 0) {
+          alert(`Disconnected ${provider}.\n\nDeleted ${counts.join(', ')}.`);
         }
       } catch {
         // Response wasn't JSON or didn't have deletion info, that's fine

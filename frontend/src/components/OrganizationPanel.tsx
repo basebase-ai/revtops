@@ -93,16 +93,32 @@ export function OrganizationPanel({ organization, currentUser, onClose }: Organi
   };
 
   const handleInvite = async (): Promise<void> => {
-    if (!inviteEmail.trim()) return;
-    
+    const email: string = inviteEmail.trim().toLowerCase();
+    if (!email) return;
+
     setIsInviting(true);
     try {
-      // TODO: Call invite API
-      await new Promise((r) => setTimeout(r, 1000));
+      const { API_BASE } = await import('../lib/api');
+      const response = await fetch(
+        `${API_BASE}/auth/organizations/${organization.id}/invitations?user_id=${currentUser.id}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email }),
+        },
+      );
+
+      if (!response.ok) {
+        const errData = (await response.json().catch(() => ({}))) as { detail?: string };
+        alert(errData.detail ?? `Failed to invite: ${response.status}`);
+        return;
+      }
+
       setInviteEmail('');
       alert('Invitation sent!');
     } catch (error) {
       console.error('Failed to invite:', error);
+      alert(`Failed to invite: ${error instanceof Error ? error.message : 'Unknown error'}`);
     } finally {
       setIsInviting(false);
     }

@@ -94,6 +94,7 @@ function App(): JSX.Element {
     setOrganization, 
     logout: storeLogout,
     syncUserToBackend,
+    fetchUserOrganizations,
   } = useAppStore();
 
   // Check auth status on mount
@@ -122,6 +123,8 @@ function App(): JSX.Element {
           } else {
             // Always sync with backend to get fresh data (including avatar_url)
             await handleAuthenticatedUser(session.user);
+            // Refresh user's org list in background
+            void useAppStore.getState().fetchUserOrganizations();
           }
         } else if (!hasPersistedUser) {
           // No session and no persisted user - check legacy localStorage auth
@@ -212,19 +215,6 @@ function App(): JSX.Element {
       (identityData?.full_name as string | undefined) ??
       null;
 
-    // Check if personal email
-    if (isPersonalEmail(email)) {
-      setUser({
-        id: supabaseUser.id,
-        email,
-        name,
-        avatarUrl,
-        roles: [],
-      });
-      setScreen('blocked-email');
-      return;
-    }
-
     // Set user in store first (needed for syncUserToBackend)
     setUser({
       id: supabaseUser.id,
@@ -236,6 +226,7 @@ function App(): JSX.Element {
 
     // CHECK WAITLIST STATUS FIRST - before any company/org setup
     // This catches users who signed up via waitlist form
+    // Also handles invited users with personal emails (they'll have a pending invitation)
     try {
       const syncResponse = await fetch(`${API_BASE}/auth/users/sync`, {
         method: 'POST',
@@ -249,7 +240,12 @@ function App(): JSX.Element {
       });
 
       if (syncResponse.status === 403) {
-        // User not registered - needs to join waitlist
+        // User not registered — block personal emails only if not in the system
+        if (isPersonalEmail(email)) {
+          setScreen('blocked-email');
+          return;
+        }
+        // Work email but not registered - needs to join waitlist
         setScreen('not-registered');
         return;
       }
@@ -261,6 +257,8 @@ function App(): JSX.Element {
           avatar_url: string | null;
           name: string | null;
           roles: string[];
+          organization_id: string | null;
+          organization: { id: string; name: string; logo_url: string | null } | null;
         };
         
         // Update user with data from backend (authoritative source)
@@ -278,9 +276,28 @@ function App(): JSX.Element {
           return;
         }
         // If status is 'invited', it gets upgraded to 'active' by the backend
+
+        // If sync returned an organization (e.g. invited user who auto-activated),
+        // set it and go directly to app — skip domain lookup entirely
+        if (userData.organization) {
+          setOrganization({
+            id: userData.organization.id,
+            name: userData.organization.name,
+            logoUrl: userData.organization.logo_url,
+          });
+          await fetchUserOrganizations();
+          setScreen('app');
+          return;
+        }
       }
     } catch (error) {
       console.error('Failed to check user status:', error);
+    }
+
+    // Block personal emails for org creation (not for invited users who already passed sync)
+    if (isPersonalEmail(email)) {
+      setScreen('blocked-email');
+      return;
     }
 
     // User is allowed in - now check company/organization
@@ -337,6 +354,9 @@ function App(): JSX.Element {
       console.error('Failed to sync organization to backend:', error);
     }
 
+    // Fetch the user's org list (for multi-org switcher)
+    await fetchUserOrganizations();
+
     // Go directly to app - Home screen shows data source prompt if needed
     setScreen('app');
   };
@@ -375,6 +395,9 @@ function App(): JSX.Element {
 
     // Sync user to backend now that we have an org
     await syncUserToBackend();
+
+    // Fetch the user's org list (for multi-org switcher)
+    await fetchUserOrganizations();
 
     // Go directly to app - Home screen shows data source prompt if needed
     setScreen('app');

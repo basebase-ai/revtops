@@ -11,9 +11,9 @@
  * - Profile section
  */
 
-import { useMemo, useState } from 'react';
+import { useMemo, useState, useRef, useEffect } from 'react';
 import type { View, ChatSummary, OrganizationInfo } from './AppLayout';
-import { useAppStore, useIsGlobalAdmin, useActiveTasksByConversation, type UserProfile } from '../store';
+import { useAppStore, useIsGlobalAdmin, useActiveTasksByConversation, type UserProfile, type UserOrganization } from '../store';
 
 /** Avatar component with error fallback */
 function UserAvatar({ user }: { user: UserProfile }): JSX.Element {
@@ -34,6 +34,130 @@ function UserAvatar({ user }: { user: UserProfile }): JSX.Element {
   return (
     <div className="w-8 h-8 rounded-full bg-primary-600 flex items-center justify-center text-white font-medium text-sm">
       {(user.name ?? user.email).charAt(0).toUpperCase()}
+    </div>
+  );
+}
+
+/** Organization switcher in the sidebar bottom section. */
+function OrgSwitcherSection({
+  collapsed,
+  organization,
+  memberCount,
+  onOpenOrgPanel,
+}: {
+  collapsed: boolean;
+  organization: OrganizationInfo;
+  memberCount: number;
+  onOpenOrgPanel: () => void;
+}): JSX.Element {
+  const organizations: UserOrganization[] = useAppStore((state) => state.organizations);
+  const switchActiveOrganization = useAppStore((state) => state.switchActiveOrganization);
+  const fetchConversations = useAppStore((state) => state.fetchConversations);
+  const fetchIntegrations = useAppStore((state) => state.fetchIntegrations);
+  const [showDropdown, setShowDropdown] = useState(false);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+
+  // Close dropdown on outside click
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent): void => {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
+        setShowDropdown(false);
+      }
+    };
+    if (showDropdown) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [showDropdown]);
+
+  const hasMultipleOrgs: boolean = organizations.length > 1;
+
+  const handleSwitchOrg = async (orgId: string): Promise<void> => {
+    setShowDropdown(false);
+    await switchActiveOrganization(orgId);
+    // Refetch org-scoped data
+    await Promise.all([fetchConversations(), fetchIntegrations()]);
+  };
+
+  return (
+    <div className="relative" ref={dropdownRef}>
+      <button
+        onClick={hasMultipleOrgs ? () => setShowDropdown((prev) => !prev) : onOpenOrgPanel}
+        className={`w-full flex items-center gap-3 px-3 py-3 hover:bg-surface-800/50 transition-colors ${collapsed ? 'justify-center' : ''}`}
+      >
+        {organization.logoUrl ? (
+          <img
+            src={organization.logoUrl}
+            alt={organization.name}
+            className="w-8 h-8 rounded-lg object-cover"
+          />
+        ) : (
+          <div className="w-8 h-8 rounded-lg bg-surface-700 flex items-center justify-center text-surface-300 font-medium text-sm">
+            {organization.name.charAt(0).toUpperCase()}
+          </div>
+        )}
+        {!collapsed && (
+          <div className="flex-1 min-w-0 text-left">
+            <div className="text-sm font-medium text-surface-200 truncate">
+              {organization.name}
+            </div>
+            <div className="text-xs text-surface-500">
+              {memberCount} member{memberCount !== 1 ? 's' : ''}
+            </div>
+          </div>
+        )}
+        {!collapsed && hasMultipleOrgs && (
+          <svg
+            className={`w-4 h-4 text-surface-400 transition-transform ${showDropdown ? 'rotate-180' : ''}`}
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+          >
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
+          </svg>
+        )}
+      </button>
+
+      {/* Org switcher dropdown */}
+      {showDropdown && hasMultipleOrgs && !collapsed && (
+        <div className="absolute bottom-full left-0 right-0 mb-1 mx-2 bg-surface-800 border border-surface-700 rounded-lg shadow-xl overflow-hidden z-50">
+          <div className="py-1">
+            {organizations.map((org) => (
+              <button
+                key={org.id}
+                onClick={() => void handleSwitchOrg(org.id)}
+                className={`w-full flex items-center gap-3 px-3 py-2.5 text-left transition-colors ${
+                  org.isActive
+                    ? 'bg-primary-500/10 text-primary-400'
+                    : 'text-surface-300 hover:bg-surface-700'
+                }`}
+              >
+                {org.logoUrl ? (
+                  <img src={org.logoUrl} alt={org.name} className="w-6 h-6 rounded object-cover" />
+                ) : (
+                  <div className="w-6 h-6 rounded bg-surface-600 flex items-center justify-center text-surface-300 text-xs font-medium">
+                    {org.name.charAt(0).toUpperCase()}
+                  </div>
+                )}
+                <span className="text-sm truncate flex-1">{org.name}</span>
+                {org.isActive && (
+                  <svg className="w-4 h-4 text-primary-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                  </svg>
+                )}
+              </button>
+            ))}
+          </div>
+          <div className="border-t border-surface-700">
+            <button
+              onClick={() => { setShowDropdown(false); onOpenOrgPanel(); }}
+              className="w-full px-3 py-2 text-xs text-surface-400 hover:text-surface-200 hover:bg-surface-700/50 transition-colors text-left"
+            >
+              Organization settings
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -389,32 +513,12 @@ export function Sidebar({
       {/* Bottom Section */}
       <div className="mt-auto border-t border-surface-800">
         {/* Organization */}
-        <button
-          onClick={onOpenOrgPanel}
-          className={`w-full flex items-center gap-3 px-3 py-3 hover:bg-surface-800/50 transition-colors ${collapsed ? 'justify-center' : ''}`}
-        >
-          {organization.logoUrl ? (
-            <img
-              src={organization.logoUrl}
-              alt={organization.name}
-              className="w-8 h-8 rounded-lg object-cover"
-            />
-          ) : (
-            <div className="w-8 h-8 rounded-lg bg-surface-700 flex items-center justify-center text-surface-300 font-medium text-sm">
-              {organization.name.charAt(0).toUpperCase()}
-            </div>
-          )}
-          {!collapsed && (
-            <div className="flex-1 min-w-0 text-left">
-              <div className="text-sm font-medium text-surface-200 truncate">
-                {organization.name}
-              </div>
-              <div className="text-xs text-surface-500">
-                {memberCount} member{memberCount !== 1 ? 's' : ''}
-              </div>
-            </div>
-          )}
-        </button>
+        <OrgSwitcherSection
+          collapsed={collapsed}
+          organization={organization}
+          memberCount={memberCount}
+          onOpenOrgPanel={onOpenOrgPanel}
+        />
 
         {/* User Profile */}
         {user && (
