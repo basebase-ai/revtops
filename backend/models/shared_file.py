@@ -1,7 +1,9 @@
 """
-GoogleDriveFile model — stores synced metadata for files in a user's Google Drive.
+SharedFile model — stores synced metadata for files from any external source.
 
-This enables the agent to search files by name without hitting the Google API
+Supported sources: Google Drive, Airtable, OneDrive, etc.
+
+This enables the agent to search files by name without hitting the source API
 on every query.  Actual file content is fetched on demand via the connector.
 """
 from __future__ import annotations
@@ -17,20 +19,22 @@ from sqlalchemy.orm import Mapped, mapped_column
 from models.database import Base
 
 
-class GoogleDriveFile(Base):
-    """A file or folder synced from a user's Google Drive."""
+class SharedFile(Base):
+    """A file or folder synced from an external source (Google Drive, Airtable, etc.)."""
 
-    __tablename__ = "google_drive_files"
+    __tablename__ = "shared_files"
     __table_args__ = (
-        Index("idx_gdrive_org_user", "organization_id", "user_id"),
+        Index("idx_shared_files_org_user", "organization_id", "user_id"),
         Index(
-            "uq_gdrive_org_user_fileid",
+            "uq_shared_files_org_user_source_extid",
             "organization_id",
             "user_id",
-            "google_file_id",
+            "source",
+            "external_id",
             unique=True,
         ),
-        Index("idx_gdrive_name_trgm", "name"),  # for ILIKE searches
+        Index("idx_shared_files_name_trgm", "name"),  # for ILIKE searches
+        Index("idx_shared_files_source", "source"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -43,19 +47,22 @@ class GoogleDriveFile(Base):
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
 
-    # Google identifiers
-    google_file_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    # Source identifier (e.g. "google_drive", "airtable", "onedrive")
+    source: Mapped[str] = mapped_column(String(64), nullable=False, default="google_drive")
+
+    # External identifiers
+    external_id: Mapped[str] = mapped_column(String(255), nullable=False)
     name: Mapped[str] = mapped_column(String(1024), nullable=False, default="")
     mime_type: Mapped[str] = mapped_column(String(255), nullable=False, default="")
 
     # Hierarchy
-    parent_google_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    parent_external_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     folder_path: Mapped[str] = mapped_column(Text, nullable=False, default="/")
 
     # Metadata
     web_view_link: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)
     file_size: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
-    google_modified_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    source_modified_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
     # Sync tracking
     synced_at: Mapped[Optional[datetime]] = mapped_column(
@@ -65,15 +72,16 @@ class GoogleDriveFile(Base):
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for API / agent responses."""
         return {
-            "google_file_id": self.google_file_id,
+            "external_id": self.external_id,
+            "source": self.source,
             "name": self.name,
             "mime_type": self.mime_type,
             "folder_path": self.folder_path,
             "web_view_link": self.web_view_link,
             "file_size": self.file_size,
-            "google_modified_at": (
-                f"{self.google_modified_at.isoformat()}Z"
-                if self.google_modified_at
+            "source_modified_at": (
+                f"{self.source_modified_at.isoformat()}Z"
+                if self.source_modified_at
                 else None
             ),
             "synced_at": (

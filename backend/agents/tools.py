@@ -141,6 +141,7 @@ ALLOWED_TABLES: set[str] = {
     "deals", "accounts", "contacts", "activities", "meetings", "integrations", "users", "organizations",
     "pipelines", "pipeline_stages", "workflows", "workflow_runs", "user_mappings_for_identity",
     "github_repositories", "github_commits", "github_pull_requests",
+    "shared_files",
 }
 
 
@@ -300,19 +301,29 @@ async def execute_tool(
         logger.info("[Tools] trigger_sync completed: %s", result.get("status"))
         return result
 
-    elif tool_name == "search_google_drive":
-        result = await _search_google_drive(tool_input, organization_id, user_id)
-        logger.info("[Tools] search_google_drive returned %d results", len(result.get("files", [])))
+    elif tool_name == "search_cloud_files":
+        result = await _search_cloud_files(tool_input, organization_id, user_id)
+        logger.info("[Tools] search_cloud_files returned %d results", len(result.get("files", [])))
         return result
 
-    elif tool_name == "read_google_drive_file":
-        result = await _read_google_drive_file(tool_input, organization_id, user_id)
-        logger.info("[Tools] read_google_drive_file completed: %s", result.get("file_name", "unknown"))
+    elif tool_name == "read_cloud_file":
+        result = await _read_cloud_file(tool_input, organization_id, user_id)
+        logger.info("[Tools] read_cloud_file completed: %s", result.get("file_name", "unknown"))
         return result
 
     elif tool_name == "create_artifact":
         result = await _create_artifact(tool_input, organization_id, user_id, context)
         logger.info("[Tools] create_artifact completed: %s", result.get("artifact_id"))
+        return result
+
+    elif tool_name == "save_memory":
+        result = await _save_memory(tool_input, organization_id, user_id)
+        logger.info("[Tools] save_memory completed: %s", result.get("memory_id", result.get("error")))
+        return result
+
+    elif tool_name == "delete_memory":
+        result = await _delete_memory(tool_input, organization_id, user_id)
+        logger.info("[Tools] delete_memory completed: %s", result.get("status", result.get("error")))
         return result
 
     else:
@@ -4014,15 +4025,16 @@ async def _create_artifact(
 # =============================================================================
 
 
-async def _search_google_drive(
+async def _search_cloud_files(
     params: dict[str, Any], organization_id: str, user_id: str | None
 ) -> dict[str, Any]:
     """
-    Search the user's synced Google Drive files by name.
+    Search synced cloud files by name across all sources.
 
-    Queries the local google_drive_files table (populated by sync).
+    Queries the shared_files table directly (no connector needed for search).
     """
     name_query: str = params.get("name_query", "").strip()
+    source_filter: str | None = params.get("source")
     limit: int = min(params.get("limit", 20), 50)
 
     if not name_query:
@@ -4030,16 +4042,45 @@ async def _search_google_drive(
 
     if not user_id:
         return {
-            "error": "Google Drive search requires a user context (not available in Slack DM).",
+            "error": "Cloud file search requires a user context (not available in Slack DM).",
         }
 
     try:
-        from connectors.google_drive import GoogleDriveConnector
+        from uuid import UUID as _UUID
+        from sqlalchemy import select, and_
+        from models.shared_file import SharedFile
+        from models.database import get_session
 
-        connector = GoogleDriveConnector(organization_id, user_id)
-        files: list[dict[str, Any]] = await connector.search_files(
-            name_query, limit=limit
-        )
+        org_uuid = _UUID(organization_id)
+        user_uuid = _UUID(user_id)
+
+        # Normalise wildcard-only queries (e.g. "*") to match all files
+        cleaned_query: str = name_query.replace("*", "").strip()
+
+        filters: list[Any] = [
+            SharedFile.organization_id == org_uuid,
+            SharedFile.user_id == user_uuid,
+            SharedFile.mime_type != "application/vnd.google-apps.folder",
+        ]
+
+        if cleaned_query:
+            like_pattern: str = f"%{cleaned_query}%"
+            filters.append(SharedFile.name.ilike(like_pattern))
+
+        if source_filter:
+            filters.append(SharedFile.source == source_filter)
+
+        async with get_session(organization_id=organization_id) as session:
+            query = (
+                select(SharedFile)
+                .where(and_(*filters))
+                .order_by(SharedFile.source_modified_at.desc())
+                .limit(limit)
+            )
+            result = await session.execute(query)
+            rows: list[SharedFile] = list(result.scalars().all())
+
+        files: list[dict[str, Any]] = [row.to_dict() for row in rows]
 
         if not files:
             return {
@@ -4047,7 +4088,7 @@ async def _search_google_drive(
                 "count": 0,
                 "message": (
                     f"No files matching '{name_query}' found. "
-                    "Make sure Google Drive has been synced from the Data Sources page."
+                    "Make sure your cloud files have been synced from the Data Sources page."
                 ),
             }
 
@@ -4058,38 +4099,127 @@ async def _search_google_drive(
     except ValueError as e:
         return {"error": str(e)}
     except Exception as e:
-        logger.error("[Tools._search_google_drive] Failed: %s", e)
-        return {"error": f"Failed to search Google Drive: {str(e)}"}
+        logger.error("[Tools._search_cloud_files] Failed: %s", e)
+        return {"error": f"Failed to search cloud files: {str(e)}"}
 
 
-async def _read_google_drive_file(
+async def _read_cloud_file(
     params: dict[str, Any], organization_id: str, user_id: str | None
 ) -> dict[str, Any]:
     """
-    Read the text content of a Google Drive file via the Google API.
-    """
-    google_file_id: str = params.get("google_file_id", "").strip()
+    Read the text content of a synced cloud file.
 
-    if not google_file_id:
-        return {"error": "google_file_id is required."}
+    Looks up the file's source, then dispatches to the appropriate connector.
+    """
+    external_id: str = params.get("external_id", "").strip()
+
+    if not external_id:
+        return {"error": "external_id is required."}
 
     if not user_id:
         return {
-            "error": "Google Drive read requires a user context (not available in Slack DM).",
+            "error": "Cloud file read requires a user context (not available in Slack DM).",
         }
 
     try:
-        from connectors.google_drive import GoogleDriveConnector
+        from uuid import UUID as _UUID
+        from sqlalchemy import select, and_
+        from models.shared_file import SharedFile
+        from models.database import get_session
 
-        connector = GoogleDriveConnector(organization_id, user_id)
-        result: dict[str, Any] = await connector.get_file_content(google_file_id)
+        # Look up the file to determine its source
+        org_uuid = _UUID(organization_id)
+        user_uuid = _UUID(user_id)
 
-        if "error" in result:
-            return result
+        async with get_session(organization_id=organization_id) as session:
+            result = await session.execute(
+                select(SharedFile).where(
+                    and_(
+                        SharedFile.organization_id == org_uuid,
+                        SharedFile.user_id == user_uuid,
+                        SharedFile.external_id == external_id,
+                    )
+                )
+            )
+            file_record: SharedFile | None = result.scalar_one_or_none()
 
-        return result
+        if not file_record:
+            return {"error": f"File not found in synced metadata: {external_id}"}
+
+        source: str = file_record.source
+
+        # Dispatch to the right connector based on source
+        if source == "google_drive":
+            from connectors.google_drive import GoogleDriveConnector
+            connector = GoogleDriveConnector(organization_id, user_id)
+            return await connector.get_file_content(external_id)
+        else:
+            return {"error": f"Reading files from '{source}' is not yet supported."}
+
     except ValueError as e:
         return {"error": str(e)}
     except Exception as e:
-        logger.error("[Tools._read_google_drive_file] Failed: %s", e)
-        return {"error": f"Failed to read Google Drive file: {str(e)}"}
+        logger.error("[Tools._read_cloud_file] Failed: %s", e)
+        return {"error": f"Failed to read cloud file: {str(e)}"}
+
+
+# =============================================================================
+# User Memory Tools
+# =============================================================================
+
+
+async def _save_memory(
+    params: dict[str, Any],
+    organization_id: str,
+    user_id: str | None,
+) -> dict[str, Any]:
+    """Save a persistent memory for the current user."""
+    content: str = params.get("content", "").strip()
+    if not content:
+        return {"error": "content is required."}
+    if not user_id:
+        return {"error": "Cannot save memory without a user context."}
+
+    from models.user_memory import UserMemory
+
+    memory = UserMemory(
+        user_id=UUID(user_id),
+        organization_id=UUID(organization_id),
+        content=content,
+    )
+
+    async with get_session(organization_id=organization_id) as session:
+        session.add(memory)
+        await session.commit()
+
+    return {"memory_id": str(memory.id), "content": content, "status": "saved"}
+
+
+async def _delete_memory(
+    params: dict[str, Any],
+    organization_id: str,
+    user_id: str | None,
+) -> dict[str, Any]:
+    """Delete a previously saved memory by ID."""
+    memory_id: str = params.get("memory_id", "").strip()
+    if not memory_id:
+        return {"error": "memory_id is required."}
+    if not user_id:
+        return {"error": "Cannot delete memory without a user context."}
+
+    from models.user_memory import UserMemory
+
+    async with get_session(organization_id=organization_id) as session:
+        result = await session.execute(
+            select(UserMemory).where(
+                UserMemory.id == UUID(memory_id),
+                UserMemory.user_id == UUID(user_id),
+            )
+        )
+        memory: UserMemory | None = result.scalar_one_or_none()
+        if not memory:
+            return {"error": f"Memory {memory_id} not found or does not belong to this user."}
+        await session.delete(memory)
+        await session.commit()
+
+    return {"status": "deleted", "memory_id": memory_id}

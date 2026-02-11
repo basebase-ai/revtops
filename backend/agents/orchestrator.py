@@ -160,6 +160,10 @@ This helps users understand what you're thinking and what to expect.
 - **create_workflow** / **run_workflow**: Create or run automated workflows on schedules or events.
 - **trigger_workflow**: Manually trigger an existing workflow to test it.
 
+### Memory
+- **save_memory**: Save a persistent preference or fact the user asks you to remember across conversations. Use when the user says "remember that..." or states a lasting preference.
+- **delete_memory**: Remove a previously saved memory when the user asks you to forget something.
+
 ### Enrichment
 - **enrich_contacts_with_apollo**: Enrich contacts with Apollo.io data (titles, companies, emails). After enrichment, use **crm_write** to update the contacts with the enriched fields.
 - **enrich_company_with_apollo**: Enrich a single company with Apollo.io data.
@@ -456,6 +460,8 @@ class ChatOrchestrator:
         organization_id: str | None,
         conversation_id: str | None = None,
         user_email: str | None = None,
+        user_name: str | None = None,
+        organization_name: str | None = None,
         local_time: str | None = None,
         timezone: str | None = None,
         source_user_id: str | None = None,
@@ -470,6 +476,8 @@ class ChatOrchestrator:
             organization_id: UUID of the user's organization (may be None for new users)
             conversation_id: UUID of the conversation (may be None for new conversations)
             user_email: Email of the authenticated user
+            user_name: Display name of the authenticated user
+            organization_name: Name of the user's organization
             local_time: ISO timestamp of user's local time
             timezone: User's timezone (e.g., "America/New_York")
             source_user_id: External sender ID (e.g. Slack user ID)
@@ -483,6 +491,8 @@ class ChatOrchestrator:
         self.organization_id = organization_id
         self.conversation_id = conversation_id
         self.user_email = user_email
+        self.user_name = user_name
+        self.organization_name = organization_name
         self.local_time = local_time
         self.timezone = timezone
         self.source_user_id = source_user_id
@@ -491,6 +501,50 @@ class ChatOrchestrator:
         self.client = AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
         # Track if we've saved the assistant message (for early save during tool execution)
         self._assistant_message_saved = False
+
+    async def _resolve_user_context(self) -> None:
+        """Fetch user name and organization name from DB if not already set."""
+        from models.user import User
+        from models.organization import Organization
+
+        try:
+            async with get_session(organization_id=self.organization_id) as session:
+                if not self.user_name and self.user_id:
+                    result = await session.execute(
+                        select(User.name).where(User.id == UUID(self.user_id))
+                    )
+                    name: str | None = result.scalar_one_or_none()
+                    if name:
+                        self.user_name = name
+
+                if not self.organization_name and self.organization_id:
+                    result = await session.execute(
+                        select(Organization.name).where(
+                            Organization.id == UUID(self.organization_id)
+                        )
+                    )
+                    org_name: str | None = result.scalar_one_or_none()
+                    if org_name:
+                        self.organization_name = org_name
+        except Exception:
+            logger.warning("Failed to resolve user context", exc_info=True)
+
+    async def _load_user_memories(self) -> list[dict[str, str]]:
+        """Load all saved memories for the current user."""
+        from models.user_memory import UserMemory
+
+        try:
+            async with get_session(organization_id=self.organization_id) as session:
+                result = await session.execute(
+                    select(UserMemory)
+                    .where(UserMemory.user_id == UUID(self.user_id))  # type: ignore[arg-type]
+                    .order_by(UserMemory.created_at.asc())
+                )
+                rows: list[UserMemory] = list(result.scalars().all())
+                return [{"id": str(m.id), "content": m.content} for m in rows]
+        except Exception:
+            logger.warning("Failed to load user memories", exc_info=True)
+            return []
 
     async def process_message(
         self,
@@ -556,12 +610,20 @@ class ChatOrchestrator:
 
         # Build system prompt with user and time context
         system_prompt = SYSTEM_PROMPT
+
+        # Resolve user_name and organization_name if not already set
+        if self.user_id and (not self.user_name or not self.organization_name):
+            await self._resolve_user_context()
         
         # Add user context so the agent knows who "me" is
         if self.user_email and self.user_id:
             user_context = f"\n\n## Current User\n"
+            if self.user_name:
+                user_context += f"- Name: {self.user_name}\n"
             user_context += f"- Email: {self.user_email}\n"
             user_context += f"- User ID: {self.user_id}\n"
+            if self.organization_name:
+                user_context += f"- Organization: {self.organization_name}\n"
             user_context += "\nWhen the user asks about 'my' data, use this email to filter queries. "
             user_context += "For example, to find the user's company, join the users table (filter by email) to the organizations table."
             system_prompt += user_context
@@ -609,6 +671,17 @@ WHERE scheduled_start >= '2026-01-27'::date AND scheduled_start < '2026-01-28'::
 
 5. **Displaying Results**: Convert UTC times to the user's timezone when presenting results. Use relative references when helpful (e.g., "in 30 minutes", "3 hours ago")."""
             system_prompt += time_context
+
+        # Load and inject user memories
+        if self.user_id and self.organization_id:
+            memories = await self._load_user_memories()
+            if memories:
+                memory_context = "\n\n## User Memories\n"
+                memory_context += "These are preferences and facts the user previously asked you to remember. Follow them.\n\n"
+                for mem in memories:
+                    memory_context += f"- [{mem['id']}] {mem['content']}\n"
+                memory_context += "\nIf the user asks you to forget something, use the delete_memory tool with the memory_id shown in brackets above."
+                system_prompt += memory_context
 
         # Stream responses with tool handling loop
         async for chunk in self._stream_with_tools(messages, system_prompt, content_blocks):

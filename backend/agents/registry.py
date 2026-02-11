@@ -107,7 +107,7 @@ Available tables:
 - github_repositories: Tracked GitHub repos (full_name, owner, name, is_tracked, last_sync_at). Join to commits/PRs via repository_id.
 - github_commits: Commits on tracked repos (repository_id, sha, message, author_name, author_email, author_login, author_date, additions, deletions, user_id). Use organization_id in WHERE.
 - github_pull_requests: PRs on tracked repos (repository_id, number, title, state, author_login, created_date, merged_date, additions, deletions, user_id). Use organization_id in WHERE.
-- google_drive_files: Synced Google Drive file metadata (google_file_id, name, mime_type, folder_path, web_view_link, file_size, google_modified_at). Filter by organization_id AND user_id. Use search_google_drive tool instead for name-based searches.
+- shared_files: Synced file metadata from cloud sources like Google Drive (external_id, source, name, mime_type, folder_path, web_view_link, file_size, source_modified_at). Filter by organization_id AND user_id AND source (e.g. 'google_drive'). Use search_cloud_files tool instead for name-based searches.
 
 IMPORTANT: Only SELECT queries are allowed. No INSERT, UPDATE, DELETE, DROP, etc.""",
     input_schema={
@@ -645,33 +645,38 @@ The sync runs in the background and may take a few minutes to complete.""",
 
 
 # -----------------------------------------------------------------------------
-# Google Drive Tools
+# Cloud File Tools (Google Drive, Airtable, OneDrive, etc.)
 # -----------------------------------------------------------------------------
 
 register_tool(
-    name="search_google_drive",
-    description="""Search the user's synced Google Drive files by name.
+    name="search_cloud_files",
+    description="""Search the user's synced cloud files by name.
 
-Use this when the user wants to find a file in their Google Drive, or when you need
-to locate a specific document (Doc, Sheet, or Slides) to read its content.
+Searches files synced from any connected source (Google Drive, Airtable, OneDrive, etc.).
+Returns matching file metadata including name, MIME type, folder path, source, and external_id.
+Use the returned external_id with read_cloud_file to get the text content.
 
-Returns matching file metadata including name, MIME type, folder path, and file ID.
-Use the returned google_file_id with read_google_drive_file to get the text content.
+Use '*' as the name_query to list all files (most recently modified first).
+Optionally filter by source (e.g. 'google_drive') if the user specifies a particular service.
 
 NOTE: Files must have been synced first. If no results are found, suggest the user
-sync their Drive from the Data Sources page.
+sync from the Data Sources page.
 
 Examples:
-- "Find the Q4 planning doc in my Drive"
+- "Find the Q4 planning doc"
 - "Search for spreadsheets with 'revenue' in the name"
-- "Look for the sales deck in Google Drive"
+- "Show me all my synced files"
 """,
     input_schema={
         "type": "object",
         "properties": {
             "name_query": {
                 "type": "string",
-                "description": "File name to search for (case-insensitive substring match)",
+                "description": "File name to search for (case-insensitive substring match). Use '*' to list all files.",
+            },
+            "source": {
+                "type": "string",
+                "description": "Optional: filter by source (e.g. 'google_drive'). Omit to search all sources.",
             },
             "limit": {
                 "type": "integer",
@@ -687,27 +692,28 @@ Examples:
 
 
 register_tool(
-    name="read_google_drive_file",
-    description="""Read the text content of a Google Drive file.
+    name="read_cloud_file",
+    description="""Read the text content of a synced cloud file.
 
-Extracts text from Google Workspace files:
+Extracts text from files based on their source:
 - Google Docs → plain text
 - Google Sheets → CSV (all sheets combined)
 - Google Slides → plain text
+- Other text-based files → raw text
 
-Use search_google_drive first to find the file's google_file_id, then use this tool
+Use search_cloud_files first to find the file's external_id, then use this tool
 to read its content into the conversation context.
 
 Content is truncated at ~100K characters for very large files.""",
     input_schema={
         "type": "object",
         "properties": {
-            "google_file_id": {
+            "external_id": {
                 "type": "string",
-                "description": "The Google Drive file ID (from search_google_drive results)",
+                "description": "The file's external_id (from search_cloud_files results)",
             },
         },
-        "required": ["google_file_id"],
+        "required": ["external_id"],
     },
     category=ToolCategory.EXTERNAL_READ,
     default_requires_approval=False,
@@ -820,6 +826,52 @@ Parameters:
             },
         },
         "required": ["items", "workflow_id"],
+    },
+    category=ToolCategory.LOCAL_WRITE,
+    default_requires_approval=False,
+)
+
+# -----------------------------------------------------------------------------
+# User Memory Tools - Save/delete persistent per-user preferences
+# -----------------------------------------------------------------------------
+
+register_tool(
+    name="save_memory",
+    description="""Save a memory or preference for the current user that will be recalled at the start of every future conversation.
+
+Use this when the user explicitly asks you to "remember" something, or states a preference they want persisted (e.g. "always be concise", "my territory is EMEA", "I prefer tables over lists").
+
+Each memory should be a single, self-contained statement. Save multiple memories as separate calls if the user gives you several things to remember.
+
+Do NOT save conversation-specific context (like "user asked about deal X") — only persistent preferences and facts.""",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "content": {
+                "type": "string",
+                "description": "The memory to save. A concise, self-contained statement (e.g. 'User prefers concise answers' or 'User manages the EMEA territory').",
+            },
+        },
+        "required": ["content"],
+    },
+    category=ToolCategory.LOCAL_WRITE,
+    default_requires_approval=False,
+)
+
+register_tool(
+    name="delete_memory",
+    description="""Delete a previously saved memory for the current user.
+
+Use this when the user asks you to forget something, or when a previously saved memory is no longer relevant. You must provide the exact memory_id (UUID) from the memories listed in the system prompt.""",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "memory_id": {
+                "type": "string",
+                "description": "UUID of the memory to delete.",
+            },
+        },
+        "required": ["memory_id"],
     },
     category=ToolCategory.LOCAL_WRITE,
     default_requires_approval=False,
