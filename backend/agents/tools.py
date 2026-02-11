@@ -4040,11 +4040,6 @@ async def _search_cloud_files(
     if not name_query:
         return {"error": "name_query is required."}
 
-    if not user_id:
-        return {
-            "error": "Cloud file search requires a user context (not available in Slack DM).",
-        }
-
     try:
         from uuid import UUID as _UUID
         from sqlalchemy import select, and_
