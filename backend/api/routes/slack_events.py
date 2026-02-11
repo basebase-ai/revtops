@@ -133,6 +133,14 @@ async def _process_event_callback(payload: dict[str, Any]) -> None:
     Process an event_callback in the background. Runs dedup check then dispatches.
     Slack expects 200 within 3 seconds, so this must NOT block the HTTP response.
     """
+    try:
+        await _process_event_callback_impl(payload)
+    except Exception as e:
+        logger.exception("[slack_events] Background processing failed: %s", e)
+
+
+async def _process_event_callback_impl(payload: dict[str, Any]) -> None:
+    """Implementation of event_callback processing (called from background task)."""
     event = payload.get("event", {})
     event_id = payload.get("event_id", "")
     team_id = payload.get("team_id", "")
