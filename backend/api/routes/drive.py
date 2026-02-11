@@ -34,13 +34,14 @@ class DriveSyncResponse(BaseModel):
 
 class DriveFileInfo(BaseModel):
     """File metadata returned from search."""
-    google_file_id: str
+    external_id: str
+    source: str
     name: str
     mime_type: str
     folder_path: str
     web_view_link: Optional[str]
     file_size: Optional[int]
-    google_modified_at: Optional[str]
+    source_modified_at: Optional[str]
     synced_at: Optional[str]
 
 
@@ -53,7 +54,7 @@ class DriveSearchResponse(BaseModel):
 class DriveFileContentResponse(BaseModel):
     """Response for file content read."""
     file_name: str
-    google_file_id: str
+    external_id: str
     mime_type: str
     folder_path: str
     web_view_link: Optional[str]
@@ -117,9 +118,9 @@ async def search_files(
         raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")
 
 
-@router.get("/files/{google_file_id}/content", response_model=DriveFileContentResponse)
+@router.get("/files/{external_id}/content", response_model=DriveFileContentResponse)
 async def read_file_content(
-    google_file_id: str,
+    external_id: str,
     user_id: Optional[str] = None,
     organization_id: Optional[str] = None,
 ) -> DriveFileContentResponse:
@@ -133,7 +134,7 @@ async def read_file_content(
 
     try:
         connector = GoogleDriveConnector(org_id, usr_id)
-        result: dict[str, Any] = await connector.get_file_content(google_file_id)
+        result: dict[str, Any] = await connector.get_file_content(external_id)
 
         if "error" in result:
             raise HTTPException(status_code=400, detail=result["error"])
@@ -144,7 +145,7 @@ async def read_file_content(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        logger.error("[Drive] Read content failed for %s: %s", google_file_id, e)
+        logger.error("[Drive] Read content failed for %s: %s", external_id, e)
         raise HTTPException(
             status_code=500, detail=f"Failed to read file: {str(e)}"
         )

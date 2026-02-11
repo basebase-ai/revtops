@@ -19,7 +19,8 @@ from models.user_tool_setting import UserToolSetting
 from models.change_session import ChangeSession
 from models.record_snapshot import RecordSnapshot
 from models.slack_user_mapping import SlackUserMapping
-from models.google_drive_file import GoogleDriveFile
+from models.shared_file import SharedFile
+from models.user_memory import UserMemory
 
 __all__ = [
     "Base",
@@ -47,5 +48,6 @@ __all__ = [
     "ChangeSession",
     "RecordSnapshot",
     "SlackUserMapping",
-    "GoogleDriveFile",
+    "SharedFile",
+    "UserMemory",
 ]

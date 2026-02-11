@@ -7,7 +7,7 @@ Google Drive connector for syncing file metadata and reading file contents.
 
 Flow:
 1. User connects Google account via OAuth (Nango)
-2. Sync crawls Drive and stores file metadata in google_drive_files table
+2. Sync crawls Drive and stores file metadata in shared_files table (source='google_drive')
 3. Agent can search files by name and read their text content
 """
 
@@ -22,7 +22,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from config import settings, get_nango_integration_id
 from models.database import get_session
-from models.google_drive_file import GoogleDriveFile
+from models.shared_file import SharedFile
 from models.integration import Integration
 from services.nango import get_nango_client
 
@@ -57,8 +57,8 @@ class GoogleDriveConnector:
     Connector for syncing Google Drive file metadata and reading file content.
 
     Unlike CRM connectors this is user-scoped (each user connects their own Drive).
-    Metadata is synced into the google_drive_files table so the agent can search
-    without hitting the Google API on every query.
+    Metadata is synced into the shared_files table (source='google_drive') so the
+    agent can search without hitting the Google API on every query.
     """
 
     def __init__(self, organization_id: str, user_id: str) -> None:
@@ -193,14 +193,15 @@ class GoogleDriveConnector:
                 else:
                     counts["other"] += 1
 
-                # Parse modified time
+                # Parse modified time (strip tz to match TIMESTAMP WITHOUT TIME ZONE column)
                 modified_time: Optional[datetime] = None
                 raw_modified: Optional[str] = file_data.get("modifiedTime")
                 if raw_modified:
                     try:
-                        modified_time = datetime.fromisoformat(
+                        dt = datetime.fromisoformat(
                             raw_modified.replace("Z", "+00:00")
                         )
+                        modified_time = dt.replace(tzinfo=None)
                     except ValueError:
                         pass
 
@@ -214,29 +215,30 @@ class GoogleDriveConnector:
                         pass
 
                 # Upsert
-                stmt = pg_insert(GoogleDriveFile).values(
+                stmt = pg_insert(SharedFile).values(
                     id=uuid4(),
                     organization_id=org_uuid,
                     user_id=user_uuid,
-                    google_file_id=file_id,
+                    source="google_drive",
+                    external_id=file_id,
                     name=file_data.get("name", ""),
                     mime_type=mime_type,
-                    parent_google_id=parent_id,
+                    parent_external_id=parent_id,
                     folder_path=folder_path,
                     web_view_link=file_data.get("webViewLink"),
                     file_size=file_size,
-                    google_modified_at=modified_time,
+                    source_modified_at=modified_time,
                     synced_at=datetime.utcnow(),
                 ).on_conflict_do_update(
-                    index_elements=["organization_id", "user_id", "google_file_id"],
+                    index_elements=["organization_id", "user_id", "source", "external_id"],
                     set_={
                         "name": file_data.get("name", ""),
                         "mime_type": mime_type,
-                        "parent_google_id": parent_id,
+                        "parent_external_id": parent_id,
                         "folder_path": folder_path,
                         "web_view_link": file_data.get("webViewLink"),
                         "file_size": file_size,
-                        "google_modified_at": modified_time,
+                        "source_modified_at": modified_time,
                         "synced_at": datetime.utcnow(),
                     },
                 )
@@ -318,28 +320,33 @@ class GoogleDriveConnector:
         org_uuid: UUID = UUID(self.organization_id)
         user_uuid: UUID = UUID(self.user_id)
 
-        # Wrap in wildcards for substring match
-        like_pattern: str = f"%{name_query}%"
+        # Normalise wildcard-only queries (e.g. "*") to match all files
+        cleaned_query: str = name_query.replace("*", "").strip()
 
         async with get_session(organization_id=self.organization_id) as session:
-            query = select(GoogleDriveFile).where(
-                and_(
-                    GoogleDriveFile.organization_id == org_uuid,
-                    GoogleDriveFile.user_id == user_uuid,
-                    GoogleDriveFile.name.ilike(like_pattern),
-                    GoogleDriveFile.mime_type != GOOGLE_FOLDER_MIME,
-                )
-            )
+            base_filters = [
+                SharedFile.organization_id == org_uuid,
+                SharedFile.user_id == user_uuid,
+                SharedFile.source == "google_drive",
+                SharedFile.mime_type != GOOGLE_FOLDER_MIME,
+            ]
+
+            # Only add name filter when there's an actual search term
+            if cleaned_query:
+                like_pattern: str = f"%{cleaned_query}%"
+                base_filters.append(SharedFile.name.ilike(like_pattern))
+
+            query = select(SharedFile).where(and_(*base_filters))
 
             if mime_types:
-                query = query.where(GoogleDriveFile.mime_type.in_(mime_types))
+                query = query.where(SharedFile.mime_type.in_(mime_types))
 
-            query = query.order_by(GoogleDriveFile.google_modified_at.desc()).limit(
+            query = query.order_by(SharedFile.source_modified_at.desc()).limit(
                 limit
             )
 
             result = await session.execute(query)
-            rows: list[GoogleDriveFile] = list(result.scalars().all())
+            rows: list[SharedFile] = list(result.scalars().all())
 
             return [row.to_dict() for row in rows]
 
@@ -347,7 +354,7 @@ class GoogleDriveConnector:
     # Content Reading (on-demand from Google API)
     # -------------------------------------------------------------------------
 
-    async def get_file_content(self, google_file_id: str) -> dict[str, Any]:
+    async def get_file_content(self, external_id: str) -> dict[str, Any]:
         """
         Get the text content of a Google Drive file.
 
@@ -363,21 +370,22 @@ class GoogleDriveConnector:
         org_uuid: UUID = UUID(self.organization_id)
         user_uuid: UUID = UUID(self.user_id)
 
-        file_record: Optional[GoogleDriveFile] = None
+        file_record: Optional[SharedFile] = None
         async with get_session(organization_id=self.organization_id) as session:
             result = await session.execute(
-                select(GoogleDriveFile).where(
+                select(SharedFile).where(
                     and_(
-                        GoogleDriveFile.organization_id == org_uuid,
-                        GoogleDriveFile.user_id == user_uuid,
-                        GoogleDriveFile.google_file_id == google_file_id,
+                        SharedFile.organization_id == org_uuid,
+                        SharedFile.user_id == user_uuid,
+                        SharedFile.source == "google_drive",
+                        SharedFile.external_id == external_id,
                     )
                 )
             )
             file_record = result.scalar_one_or_none()
 
         if not file_record:
-            return {"error": f"File not found in synced metadata: {google_file_id}"}
+            return {"error": f"File not found in synced metadata: {external_id}"}
 
         mime_type: str = file_record.mime_type or ""
         file_name: str = file_record.name or ""
@@ -387,10 +395,10 @@ class GoogleDriveConnector:
             export_mime: Optional[str] = EXPORT_MIME_MAP.get(mime_type)
             if export_mime:
                 content = await self._export_workspace_file(
-                    client, google_file_id, export_mime, mime_type
+                    client, external_id, export_mime, mime_type
                 )
             else:
-                content = await self._download_file(client, google_file_id)
+                content = await self._download_file(client, external_id)
 
         if content is None:
             return {
@@ -407,7 +415,7 @@ class GoogleDriveConnector:
 
         return {
             "file_name": file_name,
-            "google_file_id": google_file_id,
+            "external_id": external_id,
             "mime_type": mime_type,
             "folder_path": file_record.folder_path or "/",
             "web_view_link": file_record.web_view_link,

@@ -1870,6 +1870,11 @@ async def run_initial_sync(
     from connectors.zoom import ZoomConnector
     from connectors.github import GitHubConnector
 
+    # Google Drive uses a different sync pattern (not BaseConnector)
+    if provider == "google_drive":
+        await _run_initial_drive_sync(organization_id, user_id)
+        return
+
     connectors = {
         "hubspot": HubSpotConnector,
         "salesforce": SalesforceConnector,
@@ -1902,3 +1907,37 @@ async def run_initial_sync(
             await connector.record_error(str(e))
         except Exception:
             pass  # Ignore errors while recording error
+
+
+async def _run_initial_drive_sync(organization_id: str, user_id: Optional[str]) -> None:
+    """Run initial Google Drive metadata sync after OAuth."""
+    if not user_id:
+        print("[GoogleDrive] Skipping initial sync: user_id required")
+        return
+
+    try:
+        from connectors.google_drive import GoogleDriveConnector
+
+        print(f"Starting initial Google Drive sync (org: {organization_id}, user: {user_id})")
+        connector = GoogleDriveConnector(organization_id, user_id)
+        counts: dict[str, int] = await connector.sync_file_metadata()
+        total: int = sum(counts.values())
+
+        # Update integration sync stats
+        async with get_session(organization_id=organization_id) as session:
+            result = await session.execute(
+                select(Integration).where(
+                    Integration.organization_id == UUID(organization_id),
+                    Integration.provider == "google_drive",
+                    Integration.user_id == UUID(user_id),
+                )
+            )
+            integration: Optional[Integration] = result.scalar_one_or_none()
+            if integration:
+                integration.last_sync_at = datetime.utcnow()
+                integration.sync_stats = {"total_files": total, **counts}
+                await session.commit()
+
+        print(f"Initial Google Drive sync complete: {total} files ({counts})")
+    except Exception as e:
+        print(f"Initial Google Drive sync failed: {str(e)}")
