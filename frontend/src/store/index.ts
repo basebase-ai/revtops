@@ -1451,6 +1451,12 @@ export const getAdminUserId = (): string | null => {
   return state.masquerade?.originalUser.id ?? null;
 };
 
+// Get the target user ID when masquerading (for API impersonation headers)
+export const getMasqueradeUserId = (): string | null => {
+  const state = useAppStore.getState();
+  return state.masquerade?.masqueradingAs.id ?? null;
+};
+
 // Legacy chat selectors (for backwards compatibility)
 export const useMessages = () => useAppStore((state) => state.messages);
 export const useChatTitle = () => useAppStore((state) => state.chatTitle);
