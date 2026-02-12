@@ -12,7 +12,7 @@
 import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAppStore } from '../store';
-import { API_BASE } from '../lib/api';
+import { apiRequest } from '../lib/api';
 
 // Types
 interface WorkflowStep {
@@ -73,17 +73,17 @@ interface WorkflowListResponse {
 
 // Fetch workflows for the organization
 async function fetchWorkflows(orgId: string): Promise<Workflow[]> {
-  const response = await fetch(`${API_BASE}/workflows/${orgId}`);
-  if (!response.ok) throw new Error('Failed to fetch workflows');
-  const data: WorkflowListResponse = await response.json();
+  console.debug('[Workflows] Fetching workflows', { orgId });
+  const { data, error } = await apiRequest<WorkflowListResponse>(`/workflows/${orgId}`);
+  if (error || !data) throw new Error(error ?? 'Failed to fetch workflows');
   return data.workflows;
 }
 
 // Fetch runs for a workflow
 async function fetchWorkflowRuns(orgId: string, workflowId: string): Promise<WorkflowRun[]> {
-  const response = await fetch(`${API_BASE}/workflows/${orgId}/${workflowId}/runs?limit=10`);
-  if (!response.ok) throw new Error('Failed to fetch workflow runs');
-  return response.json();
+  const { data, error } = await apiRequest<WorkflowRun[]>(`/workflows/${orgId}/${workflowId}/runs?limit=10`);
+  if (error || !data) throw new Error(error ?? 'Failed to fetch workflow runs');
+  return data;
 }
 
 // Trigger a workflow
@@ -94,27 +94,27 @@ interface TriggerResponse {
 }
 
 async function triggerWorkflow(orgId: string, workflowId: string): Promise<TriggerResponse> {
-  const response = await fetch(`${API_BASE}/workflows/${orgId}/${workflowId}/trigger`, {
+  const { data, error } = await apiRequest<TriggerResponse>(`/workflows/${orgId}/${workflowId}/trigger`, {
     method: 'POST',
   });
-  if (!response.ok) throw new Error('Failed to trigger workflow');
-  return response.json();
+  if (error || !data) throw new Error(error ?? 'Failed to trigger workflow');
+  return data;
 }
 
 // Delete a workflow
 async function deleteWorkflow(orgId: string, workflowId: string): Promise<void> {
-  const response = await fetch(`${API_BASE}/workflows/${orgId}/${workflowId}`, {
+  const { error } = await apiRequest<{ status: string }>(`/workflows/${orgId}/${workflowId}`, {
     method: 'DELETE',
   });
-  if (!response.ok) throw new Error('Failed to delete workflow');
+  if (error) throw new Error(error);
 }
 
 // Delete a workflow run
 async function deleteWorkflowRun(orgId: string, runId: string): Promise<void> {
-  const response = await fetch(`${API_BASE}/workflows/${orgId}/runs/${runId}`, {
+  const { error } = await apiRequest<{ status: string }>(`/workflows/${orgId}/runs/${runId}`, {
     method: 'DELETE',
   });
-  if (!response.ok) throw new Error('Failed to delete run');
+  if (error) throw new Error(error);
 }
 
 // Create a workflow
@@ -131,9 +131,8 @@ interface CreateWorkflowParams {
 }
 
 async function createWorkflow(orgId: string, userId: string, params: CreateWorkflowParams): Promise<Workflow> {
-  const response = await fetch(`${API_BASE}/workflows/${orgId}?user_id=${userId}`, {
+  const { data, error } = await apiRequest<Workflow>(`/workflows/${orgId}?user_id=${userId}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       name: params.name,
       description: params.description ?? null,
@@ -150,18 +149,14 @@ async function createWorkflow(orgId: string, userId: string, params: CreateWorkf
       is_enabled: true,
     }),
   });
-  if (!response.ok) {
-    const error = await response.json().catch(() => ({ detail: 'Failed to create workflow' }));
-    throw new Error(error.detail ?? 'Failed to create workflow');
-  }
-  return response.json();
+  if (error || !data) throw new Error(error ?? 'Failed to create workflow');
+  return data;
 }
 
 // Update workflow
 async function updateWorkflow(orgId: string, workflowId: string, params: CreateWorkflowParams): Promise<Workflow> {
-  const response = await fetch(`${API_BASE}/workflows/${orgId}/${workflowId}`, {
+  const { data, error } = await apiRequest<Workflow>(`/workflows/${orgId}/${workflowId}`, {
     method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       name: params.name,
       description: params.description ?? null,
@@ -176,22 +171,18 @@ async function updateWorkflow(orgId: string, workflowId: string, params: CreateW
       child_workflows: params.child_workflows,
     }),
   });
-  if (!response.ok) {
-    const error = await response.json().catch(() => ({ detail: 'Failed to update workflow' }));
-    throw new Error(error.detail ?? 'Failed to update workflow');
-  }
-  return response.json();
+  if (error || !data) throw new Error(error ?? 'Failed to update workflow');
+  return data;
 }
 
 // Toggle workflow enabled state
 async function toggleWorkflow(orgId: string, workflowId: string, enabled: boolean): Promise<Workflow> {
-  const response = await fetch(`${API_BASE}/workflows/${orgId}/${workflowId}`, {
+  const { data, error } = await apiRequest<Workflow>(`/workflows/${orgId}/${workflowId}`, {
     method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ is_enabled: enabled }),
   });
-  if (!response.ok) throw new Error('Failed to update workflow');
-  return response.json();
+  if (error || !data) throw new Error(error ?? 'Failed to update workflow');
+  return data;
 }
 
 // Format relative time
