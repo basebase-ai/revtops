@@ -72,6 +72,22 @@ class GitHubConnector(BaseConnector):
             resp.raise_for_status()
             return resp.json()
 
+    async def _gh_post(
+        self,
+        path: str,
+        payload: dict[str, Any],
+    ) -> Any:
+        """POST to the GitHub REST API. Returns parsed JSON."""
+        headers: dict[str, str] = await self._get_headers()
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp: httpx.Response = await client.post(
+                f"{GITHUB_API_BASE}{path}",
+                headers=headers,
+                json=payload,
+            )
+            resp.raise_for_status()
+            return resp.json()
+
     async def _gh_get_paginated(
         self,
         path: str,
@@ -394,6 +410,47 @@ class GitHubConnector(BaseConnector):
             for r in raw_repos
         ]
         return repos
+
+    async def create_issue(
+        self,
+        *,
+        repo_full_name: str,
+        title: str,
+        body: str | None = None,
+        labels: list[str] | None = None,
+        assignees: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Create a GitHub issue in a repository accessible by the integration token."""
+        clean_repo: str = repo_full_name.strip()
+        if "/" not in clean_repo:
+            raise ValueError(
+                "repo_full_name must be in 'owner/repo' format."
+            )
+
+        payload: dict[str, Any] = {"title": title.strip()}
+        if body:
+            payload["body"] = body
+        if labels:
+            payload["labels"] = labels
+        if assignees:
+            payload["assignees"] = assignees
+
+        logger.info(
+            "Creating GitHub issue for org %s in repo %s",
+            self.organization_id,
+            clean_repo,
+        )
+        issue: dict[str, Any] = await self._gh_post(
+            f"/repos/{clean_repo}/issues",
+            payload,
+        )
+        return {
+            "number": issue["number"],
+            "title": issue["title"],
+            "url": issue["html_url"],
+            "state": issue["state"],
+            "repo_full_name": clean_repo,
+        }
 
     async def track_repos(self, github_repo_ids: list[int]) -> list[dict[str, Any]]:
         """
