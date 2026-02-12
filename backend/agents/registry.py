@@ -627,7 +627,7 @@ register_tool(
     name="create_github_issue",
     description="""Create a GitHub issue in a repository your organization has connected.
 
-Use this when the user asks to file/report an issue in GitHub.
+Use this when the user asks to file/report issues in GitHub.
 
 Required:
 - repo_full_name: Repository in owner/repo format (e.g. 'octocat/Hello-World')
@@ -638,7 +638,7 @@ Optional:
 - labels: List of label names
 - assignees: List of GitHub usernames to assign
 
-This is an external write action and should be reviewed before sending unless auto-approved.""",
+This only changes GitHub issues (never source code). It is an external write action and should be reviewed before sending unless auto-approved.""",
     input_schema={
         "type": "object",
         "properties": {

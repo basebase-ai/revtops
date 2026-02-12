@@ -285,6 +285,36 @@ def compute_effective_auto_approve_tools(
     return [tool for tool in configured_tools if tool in inherited_set]
 
 
+async def apply_user_auto_approve_permissions(
+    session: Any,
+    user_id: UUID,
+    auto_approve_tools: list[str],
+) -> list[str]:
+    """Restrict workflow auto-approve tools to explicit per-user permissions."""
+    if "create_github_issue" not in auto_approve_tools:
+        return auto_approve_tools
+
+    from sqlalchemy import select
+    from models.user_tool_setting import UserToolSetting
+
+    result = await session.execute(
+        select(UserToolSetting.auto_approve).where(
+            UserToolSetting.user_id == user_id,
+            UserToolSetting.tool_name == "create_github_issue",
+        )
+    )
+    github_issue_auto_approve_enabled = bool(result.scalar_one_or_none())
+    if github_issue_auto_approve_enabled:
+        return auto_approve_tools
+
+    filtered_tools = [tool for tool in auto_approve_tools if tool != "create_github_issue"]
+    logger.info(
+        "[Workflow] Removed create_github_issue from auto-approve for user %s because permission is disabled",
+        user_id,
+    )
+    return filtered_tools
+
+
 def extract_structured_output(response_text: str) -> dict[str, Any] | None:
     """
     Extract structured JSON output from agent response text.
@@ -740,6 +770,11 @@ async def _execute_workflow_via_agent(
     effective_auto_approve_tools = compute_effective_auto_approve_tools(
         workflow_auto_approve_tools=workflow.auto_approve_tools,
         parent_auto_approve_tools=parent_auto_approve_tools,
+    )
+    effective_auto_approve_tools = await apply_user_auto_approve_permissions(
+        session=session,
+        user_id=workflow.created_by_user_id,
+        auto_approve_tools=effective_auto_approve_tools,
     )
     if parent_auto_approve_tools is not None:
         logger.info(
