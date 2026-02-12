@@ -714,6 +714,102 @@ def _parse_insert_values(query: str) -> dict[str, Any] | None:
     return dict(zip(columns, values))
 
 
+def _split_sql_csv(values: str) -> list[str]:
+    """Split a SQL comma-separated list while respecting quotes and nested parentheses."""
+    parts: list[str] = []
+    current: list[str] = []
+    in_string = False
+    string_char: str | None = None
+    depth = 0
+
+    i = 0
+    while i < len(values):
+        char = values[i]
+
+        if char in ("'", '"') and not in_string:
+            in_string = True
+            string_char = char
+            current.append(char)
+        elif char == string_char and in_string:
+            # Handle escaped quotes in SQL strings (e.g., 'it''s')
+            if i + 1 < len(values) and values[i + 1] == string_char:
+                current.append(char)
+                current.append(values[i + 1])
+                i += 1
+            else:
+                in_string = False
+                string_char = None
+                current.append(char)
+        elif not in_string and char == '(':
+            depth += 1
+            current.append(char)
+        elif not in_string and char == ')':
+            depth = max(0, depth - 1)
+            current.append(char)
+        elif not in_string and depth == 0 and char == ',':
+            part = ''.join(current).strip()
+            if part:
+                parts.append(part)
+            current = []
+        else:
+            current.append(char)
+
+        i += 1
+
+    tail = ''.join(current).strip()
+    if tail:
+        parts.append(tail)
+
+    return parts
+
+
+def _parse_sql_bool(raw_value: str) -> bool | None:
+    """Parse a SQL boolean literal; returns None if not a boolean literal."""
+    normalized = raw_value.strip().lower()
+    if normalized == "true":
+        return True
+    if normalized == "false":
+        return False
+    return None
+
+
+def _parse_sql_string_literal(raw_value: str) -> str | None:
+    """Parse a quoted SQL string literal; returns None for non-literals."""
+    value = raw_value.strip()
+    if len(value) >= 2 and value[0] == "'" and value[-1] == "'":
+        return value[1:-1].replace("''", "'")
+    return None
+
+
+def _workflow_insert_would_auto_run(query: str) -> bool:
+    """Return True when a workflow INSERT results in an enabled non-manual workflow."""
+    parsed = _parse_insert_for_injection(query)
+    if parsed is None:
+        logger.warning("[Tools._workflow_insert_would_auto_run] Could not parse workflow INSERT query")
+        return False
+
+    _, columns, values = parsed
+    col_names = [c.strip().lower() for c in _split_sql_csv(columns)]
+    raw_values = _split_sql_csv(values)
+    if len(col_names) != len(raw_values):
+        logger.warning(
+            "[Tools._workflow_insert_would_auto_run] Workflow INSERT parse mismatch (columns=%d values=%d)",
+            len(col_names),
+            len(raw_values),
+        )
+        return False
+
+    value_map = {name: raw_values[idx] for idx, name in enumerate(col_names)}
+
+    trigger_type_value = _parse_sql_string_literal(value_map.get("trigger_type", ""))
+    trigger_type = (trigger_type_value or "").strip().lower()
+
+    is_enabled_raw = value_map.get("is_enabled")
+    is_enabled = _parse_sql_bool(is_enabled_raw) if is_enabled_raw is not None else True
+
+    return bool(trigger_type and trigger_type != "manual" and is_enabled is True)
+
+
 def _parse_update_values(query: str) -> tuple[dict[str, Any], str] | None:
     """
     Parse an UPDATE query to extract SET values and WHERE clause.
@@ -817,6 +913,35 @@ async def _run_sql_write(
     
     if table not in WRITABLE_TABLES:
         return {"error": f"Table '{table}' is not in the writable list. Allowed tables: {', '.join(sorted(WRITABLE_TABLES))}"}
+
+    # Prevent autonomous workflow fan-out: a workflow run cannot create other
+    # workflows that are automatically runnable (enabled + non-manual trigger).
+    if context and context.get("is_workflow") and table == "workflows":
+        if operation == "INSERT" and _workflow_insert_would_auto_run(query):
+            logger.warning(
+                "[Tools._run_sql_write] Blocked workflow-created auto-run workflow INSERT"
+            )
+            return {
+                "error": (
+                    "Workflow executions cannot create enabled schedule/event workflows. "
+                    "Create the workflow as manual or disabled first."
+                )
+            }
+
+        if operation == "UPDATE":
+            lower_query = query.lower()
+            enables_workflow = re.search(r"\bis_enabled\s*=\s*true\b", lower_query) is not None
+            sets_auto_trigger = re.search(r"\btrigger_type\s*=\s*'\s*(schedule|event)\s*'", lower_query) is not None
+            if enables_workflow or sets_auto_trigger:
+                logger.warning(
+                    "[Tools._run_sql_write] Blocked workflow UPDATE that could enable auto-run child workflow"
+                )
+                return {
+                    "error": (
+                        "Workflow executions cannot enable or configure schedule/event triggers "
+                        "on workflows. Leave child workflows manual/disabled."
+                    )
+                }
     
     # ==========================================================================
     # CRM Tables: Route through PendingOperation for review/commit workflow
