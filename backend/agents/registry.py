@@ -629,6 +629,11 @@ register_tool(
 
 Use this when the user asks to file/report an issue in GitHub.
 
+Identity requirement:
+- File issues as penny-bot (not the connected user).
+- Prefer including `penny-bot` in assignees when valid for the target repo.
+- Add a brief note in the issue body that penny-bot opened the issue.
+
 Required:
 - repo_full_name: Repository in owner/repo format (e.g. 'octocat/Hello-World')
 - title: Issue title
