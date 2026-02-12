@@ -115,7 +115,7 @@ async def update_tool_setting(
     Update the auto_approve setting for a specific tool.
     
     This controls whether the tool requires user approval before execution.
-    Only EXTERNAL_WRITE tools can have their approval settings changed.
+    Only approval-gated tools can have approval settings changed.
     """
     # Validate tool exists and requires approval by default
     all_tools = get_all_tools()
@@ -128,7 +128,7 @@ async def update_tool_setting(
         raise HTTPException(
             status_code=400, 
             detail=f"Tool '{tool_name}' does not require approval by default. "
-                   "Only EXTERNAL_WRITE tools can have approval settings changed."
+                   "Only tools that require approval by default can have approval settings changed."
         )
     
     # Upsert the setting

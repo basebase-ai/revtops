@@ -72,6 +72,16 @@ interface WorkflowListResponse {
   total: number;
 }
 
+const TOOL_PERMISSION_LABELS: Record<string, string> = {
+  run_sql_query: 'Query Data',
+  run_workflow: 'Run Workflow',
+  loop_over: 'Loop Over Items',
+  send_slack: 'Post to Slack',
+  send_email_from: 'Send Email',
+  run_sql_write: 'Write Data',
+  save_memory: 'Save Interim Values',
+};
+
 // Fetch workflows for the organization
 async function fetchWorkflows(orgId: string): Promise<Workflow[]> {
   console.debug('[Workflows] Fetching workflows', { orgId });
@@ -425,7 +435,7 @@ function WorkflowDetail({
                     key={tool}
                     className="px-2 py-1 bg-surface-800 text-surface-300 rounded text-xs font-mono"
                   >
-                    {tool}
+                    {TOOL_PERMISSION_LABELS[tool] ?? tool}
                   </span>
                 ))}
               </div>
@@ -736,6 +746,7 @@ function WorkflowModal({
     { id: 'send_slack', label: 'Post to Slack', description: 'Send messages to Slack channels' },
     { id: 'send_email_from', label: 'Send Email', description: 'Send emails from your connected account' },
     { id: 'run_sql_write', label: 'Write Data', description: 'Insert, update, or delete records' },
+    { id: 'save_memory', label: 'Save Interim Values', description: 'Store user-scoped preferences or interim facts across conversations' },
   ];
 
   const toggleAutoApproveTool = (toolId: string): void => {

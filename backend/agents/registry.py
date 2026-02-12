@@ -904,7 +904,9 @@ Do NOT save conversation-specific context (like "user asked about deal X") — o
         "required": ["content"],
     },
     category=ToolCategory.LOCAL_WRITE,
-    default_requires_approval=False,
+    # Saving memory changes persistent user state, so require explicit approval
+    # unless a user or workflow has opted into auto-approve.
+    default_requires_approval=True,
 )
 
 register_tool(
