@@ -337,11 +337,11 @@ async def sync_user(request: SyncUserRequest) -> SyncUserResponse:
                     "UPDATE conversations SET user_id = :new_id WHERE user_id = :old_id",
                     "UPDATE chat_messages SET user_id = :new_id WHERE user_id = :old_id",
                     "UPDATE deals SET owner_id = :new_id WHERE owner_id = :old_id",
-                    "UPDATE deals SET created_by_user_id = :new_id WHERE created_by_user_id = :old_id",
+                    "UPDATE deals SET updated_by = :new_id WHERE updated_by = :old_id",
                     "UPDATE accounts SET owner_id = :new_id WHERE owner_id = :old_id",
-                    "UPDATE accounts SET created_by_user_id = :new_id WHERE created_by_user_id = :old_id",
+                    "UPDATE accounts SET updated_by = :new_id WHERE updated_by = :old_id",
                     "UPDATE activities SET created_by_id = :new_id WHERE created_by_id = :old_id",
-                    "UPDATE activities SET updated_by_user_id = :new_id WHERE updated_by_user_id = :old_id",
+                    "UPDATE activities SET updated_by = :new_id WHERE updated_by = :old_id",
                     "UPDATE artifacts SET user_id = :new_id WHERE user_id = :old_id",
                     "UPDATE integrations SET user_id = :new_id WHERE user_id = :old_id",
                     "UPDATE integrations SET connected_by_user_id = :new_id WHERE connected_by_user_id = :old_id",
@@ -361,8 +361,7 @@ async def sync_user(request: SyncUserRequest) -> SyncUserResponse:
                     "UPDATE shared_files SET user_id = :new_id WHERE user_id = :old_id",
                     "UPDATE github_pull_requests SET user_id = :new_id WHERE user_id = :old_id",
                     "UPDATE github_commits SET user_id = :new_id WHERE user_id = :old_id",
-                    "UPDATE slack_user_mappings SET user_id = :new_id WHERE user_id = :old_id",
-                    "UPDATE contacts SET owner_id = :new_id WHERE owner_id = :old_id",
+                    "UPDATE contacts SET updated_by = :new_id WHERE updated_by = :old_id",
                 ]
                 params = {"new_id": str(user_uuid), "old_id": str(old_id)}
                 # Temporarily disable FK constraint checks. The admin session
@@ -380,10 +379,16 @@ async def sync_user(request: SyncUserRequest) -> SyncUserResponse:
                         text("UPDATE users SET id = :new_id WHERE id = :old_id"),
                         params,
                     )
+                except Exception:
+                    await session.rollback()
+                    raise
                 finally:
-                    await session.execute(
-                        text("SET session_replication_role = 'origin'")
-                    )
+                    try:
+                        await session.execute(
+                            text("SET session_replication_role = 'origin'")
+                        )
+                    except Exception:
+                        pass  # Connection may already be closed/rolled back
                 # Expire the ORM object so we re-fetch with the new PK
                 await session.flush()
                 session.expire(existing)
