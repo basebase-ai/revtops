@@ -130,6 +130,55 @@ interface CreateWorkflowParams {
   child_workflows?: string[];
 }
 
+interface WorkflowDraft {
+  name: string;
+  description: string;
+  prompt: string;
+  triggerType: 'schedule' | 'manual';
+  cron: string;
+  autoApproveTools: string[];
+  showAdvanced: boolean;
+  inputSchemaText: string;
+  outputSchemaText: string;
+  selectedChildWorkflows: string[];
+}
+
+const WORKFLOW_DRAFT_VERSION = 'v1';
+
+function getWorkflowDraftStorageKey(orgId?: string): string {
+  return `workflow-create-draft:${WORKFLOW_DRAFT_VERSION}:${orgId ?? 'unknown-org'}`;
+}
+
+function readWorkflowDraft(orgId?: string): WorkflowDraft | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const savedDraft = window.localStorage.getItem(getWorkflowDraftStorageKey(orgId));
+    if (!savedDraft) return null;
+    return JSON.parse(savedDraft) as WorkflowDraft;
+  } catch (error) {
+    console.warn('[Workflows] Failed to read workflow draft from localStorage', error);
+    return null;
+  }
+}
+
+function saveWorkflowDraft(orgId: string | undefined, draft: WorkflowDraft): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(getWorkflowDraftStorageKey(orgId), JSON.stringify(draft));
+  } catch (error) {
+    console.warn('[Workflows] Failed to save workflow draft to localStorage', error);
+  }
+}
+
+function clearWorkflowDraft(orgId?: string): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.removeItem(getWorkflowDraftStorageKey(orgId));
+  } catch (error) {
+    console.warn('[Workflows] Failed to clear workflow draft from localStorage', error);
+  }
+}
+
 async function createWorkflow(orgId: string, userId: string, params: CreateWorkflowParams): Promise<Workflow> {
   const response = await fetch(`${API_BASE}/workflows/${orgId}?user_id=${userId}`, {
     method: 'POST',
@@ -606,36 +655,68 @@ function WorkflowModal({
   workflow,
 }: WorkflowModalProps): JSX.Element {
   const isEditMode = !!workflow;
+  const organization = useAppStore((state) => state.organization);
+  const createDraft = !isEditMode ? readWorkflowDraft(organization?.id) : null;
   
   // Initialize state from workflow if editing
-  const [name, setName] = useState(workflow?.name ?? '');
-  const [description, setDescription] = useState(workflow?.description ?? '');
-  const [prompt, setPrompt] = useState(workflow?.prompt ?? '');
+  const [name, setName] = useState(workflow?.name ?? createDraft?.name ?? '');
+  const [description, setDescription] = useState(workflow?.description ?? createDraft?.description ?? '');
+  const [prompt, setPrompt] = useState(workflow?.prompt ?? createDraft?.prompt ?? '');
   const [triggerType, setTriggerType] = useState<'schedule' | 'manual'>(
-    workflow?.trigger_type === 'schedule' ? 'schedule' : 'manual'
+    workflow?.trigger_type === 'schedule' ? 'schedule' : (createDraft?.triggerType ?? 'manual')
   );
   const [cron, setCron] = useState(
-    workflow?.trigger_config?.cron ?? '0 9 * * 1-5'
+    workflow?.trigger_config?.cron ?? createDraft?.cron ?? '0 9 * * 1-5'
   );
   const [autoApproveTools, setAutoApproveTools] = useState<string[]>(
-    workflow?.auto_approve_tools ?? []
+    workflow?.auto_approve_tools ?? createDraft?.autoApproveTools ?? []
   );
   const [showAdvanced, setShowAdvanced] = useState(
-    !!(workflow?.input_schema || workflow?.output_schema)
+    !!(workflow?.input_schema || workflow?.output_schema) || createDraft?.showAdvanced === true
   );
   const [inputSchemaText, setInputSchemaText] = useState(
-    workflow?.input_schema ? JSON.stringify(workflow.input_schema, null, 2) : ''
+    workflow?.input_schema ? JSON.stringify(workflow.input_schema, null, 2) : (createDraft?.inputSchemaText ?? '')
   );
   const [outputSchemaText, setOutputSchemaText] = useState(
-    workflow?.output_schema ? JSON.stringify(workflow.output_schema, null, 2) : ''
+    workflow?.output_schema ? JSON.stringify(workflow.output_schema, null, 2) : (createDraft?.outputSchemaText ?? '')
   );
   const [schemaError, setSchemaError] = useState<string | null>(null);
   const [selectedChildWorkflows, setSelectedChildWorkflows] = useState<string[]>(
-    workflow?.child_workflows ?? []
+    workflow?.child_workflows ?? createDraft?.selectedChildWorkflows ?? []
   );
 
+  useEffect(() => {
+    if (isEditMode) return;
+
+    console.debug('[Workflows] Persisting workflow create draft');
+    saveWorkflowDraft(organization?.id, {
+      name,
+      description,
+      prompt,
+      triggerType,
+      cron,
+      autoApproveTools,
+      showAdvanced,
+      inputSchemaText,
+      outputSchemaText,
+      selectedChildWorkflows,
+    });
+  }, [
+    autoApproveTools,
+    cron,
+    description,
+    inputSchemaText,
+    isEditMode,
+    name,
+    organization?.id,
+    outputSchemaText,
+    prompt,
+    selectedChildWorkflows,
+    showAdvanced,
+    triggerType,
+  ]);
+
   // Get all workflows for child workflow selection (exclude current workflow)
-  const organization = useAppStore((state) => state.organization);
   const { data: allWorkflows = [] } = useQuery({
     queryKey: ['workflows', organization?.id],
     queryFn: () => fetchWorkflows(organization?.id ?? ''),
@@ -1087,6 +1168,7 @@ export function Workflows(): JSX.Element {
     mutationFn: (params: CreateWorkflowParams) =>
       createWorkflow(organization?.id ?? '', user?.id ?? '', params),
     onSuccess: () => {
+      clearWorkflowDraft(organization?.id);
       void queryClient.invalidateQueries({ queryKey: ['workflows'] });
       setShowModal(false);
     },
