@@ -3744,14 +3744,30 @@ async def _run_workflow(
             
             workflow_name: str = workflow.name
         
+        # Parent workflow permissions must always bound child permissions.
+        inherited_auto_approve_tools: list[str] | None = None
+        if context:
+            inherited_auto_approve_tools = context.get("auto_approve_tools")
+
+        parent_context: dict[str, Any] = {
+            "call_stack": call_stack + [workflow_id],
+            "parent_workflow_id": context.get("workflow_id") if context else None,
+            "parent_conversation_id": context.get("conversation_id") if context else None,
+        }
+        if inherited_auto_approve_tools is not None:
+            parent_context["auto_approve_tools"] = inherited_auto_approve_tools
+
         if not wait_for_completion:
             # Fire and forget - queue via Celery
             from workers.tasks.workflows import execute_workflow
             task = execute_workflow.delay(
-                workflow_id, 
-                "run_workflow", 
-                input_data, 
-                None, 
+                workflow_id,
+                "run_workflow",
+                {
+                    **input_data,
+                    "_parent_context": parent_context,
+                },
+                None,
                 organization_id
             )
             
@@ -3764,17 +3780,10 @@ async def _run_workflow(
             }
         
         # === Synchronous execution ===
-        # Build child context with updated call stack
-        child_call_stack: list[str] = call_stack + [workflow_id]
-        
         # Build trigger_data with parent context (child workflow will set root_conversation_id from this)
         trigger_data: dict[str, Any] = {
             **input_data,
-            "_parent_context": {
-                "call_stack": child_call_stack,
-                "parent_workflow_id": context.get("workflow_id") if context else None,
-                "parent_conversation_id": context.get("conversation_id") if context else None,
-            },
+            "_parent_context": parent_context,
         }
         
         # Execute workflow directly (not via Celery) for synchronous result
