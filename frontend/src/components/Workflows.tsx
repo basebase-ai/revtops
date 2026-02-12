@@ -13,6 +13,7 @@ import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAppStore } from '../store';
 import { apiRequest } from '../lib/api';
+import { useTeamMembers } from '../hooks/useOrganization';
 
 // Types
 interface WorkflowStep {
@@ -1088,6 +1089,14 @@ export function Workflows(): JSX.Element {
     enabled: !!organization?.id,
   });
 
+  const { data: teamMembersData } = useTeamMembers(organization?.id ?? null, user?.id ?? null);
+
+  const workflowCreatorNames = (teamMembersData?.members ?? []).reduce<Record<string, string>>((acc, member) => {
+    const creatorLabel = member.name?.trim() || member.email;
+    acc[member.id] = creatorLabel;
+    return acc;
+  }, {});
+
   // Auto-refresh when navigating to this view or when workflows are modified via chat
   useEffect(() => {
     // Refetch on mount (navigation to this view)
@@ -1272,6 +1281,7 @@ export function Workflows(): JSX.Element {
                     <WorkflowCard
                       key={workflow.id}
                       workflow={workflow}
+                      creatorName={workflowCreatorNames[workflow.created_by_user_id]}
                       onClick={() => setSelectedWorkflow(workflow)}
                     />
                   ))}
@@ -1290,6 +1300,7 @@ export function Workflows(): JSX.Element {
                     <WorkflowCard
                       key={workflow.id}
                       workflow={workflow}
+                      creatorName={workflowCreatorNames[workflow.created_by_user_id]}
                       onClick={() => setSelectedWorkflow(workflow)}
                     />
                   ))}
@@ -1334,11 +1345,15 @@ export function Workflows(): JSX.Element {
 // Workflow card component
 function WorkflowCard({
   workflow,
+  creatorName,
   onClick,
 }: {
   workflow: Workflow;
+  creatorName?: string;
   onClick: () => void;
 }): JSX.Element {
+  const creatorDisplay = creatorName ?? workflow.created_by_user_id;
+
   return (
     <button
       onClick={onClick}
@@ -1350,6 +1365,7 @@ function WorkflowCard({
       </div>
       
       <p className="text-xs text-surface-500 mb-3">{getTriggerDescription(workflow)}</p>
+      <p className="text-xs text-surface-500 mb-3">Created by {creatorDisplay}</p>
       
       <div className="flex items-center gap-1 flex-wrap">
         {workflow.steps.slice(0, 3).map((step, idx) => (
