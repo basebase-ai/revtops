@@ -9,7 +9,7 @@
  * the user - never trust user_id or organization_id from query parameters.
  */
 
-import { getAdminUserId } from "../store";
+import { getAdminUserId, getMasqueradeUserId } from "../store";
 import { supabase } from "./supabase";
 
 // Backend URL for production
@@ -69,6 +69,7 @@ export async function getAuthenticatedWsUrl(path: string): Promise<string | null
  * Automatically includes:
  * - Authorization header with Supabase JWT token
  * - X-Admin-User-Id header when masquerading
+ * - X-Masquerade-User-Id header when masquerading
  */
 export async function apiRequest<T>(
   endpoint: string,
@@ -89,6 +90,11 @@ export async function apiRequest<T>(
   const adminUserId = getAdminUserId();
   if (adminUserId) {
     (headers as Record<string, string>)["X-Admin-User-Id"] = adminUserId;
+  }
+
+  const masqueradeUserId = getMasqueradeUserId();
+  if (masqueradeUserId) {
+    (headers as Record<string, string>)["X-Masquerade-User-Id"] = masqueradeUserId;
   }
 
   try {
