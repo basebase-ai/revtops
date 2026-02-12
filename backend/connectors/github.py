@@ -452,6 +452,41 @@ class GitHubConnector(BaseConnector):
             "repo_full_name": clean_repo,
         }
 
+    async def create_issue_comment(
+        self,
+        *,
+        repo_full_name: str,
+        issue_number: int,
+        body: str,
+    ) -> dict[str, Any]:
+        """Add a comment to an existing GitHub issue."""
+        clean_repo: str = repo_full_name.strip()
+        if "/" not in clean_repo:
+            raise ValueError("repo_full_name must be in 'owner/repo' format.")
+        if issue_number <= 0:
+            raise ValueError("issue_number must be a positive integer.")
+        clean_body = body.strip()
+        if not clean_body:
+            raise ValueError("body is required.")
+
+        logger.info(
+            "Creating GitHub issue comment for org %s in repo %s issue #%s",
+            self.organization_id,
+            clean_repo,
+            issue_number,
+        )
+        comment: dict[str, Any] = await self._gh_post(
+            f"/repos/{clean_repo}/issues/{issue_number}/comments",
+            {"body": clean_body},
+        )
+        return {
+            "id": comment["id"],
+            "url": comment["html_url"],
+            "body": comment["body"],
+            "repo_full_name": clean_repo,
+            "issue_number": issue_number,
+        }
+
     async def track_repos(self, github_repo_ids: list[int]) -> list[dict[str, Any]]:
         """
         Mark specific repos for tracking by this org.

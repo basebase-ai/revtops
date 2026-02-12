@@ -35,6 +35,7 @@ interface Workflow {
   steps: WorkflowStep[];
   prompt: string | null;  // Agent prompt for prompt-based workflows
   auto_approve_tools: string[];  // Tools that don't require approval
+  auto_approve_permissions: string[];  // Explicit permissions needed for some tool auto-approvals
   input_schema: Record<string, unknown> | null;  // JSON Schema for typed inputs
   output_schema: Record<string, unknown> | null;  // JSON Schema for typed outputs
   child_workflows: string[];  // IDs of workflows this can call
@@ -125,6 +126,7 @@ interface CreateWorkflowParams {
   trigger_type: 'schedule' | 'manual';
   cron?: string;
   auto_approve_tools?: string[];
+  auto_approve_permissions?: string[];
   input_schema?: Record<string, unknown> | null;
   output_schema?: Record<string, unknown> | null;
   child_workflows?: string[];
@@ -137,6 +139,7 @@ interface WorkflowDraft {
   triggerType: 'schedule' | 'manual';
   cron: string;
   autoApproveTools: string[];
+  autoApprovePermissions: string[];
   showAdvanced: boolean;
   inputSchemaText: string;
   outputSchemaText: string;
@@ -192,6 +195,7 @@ async function createWorkflow(orgId: string, userId: string, params: CreateWorkf
       steps: [],
       prompt: params.prompt,
       auto_approve_tools: params.auto_approve_tools ?? [],
+      auto_approve_permissions: params.auto_approve_permissions ?? [],
       input_schema: params.input_schema ?? null,
       output_schema: params.output_schema ?? null,
       child_workflows: params.child_workflows ?? [],
@@ -215,6 +219,7 @@ async function updateWorkflow(orgId: string, workflowId: string, params: CreateW
       },
       prompt: params.prompt,
       auto_approve_tools: params.auto_approve_tools ?? [],
+      auto_approve_permissions: params.auto_approve_permissions ?? [],
       input_schema: params.input_schema,
       output_schema: params.output_schema,
       child_workflows: params.child_workflows,
@@ -431,6 +436,22 @@ function WorkflowDetail({
               <p className="text-xs text-surface-500 mt-2">
                 These tools will run without requiring manual approval.
               </p>
+            </div>
+          )}
+
+          {workflow.auto_approve_permissions && workflow.auto_approve_permissions.length > 0 && (
+            <div>
+              <h3 className="text-sm font-medium text-surface-300 mb-3">Auto-approve Permissions</h3>
+              <div className="flex flex-wrap gap-2">
+                {workflow.auto_approve_permissions.map((permission) => (
+                  <span
+                    key={permission}
+                    className="px-2 py-1 bg-surface-800 text-surface-300 rounded text-xs font-mono"
+                  >
+                    {permission}
+                  </span>
+                ))}
+              </div>
             </div>
           )}
 
@@ -662,6 +683,9 @@ function WorkflowModal({
   const [autoApproveTools, setAutoApproveTools] = useState<string[]>(
     workflow?.auto_approve_tools ?? createDraft?.autoApproveTools ?? []
   );
+  const [autoApprovePermissions, setAutoApprovePermissions] = useState<string[]>(
+    workflow?.auto_approve_permissions ?? createDraft?.autoApprovePermissions ?? []
+  );
   const [showAdvanced, setShowAdvanced] = useState(
     !!(workflow?.input_schema || workflow?.output_schema) || createDraft?.showAdvanced === true
   );
@@ -687,6 +711,7 @@ function WorkflowModal({
       triggerType,
       cron,
       autoApproveTools,
+      autoApprovePermissions,
       showAdvanced,
       inputSchemaText,
       outputSchemaText,
@@ -694,6 +719,7 @@ function WorkflowModal({
     });
   }, [
     autoApproveTools,
+    autoApprovePermissions,
     cron,
     description,
     inputSchemaText,
@@ -734,6 +760,8 @@ function WorkflowModal({
     { id: 'loop_over', label: 'Loop Over Items', description: 'Run a workflow for each item in a list' },
     { id: 'send_slack', label: 'Post to Slack', description: 'Send messages to Slack channels' },
     { id: 'send_email_from', label: 'Send Email', description: 'Send emails from your connected account' },
+    { id: 'create_github_issue', label: 'Create GitHub Issue', description: 'Create issue tickets in connected GitHub repositories' },
+    { id: 'create_github_issue_comment', label: 'Comment on GitHub Issue', description: 'Add comments to existing GitHub issues' },
     { id: 'run_sql_write', label: 'Write Data', description: 'Insert, update, or delete records' },
   ];
 
@@ -742,6 +770,22 @@ function WorkflowModal({
       prev.includes(toolId) 
         ? prev.filter(t => t !== toolId)
         : [...prev, toolId]
+    );
+  };
+
+  const availableAutoApprovePermissions = [
+    {
+      id: 'github_issues_write',
+      label: 'GitHub issues and comments',
+      description: 'Allow workflows to create issue tickets and comments without approval (no code access).',
+    },
+  ];
+
+  const toggleAutoApprovePermission = (permissionId: string): void => {
+    setAutoApprovePermissions(prev =>
+      prev.includes(permissionId)
+        ? prev.filter(p => p !== permissionId)
+        : [...prev, permissionId]
     );
   };
 
@@ -791,6 +835,7 @@ function WorkflowModal({
       trigger_type: triggerType,
       cron: triggerType === 'schedule' ? cron : undefined,
       auto_approve_tools: autoApproveTools.length > 0 ? autoApproveTools : undefined,
+      auto_approve_permissions: autoApprovePermissions.length > 0 ? autoApprovePermissions : undefined,
       input_schema: inputSchema,
       output_schema: outputSchema,
       child_workflows: selectedChildWorkflows.length > 0 ? selectedChildWorkflows : undefined,
@@ -906,7 +951,7 @@ function WorkflowModal({
           {/* Auto-approve Tools */}
           <div>
             <label className="block text-sm font-medium text-surface-300 mb-2">
-              Auto-approve Actions
+              Auto-approve Tools
             </label>
             <p className="text-xs text-surface-500 mb-3">
               Select actions this workflow can perform automatically without pausing for approval.
@@ -926,6 +971,34 @@ function WorkflowModal({
                   <div>
                     <span className="text-surface-200 font-medium">{tool.label}</span>
                     <p className="text-xs text-surface-500">{tool.description}</p>
+                  </div>
+                </label>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-surface-300 mb-2">
+              Explicit Workflow Permissions
+            </label>
+            <p className="text-xs text-surface-500 mb-3">
+              Some tool auto-approvals also require explicit permissions. This helps prevent over-broad access.
+            </p>
+            <div className="space-y-2">
+              {availableAutoApprovePermissions.map((permission) => (
+                <label
+                  key={permission.id}
+                  className="flex items-start gap-3 p-3 bg-surface-800/50 rounded-lg cursor-pointer hover:bg-surface-800 transition-colors"
+                >
+                  <input
+                    type="checkbox"
+                    checked={autoApprovePermissions.includes(permission.id)}
+                    onChange={() => toggleAutoApprovePermission(permission.id)}
+                    className="mt-0.5 text-primary-500 focus:ring-primary-500 rounded"
+                  />
+                  <div>
+                    <span className="text-surface-200 font-medium">{permission.label}</span>
+                    <p className="text-xs text-surface-500">{permission.description}</p>
                   </div>
                 </label>
               ))}

@@ -673,6 +673,41 @@ This is an external write action and should be reviewed before sending unless au
 
 
 register_tool(
+    name="create_github_issue_comment",
+    description="""Create a comment on an existing GitHub issue.
+
+Use this when the user asks to reply on, update, or add notes to a GitHub issue thread.
+
+Required:
+- repo_full_name: Repository in owner/repo format (e.g. 'octocat/Hello-World')
+- issue_number: Numeric issue number (e.g. 123)
+- body: Markdown comment content
+
+This is an external write action and should be reviewed before sending unless auto-approved.""",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "repo_full_name": {
+                "type": "string",
+                "description": "Repository in owner/repo format (e.g., 'octocat/Hello-World')",
+            },
+            "issue_number": {
+                "type": "integer",
+                "description": "GitHub issue number",
+            },
+            "body": {
+                "type": "string",
+                "description": "Comment body in Markdown",
+            },
+        },
+        "required": ["repo_full_name", "issue_number", "body"],
+    },
+    category=ToolCategory.EXTERNAL_WRITE,
+    default_requires_approval=True,
+)
+
+
+register_tool(
     name="trigger_sync",
     description="""Trigger a data sync for a specific integration.
 

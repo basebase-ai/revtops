@@ -5,7 +5,7 @@ Tools are organized by category (see registry.py):
 - LOCAL_READ: run_sql_query, search_activities
 - LOCAL_WRITE: create_artifact, create_workflow, trigger_workflow
 - EXTERNAL_READ: web_search, fetch_url, enrich_contacts_with_apollo, enrich_company_with_apollo
-- EXTERNAL_WRITE: crm_write, send_email_from, send_slack, create_github_issue, trigger_sync
+- EXTERNAL_WRITE: crm_write, send_email_from, send_slack, create_github_issue, create_github_issue_comment, trigger_sync
 
 EXTERNAL_WRITE tools require user approval by default (can be overridden in settings).
 """
@@ -32,6 +32,7 @@ from models.integration import Integration
 
 # Import the unified tool registry
 from agents.registry import get_tools_for_claude, get_tool, requires_approval
+from agents.workflow_permissions import TOOL_TO_REQUIRED_WORKFLOW_PERMISSION
 
 logger = logging.getLogger(__name__)
 
@@ -179,6 +180,15 @@ async def _should_skip_approval(
     if context and context.get("is_workflow"):
         auto_approve_tools = context.get("auto_approve_tools", [])
         if tool_name in auto_approve_tools:
+            required_permission = TOOL_TO_REQUIRED_WORKFLOW_PERMISSION.get(tool_name)
+            auto_approve_permissions = set(context.get("auto_approve_permissions", []))
+            if required_permission and required_permission not in auto_approve_permissions:
+                logger.info(
+                    "[Tools] Approval required for %s - missing workflow permission %s",
+                    tool_name,
+                    required_permission,
+                )
+                return False
             logger.info(f"[Tools] Skipping approval for {tool_name} - workflow auto-approved")
             return True
     
@@ -299,6 +309,11 @@ async def execute_tool(
     elif tool_name == "create_github_issue":
         result = await _create_github_issue(tool_input, organization_id, user_id, skip_approval)
         logger.info("[Tools] create_github_issue completed: %s", result.get("status", result.get("error", "unknown")))
+        return result
+
+    elif tool_name == "create_github_issue_comment":
+        result = await _create_github_issue_comment(tool_input, organization_id, user_id, skip_approval)
+        logger.info("[Tools] create_github_issue_comment completed: %s", result.get("status", result.get("error", "unknown")))
         return result
 
     elif tool_name == "trigger_sync":
@@ -3597,6 +3612,118 @@ async def execute_create_github_issue(
         }
     except Exception as e:
         logger.error("[Tools.execute_create_github_issue] Failed: %s", str(e))
+        return {
+            "status": "failed",
+            "error": str(e),
+        }
+
+
+async def _create_github_issue_comment(
+    params: dict[str, Any], organization_id: str, user_id: str | None, skip_approval: bool = False
+) -> dict[str, Any]:
+    """Create a comment on an existing GitHub issue."""
+    repo_full_name = params.get("repo_full_name", "").strip()
+    issue_number = params.get("issue_number")
+    body = params.get("body", "")
+
+    if not repo_full_name:
+        return {"error": "repo_full_name is required (owner/repo)."}
+    if "/" not in repo_full_name:
+        return {"error": "repo_full_name must be in 'owner/repo' format."}
+    if not isinstance(issue_number, int) or issue_number <= 0:
+        return {"error": "issue_number is required and must be a positive integer."}
+    if not isinstance(body, str) or not body.strip():
+        return {"error": "Comment body is required."}
+
+    async with get_session(organization_id=organization_id) as session:
+        result = await session.execute(
+            select(Integration).where(
+                Integration.organization_id == UUID(organization_id),
+                Integration.provider == "github",
+                Integration.is_active == True,
+            )
+        )
+        integration = result.scalar_one_or_none()
+
+        if not integration:
+            return {
+                "error": "No active GitHub integration found. Please connect GitHub in Data Sources.",
+                "suggestion": "Go to Data Sources and connect GitHub before adding comments.",
+            }
+
+    if skip_approval:
+        logger.info("[Tools._create_github_issue_comment] Auto-approved, creating comment immediately")
+        return await execute_create_github_issue_comment(params, organization_id)
+
+    operation_id = str(uuid4())
+    store_pending_operation(
+        operation_id=operation_id,
+        tool_name="create_github_issue_comment",
+        params=params,
+        organization_id=organization_id,
+        user_id=user_id or "",
+    )
+
+    return {
+        "type": "pending_approval",
+        "status": "pending_approval",
+        "operation_id": operation_id,
+        "tool_name": "create_github_issue_comment",
+        "preview": {
+            "repo_full_name": repo_full_name,
+            "issue_number": issue_number,
+            "body": (body[:500] + "...") if len(body) > 500 else body,
+        },
+        "message": (
+            f"Ready to add a comment to GitHub issue #{issue_number} in {repo_full_name}. "
+            "Please review and click Approve to create it."
+        ),
+    }
+
+
+async def execute_create_github_issue_comment(
+    params: dict[str, Any], organization_id: str
+) -> dict[str, Any]:
+    """Actually create a GitHub issue comment (called after user approval)."""
+    from connectors.github import GitHubConnector
+
+    repo_full_name = params.get("repo_full_name", "").strip()
+    issue_number = params.get("issue_number")
+    body = params.get("body", "")
+
+    if not repo_full_name or not isinstance(issue_number, int) or not isinstance(body, str):
+        return {
+            "status": "failed",
+            "error": "repo_full_name, issue_number, and body are required.",
+        }
+
+    try:
+        connector = GitHubConnector(organization_id=organization_id)
+        comment = await connector.create_issue_comment(
+            repo_full_name=repo_full_name,
+            issue_number=issue_number,
+            body=body,
+        )
+        logger.info(
+            "[Tools] Created GitHub issue comment %s in %s#%s",
+            comment.get("id"),
+            repo_full_name,
+            issue_number,
+        )
+        return {
+            "status": "completed",
+            "message": f"Added comment to GitHub issue #{issue_number} in {repo_full_name}",
+            "comment": comment,
+        }
+    except httpx.HTTPStatusError as e:
+        logger.error("[Tools.execute_create_github_issue_comment] GitHub API failed: %s", str(e))
+        detail = e.response.text[:500] if e.response is not None else str(e)
+        return {
+            "status": "failed",
+            "error": f"GitHub API error: {detail}",
+        }
+    except Exception as e:
+        logger.error("[Tools.execute_create_github_issue_comment] Failed: %s", str(e))
         return {
             "status": "failed",
             "error": str(e),

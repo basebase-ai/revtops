@@ -716,6 +716,7 @@ async def _execute_workflow_via_agent(
         "is_workflow": True,
         "workflow_id": str(workflow.id),
         "auto_approve_tools": workflow.auto_approve_tools or [],
+        "auto_approve_permissions": workflow.auto_approve_permissions or [],
         "call_stack": call_stack,  # For nested workflow recursion detection
     }
     

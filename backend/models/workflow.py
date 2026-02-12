@@ -86,6 +86,12 @@ class Workflow(Base):
     auto_approve_tools: Mapped[list[str]] = mapped_column(
         JSONB, nullable=False, default=list
     )
+
+    # Explicit workflow permissions that must be granted before certain tools
+    # can run without approval. Example: ["github_issues_write"]
+    auto_approve_permissions: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, default=list
+    )
     
     # NEW: Typed input/output schemas for workflow composition
     # input_schema: JSON Schema defining expected input parameters
@@ -150,6 +156,7 @@ class Workflow(Base):
             "steps": self.steps,
             "prompt": self.prompt,
             "auto_approve_tools": self.auto_approve_tools,
+            "auto_approve_permissions": self.auto_approve_permissions,
             "input_schema": self.input_schema,
             "output_schema": self.output_schema,
             "child_workflows": self.child_workflows,

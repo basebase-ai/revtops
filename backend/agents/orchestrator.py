@@ -487,6 +487,7 @@ class ChatOrchestrator:
                 - is_workflow: bool
                 - workflow_id: str
                 - auto_approve_tools: list[str]
+                - auto_approve_permissions: list[str]
         """
         self.user_id = user_id
         self.organization_id = organization_id

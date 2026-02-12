@@ -13,10 +13,23 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select, and_
 
+from agents.workflow_permissions import WORKFLOW_PERMISSION_DEFINITIONS
 from models.database import get_session
 from models.workflow import Workflow, WorkflowRun
 
 router = APIRouter()
+
+
+def _validate_workflow_permissions(permissions: list[str]) -> None:
+    invalid_permissions = [p for p in permissions if p not in WORKFLOW_PERMISSION_DEFINITIONS]
+    if invalid_permissions:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Invalid auto_approve_permissions: "
+                + ", ".join(sorted(invalid_permissions))
+            ),
+        )
 
 
 # ============================================================================
@@ -49,6 +62,7 @@ class CreateWorkflowRequest(BaseModel):
     steps: list[WorkflowStep] = []  # Optional for prompt-based workflows
     prompt: Optional[str] = None  # Agent prompt for prompt-based workflows
     auto_approve_tools: list[str] = []  # Tools that run without approval
+    auto_approve_permissions: list[str] = []  # Explicit permissions for workflow auto-approval
     input_schema: Optional[dict[str, Any]] = None  # JSON Schema for typed inputs
     output_schema: Optional[dict[str, Any]] = None  # JSON Schema for typed outputs
     child_workflows: list[str] = []  # IDs of workflows this can call
@@ -66,6 +80,7 @@ class UpdateWorkflowRequest(BaseModel):
     steps: Optional[list[WorkflowStep]] = None
     prompt: Optional[str] = None
     auto_approve_tools: Optional[list[str]] = None
+    auto_approve_permissions: Optional[list[str]] = None
     input_schema: Optional[dict[str, Any]] = None
     output_schema: Optional[dict[str, Any]] = None
     child_workflows: Optional[list[str]] = None
@@ -86,6 +101,7 @@ class WorkflowResponse(BaseModel):
     steps: list[dict[str, Any]]
     prompt: Optional[str]  # Agent prompt for prompt-based workflows
     auto_approve_tools: list[str]  # Tools that run without approval
+    auto_approve_permissions: list[str]  # Explicit permissions for workflow auto-approval
     input_schema: Optional[dict[str, Any]]  # JSON Schema for typed inputs
     output_schema: Optional[dict[str, Any]]  # JSON Schema for typed outputs
     child_workflows: list[str]  # IDs of workflows this can call
@@ -216,6 +232,8 @@ async def create_workflow(
             detail="Event triggers require an event type",
         )
 
+    _validate_workflow_permissions(request.auto_approve_permissions)
+
     # Validate cron expression if provided
     if request.trigger_config.cron:
         try:
@@ -238,6 +256,7 @@ async def create_workflow(
             steps=[s.model_dump() for s in request.steps],
             prompt=request.prompt,
             auto_approve_tools=request.auto_approve_tools,
+            auto_approve_permissions=request.auto_approve_permissions,
             input_schema=request.input_schema,
             output_schema=request.output_schema,
             child_workflows=request.child_workflows,
@@ -293,6 +312,9 @@ async def update_workflow(
             workflow.prompt = request.prompt
         if request.auto_approve_tools is not None:
             workflow.auto_approve_tools = request.auto_approve_tools
+        if request.auto_approve_permissions is not None:
+            _validate_workflow_permissions(request.auto_approve_permissions)
+            workflow.auto_approve_permissions = request.auto_approve_permissions
         if request.input_schema is not None:
             workflow.input_schema = request.input_schema
         if request.output_schema is not None:
