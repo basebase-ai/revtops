@@ -9,7 +9,7 @@
  * - Delete workflows
  */
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, type KeyboardEvent } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAppStore } from '../store';
 import { apiRequest } from '../lib/api';
@@ -1081,6 +1081,7 @@ export function Workflows(): JSX.Element {
   const [selectedWorkflow, setSelectedWorkflow] = useState<Workflow | null>(null);
   const [showModal, setShowModal] = useState(false);
   const [editingWorkflow, setEditingWorkflow] = useState<Workflow | null>(null);
+  const [selectedWorkflowIds, setSelectedWorkflowIds] = useState<Set<string>>(new Set());
 
   // Fetch workflows
   const { data: workflows = [], isLoading, error, refetch } = useQuery({
@@ -1096,6 +1097,27 @@ export function Workflows(): JSX.Element {
     acc[member.id] = creatorLabel;
     return acc;
   }, {});
+
+  const currentTeamMember = (teamMembersData?.members ?? []).find((member) => member.id === user?.id);
+  const isAdmin = currentTeamMember?.role === 'admin' || (user?.roles?.includes('global_admin') ?? false);
+
+  useEffect(() => {
+    setSelectedWorkflowIds((previousSelection) => {
+      const workflowIds = new Set(workflows.map((workflow) => workflow.id));
+      const updatedSelection = new Set(
+        [...previousSelection].filter((workflowId) => workflowIds.has(workflowId)),
+      );
+
+      if (updatedSelection.size !== previousSelection.size) {
+        console.debug('[Workflows] Cleared stale selected workflow IDs', {
+          previousCount: previousSelection.size,
+          updatedCount: updatedSelection.size,
+        });
+      }
+
+      return updatedSelection;
+    });
+  }, [workflows]);
 
   // Auto-refresh when navigating to this view or when workflows are modified via chat
   useEffect(() => {
@@ -1143,6 +1165,29 @@ export function Workflows(): JSX.Element {
       deleteWorkflow(organization?.id ?? '', workflowId),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['workflows'] });
+    },
+  });
+
+  const bulkDeleteMutation = useMutation({
+    mutationFn: async ({ workflowIds }: { workflowIds: string[] }) => {
+      console.info('[Workflows] Bulk deleting workflows', {
+        orgId: organization?.id,
+        workflowCount: workflowIds.length,
+      });
+      await Promise.all(
+        workflowIds.map((workflowId) => deleteWorkflow(organization?.id ?? '', workflowId)),
+      );
+    },
+    onSuccess: (_data, variables) => {
+      console.info('[Workflows] Bulk delete complete', { workflowCount: variables.workflowIds.length });
+      setSelectedWorkflowIds(new Set());
+      if (selectedWorkflow && variables.workflowIds.includes(selectedWorkflow.id)) {
+        setSelectedWorkflow(null);
+      }
+      void queryClient.invalidateQueries({ queryKey: ['workflows'] });
+    },
+    onError: (mutationError) => {
+      console.error('[Workflows] Bulk delete failed', mutationError);
     },
   });
 
@@ -1203,6 +1248,29 @@ export function Workflows(): JSX.Element {
     setEditingWorkflow(null);
   };
 
+  const toggleWorkflowSelection = (workflowId: string, checked: boolean): void => {
+    setSelectedWorkflowIds((previousSelection) => {
+      const updatedSelection = new Set(previousSelection);
+      if (checked) {
+        updatedSelection.add(workflowId);
+      } else {
+        updatedSelection.delete(workflowId);
+      }
+      console.debug('[Workflows] Toggled workflow selection', {
+        workflowId,
+        checked,
+        selectedCount: updatedSelection.size,
+      });
+      return updatedSelection;
+    });
+  };
+
+  const handleBulkDelete = (): void => {
+    if (!isAdmin || selectedWorkflowIds.size === 0) return;
+    const workflowIds = [...selectedWorkflowIds];
+    bulkDeleteMutation.mutate({ workflowIds });
+  };
+
   const handleModalSubmit = (params: CreateWorkflowParams): void => {
     if (editingWorkflow) {
       updateMutation.mutate({ workflowId: editingWorkflow.id, params });
@@ -1237,15 +1305,26 @@ export function Workflows(): JSX.Element {
             Automated tasks that run on schedule or manually
           </p>
         </div>
-        <button
-          onClick={openCreateModal}
-          className="px-4 py-2 bg-primary-600 hover:bg-primary-700 text-white rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
-        >
-          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-          </svg>
-          Create Workflow
-        </button>
+        <div className="flex items-center gap-2">
+          {isAdmin && (
+            <button
+              onClick={handleBulkDelete}
+              disabled={selectedWorkflowIds.size === 0 || bulkDeleteMutation.isPending}
+              className="px-4 py-2 bg-red-600 hover:bg-red-700 disabled:bg-surface-700 disabled:text-surface-500 text-white rounded-lg text-sm font-medium transition-colors"
+            >
+              {bulkDeleteMutation.isPending ? 'Deleting...' : `Delete All Selected (${selectedWorkflowIds.size})`}
+            </button>
+          )}
+          <button
+            onClick={openCreateModal}
+            className="px-4 py-2 bg-primary-600 hover:bg-primary-700 text-white rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
+          >
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+            </svg>
+            Create Workflow
+          </button>
+        </div>
       </header>
 
       {/* Content */}
@@ -1283,6 +1362,9 @@ export function Workflows(): JSX.Element {
                       workflow={workflow}
                       creatorName={workflowCreatorNames[workflow.created_by_user_id]}
                       onClick={() => setSelectedWorkflow(workflow)}
+                      showSelection={isAdmin}
+                      selected={selectedWorkflowIds.has(workflow.id)}
+                      onSelectionChange={(checked) => toggleWorkflowSelection(workflow.id, checked)}
                     />
                   ))}
                 </div>
@@ -1302,6 +1384,9 @@ export function Workflows(): JSX.Element {
                       workflow={workflow}
                       creatorName={workflowCreatorNames[workflow.created_by_user_id]}
                       onClick={() => setSelectedWorkflow(workflow)}
+                      showSelection={isAdmin}
+                      selected={selectedWorkflowIds.has(workflow.id)}
+                      onSelectionChange={(checked) => toggleWorkflowSelection(workflow.id, checked)}
                     />
                   ))}
                 </div>
@@ -1347,21 +1432,49 @@ function WorkflowCard({
   workflow,
   creatorName,
   onClick,
+  showSelection,
+  selected,
+  onSelectionChange,
 }: {
   workflow: Workflow;
   creatorName?: string;
   onClick: () => void;
+  showSelection: boolean;
+  selected: boolean;
+  onSelectionChange: (checked: boolean) => void;
 }): JSX.Element {
   const creatorDisplay = creatorName ?? workflow.created_by_user_id;
 
+  const handleCardKeyDown = (event: KeyboardEvent<HTMLDivElement>): void => {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      onClick();
+    }
+  };
+
   return (
-    <button
+    <div
       onClick={onClick}
-      className="text-left p-4 bg-surface-900 border border-surface-800 rounded-xl hover:border-surface-700 transition-colors"
+      onKeyDown={handleCardKeyDown}
+      role="button"
+      tabIndex={0}
+      className="text-left p-4 bg-surface-900 border border-surface-800 rounded-xl hover:border-surface-700 transition-colors cursor-pointer"
     >
       <div className="flex items-start justify-between mb-2">
         <h3 className="font-medium text-surface-100 truncate flex-1">{workflow.name}</h3>
-        <span className={`ml-2 w-2 h-2 rounded-full ${workflow.is_enabled ? 'bg-green-500' : 'bg-surface-600'}`} />
+        <div className="ml-2 flex items-center gap-2">
+          {showSelection && (
+            <input
+              type="checkbox"
+              checked={selected}
+              onChange={(event) => onSelectionChange(event.target.checked)}
+              onClick={(event) => event.stopPropagation()}
+              className="h-4 w-4 rounded border-surface-600 bg-surface-900 text-primary-500 focus:ring-primary-500"
+              aria-label={`Select ${workflow.name}`}
+            />
+          )}
+          <span className={`w-2 h-2 rounded-full ${workflow.is_enabled ? 'bg-green-500' : 'bg-surface-600'}`} />
+        </div>
       </div>
       
       <p className="text-xs text-surface-500 mb-3">{getTriggerDescription(workflow)}</p>
@@ -1383,6 +1496,6 @@ function WorkflowCard({
           Last run: {formatRelativeTime(workflow.last_run_at)}
         </div>
       )}
-    </button>
+    </div>
   );
 }
