@@ -19,7 +19,7 @@ Architecture:
 import json
 import logging
 from collections import defaultdict
-from typing import Dict, Set
+from typing import Dict, Optional, Set
 from uuid import UUID, uuid4
 
 from fastapi import WebSocket, WebSocketDisconnect
@@ -89,6 +89,7 @@ async def broadcast_sync_progress(
     provider: str,
     count: int,
     status: str = "syncing",
+    step: Optional[str] = None,
 ) -> None:
     """
     Broadcast sync progress to all connected clients for an organization.
@@ -100,15 +101,19 @@ async def broadcast_sync_progress(
         provider: The provider name (e.g., "google_calendar")
         count: Current count of synced items
         status: "syncing" or "completed"
+        step: Current sync phase (e.g., "accounts", "deals", "contacts", "activities")
     """
+    data: dict[str, str | int] = {
+        "provider": provider,
+        "count": count,
+        "status": status,
+    }
+    if step is not None:
+        data["step"] = step
     await sync_broadcaster.broadcast(
         organization_id=organization_id,
         event_type="sync_progress",
-        data={
-            "provider": provider,
-            "count": count,
-            "status": status,
-        },
+        data=data,
     )
 
 

@@ -265,6 +265,7 @@ export function DataSources(): JSX.Element {
   
   // Live sync progress from WebSocket
   const [syncProgress, setSyncProgress] = useState<Record<string, number>>({});
+  const [syncStep, setSyncStep] = useState<Record<string, string>>({});
 
   const organizationId = organization?.id ?? '';
   const userId = user?.id ?? '';
@@ -278,12 +279,18 @@ export function DataSources(): JSX.Element {
   // Handle WebSocket messages for sync progress
   const handleWsMessage = useCallback((message: string) => {
     try {
-      const data = JSON.parse(message) as { type: string; provider?: string; count?: number; status?: string };
+      const data = JSON.parse(message) as { type: string; provider?: string; count?: number; status?: string; step?: string };
       if (data.type === 'sync_progress' && data.provider !== undefined && data.count !== undefined) {
         setSyncProgress((prev) => ({
           ...prev,
           [data.provider as string]: data.count as number,
         }));
+        if (data.step) {
+          setSyncStep((prev) => ({
+            ...prev,
+            [data.provider as string]: data.step as string,
+          }));
+        }
         
         // If sync is in progress, add to syncingProviders to show spinner
         if (data.status === 'syncing') {
@@ -296,6 +303,11 @@ export function DataSources(): JSX.Element {
           // Clear the progress for this provider after a short delay
           setTimeout(() => {
             setSyncProgress((prev) => {
+              const next = { ...prev };
+              delete next[data.provider as string];
+              return next;
+            });
+            setSyncStep((prev) => {
               const next = { ...prev };
               delete next[data.provider as string];
               return next;
@@ -1223,7 +1235,7 @@ export function DataSources(): JSX.Element {
                 <p className="text-xs text-surface-400 mt-1 hidden sm:block">
                   {syncProgress[integration.provider] !== undefined ? (
                     <span className="text-primary-400">
-                      Syncing... {getActivityLabel(integration.provider, syncProgress[integration.provider] ?? 0)}
+                      Syncing{syncStep[integration.provider] ? ` ${syncStep[integration.provider]}` : ''}... {getActivityLabel(integration.provider, syncProgress[integration.provider] ?? 0)}
                     </span>
                   ) : integration.syncStats ? (
                     formatSyncStats(integration.syncStats, integration.provider)
