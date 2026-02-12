@@ -28,6 +28,7 @@ from typing import Any
 
 import redis.asyncio as redis
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import JSONResponse
 
 from config import get_redis_connection_kwargs, settings
 from services.slack_conversations import (
@@ -125,6 +126,63 @@ async def is_duplicate_event(event_id: str) -> bool:
     except Exception as e:
         logger.error("[slack_events] Redis error during deduplication: %s", e)
         # If Redis fails, process the event anyway (better to duplicate than miss)
+        return False
+
+
+async def cache_incoming_event_payload(
+    body: bytes,
+    payload: dict[str, Any],
+) -> bool:
+    """Cache the incoming Slack payload in Redis before responding to Slack."""
+    event_id = payload.get("event_id")
+    event = payload.get("event") or {}
+    event_ts = event.get("event_ts") or event.get("ts") or "unknown"
+    key_suffix = event_id or hashlib.sha256(body).hexdigest()
+    cache_key = f"revtops:slack_events:incoming:{key_suffix}"
+
+    logger.info(
+        "[slack_events] Caching incoming event payload key=%s event_id=%s team_id=%s event_ts=%s",
+        cache_key,
+        event_id,
+        payload.get("team_id"),
+        event_ts,
+    )
+
+    cache_value = {
+        "event_id": event_id,
+        "event_type": payload.get("type"),
+        "team_id": payload.get("team_id"),
+        "received_at": int(time.time()),
+        "payload": payload,
+    }
+
+    try:
+        redis_client = await get_redis()
+        was_set = await asyncio.wait_for(
+            redis_client.set(
+                cache_key,
+                json.dumps(cache_value),
+                ex=86400,  # 24h TTL
+            ),
+            timeout=1.0,
+        )
+        if not was_set:
+            logger.warning(
+                "[slack_events] Redis SET returned falsy response while caching key=%s",
+                cache_key,
+            )
+        return bool(was_set)
+    except asyncio.TimeoutError:
+        logger.warning(
+            "[slack_events] Timed out (>1s) while caching incoming payload key=%s",
+            cache_key,
+        )
+        return False
+    except Exception:
+        logger.exception(
+            "[slack_events] Failed to cache incoming payload key=%s",
+            cache_key,
+        )
         return False
 
 
@@ -233,7 +291,7 @@ async def _process_event_callback_impl(payload: dict[str, Any]) -> None:
 
 
 @router.post("/events", response_model=None)
-async def handle_slack_events(request: Request) -> dict[str, Any]:
+async def handle_slack_events(request: Request) -> dict[str, Any] | JSONResponse:
     """
     Handle incoming Slack Events API requests.
     
@@ -272,8 +330,15 @@ async def handle_slack_events(request: Request) -> dict[str, Any]:
     # Handle event callbacks: return 200 immediately to satisfy Slack's 3-second timeout.
     # Processing (including dedup) runs in the background to avoid blocking the response.
     if event_type == "event_callback":
+        cache_succeeded = await cache_incoming_event_payload(body, payload)
         asyncio.create_task(_process_event_callback(payload))
-        return {"ok": True}
+        status_code = 200 if cache_succeeded else 202
+        logger.info(
+            "[slack_events] Responding to Slack event_callback with status=%s cache_succeeded=%s",
+            status_code,
+            cache_succeeded,
+        )
+        return JSONResponse(content={"ok": True}, status_code=status_code)
 
     return {"ok": True}
 
