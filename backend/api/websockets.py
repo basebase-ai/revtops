@@ -157,6 +157,7 @@ from agents.tools import (
     update_tool_call_result,
     execute_send_email_from,
     execute_send_slack,
+    execute_create_github_issue,
 )
 from models.conversation import Conversation
 from models.database import get_session
@@ -207,6 +208,7 @@ async def _execute_tool_approval(
         remove_pending_operation,
         execute_send_email_from,
         execute_send_slack,
+        execute_create_github_issue,
     )
     
     # First check if this is in our in-memory pending operations store
@@ -235,6 +237,10 @@ async def _execute_tool_approval(
             return result
         elif tool_name == "send_slack":
             result = await execute_send_slack(params, op_org_id)
+            result["tool_name"] = tool_name
+            return result
+        elif tool_name == "create_github_issue":
+            result = await execute_create_github_issue(params, op_org_id)
             result["tool_name"] = tool_name
             return result
         else:

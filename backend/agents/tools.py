@@ -5,7 +5,7 @@ Tools are organized by category (see registry.py):
 - LOCAL_READ: run_sql_query, search_activities
 - LOCAL_WRITE: create_artifact, create_workflow, trigger_workflow
 - EXTERNAL_READ: web_search, fetch_url, enrich_contacts_with_apollo, enrich_company_with_apollo
-- EXTERNAL_WRITE: crm_write, send_email_from, send_slack, trigger_sync
+- EXTERNAL_WRITE: crm_write, send_email_from, send_slack, create_github_issue, trigger_sync
 
 EXTERNAL_WRITE tools require user approval by default (can be overridden in settings).
 """
@@ -294,6 +294,11 @@ async def execute_tool(
     elif tool_name == "send_slack":
         result = await _send_slack(tool_input, organization_id, user_id, skip_approval)
         logger.info("[Tools] send_slack completed: %s", result.get("status"))
+        return result
+
+    elif tool_name == "create_github_issue":
+        result = await _create_github_issue(tool_input, organization_id, user_id, skip_approval)
+        logger.info("[Tools] create_github_issue completed: %s", result.get("status", result.get("error", "unknown")))
         return result
 
     elif tool_name == "trigger_sync":
@@ -3470,6 +3475,128 @@ async def execute_send_slack(
         
     except Exception as e:
         logger.error(f"[Tools._send_slack] Failed: {str(e)}")
+        return {
+            "status": "failed",
+            "error": str(e),
+        }
+
+
+
+
+async def _create_github_issue(
+    params: dict[str, Any], organization_id: str, user_id: str | None, skip_approval: bool = False
+) -> dict[str, Any]:
+    """
+    Create a GitHub issue in a repository.
+
+    Requires approval by default unless auto-approved.
+    """
+    repo_full_name = params.get("repo_full_name", "").strip()
+    title = params.get("title", "").strip()
+    body = params.get("body")
+    labels = params.get("labels")
+    assignees = params.get("assignees")
+
+    if not repo_full_name:
+        return {"error": "repo_full_name is required (owner/repo)."}
+    if "/" not in repo_full_name:
+        return {"error": "repo_full_name must be in 'owner/repo' format."}
+    if not title:
+        return {"error": "Issue title is required."}
+
+    # Validate optional fields early so approval preview is trustworthy
+    if labels is not None and not isinstance(labels, list):
+        return {"error": "labels must be an array of strings."}
+    if assignees is not None and not isinstance(assignees, list):
+        return {"error": "assignees must be an array of GitHub usernames."}
+
+    async with get_session(organization_id=organization_id) as session:
+        result = await session.execute(
+            select(Integration).where(
+                Integration.organization_id == UUID(organization_id),
+                Integration.provider == "github",
+                Integration.is_active == True,
+            )
+        )
+        integration = result.scalar_one_or_none()
+
+        if not integration:
+            return {
+                "error": "No active GitHub integration found. Please connect GitHub in Data Sources.",
+                "suggestion": "Go to Data Sources and connect GitHub before filing issues.",
+            }
+
+    if skip_approval:
+        logger.info("[Tools._create_github_issue] Auto-approved, creating issue immediately")
+        return await execute_create_github_issue(params, organization_id)
+
+    operation_id = str(uuid4())
+    store_pending_operation(
+        operation_id=operation_id,
+        tool_name="create_github_issue",
+        params=params,
+        organization_id=organization_id,
+        user_id=user_id or "",
+    )
+
+    return {
+        "type": "pending_approval",
+        "status": "pending_approval",
+        "operation_id": operation_id,
+        "tool_name": "create_github_issue",
+        "preview": {
+            "repo_full_name": repo_full_name,
+            "title": title,
+            "body": (body[:500] + "...") if isinstance(body, str) and len(body) > 500 else body,
+            "labels": labels or [],
+            "assignees": assignees or [],
+        },
+        "message": f"Ready to create GitHub issue in {repo_full_name}. Please review and click Approve to create it.",
+    }
+
+
+async def execute_create_github_issue(
+    params: dict[str, Any], organization_id: str
+) -> dict[str, Any]:
+    """Actually create a GitHub issue (called after user approval)."""
+    from connectors.github import GitHubConnector
+
+    repo_full_name = params.get("repo_full_name", "").strip()
+    title = params.get("title", "").strip()
+    body = params.get("body")
+    labels = params.get("labels")
+    assignees = params.get("assignees")
+
+    if not repo_full_name or not title:
+        return {
+            "status": "failed",
+            "error": "repo_full_name and title are required.",
+        }
+
+    try:
+        connector = GitHubConnector(organization_id=organization_id)
+        issue = await connector.create_issue(
+            repo_full_name=repo_full_name,
+            title=title,
+            body=body,
+            labels=labels,
+            assignees=assignees,
+        )
+        logger.info("[Tools] Created GitHub issue %s in %s", issue.get("number"), repo_full_name)
+        return {
+            "status": "completed",
+            "message": f"Created GitHub issue #{issue.get('number')} in {repo_full_name}",
+            "issue": issue,
+        }
+    except httpx.HTTPStatusError as e:
+        logger.error("[Tools.execute_create_github_issue] GitHub API failed: %s", str(e))
+        detail = e.response.text[:500] if e.response is not None else str(e)
+        return {
+            "status": "failed",
+            "error": f"GitHub API error: {detail}",
+        }
+    except Exception as e:
+        logger.error("[Tools.execute_create_github_issue] Failed: %s", str(e))
         return {
             "status": "failed",
             "error": str(e),

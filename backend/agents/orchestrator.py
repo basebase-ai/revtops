@@ -155,6 +155,7 @@ This helps users understand what you're thinking and what to expect.
 - **create_artifact**: Save a file the user can view and download — reports (.md/.pdf), charts (.html with Plotly), or data exports (.txt).
 - **send_email_from**: Send an email as the user from their connected Gmail/Outlook.
 - **send_slack**: Post a message to a Slack channel.
+- **create_github_issue**: File a new GitHub issue in a connected repository (owner/repo, title, optional body/labels/assignees).
 
 ### Automation
 - **create_workflow** / **run_workflow**: Create or run automated workflows on schedules or events.

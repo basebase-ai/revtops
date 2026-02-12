@@ -624,6 +624,55 @@ Examples:
 
 
 register_tool(
+    name="create_github_issue",
+    description="""Create a GitHub issue in a repository your organization has connected.
+
+Use this when the user asks to file/report an issue in GitHub.
+
+Required:
+- repo_full_name: Repository in owner/repo format (e.g. 'octocat/Hello-World')
+- title: Issue title
+
+Optional:
+- body: Markdown body content for the issue
+- labels: List of label names
+- assignees: List of GitHub usernames to assign
+
+This is an external write action and should be reviewed before sending unless auto-approved.""",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "repo_full_name": {
+                "type": "string",
+                "description": "Repository in owner/repo format (e.g., 'octocat/Hello-World')",
+            },
+            "title": {
+                "type": "string",
+                "description": "Issue title",
+            },
+            "body": {
+                "type": "string",
+                "description": "Issue body in Markdown (optional)",
+            },
+            "labels": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Label names to apply (optional)",
+            },
+            "assignees": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "GitHub usernames to assign (optional)",
+            },
+        },
+        "required": ["repo_full_name", "title"],
+    },
+    category=ToolCategory.EXTERNAL_WRITE,
+    default_requires_approval=True,
+)
+
+
+register_tool(
     name="trigger_sync",
     description="""Trigger a data sync for a specific integration.
 
