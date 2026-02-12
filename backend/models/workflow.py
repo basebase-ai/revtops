@@ -48,7 +48,7 @@ class Workflow(Base):
         UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False
     )
     created_by_user_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("users.id"), nullable=False
+        UUID(as_uuid=True), ForeignKey("users.id", onupdate="CASCADE"), nullable=False
     )
 
     # Workflow metadata

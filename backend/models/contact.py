@@ -57,7 +57,7 @@ class Contact(Base):
         DateTime(timezone=True), nullable=True
     )
     updated_by: Mapped[Optional[uuid.UUID]] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL", onupdate="CASCADE"), nullable=True
     )
 
     # Relationships

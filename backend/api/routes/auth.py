@@ -331,64 +331,14 @@ async def sync_user(request: SyncUserRequest) -> SyncUserResponse:
                     f"Supabase id={user_uuid}, email={request.email}. "
                     f"Migrating user ID to match Supabase."
                 )
-                # Update all FK references to this user, then update the PK.
-                # Order: children first, then the user row itself.
-                _fk_updates: list[str] = [
-                    "UPDATE conversations SET user_id = :new_id WHERE user_id = :old_id",
-                    "UPDATE chat_messages SET user_id = :new_id WHERE user_id = :old_id",
-                    "UPDATE deals SET owner_id = :new_id WHERE owner_id = :old_id",
-                    "UPDATE deals SET updated_by = :new_id WHERE updated_by = :old_id",
-                    "UPDATE accounts SET owner_id = :new_id WHERE owner_id = :old_id",
-                    "UPDATE accounts SET updated_by = :new_id WHERE updated_by = :old_id",
-                    "UPDATE activities SET created_by_id = :new_id WHERE created_by_id = :old_id",
-                    "UPDATE activities SET updated_by = :new_id WHERE updated_by = :old_id",
-                    "UPDATE artifacts SET user_id = :new_id WHERE user_id = :old_id",
-                    "UPDATE integrations SET user_id = :new_id WHERE user_id = :old_id",
-                    "UPDATE integrations SET connected_by_user_id = :new_id WHERE connected_by_user_id = :old_id",
-                    "UPDATE sheet_imports SET user_id = :new_id WHERE user_id = :old_id",
-                    "UPDATE change_sessions SET user_id = :new_id WHERE user_id = :old_id",
-                    "UPDATE change_sessions SET resolved_by = :new_id WHERE resolved_by = :old_id",
-                    "UPDATE organizations SET token_owner_user_id = :new_id WHERE token_owner_user_id = :old_id",
-                    "UPDATE crm_operations SET user_id = :new_id WHERE user_id = :old_id",
-                    "UPDATE pending_operations SET user_id = :new_id WHERE user_id = :old_id",
-                    "UPDATE workflows SET created_by_user_id = :new_id WHERE created_by_user_id = :old_id",
-                    "UPDATE user_tool_settings SET user_id = :new_id WHERE user_id = :old_id",
-                    "UPDATE user_mappings_for_identity SET user_id = :new_id WHERE user_id = :old_id",
-                    "UPDATE organization_memberships SET user_id = :new_id WHERE user_id = :old_id",
-                    "UPDATE organization_memberships SET invited_by_user_id = :new_id WHERE invited_by_user_id = :old_id",
-                    "UPDATE agent_tasks SET user_id = :new_id WHERE user_id = :old_id",
-                    "UPDATE user_memories SET user_id = :new_id WHERE user_id = :old_id",
-                    "UPDATE shared_files SET user_id = :new_id WHERE user_id = :old_id",
-                    "UPDATE github_pull_requests SET user_id = :new_id WHERE user_id = :old_id",
-                    "UPDATE github_commits SET user_id = :new_id WHERE user_id = :old_id",
-                    "UPDATE contacts SET updated_by = :new_id WHERE updated_by = :old_id",
-                ]
-                params = {"new_id": str(user_uuid), "old_id": str(old_id)}
-                # Temporarily disable FK constraint checks. The admin session
-                # runs as the postgres superuser which is required for this.
-                # Without this, updating child FKs to the new ID fails because
-                # the users PK hasn't been changed yet.
+                # Update the user's primary key to match the Supabase ID.
+                # All FK constraints referencing users.id have ON UPDATE CASCADE
+                # (see migration 052), so Postgres automatically propagates the
+                # PK change to every child table.
                 await session.execute(
-                    text("SET session_replication_role = 'replica'")
+                    text("UPDATE users SET id = :new_id WHERE id = :old_id"),
+                    {"new_id": str(user_uuid), "old_id": str(old_id)},
                 )
-                try:
-                    for stmt in _fk_updates:
-                        await session.execute(text(stmt), params)
-                    # Now update the user's primary key
-                    await session.execute(
-                        text("UPDATE users SET id = :new_id WHERE id = :old_id"),
-                        params,
-                    )
-                except Exception:
-                    await session.rollback()
-                    raise
-                finally:
-                    try:
-                        await session.execute(
-                            text("SET session_replication_role = 'origin'")
-                        )
-                    except Exception:
-                        pass  # Connection may already be closed/rolled back
                 # Expire the ORM object so we re-fetch with the new PK
                 await session.flush()
                 session.expire(existing)

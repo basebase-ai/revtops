@@ -50,7 +50,7 @@ class SlackUserMapping(Base):
         UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True
     )
     user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("users.id"), nullable=True, index=True
+        UUID(as_uuid=True), ForeignKey("users.id", onupdate="CASCADE"), nullable=True, index=True
     )
     revtops_email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     external_userid: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)

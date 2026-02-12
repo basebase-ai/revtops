@@ -29,7 +29,7 @@ class CrmOperation(Base):
     )
     # user_id is nullable for Slack conversations where we don't have a RevTops user
     user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("users.id"), nullable=True
+        UUID(as_uuid=True), ForeignKey("users.id", onupdate="CASCADE"), nullable=True
     )
     conversation_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True), ForeignKey("conversations.id"), nullable=True

@@ -46,7 +46,7 @@ class Organization(Base):
         Text, nullable=True
     )
     token_owner_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("users.id"), nullable=True
+        UUID(as_uuid=True), ForeignKey("users.id", onupdate="CASCADE"), nullable=True
     )
     created_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime, default=datetime.utcnow, nullable=True

@@ -33,7 +33,7 @@ class OrganizationMembership(Base):
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
     user_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE", onupdate="CASCADE"), nullable=False
     )
     organization_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
@@ -45,7 +45,7 @@ class OrganizationMembership(Base):
         String(20), nullable=False, default="active"
     )  # 'invited', 'active', 'deactivated'
     invited_by_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL", onupdate="CASCADE"), nullable=True
     )
     invited_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     joined_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)

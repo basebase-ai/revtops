@@ -77,7 +77,7 @@ class GitHubCommit(Base):
 
     # Mapped internal user (resolved by email matching)
     user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("users.id"), nullable=True
+        UUID(as_uuid=True), ForeignKey("users.id", onupdate="CASCADE"), nullable=True
     )
 
     # Timestamps
