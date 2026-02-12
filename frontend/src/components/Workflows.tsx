@@ -1076,10 +1076,16 @@ function WorkflowModal({
 export function Workflows(): JSX.Element {
   const user = useAppStore((state) => state.user);
   const organization = useAppStore((state) => state.organization);
+  const organizations = useAppStore((state) => state.organizations);
   const queryClient = useQueryClient();
   const [selectedWorkflow, setSelectedWorkflow] = useState<Workflow | null>(null);
   const [showModal, setShowModal] = useState(false);
   const [editingWorkflow, setEditingWorkflow] = useState<Workflow | null>(null);
+  const [isBulkSelectionMode, setIsBulkSelectionMode] = useState(false);
+  const [selectedWorkflowIds, setSelectedWorkflowIds] = useState<string[]>([]);
+
+  const activeOrganizationMembership = organizations.find((org) => org.id === organization?.id);
+  const isOrganizationAdmin = activeOrganizationMembership?.role === 'admin';
 
   // Fetch workflows
   const { data: workflows = [], isLoading, error, refetch } = useQuery({
@@ -1136,6 +1142,87 @@ export function Workflows(): JSX.Element {
       void queryClient.invalidateQueries({ queryKey: ['workflows'] });
     },
   });
+
+  const bulkDeleteMutation = useMutation({
+    mutationFn: async ({ workflowIds }: { workflowIds: string[] }) => {
+      console.debug('[Workflows] Bulk deleting workflows', {
+        organizationId: organization?.id,
+        workflowIds,
+      });
+
+      const results = await Promise.allSettled(
+        workflowIds.map(async (workflowId) => {
+          await deleteWorkflow(organization?.id ?? '', workflowId);
+          return workflowId;
+        }),
+      );
+
+      const deletedWorkflowIds: string[] = [];
+      const failedWorkflowIds: string[] = [];
+
+      results.forEach((result, index) => {
+        const workflowId = workflowIds[index];
+        if (!workflowId) {
+          return;
+        }
+
+        if (result.status === 'fulfilled') {
+          deletedWorkflowIds.push(workflowId);
+        } else {
+          failedWorkflowIds.push(workflowId);
+          console.error('[Workflows] Failed to delete workflow during bulk delete', {
+            workflowId,
+            error: result.reason,
+          });
+        }
+      });
+
+      if (failedWorkflowIds.length > 0) {
+        throw new Error(`Failed to delete ${failedWorkflowIds.length} workflow(s)`);
+      }
+
+      return { deletedWorkflowIds };
+    },
+    onSuccess: () => {
+      setSelectedWorkflowIds([]);
+      setIsBulkSelectionMode(false);
+      void queryClient.invalidateQueries({ queryKey: ['workflows'] });
+    },
+    onError: (error) => {
+      console.error('[Workflows] Bulk delete failed', error);
+      void queryClient.invalidateQueries({ queryKey: ['workflows'] });
+    },
+  });
+
+  const toggleWorkflowSelection = (workflowId: string): void => {
+    setSelectedWorkflowIds((currentSelectedWorkflowIds) => {
+      if (currentSelectedWorkflowIds.includes(workflowId)) {
+        return currentSelectedWorkflowIds.filter((id) => id !== workflowId);
+      }
+      return [...currentSelectedWorkflowIds, workflowId];
+    });
+  };
+
+  const handleBulkModeToggle = (): void => {
+    if (!isBulkSelectionMode) {
+      setIsBulkSelectionMode(true);
+      setSelectedWorkflowIds([]);
+      setSelectedWorkflow(null);
+      return;
+    }
+
+    setIsBulkSelectionMode(false);
+    setSelectedWorkflowIds([]);
+  };
+
+  const handleBulkDelete = (): void => {
+    if (selectedWorkflowIds.length === 0) return;
+
+    const confirmed = window.confirm(`Delete ${selectedWorkflowIds.length} selected workflow(s)? This cannot be undone.`);
+    if (!confirmed) return;
+
+    bulkDeleteMutation.mutate({ workflowIds: selectedWorkflowIds });
+  };
 
   const toggleMutation = useMutation({
     mutationFn: ({ workflowId, enabled }: { workflowId: string; enabled: boolean }) =>
@@ -1228,19 +1315,46 @@ export function Workflows(): JSX.Element {
             Automated tasks that run on schedule or manually
           </p>
         </div>
-        <button
-          onClick={openCreateModal}
-          className="px-4 py-2 bg-primary-600 hover:bg-primary-700 text-white rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
-        >
-          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-          </svg>
-          Create Workflow
-        </button>
+        <div className="flex items-center gap-2">
+          {isOrganizationAdmin && workflows.length > 0 && (
+            <button
+              onClick={handleBulkModeToggle}
+              className="px-4 py-2 bg-surface-700 hover:bg-surface-600 text-surface-200 rounded-lg text-sm font-medium transition-colors"
+            >
+              {isBulkSelectionMode ? 'Cancel Selection' : 'Select for Bulk Delete'}
+            </button>
+          )}
+          <button
+            onClick={openCreateModal}
+            className="px-4 py-2 bg-primary-600 hover:bg-primary-700 text-white rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
+          >
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+            </svg>
+            Create Workflow
+          </button>
+        </div>
       </header>
 
       {/* Content */}
       <div className="flex-1 overflow-y-auto p-6">
+        {isBulkSelectionMode && (
+          <div className="mb-6 p-4 rounded-xl border border-red-500/40 bg-red-500/10 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <p className="text-sm text-red-200">
+              {selectedWorkflowIds.length === 0
+                ? 'Select workflows to delete.'
+                : `${selectedWorkflowIds.length} workflow(s) selected.`}
+            </p>
+            <button
+              onClick={handleBulkDelete}
+              disabled={selectedWorkflowIds.length === 0 || bulkDeleteMutation.isPending}
+              className="px-4 py-2 bg-red-600 hover:bg-red-700 disabled:bg-surface-700 disabled:text-surface-500 text-white rounded-lg text-sm font-medium transition-colors"
+            >
+              {bulkDeleteMutation.isPending ? 'Deleting...' : 'Delete Selected Workflows'}
+            </button>
+          </div>
+        )}
+
         {workflows.length === 0 ? (
           <div className="text-center py-12">
             <div className="w-16 h-16 rounded-full bg-surface-800 flex items-center justify-center mx-auto mb-4">
@@ -1272,7 +1386,16 @@ export function Workflows(): JSX.Element {
                     <WorkflowCard
                       key={workflow.id}
                       workflow={workflow}
-                      onClick={() => setSelectedWorkflow(workflow)}
+                      onClick={() => {
+                        if (isBulkSelectionMode) {
+                          toggleWorkflowSelection(workflow.id);
+                          return;
+                        }
+                        setSelectedWorkflow(workflow);
+                      }}
+                      isSelectable={isBulkSelectionMode}
+                      isSelected={selectedWorkflowIds.includes(workflow.id)}
+                      onToggleSelect={() => toggleWorkflowSelection(workflow.id)}
                     />
                   ))}
                 </div>
@@ -1290,7 +1413,16 @@ export function Workflows(): JSX.Element {
                     <WorkflowCard
                       key={workflow.id}
                       workflow={workflow}
-                      onClick={() => setSelectedWorkflow(workflow)}
+                      onClick={() => {
+                        if (isBulkSelectionMode) {
+                          toggleWorkflowSelection(workflow.id);
+                          return;
+                        }
+                        setSelectedWorkflow(workflow);
+                      }}
+                      isSelectable={isBulkSelectionMode}
+                      isSelected={selectedWorkflowIds.includes(workflow.id)}
+                      onToggleSelect={() => toggleWorkflowSelection(workflow.id)}
                     />
                   ))}
                 </div>
@@ -1301,7 +1433,7 @@ export function Workflows(): JSX.Element {
       </div>
 
       {/* Detail Panel */}
-      {selectedWorkflow && (
+      {selectedWorkflow && !isBulkSelectionMode && (
         <WorkflowDetail
           workflow={selectedWorkflow}
           onClose={() => setSelectedWorkflow(null)}
@@ -1335,17 +1467,37 @@ export function Workflows(): JSX.Element {
 function WorkflowCard({
   workflow,
   onClick,
+  isSelectable,
+  isSelected,
+  onToggleSelect,
 }: {
   workflow: Workflow;
   onClick: () => void;
+  isSelectable: boolean;
+  isSelected: boolean;
+  onToggleSelect: () => void;
 }): JSX.Element {
   return (
     <button
       onClick={onClick}
-      className="text-left p-4 bg-surface-900 border border-surface-800 rounded-xl hover:border-surface-700 transition-colors"
+      className={`text-left p-4 bg-surface-900 border rounded-xl hover:border-surface-700 transition-colors ${
+        isSelected ? 'border-red-500' : 'border-surface-800'
+      }`}
     >
       <div className="flex items-start justify-between mb-2">
-        <h3 className="font-medium text-surface-100 truncate flex-1">{workflow.name}</h3>
+        <div className="flex items-center gap-2 flex-1 min-w-0">
+          {isSelectable && (
+            <input
+              type="checkbox"
+              checked={isSelected}
+              onChange={onToggleSelect}
+              onClick={(event) => event.stopPropagation()}
+              className="h-4 w-4 rounded border-surface-600 bg-surface-800 text-red-500 focus:ring-red-500"
+              aria-label={`Select workflow ${workflow.name}`}
+            />
+          )}
+          <h3 className="font-medium text-surface-100 truncate flex-1">{workflow.name}</h3>
+        </div>
         <span className={`ml-2 w-2 h-2 rounded-full ${workflow.is_enabled ? 'bg-green-500' : 'bg-surface-600'}`} />
       </div>
       
