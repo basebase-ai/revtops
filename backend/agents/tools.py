@@ -1221,12 +1221,15 @@ async def _fetch_url_via_scrapingbee(
         )
 
         if response.status_code != 200:
+            detail: str = response.text[:500] if response.text else "no response body"
             logger.error(
                 "[Tools._fetch_url] ScrapingBee error: %s %s",
                 response.status_code,
-                response.text[:500],
+                detail,
             )
-            raise Exception(f"ScrapingBee returned status {response.status_code}")
+            raise Exception(
+                f"ScrapingBee returned status {response.status_code}: {detail}"
+            )
 
         return response.text
 

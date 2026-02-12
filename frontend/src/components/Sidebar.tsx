@@ -108,12 +108,12 @@ function OrgSwitcherSection({
         )}
         {!collapsed && hasMultipleOrgs && (
           <svg
-            className={`w-4 h-4 text-surface-400 transition-transform ${showDropdown ? 'rotate-180' : ''}`}
+            className={`w-4 h-4 text-surface-400 transition-transform ${showDropdown ? 'rotate-90' : ''}`}
             fill="none"
             viewBox="0 0 24 24"
             stroke="currentColor"
           >
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
           </svg>
         )}
       </button>

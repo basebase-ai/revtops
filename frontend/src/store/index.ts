@@ -54,6 +54,7 @@ export interface SyncStats {
   contacts?: number;
   activities?: number;
   pipelines?: number;
+  goals?: number;
   repositories?: number;
   commits?: number;
   pull_requests?: number;

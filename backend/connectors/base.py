@@ -125,6 +125,15 @@ class BaseConnector(ABC):
         """
         return 0
 
+    async def sync_goals(self) -> int:
+        """
+        Fetch and normalize goals/quotas/targets, return count synced.
+
+        Override in subclasses that support goals (HubSpot, Salesforce).
+        Default implementation returns 0.
+        """
+        return 0
+
     async def sync_all(self) -> dict[str, int]:
         """
         Run all sync operations.
@@ -145,6 +154,8 @@ class BaseConnector(ABC):
         await self.ensure_sync_active("sync_all:after_contacts")
         activities_count = await self.sync_activities()
         await self.ensure_sync_active("sync_all:after_activities")
+        goals_count = await self.sync_goals()
+        await self.ensure_sync_active("sync_all:after_goals")
 
         result: dict[str, int] = {
             "accounts": accounts_count,
@@ -156,6 +167,8 @@ class BaseConnector(ABC):
         # Only include pipelines if synced (not all connectors have them)
         if pipelines_count > 0:
             result["pipelines"] = pipelines_count
+        if goals_count > 0:
+            result["goals"] = goals_count
 
         return result
 

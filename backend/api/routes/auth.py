@@ -2046,6 +2046,7 @@ async def disconnect_integration(
         deleted_contacts: int = 0
         deleted_accounts: int = 0
         deleted_deals: int = 0
+        deleted_goals: int = 0
         deleted_pipelines: int = 0
         deleted_meetings: int = 0
         
@@ -2136,7 +2137,20 @@ async def disconnect_integration(
             deleted_accounts = len(result.fetchall())
             print(f"Disconnect: Deleted {deleted_accounts} accounts")
             
-            # 6. Delete pipelines (stages cascade via ON DELETE CASCADE)
+            # 6. Delete goals
+            result = await db_session.execute(
+                text("""
+                    DELETE FROM goals
+                    WHERE organization_id = :org_id
+                      AND source_system = :source_system
+                    RETURNING id
+                """),
+                params,
+            )
+            deleted_goals = len(result.fetchall())
+            print(f"Disconnect: Deleted {deleted_goals} goals")
+            
+            # 7. Delete pipelines (stages cascade via ON DELETE CASCADE)
             result = await db_session.execute(
                 text("""
                     DELETE FROM pipelines
@@ -2149,7 +2163,7 @@ async def disconnect_integration(
             deleted_pipelines = len(result.fetchall())
             print(f"Disconnect: Deleted {deleted_pipelines} pipelines")
             
-            # 7. Clean up orphaned meetings (meetings with no linked activities)
+            # 8. Clean up orphaned meetings (meetings with no linked activities)
             result = await db_session.execute(
                 text("""
                     DELETE FROM meetings
@@ -2176,6 +2190,7 @@ async def disconnect_integration(
         response["deleted_contacts"] = deleted_contacts
         response["deleted_accounts"] = deleted_accounts
         response["deleted_deals"] = deleted_deals
+        response["deleted_goals"] = deleted_goals
         response["deleted_pipelines"] = deleted_pipelines
         response["deleted_meetings"] = deleted_meetings
     return response

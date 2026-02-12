@@ -22,6 +22,7 @@ from models.slack_user_mapping import SlackUserMapping
 from models.shared_file import SharedFile
 from models.user_memory import UserMemory
 from models.organization_membership import OrganizationMembership
+from models.goal import Goal
 
 __all__ = [
     "Base",
@@ -52,4 +53,5 @@ __all__ = [
     "SharedFile",
     "UserMemory",
     "OrganizationMembership",
+    "Goal",
 ]

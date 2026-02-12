@@ -26,6 +26,7 @@ from models.activity import Activity
 from models.contact import Contact
 from models.database import get_session
 from models.deal import Deal
+from models.goal import Goal
 from models.pipeline import Pipeline, PipelineStage
 from models.slack_user_mapping import SlackUserMapping
 from models.user import User
@@ -893,6 +894,127 @@ class HubSpotConnector(BaseConnector):
             description=description,
             activity_date=activity_date,
         )
+
+    async def sync_goals(self) -> int:
+        """Sync goals/quotas/targets from HubSpot."""
+        await broadcast_sync_progress(
+            organization_id=self.organization_id,
+            provider=self.source_system,
+            count=0,
+            status="syncing",
+            step="fetching goals",
+        )
+
+        properties: list[str] = [
+            "hs_goal_name",
+            "hs_target_amount",
+            "hs_start_datetime",
+            "hs_end_datetime",
+            "hs_created_by_user_id",
+        ]
+
+        try:
+            raw_goals: list[dict[str, Any]] = await self._paginate_results(
+                "/crm/v3/objects/goal_targets", properties=properties
+            )
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 403:
+                print("[HubSpot] WARNING: No permission to fetch goals (requires crm.objects.goals.read scope), skipping")
+                return 0
+            raise
+
+        if not raw_goals:
+            print("[HubSpot] No goals found")
+            return 0
+
+        # Build existing source_id -> UUID map
+        existing_map: dict[str, uuid.UUID] = {}
+        async with get_session(organization_id=self.organization_id) as session:
+            result = await session.execute(
+                select(Goal.source_id, Goal.id).where(
+                    Goal.organization_id == uuid.UUID(self.organization_id),
+                    Goal.source_system == self.source_system,
+                )
+            )
+            for row in result.all():
+                existing_map[row[0]] = row[1]
+        print(f"[HubSpot] Pre-loaded {len(existing_map)} existing goal IDs")
+
+        # Build row dicts
+        org_uuid: uuid.UUID = uuid.UUID(self.organization_id)
+        rows: list[dict[str, Any]] = []
+        for raw_goal in raw_goals:
+            hs_id: str = raw_goal.get("id", "")
+            props: dict[str, Any] = raw_goal.get("properties", {})
+
+            # Parse dates
+            start_date: Optional[datetime] = None
+            end_date: Optional[datetime] = None
+            if props.get("hs_start_datetime"):
+                try:
+                    start_date = datetime.fromisoformat(
+                        props["hs_start_datetime"].replace("Z", "+00:00")
+                    ).date()
+                except (ValueError, TypeError):
+                    pass
+            if props.get("hs_end_datetime"):
+                try:
+                    end_date = datetime.fromisoformat(
+                        props["hs_end_datetime"].replace("Z", "+00:00")
+                    ).date()
+                except (ValueError, TypeError):
+                    pass
+
+            # Parse target amount
+            target_amount: Optional[Decimal] = None
+            if props.get("hs_target_amount"):
+                try:
+                    target_amount = Decimal(str(props["hs_target_amount"]))
+                except Exception:
+                    pass
+
+            goal_name: str = props.get("hs_goal_name") or f"Goal {hs_id}"
+
+            rows.append({
+                "id": existing_map.get(hs_id, uuid.uuid4()),
+                "organization_id": org_uuid,
+                "source_system": self.source_system,
+                "source_id": hs_id,
+                "name": goal_name[:255],
+                "target_amount": target_amount,
+                "start_date": start_date,
+                "end_date": end_date,
+                "synced_at": datetime.utcnow(),
+                "sync_status": "synced",
+            })
+
+        # Bulk upsert in batches
+        BATCH_SIZE: int = 500
+        update_cols: list[str] = [
+            "name", "target_amount", "start_date", "end_date", "synced_at",
+        ]
+        async with get_session(organization_id=self.organization_id) as session:
+            for i in range(0, len(rows), BATCH_SIZE):
+                batch: list[dict[str, Any]] = rows[i : i + BATCH_SIZE]
+                stmt = pg_insert(Goal).values(batch)
+                stmt = stmt.on_conflict_do_update(
+                    index_elements=["id"],
+                    set_={col: stmt.excluded[col] for col in update_cols},
+                )
+                await session.execute(stmt)
+                await session.commit()
+                count: int = i + len(batch)
+                await broadcast_sync_progress(
+                    organization_id=self.organization_id,
+                    provider=self.source_system,
+                    count=count,
+                    status="syncing",
+                    step="goals",
+                )
+                print(f"[HubSpot] Goals: {count}/{len(rows)}")
+        print(f"[HubSpot] Committed {len(rows)} goals")
+
+        return len(rows)
 
     async def _ensure_identity_mapping(
         self,
