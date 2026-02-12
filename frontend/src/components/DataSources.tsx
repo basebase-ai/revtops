@@ -104,6 +104,8 @@ const INTEGRATION_CONFIG: Record<string, { name: string; description: string; ic
   github: { name: 'GitHub', description: 'Track repos, commits, and pull requests by team', icon: 'github', color: 'from-gray-600 to-gray-700' },
 };
 
+const SUPPORTED_PROVIDERS = new Set(Object.keys(INTEGRATION_CONFIG));
+
 // Extended integration type with display info
 interface DisplayIntegration extends Integration {
   name: string;
@@ -423,14 +425,18 @@ export function DataSources(): JSX.Element {
   // Filter out raw "microsoft" integration - it's a meta-integration from Nango's OAuth.
   // The actual data sources are microsoft_calendar and microsoft_mail.
   const integrations: DisplayIntegration[] = rawIntegrations
-    .filter((integration) => integration.provider !== 'microsoft')
+    .filter((integration) => {
+      if (integration.provider === 'microsoft') {
+        return false;
+      }
+      if (!SUPPORTED_PROVIDERS.has(integration.provider)) {
+        console.warn('[DataSources] Hiding unsupported integration provider from UI:', integration.provider);
+        return false;
+      }
+      return true;
+    })
     .map((integration) => {
-      const config = INTEGRATION_CONFIG[integration.provider] ?? {
-        name: integration.provider,
-        description: 'Data source',
-        icon: integration.provider,
-        color: 'from-surface-500 to-surface-600',
-      };
+      const config = INTEGRATION_CONFIG[integration.provider]!;
       return {
         ...integration,
         ...config,
