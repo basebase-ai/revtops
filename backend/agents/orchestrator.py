@@ -735,14 +735,14 @@ WHERE scheduled_start >= '2026-01-27'::date AND scheduled_start < '2026-01-28'::
                 system_prompt += memory_context
         workflow_id: str | None = (self.workflow_context or {}).get("workflow_id")
         if workflow_id and self.organization_id:
-            system_prompt += "\n\n## Workflow Memory Rules\nIn workflow executions, NEVER use save_memory. Use keep_notes for workflow-scoped notes."
+            system_prompt += "\n\n## Workflow Memory Rules\nIn workflow executions, NEVER use save_memory. Use keep_notes for workflow-scoped notes. The canonical persistence field for workflow execution notes/state is workflow_runs.workflow_notes."
             workflow_notes = await self._load_workflow_notes(workflow_id)
             if workflow_notes:
                 notes_context = "\n\n## Workflow Notes\n"
                 notes_context += "These are notes saved by prior runs of this workflow. Use them as workflow memory.\n\n"
                 for note in workflow_notes:
                     notes_context += f"- {note}\n"
-                notes_context += "\nWhen a run needs to persist new workflow-scoped context, use keep_notes."
+                notes_context += "\nWhen a run needs to persist new workflow-scoped context, use keep_notes so it is stored on workflow_runs.workflow_notes for future runs of this workflow."
                 system_prompt += notes_context
 
 
