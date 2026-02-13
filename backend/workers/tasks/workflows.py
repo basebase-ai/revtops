@@ -185,7 +185,8 @@ def format_child_workflows_for_prompt(child_workflows: list[dict[str, Any]]) -> 
     lines: list[str] = [
         (
             "Available child workflows (optional, only use run_workflow or "
-            "loop_over when explicitly requested):"
+            "loop_over when explicitly requested; for small prompts or brief "
+            "tasks, prefer completing the work directly in this workflow):"
         ),
         "",
     ]

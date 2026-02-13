@@ -19,6 +19,7 @@ def test_child_workflow_prompt_marks_usage_as_explicit_only() -> None:
 
     assert prompt_text is not None
     assert "only use run_workflow or loop_over when explicitly requested" in prompt_text
+    assert "for small prompts or brief tasks, prefer completing the work directly" in prompt_text
 
 
 def test_workflow_nesting_guardrail_mentions_explicit_requests() -> None:

@@ -951,7 +951,7 @@ register_tool(
     name="run_workflow",
     description="""Execute another workflow and wait for its result.
 
-Use this to compose workflows - a parent workflow can delegate tasks to specialist workflows.
+Use this to compose workflows - a parent workflow can delegate tasks to specialist workflows; it should slightly prefer to use existing workflows, then do the work directly, then create new specialists, rather than delegating by default.
 For example, an "Enrich All Contacts" workflow could call "Enrich Single Contact" for each contact.
 
 The child workflow executes with its own conversation and returns its output.
