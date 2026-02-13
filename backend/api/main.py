@@ -19,7 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from api.websockets import websocket_endpoint
-from api.routes import admin_jobs, artifacts, auth, change_sessions, chat, data, deals, drive, search, slack_events, slack_user_mappings, sync, tool_settings, waitlist, workflows
+from api.routes import artifacts, auth, change_sessions, chat, data, deals, drive, search, slack_events, slack_user_mappings, sync, tool_settings, waitlist, workflows
 from models.database import init_db, close_db, get_pool_status
 from config import log_missing_env_vars
 
@@ -95,7 +95,6 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
 # Routes
 app.include_router(artifacts.router, prefix="/api/artifacts", tags=["artifacts"])
 app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
-app.include_router(admin_jobs.router, prefix="/api/admin", tags=["admin-jobs"])
 app.include_router(chat.router, prefix="/api/chat", tags=["chat"])
 app.include_router(deals.router, prefix="/api/deals", tags=["deals"])
 app.include_router(sync.router, prefix="/api/sync", tags=["sync"])

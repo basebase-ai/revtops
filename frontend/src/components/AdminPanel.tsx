@@ -10,7 +10,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { API_BASE } from '../lib/api';
 import { useAppStore, type UserProfile, type OrganizationInfo } from '../store';
 
-type AdminTab = 'waitlist' | 'users' | 'organizations' | 'sources' | 'jobs';
+type AdminTab = 'waitlist' | 'users' | 'organizations' | 'sources';
 
 interface WaitlistEntry {
   id: string;
@@ -62,21 +62,6 @@ interface AdminIntegration {
   created_at: string | null;
 }
 
-interface AdminJob {
-  id: string;
-  job_type: 'workflow' | 'sync' | 'chat';
-  status: 'active' | 'reserved' | 'scheduled' | 'running';
-  task_name: string;
-  organization_id: string | null;
-  workflow_id: string | null;
-  conversation_id: string | null;
-  user_id: string | null;
-  worker: string | null;
-  started_at: string | null;
-  eta: string | null;
-  summary: string | null;
-}
-
 export function AdminPanel(): JSX.Element {
   const user = useAppStore((state) => state.user);
   const startMasquerade = useAppStore((state) => state.startMasquerade);
@@ -106,12 +91,6 @@ export function AdminPanel(): JSX.Element {
   const [integrationsLoading, setIntegrationsLoading] = useState<boolean>(true);
   const [integrationsError, setIntegrationsError] = useState<string | null>(null);
   const [sourceSearch, setSourceSearch] = useState<string>('');
-
-  // Jobs tab state
-  const [adminJobs, setAdminJobs] = useState<AdminJob[]>([]);
-  const [jobsLoading, setJobsLoading] = useState<boolean>(true);
-  const [jobsError, setJobsError] = useState<string | null>(null);
-  const [cancellingJob, setCancellingJob] = useState<string | null>(null);
 
   // Global sync state
   const [syncing, setSyncing] = useState<boolean>(false);
@@ -241,37 +220,6 @@ export function AdminPanel(): JSX.Element {
     }
   }, [user]);
 
-  const fetchJobs = useCallback(async (): Promise<void> => {
-    if (!user) return;
-
-    setJobsLoading(true);
-    setJobsError(null);
-
-    try {
-      const response = await fetch(
-        `${API_BASE}/admin/jobs?user_id=${user.id}`
-      );
-
-      if (!response.ok) {
-        if (response.status === 403) {
-          setJobsError('Access denied. You need global_admin role.');
-        } else {
-          setJobsError('Failed to fetch running jobs');
-        }
-        setAdminJobs([]);
-        return;
-      }
-
-      const data = await response.json() as { jobs: AdminJob[]; total: number };
-      setAdminJobs(data.jobs);
-    } catch (_err) {
-      setJobsError('Failed to connect to server');
-      setAdminJobs([]);
-    } finally {
-      setJobsLoading(false);
-    }
-  }, [user]);
-
   useEffect(() => {
     if (activeTab === 'waitlist') {
       void fetchWaitlist();
@@ -281,34 +229,8 @@ export function AdminPanel(): JSX.Element {
       void fetchOrganizations();
     } else if (activeTab === 'sources') {
       void fetchIntegrations();
-    } else if (activeTab === 'jobs') {
-      void fetchJobs();
     }
-  }, [activeTab, fetchWaitlist, fetchUsers, fetchOrganizations, fetchIntegrations, fetchJobs]);
-
-  const handleCancelJob = async (job: AdminJob): Promise<void> => {
-    if (!user) return;
-
-    setCancellingJob(job.id);
-    try {
-      const response = await fetch(
-        `${API_BASE}/admin/jobs/${job.job_type}/${job.id}/cancel?user_id=${user.id}`,
-        { method: 'POST' }
-      );
-
-      if (!response.ok) {
-        const data = await response.json() as { detail?: string };
-        throw new Error(data.detail ?? 'Failed to cancel job');
-      }
-
-      await fetchJobs();
-    } catch (err) {
-      console.error('Failed to cancel job:', err);
-      alert('Failed to cancel job: ' + (err instanceof Error ? err.message : 'Unknown error'));
-    } finally {
-      setCancellingJob(null);
-    }
-  };
+  }, [activeTab, fetchWaitlist, fetchUsers, fetchOrganizations, fetchIntegrations]);
 
   const handleInvite = async (targetUserId: string): Promise<void> => {
     if (!user) return;
@@ -451,14 +373,7 @@ export function AdminPanel(): JSX.Element {
     { id: 'users', label: 'Users', available: true },
     { id: 'organizations', label: 'Organizations', available: true },
     { id: 'sources', label: 'Sources', available: true },
-    { id: 'jobs', label: 'Jobs', available: true },
   ];
-
-  const jobTypeLabel: Record<AdminJob['job_type'], string> = {
-    workflow: 'Workflow',
-    sync: 'Connector Sync',
-    chat: 'Chat',
-  };
 
   // Filter users by search term (in-memory)
   const filteredUsers = adminUsers.filter((u) => {
@@ -1077,102 +992,6 @@ export function AdminPanel(): JSX.Element {
                 Showing {filteredIntegrations.length} of {adminIntegrations.length} data sources
                 {sourceSearch && ` matching "${sourceSearch}"`}
               </div>
-            )}
-          </div>
-        )}
-
-        {/* Jobs Tab Content */}
-        {activeTab === 'jobs' && (
-          <div className="space-y-6">
-            <div className="flex items-center justify-between gap-4">
-              <div>
-                <h2 className="text-lg font-semibold text-surface-100">Running Jobs</h2>
-                <p className="text-sm text-surface-400">Workflows, chats, and connector syncs currently in flight.</p>
-              </div>
-              <button
-                onClick={() => void fetchJobs()}
-                disabled={jobsLoading}
-                className="px-4 py-2 rounded-lg bg-surface-800 border border-surface-700 text-surface-300 hover:bg-surface-700 transition-colors disabled:opacity-50 flex items-center gap-2"
-              >
-                <svg className={`w-4 h-4 ${jobsLoading ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                </svg>
-                Refresh
-              </button>
-            </div>
-
-            {jobsError && (
-              <div className="p-4 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400">
-                {jobsError}
-              </div>
-            )}
-
-            {jobsLoading && (
-              <div className="text-center py-12 text-surface-400">
-                <div className="w-8 h-8 border-2 border-primary-500 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
-                Loading running jobs...
-              </div>
-            )}
-
-            {!jobsLoading && !jobsError && adminJobs.length === 0 && (
-              <div className="text-center py-12 text-surface-400">No running jobs found.</div>
-            )}
-
-            {!jobsLoading && !jobsError && adminJobs.length > 0 && (
-              <div className="bg-surface-900 rounded-xl border border-surface-800 overflow-hidden">
-                <table className="w-full">
-                  <thead>
-                    <tr className="border-b border-surface-800 text-left">
-                      <th className="px-4 py-3 text-sm font-medium text-surface-400">Type</th>
-                      <th className="px-4 py-3 text-sm font-medium text-surface-400">Status</th>
-                      <th className="px-4 py-3 text-sm font-medium text-surface-400">Task</th>
-                      <th className="px-4 py-3 text-sm font-medium text-surface-400">Worker / Org</th>
-                      <th className="px-4 py-3 text-sm font-medium text-surface-400">Started / ETA</th>
-                      <th className="px-4 py-3 text-sm font-medium text-surface-400">Action</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-surface-800">
-                    {adminJobs.map((job) => (
-                      <tr key={`${job.job_type}:${job.id}`} className="hover:bg-surface-800/50 align-top">
-                        <td className="px-4 py-3 text-surface-100">{jobTypeLabel[job.job_type]}</td>
-                        <td className="px-4 py-3">
-                          <span className="px-2 py-0.5 rounded-full text-xs border bg-blue-500/10 text-blue-300 border-blue-500/30">
-                            {job.status}
-                          </span>
-                        </td>
-                        <td className="px-4 py-3 text-xs text-surface-300">
-                          <div className="font-mono text-surface-200">{job.id}</div>
-                          <div className="text-surface-500">{job.task_name}</div>
-                          {job.summary && <div className="text-surface-500 mt-1 truncate max-w-[360px]" title={job.summary}>{job.summary}</div>}
-                        </td>
-                        <td className="px-4 py-3 text-xs text-surface-300">
-                          <div>Worker: {job.worker ?? '—'}</div>
-                          <div>Org: {job.organization_id ?? '—'}</div>
-                          {job.workflow_id && <div>Workflow: {job.workflow_id}</div>}
-                          {job.conversation_id && <div>Conversation: {job.conversation_id}</div>}
-                        </td>
-                        <td className="px-4 py-3 text-xs text-surface-300">
-                          <div>Started: {formatDate(job.started_at)}</div>
-                          <div>ETA: {formatDate(job.eta)}</div>
-                        </td>
-                        <td className="px-4 py-3">
-                          <button
-                            onClick={() => void handleCancelJob(job)}
-                            disabled={cancellingJob === job.id}
-                            className="px-3 py-1.5 rounded-lg bg-red-500/20 border border-red-500/30 text-red-300 hover:bg-red-500/30 transition-colors disabled:opacity-50"
-                          >
-                            {cancellingJob === job.id ? 'Cancelling...' : 'Cancel'}
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-
-            {!jobsLoading && !jobsError && (
-              <div className="text-sm text-surface-500 text-center">Showing {adminJobs.length} running job(s)</div>
             )}
           </div>
         )}
