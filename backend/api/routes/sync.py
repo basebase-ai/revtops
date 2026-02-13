@@ -194,6 +194,43 @@ def _parse_celery_args(args: Any) -> list[Any]:
     return []
 
 
+def _parse_celery_kwargs(kwargs: Any) -> dict[str, Any]:
+    """Normalize Celery active-task kwargs into a dict."""
+    if isinstance(kwargs, dict):
+        return kwargs
+    if isinstance(kwargs, str):
+        kwargs = kwargs.strip()
+        if not kwargs:
+            return {}
+        try:
+            parsed = ast.literal_eval(kwargs)
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+def _is_trackable_admin_task(task_name: str) -> bool:
+    """Whether a Celery task should appear in the admin running-jobs pane."""
+    if task_name.startswith("workers.tasks.sync"):
+        return True
+    # Be defensive: workers can expose full dotted paths depending on import wiring.
+    return task_name == "workers.tasks.workflows.execute_workflow" or task_name.endswith(".workflows.execute_workflow")
+
+
+def _extract_workflow_task_org_id(args: list[Any], kwargs: dict[str, Any]) -> str | None:
+    """Extract workflow organization_id from kwargs-first, then legacy positional args."""
+    org_id = kwargs.get("organization_id")
+    if org_id:
+        return str(org_id)
+    if len(args) >= 5 and args[4] is not None:
+        return str(args[4])
+    if len(args) >= 1 and isinstance(args[-1], str):
+        # Best-effort fallback for older/variant signatures.
+        return str(args[-1])
+    return None
+
+
 @router.get("/admin/integrations", response_model=AdminIntegrationsResponse)
 async def list_admin_integrations(user_id: str) -> AdminIntegrationsResponse:
     """
@@ -339,21 +376,30 @@ async def list_admin_running_jobs(user_id: str) -> AdminRunningJobsResponse:
 
     for worker_name, active_tasks in active_by_worker.items():
         for task in active_tasks:
-            task_name = task.get("name", "")
-            if not task_name.startswith("workers.tasks.sync") and task_name != "workers.tasks.workflows.execute_workflow":
+            task_name = str(task.get("name", ""))
+            if not _is_trackable_admin_task(task_name):
                 continue
 
             task_id = str(task.get("id"))
             args = _parse_celery_args(task.get("args"))
-            task_type = "workflow" if task_name == "workers.tasks.workflows.execute_workflow" else "connector_sync"
-            org_id = str(args[-1]) if task_type == "workflow" and len(args) >= 5 else (str(args[0]) if args else None)
+            kwargs = _parse_celery_kwargs(task.get("kwargs"))
+            is_workflow_task = task_name == "workers.tasks.workflows.execute_workflow" or task_name.endswith(".workflows.execute_workflow")
+            task_type = "workflow" if is_workflow_task else "connector_sync"
+
+            if task_type == "workflow":
+                org_id = _extract_workflow_task_org_id(args, kwargs)
+            else:
+                org_id = str(args[0]) if args else None
+
             org_name = org_name_by_id.get(org_id) if org_id else None
             provider = str(args[1]) if task_type == "connector_sync" and len(args) > 1 else None
 
+            workflow_id = str(kwargs.get("workflow_id")) if kwargs.get("workflow_id") is not None else (str(args[0]) if args else None)
+
             title = "Workflow execution" if task_type == "workflow" else f"{provider or 'connector'} sync"
             description = f"Running on worker {worker_name}"
-            if task_type == "workflow" and args:
-                description = f"Workflow {args[0]} running on worker {worker_name}"
+            if task_type == "workflow" and workflow_id:
+                description = f"Workflow {workflow_id} running on worker {worker_name}"
 
             jobs.append(
                 AdminRunningJob(
@@ -369,6 +415,7 @@ async def list_admin_running_jobs(user_id: str) -> AdminRunningJobsResponse:
                         "task_name": task_name,
                         "worker": worker_name,
                         "args": [str(arg) for arg in args],
+                        "kwargs": {k: str(v) for k, v in kwargs.items()},
                     },
                 )
             )
