@@ -303,7 +303,7 @@ async def apply_user_auto_approve_permissions(
     auto_approve_tools: list[str],
 ) -> list[str]:
     """Restrict workflow auto-approve tools to explicit per-user permissions."""
-    tools_requiring_explicit_permissions = {"github_issues_access", "save_memory"}
+    tools_requiring_explicit_permissions = {"write_to_system_of_record", "save_memory"}
     restricted_tools = [tool for tool in auto_approve_tools if tool in tools_requiring_explicit_permissions]
     if not restricted_tools:
         return auto_approve_tools

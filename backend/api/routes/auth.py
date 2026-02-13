@@ -1363,6 +1363,7 @@ async def get_available_integrations() -> AvailableIntegrationsResponse:
             {"id": "apollo", "name": "Apollo.io", "description": "Data enrichment - Update contact job titles, companies, emails"},
             {"id": "github", "name": "GitHub", "description": "Track repos, commits, and pull requests by team"},
             {"id": "linear", "name": "Linear", "description": "Issue tracking - sync and manage teams, projects, and issues"},
+            {"id": "asana", "name": "Asana", "description": "Project management - sync and manage teams, projects, and tasks"},
         ]
     )
 
@@ -2343,6 +2344,7 @@ async def run_initial_sync(
     from connectors.zoom import ZoomConnector
     from connectors.github import GitHubConnector
     from connectors.linear import LinearConnector
+    from connectors.asana import AsanaConnector
 
     # Google Drive uses a different sync pattern (not BaseConnector)
     if provider == "google_drive":
@@ -2361,6 +2363,7 @@ async def run_initial_sync(
         "zoom": ZoomConnector,
         "github": GitHubConnector,
         "linear": LinearConnector,
+        "asana": AsanaConnector,
     }
 
     connector_class = connectors.get(provider)

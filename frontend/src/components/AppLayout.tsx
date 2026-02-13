@@ -514,7 +514,7 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
               
               // If CRM write tool completed, notify PendingChangesBar to refresh
               const toolName = data.tool_name as string | undefined;
-              if (toolName === 'crm_write' || toolName === 'run_sql_write') {
+              if (toolName === 'write_to_system_of_record' || toolName === 'run_sql_write') {
                 window.dispatchEvent(new Event('pending-changes-updated'));
               }
             } else if (data.type === 'text_block_complete') {
@@ -707,13 +707,15 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
   }, [addConversationMessage, handleWebSocketMessage, setConversationThinking]);
 
   // Global WebSocket connection - authenticated via JWT token
+  // reconnectKey = org ID so the socket reconnects when the user switches organizations
   const { sendJson, isConnected, connectionState } = useWebSocket(
     user ? '/ws/chat' : '',
     {
       onMessage: (message) => handleWebSocketMessage(message, 'ws'),
       onConnect: () => console.log('[AppLayout] WebSocket connected'),
       onDisconnect: () => console.log('[AppLayout] WebSocket disconnected'),
-    }
+    },
+    organization?.id ?? '',
   );
 
   // Fetch conversations on mount

@@ -30,6 +30,7 @@ from connectors.salesforce import SalesforceConnector
 from connectors.slack import SlackConnector
 from connectors.zoom import ZoomConnector
 from connectors.linear import LinearConnector
+from connectors.asana import AsanaConnector
 from models.database import get_session
 from models.integration import Integration
 from models.organization import Organization
@@ -52,6 +53,7 @@ CONNECTORS = {
     "zoom": ZoomConnector,
     "github": GitHubConnector,
     "linear": LinearConnector,
+    "asana": AsanaConnector,
 }
 
 # Simple in-memory sync status tracking (use Redis in production)

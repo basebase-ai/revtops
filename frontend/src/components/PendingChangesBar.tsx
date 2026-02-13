@@ -80,7 +80,7 @@ export function PendingChangesBar({ organizationId, userId, onChangesResolved }:
   useEffect(() => {
     void fetchPendingChanges();
     
-    // Listen for updates from WebSocket (e.g., when crm_write tool completes)
+    // Listen for updates from WebSocket (e.g., when write_to_system_of_record tool completes)
     const handleUpdate = (): void => {
       void fetchPendingChanges();
     };
