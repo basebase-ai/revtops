@@ -37,6 +37,11 @@ WORKFLOW_NESTING_GUARDRAIL = (
 )
 
 
+def build_user_visible_workflow_prompt(full_prompt: str) -> str:
+    """Remove internal execution-only instructions from the prompt shown in UI."""
+    return full_prompt.replace(f"\n\n{WORKFLOW_NESTING_GUARDRAIL}", "", 1)
+
+
 # =============================================================================
 # Schema Validation and Parameter Formatting
 # =============================================================================
@@ -824,10 +829,14 @@ async def _execute_workflow_via_agent(
         source="workflow",
     )
     
+    # Persist a user-visible prompt without execution-only system guardrails.
+    user_visible_prompt = build_user_visible_workflow_prompt(prompt)
+    await orchestrator._save_user_message(user_visible_prompt)
+
     # Process the prompt (this streams through the agent)
     # Since we're in a background worker, we consume the generator fully
     response_text = ""
-    async for chunk in orchestrator.process_message(prompt, save_user_message=True):
+    async for chunk in orchestrator.process_message(prompt, save_user_message=False):
         # Collect text chunks (JSON chunks are tool events)
         if not chunk.startswith("{"):
             response_text += chunk
