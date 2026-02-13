@@ -63,7 +63,7 @@ def test_workflow_auto_approve_strips_save_memory() -> None:
     assert effective == ["send_slack"]
 
 
-def test_apply_user_permissions_removes_restricted_tools_without_explicit_allow() -> None:
+def test_apply_user_permissions_removes_only_github_without_explicit_allow() -> None:
     session = _FakeSession(allowed_tools=[])
 
     async def _run() -> list[str]:
@@ -74,11 +74,11 @@ def test_apply_user_permissions_removes_restricted_tools_without_explicit_allow(
         )
 
     effective = asyncio.run(_run())
-    assert effective == ["send_slack"]
+    assert effective == ["keep_notes", "send_slack"]
 
 
-def test_apply_user_permissions_keeps_explicitly_allowed_restricted_tools() -> None:
-    session = _FakeSession(allowed_tools=["keep_notes", "github_issues_access"])
+def test_apply_user_permissions_keeps_explicitly_allowed_github_tool() -> None:
+    session = _FakeSession(allowed_tools=["github_issues_access"])
 
     async def _run() -> list[str]:
         return await apply_user_auto_approve_permissions(

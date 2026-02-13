@@ -148,9 +148,10 @@ ALLOWED_TABLES: set[str] = {
 }
 
 
-def get_tools() -> list[dict[str, Any]]:
+def get_tools(context: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     """Return tool definitions for Claude from the unified registry."""
-    return get_tools_for_claude()
+    in_workflow = bool((context or {}).get("is_workflow"))
+    return get_tools_for_claude(in_workflow=in_workflow)
 
 
 async def _should_skip_approval(

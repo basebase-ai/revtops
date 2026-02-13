@@ -809,7 +809,7 @@ WHERE scheduled_start >= '2026-01-27'::date AND scheduled_start < '2026-01-28'::
                         model="claude-sonnet-4-20250514",
                         max_tokens=16384,
                         system=system_prompt,
-                        tools=get_tools(),
+                        tools=get_tools(self.workflow_context),
                         messages=messages,
                     ) as stream:
                         async for event in stream:
