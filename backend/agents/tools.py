@@ -13,6 +13,7 @@ EXTERNAL_WRITE tools require user approval by default (can be overridden in sett
 import json
 import logging
 import re
+from collections.abc import Awaitable, Callable
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Any
@@ -229,142 +230,104 @@ async def execute_tool(
         logger.warning("[Tools] No organization_id - returning error")
         return {"error": "No organization associated with user. Please complete onboarding."}
     
+    normalized_tool_name = tool_name
+    if tool_name == "create_github_issue":
+        logger.warning("[Tools] create_github_issue is deprecated, remapping to github_issues_access")
+        normalized_tool_name = "github_issues_access"
+
     # Check if this tool should bypass approval (for auto-approved workflows)
     skip_approval = await _should_skip_approval(tool_name, user_id, context)
-    
-    if tool_name == "run_sql_query":
-        result = await _run_sql_query(tool_input, organization_id, user_id)
-        logger.info("[Tools] run_sql_query returned %d rows", result.get("row_count", 0))
-        return result
 
-    elif tool_name == "run_sql_write":
-        result = await _run_sql_write(tool_input, organization_id, user_id, context)
-        logger.info("[Tools] run_sql_write completed: %s", result)
-        return result
+    if normalized_tool_name == "save_memory" and context and context.get("is_workflow"):
+        logger.info("[Tools] Blocking save_memory during workflow execution; use keep_notes instead")
+        return {"error": "save_memory is not available in workflows. Use keep_notes for workflow-scoped notes."}
 
-    elif tool_name == "search_activities":
-        result = await _search_activities(tool_input, organization_id, user_id)
-        logger.info("[Tools] search_activities returned %d results", len(result.get("results", [])))
-        return result
+    conversation_id: str | None = (context or {}).get("conversation_id")
+    tool_handlers: dict[str, Callable[[], Awaitable[dict[str, Any]]]] = {
+        "run_sql_query": lambda: _run_sql_query(tool_input, organization_id, user_id),
+        "run_sql_write": lambda: _run_sql_write(tool_input, organization_id, user_id, context),
+        "search_activities": lambda: _search_activities(tool_input, organization_id, user_id),
+        "web_search": lambda: _web_search(tool_input),
+        "trigger_workflow": lambda: _trigger_workflow(tool_input, organization_id),
+        "run_workflow": lambda: _run_workflow(tool_input, organization_id, user_id, context),
+        "loop_over": lambda: _loop_over(tool_input, organization_id, user_id, context),
+        "fetch_url": lambda: _fetch_url(tool_input),
+        "enrich_contacts_with_apollo": lambda: _enrich_contacts_with_apollo(tool_input, organization_id),
+        "enrich_company_with_apollo": lambda: _enrich_company_with_apollo(tool_input, organization_id),
+        "crm_write": lambda: _crm_write(
+            tool_input,
+            organization_id,
+            user_id,
+            skip_approval,
+            conversation_id=conversation_id,
+        ),
+        "send_email_from": lambda: _send_email_from(tool_input, organization_id, user_id, skip_approval),
+        "send_slack": lambda: _send_slack(tool_input, organization_id, user_id, skip_approval),
+        "github_issues_access": lambda: _github_issues_access(tool_input, organization_id, user_id, skip_approval),
+        "trigger_sync": lambda: _trigger_sync(tool_input, organization_id),
+        "search_cloud_files": lambda: _search_cloud_files(tool_input, organization_id, user_id),
+        "read_cloud_file": lambda: _read_cloud_file(tool_input, organization_id, user_id),
+        "create_artifact": lambda: _create_artifact(tool_input, organization_id, user_id, context),
+        "keep_notes": lambda: _keep_notes(tool_input, organization_id, user_id, context, skip_approval),
+        "save_memory": lambda: _save_memory(tool_input, organization_id, user_id, skip_approval),
+        "delete_memory": lambda: _delete_memory(tool_input, organization_id, user_id),
+        "create_linear_issue": lambda: _create_linear_issue(tool_input, organization_id, user_id, skip_approval),
+        "update_linear_issue": lambda: _update_linear_issue(tool_input, organization_id, user_id, skip_approval),
+        "search_linear_issues": lambda: _search_linear_issues(tool_input, organization_id),
+    }
 
-    elif tool_name == "web_search":
-        result = await _web_search(tool_input)
-        logger.info("[Tools] web_search completed")
-        return result
-
-    elif tool_name == "trigger_workflow":
-        result = await _trigger_workflow(tool_input, organization_id)
-        logger.info("[Tools] trigger_workflow completed: %s", result)
-        return result
-
-    elif tool_name == "run_workflow":
-        result = await _run_workflow(tool_input, organization_id, user_id, context)
-        logger.info("[Tools] run_workflow completed: %s", result.get("status"))
-        return result
-
-    elif tool_name == "loop_over":
-        result = await _loop_over(tool_input, organization_id, user_id, context)
-        logger.info("[Tools] loop_over completed: %d/%d successful", result.get("succeeded", 0), result.get("total", 0))
-        return result
-
-    elif tool_name == "fetch_url":
-        result = await _fetch_url(tool_input)
-        logger.info("[Tools] fetch_url completed: %s", result.get("url"))
-        return result
-
-    elif tool_name == "enrich_contacts_with_apollo":
-        result = await _enrich_contacts_with_apollo(tool_input, organization_id)
-        logger.info("[Tools] enrich_contacts_with_apollo completed: %d results", len(result.get("enriched", [])))
-        return result
-
-    elif tool_name == "enrich_company_with_apollo":
-        result = await _enrich_company_with_apollo(tool_input, organization_id)
-        logger.info("[Tools] enrich_company_with_apollo completed")
-        return result
-
-    elif tool_name == "crm_write":
-        conversation_id: str | None = (context or {}).get("conversation_id")
-        result = await _crm_write(tool_input, organization_id, user_id, skip_approval, conversation_id=conversation_id)
-        logger.info("[Tools] crm_write completed: %s", result.get("status", result.get("error", "unknown")))
-        return result
-
-    elif tool_name == "send_email_from":
-        result = await _send_email_from(tool_input, organization_id, user_id, skip_approval)
-        logger.info("[Tools] send_email_from completed: %s", result.get("status"))
-        return result
-
-    elif tool_name == "send_slack":
-        result = await _send_slack(tool_input, organization_id, user_id, skip_approval)
-        logger.info("[Tools] send_slack completed: %s", result.get("status"))
-        return result
-
-    elif tool_name == "github_issues_access":
-        result = await _github_issues_access(tool_input, organization_id, user_id, skip_approval)
-        logger.info("[Tools] github_issues_access completed: %s", result.get("status", result.get("error", "unknown")))
-        return result
-
-    elif tool_name == "create_github_issue":
-        logger.warning("[Tools] create_github_issue is deprecated, remapping to github_issues_access")
-        result = await _github_issues_access(tool_input, organization_id, user_id, skip_approval)
-        logger.info("[Tools] create_github_issue completed via github_issues_access: %s", result.get("status", result.get("error", "unknown")))
-        return result
-
-    elif tool_name == "trigger_sync":
-        result = await _trigger_sync(tool_input, organization_id)
-        logger.info("[Tools] trigger_sync completed: %s", result.get("status"))
-        return result
-
-    elif tool_name == "search_cloud_files":
-        result = await _search_cloud_files(tool_input, organization_id, user_id)
-        logger.info("[Tools] search_cloud_files returned %d results", len(result.get("files", [])))
-        return result
-
-    elif tool_name == "read_cloud_file":
-        result = await _read_cloud_file(tool_input, organization_id, user_id)
-        logger.info("[Tools] read_cloud_file completed: %s", result.get("file_name", "unknown"))
-        return result
-
-    elif tool_name == "create_artifact":
-        result = await _create_artifact(tool_input, organization_id, user_id, context)
-        logger.info("[Tools] create_artifact completed: %s", result.get("artifact_id"))
-        return result
-
-    elif tool_name == "keep_notes":
-        result = await _keep_notes(tool_input, organization_id, user_id, context, skip_approval)
-        logger.info("[Tools] keep_notes completed: %s", result.get("note_id", result.get("error", result.get("status"))))
-        return result
-
-    elif tool_name == "save_memory":
-        if context and context.get("is_workflow"):
-            logger.info("[Tools] Blocking save_memory during workflow execution; use keep_notes instead")
-            return {"error": "save_memory is not available in workflows. Use keep_notes for workflow-scoped notes."}
-        result = await _save_memory(tool_input, organization_id, user_id, skip_approval)
-        logger.info("[Tools] save_memory completed: %s", result.get("memory_id", result.get("error", result.get("status"))))
-        return result
-
-    elif tool_name == "delete_memory":
-        result = await _delete_memory(tool_input, organization_id, user_id)
-        logger.info("[Tools] delete_memory completed: %s", result.get("status", result.get("error")))
-        return result
-
-    elif tool_name == "create_linear_issue":
-        result = await _create_linear_issue(tool_input, organization_id, user_id, skip_approval)
-        logger.info("[Tools] create_linear_issue completed: %s", result.get("status", result.get("error")))
-        return result
-
-    elif tool_name == "update_linear_issue":
-        result = await _update_linear_issue(tool_input, organization_id, user_id, skip_approval)
-        logger.info("[Tools] update_linear_issue completed: %s", result.get("status", result.get("error")))
-        return result
-
-    elif tool_name == "search_linear_issues":
-        result = await _search_linear_issues(tool_input, organization_id)
-        logger.info("[Tools] search_linear_issues returned %d results", len(result.get("issues", [])))
-        return result
-
-    else:
+    handler = tool_handlers.get(normalized_tool_name)
+    if handler is None:
         logger.error("[Tools] Unknown tool: %s", tool_name)
         return {"error": f"Unknown tool: {tool_name}"}
+
+    result = await handler()
+    _log_tool_execution_result(tool_name, normalized_tool_name, result)
+    return result
+
+
+def _log_tool_execution_result(
+    requested_tool_name: str,
+    executed_tool_name: str,
+    result: dict[str, Any],
+) -> None:
+    """Centralize tool execution logging so execute_tool remains easy to scan."""
+    if executed_tool_name == "run_sql_query":
+        logger.info("[Tools] run_sql_query returned %d rows", result.get("row_count", 0))
+    elif executed_tool_name == "search_activities":
+        logger.info("[Tools] search_activities returned %d results", len(result.get("results", [])))
+    elif executed_tool_name == "loop_over":
+        logger.info(
+            "[Tools] loop_over completed: %d/%d successful",
+            result.get("succeeded", 0),
+            result.get("total", 0),
+        )
+    elif executed_tool_name == "fetch_url":
+        logger.info("[Tools] fetch_url completed: %s", result.get("url"))
+    elif executed_tool_name == "enrich_contacts_with_apollo":
+        logger.info("[Tools] enrich_contacts_with_apollo completed: %d results", len(result.get("enriched", [])))
+    elif executed_tool_name == "crm_write":
+        logger.info("[Tools] crm_write completed: %s", result.get("status", result.get("error", "unknown")))
+    elif executed_tool_name in {"github_issues_access", "create_linear_issue", "update_linear_issue"}:
+        logger.info("[Tools] %s completed: %s", requested_tool_name, result.get("status", result.get("error", "unknown")))
+    elif executed_tool_name == "search_cloud_files":
+        logger.info("[Tools] search_cloud_files returned %d results", len(result.get("files", [])))
+    elif executed_tool_name == "read_cloud_file":
+        logger.info("[Tools] read_cloud_file completed: %s", result.get("file_name", "unknown"))
+    elif executed_tool_name == "create_artifact":
+        logger.info("[Tools] create_artifact completed: %s", result.get("artifact_id"))
+    elif executed_tool_name == "keep_notes":
+        logger.info("[Tools] keep_notes completed: %s", result.get("note_id", result.get("error", result.get("status"))))
+    elif executed_tool_name == "save_memory":
+        logger.info("[Tools] save_memory completed: %s", result.get("memory_id", result.get("error", result.get("status"))))
+    elif executed_tool_name == "delete_memory":
+        logger.info("[Tools] delete_memory completed: %s", result.get("status", result.get("error")))
+    elif executed_tool_name == "search_linear_issues":
+        logger.info("[Tools] search_linear_issues returned %d results", len(result.get("issues", [])))
+    elif executed_tool_name in {"web_search", "enrich_company_with_apollo"}:
+        logger.info("[Tools] %s completed", executed_tool_name)
+    else:
+        logger.info("[Tools] %s completed: %s", requested_tool_name, result.get("status", result))
 
 
 def _validate_sql_query(query: str) -> tuple[bool, str | None]:
