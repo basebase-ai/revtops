@@ -460,7 +460,20 @@ function App(): JSX.Element {
 
   // Handle admin waitlist route
   if (path === '/admin/waitlist') {
-    return <AdminWaitlist />;
+    const params = new URLSearchParams(window.location.search);
+    const adminKey = params.get('key');
+    if (adminKey) {
+      return <AdminWaitlist adminKey={adminKey} />;
+    }
+    // No key provided - show error
+    return (
+      <div className="min-h-screen flex items-center justify-center p-4">
+        <div className="text-center">
+          <h1 className="text-xl font-bold text-surface-50 mb-2">Access Denied</h1>
+          <p className="text-surface-400">Admin key required. Add ?key=YOUR_KEY to the URL.</p>
+        </div>
+      </div>
+    );
   }
 
   // Loading state

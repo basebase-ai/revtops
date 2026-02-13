@@ -379,14 +379,12 @@ async def get_current_auth(
 
         user = target_user
 
-    is_global_admin = user.role == "global_admin" or "global_admin" in (user.roles or [])
-
     return AuthContext(
         user_id=user.id,
         organization_id=user.organization_id,
         email=user.email,
         role=user.role or "user",
-        is_global_admin=is_global_admin,
+        is_global_admin=user.role == "global_admin",
     )
 
 
@@ -413,13 +411,12 @@ async def get_optional_auth(
         token = _extract_token(authorization)
         payload = await _verify_jwt(token)
         user = await _get_user_from_token(payload)
-        is_global_admin = user.role == "global_admin" or "global_admin" in (user.roles or [])
         return AuthContext(
             user_id=user.id,
             organization_id=user.organization_id,
             email=user.email,
             role=user.role or "user",
-            is_global_admin=is_global_admin,
+            is_global_admin=user.role == "global_admin",
         )
     except HTTPException:
         return None
