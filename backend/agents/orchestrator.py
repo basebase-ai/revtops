@@ -749,6 +749,11 @@ WHERE scheduled_start >= '2026-01-27'::date AND scheduled_start < '2026-01-28'::
                 notes_context += "\nWhen a run needs to persist new workflow-scoped context, use keep_notes so it is stored on workflow_runs.workflow_notes for future runs of this workflow."
                 system_prompt += notes_context
 
+        execution_guardrails: list[str] = (self.workflow_context or {}).get("execution_guardrails") or []
+        if execution_guardrails:
+            system_prompt += "\n\n## Workflow Execution Guardrails\n"
+            system_prompt += "\n".join(f"- {guardrail}" for guardrail in execution_guardrails)
+
 
         # Stream responses with tool handling loop
         async for chunk in self._stream_with_tools(messages, system_prompt, content_blocks):

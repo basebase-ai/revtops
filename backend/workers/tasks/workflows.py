@@ -762,9 +762,6 @@ async def _execute_workflow_via_agent(
     # Build the prompt with typed parameters or raw trigger data
     prompt = workflow.prompt
 
-    # Prevent unrequested nested workflow orchestration
-    prompt += f"\n\n{WORKFLOW_NESTING_GUARDRAIL}"
-    
     # If schema is defined, inject typed parameters; otherwise use raw trigger data
     typed_params = format_typed_parameters(user_trigger_data, input_schema)
     if typed_params:
@@ -821,6 +818,7 @@ async def _execute_workflow_via_agent(
         "workflow_run_id": str(run.id),
         "auto_approve_tools": effective_auto_approve_tools,
         "call_stack": call_stack,  # For nested workflow recursion detection
+        "execution_guardrails": [WORKFLOW_NESTING_GUARDRAIL],
     }
     
     orchestrator = ChatOrchestrator(
