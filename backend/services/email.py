@@ -373,3 +373,111 @@ Questions? Just reply to this email.
         except Exception as e:
             print(f"[Email] Error sending to {to_email}: {e}")
             return False
+
+
+async def send_org_invitation_email(
+    to_email: str,
+    org_name: str,
+    invited_by_name: Optional[str] = None,
+) -> bool:
+    """
+    Send an invitation email to join an organization.
+
+    Args:
+        to_email: Recipient email address
+        org_name: Name of the organization they're being invited to
+        invited_by_name: Name of the person who sent the invite
+
+    Returns:
+        True if email sent successfully, False otherwise
+    """
+    if not settings.RESEND_API_KEY:
+        print(f"[Email] RESEND_API_KEY not set, skipping org invite to {to_email}")
+        return False
+
+    inviter_line: str = (
+        f"<p>{invited_by_name} has invited you to join <strong>{org_name}</strong> on Revtops.</p>"
+        if invited_by_name
+        else f"<p>You've been invited to join <strong>{org_name}</strong> on Revtops.</p>"
+    )
+
+    html_content: str = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    </head>
+    <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <div style="text-align: center; margin-bottom: 30px;">
+            <div style="display: inline-block; width: 48px; height: 48px; background: linear-gradient(135deg, #6366f1, #4f46e5); border-radius: 12px; margin-bottom: 16px;"></div>
+            <h1 style="margin: 0; font-size: 24px; color: #111;">You're Invited!</h1>
+        </div>
+
+        {inviter_line}
+
+        <p>Revtops connects your CRM, Slack, email, and calendar so you can chat with your revenue data and build automations that save your team hours every week.</p>
+
+        <div style="text-align: center; margin: 30px 0;">
+            <a href="{settings.FRONTEND_URL}" style="display: inline-block; background: linear-gradient(135deg, #6366f1, #4f46e5); color: white; text-decoration: none; padding: 14px 28px; border-radius: 8px; font-weight: 600;">Accept Invitation</a>
+        </div>
+
+        <p>Questions? Just reply to this email.</p>
+
+        <p>— The Revtops Team</p>
+
+        <hr style="border: none; border-top: 1px solid #eee; margin: 30px 0;">
+
+        <p style="font-size: 12px; color: #666;">
+            You received this email because someone invited you to {org_name} on Revtops.
+        </p>
+    </body>
+    </html>
+    """
+
+    inviter_text: str = (
+        f"{invited_by_name} has invited you to join {org_name} on Revtops."
+        if invited_by_name
+        else f"You've been invited to join {org_name} on Revtops."
+    )
+
+    text_content: str = f"""
+{inviter_text}
+
+Revtops connects your CRM, Slack, email, and calendar so you can chat with your revenue data and build automations.
+
+Accept the invitation: {settings.FRONTEND_URL}
+
+Questions? Just reply to this email.
+
+— The Revtops Team
+"""
+
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.post(
+                "https://api.resend.com/emails",
+                headers={
+                    "Authorization": f"Bearer {settings.RESEND_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "from": settings.EMAIL_FROM or "Revtops <hello@revtops.com>",
+                    "to": [to_email],
+                    "subject": f"You're invited to {org_name} on Revtops",
+                    "html": html_content,
+                    "text": text_content,
+                },
+                timeout=10.0,
+            )
+
+            if response.status_code == 200:
+                print(f"[Email] Org invitation sent to {to_email} for org {org_name}")
+                return True
+            else:
+                print(f"[Email] Failed to send org invite to {to_email}: {response.status_code} {response.text}")
+                return False
+
+        except Exception as e:
+            print(f"[Email] Error sending org invite to {to_email}: {e}")
+            return False

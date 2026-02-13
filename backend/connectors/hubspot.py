@@ -9,6 +9,7 @@ Responsibilities:
 - Upsert normalized data to database
 """
 
+import asyncio
 import uuid
 from datetime import datetime
 from decimal import Decimal
@@ -16,6 +17,7 @@ from typing import Any, Optional
 
 import httpx
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from api.websockets import broadcast_sync_progress
 from connectors.base import BaseConnector
@@ -24,7 +26,9 @@ from models.activity import Activity
 from models.contact import Contact
 from models.database import get_session
 from models.deal import Deal
+from models.goal import Goal
 from models.pipeline import Pipeline, PipelineStage
+from models.slack_user_mapping import SlackUserMapping
 from models.user import User
 
 HUBSPOT_API_BASE = "https://api.hubapi.com"
@@ -42,9 +46,21 @@ class HubSpotConnector(BaseConnector):
         self._owner_cache: dict[str, Optional[uuid.UUID]] = {}
         # Cache for HubSpot pipeline ID -> internal pipeline ID mapping
         self._pipeline_cache: dict[str, uuid.UUID] = {}
+        # Pre-fetched HubSpot owner ID -> email (populated by _ensure_owner_email_cache)
+        self._owner_email_cache: dict[str, str] = {}
+        self._owner_email_cache_loaded: bool = False
 
     async def sync_all(self) -> dict[str, int]:
         """Run all sync operations with progress broadcasting."""
+        # Broadcast immediately so the UI shows activity
+        await broadcast_sync_progress(
+            organization_id=self.organization_id,
+            provider=self.source_system,
+            count=0,
+            status="syncing",
+            step="preparing",
+        )
+
         # Call parent sync_all
         result = await super().sync_all()
         
@@ -75,41 +91,57 @@ class HubSpotConnector(BaseConnector):
         endpoint: str,
         params: Optional[dict[str, Any]] = None,
         json_data: Optional[dict[str, Any]] = None,
+        _max_retries: int = 5,
     ) -> dict[str, Any]:
-        """Make an authenticated request to HubSpot API."""
-        headers = await self._get_headers()
-        url = f"{HUBSPOT_API_BASE}{endpoint}"
+        """Make an authenticated request to HubSpot API with 429 retry."""
+        headers: dict[str, str] = await self._get_headers()
+        url: str = f"{HUBSPOT_API_BASE}{endpoint}"
 
-        async with httpx.AsyncClient() as client:
-            response = await client.request(
-                method=method,
-                url=url,
-                headers=headers,
-                params=params,
-                json=json_data,
-                timeout=30.0,
-            )
-            
-            # If error, try to get detailed error message from HubSpot
-            if response.status_code >= 400:
-                error_detail = ""
-                try:
-                    error_body = response.json()
-                    # HubSpot error format: {"message": "...", "errors": [...]}
-                    error_detail = error_body.get("message", "")
-                    if error_body.get("errors"):
-                        error_details = [e.get("message", str(e)) for e in error_body["errors"]]
-                        error_detail = f"{error_detail}: {'; '.join(error_details)}"
-                except Exception:
-                    error_detail = response.text[:500] if response.text else ""
-                
-                raise httpx.HTTPStatusError(
-                    f"HubSpot API error ({response.status_code}): {error_detail}",
-                    request=response.request,
-                    response=response,
+        last_exc: Optional[httpx.HTTPStatusError] = None
+        for attempt in range(_max_retries + 1):
+            async with httpx.AsyncClient() as client:
+                response: httpx.Response = await client.request(
+                    method=method,
+                    url=url,
+                    headers=headers,
+                    params=params,
+                    json=json_data,
+                    timeout=30.0,
                 )
-            
-            return response.json()
+
+                # Retry on 429 rate limit
+                if response.status_code == 429 and attempt < _max_retries:
+                    retry_after: float = float(response.headers.get("Retry-After", "10"))
+                    wait_secs: float = min(retry_after, 30.0)
+                    print(f"[HubSpot] 429 rate limited on {endpoint}, retrying in {wait_secs}s (attempt {attempt + 1}/{_max_retries})")
+                    await asyncio.sleep(wait_secs)
+                    continue
+
+                # If error, try to get detailed error message from HubSpot
+                if response.status_code >= 400:
+                    error_detail: str = ""
+                    try:
+                        error_body: dict[str, Any] = response.json()
+                        # HubSpot error format: {"message": "...", "errors": [...]}
+                        error_detail = error_body.get("message", "")
+                        if error_body.get("errors"):
+                            error_details: list[str] = [e.get("message", str(e)) for e in error_body["errors"]]
+                            error_detail = f"{error_detail}: {'; '.join(error_details)}"
+                    except Exception:
+                        error_detail = response.text[:500] if response.text else ""
+
+                    last_exc = httpx.HTTPStatusError(
+                        f"HubSpot API error ({response.status_code}): {error_detail}",
+                        request=response.request,
+                        response=response,
+                    )
+                    raise last_exc
+
+                return response.json()
+
+        # Should not reach here, but satisfy type checker
+        assert last_exc is not None
+        raise last_exc
 
     async def _paginate_results(
         self,
@@ -269,6 +301,13 @@ class HubSpotConnector(BaseConnector):
         - dealname, amount, dealstage, closedate, createdate, hs_lastmodifieddate
         - hubspot_owner_id, associated company/contact
         """
+        await broadcast_sync_progress(
+            organization_id=self.organization_id,
+            provider=self.source_system,
+            count=0,
+            status="syncing",
+            step="fetching deals",
+        )
         properties = [
             "dealname",
             "amount",
@@ -283,45 +322,71 @@ class HubSpotConnector(BaseConnector):
         raw_deals = await self._paginate_results(
             "/crm/v3/objects/deals", properties=properties
         )
-        
-        # Broadcast initial progress
-        await broadcast_sync_progress(
-            organization_id=self.organization_id,
-            provider=self.source_system,
-            count=0,
-            status="syncing",
-        )
 
+        # Pre-load owner email cache
+        await self._ensure_owner_email_cache()
+
+        # Build existing source_id -> UUID map
+        existing_map: dict[str, uuid.UUID] = {}
         async with get_session(organization_id=self.organization_id) as session:
-            count = 0
-            for raw_deal in raw_deals:
-                hs_id = raw_deal.get("id", "")
-                
-                # Check if deal already exists
-                result = await session.execute(
-                    select(Deal).where(
-                        Deal.organization_id == uuid.UUID(self.organization_id),
-                        Deal.source_system == self.source_system,
-                        Deal.source_id == hs_id,
-                    )
+            result = await session.execute(
+                select(Deal.source_id, Deal.id).where(
+                    Deal.organization_id == uuid.UUID(self.organization_id),
+                    Deal.source_system == self.source_system,
                 )
-                existing = result.scalar_one_or_none()
-                
-                deal = await self._normalize_deal(raw_deal, existing_id=existing.id if existing else None)
-                await session.merge(deal)
-                count += 1
-                
-                # Broadcast progress every 10 deals
-                if count % 10 == 0:
-                    await broadcast_sync_progress(
-                        organization_id=self.organization_id,
-                        provider=self.source_system,
-                        count=count,
-                        status="syncing",
-                    )
-            await session.commit()
+            )
+            for row in result.all():
+                existing_map[row[0]] = row[1]
+        print(f"[HubSpot] Pre-loaded {len(existing_map)} existing deal IDs")
 
-        return count
+        # Build all row dicts in memory
+        rows: list[dict[str, Any]] = []
+        for raw_deal in raw_deals:
+            deal: Deal = await self._normalize_deal(
+                raw_deal, existing_id=existing_map.get(raw_deal.get("id", ""))
+            )
+            rows.append({
+                "id": deal.id, "organization_id": deal.organization_id,
+                "source_system": deal.source_system, "source_id": deal.source_id,
+                "name": deal.name, "amount": deal.amount, "stage": deal.stage,
+                "pipeline_id": deal.pipeline_id, "close_date": deal.close_date,
+                "created_date": deal.created_date,
+                "last_modified_date": deal.last_modified_date,
+                "owner_id": deal.owner_id,
+                "visible_to_user_ids": deal.visible_to_user_ids,
+                "custom_fields": deal.custom_fields,
+                "synced_at": datetime.utcnow(), "sync_status": "synced",
+            })
+
+        # Bulk upsert in batches
+        BATCH_SIZE: int = 500
+        update_cols: list[str] = [
+            "name", "amount", "stage", "pipeline_id", "close_date",
+            "created_date", "last_modified_date", "owner_id",
+            "visible_to_user_ids", "custom_fields", "synced_at",
+        ]
+        async with get_session(organization_id=self.organization_id) as session:
+            for i in range(0, len(rows), BATCH_SIZE):
+                batch: list[dict[str, Any]] = rows[i : i + BATCH_SIZE]
+                stmt = pg_insert(Deal).values(batch)
+                stmt = stmt.on_conflict_do_update(
+                    index_elements=["id"],
+                    set_={col: stmt.excluded[col] for col in update_cols},
+                )
+                await session.execute(stmt)
+                await session.commit()
+                count: int = i + len(batch)
+                await broadcast_sync_progress(
+                    organization_id=self.organization_id,
+                    provider=self.source_system,
+                    count=count,
+                    status="syncing",
+                    step="deals",
+                )
+                print(f"[HubSpot] Deals: {count}/{len(rows)}")
+        print(f"[HubSpot] Committed {len(rows)} deals")
+
+        return len(rows)
 
     async def _normalize_deal(
         self, hs_deal: dict[str, Any], existing_id: Optional[uuid.UUID] = None
@@ -400,6 +465,13 @@ class HubSpotConnector(BaseConnector):
 
     async def sync_accounts(self) -> int:
         """Sync all companies from HubSpot as accounts."""
+        await broadcast_sync_progress(
+            organization_id=self.organization_id,
+            provider=self.source_system,
+            count=0,
+            status="syncing",
+            step="fetching accounts",
+        )
         properties = [
             "name",
             "domain",
@@ -414,45 +486,66 @@ class HubSpotConnector(BaseConnector):
         raw_companies = await self._paginate_results(
             "/crm/v3/objects/companies", properties=properties
         )
-        
-        # Broadcast progress
-        await broadcast_sync_progress(
-            organization_id=self.organization_id,
-            provider=self.source_system,
-            count=0,
-            status="syncing",
-        )
 
+        # Pre-load owner email cache so _normalize_account doesn't trigger per-row fetches
+        await self._ensure_owner_email_cache()
+
+        # Build existing source_id -> UUID map
+        existing_map: dict[str, uuid.UUID] = {}
         async with get_session(organization_id=self.organization_id) as session:
-            count = 0
-            for raw_company in raw_companies:
-                hs_id = raw_company.get("id", "")
-                
-                # Check if account already exists
-                result = await session.execute(
-                    select(Account).where(
-                        Account.organization_id == uuid.UUID(self.organization_id),
-                        Account.source_system == self.source_system,
-                        Account.source_id == hs_id,
-                    )
+            result = await session.execute(
+                select(Account.source_id, Account.id).where(
+                    Account.organization_id == uuid.UUID(self.organization_id),
+                    Account.source_system == self.source_system,
                 )
-                existing = result.scalar_one_or_none()
-                
-                account = await self._normalize_account(raw_company, existing_id=existing.id if existing else None)
-                await session.merge(account)
-                count += 1
-                
-                # Broadcast progress every 10 accounts
-                if count % 10 == 0:
-                    await broadcast_sync_progress(
-                        organization_id=self.organization_id,
-                        provider=self.source_system,
-                        count=count,
-                        status="syncing",
-                    )
-            await session.commit()
+            )
+            for row in result.all():
+                existing_map[row[0]] = row[1]
+        print(f"[HubSpot] Pre-loaded {len(existing_map)} existing account IDs")
 
-        return count
+        # Build all row dicts in memory
+        rows: list[dict[str, Any]] = []
+        for raw_company in raw_companies:
+            account: Account = await self._normalize_account(
+                raw_company, existing_id=existing_map.get(raw_company.get("id", ""))
+            )
+            rows.append({
+                "id": account.id, "organization_id": account.organization_id,
+                "source_system": account.source_system, "source_id": account.source_id,
+                "name": account.name, "domain": account.domain,
+                "industry": account.industry, "employee_count": account.employee_count,
+                "annual_revenue": account.annual_revenue, "owner_id": account.owner_id,
+                "synced_at": datetime.utcnow(), "sync_status": "synced",
+            })
+
+        # Bulk upsert in batches (single SQL per batch instead of per-row)
+        BATCH_SIZE: int = 500
+        update_cols: list[str] = [
+            "name", "domain", "industry", "employee_count",
+            "annual_revenue", "owner_id", "synced_at",
+        ]
+        async with get_session(organization_id=self.organization_id) as session:
+            for i in range(0, len(rows), BATCH_SIZE):
+                batch: list[dict[str, Any]] = rows[i : i + BATCH_SIZE]
+                stmt = pg_insert(Account).values(batch)
+                stmt = stmt.on_conflict_do_update(
+                    index_elements=["id"],
+                    set_={col: stmt.excluded[col] for col in update_cols},
+                )
+                await session.execute(stmt)
+                await session.commit()
+                count: int = i + len(batch)
+                await broadcast_sync_progress(
+                    organization_id=self.organization_id,
+                    provider=self.source_system,
+                    count=count,
+                    status="syncing",
+                    step="accounts",
+                )
+                print(f"[HubSpot] Accounts: {count}/{len(rows)}")
+        print(f"[HubSpot] Committed {len(rows)} accounts")
+
+        return len(rows)
 
     async def _normalize_account(
         self, hs_company: dict[str, Any], existing_id: Optional[uuid.UUID] = None
@@ -499,6 +592,13 @@ class HubSpotConnector(BaseConnector):
 
     async def sync_contacts(self) -> int:
         """Sync all contacts from HubSpot."""
+        await broadcast_sync_progress(
+            organization_id=self.organization_id,
+            provider=self.source_system,
+            count=0,
+            status="syncing",
+            step="fetching contacts",
+        )
         # Only request standard properties that exist in all HubSpot instances
         # Removed 'company' as it's a custom/optional text field
         properties = [
@@ -538,59 +638,76 @@ class HubSpotConnector(BaseConnector):
             for account in accounts:
                 hs_company_id_to_account_id[account.source_id] = account.id
 
-        # Broadcast progress
-        await broadcast_sync_progress(
-            organization_id=self.organization_id,
-            provider=self.source_system,
-            count=0,
-            status="syncing",
-        )
-
+        # Build existing source_id -> UUID map
+        existing_map: dict[str, uuid.UUID] = {}
         async with get_session(organization_id=self.organization_id) as session:
-            count = 0
-            for raw_contact in raw_contacts:
-                hs_id = raw_contact.get("id", "")
-                
-                # Extract associated company ID from associations
-                account_id: Optional[uuid.UUID] = None
-                associations = raw_contact.get("associations", {})
-                companies_assoc = associations.get("companies", {})
-                company_results = companies_assoc.get("results", [])
-                if company_results:
-                    # Take the first (primary) company association
-                    hs_company_id = company_results[0].get("id")
-                    if hs_company_id:
-                        account_id = hs_company_id_to_account_id.get(hs_company_id)
-                
-                # Check if contact already exists
-                result = await session.execute(
-                    select(Contact).where(
-                        Contact.organization_id == uuid.UUID(self.organization_id),
-                        Contact.source_system == self.source_system,
-                        Contact.source_id == hs_id,
-                    )
+            result = await session.execute(
+                select(Contact.source_id, Contact.id).where(
+                    Contact.organization_id == uuid.UUID(self.organization_id),
+                    Contact.source_system == self.source_system,
                 )
-                existing = result.scalar_one_or_none()
-                
-                contact = self._normalize_contact(
-                    raw_contact,
-                    existing_id=existing.id if existing else None,
-                    account_id=account_id,
-                )
-                await session.merge(contact)
-                count += 1
-                
-                # Broadcast progress every 10 contacts
-                if count % 10 == 0:
-                    await broadcast_sync_progress(
-                        organization_id=self.organization_id,
-                        provider=self.source_system,
-                        count=count,
-                        status="syncing",
-                    )
-            await session.commit()
+            )
+            for row in result.all():
+                existing_map[row[0]] = row[1]
+        print(f"[HubSpot] Pre-loaded {len(existing_map)} existing contact IDs")
 
-        return count
+        # Build all row dicts in memory
+        org_uuid: uuid.UUID = uuid.UUID(self.organization_id)
+        rows: list[dict[str, Any]] = []
+        for raw_contact in raw_contacts:
+            hs_id: str = raw_contact.get("id", "")
+
+            # Extract associated company ID
+            account_id: Optional[uuid.UUID] = None
+            associations = raw_contact.get("associations", {})
+            companies_assoc = associations.get("companies", {})
+            company_results: list[dict[str, Any]] = companies_assoc.get("results", [])
+            if company_results:
+                hs_company_id: Optional[str] = company_results[0].get("id")
+                if hs_company_id:
+                    account_id = hs_company_id_to_account_id.get(hs_company_id)
+
+            contact: Contact = self._normalize_contact(
+                raw_contact,
+                existing_id=existing_map.get(hs_id),
+                account_id=account_id,
+            )
+            rows.append({
+                "id": contact.id, "organization_id": org_uuid,
+                "source_system": self.source_system, "source_id": hs_id,
+                "name": contact.name, "email": contact.email,
+                "title": contact.title, "phone": contact.phone,
+                "account_id": contact.account_id,
+                "synced_at": datetime.utcnow(), "sync_status": "synced",
+            })
+
+        # Bulk upsert in batches
+        BATCH_SIZE: int = 500
+        update_cols: list[str] = [
+            "name", "email", "title", "phone", "account_id", "synced_at",
+        ]
+        async with get_session(organization_id=self.organization_id) as session:
+            for i in range(0, len(rows), BATCH_SIZE):
+                batch: list[dict[str, Any]] = rows[i : i + BATCH_SIZE]
+                stmt = pg_insert(Contact).values(batch)
+                stmt = stmt.on_conflict_do_update(
+                    index_elements=["id"],
+                    set_={col: stmt.excluded[col] for col in update_cols},
+                )
+                await session.execute(stmt)
+                await session.commit()
+                count: int = i + len(batch)
+                await broadcast_sync_progress(
+                    organization_id=self.organization_id,
+                    provider=self.source_system,
+                    count=count,
+                    status="syncing",
+                    step="contacts",
+                )
+                print(f"[HubSpot] Contacts: {count}/{len(rows)}")
+        print(f"[HubSpot] Committed {len(rows)} contacts")
+
+        return len(rows)
 
     def _normalize_contact(
         self,
@@ -611,25 +728,36 @@ class HubSpotConnector(BaseConnector):
         if not full_name:
             full_name = props.get("email") or f"Contact {hs_id}"
 
+        # Truncate fields to match DB column limits
+        email_val: Optional[str] = props.get("email")
+        if email_val:
+            email_val = email_val[:255]
+        title_val: Optional[str] = props.get("jobtitle")
+        if title_val:
+            title_val = title_val[:255]
+        phone_val: Optional[str] = props.get("phone")
+        if phone_val:
+            phone_val = phone_val[:50]
+
         return Contact(
             id=existing_id or uuid.uuid4(),
             organization_id=uuid.UUID(self.organization_id),
             source_system=self.source_system,
             source_id=hs_id,
-            name=full_name,
-            email=props.get("email"),
-            title=props.get("jobtitle"),
-            phone=props.get("phone"),
+            name=full_name[:255] if full_name else full_name,
+            email=email_val,
+            title=title_val,
+            phone=phone_val,
             account_id=account_id,
         )
 
     async def sync_activities(self) -> int:
         """Sync engagements (calls, emails, meetings, notes) from HubSpot."""
-        count = 0
+        total_count: int = 0
 
         # Sync different engagement types
         for engagement_type in ["calls", "emails", "meetings", "notes"]:
-            properties = ["hs_timestamp", "hs_call_title", "hs_call_body"]
+            properties: list[str] = ["hs_timestamp", "hs_call_title", "hs_call_body"]
             if engagement_type == "emails":
                 properties = ["hs_timestamp", "hs_email_subject", "hs_email_text"]
             elif engagement_type == "meetings":
@@ -638,26 +766,84 @@ class HubSpotConnector(BaseConnector):
                 properties = ["hs_timestamp", "hs_note_body"]
 
             try:
-                raw_engagements = await self._paginate_results(
+                raw_engagements: list[dict[str, Any]] = await self._paginate_results(
                     f"/crm/v3/objects/{engagement_type}", properties=properties
                 )
 
+                if not raw_engagements:
+                    continue
+
+                # Build existing source_id -> UUID map
+                existing_map: dict[str, uuid.UUID] = {}
                 async with get_session(organization_id=self.organization_id) as session:
-                    for raw_engagement in raw_engagements:
-                        activity = self._normalize_engagement(
-                            raw_engagement, engagement_type
+                    result = await session.execute(
+                        select(Activity.source_id, Activity.id).where(
+                            Activity.organization_id == uuid.UUID(self.organization_id),
+                            Activity.source_system == self.source_system,
+                            Activity.source_id.isnot(None),
                         )
-                        await session.merge(activity)
-                        count += 1
-                    await session.commit()
+                    )
+                    for row in result.all():
+                        existing_map[row[0]] = row[1]
+                print(f"[HubSpot] Pre-loaded {len(existing_map)} existing activity IDs for {engagement_type}")
+
+                # Build row dicts
+                rows: list[dict[str, Any]] = []
+                for raw_engagement in raw_engagements:
+                    activity: Activity = self._normalize_engagement(
+                        raw_engagement,
+                        engagement_type,
+                        existing_id=existing_map.get(raw_engagement.get("id", "")),
+                    )
+                    rows.append({
+                        "id": activity.id,
+                        "organization_id": activity.organization_id,
+                        "source_system": activity.source_system,
+                        "source_id": activity.source_id,
+                        "type": activity.type,
+                        "subject": activity.subject,
+                        "description": activity.description,
+                        "activity_date": activity.activity_date,
+                        "synced_at": datetime.utcnow(),
+                    })
+
+                # Bulk upsert in batches
+                BATCH_SIZE: int = 500
+                update_cols: list[str] = [
+                    "type", "subject", "description", "activity_date", "synced_at",
+                ]
+                async with get_session(organization_id=self.organization_id) as session:
+                    for i in range(0, len(rows), BATCH_SIZE):
+                        batch: list[dict[str, Any]] = rows[i : i + BATCH_SIZE]
+                        stmt = pg_insert(Activity).values(batch)
+                        stmt = stmt.on_conflict_do_update(
+                            index_elements=["id"],
+                            set_={col: stmt.excluded[col] for col in update_cols},
+                        )
+                        await session.execute(stmt)
+                        await session.commit()
+                        count: int = i + len(batch)
+                        await broadcast_sync_progress(
+                            organization_id=self.organization_id,
+                            provider=self.source_system,
+                            count=count,
+                            status="syncing",
+                            step="activities",
+                        )
+                        print(f"[HubSpot] Activities ({engagement_type}): {count}/{len(rows)}")
+                total_count += len(rows)
+                print(f"[HubSpot] Committed {len(rows)} {engagement_type}")
             except httpx.HTTPStatusError:
                 # Some engagement types might not be available
                 continue
 
-        return count
+        return total_count
 
     def _normalize_engagement(
-        self, hs_engagement: dict[str, Any], engagement_type: str
+        self,
+        hs_engagement: dict[str, Any],
+        engagement_type: str,
+        existing_id: Optional[uuid.UUID] = None,
     ) -> Activity:
         """Transform HubSpot engagement to our Activity model."""
         props = hs_engagement.get("properties", {})
@@ -699,7 +885,7 @@ class HubSpotConnector(BaseConnector):
         }
 
         return Activity(
-            id=uuid.uuid4(),
+            id=existing_id or uuid.uuid4(),
             organization_id=uuid.UUID(self.organization_id),
             source_system=self.source_system,
             source_id=hs_id,
@@ -709,14 +895,204 @@ class HubSpotConnector(BaseConnector):
             activity_date=activity_date,
         )
 
+    async def sync_goals(self) -> int:
+        """Sync goals/quotas/targets from HubSpot."""
+        await broadcast_sync_progress(
+            organization_id=self.organization_id,
+            provider=self.source_system,
+            count=0,
+            status="syncing",
+            step="fetching goals",
+        )
+
+        properties: list[str] = [
+            "hs_goal_name",
+            "hs_target_amount",
+            "hs_start_datetime",
+            "hs_end_datetime",
+            "hs_created_by_user_id",
+        ]
+
+        try:
+            raw_goals: list[dict[str, Any]] = await self._paginate_results(
+                "/crm/v3/objects/goal_targets", properties=properties
+            )
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 403:
+                print("[HubSpot] WARNING: No permission to fetch goals (requires crm.objects.goals.read scope), skipping")
+                return 0
+            raise
+
+        if not raw_goals:
+            print("[HubSpot] No goals found")
+            return 0
+
+        # Build existing source_id -> UUID map
+        existing_map: dict[str, uuid.UUID] = {}
+        async with get_session(organization_id=self.organization_id) as session:
+            result = await session.execute(
+                select(Goal.source_id, Goal.id).where(
+                    Goal.organization_id == uuid.UUID(self.organization_id),
+                    Goal.source_system == self.source_system,
+                )
+            )
+            for row in result.all():
+                existing_map[row[0]] = row[1]
+        print(f"[HubSpot] Pre-loaded {len(existing_map)} existing goal IDs")
+
+        # Build row dicts
+        org_uuid: uuid.UUID = uuid.UUID(self.organization_id)
+        rows: list[dict[str, Any]] = []
+        for raw_goal in raw_goals:
+            hs_id: str = raw_goal.get("id", "")
+            props: dict[str, Any] = raw_goal.get("properties", {})
+
+            # Parse dates
+            start_date: Optional[datetime] = None
+            end_date: Optional[datetime] = None
+            if props.get("hs_start_datetime"):
+                try:
+                    start_date = datetime.fromisoformat(
+                        props["hs_start_datetime"].replace("Z", "+00:00")
+                    ).date()
+                except (ValueError, TypeError):
+                    pass
+            if props.get("hs_end_datetime"):
+                try:
+                    end_date = datetime.fromisoformat(
+                        props["hs_end_datetime"].replace("Z", "+00:00")
+                    ).date()
+                except (ValueError, TypeError):
+                    pass
+
+            # Parse target amount
+            target_amount: Optional[Decimal] = None
+            if props.get("hs_target_amount"):
+                try:
+                    target_amount = Decimal(str(props["hs_target_amount"]))
+                except Exception:
+                    pass
+
+            goal_name: str = props.get("hs_goal_name") or f"Goal {hs_id}"
+
+            rows.append({
+                "id": existing_map.get(hs_id, uuid.uuid4()),
+                "organization_id": org_uuid,
+                "source_system": self.source_system,
+                "source_id": hs_id,
+                "name": goal_name[:255],
+                "target_amount": target_amount,
+                "start_date": start_date,
+                "end_date": end_date,
+                "synced_at": datetime.utcnow(),
+                "sync_status": "synced",
+            })
+
+        # Bulk upsert in batches
+        BATCH_SIZE: int = 500
+        update_cols: list[str] = [
+            "name", "target_amount", "start_date", "end_date", "synced_at",
+        ]
+        async with get_session(organization_id=self.organization_id) as session:
+            for i in range(0, len(rows), BATCH_SIZE):
+                batch: list[dict[str, Any]] = rows[i : i + BATCH_SIZE]
+                stmt = pg_insert(Goal).values(batch)
+                stmt = stmt.on_conflict_do_update(
+                    index_elements=["id"],
+                    set_={col: stmt.excluded[col] for col in update_cols},
+                )
+                await session.execute(stmt)
+                await session.commit()
+                count: int = i + len(batch)
+                await broadcast_sync_progress(
+                    organization_id=self.organization_id,
+                    provider=self.source_system,
+                    count=count,
+                    status="syncing",
+                    step="goals",
+                )
+                print(f"[HubSpot] Goals: {count}/{len(rows)}")
+        print(f"[HubSpot] Committed {len(rows)} goals")
+
+        return len(rows)
+
+    async def _ensure_identity_mapping(
+        self,
+        session: Any,
+        *,
+        hs_owner_id: str,
+        hs_email: str | None,
+        user_id: uuid.UUID | None = None,
+        revtops_email: str | None = None,
+        match_source: str = "hubspot_owner_email_match",
+    ) -> None:
+        """
+        Upsert a row in ``user_mappings_for_identity`` for a HubSpot owner.
+
+        If a mapping already exists for this (org, external_userid, source)
+        it is updated only if we're upgrading from unmapped to mapped.
+        Otherwise a new row is inserted (with ``user_id=None`` if unmatched).
+        """
+        org_uuid: uuid.UUID = uuid.UUID(self.organization_id)
+        existing = await session.execute(
+            select(SlackUserMapping).where(
+                SlackUserMapping.organization_id == org_uuid,
+                SlackUserMapping.external_userid == hs_owner_id,
+                SlackUserMapping.source == "hubspot",
+            )
+        )
+        mapping: SlackUserMapping | None = existing.scalar_one_or_none()
+
+        if mapping:
+            # Upgrade from unmapped to mapped if we now have a user
+            if not mapping.user_id and user_id:
+                mapping.user_id = user_id
+                mapping.revtops_email = revtops_email
+                mapping.match_source = match_source
+        else:
+            session.add(
+                SlackUserMapping(
+                    id=uuid.uuid4(),
+                    organization_id=org_uuid,
+                    user_id=user_id,
+                    revtops_email=revtops_email,
+                    external_userid=hs_owner_id,
+                    external_email=hs_email,
+                    source="hubspot",
+                    match_source=match_source if user_id else "hubspot_directory_unmapped",
+                )
+            )
+
+    async def _ensure_owner_email_cache(self) -> None:
+        """Pre-fetch all HubSpot owners in bulk and cache their emails.
+
+        Uses the list endpoint ``/crm/v3/owners`` which avoids per-owner
+        403 errors that can occur with ``/crm/v3/owners/{id}``.
+        """
+        if self._owner_email_cache_loaded:
+            return
+
+        try:
+            owners: list[dict[str, Any]] = await self.fetch_owners()
+            for owner in owners:
+                oid: str = owner.get("id", "")
+                email: str | None = owner.get("email")
+                if oid and email:
+                    self._owner_email_cache[oid] = email
+            print(f"[HubSpot] Pre-fetched {len(self._owner_email_cache)} owner emails")
+        except httpx.HTTPStatusError as exc:
+            print(f"[HubSpot] WARNING: Could not fetch owners list ({exc}), owner mapping will be skipped")
+        self._owner_email_cache_loaded = True
+
     async def _map_hs_owner_to_user(
         self, hs_owner_id: Optional[str]
     ) -> Optional[uuid.UUID]:
         """
         Map HubSpot owner ID to our internal user ID by fetching owner email.
-        
-        If no matching user exists, creates a stub user with status='crm_only'
-        that can be upgraded when the person signs up for Revtops.
+
+        Persists the mapping in ``user_mappings_for_identity``.
+        If no matching local user exists, creates an unmapped identity row
+        (``user_id=NULL``) that an admin can link later.
         """
         if not hs_owner_id:
             return None
@@ -725,55 +1101,157 @@ class HubSpotConnector(BaseConnector):
         if hs_owner_id in self._owner_cache:
             return self._owner_cache[hs_owner_id]
 
-        # Fetch owner details from HubSpot to get their email and name
-        try:
-            owner_data = await self._make_request(
-                "GET", f"/crm/v3/owners/{hs_owner_id}"
-            )
-            owner_email: Optional[str] = owner_data.get("email")
-            if not owner_email:
-                self._owner_cache[hs_owner_id] = None
-                return None
-            
-            # Build owner name from firstName/lastName
-            first_name: str = owner_data.get("firstName") or ""
-            last_name: str = owner_data.get("lastName") or ""
-            owner_name: Optional[str] = f"{first_name} {last_name}".strip() or None
-        except httpx.HTTPStatusError:
-            # If we can't fetch owner, fall back to None
+        # Ensure bulk owner emails are loaded (single fetch for all owners)
+        await self._ensure_owner_email_cache()
+
+        owner_email: Optional[str] = self._owner_email_cache.get(hs_owner_id)
+        if not owner_email:
             self._owner_cache[hs_owner_id] = None
             return None
 
-        # Look up user by email (email is globally unique, not per-org)
+        # Look up user by email within the organization
         async with get_session(organization_id=self.organization_id) as session:
             result = await session.execute(
-                select(User).where(User.email == owner_email)
+                select(User).where(
+                    User.email == owner_email,
+                    User.organization_id == uuid.UUID(self.organization_id),
+                )
             )
-            user = result.scalar_one_or_none()
-            
+            user: User | None = result.scalar_one_or_none()
+
             if user:
-                # User exists - check if they belong to this organization
-                if user.organization_id == uuid.UUID(self.organization_id):
-                    self._owner_cache[hs_owner_id] = user.id
-                    return user.id
-                else:
-                    # User exists but in different org - can't assign cross-org ownership
-                    self._owner_cache[hs_owner_id] = None
-                    return None
-            
-            # No user with this email exists - create a stub user for this CRM owner
-            stub_user = User(
-                id=uuid.uuid4(),
-                email=owner_email,
-                name=owner_name,
-                organization_id=uuid.UUID(self.organization_id),
-                status="crm_only",  # Stub user from CRM sync, not yet signed up
+                # Matched — persist identity mapping with user_id
+                await self._ensure_identity_mapping(
+                    session,
+                    hs_owner_id=hs_owner_id,
+                    hs_email=owner_email,
+                    user_id=user.id,
+                    revtops_email=user.email,
+                )
+                await session.commit()
+                self._owner_cache[hs_owner_id] = user.id
+                return user.id
+
+            # No matching user — create unmapped identity row (user_id=NULL)
+            await self._ensure_identity_mapping(
+                session,
+                hs_owner_id=hs_owner_id,
+                hs_email=owner_email,
             )
-            session.add(stub_user)
             await session.commit()
-            
-            self._owner_cache[hs_owner_id] = stub_user.id
-            return stub_user.id
+            self._owner_cache[hs_owner_id] = None
+            return None
+
+    async def fetch_owners(self) -> list[dict[str, Any]]:
+        """
+        Fetch all HubSpot owners from the account.
+
+        Requires the ``crm.objects.owners.read`` scope.
+
+        Returns:
+            List of owner dicts with id, email, firstName, lastName.
+        """
+        results: list[dict[str, Any]] = []
+        after: str | None = None
+
+        while True:
+            params: dict[str, str | int] = {"limit": 100}
+            if after:
+                params["after"] = after
+
+            data: dict[str, Any] = await self._make_request(
+                "GET", "/crm/v3/owners", params=params
+            )
+            for o in data.get("results", []):
+                results.append({
+                    "id": str(o.get("id", "")),
+                    "email": o.get("email"),
+                    "firstName": o.get("firstName"),
+                    "lastName": o.get("lastName"),
+                })
+
+            paging: dict[str, Any] | None = data.get("paging")
+            if paging and paging.get("next", {}).get("after"):
+                after = paging["next"]["after"]
+            else:
+                break
+
+        return results
+
+    async def match_owners_to_users(self) -> list[dict[str, Any]]:
+        """
+        Fetch all HubSpot owners, match them by email to local users,
+        and persist mappings in ``user_mappings_for_identity``.
+
+        Owners that don't match any local user get an unmapped row
+        (``user_id=NULL``) rather than a stub user.
+
+        Requires the ``crm.objects.owners.read`` scope.
+        """
+        hs_owners: list[dict[str, Any]] = await self.fetch_owners()
+
+        # Build email -> hs_owner_id map and reverse lookup
+        owner_email_map: dict[str, str] = {}
+        owner_raw_emails: dict[str, str] = {}
+        for owner in hs_owners:
+            email: str | None = owner.get("email")
+            oid: str = owner.get("id", "")
+            if email and oid:
+                owner_email_map[email.lower()] = oid
+                owner_raw_emails[oid] = email
+
+        results: list[dict[str, Any]] = []
+        matched_owner_ids: set[str] = set()
+
+        async with get_session(organization_id=self.organization_id) as session:
+            # Match local users to HubSpot owners
+            db_result = await session.execute(
+                select(User).where(
+                    User.organization_id == uuid.UUID(self.organization_id),
+                    User.status != "crm_only",
+                )
+            )
+            users: list[User] = list(db_result.scalars().all())
+
+            for user in users:
+                hs_owner_id: str | None = owner_email_map.get(user.email.lower())
+                if hs_owner_id:
+                    await self._ensure_identity_mapping(
+                        session,
+                        hs_owner_id=hs_owner_id,
+                        hs_email=owner_raw_emails.get(hs_owner_id),
+                        user_id=user.id,
+                        revtops_email=user.email,
+                    )
+                    matched_owner_ids.add(hs_owner_id)
+                    results.append({
+                        "email": user.email,
+                        "hubspot_owner_id": hs_owner_id,
+                        "user_id": str(user.id),
+                        "user_name": user.name,
+                        "matched": True,
+                    })
+                else:
+                    results.append({
+                        "email": user.email,
+                        "hubspot_owner_id": None,
+                        "user_id": str(user.id),
+                        "user_name": user.name,
+                        "matched": False,
+                    })
+
+            # Create unmapped identity rows for HubSpot owners with no match
+            for oid, raw_email in owner_raw_emails.items():
+                if oid not in matched_owner_ids:
+                    await self._ensure_identity_mapping(
+                        session,
+                        hs_owner_id=oid,
+                        hs_email=raw_email,
+                    )
+
+            await session.commit()
+
+        return results
 
     async def fetch_deal(self, deal_id: str) -> dict[str, Any]:
         """Fetch single deal on-demand."""
@@ -1090,6 +1568,141 @@ class HubSpotConnector(BaseConnector):
             return None
         except httpx.HTTPStatusError:
             return None
+
+    # =========================================================================
+    # Engagement Write Operations (calls, emails, meetings, notes)
+    # =========================================================================
+
+    # HubSpot V3 engagement object type to API path mapping
+    _ENGAGEMENT_OBJECT_PATHS: dict[str, str] = {
+        "call": "calls",
+        "email": "emails",
+        "meeting": "meetings",
+        "note": "notes",
+    }
+
+    # Default association type IDs: engagement → CRM object
+    # Source: https://developers.hubspot.com/docs/api-reference/crm-associations-v4/guide
+    _ENGAGEMENT_ASSOC_TYPE_IDS: dict[str, dict[str, int]] = {
+        "call":    {"contact": 194, "company": 182, "deal": 206},
+        "email":   {"contact": 198, "company": 186, "deal": 210},
+        "meeting": {"contact": 200, "company": 188, "deal": 212},
+        "note":    {"contact": 202, "company": 190, "deal": 214},
+    }
+
+    async def create_engagement(
+        self,
+        engagement_type: str,
+        properties: dict[str, Any],
+        associations: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """
+        Create a single engagement (call, email, meeting, or note) in HubSpot.
+
+        Args:
+            engagement_type: One of 'call', 'email', 'meeting', 'note'
+            properties: HubSpot engagement properties (hs_timestamp required)
+            associations: Optional list of association dicts for the v3 API, each with
+                          ``{"to": {"id": <hs_id>}, "types": [{"associationCategory": ..., "associationTypeId": ...}]}``
+
+        Returns:
+            Created engagement data with HubSpot ID
+        """
+        object_path: str = self._ENGAGEMENT_OBJECT_PATHS[engagement_type]
+        json_data: dict[str, Any] = {"properties": properties}
+        if associations:
+            json_data["associations"] = associations
+
+        data: dict[str, Any] = await self._make_request(
+            "POST",
+            f"/crm/v3/objects/{object_path}",
+            json_data=json_data,
+        )
+        return {
+            "id": data.get("id"),
+            "properties": data.get("properties", {}),
+        }
+
+    async def create_engagements_batch(
+        self,
+        engagement_type: str,
+        engagements: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """
+        Batch create engagements in HubSpot (up to 100 per call).
+
+        Each item in *engagements* should be a dict with a ``properties`` key
+        and an optional ``associations`` key.
+
+        Args:
+            engagement_type: One of 'call', 'email', 'meeting', 'note'
+            engagements: List of engagement input dicts
+
+        Returns:
+            Batch result with created engagements and any errors
+        """
+        if len(engagements) > 100:
+            raise ValueError("HubSpot batch limit is 100 records per call")
+
+        object_path: str = self._ENGAGEMENT_OBJECT_PATHS[engagement_type]
+        inputs: list[dict[str, Any]] = []
+        for eng in engagements:
+            item: dict[str, Any] = {"properties": eng.get("properties", eng)}
+            if eng.get("associations"):
+                item["associations"] = eng["associations"]
+            inputs.append(item)
+
+        data: dict[str, Any] = await self._make_request(
+            "POST",
+            f"/crm/v3/objects/{object_path}/batch/create",
+            json_data={"inputs": inputs},
+        )
+        return {
+            "status": data.get("status", "COMPLETE"),
+            "results": [
+                {"id": r.get("id"), "properties": r.get("properties", {})}
+                for r in data.get("results", [])
+            ],
+            "errors": data.get("errors", []),
+        }
+
+    def build_engagement_associations(
+        self,
+        engagement_type: str,
+        raw_associations: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """
+        Convert simplified association dicts into HubSpot v3 association format.
+
+        Each item in *raw_associations* should have:
+        - ``to_object_type``: 'contact', 'company', or 'deal'
+        - ``to_object_id``: HubSpot record ID (string)
+
+        Returns:
+            List of HubSpot v3 association objects ready for the API
+        """
+        hs_associations: list[dict[str, Any]] = []
+        type_ids: dict[str, int] = self._ENGAGEMENT_ASSOC_TYPE_IDS.get(engagement_type, {})
+
+        for assoc in raw_associations:
+            to_type: str = assoc.get("to_object_type", "")
+            to_id: str = str(assoc.get("to_object_id", ""))
+            assoc_type_id: int | None = type_ids.get(to_type)
+
+            if not to_id or assoc_type_id is None:
+                continue
+
+            hs_associations.append({
+                "to": {"id": to_id},
+                "types": [
+                    {
+                        "associationCategory": "HUBSPOT_DEFINED",
+                        "associationTypeId": assoc_type_id,
+                    }
+                ],
+            })
+
+        return hs_associations
 
     async def get_pipelines(self) -> list[dict[str, Any]]:
         """

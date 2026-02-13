@@ -55,7 +55,7 @@ class ChangeSession(Base):
     
     user_id: Mapped[Optional[UUID]] = mapped_column(
         PGUUID(as_uuid=True),
-        ForeignKey("users.id", ondelete="SET NULL"),
+        ForeignKey("users.id", ondelete="SET NULL", onupdate="CASCADE"),
         nullable=True,
         index=True,
     )
@@ -92,7 +92,7 @@ class ChangeSession(Base):
     
     resolved_by: Mapped[Optional[UUID]] = mapped_column(
         PGUUID(as_uuid=True),
-        ForeignKey("users.id", ondelete="SET NULL"),
+        ForeignKey("users.id", ondelete="SET NULL", onupdate="CASCADE"),
         nullable=True,
     )
     

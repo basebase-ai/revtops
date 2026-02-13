@@ -43,7 +43,7 @@ class Deal(Base):
         UUID(as_uuid=True), ForeignKey("accounts.id"), nullable=True
     )
     owner_id: Mapped[Optional[uuid.UUID]] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("users.id"), nullable=True
+        UUID(as_uuid=True), ForeignKey("users.id", onupdate="CASCADE"), nullable=True
     )
     pipeline_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True), ForeignKey("pipelines.id"), nullable=True
@@ -80,7 +80,7 @@ class Deal(Base):
         DateTime(timezone=True), nullable=True
     )
     updated_by: Mapped[Optional[uuid.UUID]] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL", onupdate="CASCADE"), nullable=True
     )
 
     # Relationships

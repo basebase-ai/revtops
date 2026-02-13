@@ -468,6 +468,7 @@ async def send_message(
             user_id=auth.user_id_str,
             organization_id=org_id,
             conversation_id=str(conv_uuid),
+            user_email=auth.email,
             local_time=request.local_time,
             timezone=request.timezone,
         )

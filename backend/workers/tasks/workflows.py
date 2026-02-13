@@ -216,49 +216,111 @@ def format_child_workflows_for_prompt(child_workflows: list[dict[str, Any]]) -> 
 def format_output_schema_instruction(output_schema: dict[str, Any] | None) -> str | None:
     """
     Format output schema as instructions for the agent.
-    
+
     Returns a string like:
-    
+
     Expected output format (JSON):
     {
       "enriched": boolean,
       "company_name": string,
       "linkedin_url": string
     }
-    
+
     Returns None if no schema is defined.
     """
     if output_schema is None:
         return None
-    
+
     # Simple case: primitive type
     schema_type = output_schema.get("type")
     if schema_type in ("string", "number", "boolean", "integer"):
         return f"Expected output: Return a {schema_type} value."
-    
+
     # Object type: format properties
     if schema_type == "object":
         properties = output_schema.get("properties", {})
         if not properties:
             return "Expected output: Return a JSON object."
-        
+
         lines: list[str] = ["Expected output format (return as JSON):"]
         lines.append("{")
-        
+
         prop_lines: list[str] = []
         for prop_name, prop_schema in properties.items():
             prop_type = prop_schema.get("type", "any")
             prop_desc = prop_schema.get("description", "")
             desc_str = f"  // {prop_desc}" if prop_desc else ""
             prop_lines.append(f'  "{prop_name}": {prop_type}{desc_str}')
-        
+
         lines.append(",\n".join(prop_lines))
         lines.append("}")
-        
         return "\n".join(lines)
-    
+
     # Array or complex type: just show the schema
     return f"Expected output format:\n```json\n{json.dumps(output_schema, indent=2)}\n```"
+
+
+def compute_effective_auto_approve_tools(
+    workflow_auto_approve_tools: list[str] | None,
+    parent_auto_approve_tools: list[str] | None,
+) -> list[str]:
+    """
+    Compute effective auto-approve tools for a workflow run.
+
+    Security invariant:
+    - A child workflow can never gain tool permissions its parent did not have.
+    - Root workflows (no parent restrictions) keep their configured permissions.
+
+    Returns:
+        Ordered list of effective tool names.
+    """
+    configured_tools: list[str] = list(workflow_auto_approve_tools or [])
+    inherited_tools: list[str] | None = parent_auto_approve_tools
+
+    # Root invocation: no parent restrictions to intersect with.
+    if inherited_tools is None:
+        return configured_tools
+
+    inherited_set = set(inherited_tools)
+    return [tool for tool in configured_tools if tool in inherited_set]
+
+
+async def apply_user_auto_approve_permissions(
+    session: Any,
+    user_id: UUID,
+    auto_approve_tools: list[str],
+) -> list[str]:
+    """Restrict workflow auto-approve tools to explicit per-user permissions."""
+    tools_requiring_explicit_permissions = {"github_issues_access", "save_memory"}
+    restricted_tools = [tool for tool in auto_approve_tools if tool in tools_requiring_explicit_permissions]
+    if not restricted_tools:
+        return auto_approve_tools
+
+    from sqlalchemy import select
+    from models.user_tool_setting import UserToolSetting
+
+    result = await session.execute(
+        select(UserToolSetting.tool_name).where(
+            UserToolSetting.user_id == user_id,
+            UserToolSetting.auto_approve.is_(True),
+            UserToolSetting.tool_name.in_(restricted_tools),
+        )
+    )
+    allowed_tools = set(result.scalars().all())
+
+    filtered_tools = [
+        tool for tool in auto_approve_tools
+        if tool not in tools_requiring_explicit_permissions or tool in allowed_tools
+    ]
+    removed_tools = [tool for tool in restricted_tools if tool not in allowed_tools]
+    for removed_tool in removed_tools:
+        logger.info(
+            "[Workflow] Removed %s from auto-approve for user %s because permission is disabled",
+            removed_tool,
+            user_id,
+        )
+
+    return filtered_tools
 
 
 def extract_structured_output(response_text: str) -> dict[str, Any] | None:
@@ -707,15 +769,35 @@ async def _execute_workflow_via_agent(
     
     # Extract call_stack from parent context for recursion detection
     call_stack: list[str] = []
+    parent_auto_approve_tools: list[str] | None = None
     if trigger_data and "_parent_context" in trigger_data:
         parent_context = trigger_data["_parent_context"]
         call_stack = parent_context.get("call_stack", [])
+        parent_auto_approve_tools = parent_context.get("auto_approve_tools")
+
+    effective_auto_approve_tools = compute_effective_auto_approve_tools(
+        workflow_auto_approve_tools=workflow.auto_approve_tools,
+        parent_auto_approve_tools=parent_auto_approve_tools,
+    )
+    effective_auto_approve_tools = await apply_user_auto_approve_permissions(
+        session=session,
+        user_id=workflow.created_by_user_id,
+        auto_approve_tools=effective_auto_approve_tools,
+    )
+    if parent_auto_approve_tools is not None:
+        logger.info(
+            "[Workflow] Auto-approve restriction applied for child workflow %s: configured=%s inherited=%s effective=%s",
+            workflow.id,
+            workflow.auto_approve_tools or [],
+            parent_auto_approve_tools,
+            effective_auto_approve_tools,
+        )
     
     # Create orchestrator with workflow context for auto-approvals
     workflow_context: dict[str, Any] = {
         "is_workflow": True,
         "workflow_id": str(workflow.id),
-        "auto_approve_tools": workflow.auto_approve_tools or [],
+        "auto_approve_tools": effective_auto_approve_tools,
         "call_stack": call_stack,  # For nested workflow recursion detection
     }
     

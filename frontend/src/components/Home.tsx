@@ -6,6 +6,7 @@
 
 import { useEffect, useState, useMemo, useCallback } from 'react';
 import { API_BASE } from '../lib/api';
+import { formatDateOnly } from '../lib/dates';
 import { useAppStore, useIntegrations } from '../store';
 
 interface Deal {
@@ -149,8 +150,7 @@ export function Home(): JSX.Element {
 
   const formatDate = (dateStr: string | null): string => {
     if (!dateStr) return '—';
-    const date = new Date(dateStr);
-    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    return formatDateOnly(dateStr);
   };
 
   const handleDealClick = useCallback((deal: Deal) => {

@@ -5,7 +5,7 @@ Tools are organized by category (see registry.py):
 - LOCAL_READ: run_sql_query, search_activities
 - LOCAL_WRITE: create_artifact, create_workflow, trigger_workflow
 - EXTERNAL_READ: web_search, fetch_url, enrich_contacts_with_apollo, enrich_company_with_apollo
-- EXTERNAL_WRITE: crm_write, send_email_from, send_slack, trigger_sync
+- EXTERNAL_WRITE: crm_write, send_email_from, send_slack, github_issues_access, trigger_sync
 
 EXTERNAL_WRITE tools require user approval by default (can be overridden in settings).
 """
@@ -139,7 +139,9 @@ class ToolProgressUpdater:
 # Note: Row-Level Security (RLS) handles organization filtering at the database level
 ALLOWED_TABLES: set[str] = {
     "deals", "accounts", "contacts", "activities", "meetings", "integrations", "users", "organizations",
-    "pipelines", "pipeline_stages", "workflows", "workflow_runs", "slack_user_mappings"
+    "pipelines", "pipeline_stages", "workflows", "workflow_runs", "user_mappings_for_identity",
+    "github_repositories", "github_commits", "github_pull_requests",
+    "shared_files",
 }
 
 
@@ -294,14 +296,45 @@ async def execute_tool(
         logger.info("[Tools] send_slack completed: %s", result.get("status"))
         return result
 
+    elif tool_name == "github_issues_access":
+        result = await _github_issues_access(tool_input, organization_id, user_id, skip_approval)
+        logger.info("[Tools] github_issues_access completed: %s", result.get("status", result.get("error", "unknown")))
+        return result
+
+    elif tool_name == "create_github_issue":
+        logger.warning("[Tools] create_github_issue is deprecated, remapping to github_issues_access")
+        result = await _github_issues_access(tool_input, organization_id, user_id, skip_approval)
+        logger.info("[Tools] create_github_issue completed via github_issues_access: %s", result.get("status", result.get("error", "unknown")))
+        return result
+
     elif tool_name == "trigger_sync":
         result = await _trigger_sync(tool_input, organization_id)
         logger.info("[Tools] trigger_sync completed: %s", result.get("status"))
         return result
 
+    elif tool_name == "search_cloud_files":
+        result = await _search_cloud_files(tool_input, organization_id, user_id)
+        logger.info("[Tools] search_cloud_files returned %d results", len(result.get("files", [])))
+        return result
+
+    elif tool_name == "read_cloud_file":
+        result = await _read_cloud_file(tool_input, organization_id, user_id)
+        logger.info("[Tools] read_cloud_file completed: %s", result.get("file_name", "unknown"))
+        return result
+
     elif tool_name == "create_artifact":
         result = await _create_artifact(tool_input, organization_id, user_id, context)
         logger.info("[Tools] create_artifact completed: %s", result.get("artifact_id"))
+        return result
+
+    elif tool_name == "save_memory":
+        result = await _save_memory(tool_input, organization_id, user_id, skip_approval)
+        logger.info("[Tools] save_memory completed: %s", result.get("memory_id", result.get("error", result.get("status"))))
+        return result
+
+    elif tool_name == "delete_memory":
+        result = await _delete_memory(tool_input, organization_id, user_id)
+        logger.info("[Tools] delete_memory completed: %s", result.get("status", result.get("error")))
         return result
 
     else:
@@ -687,6 +720,102 @@ def _parse_insert_values(query: str) -> dict[str, Any] | None:
     return dict(zip(columns, values))
 
 
+def _split_sql_csv(values: str) -> list[str]:
+    """Split a SQL comma-separated list while respecting quotes and nested parentheses."""
+    parts: list[str] = []
+    current: list[str] = []
+    in_string = False
+    string_char: str | None = None
+    depth = 0
+
+    i = 0
+    while i < len(values):
+        char = values[i]
+
+        if char in ("'", '"') and not in_string:
+            in_string = True
+            string_char = char
+            current.append(char)
+        elif char == string_char and in_string:
+            # Handle escaped quotes in SQL strings (e.g., 'it''s')
+            if i + 1 < len(values) and values[i + 1] == string_char:
+                current.append(char)
+                current.append(values[i + 1])
+                i += 1
+            else:
+                in_string = False
+                string_char = None
+                current.append(char)
+        elif not in_string and char == '(':
+            depth += 1
+            current.append(char)
+        elif not in_string and char == ')':
+            depth = max(0, depth - 1)
+            current.append(char)
+        elif not in_string and depth == 0 and char == ',':
+            part = ''.join(current).strip()
+            if part:
+                parts.append(part)
+            current = []
+        else:
+            current.append(char)
+
+        i += 1
+
+    tail = ''.join(current).strip()
+    if tail:
+        parts.append(tail)
+
+    return parts
+
+
+def _parse_sql_bool(raw_value: str) -> bool | None:
+    """Parse a SQL boolean literal; returns None if not a boolean literal."""
+    normalized = raw_value.strip().lower()
+    if normalized == "true":
+        return True
+    if normalized == "false":
+        return False
+    return None
+
+
+def _parse_sql_string_literal(raw_value: str) -> str | None:
+    """Parse a quoted SQL string literal; returns None for non-literals."""
+    value = raw_value.strip()
+    if len(value) >= 2 and value[0] == "'" and value[-1] == "'":
+        return value[1:-1].replace("''", "'")
+    return None
+
+
+def _workflow_insert_would_auto_run(query: str) -> bool:
+    """Return True when a workflow INSERT results in an enabled non-manual workflow."""
+    parsed = _parse_insert_for_injection(query)
+    if parsed is None:
+        logger.warning("[Tools._workflow_insert_would_auto_run] Could not parse workflow INSERT query")
+        return False
+
+    _, columns, values = parsed
+    col_names = [c.strip().lower() for c in _split_sql_csv(columns)]
+    raw_values = _split_sql_csv(values)
+    if len(col_names) != len(raw_values):
+        logger.warning(
+            "[Tools._workflow_insert_would_auto_run] Workflow INSERT parse mismatch (columns=%d values=%d)",
+            len(col_names),
+            len(raw_values),
+        )
+        return False
+
+    value_map = {name: raw_values[idx] for idx, name in enumerate(col_names)}
+
+    trigger_type_value = _parse_sql_string_literal(value_map.get("trigger_type", ""))
+    trigger_type = (trigger_type_value or "").strip().lower()
+
+    is_enabled_raw = value_map.get("is_enabled")
+    is_enabled = _parse_sql_bool(is_enabled_raw) if is_enabled_raw is not None else True
+
+    return bool(trigger_type and trigger_type != "manual" and is_enabled is True)
+
+
 def _parse_update_values(query: str) -> tuple[dict[str, Any], str] | None:
     """
     Parse an UPDATE query to extract SET values and WHERE clause.
@@ -790,6 +919,35 @@ async def _run_sql_write(
     
     if table not in WRITABLE_TABLES:
         return {"error": f"Table '{table}' is not in the writable list. Allowed tables: {', '.join(sorted(WRITABLE_TABLES))}"}
+
+    # Prevent autonomous workflow fan-out: a workflow run cannot create other
+    # workflows that are automatically runnable (enabled + non-manual trigger).
+    if context and context.get("is_workflow") and table == "workflows":
+        if operation == "INSERT" and _workflow_insert_would_auto_run(query):
+            logger.warning(
+                "[Tools._run_sql_write] Blocked workflow-created auto-run workflow INSERT"
+            )
+            return {
+                "error": (
+                    "Workflow executions cannot create enabled schedule/event workflows. "
+                    "Create the workflow as manual or disabled first."
+                )
+            }
+
+        if operation == "UPDATE":
+            lower_query = query.lower()
+            enables_workflow = re.search(r"\bis_enabled\s*=\s*true\b", lower_query) is not None
+            sets_auto_trigger = re.search(r"\btrigger_type\s*=\s*'\s*(schedule|event)\s*'", lower_query) is not None
+            if enables_workflow or sets_auto_trigger:
+                logger.warning(
+                    "[Tools._run_sql_write] Blocked workflow UPDATE that could enable auto-run child workflow"
+                )
+                return {
+                    "error": (
+                        "Workflow executions cannot enable or configure schedule/event triggers "
+                        "on workflows. Leave child workflows manual/disabled."
+                    )
+                }
     
     # ==========================================================================
     # CRM Tables: Route through PendingOperation for review/commit workflow
@@ -1194,12 +1352,15 @@ async def _fetch_url_via_scrapingbee(
         )
 
         if response.status_code != 200:
+            detail: str = response.text[:500] if response.text else "no response body"
             logger.error(
                 "[Tools._fetch_url] ScrapingBee error: %s %s",
                 response.status_code,
-                response.text[:500],
+                detail,
             )
-            raise Exception(f"ScrapingBee returned status {response.status_code}")
+            raise Exception(
+                f"ScrapingBee returned status {response.status_code}: {detail}"
+            )
 
         return response.text
 
@@ -1261,11 +1422,20 @@ async def _crm_write(
     if target_system not in ["hubspot"]:
         return {"error": f"Unsupported CRM system: {target_system}. Currently only 'hubspot' is supported."}
     
-    if record_type not in ["contact", "company", "deal"]:
-        return {"error": f"Invalid record_type: {record_type}. Must be 'contact', 'company', or 'deal'."}
+    _ENGAGEMENT_TYPES: frozenset[str] = frozenset({"call", "email", "meeting", "note"})
+    _CRM_RECORD_TYPES: frozenset[str] = frozenset({"contact", "company", "deal"})
+    _ALL_RECORD_TYPES: frozenset[str] = _CRM_RECORD_TYPES | _ENGAGEMENT_TYPES
+
+    if record_type not in _ALL_RECORD_TYPES:
+        return {"error": f"Invalid record_type: {record_type}. Must be one of: {', '.join(sorted(_ALL_RECORD_TYPES))}."}
     
+    is_engagement: bool = record_type in _ENGAGEMENT_TYPES
+
     if operation not in ["create", "update", "upsert"]:
         return {"error": f"Invalid operation: {operation}. Must be 'create', 'update', or 'upsert'."}
+    
+    if is_engagement and operation != "create":
+        return {"error": f"Engagements (call/email/meeting/note) only support 'create' operation, got '{operation}'."}
     
     if not records or not isinstance(records, list):
         return {"error": "No records provided. 'records' must be a non-empty array."}
@@ -1299,7 +1469,23 @@ async def _crm_write(
             validation_errors.append(f"Record {i+1} is not an object")
             continue
         
-        # Validate required fields based on record type
+        # For updates, the only required field is 'id' — skip create-specific checks
+        if operation == "update":
+            if not record.get("id"):
+                validation_errors.append(f"Record {i+1}: 'id' is required for updates")
+                continue
+            # Still normalise email/domain if provided
+            if record_type == "contact" and record.get("email"):
+                record["email"] = record["email"].lower().strip()
+            if record_type == "company" and record.get("domain"):
+                domain: str = record["domain"].lower().strip()
+                domain = domain.replace("https://", "").replace("http://", "")
+                domain = domain.split("/")[0]
+                record["domain"] = domain
+            validated_records.append(record)
+            continue
+
+        # Validate required fields based on record type (create / upsert)
         if record_type == "contact":
             if not record.get("email"):
                 validation_errors.append(f"Record {i+1}: 'email' is required for contacts")
@@ -1324,6 +1510,27 @@ async def _crm_write(
             if not record.get("dealname"):
                 validation_errors.append(f"Record {i+1}: 'dealname' is required for deals")
                 continue
+
+        elif is_engagement:
+            # All engagement types require hs_timestamp
+            if not record.get("hs_timestamp"):
+                validation_errors.append(f"Record {i+1}: 'hs_timestamp' is required for {record_type}s")
+                continue
+            # Validate associations format if present
+            raw_assocs: list[dict[str, Any]] | Any = record.get("associations")
+            if raw_assocs is not None:
+                if not isinstance(raw_assocs, list):
+                    validation_errors.append(f"Record {i+1}: 'associations' must be an array")
+                    continue
+                for j, assoc in enumerate(raw_assocs):
+                    if not isinstance(assoc, dict):
+                        validation_errors.append(f"Record {i+1}, association {j+1}: must be an object")
+                        continue
+                    if not assoc.get("to_object_type") or not assoc.get("to_object_id"):
+                        validation_errors.append(
+                            f"Record {i+1}, association {j+1}: 'to_object_type' and 'to_object_id' are required"
+                        )
+                        continue
         
         validated_records.append(record)
     
@@ -1336,9 +1543,10 @@ async def _crm_write(
     if not validated_records:
         return {"error": "No valid records after validation"}
     
-    # Check for duplicates in HubSpot (for create/upsert operations)
+    # Check for duplicates in HubSpot (for create/upsert operations on CRM record types)
+    # Engagements don't have duplicate detection
     # Only check first 10 records to avoid API rate limits and connection pool exhaustion
-    if operation in ["create", "upsert"] and target_system == "hubspot":
+    if operation in ["create", "upsert"] and target_system == "hubspot" and not is_engagement:
         try:
             from connectors.hubspot import HubSpotConnector
             connector = HubSpotConnector(organization_id)
@@ -1602,7 +1810,15 @@ async def _create_local_pending_records(
     """
     from services.change_session import add_proposed_create, add_proposed_update
 
-    table_map: dict[str, str] = {"contact": "contacts", "company": "accounts", "deal": "deals"}
+    table_map: dict[str, str] = {
+        "contact": "contacts",
+        "company": "accounts",
+        "deal": "deals",
+        "call": "activities",
+        "email": "activities",
+        "meeting": "activities",
+        "note": "activities",
+    }
     table_name: str | None = table_map.get(record_type)
     if not table_name or not change_session_id:
         return {
@@ -1687,17 +1903,25 @@ async def _create_local_pending_records(
             "change_session_id": change_session_id,
         }
 
+    # For engagements, inject _engagement_type metadata so the commit flow
+    # knows which HubSpot engagement object type (call/email/meeting/note) to use.
+    _engagement_record_types: frozenset[str] = frozenset({"call", "email", "meeting", "note"})
+    is_engagement_create: bool = record_type in _engagement_record_types
+
     created_count: int = 0
     create_errors: list[dict[str, Any]] = []
     async with get_session(organization_id=str(organization_id)) as session:
         for record in records_to_process:
             try:
                 new_record_id: UUID = uuid4()
+                payload: dict[str, Any] = dict(record)
+                if is_engagement_create:
+                    payload["_engagement_type"] = record_type
                 await add_proposed_create(
                     change_session_id=change_session_id,
                     table_name=table_name,
                     record_id=str(new_record_id),
-                    input_payload=record,
+                    input_payload=payload,
                     db_session=session,
                 )
                 created_count += 1
@@ -1794,13 +2018,37 @@ async def _execute_hubspot_operation(
             "created": [],
         }
     
+    # Determine if this is an engagement type
+    _engagement_types: frozenset[str] = frozenset({"call", "email", "meeting", "note"})
+    is_engagement: bool = crm_op.record_type in _engagement_types
+
     # Execute based on record type and operation
     created: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
     
     try:
         if crm_op.operation == "create":
-            if crm_op.record_type == "contact":
+            if is_engagement:
+                # ── Engagement creation (calls, emails, meetings, notes) ──
+                engagement_type: str = crm_op.record_type
+                for record in records_to_process:
+                    try:
+                        # Separate properties from associations
+                        raw_assocs: list[dict[str, Any]] = record.pop("associations", []) or []
+                        hs_associations: list[dict[str, Any]] = (
+                            connector.build_engagement_associations(engagement_type, raw_assocs)
+                            if raw_assocs else []
+                        )
+                        eng_result: dict[str, Any] = await connector.create_engagement(
+                            engagement_type=engagement_type,
+                            properties=record,
+                            associations=hs_associations if hs_associations else None,
+                        )
+                        created.append(eng_result)
+                    except Exception as eng_err:
+                        errors.append({"record": record, "error": str(eng_err)})
+
+            elif crm_op.record_type == "contact":
                 if len(records_to_process) == 1:
                     result = await connector.create_contact(records_to_process[0])
                     created.append(result)
@@ -1963,8 +2211,11 @@ async def _sync_created_records_to_db(
     user_uuid = UUID(user_id) if user_id else None
     
     # Map record_type to table name
-    table_map = {"contact": "contacts", "company": "accounts", "deal": "deals"}
-    table_name = table_map.get(record_type)
+    table_map: dict[str, str] = {
+        "contact": "contacts", "company": "accounts", "deal": "deals",
+        "call": "activities", "email": "activities", "meeting": "activities", "note": "activities",
+    }
+    table_name: str | None = table_map.get(record_type)
     
     async with get_session(organization_id=str(organization_id)) as session:
         for hs_record in created_records:
@@ -2074,6 +2325,59 @@ async def _sync_created_records_to_db(
                             snapshot_id, deal.to_dict(), db_session=session
                         )
                     synced += 1
+
+                elif record_type in ("call", "email", "meeting", "note"):
+                    # Build Activity from HubSpot engagement response
+                    from models.activity import Activity as ActivityModel
+
+                    # Derive subject from type-specific title properties
+                    subject: str | None = (
+                        properties.get("hs_call_title")
+                        or properties.get("hs_email_subject")
+                        or properties.get("hs_meeting_title")
+                        or None
+                    )
+                    description: str | None = (
+                        properties.get("hs_call_body")
+                        or properties.get("hs_email_text")
+                        or properties.get("hs_meeting_body")
+                        or properties.get("hs_note_body")
+                        or None
+                    )
+                    # Parse activity date from hs_timestamp (store naive UTC for DB column)
+                    activity_date: datetime | None = None
+                    ts_raw = properties.get("hs_timestamp")
+                    if ts_raw:
+                        try:
+                            from dateutil.parser import parse as parse_dt
+                            parsed = parse_dt(str(ts_raw))
+                            if getattr(parsed, "tzinfo", None) is not None:
+                                activity_date = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+                            else:
+                                activity_date = parsed
+                        except Exception:
+                            pass
+
+                    activity = ActivityModel(
+                        id=record_id,
+                        organization_id=organization_id,
+                        source_system="hubspot",
+                        source_id=hs_id,
+                        type=record_type,
+                        subject=subject,
+                        description=description,
+                        activity_date=activity_date,
+                        custom_fields=properties,
+                        updated_at=now,
+                        updated_by=user_uuid,
+                    )
+                    await session.merge(activity)
+
+                    if snapshot_id:
+                        await update_snapshot_after_data(
+                            snapshot_id, activity.to_dict(), db_session=session
+                        )
+                    synced += 1
                     
             except Exception as e:
                 logger.warning(
@@ -2161,6 +2465,12 @@ def _to_hubspot_properties(table_name: str, raw: dict[str, Any]) -> dict[str, An
         # HubSpot "industry" is a strict enum (e.g. ELECTRICAL_ELECTRONIC_MANUFACTURING).
         # Always drop it to avoid validation errors — store locally only.
         cleaned.pop("industry", None)
+    elif table_name == "activities":
+        # Engagements: strip the "associations" key (handled separately) and
+        # the "_engagement_type" metadata key — everything else is passed through
+        # as HubSpot engagement properties (hs_timestamp, hs_call_body, etc.)
+        cleaned.pop("associations", None)
+        cleaned.pop("_engagement_type", None)
 
     return cleaned
 
@@ -2216,6 +2526,8 @@ async def commit_change_session(
     contacts_to_create: list[tuple[UUID, dict[str, Any]]] = []
     accounts_to_create: list[tuple[UUID, dict[str, Any]]] = []
     deals_to_create: list[tuple[UUID, dict[str, Any]]] = []
+    # Engagements: (local_id, engagement_type, hs_properties, raw_associations)
+    engagements_to_create: list[tuple[UUID, str, dict[str, Any], list[dict[str, Any]]]] = []
     # Updates: (local_id, hs_properties, raw_local_fields)
     contacts_to_update: list[tuple[UUID, dict[str, Any], dict[str, Any]]] = []
     accounts_to_update: list[tuple[UUID, dict[str, Any], dict[str, Any]]] = []
@@ -2254,6 +2566,11 @@ async def commit_change_session(
                 accounts_to_create.append((record_id, hs_props))
             elif snapshot.table_name == "deals":
                 deals_to_create.append((record_id, hs_props))
+            elif snapshot.table_name == "activities":
+                # Engagement: extract the _engagement_type and raw associations from source_data
+                eng_type: str = source_data.get("_engagement_type", "note")
+                raw_assocs: list[dict[str, Any]] = source_data.get("associations", []) or []
+                engagements_to_create.append((record_id, eng_type, hs_props, raw_assocs))
         elif snapshot.operation == "update":
             if snapshot.table_name == "contacts":
                 contacts_to_update.append((record_id, hs_props, source_data))
@@ -2262,12 +2579,14 @@ async def commit_change_session(
             elif snapshot.table_name == "deals":
                 deals_to_update.append((record_id, hs_props, source_data))
 
-    total_creates: int = len(contacts_to_create) + len(accounts_to_create) + len(deals_to_create)
+    total_creates: int = len(contacts_to_create) + len(accounts_to_create) + len(deals_to_create) + len(engagements_to_create)
     total_updates: int = len(contacts_to_update) + len(accounts_to_update) + len(deals_to_update)
     total_records: int = total_creates + total_updates
     _log.info(
-        "[commit] Creates: %d contacts, %d accounts, %d deals. Updates: %d contacts, %d accounts, %d deals. Total: %d",
+        "[commit] Creates: %d contacts, %d accounts, %d deals, %d engagements. "
+        "Updates: %d contacts, %d accounts, %d deals. Total: %d",
         len(contacts_to_create), len(accounts_to_create), len(deals_to_create),
+        len(engagements_to_create),
         len(contacts_to_update), len(accounts_to_update), len(deals_to_update),
         total_records,
     )
@@ -2384,6 +2703,115 @@ async def commit_change_session(
             except Exception as e:
                 _log.error("[commit:create] FAILED deal %s: %s", local_id, e, exc_info=True)
                 errors.append({"table": "deals", "record_id": str(local_id), "error": str(e)})
+
+        # ── Create engagements (calls, emails, meetings, notes) ─────────
+        def _is_uuid(s: str) -> bool:
+            if not s or len(s) != 36:
+                return False
+            try:
+                UUID(s)
+                return True
+            except (ValueError, TypeError):
+                return False
+
+        async def _resolve_association_ids(
+            sess: Any,
+            raw: list[dict[str, Any]],
+        ) -> list[dict[str, Any]]:
+            """Resolve internal UUIDs in to_object_id to HubSpot source_id."""
+            resolved: list[dict[str, Any]] = []
+            for assoc in raw:
+                to_type: str = (assoc.get("to_object_type") or "").lower()
+                to_id: str = str(assoc.get("to_object_id", ""))
+                if not to_id:
+                    continue
+                if _is_uuid(to_id):
+                    try:
+                        uid = UUID(to_id)
+                        if to_type == "deal":
+                            row = await sess.get(Deal, uid)
+                            if row and getattr(row, "source_id", None):
+                                to_id = str(row.source_id)
+                        elif to_type == "contact":
+                            row = await sess.get(Contact, uid)
+                            if row and getattr(row, "source_id", None):
+                                to_id = str(row.source_id)
+                        elif to_type == "company":
+                            row = await sess.get(Account, uid)
+                            if row and getattr(row, "source_id", None):
+                                to_id = str(row.source_id)
+                    except (ValueError, TypeError):
+                        pass
+                resolved.append({"to_object_type": to_type, "to_object_id": to_id})
+            return resolved
+
+        for local_id, eng_type, hs_props, raw_assocs in engagements_to_create:
+            try:
+                resolved_assocs: list[dict[str, Any]] = (
+                    await _resolve_association_ids(session, raw_assocs)
+                    if raw_assocs else []
+                )
+                hs_associations: list[dict[str, Any]] = (
+                    connector.build_engagement_associations(eng_type, resolved_assocs)
+                    if resolved_assocs else []
+                )
+                _log.info(
+                    "[commit:create] Pushing %s %s to HubSpot: props=%s assocs=%d",
+                    eng_type, local_id, list(hs_props.keys()), len(hs_associations),
+                )
+                hs_result = await connector.create_engagement(
+                    engagement_type=eng_type,
+                    properties=hs_props,
+                    associations=hs_associations if hs_associations else None,
+                )
+                hs_id = hs_result.get("id")
+                _log.info("[commit:create] HubSpot returned id=%s for %s %s", hs_id, eng_type, local_id)
+
+                if hs_id:
+                    from models.activity import Activity as ActivityModel
+
+                    subject_val: str | None = (
+                        hs_props.get("hs_call_title")
+                        or hs_props.get("hs_email_subject")
+                        or hs_props.get("hs_meeting_title")
+                        or None
+                    )
+                    description_val: str | None = (
+                        hs_props.get("hs_call_body")
+                        or hs_props.get("hs_email_text")
+                        or hs_props.get("hs_meeting_body")
+                        or hs_props.get("hs_note_body")
+                        or None
+                    )
+                    activity_date_val: datetime | None = None
+                    ts_raw: str | None = hs_props.get("hs_timestamp")
+                    if ts_raw:
+                        try:
+                            from dateutil.parser import parse as parse_dt
+                            parsed: datetime = parse_dt(str(ts_raw))
+                            # Store as naive UTC for TIMESTAMP WITHOUT TIME ZONE column
+                            if getattr(parsed, "tzinfo", None) is not None:
+                                activity_date_val = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+                            else:
+                                activity_date_val = parsed
+                        except Exception:
+                            pass
+
+                    activity = ActivityModel(
+                        id=local_id, organization_id=org_uuid, source_system="hubspot",
+                        source_id=str(hs_id), type=eng_type,
+                        subject=subject_val, description=description_val,
+                        activity_date=activity_date_val, custom_fields=hs_props,
+                        updated_at=now, updated_by=user_uuid,
+                    )
+                    session.add(activity)
+                    synced_count += 1
+                    _log.info("[commit:create] Local activity created %s (hs=%s)", local_id, hs_id)
+                else:
+                    _log.warning("[commit:create] No HS id for %s %s: %s", eng_type, local_id, hs_result)
+            except Exception as e:
+                _log.error("[commit:create] FAILED %s %s: %s", eng_type, local_id, e, exc_info=True)
+                errors.append({"table": "activities", "record_id": str(local_id), "error": str(e)})
 
         # ══════════════════════════════════════════════════════════════════
         # 3b. UPDATES – load existing record, push to HubSpot, apply local
@@ -2737,23 +3165,27 @@ async def _enrich_contacts_with_apollo(
             }
     
     try:
+        import asyncio
+
         connector = ApolloConnector(organization_id)
-        
-        # Enrich contacts in bulk
-        enriched_results = await connector.bulk_enrich_people(
-            people=contacts,
-            reveal_personal_emails=reveal_personal_emails,
-            reveal_phone_number=reveal_phone_numbers,
-        )
-        
-        # Pair original contacts with enrichment results
+
+        # Use single-person /people/match (free-plan compatible); bulk_match requires paid plan
         enriched_contacts: list[dict[str, Any]] = []
         match_count = 0
         no_match_count = 0
-        
-        for i, enrichment in enumerate(enriched_results):
-            original = contacts[i] if i < len(contacts) else {}
-            
+
+        for i, person in enumerate(contacts):
+            original: dict[str, Any] = person if isinstance(person, dict) else {}
+            enrichment: dict[str, Any] | None = await connector.enrich_person(
+                email=original.get("email"),
+                first_name=original.get("first_name"),
+                last_name=original.get("last_name"),
+                domain=original.get("domain"),
+                linkedin_url=original.get("linkedin_url"),
+                organization_name=original.get("organization_name"),
+                reveal_personal_emails=reveal_personal_emails,
+                reveal_phone_number=reveal_phone_numbers,
+            )
             if enrichment and enrichment.get("name"):
                 match_count += 1
                 enriched_contacts.append({
@@ -2768,7 +3200,10 @@ async def _enrich_contacts_with_apollo(
                     "enriched": None,
                     "matched": False,
                 })
-        
+            # Brief pause between calls to respect rate limits
+            if i < len(contacts) - 1:
+                await asyncio.sleep(0.5)
+
         return {
             "success": True,
             "total": len(contacts),
@@ -2778,7 +3213,7 @@ async def _enrich_contacts_with_apollo(
             "message": f"Enriched {match_count} of {len(contacts)} contacts. "
                        f"{'Use crm_write to update these contacts in your CRM.' if match_count > 0 else 'No matches found - try providing more identifying info (email, domain).'}",
         }
-        
+
     except Exception as e:
         logger.error("[Tools._enrich_contacts_with_apollo] Failed: %s", str(e))
         return {"error": f"Apollo enrichment failed: {str(e)}"}
@@ -3180,6 +3615,128 @@ async def execute_send_slack(
         }
 
 
+
+
+async def _github_issues_access(
+    params: dict[str, Any], organization_id: str, user_id: str | None, skip_approval: bool = False
+) -> dict[str, Any]:
+    """
+    Create a GitHub issue in a repository.
+
+    Requires approval by default unless auto-approved.
+    """
+    repo_full_name = params.get("repo_full_name", "").strip()
+    title = params.get("title", "").strip()
+    body = params.get("body")
+    labels = params.get("labels")
+    assignees = params.get("assignees")
+
+    if not repo_full_name:
+        return {"error": "repo_full_name is required (owner/repo)."}
+    if "/" not in repo_full_name:
+        return {"error": "repo_full_name must be in 'owner/repo' format."}
+    if not title:
+        return {"error": "Issue title is required."}
+
+    # Validate optional fields early so approval preview is trustworthy
+    if labels is not None and not isinstance(labels, list):
+        return {"error": "labels must be an array of strings."}
+    if assignees is not None and not isinstance(assignees, list):
+        return {"error": "assignees must be an array of GitHub usernames."}
+
+    async with get_session(organization_id=organization_id) as session:
+        result = await session.execute(
+            select(Integration).where(
+                Integration.organization_id == UUID(organization_id),
+                Integration.provider == "github",
+                Integration.is_active == True,
+            )
+        )
+        integration = result.scalar_one_or_none()
+
+        if not integration:
+            return {
+                "error": "No active GitHub integration found. Please connect GitHub in Data Sources.",
+                "suggestion": "Go to Data Sources and connect GitHub before filing issues.",
+            }
+
+    if skip_approval:
+        logger.info("[Tools._github_issues_access] Auto-approved, creating issue immediately")
+        return await execute_github_issues_access(params, organization_id)
+
+    operation_id = str(uuid4())
+    store_pending_operation(
+        operation_id=operation_id,
+        tool_name="github_issues_access",
+        params=params,
+        organization_id=organization_id,
+        user_id=user_id or "",
+    )
+
+    return {
+        "type": "pending_approval",
+        "status": "pending_approval",
+        "operation_id": operation_id,
+        "tool_name": "github_issues_access",
+        "preview": {
+            "repo_full_name": repo_full_name,
+            "title": title,
+            "body": (body[:500] + "...") if isinstance(body, str) and len(body) > 500 else body,
+            "labels": labels or [],
+            "assignees": assignees or [],
+        },
+        "message": f"Ready to create GitHub issue in {repo_full_name}. Please review and click Approve to create it.",
+    }
+
+
+async def execute_github_issues_access(
+    params: dict[str, Any], organization_id: str
+) -> dict[str, Any]:
+    """Actually create a GitHub issue (called after user approval)."""
+    from connectors.github import GitHubConnector
+
+    repo_full_name = params.get("repo_full_name", "").strip()
+    title = params.get("title", "").strip()
+    body = params.get("body")
+    labels = params.get("labels")
+    assignees = params.get("assignees")
+
+    if not repo_full_name or not title:
+        return {
+            "status": "failed",
+            "error": "repo_full_name and title are required.",
+        }
+
+    try:
+        connector = GitHubConnector(organization_id=organization_id)
+        issue = await connector.create_issue(
+            repo_full_name=repo_full_name,
+            title=title,
+            body=body,
+            labels=labels,
+            assignees=assignees,
+        )
+        logger.info("[Tools] Created GitHub issue %s in %s", issue.get("number"), repo_full_name)
+        return {
+            "status": "completed",
+            "message": f"Created GitHub issue #{issue.get('number')} in {repo_full_name}",
+            "issue": issue,
+        }
+    except httpx.HTTPStatusError as e:
+        logger.error("[Tools.execute_github_issues_access] GitHub API failed: %s", str(e))
+        detail = e.response.text[:500] if e.response is not None else str(e)
+        return {
+            "status": "failed",
+            "error": f"GitHub API error: {detail}",
+        }
+    except Exception as e:
+        logger.error("[Tools.execute_github_issues_access] Failed: %s", str(e))
+        return {
+            "status": "failed",
+            "error": str(e),
+        }
+
+
 async def _trigger_sync(
     params: dict[str, Any], organization_id: str
 ) -> dict[str, Any]:
@@ -3321,14 +3878,30 @@ async def _run_workflow(
             
             workflow_name: str = workflow.name
         
+        # Parent workflow permissions must always bound child permissions.
+        inherited_auto_approve_tools: list[str] | None = None
+        if context:
+            inherited_auto_approve_tools = context.get("auto_approve_tools")
+
+        parent_context: dict[str, Any] = {
+            "call_stack": call_stack + [workflow_id],
+            "parent_workflow_id": context.get("workflow_id") if context else None,
+            "parent_conversation_id": context.get("conversation_id") if context else None,
+        }
+        if inherited_auto_approve_tools is not None:
+            parent_context["auto_approve_tools"] = inherited_auto_approve_tools
+
         if not wait_for_completion:
             # Fire and forget - queue via Celery
             from workers.tasks.workflows import execute_workflow
             task = execute_workflow.delay(
-                workflow_id, 
-                "run_workflow", 
-                input_data, 
-                None, 
+                workflow_id,
+                "run_workflow",
+                {
+                    **input_data,
+                    "_parent_context": parent_context,
+                },
+                None,
                 organization_id
             )
             
@@ -3341,17 +3914,10 @@ async def _run_workflow(
             }
         
         # === Synchronous execution ===
-        # Build child context with updated call stack
-        child_call_stack: list[str] = call_stack + [workflow_id]
-        
         # Build trigger_data with parent context (child workflow will set root_conversation_id from this)
         trigger_data: dict[str, Any] = {
             **input_data,
-            "_parent_context": {
-                "call_stack": child_call_stack,
-                "parent_workflow_id": context.get("workflow_id") if context else None,
-                "parent_conversation_id": context.get("conversation_id") if context else None,
-            },
+            "_parent_context": parent_context,
         }
         
         # Execute workflow directly (not via Celery) for synchronous result
@@ -3722,3 +4288,239 @@ async def _create_artifact(
         },
         "message": f"Created {content_type} artifact: {title}",
     }
+
+
+# =============================================================================
+# Google Drive Tools
+# =============================================================================
+
+
+async def _search_cloud_files(
+    params: dict[str, Any], organization_id: str, user_id: str | None
+) -> dict[str, Any]:
+    """
+    Search synced cloud files by name across all sources.
+
+    Queries the shared_files table directly (no connector needed for search).
+    """
+    name_query: str = params.get("name_query", "").strip()
+    source_filter: str | None = params.get("source")
+    limit: int = min(params.get("limit", 20), 50)
+
+    if not name_query:
+        return {"error": "name_query is required."}
+
+    try:
+        from uuid import UUID as _UUID
+        from sqlalchemy import select, and_
+        from models.shared_file import SharedFile
+        from models.database import get_session
+
+        org_uuid = _UUID(organization_id)
+
+        # Normalise wildcard-only queries (e.g. "*") to match all files
+        cleaned_query: str = name_query.replace("*", "").strip()
+
+        # Org-wide search: all team members' files are visible
+        filters: list[Any] = [
+            SharedFile.organization_id == org_uuid,
+            SharedFile.mime_type != "application/vnd.google-apps.folder",
+        ]
+
+        if cleaned_query:
+            like_pattern: str = f"%{cleaned_query}%"
+            filters.append(SharedFile.name.ilike(like_pattern))
+
+        if source_filter:
+            filters.append(SharedFile.source == source_filter)
+
+        async with get_session(organization_id=organization_id) as session:
+            query = (
+                select(SharedFile)
+                .where(and_(*filters))
+                .order_by(SharedFile.source_modified_at.desc())
+                .limit(limit)
+            )
+            result = await session.execute(query)
+            rows: list[SharedFile] = list(result.scalars().all())
+
+        files: list[dict[str, Any]] = [row.to_dict() for row in rows]
+
+        if not files:
+            return {
+                "files": [],
+                "count": 0,
+                "message": (
+                    f"No files matching '{name_query}' found. "
+                    "Make sure your cloud files have been synced from the Data Sources page."
+                ),
+            }
+
+        return {
+            "files": files,
+            "count": len(files),
+        }
+    except ValueError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        logger.error("[Tools._search_cloud_files] Failed: %s", e)
+        return {"error": f"Failed to search cloud files: {str(e)}"}
+
+
+async def _read_cloud_file(
+    params: dict[str, Any], organization_id: str, user_id: str | None
+) -> dict[str, Any]:
+    """
+    Read the text content of a synced cloud file.
+
+    Looks up the file's source, then dispatches to the appropriate connector.
+    """
+    external_id: str = params.get("external_id", "").strip()
+
+    if not external_id:
+        return {"error": "external_id is required."}
+
+    try:
+        from uuid import UUID as _UUID
+        from sqlalchemy import select, and_
+        from models.shared_file import SharedFile
+        from models.database import get_session
+
+        # Look up the file to determine its source (org-wide, not user-scoped)
+        org_uuid = _UUID(organization_id)
+
+        async with get_session(organization_id=organization_id) as session:
+            result = await session.execute(
+                select(SharedFile).where(
+                    and_(
+                        SharedFile.organization_id == org_uuid,
+                        SharedFile.external_id == external_id,
+                    )
+                )
+            )
+            file_record: SharedFile | None = result.scalar_one_or_none()
+
+        if not file_record:
+            return {"error": f"File not found in synced metadata: {external_id}"}
+
+        source: str = file_record.source
+        # Use the file owner's credentials to fetch content from the source API
+        file_owner_id: str = str(file_record.user_id)
+
+        # Dispatch to the right connector based on source
+        if source == "google_drive":
+            from connectors.google_drive import GoogleDriveConnector
+            connector = GoogleDriveConnector(organization_id, file_owner_id)
+            return await connector.get_file_content(external_id)
+        else:
+            return {"error": f"Reading files from '{source}' is not yet supported."}
+
+    except ValueError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        logger.error("[Tools._read_cloud_file] Failed: %s", e)
+        return {"error": f"Failed to read cloud file: {str(e)}"}
+
+
+# =============================================================================
+# User Memory Tools
+# =============================================================================
+
+
+async def _save_memory(
+    params: dict[str, Any],
+    organization_id: str,
+    user_id: str | None,
+    skip_approval: bool = False,
+) -> dict[str, Any]:
+    """Save a persistent memory for the current user."""
+    content: str = params.get("content", "").strip()
+    if not content:
+        return {"error": "content is required."}
+    if not user_id:
+        return {"error": "Cannot save memory without a user context."}
+
+    if skip_approval:
+        logger.info("[Tools._save_memory] Auto-approved, saving memory immediately")
+        return await execute_save_memory(params, organization_id, user_id)
+
+    operation_id = str(uuid4())
+    store_pending_operation(
+        operation_id=operation_id,
+        tool_name="save_memory",
+        params=params,
+        organization_id=organization_id,
+        user_id=user_id,
+    )
+
+    return {
+        "type": "pending_approval",
+        "status": "pending_approval",
+        "operation_id": operation_id,
+        "tool_name": "save_memory",
+        "preview": {
+            "content": content[:500] + ("..." if len(content) > 500 else ""),
+        },
+        "message": "Ready to save memory. Please review and click Approve to persist it.",
+    }
+
+
+async def execute_save_memory(
+    params: dict[str, Any],
+    organization_id: str,
+    user_id: str,
+) -> dict[str, Any]:
+    """Persist a user memory after approval."""
+    content: str = params.get("content", "").strip()
+    if not content:
+        return {"status": "failed", "error": "content is required."}
+
+    from models.user_memory import UserMemory
+
+    memory = UserMemory(
+        user_id=UUID(user_id),
+        organization_id=UUID(organization_id),
+        content=content,
+    )
+
+    async with get_session(organization_id=organization_id) as session:
+        session.add(memory)
+        await session.commit()
+
+    return {"memory_id": str(memory.id), "content": content, "status": "saved"}
+
+
+async def _delete_memory(
+    params: dict[str, Any],
+    organization_id: str,
+    user_id: str | None,
+) -> dict[str, Any]:
+    """Delete a previously saved memory by ID."""
+    memory_id: str = params.get("memory_id", "").strip()
+    if not memory_id:
+        return {"error": "memory_id is required."}
+    if not user_id:
+        return {"error": "Cannot delete memory without a user context."}
+
+    from models.user_memory import UserMemory
+
+    async with get_session(organization_id=organization_id) as session:
+        result = await session.execute(
+            select(UserMemory).where(
+                UserMemory.id == UUID(memory_id),
+                UserMemory.user_id == UUID(user_id),
+            )
+        )
+        memory: UserMemory | None = result.scalar_one_or_none()
+        if not memory:
+            return {"error": f"Memory {memory_id} not found or does not belong to this user."}
+        await session.delete(memory)
+        await session.commit()
+
+    return {"status": "deleted", "memory_id": memory_id}
+
+
+
+async def execute_create_github_issue(params: dict[str, Any], organization_id: str) -> dict[str, Any]:
+    """Backward-compatible alias for deprecated function name."""
+    return await execute_github_issues_access(params, organization_id)

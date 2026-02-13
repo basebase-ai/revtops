@@ -75,7 +75,7 @@ class Activity(Base):
     activity_date: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
     created_by_id: Mapped[Optional[uuid.UUID]] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("users.id"), nullable=True
+        UUID(as_uuid=True), ForeignKey("users.id", onupdate="CASCADE"), nullable=True
     )
     custom_fields: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB, nullable=True)
     synced_at: Mapped[Optional[datetime]] = mapped_column(
@@ -91,7 +91,7 @@ class Activity(Base):
         DateTime(timezone=True), nullable=True
     )
     updated_by: Mapped[Optional[uuid.UUID]] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL", onupdate="CASCADE"), nullable=True
     )
 
     # Relationships

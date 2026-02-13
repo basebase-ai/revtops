@@ -6,6 +6,7 @@
 
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { searchData, type DealSearchResult, type AccountSearchResult } from '../api/client';
+import { formatDateOnly } from '../lib/dates';
 import { useAppStore } from '../store';
 
 interface SearchProps {
@@ -118,11 +119,7 @@ export function Search({ organizationId }: SearchProps): JSX.Element {
 
   const formatDate = (dateStr: string | null): string => {
     if (!dateStr) return '—';
-    return new Date(dateStr).toLocaleDateString('en-US', {
-      month: 'short',
-      day: 'numeric',
-      year: 'numeric',
-    });
+    return formatDateOnly(dateStr);
   };
 
   const hasResults = results && (results.deals.length > 0 || results.accounts.length > 0);

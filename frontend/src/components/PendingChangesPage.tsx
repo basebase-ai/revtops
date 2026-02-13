@@ -5,7 +5,7 @@
  * Shows all pending change sessions with per-session and global Commit/Discard.
  */
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { apiRequest } from '../lib/api';
 import { useAppStore } from '../store';
 
@@ -56,6 +56,13 @@ interface ActionResponse {
   errors?: Array<{ table: string; record_id: string; error: string }>;
 }
 
+interface CommitResult {
+  status: 'success' | 'partial' | 'error';
+  message: string;
+  syncedCount: number;
+  errorCount: number;
+}
+
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 function friendlyTable(table: string): string {
@@ -91,7 +98,9 @@ export function PendingChangesPage(): JSX.Element {
   const [data, setData] = useState<PendingChangesResponse | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
-  const [busySession, setBusySession] = useState<string | null>(null); // session id being acted on
+  const [commitResult, setCommitResult] = useState<CommitResult | null>(null);
+  const autoFadeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [busySession, setBusySession] = useState<{ id: string; action: 'commit' | 'discard' } | null>(null);
   const [busyAll, setBusyAll] = useState<'commit' | 'discard' | null>(null);
   const [expandedSessions, setExpandedSessions] = useState<Set<string>>(new Set());
 
@@ -128,35 +137,85 @@ export function PendingChangesPage(): JSX.Element {
     return () => window.removeEventListener('pending-changes-updated', handleUpdate);
   }, [fetchPending]);
 
+  // Clean up auto-fade timer on unmount
+  useEffect(() => {
+    return () => {
+      if (autoFadeTimer.current) clearTimeout(autoFadeTimer.current);
+    };
+  }, []);
+
+  const dismissResult = useCallback(() => {
+    setCommitResult(null);
+    if (autoFadeTimer.current) {
+      clearTimeout(autoFadeTimer.current);
+      autoFadeTimer.current = null;
+    }
+  }, []);
+
+  /** Build a CommitResult from an ActionResponse. */
+  const buildCommitResult = (res: ActionResponse): CommitResult => {
+    const syncedCount: number = res.synced_count ?? 0;
+    const errorCount: number = res.error_count ?? 0;
+
+    if (res.status === 'failed') {
+      return { status: 'error', message: res.message || 'Commit failed', syncedCount: 0, errorCount: 0 };
+    }
+    if (errorCount > 0) {
+      return {
+        status: 'partial',
+        message: `Synced ${syncedCount} record${syncedCount !== 1 ? 's' : ''} to CRM. ${errorCount} record${errorCount !== 1 ? 's' : ''} failed (may have been deleted from CRM).`,
+        syncedCount,
+        errorCount,
+      };
+    }
+    return {
+      status: 'success',
+      message: `Successfully synced ${syncedCount} record${syncedCount !== 1 ? 's' : ''} to CRM.`,
+      syncedCount,
+      errorCount: 0,
+    };
+  };
+
+  const showCommitResult = (result: CommitResult): void => {
+    if (autoFadeTimer.current) clearTimeout(autoFadeTimer.current);
+    setCommitResult(result);
+    if (result.status === 'success') {
+      autoFadeTimer.current = setTimeout(() => {
+        setCommitResult(null);
+        autoFadeTimer.current = null;
+      }, 5000);
+    }
+  };
+
   // ── Per-session actions ─────────────────────────────────────────────────
 
   const commitSession = async (sessionId: string): Promise<void> => {
-    setBusySession(sessionId);
+    setBusySession({ id: sessionId, action: 'commit' });
     setError(null);
+    setCommitResult(null);
+    if (autoFadeTimer.current) clearTimeout(autoFadeTimer.current);
     try {
       const { data: res, error: apiErr } = await apiRequest<ActionResponse>(
         `/change-sessions/${sessionId}/commit?user_id=${userId}`,
         { method: 'POST', body: JSON.stringify({}) },
       );
       if (apiErr) {
-        setError(apiErr);
-      } else if (res?.status === 'failed') {
-        setError(res.message || 'Commit failed');
-      } else if (res?.error_count && res.error_count > 0) {
-        setError(`Synced ${res.synced_count ?? 0} records, but ${res.error_count} failed. ${res.errors?.map((e) => e.error).join('; ') ?? ''}`);
+        showCommitResult({ status: 'error', message: apiErr, syncedCount: 0, errorCount: 0 });
+      } else if (res) {
+        showCommitResult(buildCommitResult(res));
       }
       await fetchPending();
       window.dispatchEvent(new Event('pending-changes-updated'));
     } catch (err: unknown) {
       const msg: string = err instanceof Error ? err.message : 'Failed to commit session';
-      setError(msg);
+      showCommitResult({ status: 'error', message: msg, syncedCount: 0, errorCount: 0 });
     } finally {
       setBusySession(null);
     }
   };
 
   const discardSession = async (sessionId: string): Promise<void> => {
-    setBusySession(sessionId);
+    setBusySession({ id: sessionId, action: 'discard' });
     setError(null);
     try {
       const { error: apiErr } = await apiRequest<ActionResponse>(
@@ -178,19 +237,22 @@ export function PendingChangesPage(): JSX.Element {
   const commitAll = async (): Promise<void> => {
     setBusyAll('commit');
     setError(null);
+    setCommitResult(null);
+    if (autoFadeTimer.current) clearTimeout(autoFadeTimer.current);
     try {
       const { data: res, error: apiErr } = await apiRequest<ActionResponse>(
         `/change-sessions/commit-all?user_id=${userId}`,
         { method: 'POST', body: JSON.stringify({}) },
       );
-      if (apiErr) setError(apiErr);
-      else if (res?.error_count && res.error_count > 0) {
-        setError(`Synced ${res.synced_count ?? 0} records, but ${res.error_count} failed`);
+      if (apiErr) {
+        showCommitResult({ status: 'error', message: apiErr, syncedCount: 0, errorCount: 0 });
+      } else if (res) {
+        showCommitResult(buildCommitResult(res));
       }
       await fetchPending();
       window.dispatchEvent(new Event('pending-changes-updated'));
     } catch {
-      setError('Failed to commit all changes');
+      showCommitResult({ status: 'error', message: 'Failed to commit all changes', syncedCount: 0, errorCount: 0 });
     } finally {
       setBusyAll(null);
     }
@@ -285,7 +347,36 @@ export function PendingChangesPage(): JSX.Element {
 
       {/* Body */}
       <div className="flex-1 overflow-y-auto p-6">
-        {/* Error banner */}
+        {/* Commit result banner — persists until dismissed */}
+        {commitResult && (
+          <div
+            className={`mb-4 px-4 py-3 rounded-lg border ${
+              commitResult.status === 'success'
+                ? 'bg-emerald-950/50 border-emerald-800/60 text-emerald-300'
+                : commitResult.status === 'partial'
+                ? 'bg-amber-950/50 border-amber-800/60 text-amber-300'
+                : 'bg-red-950/50 border-red-800/60 text-red-300'
+            }`}
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-start gap-2 min-w-0">
+                <span className="flex-shrink-0 mt-0.5 text-base">
+                  {commitResult.status === 'success' ? '✓' : commitResult.status === 'partial' ? '⚠' : '✗'}
+                </span>
+                <span className="text-sm">{commitResult.message}</span>
+              </div>
+              <button
+                onClick={dismissResult}
+                className="flex-shrink-0 text-sm opacity-60 hover:opacity-100 transition-opacity px-1"
+                aria-label="Dismiss"
+              >
+                ✕
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* API fetch error banner */}
         {error && (
           <div className="mb-4 px-4 py-2 rounded-lg bg-red-500/10 border border-red-500/30 text-red-400 text-sm max-h-24 overflow-y-auto break-words">
             {error.length > 300 ? error.slice(0, 300) + '…' : error}
@@ -312,7 +403,7 @@ export function PendingChangesPage(): JSX.Element {
           <div className="max-w-3xl mx-auto space-y-3">
             {data.sessions.map((session) => {
               const isExpanded: boolean = expandedSessions.has(session.id);
-              const isBusy: boolean = busySession === session.id || busyAll !== null;
+              const isBusy: boolean = (busySession?.id === session.id) || busyAll !== null;
 
               return (
                 <div
@@ -462,7 +553,7 @@ export function PendingChangesPage(): JSX.Element {
                       disabled={isBusy}
                       className="px-3 py-1 text-xs font-medium rounded-md border border-surface-600 text-surface-300 hover:bg-surface-800 disabled:opacity-40 transition-colors"
                     >
-                      Discard
+                      {busySession?.id === session.id && busySession?.action === 'discard' ? 'Discarding...' : 'Discard'}
                     </button>
                     <button
                       onClick={(e) => {
@@ -472,7 +563,7 @@ export function PendingChangesPage(): JSX.Element {
                       disabled={isBusy}
                       className="px-3 py-1 text-xs font-medium rounded-md bg-primary-600 hover:bg-primary-500 text-white disabled:opacity-40 transition-colors"
                     >
-                      {busySession === session.id ? `Committing ${session.record_count} record${session.record_count !== 1 ? 's' : ''}...` : 'Commit'}
+                      {busySession?.id === session.id && busySession?.action === 'commit' ? `Committing ${session.record_count} record${session.record_count !== 1 ? 's' : ''}...` : 'Commit'}
                     </button>
                   </div>
                 </div>

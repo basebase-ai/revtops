@@ -19,7 +19,7 @@ Architecture:
 import json
 import logging
 from collections import defaultdict
-from typing import Dict, Set
+from typing import Dict, Optional, Set
 from uuid import UUID, uuid4
 
 from fastapi import WebSocket, WebSocketDisconnect
@@ -89,6 +89,7 @@ async def broadcast_sync_progress(
     provider: str,
     count: int,
     status: str = "syncing",
+    step: Optional[str] = None,
 ) -> None:
     """
     Broadcast sync progress to all connected clients for an organization.
@@ -100,15 +101,19 @@ async def broadcast_sync_progress(
         provider: The provider name (e.g., "google_calendar")
         count: Current count of synced items
         status: "syncing" or "completed"
+        step: Current sync phase (e.g., "accounts", "deals", "contacts", "activities")
     """
+    data: dict[str, str | int] = {
+        "provider": provider,
+        "count": count,
+        "status": status,
+    }
+    if step is not None:
+        data["step"] = step
     await sync_broadcaster.broadcast(
         organization_id=organization_id,
         event_type="sync_progress",
-        data={
-            "provider": provider,
-            "count": count,
-            "status": status,
-        },
+        data=data,
     )
 
 
@@ -157,6 +162,8 @@ from agents.tools import (
     update_tool_call_result,
     execute_send_email_from,
     execute_send_slack,
+    execute_github_issues_access,
+    execute_save_memory,
 )
 from models.conversation import Conversation
 from models.database import get_session
@@ -207,6 +214,8 @@ async def _execute_tool_approval(
         remove_pending_operation,
         execute_send_email_from,
         execute_send_slack,
+        execute_github_issues_access,
+        execute_save_memory,
     )
     
     # First check if this is in our in-memory pending operations store
@@ -235,6 +244,14 @@ async def _execute_tool_approval(
             return result
         elif tool_name == "send_slack":
             result = await execute_send_slack(params, op_org_id)
+            result["tool_name"] = tool_name
+            return result
+        elif tool_name == "github_issues_access":
+            result = await execute_github_issues_access(params, op_org_id)
+            result["tool_name"] = tool_name
+            return result
+        elif tool_name == "save_memory":
+            result = await execute_save_memory(params, op_org_id, op_user_id)
             result["tool_name"] = tool_name
             return result
         else:

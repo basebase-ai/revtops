@@ -8,9 +8,13 @@
 export {
   useTeamMembers,
   useUpdateOrganization,
+  useLinkIdentity,
+  useUnlinkIdentity,
   organizationKeys,
   type Organization,
   type TeamMember,
+  type TeamMembersResult,
+  type IdentityMapping,
 } from "./useOrganization";
 
 // Integrations are now in Zustand store - re-export types for convenience

@@ -9,10 +9,11 @@
  * - Delete workflows
  */
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, type KeyboardEvent } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAppStore } from '../store';
-import { API_BASE } from '../lib/api';
+import { apiRequest } from '../lib/api';
+import { useTeamMembers } from '../hooks/useOrganization';
 
 // Types
 interface WorkflowStep {
@@ -73,17 +74,17 @@ interface WorkflowListResponse {
 
 // Fetch workflows for the organization
 async function fetchWorkflows(orgId: string): Promise<Workflow[]> {
-  const response = await fetch(`${API_BASE}/workflows/${orgId}`);
-  if (!response.ok) throw new Error('Failed to fetch workflows');
-  const data: WorkflowListResponse = await response.json();
+  console.debug('[Workflows] Fetching workflows', { orgId });
+  const { data, error } = await apiRequest<WorkflowListResponse>(`/workflows/${orgId}`);
+  if (error || !data) throw new Error(error ?? 'Failed to fetch workflows');
   return data.workflows;
 }
 
 // Fetch runs for a workflow
 async function fetchWorkflowRuns(orgId: string, workflowId: string): Promise<WorkflowRun[]> {
-  const response = await fetch(`${API_BASE}/workflows/${orgId}/${workflowId}/runs?limit=10`);
-  if (!response.ok) throw new Error('Failed to fetch workflow runs');
-  return response.json();
+  const { data, error } = await apiRequest<WorkflowRun[]>(`/workflows/${orgId}/${workflowId}/runs?limit=10`);
+  if (error || !data) throw new Error(error ?? 'Failed to fetch workflow runs');
+  return data;
 }
 
 // Trigger a workflow
@@ -94,27 +95,27 @@ interface TriggerResponse {
 }
 
 async function triggerWorkflow(orgId: string, workflowId: string): Promise<TriggerResponse> {
-  const response = await fetch(`${API_BASE}/workflows/${orgId}/${workflowId}/trigger`, {
+  const { data, error } = await apiRequest<TriggerResponse>(`/workflows/${orgId}/${workflowId}/trigger`, {
     method: 'POST',
   });
-  if (!response.ok) throw new Error('Failed to trigger workflow');
-  return response.json();
+  if (error || !data) throw new Error(error ?? 'Failed to trigger workflow');
+  return data;
 }
 
 // Delete a workflow
 async function deleteWorkflow(orgId: string, workflowId: string): Promise<void> {
-  const response = await fetch(`${API_BASE}/workflows/${orgId}/${workflowId}`, {
+  const { error } = await apiRequest<{ status: string }>(`/workflows/${orgId}/${workflowId}`, {
     method: 'DELETE',
   });
-  if (!response.ok) throw new Error('Failed to delete workflow');
+  if (error) throw new Error(error);
 }
 
 // Delete a workflow run
 async function deleteWorkflowRun(orgId: string, runId: string): Promise<void> {
-  const response = await fetch(`${API_BASE}/workflows/${orgId}/runs/${runId}`, {
+  const { error } = await apiRequest<{ status: string }>(`/workflows/${orgId}/runs/${runId}`, {
     method: 'DELETE',
   });
-  if (!response.ok) throw new Error('Failed to delete run');
+  if (error) throw new Error(error);
 }
 
 // Create a workflow
@@ -130,10 +131,58 @@ interface CreateWorkflowParams {
   child_workflows?: string[];
 }
 
+interface WorkflowDraft {
+  name: string;
+  description: string;
+  prompt: string;
+  triggerType: 'schedule' | 'manual';
+  cron: string;
+  autoApproveTools: string[];
+  showAdvanced: boolean;
+  inputSchemaText: string;
+  outputSchemaText: string;
+  selectedChildWorkflows: string[];
+}
+
+const WORKFLOW_DRAFT_VERSION = 'v1';
+
+function getWorkflowDraftStorageKey(orgId?: string): string {
+  return `workflow-create-draft:${WORKFLOW_DRAFT_VERSION}:${orgId ?? 'unknown-org'}`;
+}
+
+function readWorkflowDraft(orgId?: string): WorkflowDraft | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const savedDraft = window.localStorage.getItem(getWorkflowDraftStorageKey(orgId));
+    if (!savedDraft) return null;
+    return JSON.parse(savedDraft) as WorkflowDraft;
+  } catch (error) {
+    console.warn('[Workflows] Failed to read workflow draft from localStorage', error);
+    return null;
+  }
+}
+
+function saveWorkflowDraft(orgId: string | undefined, draft: WorkflowDraft): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(getWorkflowDraftStorageKey(orgId), JSON.stringify(draft));
+  } catch (error) {
+    console.warn('[Workflows] Failed to save workflow draft to localStorage', error);
+  }
+}
+
+function clearWorkflowDraft(orgId?: string): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.removeItem(getWorkflowDraftStorageKey(orgId));
+  } catch (error) {
+    console.warn('[Workflows] Failed to clear workflow draft from localStorage', error);
+  }
+}
+
 async function createWorkflow(orgId: string, userId: string, params: CreateWorkflowParams): Promise<Workflow> {
-  const response = await fetch(`${API_BASE}/workflows/${orgId}?user_id=${userId}`, {
+  const { data, error } = await apiRequest<Workflow>(`/workflows/${orgId}?user_id=${userId}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       name: params.name,
       description: params.description ?? null,
@@ -150,18 +199,14 @@ async function createWorkflow(orgId: string, userId: string, params: CreateWorkf
       is_enabled: true,
     }),
   });
-  if (!response.ok) {
-    const error = await response.json().catch(() => ({ detail: 'Failed to create workflow' }));
-    throw new Error(error.detail ?? 'Failed to create workflow');
-  }
-  return response.json();
+  if (error || !data) throw new Error(error ?? 'Failed to create workflow');
+  return data;
 }
 
 // Update workflow
 async function updateWorkflow(orgId: string, workflowId: string, params: CreateWorkflowParams): Promise<Workflow> {
-  const response = await fetch(`${API_BASE}/workflows/${orgId}/${workflowId}`, {
+  const { data, error } = await apiRequest<Workflow>(`/workflows/${orgId}/${workflowId}`, {
     method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       name: params.name,
       description: params.description ?? null,
@@ -176,22 +221,18 @@ async function updateWorkflow(orgId: string, workflowId: string, params: CreateW
       child_workflows: params.child_workflows,
     }),
   });
-  if (!response.ok) {
-    const error = await response.json().catch(() => ({ detail: 'Failed to update workflow' }));
-    throw new Error(error.detail ?? 'Failed to update workflow');
-  }
-  return response.json();
+  if (error || !data) throw new Error(error ?? 'Failed to update workflow');
+  return data;
 }
 
 // Toggle workflow enabled state
 async function toggleWorkflow(orgId: string, workflowId: string, enabled: boolean): Promise<Workflow> {
-  const response = await fetch(`${API_BASE}/workflows/${orgId}/${workflowId}`, {
+  const { data, error } = await apiRequest<Workflow>(`/workflows/${orgId}/${workflowId}`, {
     method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ is_enabled: enabled }),
   });
-  if (!response.ok) throw new Error('Failed to update workflow');
-  return response.json();
+  if (error || !data) throw new Error(error ?? 'Failed to update workflow');
+  return data;
 }
 
 // Format relative time
@@ -606,36 +647,68 @@ function WorkflowModal({
   workflow,
 }: WorkflowModalProps): JSX.Element {
   const isEditMode = !!workflow;
+  const organization = useAppStore((state) => state.organization);
+  const createDraft = !isEditMode ? readWorkflowDraft(organization?.id) : null;
   
   // Initialize state from workflow if editing
-  const [name, setName] = useState(workflow?.name ?? '');
-  const [description, setDescription] = useState(workflow?.description ?? '');
-  const [prompt, setPrompt] = useState(workflow?.prompt ?? '');
+  const [name, setName] = useState(workflow?.name ?? createDraft?.name ?? '');
+  const [description, setDescription] = useState(workflow?.description ?? createDraft?.description ?? '');
+  const [prompt, setPrompt] = useState(workflow?.prompt ?? createDraft?.prompt ?? '');
   const [triggerType, setTriggerType] = useState<'schedule' | 'manual'>(
-    workflow?.trigger_type === 'schedule' ? 'schedule' : 'manual'
+    workflow?.trigger_type === 'schedule' ? 'schedule' : (createDraft?.triggerType ?? 'manual')
   );
   const [cron, setCron] = useState(
-    workflow?.trigger_config?.cron ?? '0 9 * * 1-5'
+    workflow?.trigger_config?.cron ?? createDraft?.cron ?? '0 9 * * 1-5'
   );
   const [autoApproveTools, setAutoApproveTools] = useState<string[]>(
-    workflow?.auto_approve_tools ?? []
+    workflow?.auto_approve_tools ?? createDraft?.autoApproveTools ?? []
   );
   const [showAdvanced, setShowAdvanced] = useState(
-    !!(workflow?.input_schema || workflow?.output_schema)
+    !!(workflow?.input_schema || workflow?.output_schema) || createDraft?.showAdvanced === true
   );
   const [inputSchemaText, setInputSchemaText] = useState(
-    workflow?.input_schema ? JSON.stringify(workflow.input_schema, null, 2) : ''
+    workflow?.input_schema ? JSON.stringify(workflow.input_schema, null, 2) : (createDraft?.inputSchemaText ?? '')
   );
   const [outputSchemaText, setOutputSchemaText] = useState(
-    workflow?.output_schema ? JSON.stringify(workflow.output_schema, null, 2) : ''
+    workflow?.output_schema ? JSON.stringify(workflow.output_schema, null, 2) : (createDraft?.outputSchemaText ?? '')
   );
   const [schemaError, setSchemaError] = useState<string | null>(null);
   const [selectedChildWorkflows, setSelectedChildWorkflows] = useState<string[]>(
-    workflow?.child_workflows ?? []
+    workflow?.child_workflows ?? createDraft?.selectedChildWorkflows ?? []
   );
 
+  useEffect(() => {
+    if (isEditMode) return;
+
+    console.debug('[Workflows] Persisting workflow create draft');
+    saveWorkflowDraft(organization?.id, {
+      name,
+      description,
+      prompt,
+      triggerType,
+      cron,
+      autoApproveTools,
+      showAdvanced,
+      inputSchemaText,
+      outputSchemaText,
+      selectedChildWorkflows,
+    });
+  }, [
+    autoApproveTools,
+    cron,
+    description,
+    inputSchemaText,
+    isEditMode,
+    name,
+    organization?.id,
+    outputSchemaText,
+    prompt,
+    selectedChildWorkflows,
+    showAdvanced,
+    triggerType,
+  ]);
+
   // Get all workflows for child workflow selection (exclude current workflow)
-  const organization = useAppStore((state) => state.organization);
   const { data: allWorkflows = [] } = useQuery({
     queryKey: ['workflows', organization?.id],
     queryFn: () => fetchWorkflows(organization?.id ?? ''),
@@ -662,6 +735,8 @@ function WorkflowModal({
     { id: 'loop_over', label: 'Loop Over Items', description: 'Run a workflow for each item in a list' },
     { id: 'send_slack', label: 'Post to Slack', description: 'Send messages to Slack channels' },
     { id: 'send_email_from', label: 'Send Email', description: 'Send emails from your connected account' },
+    { id: 'github_issues_access', label: 'GitHub Issues Access', description: 'Create GitHub issues (no code write access)' },
+    { id: 'save_memory', label: 'Save Interim Values', description: 'Store intermediate values and preferences for later workflow steps' },
     { id: 'run_sql_write', label: 'Write Data', description: 'Insert, update, or delete records' },
   ];
 
@@ -1016,6 +1091,14 @@ export function Workflows(): JSX.Element {
     enabled: !!organization?.id,
   });
 
+  const { data: teamMembersData } = useTeamMembers(organization?.id ?? null, user?.id ?? null);
+
+  const workflowCreatorNames = (teamMembersData?.members ?? []).reduce<Record<string, string>>((acc, member) => {
+    const creatorLabel = member.name?.trim() || member.email;
+    acc[member.id] = creatorLabel;
+    return acc;
+  }, {});
+
   // Auto-refresh when navigating to this view or when workflows are modified via chat
   useEffect(() => {
     // Refetch on mount (navigation to this view)
@@ -1087,6 +1170,7 @@ export function Workflows(): JSX.Element {
     mutationFn: (params: CreateWorkflowParams) =>
       createWorkflow(organization?.id ?? '', user?.id ?? '', params),
     onSuccess: () => {
+      clearWorkflowDraft(organization?.id);
       void queryClient.invalidateQueries({ queryKey: ['workflows'] });
       setShowModal(false);
     },
@@ -1155,15 +1239,17 @@ export function Workflows(): JSX.Element {
             Automated tasks that run on schedule or manually
           </p>
         </div>
-        <button
-          onClick={openCreateModal}
-          className="px-4 py-2 bg-primary-600 hover:bg-primary-700 text-white rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
-        >
-          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-          </svg>
-          Create Workflow
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={openCreateModal}
+            className="px-4 py-2 bg-primary-600 hover:bg-primary-700 text-white rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
+          >
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+            </svg>
+            Create Workflow
+          </button>
+        </div>
       </header>
 
       {/* Content */}
@@ -1199,6 +1285,7 @@ export function Workflows(): JSX.Element {
                     <WorkflowCard
                       key={workflow.id}
                       workflow={workflow}
+                      creatorName={workflowCreatorNames[workflow.created_by_user_id]}
                       onClick={() => setSelectedWorkflow(workflow)}
                     />
                   ))}
@@ -1217,6 +1304,7 @@ export function Workflows(): JSX.Element {
                     <WorkflowCard
                       key={workflow.id}
                       workflow={workflow}
+                      creatorName={workflowCreatorNames[workflow.created_by_user_id]}
                       onClick={() => setSelectedWorkflow(workflow)}
                     />
                   ))}
@@ -1261,22 +1349,39 @@ export function Workflows(): JSX.Element {
 // Workflow card component
 function WorkflowCard({
   workflow,
+  creatorName,
   onClick,
 }: {
   workflow: Workflow;
+  creatorName?: string;
   onClick: () => void;
 }): JSX.Element {
+  const creatorDisplay = creatorName ?? workflow.created_by_user_id;
+
+  const handleCardKeyDown = (event: KeyboardEvent<HTMLDivElement>): void => {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      onClick();
+    }
+  };
+
   return (
-    <button
+    <div
       onClick={onClick}
-      className="text-left p-4 bg-surface-900 border border-surface-800 rounded-xl hover:border-surface-700 transition-colors"
+      onKeyDown={handleCardKeyDown}
+      role="button"
+      tabIndex={0}
+      className="text-left p-4 bg-surface-900 border border-surface-800 rounded-xl hover:border-surface-700 transition-colors cursor-pointer"
     >
       <div className="flex items-start justify-between mb-2">
         <h3 className="font-medium text-surface-100 truncate flex-1">{workflow.name}</h3>
-        <span className={`ml-2 w-2 h-2 rounded-full ${workflow.is_enabled ? 'bg-green-500' : 'bg-surface-600'}`} />
+        <div className="ml-2 flex items-center gap-2">
+          <span className={`w-2 h-2 rounded-full ${workflow.is_enabled ? 'bg-green-500' : 'bg-surface-600'}`} />
+        </div>
       </div>
       
       <p className="text-xs text-surface-500 mb-3">{getTriggerDescription(workflow)}</p>
+      <p className="text-xs text-surface-500 mb-3">Created by {creatorDisplay}</p>
       
       <div className="flex items-center gap-1 flex-wrap">
         {workflow.steps.slice(0, 3).map((step, idx) => (
@@ -1294,6 +1399,6 @@ function WorkflowCard({
           Last run: {formatRelativeTime(workflow.last_run_at)}
         </div>
       )}
-    </button>
+    </div>
   );
 }

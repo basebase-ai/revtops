@@ -275,14 +275,31 @@ async def _get_user_from_token(payload: dict) -> User:
     # Use admin session to bypass RLS for user lookup
     from models.database import get_admin_session
     async with get_admin_session() as session:
-        user = await session.get(User, user_uuid)
+        user: Optional[User] = await session.get(User, user_uuid)
         
         if not user:
-            logger.warning(f"User not found for JWT subject: {sub}")
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="User not found",
-            )
+            # Fallback: look up by email from JWT payload.
+            # This handles users who were created (e.g. via waitlist/invite) with a
+            # different DB ID before they signed in via OAuth with a new Supabase ID.
+            email: Optional[str] = payload.get("email")
+            if email:
+                result = await session.execute(
+                    select(User).where(User.email == email)
+                )
+                user = result.scalar_one_or_none()
+                if user:
+                    logger.warning(
+                        f"User found by email fallback: JWT sub={sub}, "
+                        f"DB id={user.id}, email={email}. "
+                        f"IDs should be aligned via /auth/users/sync."
+                    )
+            
+            if not user:
+                logger.warning(f"User not found for JWT subject: {sub}")
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="User not found",
+                )
         
         if user.status == "crm_only":
             raise HTTPException(
@@ -295,6 +312,8 @@ async def _get_user_from_token(payload: dict) -> User:
 
 async def get_current_auth(
     authorization: Optional[str] = Header(None, alias="Authorization"),
+    masquerade_user_id: Optional[str] = Header(None, alias="X-Masquerade-User-Id"),
+    admin_user_id: Optional[str] = Header(None, alias="X-Admin-User-Id"),
 ) -> AuthContext:
     """
     FastAPI dependency that verifies the JWT and returns AuthContext.
@@ -320,13 +339,54 @@ async def get_current_auth(
     token = _extract_token(authorization)
     payload = await _verify_jwt(token)
     user = await _get_user_from_token(payload)
-    
+
+    if masquerade_user_id:
+        try:
+            target_user_uuid = UUID(masquerade_user_id)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid masquerade user ID",
+            )
+
+        if admin_user_id and admin_user_id != str(user.id):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Admin header does not match authenticated user",
+            )
+
+        if not (user.role == "global_admin" or "global_admin" in (user.roles or [])):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Only global admins can masquerade",
+            )
+
+        from models.database import get_admin_session
+        async with get_admin_session() as session:
+            target_user: Optional[User] = await session.get(User, target_user_uuid)
+
+        if not target_user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Masquerade user not found",
+            )
+
+        logger.info(
+            "Masquerade auth context applied: admin=%s target=%s",
+            user.id,
+            target_user.id,
+        )
+
+        user = target_user
+
+    is_global_admin = user.role == "global_admin" or "global_admin" in (user.roles or [])
+
     return AuthContext(
         user_id=user.id,
         organization_id=user.organization_id,
         email=user.email,
         role=user.role or "user",
-        is_global_admin=user.role == "global_admin",
+        is_global_admin=is_global_admin,
     )
 
 
@@ -353,12 +413,13 @@ async def get_optional_auth(
         token = _extract_token(authorization)
         payload = await _verify_jwt(token)
         user = await _get_user_from_token(payload)
+        is_global_admin = user.role == "global_admin" or "global_admin" in (user.roles or [])
         return AuthContext(
             user_id=user.id,
             organization_id=user.organization_id,
             email=user.email,
             role=user.role or "user",
-            is_global_admin=user.role == "global_admin",
+            is_global_admin=is_global_admin,
         )
     except HTTPException:
         return None

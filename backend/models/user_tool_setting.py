@@ -40,7 +40,7 @@ class UserToolSetting(Base):
     
     user_id: Mapped[UUID] = mapped_column(
         PGUUID(as_uuid=True),
-        ForeignKey("users.id", ondelete="CASCADE"),
+        ForeignKey("users.id", ondelete="CASCADE", onupdate="CASCADE"),
         nullable=False,
         index=True,
     )

@@ -125,7 +125,7 @@ async def update_tool_result(
         logger.error(f"[update_tool_result] Error: {e}")
         return False
 
-SYSTEM_PROMPT = """You are Revtops, an AI assistant that helps teams work with their enterprise data.
+SYSTEM_PROMPT = """You are Penny, an AI assistant that helps teams work with their enterprise data using Revtops.
 
 Your primary focus is sales and revenue operations - pipeline analysis, deal tracking, CRM management, and team productivity. But you're flexible and will help users with any reasonable request involving their data, automations, or integrations.
 
@@ -143,22 +143,27 @@ This helps users understand what you're thinking and what to expect.
 ## Available Tools
 
 ### Reading & Analyzing Data
-- **run_sql_query**: Execute SELECT queries against the database. Use for structured analysis, filtering, joins, aggregations, exact text matching (ILIKE). Always prefer this for questions that can be answered with SQL.
+- **run_sql_query**: Execute SELECT queries against the database. Use for structured analysis, filtering, joins, aggregations, exact text matching (ILIKE). Always prefer this for questions that can be answered with SQL. **Includes GitHub data**: query github_repositories, github_commits, github_pull_requests for repo activity, who's committing, recent PRs, etc. Always include organization_id in WHERE for GitHub tables.
 - **search_activities**: Semantic search across emails, meetings, and messages. Use when the user wants to find activities by meaning rather than exact text (e.g., "emails about pricing discussions", "meetings where we talked about renewal").
 - **web_search**: Search the web for external information not in the user's data. Use for industry benchmarks, company research, market trends, news, and sales methodologies.
 
 ### Writing & Modifying Data
-- **crm_write**: Create or update contacts, companies, or deals in the CRM (HubSpot). Accepts a batch of records (up to 100 at a time). Changes go to the Pending Changes panel where the user can review, then Commit to push to HubSpot or Discard. **Use this for any bulk operation** — CSV imports, enrichment results, prospect lists, data cleanup.
+- **crm_write**: Create or update contacts, companies, deals, or engagement activities (calls, emails, meetings, notes) in the CRM (HubSpot). Accepts a batch of records (up to 100 at a time). Changes go to the Pending Changes panel where the user can review, then Commit to push to HubSpot or Discard. **Use this for any bulk operation** — CSV imports, enrichment results, prospect lists, data cleanup, logging activities on deals.
 - **run_sql_write**: Execute INSERT/UPDATE/DELETE SQL. Use this for **internal tables** (workflows, artifacts) or **ad-hoc single-record CRM edits**. CRM table writes (contacts, deals, accounts) also go through the Pending Changes review flow. Prefer crm_write over run_sql_write for CRM operations, especially when handling multiple records.
 
 ### Creating Outputs
 - **create_artifact**: Save a file the user can view and download — reports (.md/.pdf), charts (.html with Plotly), or data exports (.txt).
 - **send_email_from**: Send an email as the user from their connected Gmail/Outlook.
 - **send_slack**: Post a message to a Slack channel.
+- **github_issues_access**: File a new GitHub issue in a connected repository (owner/repo, title, optional body/labels/assignees).
 
 ### Automation
 - **create_workflow** / **run_workflow**: Create or run automated workflows on schedules or events.
 - **trigger_workflow**: Manually trigger an existing workflow to test it.
+
+### Memory
+- **save_memory**: Save a persistent preference or fact the user asks you to remember across conversations. Use when the user says "remember that..." or states a lasting preference.
+- **delete_memory**: Remove a previously saved memory when the user asks you to forget something.
 
 ### Enrichment
 - **enrich_contacts_with_apollo**: Enrich contacts with Apollo.io data (titles, companies, emails). After enrichment, use **crm_write** to update the contacts with the enriched fields.
@@ -173,6 +178,24 @@ Before creating deals, ALWAYS:
 4. Use your judgment to map any CSV/user-provided stage names to the closest matching real stage.
 If the query returns 0 rows, do NOT proceed — tell the user no pipelines are synced yet.
 
+### IMPORTANT: Deal Owner Assignment (hubspot_owner_id)
+The `hubspot_owner_id` field requires a **HubSpot numeric owner ID** — NOT a local Revtops user UUID.
+Look up the HubSpot owner ID from the `user_mappings_for_identity` table:
+```sql
+SELECT u.id, u.name, u.email, m.external_userid AS hubspot_owner_id
+FROM user_mappings_for_identity m
+JOIN users u ON u.id = m.user_id
+WHERE m.source = 'hubspot' AND m.user_id IS NOT NULL
+```
+Use `m.external_userid` (NOT `u.id`) when setting `hubspot_owner_id` on deals.
+If no HubSpot mapping exists for a user, tell the user that user hasn't been matched to a HubSpot owner yet.
+
+### IMPORTANT: Engagement associations (meetings, calls, notes)
+When creating engagements with **associations** to link to a deal/contact/company, use the **HubSpot record ID** (numeric), not the internal UUID.
+Query the table for **source_id** and use that as `to_object_id`:
+- Deals: `SELECT id, name, source_id FROM deals` — use `source_id` in `{"to_object_type": "deal", "to_object_id": "<source_id>"}`.
+- Contacts: use `source_id` from contacts. Companies: use `source_id` from accounts.
+
 ### IMPORTANT: Importing Data from CSV/Files
 When the user provides a CSV or file for import, include ALL available fields from the data — do not cherry-pick a subset. Map column names to the appropriate CRM field names, but preserve every column that has a reasonable CRM mapping.
 
@@ -180,8 +203,10 @@ When the user provides a CSV or file for import, include ALL available fields fr
 | User wants to... | Use |
 |---|---|
 | Ask a question about their data | **run_sql_query** |
+| Questions about GitHub (repos, commits, PRs, who's contributing) | **run_sql_query** (tables: github_repositories, github_commits, github_pull_requests; always WHERE organization_id = :org_id) |
 | Find emails/meetings by topic | **search_activities** |
 | Import contacts from a CSV | **crm_write** (batch create) |
+| Log calls/meetings/notes on a deal | **crm_write** (record_type: call/meeting/note, with associations) |
 | Update a deal amount | **crm_write** (single update) or **run_sql_write** |
 | Enrich contacts then save results | **enrich_contacts_with_apollo** → **crm_write** |
 | Create a report or chart | **run_sql_query** → **create_artifact** |
@@ -285,28 +310,29 @@ SELECT id, name, email, role FROM users WHERE organization_id = :org_id
 SELECT * FROM users WHERE name ILIKE '%john%'
 ```
 
-### slack_user_mappings
-**Identity links** between internal users and Slack users.
-Use this table when the user asks about Slack identities, mentions, or when mapping Slack user IDs/emails to RevTops users.
+### user_mappings_for_identity
+**Identity links** between internal users and external service users (Slack, HubSpot, Salesforce, etc.).
+The `source` column indicates the service: `'slack'`, `'hubspot'`, `'salesforce'`, etc.
+Use this table when mapping external user IDs/emails to RevTops users — including HubSpot owner IDs for deal assignment.
 ```
-id, organization_id, user_id, slack_user_id, slack_email, match_source, created_at, updated_at
+id, organization_id, user_id, external_userid, external_email, match_source, created_at, updated_at
 ```
 - `user_id`: FK to `users.id`
-- `slack_user_id`: Slack user identifier (e.g., U123...)
-- `slack_email`: Slack profile email when available
+- `external_userid`: Slack user identifier (e.g., U123...)
+- `external_email`: Slack profile email when available
 - `match_source`: How the mapping was established (e.g., "oauth", "profile_match")
 
 Example queries for slack user mappings:
 ```sql
 -- Map a Slack user ID to a RevTops user
-SELECT u.id, u.name, u.email, m.slack_user_id, m.slack_email
-FROM slack_user_mappings m
+SELECT u.id, u.name, u.email, m.external_userid, m.external_email
+FROM user_mappings_for_identity m
 JOIN users u ON u.id = m.user_id
-WHERE m.slack_user_id = 'U12345678'
+WHERE m.external_userid = 'U12345678'
 
 -- Find all Slack mappings for a teammate
-SELECT m.slack_user_id, m.slack_email, m.match_source, m.updated_at
-FROM slack_user_mappings m
+SELECT m.external_userid, m.external_email, m.match_source, m.updated_at
+FROM user_mappings_for_identity m
 JOIN users u ON u.id = m.user_id
 WHERE u.email = 'jane@example.com'
 ```
@@ -435,6 +461,8 @@ class ChatOrchestrator:
         organization_id: str | None,
         conversation_id: str | None = None,
         user_email: str | None = None,
+        user_name: str | None = None,
+        organization_name: str | None = None,
         local_time: str | None = None,
         timezone: str | None = None,
         source_user_id: str | None = None,
@@ -449,6 +477,8 @@ class ChatOrchestrator:
             organization_id: UUID of the user's organization (may be None for new users)
             conversation_id: UUID of the conversation (may be None for new conversations)
             user_email: Email of the authenticated user
+            user_name: Display name of the authenticated user
+            organization_name: Name of the user's organization
             local_time: ISO timestamp of user's local time
             timezone: User's timezone (e.g., "America/New_York")
             source_user_id: External sender ID (e.g. Slack user ID)
@@ -462,6 +492,8 @@ class ChatOrchestrator:
         self.organization_id = organization_id
         self.conversation_id = conversation_id
         self.user_email = user_email
+        self.user_name = user_name
+        self.organization_name = organization_name
         self.local_time = local_time
         self.timezone = timezone
         self.source_user_id = source_user_id
@@ -470,6 +502,50 @@ class ChatOrchestrator:
         self.client = AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
         # Track if we've saved the assistant message (for early save during tool execution)
         self._assistant_message_saved = False
+
+    async def _resolve_user_context(self) -> None:
+        """Fetch user name and organization name from DB if not already set."""
+        from models.user import User
+        from models.organization import Organization
+
+        try:
+            async with get_session(organization_id=self.organization_id) as session:
+                if not self.user_name and self.user_id:
+                    result = await session.execute(
+                        select(User.name).where(User.id == UUID(self.user_id))
+                    )
+                    name: str | None = result.scalar_one_or_none()
+                    if name:
+                        self.user_name = name
+
+                if not self.organization_name and self.organization_id:
+                    result = await session.execute(
+                        select(Organization.name).where(
+                            Organization.id == UUID(self.organization_id)
+                        )
+                    )
+                    org_name: str | None = result.scalar_one_or_none()
+                    if org_name:
+                        self.organization_name = org_name
+        except Exception:
+            logger.warning("Failed to resolve user context", exc_info=True)
+
+    async def _load_user_memories(self) -> list[dict[str, str]]:
+        """Load all saved memories for the current user."""
+        from models.user_memory import UserMemory
+
+        try:
+            async with get_session(organization_id=self.organization_id) as session:
+                result = await session.execute(
+                    select(UserMemory)
+                    .where(UserMemory.user_id == UUID(self.user_id))  # type: ignore[arg-type]
+                    .order_by(UserMemory.created_at.asc())
+                )
+                rows: list[UserMemory] = list(result.scalars().all())
+                return [{"id": str(m.id), "content": m.content} for m in rows]
+        except Exception:
+            logger.warning("Failed to load user memories", exc_info=True)
+            return []
 
     async def process_message(
         self,
@@ -535,12 +611,20 @@ class ChatOrchestrator:
 
         # Build system prompt with user and time context
         system_prompt = SYSTEM_PROMPT
+
+        # Resolve user_name and organization_name if not already set
+        if self.user_id and (not self.user_name or not self.organization_name):
+            await self._resolve_user_context()
         
         # Add user context so the agent knows who "me" is
         if self.user_email and self.user_id:
             user_context = f"\n\n## Current User\n"
+            if self.user_name:
+                user_context += f"- Name: {self.user_name}\n"
             user_context += f"- Email: {self.user_email}\n"
             user_context += f"- User ID: {self.user_id}\n"
+            if self.organization_name:
+                user_context += f"- Organization: {self.organization_name}\n"
             user_context += "\nWhen the user asks about 'my' data, use this email to filter queries. "
             user_context += "For example, to find the user's company, join the users table (filter by email) to the organizations table."
             system_prompt += user_context
@@ -588,6 +672,17 @@ WHERE scheduled_start >= '2026-01-27'::date AND scheduled_start < '2026-01-28'::
 
 5. **Displaying Results**: Convert UTC times to the user's timezone when presenting results. Use relative references when helpful (e.g., "in 30 minutes", "3 hours ago")."""
             system_prompt += time_context
+
+        # Load and inject user memories
+        if self.user_id and self.organization_id:
+            memories = await self._load_user_memories()
+            if memories:
+                memory_context = "\n\n## User Memories\n"
+                memory_context += "These are preferences and facts the user previously asked you to remember. Follow them.\n\n"
+                for mem in memories:
+                    memory_context += f"- [{mem['id']}] {mem['content']}\n"
+                memory_context += "\nIf the user asks you to forget something, use the delete_memory tool with the memory_id shown in brackets above."
+                system_prompt += memory_context
 
         # Stream responses with tool handling loop
         async for chunk in self._stream_with_tools(messages, system_prompt, content_blocks):
@@ -645,7 +740,7 @@ WHERE scheduled_start >= '2026-01-27'::date AND scheduled_start < '2026-01-28'::
                     
                     # Stream the response
                     async with self.client.messages.stream(
-                        model="claude-sonnet-4-5",
+                        model="claude-sonnet-4-20250514",
                         max_tokens=16384,
                         system=system_prompt,
                         tools=get_tools(),

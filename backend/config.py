@@ -40,6 +40,9 @@ class Settings(BaseSettings):
 
     # Redis
     REDIS_URL: str = "redis://localhost:6379"
+    # Timeouts for remote Redis (e.g. Railway); defaults are often too short
+    REDIS_SOCKET_CONNECT_TIMEOUT: float = 10.0
+    REDIS_SOCKET_TIMEOUT: float = 10.0
 
     # Anthropic
     ANTHROPIC_API_KEY: Optional[str] = None
@@ -65,8 +68,9 @@ class Settings(BaseSettings):
     NANGO_MICROSOFT_MAIL_INTEGRATION_ID: str = "microsoft"
     NANGO_FIREFLIES_INTEGRATION_ID: str = "fireflies"
     NANGO_ZOOM_INTEGRATION_ID: str = "zoom"
-    NANGO_GOOGLE_SHEETS_INTEGRATION_ID: str = "google-sheet"
+    NANGO_GOOGLE_DRIVE_INTEGRATION_ID: str = "google-sheet"
     NANGO_APOLLO_INTEGRATION_ID: str = "apollo"
+    NANGO_GITHUB_INTEGRATION_ID: str = "github"
 
     # App
     SECRET_KEY: str = "dev-secret-change-in-production"
@@ -104,6 +108,21 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+def get_redis_connection_kwargs(
+    decode_responses: bool = False,
+) -> dict[str, str | float | bool]:
+    """Connection options for Redis (e.g. Railway). Longer timeouts for remote Redis."""
+    kwargs: dict[str, str | float | bool] = {
+        "socket_connect_timeout": settings.REDIS_SOCKET_CONNECT_TIMEOUT,
+        "socket_timeout": settings.REDIS_SOCKET_TIMEOUT,
+        "retry_on_timeout": True,
+    }
+    if decode_responses:
+        kwargs["decode_responses"] = True
+    return kwargs
+
 
 EXPECTED_ENV_VARS: tuple[str, ...] = (
     "DATABASE_URL",
@@ -146,8 +165,9 @@ NANGO_INTEGRATION_IDS: dict[str, str] = {
     "microsoft_mail": settings.NANGO_MICROSOFT_MAIL_INTEGRATION_ID,
     "fireflies": settings.NANGO_FIREFLIES_INTEGRATION_ID,
     "zoom": settings.NANGO_ZOOM_INTEGRATION_ID,
-    "google_sheets": settings.NANGO_GOOGLE_SHEETS_INTEGRATION_ID,
+    "google_drive": settings.NANGO_GOOGLE_DRIVE_INTEGRATION_ID,
     "apollo": settings.NANGO_APOLLO_INTEGRATION_ID,
+    "github": settings.NANGO_GITHUB_INTEGRATION_ID,
 }
 
 # Provider scope mapping: which integrations are user-scoped vs org-scoped
@@ -163,8 +183,9 @@ PROVIDER_SCOPES: dict[str, str] = {
     "microsoft_mail": "user",
     "fireflies": "user",
     "zoom": "user",
-    "google_sheets": "user",
+    "google_drive": "user",
     "apollo": "organization",
+    "github": "organization",
 }
 
 

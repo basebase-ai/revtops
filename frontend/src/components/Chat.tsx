@@ -17,6 +17,7 @@ import { ArtifactViewer, type FileArtifact } from './ArtifactViewer';
 import { ArtifactTile } from './ArtifactTile';
 import { PendingApprovalCard, type ApprovalResult } from './PendingApprovalCard';
 import { getConversation, uploadChatFile, type UploadResponse } from '../api/client';
+import { crossTab } from '../lib/crossTab';
 import { 
   useAppStore,
   useConversationState,
@@ -465,6 +466,20 @@ export function Chat({
       // Add message to existing conversation
       addConversationMessage(currentConvId, userMessage);
       setConversationThinking(currentConvId, true);
+      if (crossTab.isAvailable) {
+        console.log('[Chat] Broadcasting optimistic message to other tabs', {
+          conversationId: currentConvId,
+          messageId: userMessage.id,
+        });
+        crossTab.postMessage({
+          kind: 'optimistic_message',
+          payload: {
+            conversationId: currentConvId,
+            message: userMessage,
+            setThinking: true,
+          },
+        });
+      }
     } else {
       // New conversation - store in pending state
       pendingTitleRef.current = generateTitle(message);

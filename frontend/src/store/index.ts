@@ -54,6 +54,15 @@ export interface SyncStats {
   contacts?: number;
   activities?: number;
   pipelines?: number;
+  goals?: number;
+  repositories?: number;
+  commits?: number;
+  pull_requests?: number;
+  total_files?: number;
+  docs?: number;
+  sheets?: number;
+  slides?: number;
+  folders?: number;
 }
 
 export interface Integration {
@@ -181,10 +190,19 @@ export interface ActiveTask {
 // Store Interface
 // =============================================================================
 
+export interface UserOrganization {
+  id: string;
+  name: string;
+  logoUrl: string | null;
+  role: string;
+  isActive: boolean;
+}
+
 interface AppState {
   // Auth
   user: UserProfile | null;
   organization: OrganizationInfo | null;
+  organizations: UserOrganization[]; // All orgs the user belongs to
   isAuthenticated: boolean;
 
   // Masquerade (admin impersonation)
@@ -220,6 +238,9 @@ interface AppState {
   // Actions - Auth
   setUser: (user: UserProfile | null) => void;
   setOrganization: (org: OrganizationInfo | null) => void;
+  setOrganizations: (orgs: UserOrganization[]) => void;
+  fetchUserOrganizations: () => Promise<void>;
+  switchActiveOrganization: (orgId: string) => Promise<void>;
   logout: () => void;
 
   // Actions - Masquerade
@@ -331,6 +352,7 @@ export const useAppStore = create<AppState>()(
       // Initial state
       user: null,
       organization: null,
+      organizations: [],
       isAuthenticated: false,
       masquerade: null,
       sidebarCollapsed: false,
@@ -366,10 +388,103 @@ export const useAppStore = create<AppState>()(
 
       setOrganization: (organization) => set({ organization }),
 
+      setOrganizations: (organizations) => set({ organizations }),
+
+      fetchUserOrganizations: async () => {
+        const { user } = get();
+        if (!user) return;
+
+        try {
+          const response = await fetch(
+            `${API_BASE}/auth/users/me/organizations?user_id=${user.id}`,
+          );
+          if (!response.ok) {
+            console.error("[Store] Failed to fetch user organizations:", response.status);
+            return;
+          }
+
+          interface OrgApiResponse {
+            id: string;
+            name: string;
+            logo_url: string | null;
+            role: string;
+            is_active: boolean;
+          }
+
+          const data = (await response.json()) as {
+            organizations: OrgApiResponse[];
+          };
+
+          const organizations: UserOrganization[] = data.organizations.map((o) => ({
+            id: o.id,
+            name: o.name,
+            logoUrl: o.logo_url,
+            role: o.role,
+            isActive: o.is_active,
+          }));
+
+          console.log("[Store] Fetched", organizations.length, "user organizations");
+          set({ organizations });
+        } catch (error) {
+          console.error("[Store] Error fetching user organizations:", error);
+        }
+      },
+
+      switchActiveOrganization: async (orgId: string) => {
+        const { user, organizations } = get();
+        if (!user) return;
+
+        try {
+          const response = await fetch(
+            `${API_BASE}/auth/users/me/active-organization?user_id=${user.id}`,
+            {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ organization_id: orgId }),
+            },
+          );
+
+          if (!response.ok) {
+            const errData = (await response.json().catch(() => ({}))) as { detail?: string };
+            console.error("[Store] Failed to switch org:", errData.detail ?? response.status);
+            return;
+          }
+
+          const data = (await response.json()) as {
+            organization: { id: string; name: string; logo_url: string | null } | null;
+          };
+
+          if (data.organization) {
+            set({
+              organization: {
+                id: data.organization.id,
+                name: data.organization.name,
+                logoUrl: data.organization.logo_url,
+              },
+              organizations: organizations.map((o) => ({
+                ...o,
+                isActive: o.id === orgId,
+              })),
+              // Clear org-scoped state when switching
+              currentChatId: null,
+              recentChats: [],
+              conversations: {},
+              activeTasksByConversation: {},
+              integrations: [],
+            });
+          }
+
+          console.log("[Store] Switched active organization to:", orgId);
+        } catch (error) {
+          console.error("[Store] Error switching organization:", error);
+        }
+      },
+
       logout: () =>
         set({
           user: null,
           organization: null,
+          organizations: [],
           isAuthenticated: false,
           masquerade: null,
           currentChatId: null,
@@ -1304,6 +1419,7 @@ export const useAppStore = create<AppState>()(
       partialize: (state) => ({
         user: state.user,
         organization: state.organization,
+        organizations: state.organizations,
         isAuthenticated: state.isAuthenticated,
         sidebarCollapsed: state.sidebarCollapsed,
         pinnedChatIds: state.pinnedChatIds,
@@ -1319,6 +1435,7 @@ export const useAppStore = create<AppState>()(
 
 export const useUser = () => useAppStore((state) => state.user);
 export const useOrganization = () => useAppStore((state) => state.organization);
+export const useOrganizations = () => useAppStore((state) => state.organizations);
 export const useIsAuthenticated = () =>
   useAppStore((state) => state.isAuthenticated);
 export const useSidebarCollapsed = () =>
@@ -1333,6 +1450,12 @@ export const useIsMasquerading = () =>
 export const getAdminUserId = (): string | null => {
   const state = useAppStore.getState();
   return state.masquerade?.originalUser.id ?? null;
+};
+
+// Get the target user ID when masquerading (for API impersonation headers)
+export const getMasqueradeUserId = (): string | null => {
+  const state = useAppStore.getState();
+  return state.masquerade?.masqueradingAs.id ?? null;
 };
 
 // Legacy chat selectors (for backwards compatibility)

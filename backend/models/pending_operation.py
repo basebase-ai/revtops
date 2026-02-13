@@ -29,7 +29,7 @@ class PendingOperation(Base):
         UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False
     )
     user_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("users.id"), nullable=False
+        UUID(as_uuid=True), ForeignKey("users.id", onupdate="CASCADE"), nullable=False
     )
     conversation_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True), ForeignKey("conversations.id"), nullable=True

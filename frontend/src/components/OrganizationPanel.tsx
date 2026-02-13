@@ -14,7 +14,8 @@ import { useState, useRef } from 'react';
 import type { OrganizationInfo, UserProfile } from './AppLayout';
 import { supabase } from '../lib/supabase';
 import { useAppStore } from '../store';
-import { useTeamMembers, useUpdateOrganization } from '../hooks';
+import { useTeamMembers, useUpdateOrganization, useLinkIdentity, useUnlinkIdentity } from '../hooks';
+import type { TeamMember, IdentityMapping } from '../hooks';
 
 interface OrganizationPanelProps {
   organization: OrganizationInfo;
@@ -33,26 +34,91 @@ export function OrganizationPanel({ organization, currentUser, onClose }: Organi
   const [isUploadingLogo, setIsUploadingLogo] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  const [expandedMemberId, setExpandedMemberId] = useState<string | null>(null);
+
   // React Query: Fetch team members with automatic caching and refetch
   const { 
-    data: teamMembers = [], 
+    data: teamData,
     isLoading: isLoadingMembers 
   } = useTeamMembers(organization.id, currentUser.id);
 
+  const members: TeamMember[] = teamData?.members ?? [];
+  const unmappedIdentities: IdentityMapping[] = teamData?.unmappedIdentities ?? [];
+  const canLinkIdentityInOrg: boolean = members.some((member) => member.id === currentUser.id);
+
   // React Query: Mutation for updating organization
   const updateOrgMutation = useUpdateOrganization();
+  const linkIdentityMutation = useLinkIdentity();
+  const unlinkIdentityMutation = useUnlinkIdentity();
+
+  const sourceLabel = (source: string): string => {
+    const labels: Record<string, string> = { slack: 'Slack', hubspot: 'HubSpot', salesforce: 'Salesforce' };
+    return labels[source] ?? source;
+  };
+
+  const sourceColor = (source: string): string => {
+    const colors: Record<string, string> = {
+      slack: 'bg-purple-500/20 text-purple-400',
+      hubspot: 'bg-orange-500/20 text-orange-400',
+      salesforce: 'bg-blue-500/20 text-blue-400',
+    };
+    return colors[source] ?? 'bg-surface-600/20 text-surface-300';
+  };
+
+  const handleLinkIdentity = async (targetUserId: string, mappingId: string): Promise<void> => {
+    try {
+      await linkIdentityMutation.mutateAsync({
+        orgId: organization.id,
+        userId: currentUser.id,
+        targetUserId,
+        mappingId,
+      });
+    } catch (error) {
+      alert(`Link failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  };
+
+
+
+  const handleUnlinkIdentity = async (mappingId: string): Promise<void> => {
+    try {
+      await unlinkIdentityMutation.mutateAsync({
+        orgId: organization.id,
+        userId: currentUser.id,
+        mappingId,
+      });
+    } catch (error) {
+      alert(`Unlink failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  };
 
   const handleInvite = async (): Promise<void> => {
-    if (!inviteEmail.trim()) return;
-    
+    const email: string = inviteEmail.trim().toLowerCase();
+    if (!email) return;
+
     setIsInviting(true);
     try {
-      // TODO: Call invite API
-      await new Promise((r) => setTimeout(r, 1000));
+      const { API_BASE } = await import('../lib/api');
+      const response = await fetch(
+        `${API_BASE}/auth/organizations/${organization.id}/invitations?user_id=${currentUser.id}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email }),
+        },
+      );
+
+      if (!response.ok) {
+        const errData = (await response.json().catch(() => ({}))) as { detail?: string };
+        alert(errData.detail ?? `Failed to invite: ${response.status}`);
+        return;
+      }
+
       setInviteEmail('');
       alert('Invitation sent!');
     } catch (error) {
       console.error('Failed to invite:', error);
+      alert(`Failed to invite: ${error instanceof Error ? error.message : 'Unknown error'}`);
     } finally {
       setIsInviting(false);
     }
@@ -225,7 +291,7 @@ export function OrganizationPanel({ organization, currentUser, onClose }: Organi
               {/* Team List */}
               <div>
                 <h3 className="text-sm font-medium text-surface-200 mb-3">
-                  Team members ({teamMembers.length})
+                  Team members ({members.length})
                 </h3>
                 {isLoadingMembers ? (
                   <div className="flex items-center justify-center py-8">
@@ -233,44 +299,177 @@ export function OrganizationPanel({ organization, currentUser, onClose }: Organi
                   </div>
                 ) : (
                   <div className="space-y-2">
-                    {teamMembers.map((member) => {
-                      const displayName = member.name ?? member.email.split('@')[0] ?? 'Unknown';
-                      const isAdmin = member.role === 'admin' || member.id === currentUser.id;
+                    {members.map((member) => {
+                      const displayName: string = member.name ?? member.email.split('@')[0] ?? 'Unknown';
+                      const isAdmin: boolean = member.role === 'admin' || member.id === currentUser.id;
+                      const isExpanded: boolean = expandedMemberId === member.id;
+                      const identities: IdentityMapping[] = [...member.identities].sort((a, b) => {
+                        const sourceCompare = sourceLabel(a.source).localeCompare(sourceLabel(b.source));
+                        if (sourceCompare !== 0) return sourceCompare;
+                        const aTarget = (a.externalEmail ?? a.externalUserid ?? '').toLowerCase();
+                        const bTarget = (b.externalEmail ?? b.externalUserid ?? '').toLowerCase();
+                        return aTarget.localeCompare(bTarget);
+                      });
+                      const canUnlinkForMember: boolean = member.id === currentUser.id || canLinkIdentityInOrg;
+
                       return (
-                        <div
-                          key={member.id}
-                          className="flex items-center gap-3 p-3 rounded-lg bg-surface-800/50"
-                        >
-                          {member.avatarUrl ? (
-                            <img
-                              src={member.avatarUrl}
-                              alt={displayName}
-                              className="w-10 h-10 rounded-full object-cover"
-                            />
-                          ) : (
-                            <div className="w-10 h-10 rounded-full bg-primary-600 flex items-center justify-center text-white font-medium">
-                              {displayName.charAt(0).toUpperCase()}
-                            </div>
-                          )}
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-2">
-                              <span className="font-medium text-surface-100 truncate">
-                                {displayName}
-                              </span>
-                              {isAdmin && (
-                                <span className="px-2 py-0.5 text-xs font-medium bg-primary-500/20 text-primary-400 rounded-full">
-                                  Admin
+                        <div key={member.id} className="rounded-lg bg-surface-800/50 overflow-hidden">
+                          {/* Member row */}
+                          <button
+                            onClick={() => setExpandedMemberId(isExpanded ? null : member.id)}
+                            className="flex items-center gap-3 p-3 w-full text-left hover:bg-surface-800/80 transition-colors"
+                          >
+                            {member.avatarUrl ? (
+                              <img
+                                src={member.avatarUrl}
+                                alt={displayName}
+                                className="w-10 h-10 rounded-full object-cover"
+                              />
+                            ) : (
+                              <div className="w-10 h-10 rounded-full bg-primary-600 flex items-center justify-center text-white font-medium">
+                                {displayName.charAt(0).toUpperCase()}
+                              </div>
+                            )}
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2">
+                                <span className="font-medium text-surface-100 truncate">
+                                  {displayName}
                                 </span>
+                                {isAdmin && (
+                                  <span className="px-2 py-0.5 text-xs font-medium bg-primary-500/20 text-primary-400 rounded-full">
+                                    Admin
+                                  </span>
+                                )}
+                              </div>
+                              <p className="text-sm text-surface-400 truncate">{member.email}</p>
+                            </div>
+                            {/* Identity count badges */}
+                            <div className="flex items-center gap-1">
+                              {identities.length > 0 ? (
+                                [...new Set(identities.map((i) => i.source))].map((src) => (
+                                  <span
+                                    key={src}
+                                    className={`px-1.5 py-0.5 text-[10px] font-medium rounded ${sourceColor(src)}`}
+                                  >
+                                    {sourceLabel(src)}
+                                  </span>
+                                ))
+                              ) : (
+                                <span className="text-xs text-surface-500">No links</span>
                               )}
                             </div>
-                            <p className="text-sm text-surface-400 truncate">{member.email}</p>
-                          </div>
+                            <svg
+                              className={`w-4 h-4 text-surface-400 transition-transform ${isExpanded ? 'rotate-180' : ''}`}
+                              fill="none"
+                              viewBox="0 0 24 24"
+                              stroke="currentColor"
+                            >
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                            </svg>
+                          </button>
+
+                          {/* Expanded identity details */}
+                          {isExpanded && (
+                            <div className="px-3 pb-3 pt-1 border-t border-surface-700/50">
+                              <p className="text-xs text-surface-500 mb-2">Linked identities</p>
+                              {identities.length > 0 ? (
+                                <div className="space-y-1.5">
+                                  {identities.map((identity) => (
+                                    <div
+                                      key={identity.id}
+                                      className="flex items-center gap-2 text-xs px-2 py-1.5 rounded bg-surface-700/30"
+                                    >
+                                      <span className={`px-1.5 py-0.5 font-medium rounded ${sourceColor(identity.source)}`}>
+                                        {sourceLabel(identity.source)}
+                                      </span>
+                                      <span className="text-surface-300 truncate">
+                                        {identity.externalEmail ?? identity.externalUserid ?? 'Unknown'}
+                                      </span>
+                                      <div className="ml-auto flex items-center gap-2 whitespace-nowrap">
+                                        <span className="text-surface-500">
+                                          {identity.matchSource.replace(/_/g, ' ')}
+                                        </span>
+                                        {canUnlinkForMember && (
+                                          <button
+                                            onClick={() => void handleUnlinkIdentity(identity.id)}
+                                            disabled={unlinkIdentityMutation.isPending}
+                                            className="text-primary-400 hover:text-primary-300 disabled:opacity-50"
+                                          >
+                                            Unlink
+                                          </button>
+                                        )}
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : (
+                                <p className="text-xs text-surface-500 italic">
+                                  No external accounts linked yet.
+                                </p>
+                              )}
+
+                              {/* Show unmapped identities that could be linked to this user */}
+                              {unmappedIdentities.length > 0 && (
+                                <div className="mt-3">
+                                  <p className="text-xs text-surface-500 mb-1.5">Link an unmatched account:</p>
+                                  <div className="space-y-1">
+                                    {unmappedIdentities.map((ui) => (
+                                      <button
+                                        key={ui.id}
+                                        onClick={() => void handleLinkIdentity(member.id, ui.id)}
+                                        disabled={linkIdentityMutation.isPending || unlinkIdentityMutation.isPending}
+                                        className="flex items-center gap-2 text-xs px-2 py-1.5 rounded bg-surface-700/20 hover:bg-surface-700/50 transition-colors w-full text-left disabled:opacity-50"
+                                      >
+                                        <span className={`px-1.5 py-0.5 font-medium rounded ${sourceColor(ui.source)}`}>
+                                          {sourceLabel(ui.source)}
+                                        </span>
+                                        <span className="text-surface-400 truncate">
+                                          {ui.externalEmail ?? ui.externalUserid}
+                                        </span>
+                                        <span className="ml-auto text-primary-400 whitespace-nowrap">+ Link</span>
+                                      </button>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          )}
                         </div>
                       );
                     })}
                   </div>
                 )}
               </div>
+
+              {/* Unmapped external identities */}
+              {unmappedIdentities.length > 0 && (
+                <div>
+                  <h3 className="text-sm font-medium text-surface-200 mb-1">
+                    Unmatched accounts ({unmappedIdentities.length})
+                  </h3>
+                  <p className="text-xs text-surface-500 mb-3">
+                    Found during sync but not yet linked to a team member. Expand a member above to link.
+                  </p>
+                  <div className="space-y-1.5">
+                    {unmappedIdentities.map((ui) => (
+                      <div
+                        key={ui.id}
+                        className="flex items-center gap-2 px-3 py-2 rounded-lg bg-surface-800/30 border border-surface-700/50"
+                      >
+                        <span className={`px-1.5 py-0.5 text-[10px] font-medium rounded ${sourceColor(ui.source)}`}>
+                          {sourceLabel(ui.source)}
+                        </span>
+                        <span className="text-sm text-surface-300 truncate">
+                          {ui.externalEmail ?? ui.externalUserid}
+                        </span>
+                        <span className="px-2 py-0.5 text-[10px] font-medium bg-yellow-500/20 text-yellow-400 rounded-full ml-auto">
+                          Unmatched
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           )}
 

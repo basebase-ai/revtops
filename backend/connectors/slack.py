@@ -759,6 +759,39 @@ class SlackConnector(BaseConnector):
             "message": data.get("message"),
         }
 
+    async def download_file(self, url_private: str) -> bytes:
+        """
+        Download a file from Slack using the bot token for authentication.
+
+        Slack's ``url_private`` / ``url_private_download`` URLs require an
+        Authorization header with the bot token.
+
+        Args:
+            url_private: The ``url_private_download`` (preferred) or
+                ``url_private`` URL from a Slack file object.
+
+        Returns:
+            Raw file bytes.
+
+        Raises:
+            httpx.HTTPStatusError: If the download request fails.
+            ValueError: If the response body is empty.
+        """
+        headers: dict[str, str] = await self._get_headers()
+        # Remove Content-Type for raw file download
+        headers.pop("Content-Type", None)
+
+        async with httpx.AsyncClient(follow_redirects=True) as client:
+            response: httpx.Response = await client.get(
+                url_private, headers=headers, timeout=60.0,
+            )
+            response.raise_for_status()
+
+        data: bytes = response.content
+        if not data:
+            raise ValueError(f"Empty response downloading Slack file: {url_private}")
+        return data
+
     async def send_direct_message(
         self,
         slack_user_id: str,

@@ -15,11 +15,14 @@ from models.integration import Integration
 from models.pending_operation import PendingOperation, CrmOperation  # CrmOperation is alias
 from models.agent_task import AgentTask
 from models.workflow import Workflow, WorkflowRun
-from models.sheet_import import SheetImport
 from models.user_tool_setting import UserToolSetting
 from models.change_session import ChangeSession
 from models.record_snapshot import RecordSnapshot
 from models.slack_user_mapping import SlackUserMapping
+from models.shared_file import SharedFile
+from models.user_memory import UserMemory
+from models.organization_membership import OrganizationMembership
+from models.goal import Goal
 
 __all__ = [
     "Base",
@@ -43,9 +46,12 @@ __all__ = [
     "AgentTask",
     "Workflow",
     "WorkflowRun",
-    "SheetImport",
     "UserToolSetting",
     "ChangeSession",
     "RecordSnapshot",
     "SlackUserMapping",
+    "SharedFile",
+    "UserMemory",
+    "OrganizationMembership",
+    "Goal",
 ]

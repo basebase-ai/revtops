@@ -62,7 +62,7 @@ class Integration(Base):
     # For user-scoped integrations, which user owns this connection
     # NULL for organization-scoped integrations
     user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("users.id"), nullable=True, index=True
+        UUID(as_uuid=True), ForeignKey("users.id", onupdate="CASCADE"), nullable=True, index=True
     )
 
     # Nango connection ID - format depends on scope:
@@ -74,7 +74,7 @@ class Integration(Base):
 
     # User who connected this integration (for org-scoped, tracks who set it up)
     connected_by_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("users.id"), nullable=True
+        UUID(as_uuid=True), ForeignKey("users.id", onupdate="CASCADE"), nullable=True
     )
 
     # Status

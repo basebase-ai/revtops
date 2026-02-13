@@ -20,9 +20,10 @@ import {
   SiZoom,
   SiGooglecalendar,
   SiGmail,
-  SiGooglesheets,
+  SiGoogledrive,
+  SiGithub,
 } from 'react-icons/si';
-import { HiOutlineCalendar, HiOutlineMail, HiGlobeAlt, HiUserGroup, HiExclamation, HiDeviceMobile, HiMicrophone, HiUpload } from 'react-icons/hi';
+import { HiOutlineCalendar, HiOutlineMail, HiGlobeAlt, HiUserGroup, HiExclamation, HiDeviceMobile, HiMicrophone } from 'react-icons/hi';
 // Custom Apollo.io icon - 8-ray starburst matching their brand
 const ApolloIcon: IconType = ({ className, ...props }) => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className={className} {...props}>
@@ -32,7 +33,6 @@ const ApolloIcon: IconType = ({ className, ...props }) => (
     <line x1="19.07" y1="4.93" x2="4.93" y2="19.07" />
   </svg>
 );
-import { SheetImporter } from './SheetImporter';
 import { API_BASE } from '../lib/api';
 import { useAppStore, useIntegrations, useIntegrationsLoading, type Integration, type SyncStats } from '../store';
 import { useWebSocket } from '../hooks/useWebSocket';
@@ -72,8 +72,9 @@ const ICON_MAP: Record<string, IconType> = {
   'microsoft-mail': HiOutlineMail,
   microsoft_mail: HiOutlineMail,
   fireflies: HiMicrophone,
-  google_sheets: SiGooglesheets,
+  google_drive: SiGoogledrive,
   apollo: ApolloIcon,
+  github: SiGithub,
 };
 
 // User-scoped providers (each user connects individually vs org-wide connection)
@@ -84,7 +85,7 @@ const USER_SCOPED_PROVIDERS = new Set([
   'microsoft_mail',
   'zoom',
   'fireflies',
-  'google_sheets',
+  'google_drive',
 ]);
 
 // Integration display config (colors, icons, descriptions)
@@ -98,9 +99,12 @@ const INTEGRATION_CONFIG: Record<string, { name: string; description: string; ic
   microsoft_calendar: { name: 'Microsoft Calendar', description: 'Outlook calendar events and meetings', icon: 'microsoft_calendar', color: 'from-sky-500 to-sky-600' },
   microsoft_mail: { name: 'Microsoft Mail', description: 'Outlook emails and communications', icon: 'microsoft_mail', color: 'from-sky-500 to-sky-600' },
   fireflies: { name: 'Fireflies', description: 'Meeting transcriptions and notes', icon: 'fireflies', color: 'from-violet-500 to-violet-600' },
-  google_sheets: { name: 'Google Sheets', description: 'Import contacts, accounts, deals from spreadsheets', icon: 'google_sheets', color: 'from-emerald-500 to-emerald-600' },
+  google_drive: { name: 'Google Drive', description: 'Sync files — search and read Docs, Sheets, Slides from Drive', icon: 'google_drive', color: 'from-yellow-500 to-amber-500' },
   apollo: { name: 'Apollo.io', description: 'Data enrichment - Contact titles, companies, emails', icon: 'apollo', color: 'from-yellow-400 to-yellow-500' },
+  github: { name: 'GitHub', description: 'Track repos, commits, and pull requests by team', icon: 'github', color: 'from-gray-600 to-gray-700' },
 };
+
+const SUPPORTED_PROVIDERS = new Set(Object.keys(INTEGRATION_CONFIG));
 
 // Extended integration type with display info
 interface DisplayIntegration extends Integration {
@@ -113,8 +117,9 @@ interface DisplayIntegration extends Integration {
 
 interface SlackUserMapping {
   id: string;
-  slack_user_id: string;
-  slack_email: string | null;
+  external_userid: string | null;
+  external_email: string | null;
+  source: string;
   match_source: string;
   created_at: string;
 }
@@ -129,9 +134,26 @@ function formatSyncStats(stats: SyncStats | null, provider: string): string | nu
 
   const parts: string[] = [];
 
+  // GitHub: show repos, commits, PRs
+  if (provider === 'github') {
+    const repos = stats.repositories ?? 0;
+    const commits = stats.commits ?? 0;
+    const prs = stats.pull_requests ?? 0;
+    if (repos > 0) parts.push(`${repos} repos`);
+    if (commits > 0) parts.push(`${commits.toLocaleString()} commits`);
+    if (prs > 0) parts.push(`${prs} PRs`);
+  } else if (provider === 'google_drive') {
+    const total = stats.total_files ?? 0;
+    const docs = stats.docs ?? 0;
+    const sheets = stats.sheets ?? 0;
+    const slides = stats.slides ?? 0;
+    if (total > 0) parts.push(`${total.toLocaleString()} files`);
+    if (docs > 0) parts.push(`${docs} docs`);
+    if (sheets > 0) parts.push(`${sheets} sheets`);
+    if (slides > 0) parts.push(`${slides} slides`);
+  } else {
   // CRM providers always show contact/account/deal counts (even if 0)
   const isCrmProvider = provider === 'hubspot' || provider === 'salesforce';
-  
   if (isCrmProvider) {
     // Always show CRM stats for trust and debugging
     const contacts = stats.contacts ?? 0;
@@ -140,6 +162,9 @@ function formatSyncStats(stats: SyncStats | null, provider: string): string | nu
     parts.push(`${contacts.toLocaleString()} contacts`);
     parts.push(`${accounts.toLocaleString()} accounts`);
     parts.push(`${deals.toLocaleString()} deals`);
+    if (stats.goals && stats.goals > 0) {
+      parts.push(`${stats.goals.toLocaleString()} goals`);
+    }
   } else {
     // Non-CRM: only show if > 0
     if (stats.contacts && stats.contacts > 0) {
@@ -151,6 +176,7 @@ function formatSyncStats(stats: SyncStats | null, provider: string): string | nu
     if (stats.deals && stats.deals > 0) {
       parts.push(`${stats.deals.toLocaleString()} deals`);
     }
+  }
   }
 
   // Activity-based connectors (email, calendar, meetings)
@@ -183,7 +209,7 @@ function getActivityLabel(provider: string, count: number): string {
       return `${formatted} recordings`;
     case 'hubspot':
     case 'salesforce':
-      return `${formatted} records`;
+      return `${formatted} activities`;
     default:
       return `${formatted} activities`;
   }
@@ -211,32 +237,65 @@ export function DataSources(): JSX.Element {
   const [syncingProviders, setSyncingProviders] = useState<Set<string>>(new Set());
   const [disconnectingProviders, setDisconnectingProviders] = useState<Set<string>>(new Set());
   const [connectingProvider, setConnectingProvider] = useState<string | null>(null);
-  const [showSheetImporter, setShowSheetImporter] = useState(false);
   const [slackMappings, setSlackMappings] = useState<SlackUserMapping[]>([]);
   const [slackMappingsLoading, setSlackMappingsLoading] = useState(false);
   const [slackMappingsError, setSlackMappingsError] = useState<string | null>(null);
   const [slackEmailInput, setSlackEmailInput] = useState('');
   const [slackCodeInput, setSlackCodeInput] = useState('');
   const [slackMappingStatus, setSlackMappingStatus] = useState<string | null>(null);
+  const [slackShowAddForm, setSlackShowAddForm] = useState(false);
+  const [showConnectModal, setShowConnectModal] = useState(false);
+  const [connectSearch, setConnectSearch] = useState('');
+
+  // GitHub: available repos (from token), tracked repo ids, selection, loading
+  interface GitHubRepo {
+    github_repo_id: number;
+    owner: string;
+    name: string;
+    full_name: string;
+    description?: string;
+    default_branch: string;
+    is_private: boolean;
+    language?: string;
+    url: string;
+  }
+  const [githubAvailableRepos, setGithubAvailableRepos] = useState<GitHubRepo[]>([]);
+  const [githubTrackedIds, setGithubTrackedIds] = useState<Set<number>>(new Set());
+  const [githubTrackedNames, setGithubTrackedNames] = useState<string[]>([]);
+  const [githubReposLoading, setGithubReposLoading] = useState(false);
+  const [githubReposError, setGithubReposError] = useState<string | null>(null);
+  const [githubSelectedIds, setGithubSelectedIds] = useState<Set<number>>(new Set());
+  const [githubSaving, setGithubSaving] = useState(false);
+  const [githubReposExpanded, setGithubReposExpanded] = useState(false);
   
   // Live sync progress from WebSocket
   const [syncProgress, setSyncProgress] = useState<Record<string, number>>({});
+  const [syncStep, setSyncStep] = useState<Record<string, string>>({});
 
   const organizationId = organization?.id ?? '';
   const userId = user?.id ?? '';
 
   const slackIntegration = rawIntegrations.find((integration) => integration.provider === 'slack');
   const slackConnected = Boolean(slackIntegration?.isActive);
+
+  const githubIntegration = rawIntegrations.find((integration) => integration.provider === 'github');
+  const githubConnected = Boolean(githubIntegration?.isActive);
   
   // Handle WebSocket messages for sync progress
   const handleWsMessage = useCallback((message: string) => {
     try {
-      const data = JSON.parse(message) as { type: string; provider?: string; count?: number; status?: string };
+      const data = JSON.parse(message) as { type: string; provider?: string; count?: number; status?: string; step?: string };
       if (data.type === 'sync_progress' && data.provider !== undefined && data.count !== undefined) {
         setSyncProgress((prev) => ({
           ...prev,
           [data.provider as string]: data.count as number,
         }));
+        if (data.step) {
+          setSyncStep((prev) => ({
+            ...prev,
+            [data.provider as string]: data.step as string,
+          }));
+        }
         
         // If sync is in progress, add to syncingProviders to show spinner
         if (data.status === 'syncing') {
@@ -249,6 +308,11 @@ export function DataSources(): JSX.Element {
           // Clear the progress for this provider after a short delay
           setTimeout(() => {
             setSyncProgress((prev) => {
+              const next = { ...prev };
+              delete next[data.provider as string];
+              return next;
+            });
+            setSyncStep((prev) => {
               const next = { ...prev };
               delete next[data.provider as string];
               return next;
@@ -282,8 +346,18 @@ export function DataSources(): JSX.Element {
         throw new Error(`Failed to load Slack mappings: ${response.status}`);
       }
       const data = (await response.json()) as { mappings: SlackUserMapping[] };
-      setSlackMappings(data.mappings);
-      console.log('[DataSources] Loaded Slack mappings:', data.mappings.length);
+      const mappingsFromIdentityTable = data.mappings
+        .map((mapping) => ({
+          id: mapping.id,
+          external_userid: mapping.external_userid,
+          external_email: mapping.external_email,
+          source: mapping.source,
+          match_source: mapping.match_source,
+          created_at: mapping.created_at,
+        }))
+        .filter((mapping) => mapping.source.toLowerCase().includes('slack'));
+      setSlackMappings(mappingsFromIdentityTable);
+      console.log('[DataSources] Loaded Slack mappings from user_mappings_for_identity:', mappingsFromIdentityTable.length);
     } catch (error) {
       console.error('[DataSources] Failed to load Slack mappings:', error);
       setSlackMappingsError(error instanceof Error ? error.message : 'Unknown error');
@@ -298,18 +372,88 @@ export function DataSources(): JSX.Element {
     }
   }, [fetchSlackMappings, slackConnected]);
 
+  const fetchGitHubAvailableRepos = useCallback(async (): Promise<void> => {
+    if (!organizationId) return;
+    setGithubReposLoading(true);
+    setGithubReposError(null);
+    try {
+      const res = await fetch(`${API_BASE}/sync/${organizationId}/github/repos`);
+      if (!res.ok) throw new Error(`Failed to load repos: ${res.status}`);
+      const data = (await res.json()) as { repos: GitHubRepo[] };
+      setGithubAvailableRepos(data.repos ?? []);
+    } catch (e) {
+      setGithubReposError(e instanceof Error ? e.message : 'Failed to load repos');
+      setGithubAvailableRepos([]);
+    } finally {
+      setGithubReposLoading(false);
+    }
+  }, [organizationId]);
+
+  const fetchGitHubTrackedRepos = useCallback(async (): Promise<void> => {
+    if (!organizationId) return;
+    try {
+      const res = await fetch(`${API_BASE}/sync/${organizationId}/github/repos/tracked`);
+      if (!res.ok) return;
+      const data = (await res.json()) as { repos: { github_repo_id: number; full_name?: string }[] };
+      const repos = data.repos ?? [];
+      const ids = new Set(repos.map((r) => r.github_repo_id));
+      setGithubTrackedIds(ids);
+      setGithubSelectedIds(ids);
+      setGithubTrackedNames(repos.map((r) => r.full_name ?? '').filter(Boolean));
+    } catch {
+      setGithubTrackedIds(new Set());
+      setGithubSelectedIds(new Set());
+      setGithubTrackedNames([]);
+    }
+  }, [organizationId]);
+
+  useEffect(() => {
+    if (githubConnected && organizationId) {
+      void fetchGitHubAvailableRepos();
+      void fetchGitHubTrackedRepos();
+    }
+  }, [githubConnected, organizationId, fetchGitHubAvailableRepos, fetchGitHubTrackedRepos]);
+
+  const handleGitHubTrackRepos = useCallback(async (): Promise<void> => {
+    if (!organizationId || githubSaving) return;
+    setGithubSaving(true);
+    setGithubReposError(null);
+    try {
+      const res = await fetch(`${API_BASE}/sync/${organizationId}/github/repos/track`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ github_repo_ids: Array.from(githubSelectedIds) }),
+      });
+      if (!res.ok) {
+        const err = (await res.json()) as { detail?: string };
+        throw new Error(err.detail ?? `Failed to save: ${res.status}`);
+      }
+      await fetchGitHubTrackedRepos();
+      void fetchIntegrations();
+      setGithubReposExpanded(false);
+    } catch (e) {
+      setGithubReposError(e instanceof Error ? e.message : 'Failed to save');
+    } finally {
+      setGithubSaving(false);
+    }
+  }, [organizationId, githubSelectedIds, githubSaving, fetchGitHubTrackedRepos, fetchIntegrations]);
+
   // Transform raw integrations to display integrations with UI metadata
   // Filter out raw "microsoft" integration - it's a meta-integration from Nango's OAuth.
   // The actual data sources are microsoft_calendar and microsoft_mail.
   const integrations: DisplayIntegration[] = rawIntegrations
-    .filter((integration) => integration.provider !== 'microsoft')
+    .filter((integration) => {
+      if (integration.provider === 'microsoft') {
+        return false;
+      }
+      if (!SUPPORTED_PROVIDERS.has(integration.provider)) {
+        console.warn('[DataSources] Hiding unsupported integration provider from UI:', integration.provider);
+        return false;
+      }
+      return true;
+    })
     .map((integration) => {
-      const config = INTEGRATION_CONFIG[integration.provider] ?? {
-        name: integration.provider,
-        description: 'Data source',
-        icon: integration.provider,
-        color: 'from-surface-500 to-surface-600',
-      };
+      const config = INTEGRATION_CONFIG[integration.provider]!;
       return {
         ...integration,
         ...config,
@@ -447,7 +591,7 @@ export function DataSources(): JSX.Element {
     // Ask if user wants to delete all synced data
     const deleteData = confirm(
       `Do you also want to delete all data synced from ${provider}?\n\n` +
-      `This includes activities, meetings, and other records imported from this integration.\n\n` +
+      `This includes contacts, companies, deals, pipelines, activities, and meetings imported from this integration.\n\n` +
       `Click OK to delete data, or Cancel to keep the data.`
     );
 
@@ -482,14 +626,26 @@ export function DataSources(): JSX.Element {
 
       // Parse response to show deletion summary
       try {
-        const data = JSON.parse(responseText) as { 
-          deleted_activities?: number; 
-          deleted_meetings?: number 
+        const data = JSON.parse(responseText) as {
+          deleted_activities?: number;
+          deleted_contacts?: number;
+          deleted_accounts?: number;
+          deleted_deals?: number;
+          deleted_goals?: number;
+          deleted_pipelines?: number;
+          deleted_meetings?: number;
         };
-        if (data.deleted_activities !== undefined || data.deleted_meetings !== undefined) {
-          const activities = data.deleted_activities ?? 0;
-          const meetings = data.deleted_meetings ?? 0;
-          alert(`Disconnected ${provider}.\n\nDeleted ${activities} activities and ${meetings} orphaned meetings.`);
+        const counts: string[] = [];
+        if (data.deleted_activities)  counts.push(`${data.deleted_activities} activities`);
+        if (data.deleted_deals)       counts.push(`${data.deleted_deals} deals`);
+        if (data.deleted_contacts)    counts.push(`${data.deleted_contacts} contacts`);
+        if (data.deleted_accounts)    counts.push(`${data.deleted_accounts} accounts`);
+        if (data.deleted_goals)       counts.push(`${data.deleted_goals} goals`);
+        if (data.deleted_pipelines)   counts.push(`${data.deleted_pipelines} pipelines`);
+        if (data.deleted_meetings)    counts.push(`${data.deleted_meetings} orphaned meetings`);
+
+        if (counts.length > 0) {
+          alert(`Disconnected ${provider}.\n\nDeleted ${counts.join(', ')}.`);
         }
       } catch {
         // Response wasn't JSON or didn't have deletion info, that's fine
@@ -528,6 +684,23 @@ export function DataSources(): JSX.Element {
     setSyncingProviders((prev) => new Set(prev).add(provider));
 
     try {
+      // Google Drive uses its own sync endpoint (user-scoped)
+      if (provider === 'google_drive') {
+        const params = new URLSearchParams({ organization_id: organizationId, user_id: userId });
+        const response = await fetch(`${API_BASE}/drive/sync?${params.toString()}`, { method: 'POST' });
+        if (!response.ok) throw new Error('Drive sync failed');
+        // Drive sync runs in background — wait a bit then refresh integrations
+        setTimeout(() => {
+          setSyncingProviders((prev) => {
+            const next = new Set(prev);
+            next.delete(provider);
+            return next;
+          });
+          void fetchIntegrations();
+        }, 15000);
+        return;
+      }
+
       const response = await fetch(`${API_BASE}/sync/${organizationId}/${provider}`, {
         method: 'POST',
       });
@@ -636,6 +809,8 @@ export function DataSources(): JSX.Element {
       }
       setSlackMappingStatus('Slack account connected.');
       setSlackCodeInput('');
+      setSlackEmailInput('');
+      setSlackShowAddForm(false);
       void fetchSlackMappings();
     } catch (error) {
       console.error('[DataSources] Failed to verify Slack code:', error);
@@ -695,8 +870,8 @@ export function DataSources(): JSX.Element {
       'from-sky-500 to-sky-600': 'bg-sky-500',
       'from-red-500 to-red-600': 'bg-red-500',
       'from-violet-500 to-violet-600': 'bg-violet-500',
-      'from-emerald-500 to-emerald-600': 'bg-emerald-500',
       'from-yellow-400 to-yellow-500': 'bg-yellow-400',
+      'from-yellow-500 to-amber-500': 'bg-yellow-500',
     };
     return colorMap[color] ?? 'bg-surface-600';
   };
@@ -733,8 +908,8 @@ export function DataSources(): JSX.Element {
     // Button config by state
     const getButtonConfig = (): { text: string; className: string; action: () => void; disabled: boolean; hidden?: boolean } => {
       if (state === 'connected') {
-        // Google Sheets uses on-demand import, Apollo.io is on-demand enrichment - no regular sync
-        if (integration.provider === 'google_sheets' || integration.provider === 'apollo') {
+        // Apollo.io is on-demand enrichment - no regular sync
+        if (integration.provider === 'apollo') {
           return {
             text: '',
             className: '',
@@ -799,56 +974,63 @@ export function DataSources(): JSX.Element {
     const renderSlackMapping = (): JSX.Element | null => {
       if (integration.provider !== 'slack' || state !== 'connected') return null;
 
+      const hasExistingMappings: boolean = slackMappings.length > 0;
+      const showForm: boolean = !hasExistingMappings || slackShowAddForm;
+
       return (
         <div className="mt-4 pt-4 border-t border-surface-700/50 space-y-3">
-          <div>
-            <h4 className="text-sm font-semibold text-surface-100">
-              Connect your Slack email (it's on your profile in Slack!)
-            </h4>
-            <p className="text-xs text-surface-400 mt-1">
-              Add your Slack email to link your RevTops account. We'll DM a 6-digit code to confirm.
-            </p>
-          </div>
+          {showForm && (
+            <>
+              <div>
+                <h4 className="text-sm font-semibold text-surface-100">
+                  Connect your Slack email (it&apos;s on your profile in Slack!)
+                </h4>
+                <p className="text-xs text-surface-400 mt-1">
+                  Add your Slack email to link your RevTops account. We&apos;ll DM a 6-digit code to confirm.
+                </p>
+              </div>
 
-          <div className="grid gap-2 sm:grid-cols-[1fr_auto]">
-            <input
-              type="email"
-              value={slackEmailInput}
-              onChange={(event) => setSlackEmailInput(event.target.value)}
-              placeholder="you@company.com"
-              className="w-full rounded-lg bg-surface-900 border border-surface-700 px-3 py-2 text-sm text-surface-100 placeholder:text-surface-500 focus:border-primary-500 focus:outline-none"
-            />
-            <button
-              onClick={() => void handleSlackRequestCode()}
-              disabled={!slackEmailInput.trim()}
-              className="px-4 py-2 text-sm font-medium text-primary-300 border border-primary-500/30 hover:bg-primary-500/10 disabled:opacity-50 rounded-lg transition-colors"
-            >
-              Send code
-            </button>
-          </div>
+              <div className="grid gap-2 sm:grid-cols-[1fr_auto]">
+                <input
+                  type="email"
+                  value={slackEmailInput}
+                  onChange={(event) => setSlackEmailInput(event.target.value)}
+                  placeholder="you@company.com"
+                  className="w-full rounded-lg bg-surface-900 border border-surface-700 px-3 py-2 text-sm text-surface-100 placeholder:text-surface-500 focus:border-primary-500 focus:outline-none"
+                />
+                <button
+                  onClick={() => void handleSlackRequestCode()}
+                  disabled={!slackEmailInput.trim()}
+                  className="px-4 py-2 text-sm font-medium text-primary-300 border border-primary-500/30 hover:bg-primary-500/10 disabled:opacity-50 rounded-lg transition-colors"
+                >
+                  Send code
+                </button>
+              </div>
 
-          <div className="grid gap-2 sm:grid-cols-[1fr_auto]">
-            <input
-              type="text"
-              value={slackCodeInput}
-              onChange={(event) => setSlackCodeInput(event.target.value)}
-              placeholder="Enter 6-digit code"
-              className="w-full rounded-lg bg-surface-900 border border-surface-700 px-3 py-2 text-sm text-surface-100 placeholder:text-surface-500 focus:border-primary-500 focus:outline-none"
-            />
-            <button
-              onClick={() => void handleSlackVerifyCode()}
-              disabled={!slackEmailInput.trim() || !slackCodeInput.trim()}
-              className="px-4 py-2 text-sm font-medium text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/10 disabled:opacity-50 rounded-lg transition-colors"
-            >
-              Verify
-            </button>
-          </div>
+              <div className="grid gap-2 sm:grid-cols-[1fr_auto]">
+                <input
+                  type="text"
+                  value={slackCodeInput}
+                  onChange={(event) => setSlackCodeInput(event.target.value)}
+                  placeholder="Enter 6-digit code"
+                  className="w-full rounded-lg bg-surface-900 border border-surface-700 px-3 py-2 text-sm text-surface-100 placeholder:text-surface-500 focus:border-primary-500 focus:outline-none"
+                />
+                <button
+                  onClick={() => void handleSlackVerifyCode()}
+                  disabled={!slackEmailInput.trim() || !slackCodeInput.trim()}
+                  className="px-4 py-2 text-sm font-medium text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/10 disabled:opacity-50 rounded-lg transition-colors"
+                >
+                  Verify
+                </button>
+              </div>
 
-          {slackMappingStatus && (
-            <p className="text-xs text-surface-300">{slackMappingStatus}</p>
-          )}
-          {slackMappingsError && (
-            <p className="text-xs text-red-400">{slackMappingsError}</p>
+              {slackMappingStatus && (
+                <p className="text-xs text-surface-300">{slackMappingStatus}</p>
+              )}
+              {slackMappingsError && (
+                <p className="text-xs text-red-400">{slackMappingsError}</p>
+              )}
+            </>
           )}
 
           <div className="space-y-2">
@@ -860,7 +1042,7 @@ export function DataSources(): JSX.Element {
                 <span className="text-xs text-surface-500">Loading...</span>
               )}
             </div>
-            {slackMappings.length === 0 ? (
+            {slackMappings.length === 0 && !showForm ? (
               <p className="text-xs text-surface-500">No linked Slack emails yet.</p>
             ) : (
               <ul className="space-y-2">
@@ -870,9 +1052,9 @@ export function DataSources(): JSX.Element {
                     className="flex items-center justify-between rounded-lg border border-surface-700/60 px-3 py-2 text-xs text-surface-200"
                   >
                     <div className="min-w-0">
-                      <div className="truncate">{mapping.slack_email ?? 'Unknown email'}</div>
+                      <div className="truncate">{mapping.external_email ?? 'Unknown email'}</div>
                       <div className="text-[11px] text-surface-500">
-                        {mapping.slack_user_id} · {mapping.match_source}
+                        {mapping.external_userid} · {mapping.match_source}
                       </div>
                     </div>
                     <button
@@ -885,7 +1067,143 @@ export function DataSources(): JSX.Element {
                 ))}
               </ul>
             )}
+            {hasExistingMappings && !slackShowAddForm && (
+              <button
+                onClick={() => setSlackShowAddForm(true)}
+                className="text-xs text-primary-400 hover:text-primary-300 transition-colors"
+              >
+                + Add another Slack email
+              </button>
+            )}
           </div>
+        </div>
+      );
+    };
+
+    const renderGitHubRepos = (): JSX.Element | null => {
+      if (integration.provider !== 'github' || state !== 'connected') return null;
+      const trackedCount = githubTrackedIds.size;
+      const trackedNames =
+        githubTrackedNames.length > 0
+          ? githubTrackedNames
+          : githubAvailableRepos
+              .filter((r) => githubTrackedIds.has(r.github_repo_id))
+              .map((r) => r.full_name);
+      const showCompact = trackedCount > 0 && !githubReposExpanded;
+
+      const toggleRepo = (id: number): void => {
+        setGithubSelectedIds((prev) => {
+          const next = new Set(prev);
+          if (next.has(id)) next.delete(id);
+          else next.add(id);
+          return next;
+        });
+      };
+      const selectAll = (): void => setGithubSelectedIds(new Set(githubAvailableRepos.map((r) => r.github_repo_id)));
+      const selectNone = (): void => setGithubSelectedIds(new Set());
+
+      return (
+        <div className="mt-4 pt-4 border-t border-surface-700/50 space-y-3">
+          <div className="flex items-start justify-between gap-2">
+            <div>
+              <h4 className="text-sm font-semibold text-surface-100">
+                Repos to track
+              </h4>
+              <p className="text-xs text-surface-400 mt-0.5">
+                {showCompact
+                  ? `${trackedCount} repo${trackedCount !== 1 ? 's' : ''} tracked`
+                  : 'Select which repositories to sync. Tracking for this organization.'}
+              </p>
+            </div>
+            {showCompact && (
+              <button
+                type="button"
+                onClick={() => setGithubReposExpanded(true)}
+                className="text-xs font-medium text-primary-400 hover:text-primary-300 whitespace-nowrap"
+              >
+                Change
+              </button>
+            )}
+          </div>
+          {showCompact ? (
+            <p className="text-sm text-surface-300">
+              {trackedNames.length > 0 ? trackedNames.join(', ') : '—'}
+            </p>
+          ) : (
+            <>
+              {githubReposError && (
+                <p className="text-xs text-red-400">{githubReposError}</p>
+              )}
+              {githubReposLoading ? (
+                <p className="text-sm text-surface-500">Loading repos…</p>
+              ) : githubAvailableRepos.length === 0 ? (
+                <p className="text-sm text-surface-500">No repos found. Check GitHub scopes (e.g. repo).</p>
+              ) : (
+                <>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={selectAll}
+                      className="text-xs text-primary-400 hover:text-primary-300"
+                    >
+                      Select all
+                    </button>
+                    <span className="text-surface-600">|</span>
+                    <button
+                      type="button"
+                      onClick={selectNone}
+                      className="text-xs text-primary-400 hover:text-primary-300"
+                    >
+                      Select none
+                    </button>
+                    {trackedCount > 0 && (
+                      <>
+                        <span className="text-surface-600">|</span>
+                        <button
+                          type="button"
+                          onClick={() => setGithubReposExpanded(false)}
+                          className="text-xs text-primary-400 hover:text-primary-300"
+                        >
+                          Done
+                        </button>
+                      </>
+                    )}
+                  </div>
+                  <ul className="max-h-48 overflow-y-auto space-y-1.5 rounded-lg border border-surface-700/60 p-2">
+                    {githubAvailableRepos.map((repo) => {
+                      const id = repo.github_repo_id;
+                      const checked = githubSelectedIds.has(id);
+                      return (
+                        <li key={id} className="flex items-center gap-2">
+                          <input
+                            type="checkbox"
+                            id={`gh-repo-${id}`}
+                            checked={checked}
+                            onChange={() => toggleRepo(id)}
+                            className="rounded border-surface-600 bg-surface-800 text-primary-500 focus:ring-primary-500"
+                          />
+                          <label htmlFor={`gh-repo-${id}`} className="text-sm text-surface-200 cursor-pointer truncate flex-1 min-w-0">
+                            <span className="font-medium">{repo.full_name}</span>
+                            {repo.is_private && (
+                              <span className="ml-2 text-xs text-surface-500">Private</span>
+                            )}
+                          </label>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                  <button
+                    type="button"
+                    onClick={() => void handleGitHubTrackRepos()}
+                    disabled={githubSaving}
+                    className="px-3 py-2 text-sm font-medium text-primary-300 border border-primary-500/30 hover:bg-primary-500/10 disabled:opacity-50 rounded-lg"
+                  >
+                    {githubSaving ? 'Saving…' : 'Save tracked repos'}
+                  </button>
+                </>
+              )}
+            </>
+          )}
         </div>
       );
     };
@@ -924,7 +1242,7 @@ export function DataSources(): JSX.Element {
                 <p className="text-xs text-surface-400 mt-1 hidden sm:block">
                   {syncProgress[integration.provider] !== undefined ? (
                     <span className="text-primary-400">
-                      Syncing... {getActivityLabel(integration.provider, syncProgress[integration.provider] ?? 0)}
+                      Syncing{syncStep[integration.provider] ? ` ${syncStep[integration.provider]}` : ''}... {getActivityLabel(integration.provider, syncProgress[integration.provider] ?? 0)}
                     </span>
                   ) : integration.syncStats ? (
                     formatSyncStats(integration.syncStats, integration.provider)
@@ -959,15 +1277,6 @@ export function DataSources(): JSX.Element {
                 {buttonConfig.text}
               </button>
             )}
-            {state === 'connected' && integration.provider === 'google_sheets' && (
-              <button
-                onClick={() => setShowSheetImporter(true)}
-                className="px-3 sm:px-4 py-2 text-sm font-medium text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/10 rounded-lg transition-colors flex items-center gap-2"
-              >
-                <HiUpload className="w-4 h-4" />
-                Import
-              </button>
-            )}
             {state === 'connected' && (
               <button
                 onClick={() => void handleDisconnect(integration.provider)}
@@ -989,6 +1298,7 @@ export function DataSources(): JSX.Element {
         {/* Team connections footer */}
         {renderTeamInfo()}
         {renderSlackMapping()}
+        {renderGitHubRepos()}
       </div>
     );
   };
@@ -1001,17 +1311,138 @@ export function DataSources(): JSX.Element {
     );
   }
 
+  // Filtered available sources for the connect modal
+  const filteredAvailableIntegrations: DisplayIntegration[] = availableIntegrations.filter((i) => {
+    if (!connectSearch.trim()) return true;
+    const query: string = connectSearch.toLowerCase();
+    return (
+      i.name.toLowerCase().includes(query) ||
+      i.description.toLowerCase().includes(query) ||
+      i.provider.toLowerCase().includes(query)
+    );
+  });
+
   return (
     <div className="flex-1 overflow-y-auto overflow-x-hidden">
       {/* Header - hidden on mobile since AppLayout has mobile header */}
       <header className="hidden md:block sticky top-0 z-20 bg-surface-950 border-b border-surface-800 px-4 md:px-8 py-4 md:py-6">
-        <h1 className="text-xl md:text-2xl font-bold text-surface-50">Data Sources</h1>
-        <p className="text-surface-400 mt-1 text-sm md:text-base">
-          Connect your sales tools to unlock AI-powered insights
-        </p>
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-xl md:text-2xl font-bold text-surface-50">Data Sources</h1>
+            <p className="text-surface-400 mt-1 text-sm md:text-base">
+              Connect your sales tools to unlock AI-powered insights
+            </p>
+          </div>
+          <button
+            onClick={() => { setShowConnectModal(true); setConnectSearch(''); }}
+            className="px-5 py-2.5 text-sm font-semibold text-white bg-primary-600 hover:bg-primary-500 rounded-lg transition-colors flex items-center gap-2 shadow-lg shadow-primary-600/20"
+          >
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+            </svg>
+            Add Source
+          </button>
+        </div>
       </header>
 
+      {/* Connect Source Modal */}
+      {showConnectModal && (
+        <div className="fixed inset-0 z-50 flex items-start justify-center pt-[10vh]">
+          {/* Backdrop */}
+          <div
+            className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+            onClick={() => setShowConnectModal(false)}
+          />
+          {/* Modal */}
+          <div className="relative bg-surface-900 border border-surface-700 rounded-2xl shadow-2xl w-full max-w-lg mx-4 overflow-hidden">
+            <div className="p-5 border-b border-surface-700/50">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-lg font-semibold text-surface-100">Connect a Source</h2>
+                <button
+                  onClick={() => setShowConnectModal(false)}
+                  className="text-surface-400 hover:text-surface-200 transition-colors"
+                >
+                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+              <input
+                type="text"
+                value={connectSearch}
+                onChange={(e) => setConnectSearch(e.target.value)}
+                placeholder="Search sources..."
+                autoFocus
+                className="w-full rounded-lg bg-surface-800 border border-surface-600 px-4 py-2.5 text-sm text-surface-100 placeholder:text-surface-500 focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500/30"
+              />
+            </div>
+            <ul className="max-h-[50vh] overflow-y-auto p-2">
+              {filteredAvailableIntegrations.length === 0 ? (
+                <li className="px-4 py-8 text-center text-sm text-surface-500">
+                  {availableIntegrations.length === 0
+                    ? 'All sources are already connected!'
+                    : 'No sources match your search.'}
+                </li>
+              ) : (
+                filteredAvailableIntegrations.map((integration) => {
+                  const isConnecting: boolean = connectingProvider === integration.provider;
+                  return (
+                    <li key={integration.provider}>
+                      <button
+                        onClick={() => {
+                          if (!isMobile) {
+                            setShowConnectModal(false);
+                            void handleConnect(integration.provider, integration.scope);
+                          }
+                        }}
+                        disabled={isMobile || isConnecting}
+                        className="w-full flex items-center gap-4 px-4 py-3 rounded-xl hover:bg-surface-800 transition-colors text-left group disabled:opacity-50"
+                      >
+                        <div className={`${getColorClass(integration.color)} p-2 rounded-lg text-white flex-shrink-0`}>
+                          {renderIcon(integration.icon)}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="font-medium text-surface-100 group-hover:text-white transition-colors">
+                            {integration.name}
+                          </div>
+                          <div className="text-xs text-surface-500 truncate mt-0.5">
+                            {integration.description}
+                          </div>
+                        </div>
+                        {isConnecting ? (
+                          <svg className="w-5 h-5 animate-spin text-primary-400 flex-shrink-0" fill="none" viewBox="0 0 24 24">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                          </svg>
+                        ) : (
+                          <svg className="w-5 h-5 text-surface-600 group-hover:text-surface-400 transition-colors flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                          </svg>
+                        )}
+                      </button>
+                    </li>
+                  );
+                })
+              )}
+            </ul>
+          </div>
+        </div>
+      )}
+
       <div className="max-w-4xl mx-auto px-4 md:px-8 py-4 md:py-8 space-y-6 md:space-y-10">
+        {/* Mobile: Connect Source button (since header is hidden) */}
+        {isMobile && (
+          <button
+            onClick={() => { setShowConnectModal(true); setConnectSearch(''); }}
+            className="w-full px-5 py-3 text-sm font-semibold text-white bg-primary-600 hover:bg-primary-500 rounded-lg transition-colors flex items-center justify-center gap-2 shadow-lg shadow-primary-600/20"
+          >
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+            </svg>
+            Connect Source
+          </button>
+        )}
+
         {/* Mobile notice banner */}
         {isMobile && (
           <div className="bg-surface-800/50 border border-surface-700 rounded-xl p-4 flex items-start gap-3">
@@ -1066,21 +1497,8 @@ export function DataSources(): JSX.Element {
           )}
         </section>
 
-        {/* Available Sources */}
-        <section>
-          <h2 className="text-lg font-semibold text-surface-100 mb-4">
-            Available Sources
-          </h2>
-          <div className="grid gap-4">
-            {availableIntegrations.map((integration) => renderIntegrationTile(integration, 'available'))}
-          </div>
-        </section>
       </div>
 
-      {/* Sheet Importer Modal */}
-      {showSheetImporter && (
-        <SheetImporter onClose={() => setShowSheetImporter(false)} />
-      )}
     </div>
   );
 }
