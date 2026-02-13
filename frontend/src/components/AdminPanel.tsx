@@ -9,8 +9,9 @@
 import { useEffect, useState, useCallback } from 'react';
 import { API_BASE } from '../lib/api';
 import { useAppStore, type UserProfile, type OrganizationInfo } from '../store';
+import { AdminJobsTab } from './AdminJobsTab';
 
-type AdminTab = 'waitlist' | 'users' | 'organizations' | 'sources';
+type AdminTab = 'waitlist' | 'users' | 'organizations' | 'sources' | 'jobs';
 
 interface WaitlistEntry {
   id: string;
@@ -373,6 +374,7 @@ export function AdminPanel(): JSX.Element {
     { id: 'users', label: 'Users', available: true },
     { id: 'organizations', label: 'Organizations', available: true },
     { id: 'sources', label: 'Sources', available: true },
+    { id: 'jobs', label: 'Jobs', available: true },
   ];
 
   // Filter users by search term (in-memory)
@@ -994,6 +996,11 @@ export function AdminPanel(): JSX.Element {
               </div>
             )}
           </div>
+        )}
+
+        {/* Jobs Tab Content */}
+        {activeTab === 'jobs' && user && (
+          <AdminJobsTab userId={user.id} />
         )}
       </div>
     </div>
