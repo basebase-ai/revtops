@@ -594,6 +594,7 @@ class ChatOrchestrator:
         save_user_message: bool = True,
         skip_history: bool = False,
         attachment_ids: list[str] | None = None,
+        persisted_user_message: str | None = None,
     ) -> AsyncGenerator[str, None]:
         """
         Process a user message and stream Claude's response with true streaming.
@@ -603,6 +604,8 @@ class ChatOrchestrator:
             save_user_message: If False, don't save user_message to DB (for internal system messages)
             skip_history: If True, skip loading history from DB (e.g. first message in a new conversation)
             attachment_ids: Optional list of upload IDs for attached files
+            persisted_user_message: Optional user-visible message persisted to history
+                instead of ``user_message`` (useful for internal guardrails)
 
         Yields:
             String chunks of the assistant's response (text streams immediately)
@@ -627,7 +630,8 @@ class ChatOrchestrator:
 
         # Fire-and-forget user message save — it's for persistence, not the Claude call.
         if save_user_message:
-            asyncio.create_task(self._save_user_message_safe(user_message, attachment_meta))
+            message_for_history = persisted_user_message if persisted_user_message is not None else user_message
+            asyncio.create_task(self._save_user_message_safe(message_for_history, attachment_meta))
 
         # Skip history DB call for new conversations (zero messages to load).
         if skip_history:

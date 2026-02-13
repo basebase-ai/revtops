@@ -272,6 +272,44 @@ def format_output_schema_instruction(output_schema: dict[str, Any] | None) -> st
     return f"Expected output format:\n```json\n{json.dumps(output_schema, indent=2)}\n```"
 
 
+def build_workflow_prompts(
+    *,
+    workflow_prompt: str,
+    typed_parameters: str | None,
+    user_trigger_data: dict[str, Any] | None,
+    output_instruction: str | None,
+    child_workflows_text: str | None,
+) -> tuple[str, str]:
+    """Build display and execution workflow prompts.
+
+    Returns:
+        (display_prompt, execution_prompt)
+        - display_prompt: persisted to conversation history for the UI.
+        - execution_prompt: sent to the agent and includes system guardrails.
+    """
+    shared_sections: list[str] = [workflow_prompt]
+
+    if typed_parameters:
+        shared_sections.append(typed_parameters)
+    elif user_trigger_data:
+        shared_sections.append(f"Trigger data: {user_trigger_data}")
+
+    if output_instruction:
+        shared_sections.append(output_instruction)
+
+    if child_workflows_text:
+        shared_sections.append(child_workflows_text)
+
+    display_prompt = "\n\n".join(shared_sections)
+    execution_prompt = "\n\n".join([
+        workflow_prompt,
+        WORKFLOW_NESTING_GUARDRAIL,
+        *shared_sections[1:],
+    ])
+
+    return display_prompt, execution_prompt
+
+
 def compute_effective_auto_approve_tools(
     workflow_auto_approve_tools: list[str] | None,
     parent_auto_approve_tools: list[str] | None,
@@ -759,34 +797,29 @@ async def _execute_workflow_via_agent(
                 "error": error_msg,
             }
     
-    # Build the prompt with typed parameters or raw trigger data
-    prompt = workflow.prompt
-
-    # Prevent unrequested nested workflow orchestration
-    prompt += f"\n\n{WORKFLOW_NESTING_GUARDRAIL}"
-    
     # If schema is defined, inject typed parameters; otherwise use raw trigger data
     typed_params = format_typed_parameters(user_trigger_data, input_schema)
-    if typed_params:
-        prompt += f"\n\n{typed_params}"
-    elif user_trigger_data:
-        prompt += f"\n\nTrigger data: {user_trigger_data}"
     
     # Add output format instructions if schema is defined
     output_instruction = format_output_schema_instruction(output_schema)
-    if output_instruction:
-        prompt += f"\n\n{output_instruction}"
     
     # Resolve and inject child workflows
     child_workflow_ids: list[str] = getattr(workflow, "child_workflows", []) or []
+    child_workflows_text: str | None = None
     if child_workflow_ids:
         resolved_children = await resolve_child_workflows(
             child_workflow_ids, 
             str(workflow.organization_id)
         )
         child_workflows_text = format_child_workflows_for_prompt(resolved_children)
-        if child_workflows_text:
-            prompt += f"\n\n{child_workflows_text}"
+
+    display_prompt, execution_prompt = build_workflow_prompts(
+        workflow_prompt=workflow.prompt,
+        typed_parameters=typed_params,
+        user_trigger_data=user_trigger_data,
+        output_instruction=output_instruction,
+        child_workflows_text=child_workflows_text,
+    )
     
     # Extract call_stack from parent context for recursion detection
     call_stack: list[str] = []
@@ -834,7 +867,11 @@ async def _execute_workflow_via_agent(
     # Process the prompt (this streams through the agent)
     # Since we're in a background worker, we consume the generator fully
     response_text = ""
-    async for chunk in orchestrator.process_message(prompt, save_user_message=True):
+    async for chunk in orchestrator.process_message(
+        execution_prompt,
+        save_user_message=True,
+        persisted_user_message=display_prompt,
+    ):
         # Collect text chunks (JSON chunks are tool events)
         if not chunk.startswith("{"):
             response_text += chunk

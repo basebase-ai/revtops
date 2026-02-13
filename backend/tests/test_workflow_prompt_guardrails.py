@@ -1,5 +1,6 @@
 from workers.tasks.workflows import (
     WORKFLOW_NESTING_GUARDRAIL,
+    build_workflow_prompts,
     format_child_workflows_for_prompt,
 )
 
@@ -26,3 +27,21 @@ def test_workflow_nesting_guardrail_mentions_explicit_requests() -> None:
     assert "Do NOT create or invoke child workflows" in WORKFLOW_NESTING_GUARDRAIL
     assert "explicitly asks" in WORKFLOW_NESTING_GUARDRAIL
     assert "at 5 or fewer" in WORKFLOW_NESTING_GUARDRAIL
+
+
+def test_build_workflow_prompts_hides_guardrail_from_display_prompt() -> None:
+    display_prompt, execution_prompt = build_workflow_prompts(
+        workflow_prompt="Find contact details",
+        typed_parameters=(
+            "Input parameters:\n"
+            '- email (string, required): "dev@acme.com"'
+        ),
+        user_trigger_data=None,
+        output_instruction="Expected output: Return a JSON object.",
+        child_workflows_text=None,
+    )
+
+    assert "Execution guardrail:" not in display_prompt
+    assert "Execution guardrail:" in execution_prompt
+    assert "Input parameters:" in display_prompt
+    assert "Input parameters:" in execution_prompt
