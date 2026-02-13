@@ -31,8 +31,9 @@ logger = logging.getLogger(__name__)
 WORKFLOW_NESTING_GUARDRAIL = (
     "Execution guardrail: Do NOT create or invoke child workflows (via "
     "create_workflow, run_workflow, or loop_over) unless the user or workflow "
-    "prompt explicitly asks you to do so. Prefer completing the task in this "
-    "workflow directly."
+    "prompt explicitly asks you to do so. If you create child workflows, keep "
+    "the total created across this execution tree at 5 or fewer. Prefer "
+    "completing the task in this workflow directly."
 )
 
 
