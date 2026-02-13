@@ -1037,6 +1037,31 @@ Parameters:
 # User Memory Tools - Save/delete persistent per-user preferences
 # -----------------------------------------------------------------------------
 
+# -----------------------------------------------------------------------------
+# Workflow Notes Tool - Save workflow-scoped notes shared across runs
+# -----------------------------------------------------------------------------
+
+register_tool(
+    name="keep_notes",
+    description="""Store workflow-scoped notes that should be available to future runs of the same workflow.
+
+Use this in workflow executions for interim findings, state, or progress breadcrumbs that future runs can reference.
+
+This is workflow-scoped memory, not user-wide memory.""",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "content": {
+                "type": "string",
+                "description": "The note content to store for this workflow.",
+            },
+        },
+        "required": ["content"],
+    },
+    category=ToolCategory.LOCAL_WRITE,
+    default_requires_approval=True,
+)
+
 register_tool(
     name="save_memory",
     description="""Save a memory or preference for the current user that will be recalled at the start of every future conversation.

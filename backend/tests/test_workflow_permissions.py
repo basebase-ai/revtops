@@ -55,6 +55,14 @@ def test_child_workflow_cannot_escalate_if_parent_has_no_permissions() -> None:
     assert effective == []
 
 
+def test_workflow_auto_approve_strips_save_memory() -> None:
+    effective = compute_effective_auto_approve_tools(
+        workflow_auto_approve_tools=["save_memory", "send_slack"],
+        parent_auto_approve_tools=None,
+    )
+    assert effective == ["send_slack"]
+
+
 def test_apply_user_permissions_removes_restricted_tools_without_explicit_allow() -> None:
     session = _FakeSession(allowed_tools=[])
 
@@ -62,7 +70,7 @@ def test_apply_user_permissions_removes_restricted_tools_without_explicit_allow(
         return await apply_user_auto_approve_permissions(
             session=session,
             user_id=UUID("00000000-0000-0000-0000-000000000001"),
-            auto_approve_tools=["save_memory", "send_slack", "github_issues_access"],
+            auto_approve_tools=["keep_notes", "send_slack", "github_issues_access"],
         )
 
     effective = asyncio.run(_run())
@@ -70,14 +78,14 @@ def test_apply_user_permissions_removes_restricted_tools_without_explicit_allow(
 
 
 def test_apply_user_permissions_keeps_explicitly_allowed_restricted_tools() -> None:
-    session = _FakeSession(allowed_tools=["save_memory", "github_issues_access"])
+    session = _FakeSession(allowed_tools=["keep_notes", "github_issues_access"])
 
     async def _run() -> list[str]:
         return await apply_user_auto_approve_permissions(
             session=session,
             user_id=UUID("00000000-0000-0000-0000-000000000001"),
-            auto_approve_tools=["save_memory", "send_slack", "github_issues_access"],
+            auto_approve_tools=["keep_notes", "send_slack", "github_issues_access"],
         )
 
     effective = asyncio.run(_run())
-    assert effective == ["save_memory", "send_slack", "github_issues_access"]
+    assert effective == ["keep_notes", "send_slack", "github_issues_access"]

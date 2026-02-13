@@ -329,7 +329,15 @@ async def execute_tool(
         logger.info("[Tools] create_artifact completed: %s", result.get("artifact_id"))
         return result
 
+    elif tool_name == "keep_notes":
+        result = await _keep_notes(tool_input, organization_id, user_id, context, skip_approval)
+        logger.info("[Tools] keep_notes completed: %s", result.get("note_id", result.get("error", result.get("status"))))
+        return result
+
     elif tool_name == "save_memory":
+        if context and context.get("is_workflow"):
+            logger.info("[Tools] Blocking save_memory during workflow execution; use keep_notes instead")
+            return {"error": "save_memory is not available in workflows. Use keep_notes for workflow-scoped notes."}
         result = await _save_memory(tool_input, organization_id, user_id, skip_approval)
         logger.info("[Tools] save_memory completed: %s", result.get("memory_id", result.get("error", result.get("status"))))
         return result
@@ -4442,6 +4450,103 @@ async def _read_cloud_file(
 # =============================================================================
 # User Memory Tools
 # =============================================================================
+
+
+async def _keep_notes(
+    params: dict[str, Any],
+    organization_id: str,
+    user_id: str | None,
+    context: dict[str, Any] | None,
+    skip_approval: bool = False,
+) -> dict[str, Any]:
+    """Save a workflow-scoped note that can be reused in future runs."""
+    content: str = params.get("content", "").strip()
+    if not content:
+        return {"error": "content is required."}
+
+    workflow_id: str | None = (context or {}).get("workflow_id")
+    run_id: str | None = (context or {}).get("workflow_run_id")
+    if not workflow_id or not run_id:
+        return {"error": "keep_notes can only be used in a workflow run."}
+
+    if skip_approval:
+        logger.info("[Tools._keep_notes] Auto-approved, saving note immediately")
+        return await execute_keep_notes(params, organization_id, user_id, workflow_id, run_id)
+
+    operation_id = str(uuid4())
+    pending_params = dict(params)
+    pending_params["workflow_id"] = workflow_id
+    pending_params["run_id"] = run_id
+    store_pending_operation(
+        operation_id=operation_id,
+        tool_name="keep_notes",
+        params=pending_params,
+        organization_id=organization_id,
+        user_id=user_id,
+    )
+
+    return {
+        "type": "pending_approval",
+        "status": "pending_approval",
+        "operation_id": operation_id,
+        "tool_name": "keep_notes",
+        "preview": {
+            "content": content[:500] + ("..." if len(content) > 500 else ""),
+        },
+        "message": "Ready to keep workflow notes. Please review and click Approve to persist them.",
+    }
+
+
+async def execute_keep_notes(
+    params: dict[str, Any],
+    organization_id: str,
+    user_id: str | None,
+    workflow_id: str,
+    run_id: str | None = None,
+) -> dict[str, Any]:
+    """Persist a workflow-scoped note onto the active workflow run."""
+    content: str = params.get("content", "").strip()
+    if not content:
+        return {"status": "failed", "error": "content is required."}
+
+    from datetime import datetime, timezone
+    from sqlalchemy import and_
+    from models.workflow import WorkflowRun
+
+    if not run_id:
+        return {"status": "failed", "error": "run_id is required for keep_notes."}
+
+    async with get_session(organization_id=organization_id) as session:
+        result = await session.execute(
+            select(WorkflowRun).where(
+                and_(
+                    WorkflowRun.id == UUID(run_id),
+                    WorkflowRun.organization_id == UUID(organization_id),
+                    WorkflowRun.workflow_id == UUID(workflow_id),
+                )
+            )
+        )
+        run: WorkflowRun | None = result.scalar_one_or_none()
+        if not run:
+            logger.warning(
+                "[Tools.execute_keep_notes] Workflow run not found: run_id=%s workflow_id=%s",
+                run_id,
+                workflow_id,
+            )
+            return {"status": "failed", "error": "Workflow run not found for keep_notes."}
+
+        notes = list(run.workflow_notes or [])
+        notes.append(
+            {
+                "content": content,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "created_by_user_id": user_id,
+            }
+        )
+        run.workflow_notes = notes
+        await session.commit()
+
+    return {"note_id": f"{run_id}:{len(notes) - 1}", "content": content, "status": "saved"}
 
 
 async def _save_memory(

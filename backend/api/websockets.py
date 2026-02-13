@@ -164,6 +164,7 @@ from agents.tools import (
     execute_send_slack,
     execute_github_issues_access,
     execute_save_memory,
+    execute_keep_notes,
 )
 from models.conversation import Conversation
 from models.database import get_session
@@ -216,6 +217,7 @@ async def _execute_tool_approval(
         execute_send_slack,
         execute_github_issues_access,
         execute_save_memory,
+        execute_keep_notes,
         execute_create_linear_issue,
         execute_update_linear_issue,
     )
@@ -254,6 +256,12 @@ async def _execute_tool_approval(
             return result
         elif tool_name == "save_memory":
             result = await execute_save_memory(params, op_org_id, op_user_id)
+            result["tool_name"] = tool_name
+            return result
+        elif tool_name == "keep_notes":
+            workflow_id = params.get("workflow_id", "")
+            run_id = params.get("run_id")
+            result = await execute_keep_notes(params, op_org_id, op_user_id, workflow_id, run_id)
             result["tool_name"] = tool_name
             return result
         elif tool_name == "create_linear_issue":

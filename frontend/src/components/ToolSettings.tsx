@@ -31,7 +31,7 @@ const TOOL_LABELS: Record<string, string> = {
   send_slack: 'Post to Slack',
   trigger_sync: 'Trigger Sync',
   github_issues_access: 'GitHub Issues Access',
-  save_memory: 'Save Interim Values',
+  keep_notes: 'Keep Notes',
 };
 
 // Tool descriptions for the UI
@@ -41,7 +41,7 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
   send_slack: 'Post messages to your connected Slack workspace',
   trigger_sync: 'Trigger data sync from connected integrations',
   github_issues_access: 'Create GitHub issues (no code changes)',
-  save_memory: 'Allow workflows to persist interim values for later steps',
+  keep_notes: 'Allow workflows to persist workflow-scoped notes for later runs',
 };
 
 export function ToolSettings({ userId, onClose }: ToolSettingsProps): JSX.Element {

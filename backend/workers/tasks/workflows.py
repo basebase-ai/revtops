@@ -275,14 +275,20 @@ def compute_effective_auto_approve_tools(
         Ordered list of effective tool names.
     """
     configured_tools: list[str] = list(workflow_auto_approve_tools or [])
+    disallowed_workflow_tools = {"save_memory"}
+    sanitized_configured_tools = [tool for tool in configured_tools if tool not in disallowed_workflow_tools]
+    removed_disallowed_tools = [tool for tool in configured_tools if tool in disallowed_workflow_tools]
+    for removed_tool in removed_disallowed_tools:
+        logger.info("[Workflow] Removed disallowed workflow tool from auto-approve: %s", removed_tool)
+
     inherited_tools: list[str] | None = parent_auto_approve_tools
 
     # Root invocation: no parent restrictions to intersect with.
     if inherited_tools is None:
-        return configured_tools
+        return sanitized_configured_tools
 
     inherited_set = set(inherited_tools)
-    return [tool for tool in configured_tools if tool in inherited_set]
+    return [tool for tool in sanitized_configured_tools if tool in inherited_set]
 
 
 async def apply_user_auto_approve_permissions(
@@ -291,7 +297,7 @@ async def apply_user_auto_approve_permissions(
     auto_approve_tools: list[str],
 ) -> list[str]:
     """Restrict workflow auto-approve tools to explicit per-user permissions."""
-    tools_requiring_explicit_permissions = {"github_issues_access", "save_memory"}
+    tools_requiring_explicit_permissions = {"github_issues_access", "keep_notes"}
     restricted_tools = [tool for tool in auto_approve_tools if tool in tools_requiring_explicit_permissions]
     if not restricted_tools:
         return auto_approve_tools
@@ -797,6 +803,7 @@ async def _execute_workflow_via_agent(
     workflow_context: dict[str, Any] = {
         "is_workflow": True,
         "workflow_id": str(workflow.id),
+        "workflow_run_id": str(run.id),
         "auto_approve_tools": effective_auto_approve_tools,
         "call_stack": call_stack,  # For nested workflow recursion detection
     }
