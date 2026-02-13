@@ -1045,6 +1045,8 @@ register_tool(
     name="keep_notes",
     description="""Store workflow-scoped notes that should be available to future runs of the same workflow.
 
+Notes are persisted on `workflow_runs.workflow_notes`, which is the canonical field for workflow execution notes/state shared across runs of the same workflow.
+
 Use this in workflow executions for interim findings, state, or progress breadcrumbs that future runs can reference.
 
 This is workflow-scoped memory, not user-wide memory.""",
