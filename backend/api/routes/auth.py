@@ -2180,6 +2180,45 @@ async def disconnect_integration(
             deleted_meetings = len(result.fetchall())
             print(f"Disconnect: Deleted {deleted_meetings} orphaned meetings")
 
+            # 9. Delete tracker issues (references tracker_teams via team_id)
+            result = await db_session.execute(
+                text("""
+                    DELETE FROM tracker_issues
+                    WHERE organization_id = :org_id
+                      AND source_system = :source_system
+                    RETURNING id
+                """),
+                params,
+            )
+            deleted_tracker_issues: int = len(result.fetchall())
+            print(f"Disconnect: Deleted {deleted_tracker_issues} tracker issues")
+
+            # 10. Delete tracker projects
+            result = await db_session.execute(
+                text("""
+                    DELETE FROM tracker_projects
+                    WHERE organization_id = :org_id
+                      AND source_system = :source_system
+                    RETURNING id
+                """),
+                params,
+            )
+            deleted_tracker_projects: int = len(result.fetchall())
+            print(f"Disconnect: Deleted {deleted_tracker_projects} tracker projects")
+
+            # 11. Delete tracker teams (references integrations via integration_id)
+            result = await db_session.execute(
+                text("""
+                    DELETE FROM tracker_teams
+                    WHERE organization_id = :org_id
+                      AND source_system = :source_system
+                    RETURNING id
+                """),
+                params,
+            )
+            deleted_tracker_teams: int = len(result.fetchall())
+            print(f"Disconnect: Deleted {deleted_tracker_teams} tracker teams")
+
         print(f"Disconnect: Deleting integration from database")
         await db_session.delete(integration)
         await db_session.commit()

@@ -143,6 +143,7 @@ ALLOWED_TABLES: set[str] = {
     "pipelines", "pipeline_stages", "goals", "workflows", "workflow_runs", "user_mappings_for_identity",
     "github_repositories", "github_commits", "github_pull_requests",
     "shared_files",
+    "tracker_teams", "tracker_projects", "tracker_issues",
 }
 
 

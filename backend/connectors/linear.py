@@ -600,15 +600,15 @@ class LinearConnector(BaseConnector):
         team_key: str | None = None,
         limit: int = 20,
     ) -> list[dict[str, Any]]:
-        """Search issues in Linear using the issueSearch query."""
-        # If a team key is provided, prefix the search
-        search_query: str = query_text
+        """Search issues in Linear using the searchIssues query."""
+        # Resolve team_key to team_id if provided
+        team_id: str | None = None
         if team_key:
-            search_query = f"team:{team_key} {query_text}"
+            team_id = await self.resolve_team_by_key(team_key)
 
         gql_query: str = """
-        query SearchIssues($query: String!, $first: Int) {
-            issueSearch(query: $query, first: $first) {
+        query SearchIssues($term: String!, $first: Int, $teamId: String, $includeComments: Boolean) {
+            searchIssues(term: $term, first: $first, teamId: $teamId, includeComments: $includeComments) {
                 nodes {
                     id
                     identifier
@@ -642,11 +642,17 @@ class LinearConnector(BaseConnector):
             }
         }
         """
-        data: dict[str, Any] = await self._gql(
-            gql_query, {"query": search_query, "first": min(limit, 50)}
-        )
+        variables: dict[str, Any] = {
+            "term": query_text,
+            "first": min(limit, 50),
+            "includeComments": True,
+        }
+        if team_id:
+            variables["teamId"] = team_id
+
+        data: dict[str, Any] = await self._gql(gql_query, variables)
         nodes: list[dict[str, Any]] = (
-            data.get("issueSearch", {}).get("nodes", [])
+            data.get("searchIssues", {}).get("nodes", [])
         )
 
         results: list[dict[str, Any]] = []
