@@ -644,9 +644,10 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
         
         case 'tool_progress': {
           // Tool progress update - update tool result in real-time
-          const { conversation_id, tool_id, result, status } = parsed;
+          const { conversation_id, tool_id, tool_name, result, status } = parsed;
           if (conversation_id && tool_id) {
             updateConversationToolMessage(conversation_id, tool_id, {
+              toolName: tool_name,
               result,
               status: status === 'complete' ? 'complete' : 'running',
             });

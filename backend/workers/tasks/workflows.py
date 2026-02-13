@@ -28,6 +28,14 @@ from workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
 
+WORKFLOW_NESTING_GUARDRAIL = (
+    "Execution guardrail: Do NOT create or invoke child workflows (via "
+    "create_workflow, run_workflow, or loop_over) unless the user or workflow "
+    "prompt explicitly asks you to do so. If you create child workflows, keep "
+    "the total created across this execution tree at 5 or fewer. Prefer "
+    "completing the task in this workflow directly."
+)
+
 
 # =============================================================================
 # Schema Validation and Parameter Formatting
@@ -175,7 +183,11 @@ def format_child_workflows_for_prompt(child_workflows: list[dict[str, Any]]) -> 
         return None
     
     lines: list[str] = [
-        "Available child workflows (use with run_workflow or loop_over):",
+        (
+            "Available child workflows (optional, only use run_workflow or "
+            "loop_over when explicitly requested; for small prompts or brief "
+            "tasks, prefer completing the work directly in this workflow):"
+        ),
         "",
     ]
     
@@ -749,6 +761,9 @@ async def _execute_workflow_via_agent(
     
     # Build the prompt with typed parameters or raw trigger data
     prompt = workflow.prompt
+
+    # Prevent unrequested nested workflow orchestration
+    prompt += f"\n\n{WORKFLOW_NESTING_GUARDRAIL}"
     
     # If schema is defined, inject typed parameters; otherwise use raw trigger data
     typed_params = format_typed_parameters(user_trigger_data, input_schema)

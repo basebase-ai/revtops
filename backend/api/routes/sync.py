@@ -397,6 +397,7 @@ async def list_admin_running_jobs(user_id: str) -> AdminRunningJobsResponse:
     """List currently running jobs across chats, workflows, and connector syncs."""
     from models.database import get_admin_session
     from workers.celery_app import celery_app
+    from models.workflow import WorkflowRun, Workflow
 
     await _require_global_admin(user_id)
 
@@ -411,8 +412,8 @@ async def list_admin_running_jobs(user_id: str) -> AdminRunningJobsResponse:
             .order_by(AgentTask.started_at.desc())
         )
 
-        workflow_run_rows = await session.execute(
-            select(WorkflowRun, Workflow.name)
+        workflow_rows = await session.execute(
+            select(WorkflowRun, Workflow)
             .join(Workflow, WorkflowRun.workflow_id == Workflow.id)
             .where(WorkflowRun.status.in_(["pending", "running"]))
             .order_by(WorkflowRun.started_at.desc())
@@ -440,21 +441,26 @@ async def list_admin_running_jobs(user_id: str) -> AdminRunningJobsResponse:
             )
         )
 
-    workflow_runs_added = 0
-    for workflow_run, workflow_name in workflow_run_rows.all():
-        if not _is_active_workflow_run_status(workflow_run.status):
-            continue
+    for workflow_run, workflow in workflow_rows.all():
         org_id = str(workflow_run.organization_id)
         jobs.append(
-            _build_workflow_run_admin_job(
-                run=workflow_run,
-                workflow_name=workflow_name,
+            AdminRunningJob(
+                id=str(workflow_run.id),
+                type="workflow",
+                status=workflow_run.status,
+                organization_id=org_id,
                 organization_name=org_name_by_id.get(org_id),
+                started_at=workflow_run.started_at.isoformat() if workflow_run.started_at else None,
+                title=workflow.name,
+                description=f"Workflow run triggered by {workflow_run.triggered_by}",
+                metadata={
+                    "workflow_id": str(workflow.id),
+                    "workflow_name": workflow.name,
+                    "triggered_by": workflow_run.triggered_by,
+                    "conversation_id": (workflow_run.output or {}).get("conversation_id") if isinstance(workflow_run.output, dict) else None,
+                },
             )
         )
-        workflow_runs_added += 1
-
-    logger.info("Added %d workflow_runs records to admin running jobs", workflow_runs_added)
 
     try:
         inspector = celery_app.control.inspect(timeout=1.5)
@@ -524,6 +530,8 @@ async def cancel_admin_running_job(
     """Cancel a running admin-visible job."""
     from services.task_manager import task_manager
     from workers.celery_app import celery_app
+    from models.database import get_admin_session
+    from models.workflow import WorkflowRun
 
     await _require_global_admin(user_id)
 
@@ -541,6 +549,32 @@ async def cancel_admin_running_job(
 
     if request.job_type not in {"workflow", "connector_sync"}:
         raise HTTPException(status_code=400, detail="Unsupported job_type")
+
+    if request.job_type == "workflow":
+        # First try treating job_id as WorkflowRun.id (DB-backed running workflow)
+        try:
+            run_uuid = UUID(job_id)
+        except ValueError:
+            run_uuid = None
+
+        if run_uuid is not None:
+            async with get_admin_session() as session:
+                result = await session.execute(
+                    select(WorkflowRun).where(WorkflowRun.id == run_uuid)
+                )
+                run = result.scalar_one_or_none()
+                if run and run.status == "running":
+                    run.status = "cancelled"
+                    run.completed_at = datetime.utcnow()
+                    run.error_message = "Cancelled by admin"
+                    await session.commit()
+                    logger.info("Admin %s cancelled workflow run %s", user_id, job_id)
+                    return AdminCancelJobResponse(
+                        status="cancelled",
+                        job_id=job_id,
+                        job_type=request.job_type,
+                        message="Workflow run marked as cancelled",
+                    )
 
     celery_app.control.revoke(job_id, terminate=True)
     logger.info("Admin %s revoked celery task %s of type %s", user_id, job_id, request.job_type)

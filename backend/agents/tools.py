@@ -912,6 +912,11 @@ async def _run_sql_write(
     # Prevent autonomous workflow fan-out: a workflow run cannot create other
     # workflows that are automatically runnable (enabled + non-manual trigger).
     if context and context.get("is_workflow") and table == "workflows":
+        if operation == "INSERT":
+            limit_error = _workflow_child_creation_limit_error(context)
+            if limit_error:
+                return limit_error
+
         if operation == "INSERT" and _workflow_insert_would_auto_run(query):
             logger.warning(
                 "[Tools._run_sql_write] Blocked workflow-created auto-run workflow INSERT"
@@ -1014,6 +1019,20 @@ async def _run_sql_write(
             # Execute the query
             result = await session.execute(text(final_query))
             await session.commit()
+
+            if (
+                context
+                and context.get("is_workflow")
+                and table == "workflows"
+                and operation == "INSERT"
+            ):
+                updated_count = int(context.get("created_workflow_count", 0)) + 1
+                context["created_workflow_count"] = updated_count
+                logger.info(
+                    "[Tools._run_sql_write] Workflow-created child count incremented: workflow_id=%s count=%d",
+                    context.get("workflow_id"),
+                    updated_count,
+                )
             
             rows_affected = result.rowcount
             
@@ -3787,11 +3806,41 @@ async def _trigger_sync(
 # Maximum depth for nested workflow calls to prevent infinite recursion
 MAX_WORKFLOW_CALL_DEPTH: int = 5
 
+# Maximum number of workflows a workflow execution tree may create.
+MAX_CREATED_CHILD_WORKFLOWS: int = 5
+
 # Maximum items that can be processed in loop_over
 MAX_LOOP_ITEMS: int = 500
 
 # Maximum concurrent workflow executions in loop_over
 MAX_CONCURRENT_WORKFLOWS: int = 10
+
+
+def _workflow_child_creation_limit_error(
+    context: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Return an error when a workflow execution has created too many child workflows."""
+    if not context or not context.get("is_workflow"):
+        return None
+
+    created_count = int(context.get("created_workflow_count", 0))
+    if created_count < MAX_CREATED_CHILD_WORKFLOWS:
+        return None
+
+    workflow_id = context.get("workflow_id")
+    logger.warning(
+        "[Tools._run_sql_write] Blocked workflow child creation limit: workflow_id=%s created=%d limit=%d",
+        workflow_id,
+        created_count,
+        MAX_CREATED_CHILD_WORKFLOWS,
+    )
+    return {
+        "error": (
+            "Workflow child-creation limit reached. "
+            f"A workflow execution can create at most {MAX_CREATED_CHILD_WORKFLOWS} child workflows."
+        ),
+        "status": "rejected",
+    }
 
 
 async def _run_workflow(
