@@ -490,11 +490,14 @@ export function Chat({
     // Send message with conversation context, timezone info, and attachment IDs
     const attachmentIds: string[] = pendingAttachments.map((a) => a.upload_id);
     const now = new Date();
+    // Build a local ISO-style string (no "Z" suffix) so the backend sees the
+    // user's wall-clock time rather than UTC.
+    const localIso: string = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}T${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
     sendMessage({
       type: 'send_message',
       message,
       conversation_id: currentConvId,
-      local_time: now.toISOString(),
+      local_time: localIso,
       timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
       ...(attachmentIds.length > 0 ? { attachment_ids: attachmentIds } : {}),
     });

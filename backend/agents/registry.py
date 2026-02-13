@@ -100,6 +100,7 @@ Available tables:
 - activities: Raw activity records - query by TYPE not source
 - pipelines: Sales pipelines (name, display_order, is_default)
 - pipeline_stages: Stages in pipelines (pipeline_id, name, probability)
+- goals: Revenue goals and quotas synced from CRM (name, target_amount, start_date, end_date, goal_type, owner_id, pipeline_id, source_system, source_id, custom_fields JSONB). Compare target_amount against deal totals to measure progress.
 - integrations: Connected data sources (provider, is_active, last_sync_at)
 - users: Team members (email, name, role)
 - user_mappings_for_identity: Slack identity links (external_userid, external_email, match_source)
@@ -107,6 +108,9 @@ Available tables:
 - github_repositories: Tracked GitHub repos (full_name, owner, name, is_tracked, last_sync_at). Join to commits/PRs via repository_id.
 - github_commits: Commits on tracked repos (repository_id, sha, message, author_name, author_email, author_login, author_date, additions, deletions, user_id). Use organization_id in WHERE.
 - github_pull_requests: PRs on tracked repos (repository_id, number, title, state, author_login, created_date, merged_date, additions, deletions, user_id). Use organization_id in WHERE.
+- tracker_teams: Issue tracker teams/workspaces (source_system, source_id, name, key, description). Filter by source_system ('linear', 'jira', 'asana'). Join to issues via team_id.
+- tracker_projects: Issue tracker projects (source_system, source_id, name, description, state, progress, target_date, start_date, lead_name, team_ids JSONB). Filter by source_system. Use organization_id in WHERE.
+- tracker_issues: Issue tracker issues/tasks (source_system, source_id, team_id, identifier e.g. "ENG-123", title, description, state_name, state_type, priority 0-4, priority_label, issue_type, assignee_name, assignee_email, creator_name, project_id, labels JSONB, estimate, url, due_date, created_date, updated_date, completed_date, cancelled_date, user_id). Filter by source_system. Use organization_id in WHERE.
 - shared_files: Synced file metadata from cloud sources like Google Drive (external_id, source, name, mime_type, folder_path, web_view_link, file_size, source_modified_at). Filter by organization_id AND user_id AND source (e.g. 'google_drive'). Use search_cloud_files tool instead for name-based searches.
 
 IMPORTANT: Only SELECT queries are allowed. No INSERT, UPDATE, DELETE, DROP, etc.""",
@@ -669,6 +673,155 @@ This only changes GitHub issues (never source code). It is an external write act
     },
     category=ToolCategory.EXTERNAL_WRITE,
     default_requires_approval=True,
+)
+
+
+register_tool(
+    name="create_linear_issue",
+    description="""Create an issue in Linear (issue tracking).
+
+Use this when the user asks to create a ticket, task, or issue in Linear.
+
+Required:
+- team_key: Team key (e.g. 'ENG', 'PROD'). Use run_sql_query on tracker_teams WHERE source_system='linear' to find valid keys.
+- title: Issue title
+
+Optional:
+- description: Markdown body for the issue
+- priority: 0=No priority, 1=Urgent, 2=High, 3=Medium, 4=Low
+- assignee_name: Display name of the assignee (resolved to Linear user)
+- project_name: Project name to add the issue to
+- labels: List of label names
+
+This is an external write action and requires approval unless auto-approved.""",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "team_key": {
+                "type": "string",
+                "description": "Team key (e.g. 'ENG'). Query tracker_teams WHERE source_system='linear' for valid keys.",
+            },
+            "title": {
+                "type": "string",
+                "description": "Issue title",
+            },
+            "description": {
+                "type": "string",
+                "description": "Issue body in Markdown (optional)",
+            },
+            "priority": {
+                "type": "integer",
+                "description": "Priority: 0=None, 1=Urgent, 2=High, 3=Medium, 4=Low",
+                "enum": [0, 1, 2, 3, 4],
+            },
+            "assignee_name": {
+                "type": "string",
+                "description": "Display name of the person to assign (optional)",
+            },
+            "project_name": {
+                "type": "string",
+                "description": "Project name to attach this issue to (optional)",
+            },
+            "labels": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Label names to apply (optional)",
+            },
+        },
+        "required": ["team_key", "title"],
+    },
+    category=ToolCategory.EXTERNAL_WRITE,
+    default_requires_approval=True,
+)
+
+
+register_tool(
+    name="update_linear_issue",
+    description="""Update an existing issue in Linear.
+
+Use this when the user asks to change an issue's title, description, state, priority, or assignee.
+
+Required:
+- issue_identifier: The issue identifier like 'ENG-123'. Query tracker_issues WHERE source_system='linear' to find identifiers.
+
+All other fields are optional — only provide the ones to change:
+- title: New title
+- description: New description (Markdown)
+- state_name: New state (e.g. 'In Progress', 'Done'). Must match a valid workflow state for the issue's team.
+- priority: 0=None, 1=Urgent, 2=High, 3=Medium, 4=Low
+- assignee_name: Display name of the new assignee
+
+This is an external write action and requires approval unless auto-approved.""",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "issue_identifier": {
+                "type": "string",
+                "description": "Issue identifier like 'ENG-123'",
+            },
+            "title": {
+                "type": "string",
+                "description": "New title (optional)",
+            },
+            "description": {
+                "type": "string",
+                "description": "New description in Markdown (optional)",
+            },
+            "state_name": {
+                "type": "string",
+                "description": "New state name, e.g. 'In Progress', 'Done' (optional)",
+            },
+            "priority": {
+                "type": "integer",
+                "description": "Priority: 0=None, 1=Urgent, 2=High, 3=Medium, 4=Low",
+                "enum": [0, 1, 2, 3, 4],
+            },
+            "assignee_name": {
+                "type": "string",
+                "description": "Display name of the new assignee (optional)",
+            },
+        },
+        "required": ["issue_identifier"],
+    },
+    category=ToolCategory.EXTERNAL_WRITE,
+    default_requires_approval=True,
+)
+
+
+register_tool(
+    name="search_linear_issues",
+    description="""Search issues in Linear in real-time (not just synced data).
+
+Use this when the user wants to find issues by keyword, filter by team, or get the latest status
+from Linear directly. This calls the Linear API live, so results are always up-to-date.
+
+For querying synced/historical data, use run_sql_query on tracker_issues WHERE source_system='linear' instead.
+
+Examples:
+- "Search Linear for authentication bugs"
+- "Find open issues assigned to Alice in ENG"
+- "Look for issues about the onboarding flow" """,
+    input_schema={
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "Search query text",
+            },
+            "team_key": {
+                "type": "string",
+                "description": "Optional team key to filter (e.g. 'ENG')",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Max results (default 20, max 50)",
+                "default": 20,
+            },
+        },
+        "required": ["query"],
+    },
+    category=ToolCategory.EXTERNAL_READ,
+    default_requires_approval=False,
 )
 
 

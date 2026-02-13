@@ -29,6 +29,7 @@ from connectors.microsoft_mail import MicrosoftMailConnector
 from connectors.salesforce import SalesforceConnector
 from connectors.slack import SlackConnector
 from connectors.zoom import ZoomConnector
+from connectors.linear import LinearConnector
 from models.database import get_session
 from models.integration import Integration
 from models.organization import Organization
@@ -50,6 +51,7 @@ CONNECTORS = {
     "microsoft_mail": MicrosoftMailConnector,
     "zoom": ZoomConnector,
     "github": GitHubConnector,
+    "linear": LinearConnector,
 }
 
 # Simple in-memory sync status tracking (use Redis in production)

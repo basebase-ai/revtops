@@ -23,6 +23,9 @@ from models.shared_file import SharedFile
 from models.user_memory import UserMemory
 from models.organization_membership import OrganizationMembership
 from models.goal import Goal
+from models.tracker_team import TrackerTeam
+from models.tracker_project import TrackerProject
+from models.tracker_issue import TrackerIssue
 
 __all__ = [
     "Base",
@@ -54,4 +57,7 @@ __all__ = [
     "UserMemory",
     "OrganizationMembership",
     "Goal",
+    "TrackerTeam",
+    "TrackerProject",
+    "TrackerIssue",
 ]

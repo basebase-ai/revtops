@@ -71,6 +71,7 @@ class Settings(BaseSettings):
     NANGO_GOOGLE_DRIVE_INTEGRATION_ID: str = "google-sheet"
     NANGO_APOLLO_INTEGRATION_ID: str = "apollo"
     NANGO_GITHUB_INTEGRATION_ID: str = "github"
+    NANGO_LINEAR_INTEGRATION_ID: str = "linear"
 
     # App
     SECRET_KEY: str = "dev-secret-change-in-production"
@@ -168,6 +169,7 @@ NANGO_INTEGRATION_IDS: dict[str, str] = {
     "google_drive": settings.NANGO_GOOGLE_DRIVE_INTEGRATION_ID,
     "apollo": settings.NANGO_APOLLO_INTEGRATION_ID,
     "github": settings.NANGO_GITHUB_INTEGRATION_ID,
+    "linear": settings.NANGO_LINEAR_INTEGRATION_ID,
 }
 
 # Provider scope mapping: which integrations are user-scoped vs org-scoped
@@ -186,6 +188,7 @@ PROVIDER_SCOPES: dict[str, str] = {
     "google_drive": "user",
     "apollo": "organization",
     "github": "organization",
+    "linear": "organization",
 }
 
 
