@@ -30,7 +30,8 @@ const TOOL_LABELS: Record<string, string> = {
   send_email_from: 'Send Email',
   send_slack: 'Post to Slack',
   trigger_sync: 'Trigger Sync',
-  create_github_issue: 'Change GitHub Issues',
+  github_issues_access: 'GitHub Issues Access',
+  save_memory: 'Save Interim Values',
 };
 
 // Tool descriptions for the UI
@@ -39,7 +40,8 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
   send_email_from: 'Send emails from your connected Gmail or Outlook',
   send_slack: 'Post messages to your connected Slack workspace',
   trigger_sync: 'Trigger data sync from connected integrations',
-  create_github_issue: 'Create GitHub issues (no code changes)',
+  github_issues_access: 'Create GitHub issues (no code changes)',
+  save_memory: 'Allow workflows to persist interim values for later steps',
 };
 
 export function ToolSettings({ userId, onClose }: ToolSettingsProps): JSX.Element {
@@ -145,7 +147,7 @@ export function ToolSettings({ userId, onClose }: ToolSettingsProps): JSX.Elemen
           ) : (
             <div className="space-y-3">
               <div className="text-xs text-surface-500 uppercase tracking-wide mb-3">
-                External Actions (require approval by default)
+                Actions (require approval by default)
               </div>
               
               {tools.map(tool => {
@@ -200,7 +202,7 @@ export function ToolSettings({ userId, onClose }: ToolSettingsProps): JSX.Elemen
                   {autoApprovedCount} tool{autoApprovedCount !== 1 ? 's' : ''} will run without asking
                 </span>
               ) : (
-                'All external actions will ask for approval'
+                'All actions will ask for approval'
               )}
             </div>
             <button

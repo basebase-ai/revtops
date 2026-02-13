@@ -735,7 +735,8 @@ function WorkflowModal({
     { id: 'loop_over', label: 'Loop Over Items', description: 'Run a workflow for each item in a list' },
     { id: 'send_slack', label: 'Post to Slack', description: 'Send messages to Slack channels' },
     { id: 'send_email_from', label: 'Send Email', description: 'Send emails from your connected account' },
-    { id: 'create_github_issue', label: 'Change GitHub Issues', description: 'Create GitHub issues (no code write access)' },
+    { id: 'github_issues_access', label: 'GitHub Issues Access', description: 'Create GitHub issues (no code write access)' },
+    { id: 'save_memory', label: 'Save Interim Values', description: 'Store intermediate values and preferences for later workflow steps' },
     { id: 'run_sql_write', label: 'Write Data', description: 'Insert, update, or delete records' },
   ];
 

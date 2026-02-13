@@ -624,7 +624,7 @@ Examples:
 
 
 register_tool(
-    name="create_github_issue",
+    name="github_issues_access",
     description="""Create a GitHub issue in a repository your organization has connected.
 
 Use this when the user asks to file/report issues in GitHub.
@@ -904,7 +904,7 @@ Do NOT save conversation-specific context (like "user asked about deal X") — o
         "required": ["content"],
     },
     category=ToolCategory.LOCAL_WRITE,
-    default_requires_approval=False,
+    default_requires_approval=True,
 )
 
 register_tool(

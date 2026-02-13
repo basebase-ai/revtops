@@ -5,7 +5,7 @@ Tools are organized by category (see registry.py):
 - LOCAL_READ: run_sql_query, search_activities
 - LOCAL_WRITE: create_artifact, create_workflow, trigger_workflow
 - EXTERNAL_READ: web_search, fetch_url, enrich_contacts_with_apollo, enrich_company_with_apollo
-- EXTERNAL_WRITE: crm_write, send_email_from, send_slack, create_github_issue, trigger_sync
+- EXTERNAL_WRITE: crm_write, send_email_from, send_slack, github_issues_access, trigger_sync
 
 EXTERNAL_WRITE tools require user approval by default (can be overridden in settings).
 """
@@ -296,9 +296,15 @@ async def execute_tool(
         logger.info("[Tools] send_slack completed: %s", result.get("status"))
         return result
 
+    elif tool_name == "github_issues_access":
+        result = await _github_issues_access(tool_input, organization_id, user_id, skip_approval)
+        logger.info("[Tools] github_issues_access completed: %s", result.get("status", result.get("error", "unknown")))
+        return result
+
     elif tool_name == "create_github_issue":
-        result = await _create_github_issue(tool_input, organization_id, user_id, skip_approval)
-        logger.info("[Tools] create_github_issue completed: %s", result.get("status", result.get("error", "unknown")))
+        logger.warning("[Tools] create_github_issue is deprecated, remapping to github_issues_access")
+        result = await _github_issues_access(tool_input, organization_id, user_id, skip_approval)
+        logger.info("[Tools] create_github_issue completed via github_issues_access: %s", result.get("status", result.get("error", "unknown")))
         return result
 
     elif tool_name == "trigger_sync":
@@ -322,8 +328,8 @@ async def execute_tool(
         return result
 
     elif tool_name == "save_memory":
-        result = await _save_memory(tool_input, organization_id, user_id)
-        logger.info("[Tools] save_memory completed: %s", result.get("memory_id", result.get("error")))
+        result = await _save_memory(tool_input, organization_id, user_id, skip_approval)
+        logger.info("[Tools] save_memory completed: %s", result.get("memory_id", result.get("error", result.get("status"))))
         return result
 
     elif tool_name == "delete_memory":
@@ -3611,7 +3617,7 @@ async def execute_send_slack(
 
 
 
-async def _create_github_issue(
+async def _github_issues_access(
     params: dict[str, Any], organization_id: str, user_id: str | None, skip_approval: bool = False
 ) -> dict[str, Any]:
     """
@@ -3655,13 +3661,13 @@ async def _create_github_issue(
             }
 
     if skip_approval:
-        logger.info("[Tools._create_github_issue] Auto-approved, creating issue immediately")
-        return await execute_create_github_issue(params, organization_id)
+        logger.info("[Tools._github_issues_access] Auto-approved, creating issue immediately")
+        return await execute_github_issues_access(params, organization_id)
 
     operation_id = str(uuid4())
     store_pending_operation(
         operation_id=operation_id,
-        tool_name="create_github_issue",
+        tool_name="github_issues_access",
         params=params,
         organization_id=organization_id,
         user_id=user_id or "",
@@ -3671,7 +3677,7 @@ async def _create_github_issue(
         "type": "pending_approval",
         "status": "pending_approval",
         "operation_id": operation_id,
-        "tool_name": "create_github_issue",
+        "tool_name": "github_issues_access",
         "preview": {
             "repo_full_name": repo_full_name,
             "title": title,
@@ -3683,7 +3689,7 @@ async def _create_github_issue(
     }
 
 
-async def execute_create_github_issue(
+async def execute_github_issues_access(
     params: dict[str, Any], organization_id: str
 ) -> dict[str, Any]:
     """Actually create a GitHub issue (called after user approval)."""
@@ -3717,14 +3723,14 @@ async def execute_create_github_issue(
             "issue": issue,
         }
     except httpx.HTTPStatusError as e:
-        logger.error("[Tools.execute_create_github_issue] GitHub API failed: %s", str(e))
+        logger.error("[Tools.execute_github_issues_access] GitHub API failed: %s", str(e))
         detail = e.response.text[:500] if e.response is not None else str(e)
         return {
             "status": "failed",
             "error": f"GitHub API error: {detail}",
         }
     except Exception as e:
-        logger.error("[Tools.execute_create_github_issue] Failed: %s", str(e))
+        logger.error("[Tools.execute_github_issues_access] Failed: %s", str(e))
         return {
             "status": "failed",
             "error": str(e),
@@ -4425,6 +4431,7 @@ async def _save_memory(
     params: dict[str, Any],
     organization_id: str,
     user_id: str | None,
+    skip_approval: bool = False,
 ) -> dict[str, Any]:
     """Save a persistent memory for the current user."""
     content: str = params.get("content", "").strip()
@@ -4432,6 +4439,41 @@ async def _save_memory(
         return {"error": "content is required."}
     if not user_id:
         return {"error": "Cannot save memory without a user context."}
+
+    if skip_approval:
+        logger.info("[Tools._save_memory] Auto-approved, saving memory immediately")
+        return await execute_save_memory(params, organization_id, user_id)
+
+    operation_id = str(uuid4())
+    store_pending_operation(
+        operation_id=operation_id,
+        tool_name="save_memory",
+        params=params,
+        organization_id=organization_id,
+        user_id=user_id,
+    )
+
+    return {
+        "type": "pending_approval",
+        "status": "pending_approval",
+        "operation_id": operation_id,
+        "tool_name": "save_memory",
+        "preview": {
+            "content": content[:500] + ("..." if len(content) > 500 else ""),
+        },
+        "message": "Ready to save memory. Please review and click Approve to persist it.",
+    }
+
+
+async def execute_save_memory(
+    params: dict[str, Any],
+    organization_id: str,
+    user_id: str,
+) -> dict[str, Any]:
+    """Persist a user memory after approval."""
+    content: str = params.get("content", "").strip()
+    if not content:
+        return {"status": "failed", "error": "content is required."}
 
     from models.user_memory import UserMemory
 
@@ -4476,3 +4518,9 @@ async def _delete_memory(
         await session.commit()
 
     return {"status": "deleted", "memory_id": memory_id}
+
+
+
+async def execute_create_github_issue(params: dict[str, Any], organization_id: str) -> dict[str, Any]:
+    """Backward-compatible alias for deprecated function name."""
+    return await execute_github_issues_access(params, organization_id)

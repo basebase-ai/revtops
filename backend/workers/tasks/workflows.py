@@ -291,27 +291,35 @@ async def apply_user_auto_approve_permissions(
     auto_approve_tools: list[str],
 ) -> list[str]:
     """Restrict workflow auto-approve tools to explicit per-user permissions."""
-    if "create_github_issue" not in auto_approve_tools:
+    tools_requiring_explicit_permissions = {"github_issues_access", "save_memory"}
+    restricted_tools = [tool for tool in auto_approve_tools if tool in tools_requiring_explicit_permissions]
+    if not restricted_tools:
         return auto_approve_tools
 
     from sqlalchemy import select
     from models.user_tool_setting import UserToolSetting
 
     result = await session.execute(
-        select(UserToolSetting.auto_approve).where(
+        select(UserToolSetting.tool_name).where(
             UserToolSetting.user_id == user_id,
-            UserToolSetting.tool_name == "create_github_issue",
+            UserToolSetting.auto_approve.is_(True),
+            UserToolSetting.tool_name.in_(restricted_tools),
         )
     )
-    github_issue_auto_approve_enabled = bool(result.scalar_one_or_none())
-    if github_issue_auto_approve_enabled:
-        return auto_approve_tools
+    allowed_tools = set(result.scalars().all())
 
-    filtered_tools = [tool for tool in auto_approve_tools if tool != "create_github_issue"]
-    logger.info(
-        "[Workflow] Removed create_github_issue from auto-approve for user %s because permission is disabled",
-        user_id,
-    )
+    filtered_tools = [
+        tool for tool in auto_approve_tools
+        if tool not in tools_requiring_explicit_permissions or tool in allowed_tools
+    ]
+    removed_tools = [tool for tool in restricted_tools if tool not in allowed_tools]
+    for removed_tool in removed_tools:
+        logger.info(
+            "[Workflow] Removed %s from auto-approve for user %s because permission is disabled",
+            removed_tool,
+            user_id,
+        )
+
     return filtered_tools
 
 
