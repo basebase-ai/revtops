@@ -1,4 +1,5 @@
 from agents.registry import get_tools_for_claude, requires_approval
+from agents.tools import ALLOWED_TABLES
 
 
 def test_keep_notes_hidden_outside_workflow_context() -> None:
@@ -19,3 +20,7 @@ def test_run_sql_query_documents_workflow_runs_table() -> None:
     run_sql_query_tool = next(tool for tool in get_tools_for_claude(in_workflow=True) if tool["name"] == "run_sql_query")
     description = run_sql_query_tool["description"]
     assert "- workflow_runs:" in description
+
+
+def test_workflow_runs_is_queryable_from_run_sql_query() -> None:
+    assert "workflow_runs" in ALLOWED_TABLES
