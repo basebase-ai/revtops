@@ -10,7 +10,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { API_BASE } from '../lib/api';
 import { useAppStore, type UserProfile, type OrganizationInfo } from '../store';
 
-type AdminTab = 'waitlist' | 'users' | 'organizations' | 'sources';
+type AdminTab = 'waitlist' | 'users' | 'organizations' | 'sources' | 'jobs';
 
 interface WaitlistEntry {
   id: string;
@@ -62,6 +62,18 @@ interface AdminIntegration {
   created_at: string | null;
 }
 
+interface AdminRunningJob {
+  id: string;
+  type: 'chat' | 'workflow' | 'connector_sync';
+  status: string;
+  organization_id: string | null;
+  organization_name: string | null;
+  started_at: string | null;
+  title: string;
+  description: string;
+  metadata: Record<string, unknown> | null;
+}
+
 export function AdminPanel(): JSX.Element {
   const user = useAppStore((state) => state.user);
   const startMasquerade = useAppStore((state) => state.startMasquerade);
@@ -95,6 +107,12 @@ export function AdminPanel(): JSX.Element {
   // Global sync state
   const [syncing, setSyncing] = useState<boolean>(false);
   const [syncResult, setSyncResult] = useState<{ status: string; taskId: string; count: number } | null>(null);
+
+  // Jobs tab state
+  const [runningJobs, setRunningJobs] = useState<AdminRunningJob[]>([]);
+  const [jobsLoading, setJobsLoading] = useState<boolean>(true);
+  const [jobsError, setJobsError] = useState<string | null>(null);
+  const [cancellingJobId, setCancellingJobId] = useState<string | null>(null);
 
   const fetchWaitlist = useCallback(async (): Promise<void> => {
     if (!user) return;
@@ -220,6 +238,35 @@ export function AdminPanel(): JSX.Element {
     }
   }, [user]);
 
+  const fetchRunningJobs = useCallback(async (): Promise<void> => {
+    if (!user) return;
+
+    setJobsLoading(true);
+    setJobsError(null);
+
+    try {
+      const response = await fetch(`${API_BASE}/sync/admin/jobs?user_id=${user.id}`);
+
+      if (!response.ok) {
+        if (response.status === 403) {
+          setJobsError('Access denied. You need global_admin role.');
+        } else {
+          setJobsError('Failed to fetch running jobs');
+        }
+        setRunningJobs([]);
+        return;
+      }
+
+      const data = await response.json() as { jobs: AdminRunningJob[]; total: number };
+      setRunningJobs(data.jobs);
+    } catch {
+      setJobsError('Failed to connect to server');
+      setRunningJobs([]);
+    } finally {
+      setJobsLoading(false);
+    }
+  }, [user]);
+
   useEffect(() => {
     if (activeTab === 'waitlist') {
       void fetchWaitlist();
@@ -229,8 +276,35 @@ export function AdminPanel(): JSX.Element {
       void fetchOrganizations();
     } else if (activeTab === 'sources') {
       void fetchIntegrations();
+    } else if (activeTab === 'jobs') {
+      void fetchRunningJobs();
     }
-  }, [activeTab, fetchWaitlist, fetchUsers, fetchOrganizations, fetchIntegrations]);
+  }, [activeTab, fetchWaitlist, fetchUsers, fetchOrganizations, fetchIntegrations, fetchRunningJobs]);
+
+  const handleCancelJob = async (job: AdminRunningJob): Promise<void> => {
+    if (!user) return;
+
+    setCancellingJobId(job.id);
+    try {
+      const response = await fetch(`${API_BASE}/sync/admin/jobs/${job.id}/cancel?user_id=${user.id}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ job_type: job.type }),
+      });
+
+      if (!response.ok) {
+        const data = await response.json() as { detail?: string };
+        throw new Error(data.detail ?? 'Failed to cancel job');
+      }
+
+      await fetchRunningJobs();
+    } catch (err) {
+      console.error('Failed to cancel job:', err);
+      alert('Failed to cancel job: ' + (err instanceof Error ? err.message : 'Unknown error'));
+    } finally {
+      setCancellingJobId(null);
+    }
+  };
 
   const handleInvite = async (targetUserId: string): Promise<void> => {
     if (!user) return;
@@ -373,6 +447,7 @@ export function AdminPanel(): JSX.Element {
     { id: 'users', label: 'Users', available: true },
     { id: 'organizations', label: 'Organizations', available: true },
     { id: 'sources', label: 'Sources', available: true },
+    { id: 'jobs', label: 'Running Jobs', available: true },
   ];
 
   // Filter users by search term (in-memory)
@@ -408,6 +483,12 @@ export function AdminPanel(): JSX.Element {
     const provider = i.provider.toLowerCase();
     return orgName.includes(searchLower) || provider.includes(searchLower);
   });
+
+  const jobTypeLabel: Record<AdminRunningJob['type'], string> = {
+    chat: 'Chat',
+    workflow: 'Workflow',
+    connector_sync: 'Connector Sync',
+  };
 
   // Provider display names
   const providerNames: Record<string, string> = {
@@ -991,6 +1072,72 @@ export function AdminPanel(): JSX.Element {
               <div className="text-sm text-surface-500 text-center">
                 Showing {filteredIntegrations.length} of {adminIntegrations.length} data sources
                 {sourceSearch && ` matching "${sourceSearch}"`}
+              </div>
+            )}
+          </div>
+        )}
+
+        {activeTab === 'jobs' && (
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <p className="text-sm text-surface-400">Manage currently running chat, workflow, and connector sync jobs.</p>
+              <button
+                onClick={() => void fetchRunningJobs()}
+                className="px-3 py-1.5 text-sm bg-surface-800 hover:bg-surface-700 text-surface-200 rounded-lg border border-surface-700"
+              >
+                Refresh
+              </button>
+            </div>
+
+            {jobsError && (
+              <div className="p-4 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400">
+                {jobsError}
+              </div>
+            )}
+
+            {jobsLoading && (
+              <div className="text-center py-12 text-surface-400">Loading running jobs...</div>
+            )}
+
+            {!jobsLoading && !jobsError && runningJobs.length === 0 && (
+              <div className="text-center py-12 text-surface-400">No running jobs found.</div>
+            )}
+
+            {!jobsLoading && !jobsError && runningJobs.length > 0 && (
+              <div className="bg-surface-900 rounded-xl border border-surface-800 overflow-hidden">
+                <table className="w-full">
+                  <thead>
+                    <tr className="border-b border-surface-800 text-left">
+                      <th className="px-4 py-3 text-sm font-medium text-surface-400">Type</th>
+                      <th className="px-4 py-3 text-sm font-medium text-surface-400">Title</th>
+                      <th className="px-4 py-3 text-sm font-medium text-surface-400">Organization</th>
+                      <th className="px-4 py-3 text-sm font-medium text-surface-400">Started</th>
+                      <th className="px-4 py-3 text-sm font-medium text-surface-400">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-surface-800">
+                    {runningJobs.map((job) => (
+                      <tr key={`${job.type}:${job.id}`} className="hover:bg-surface-800/50">
+                        <td className="px-4 py-3 text-surface-200">{jobTypeLabel[job.type]}</td>
+                        <td className="px-4 py-3">
+                          <div className="text-surface-100 font-medium">{job.title}</div>
+                          <div className="text-xs text-surface-400">{job.description}</div>
+                        </td>
+                        <td className="px-4 py-3 text-surface-300">{job.organization_name ?? '—'}</td>
+                        <td className="px-4 py-3 text-sm text-surface-400">{formatDate(job.started_at)}</td>
+                        <td className="px-4 py-3">
+                          <button
+                            onClick={() => void handleCancelJob(job)}
+                            disabled={cancellingJobId === job.id}
+                            className="px-3 py-1.5 text-xs font-medium rounded-lg bg-red-500/15 text-red-300 border border-red-500/30 hover:bg-red-500/25 disabled:opacity-50"
+                          >
+                            {cancellingJobId === job.id ? 'Cancelling...' : 'Cancel'}
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             )}
           </div>

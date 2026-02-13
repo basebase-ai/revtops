@@ -9,6 +9,8 @@ Endpoints:
 from __future__ import annotations
 
 from datetime import datetime
+import ast
+import logging
 from typing import Any, Optional
 from uuid import UUID
 
@@ -30,8 +32,11 @@ from connectors.zoom import ZoomConnector
 from models.database import get_session
 from models.integration import Integration
 from models.organization import Organization
+from models.agent_task import AgentTask
+from models.conversation import Conversation
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 # Connector registry
 CONNECTORS = {
@@ -116,6 +121,75 @@ class AdminIntegrationsResponse(BaseModel):
 
     integrations: list[AdminIntegration]
     total: int
+
+
+class AdminRunningJob(BaseModel):
+    """Normalized running job for admin monitoring."""
+
+    id: str
+    type: str
+    status: str
+    organization_id: str | None = None
+    organization_name: str | None = None
+    started_at: str | None = None
+    title: str
+    description: str
+    metadata: dict[str, Any] | None = None
+
+
+class AdminRunningJobsResponse(BaseModel):
+    """Response model for admin running jobs list."""
+
+    jobs: list[AdminRunningJob]
+    total: int
+
+
+class AdminCancelJobRequest(BaseModel):
+    """Admin request model for cancelling a job."""
+
+    job_type: str
+
+
+class AdminCancelJobResponse(BaseModel):
+    """Response model for cancelling a running job."""
+
+    status: str
+    job_id: str
+    job_type: str
+    message: str
+
+
+async def _require_global_admin(user_id: str) -> None:
+    """Raise if the user is not a global admin."""
+    from models.database import get_admin_session
+    from models.user import User
+
+    async with get_admin_session() as session:
+        result = await session.execute(select(User).where(User.id == UUID(user_id)))
+        user = result.scalar_one_or_none()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        if "global_admin" not in (user.roles or []):
+            raise HTTPException(status_code=403, detail="Requires global_admin role")
+
+
+def _parse_celery_args(args: Any) -> list[Any]:
+    """Normalize Celery active-task args into a list."""
+    if isinstance(args, list):
+        return args
+    if isinstance(args, tuple):
+        return list(args)
+    if isinstance(args, str):
+        try:
+            parsed = ast.literal_eval(args)
+            if isinstance(parsed, tuple):
+                return list(parsed)
+            if isinstance(parsed, list):
+                return parsed
+            return [parsed]
+        except Exception:
+            return [args]
+    return []
 
 
 @router.get("/admin/integrations", response_model=AdminIntegrationsResponse)
@@ -209,6 +283,133 @@ async def trigger_global_sync(user_id: str) -> GlobalSyncResponse:
         status="queued",
         task_id=task.id,
         integration_count=len(integrations),
+    )
+
+
+@router.get("/admin/jobs", response_model=AdminRunningJobsResponse)
+async def list_admin_running_jobs(user_id: str) -> AdminRunningJobsResponse:
+    """List currently running jobs across chats, workflows, and connector syncs."""
+    from models.database import get_admin_session
+    from workers.celery_app import celery_app
+
+    await _require_global_admin(user_id)
+
+    async with get_admin_session() as session:
+        org_rows = await session.execute(select(Organization.id, Organization.name))
+        org_name_by_id = {str(row[0]): row[1] for row in org_rows.all()}
+
+        chat_rows = await session.execute(
+            select(AgentTask, Conversation)
+            .join(Conversation, AgentTask.conversation_id == Conversation.id)
+            .where(AgentTask.status == "running")
+            .order_by(AgentTask.started_at.desc())
+        )
+
+    jobs: list[AdminRunningJob] = []
+
+    for agent_task, conversation in chat_rows.all():
+        org_id = str(agent_task.organization_id)
+        jobs.append(
+            AdminRunningJob(
+                id=str(agent_task.id),
+                type="chat",
+                status=agent_task.status,
+                organization_id=org_id,
+                organization_name=org_name_by_id.get(org_id),
+                started_at=agent_task.started_at.isoformat() if agent_task.started_at else None,
+                title=conversation.title or "Chat task",
+                description=agent_task.user_message,
+                metadata={
+                    "conversation_id": str(conversation.id),
+                    "conversation_type": conversation.type,
+                    "user_id": str(agent_task.user_id),
+                },
+            )
+        )
+
+    try:
+        inspector = celery_app.control.inspect(timeout=1.5)
+        active_by_worker = inspector.active() or {}
+        logger.info("Fetched Celery active tasks from %d workers", len(active_by_worker))
+    except Exception as exc:
+        logger.warning("Failed to inspect celery active tasks: %s", exc)
+        active_by_worker = {}
+
+    for worker_name, active_tasks in active_by_worker.items():
+        for task in active_tasks:
+            task_name = task.get("name", "")
+            if not task_name.startswith("workers.tasks.sync") and task_name != "workers.tasks.workflows.execute_workflow":
+                continue
+
+            task_id = str(task.get("id"))
+            args = _parse_celery_args(task.get("args"))
+            task_type = "workflow" if task_name == "workers.tasks.workflows.execute_workflow" else "connector_sync"
+            org_id = str(args[-1]) if task_type == "workflow" and len(args) >= 5 else (str(args[0]) if args else None)
+            org_name = org_name_by_id.get(org_id) if org_id else None
+            provider = str(args[1]) if task_type == "connector_sync" and len(args) > 1 else None
+
+            title = "Workflow execution" if task_type == "workflow" else f"{provider or 'connector'} sync"
+            description = f"Running on worker {worker_name}"
+            if task_type == "workflow" and args:
+                description = f"Workflow {args[0]} running on worker {worker_name}"
+
+            jobs.append(
+                AdminRunningJob(
+                    id=task_id,
+                    type=task_type,
+                    status="running",
+                    organization_id=org_id,
+                    organization_name=org_name,
+                    started_at=task.get("time_start"),
+                    title=title,
+                    description=description,
+                    metadata={
+                        "task_name": task_name,
+                        "worker": worker_name,
+                        "args": [str(arg) for arg in args],
+                    },
+                )
+            )
+
+    jobs.sort(key=lambda job: job.started_at or "", reverse=True)
+    logger.info("Returning %d running jobs for admin user %s", len(jobs), user_id)
+    return AdminRunningJobsResponse(jobs=jobs, total=len(jobs))
+
+
+@router.post("/admin/jobs/{job_id}/cancel", response_model=AdminCancelJobResponse)
+async def cancel_admin_running_job(
+    job_id: str,
+    request: AdminCancelJobRequest,
+    user_id: str,
+) -> AdminCancelJobResponse:
+    """Cancel a running admin-visible job."""
+    from services.task_manager import task_manager
+    from workers.celery_app import celery_app
+
+    await _require_global_admin(user_id)
+
+    if request.job_type == "chat":
+        cancelled = await task_manager.cancel_task(job_id)
+        if not cancelled:
+            raise HTTPException(status_code=404, detail="Running chat job not found")
+        logger.info("Admin %s cancelled chat job %s", user_id, job_id)
+        return AdminCancelJobResponse(
+            status="cancelled",
+            job_id=job_id,
+            job_type=request.job_type,
+            message="Chat task cancellation requested",
+        )
+
+    if request.job_type not in {"workflow", "connector_sync"}:
+        raise HTTPException(status_code=400, detail="Unsupported job_type")
+
+    celery_app.control.revoke(job_id, terminate=True)
+    logger.info("Admin %s revoked celery task %s of type %s", user_id, job_id, request.job_type)
+    return AdminCancelJobResponse(
+        status="cancelled",
+        job_id=job_id,
+        job_type=request.job_type,
+        message="Celery task revoke requested",
     )
 
 
