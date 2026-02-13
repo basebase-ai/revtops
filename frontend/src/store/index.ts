@@ -63,6 +63,10 @@ export interface SyncStats {
   sheets?: number;
   slides?: number;
   folders?: number;
+  // Issue tracker providers (Linear, Jira, Asana)
+  teams?: number;
+  projects?: number;
+  issues?: number;
 }
 
 export interface Integration {

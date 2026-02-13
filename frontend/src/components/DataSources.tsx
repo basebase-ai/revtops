@@ -145,6 +145,14 @@ function formatSyncStats(stats: SyncStats | null, provider: string): string | nu
     if (repos > 0) parts.push(`${repos} repos`);
     if (commits > 0) parts.push(`${commits.toLocaleString()} commits`);
     if (prs > 0) parts.push(`${prs} PRs`);
+  } else if (provider === 'linear' || provider === 'jira' || provider === 'asana') {
+    // Issue tracker providers: teams, projects, issues
+    const teams = stats.teams ?? 0;
+    const projects = stats.projects ?? 0;
+    const issues = stats.issues ?? 0;
+    if (teams > 0) parts.push(`${teams} ${teams === 1 ? 'team' : 'teams'}`);
+    if (projects > 0) parts.push(`${projects} ${projects === 1 ? 'project' : 'projects'}`);
+    if (issues > 0) parts.push(`${issues.toLocaleString()} issues`);
   } else if (provider === 'google_drive') {
     const total = stats.total_files ?? 0;
     const docs = stats.docs ?? 0;
