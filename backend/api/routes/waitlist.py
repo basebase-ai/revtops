@@ -3,25 +3,27 @@ Waitlist routes for managing early access signups.
 
 Endpoints:
 - POST /api/waitlist - Submit waitlist form
-- GET /api/admin/waitlist - List waitlist entries (admin only)
-- POST /api/admin/waitlist/{user_id}/invite - Approve and invite user
+- GET /api/waitlist/admin - List waitlist entries (global admin only)
+- POST /api/waitlist/admin/{user_id}/invite - Approve and invite user
 """
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 from typing import Any, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, EmailStr
 from sqlalchemy import select
 
-from config import settings
+from api.auth_middleware import AuthContext, require_global_admin
 from models.database import get_session
 from models.user import User
 from services.email import send_invitation_email, send_waitlist_confirmation, send_waitlist_notification
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 # =============================================================================
@@ -153,34 +155,18 @@ async def submit_waitlist(request: WaitlistSubmitRequest) -> WaitlistSubmitRespo
         )
 
 
-# =============================================================================
-# Admin Endpoints (key-based auth - legacy)
-# =============================================================================
-
-
-@router.get("/admin", response_model=WaitlistListResponse)
-async def list_waitlist(
-    status: Optional[str] = None,
-    admin_key: Optional[str] = None,
-) -> WaitlistListResponse:
-    """
-    List all waitlist entries.
-    
-    Requires admin_key for authentication (simple auth for MVP).
-    Filter by status: 'waitlist', 'invited', or 'all'.
-    """
-    # Simple admin auth for MVP
-    if admin_key != settings.ADMIN_KEY:
-        raise HTTPException(status_code=403, detail="Invalid admin key")
+async def _build_waitlist_response(status: Optional[str]) -> WaitlistListResponse:
+    """Fetch and serialize waitlist entries."""
+    logger.info("Fetching waitlist entries", extra={"status_filter": status or "all"})
 
     async with get_session() as session:
         query = select(User).where(User.waitlisted_at.isnot(None))
-        
+
         if status and status != "all":
             query = query.where(User.status == status)
-        
+
         query = query.order_by(User.waitlisted_at.desc())
-        
+
         result = await session.execute(query)
         users = result.scalars().all()
 
@@ -201,150 +187,8 @@ async def list_waitlist(
         return WaitlistListResponse(entries=entries, total=len(entries))
 
 
-@router.post("/admin/{user_id}/invite", response_model=InviteResponse)
-async def invite_user(
-    user_id: str,
-    admin_key: Optional[str] = None,
-) -> InviteResponse:
-    """
-    Invite a user from the waitlist.
-    
-    Sets status to 'invited' and sends invitation email.
-    """
-    # Simple admin auth for MVP
-    if admin_key != settings.ADMIN_KEY:
-        raise HTTPException(status_code=403, detail="Invalid admin key")
-
-    try:
-        user_uuid = UUID(user_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid user ID")
-
-    async with get_session() as session:
-        user = await session.get(User, user_uuid)
-        
-        if not user:
-            raise HTTPException(status_code=404, detail="User not found")
-        
-        if user.status == "active":
-            return InviteResponse(
-                success=False,
-                message="User is already active",
-                user_id=str(user.id),
-            )
-        
-        if user.status == "invited":
-            return InviteResponse(
-                success=False,
-                message="User has already been invited",
-                user_id=str(user.id),
-            )
-
-        # Update status
-        user.status = "invited"
-        user.invited_at = datetime.utcnow()
-        await session.commit()
-
-        # Send invitation email
-        try:
-            await send_invitation_email(
-                to_email=user.email,
-                name=user.name or "there",
-            )
-        except Exception as e:
-            print(f"Failed to send invitation email: {e}")
-            # Don't fail the request if email fails - user is still invited
-
-        return InviteResponse(
-            success=True,
-            message=f"Invitation sent to {user.email}",
-            user_id=str(user.id),
-        )
-
-
-# =============================================================================
-# Admin Endpoints (role-based auth - new)
-# =============================================================================
-
-
-async def verify_global_admin(user_id: str) -> User:
-    """Verify that a user has global_admin role. Raises HTTPException if not."""
-    try:
-        user_uuid = UUID(user_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid user ID")
-
-    async with get_session() as session:
-        admin_user = await session.get(User, user_uuid)
-        if not admin_user:
-            raise HTTPException(status_code=404, detail="User not found")
-        
-        if "global_admin" not in (admin_user.roles or []):
-            raise HTTPException(status_code=403, detail="Access denied. Requires global_admin role.")
-        
-        return admin_user
-
-
-@router.get("/admin/list", response_model=WaitlistListResponse)
-async def list_waitlist_role_auth(
-    status: Optional[str] = None,
-    user_id: Optional[str] = None,
-) -> WaitlistListResponse:
-    """
-    List all waitlist entries.
-    
-    Requires user to have global_admin role.
-    Filter by status: 'waitlist', 'invited', or 'all'.
-    """
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Authentication required")
-    
-    await verify_global_admin(user_id)
-
-    async with get_session() as session:
-        query = select(User).where(User.waitlisted_at.isnot(None))
-        
-        if status and status != "all":
-            query = query.where(User.status == status)
-        
-        query = query.order_by(User.waitlisted_at.desc())
-        
-        result = await session.execute(query)
-        users = result.scalars().all()
-
-        entries = [
-            WaitlistEntryResponse(
-                id=str(u.id),
-                email=u.email,
-                name=u.name,
-                status=u.status,
-                waitlist_data=u.waitlist_data,
-                waitlisted_at=f"{u.waitlisted_at.isoformat()}Z" if u.waitlisted_at else None,
-                invited_at=f"{u.invited_at.isoformat()}Z" if u.invited_at else None,
-                created_at=f"{u.created_at.isoformat()}Z" if u.created_at else None,
-            )
-            for u in users
-        ]
-
-        return WaitlistListResponse(entries=entries, total=len(entries))
-
-
-@router.post("/admin/{target_user_id}/invite", response_model=InviteResponse)
-async def invite_user_role_auth(
-    target_user_id: str,
-    user_id: Optional[str] = None,
-) -> InviteResponse:
-    """
-    Invite a user from the waitlist.
-    
-    Requires user to have global_admin role.
-    Sets status to 'invited' and sends invitation email.
-    """
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Authentication required")
-    
-    await verify_global_admin(user_id)
-
+async def _invite_waitlist_user(target_user_id: str) -> InviteResponse:
+    """Invite a waitlisted user by ID."""
     try:
         target_uuid = UUID(target_user_id)
     except ValueError:
@@ -352,17 +196,17 @@ async def invite_user_role_auth(
 
     async with get_session() as session:
         user = await session.get(User, target_uuid)
-        
+
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
-        
+
         if user.status == "active":
             return InviteResponse(
                 success=False,
                 message="User is already active",
                 user_id=str(user.id),
             )
-        
+
         if user.status == "invited":
             return InviteResponse(
                 success=False,
@@ -370,26 +214,74 @@ async def invite_user_role_auth(
                 user_id=str(user.id),
             )
 
-        # Update status
+        logger.info("Inviting waitlist user", extra={"target_user_id": str(user.id), "email": user.email})
+
         user.status = "invited"
         user.invited_at = datetime.utcnow()
         await session.commit()
 
-        # Send invitation email
         try:
             await send_invitation_email(
                 to_email=user.email,
                 name=user.name or "there",
             )
-        except Exception as e:
-            print(f"Failed to send invitation email: {e}")
-            # Don't fail the request if email fails - user is still invited
+        except Exception:
+            logger.exception("Failed to send invitation email", extra={"target_user_id": str(user.id)})
 
         return InviteResponse(
             success=True,
             message=f"Invitation sent to {user.email}",
             user_id=str(user.id),
         )
+
+
+# =============================================================================
+# Admin Endpoints (JWT + global admin)
+# =============================================================================
+
+
+@router.get("/admin", response_model=WaitlistListResponse)
+async def list_waitlist(
+    status: Optional[str] = None,
+    auth: AuthContext = Depends(require_global_admin),
+) -> WaitlistListResponse:
+    """
+    List all waitlist entries.
+    
+    Requires authenticated global admin JWT.
+    Filter by status: 'waitlist', 'invited', or 'all'.
+    """
+    logger.info("Global admin listing waitlist", extra={"actor_user_id": auth.user_id_str})
+    return await _build_waitlist_response(status)
+
+
+@router.post("/admin/{user_id}/invite", response_model=InviteResponse)
+async def invite_user(
+    user_id: str,
+    auth: AuthContext = Depends(require_global_admin),
+) -> InviteResponse:
+    """
+    Invite a user from the waitlist.
+    
+    Sets status to 'invited' and sends invitation email.
+    """
+    logger.info("Global admin inviting waitlist user", extra={"actor_user_id": auth.user_id_str, "target_user_id": user_id})
+    return await _invite_waitlist_user(user_id)
+
+
+@router.get("/admin/list", response_model=WaitlistListResponse)
+async def list_waitlist_role_auth(
+    status: Optional[str] = None,
+    auth: AuthContext = Depends(require_global_admin),
+) -> WaitlistListResponse:
+    """
+    List all waitlist entries.
+    
+    Requires user to have global_admin role via JWT auth.
+    Filter by status: 'waitlist', 'invited', or 'all'.
+    """
+    logger.info("Global admin listing waitlist (legacy alias)", extra={"actor_user_id": auth.user_id_str})
+    return await _build_waitlist_response(status)
 
 
 # =============================================================================
@@ -420,7 +312,7 @@ class AdminUsersListResponse(BaseModel):
 
 @router.get("/admin/users", response_model=AdminUsersListResponse)
 async def list_admin_users(
-    user_id: Optional[str] = None,
+    auth: AuthContext = Depends(require_global_admin),
 ) -> AdminUsersListResponse:
     """
     List all users who are not on the waitlist (active or invited).
@@ -428,10 +320,7 @@ async def list_admin_users(
     Requires user to have global_admin role.
     Returns users with their organization info and last login time.
     """
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Authentication required")
-    
-    await verify_global_admin(user_id)
+    logger.info("Global admin listing users", extra={"actor_user_id": auth.user_id_str})
 
     from sqlalchemy.orm import selectinload
 
@@ -505,7 +394,7 @@ class AdminOrganizationsListResponse(BaseModel):
 
 @router.get("/admin/organizations", response_model=AdminOrganizationsListResponse)
 async def list_admin_organizations(
-    user_id: Optional[str] = None,
+    auth: AuthContext = Depends(require_global_admin),
 ) -> AdminOrganizationsListResponse:
     """
     List all organizations.
@@ -513,10 +402,7 @@ async def list_admin_organizations(
     Requires user to have global_admin role.
     Returns organizations with user counts.
     """
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Authentication required")
-    
-    await verify_global_admin(user_id)
+    logger.info("Global admin listing organizations", extra={"actor_user_id": auth.user_id_str})
 
     from models.organization import Organization
     from sqlalchemy import func
