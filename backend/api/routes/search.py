@@ -8,10 +8,11 @@ from __future__ import annotations
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy import select, or_
 
+from api.auth_middleware import AuthContext, get_current_auth
 from models.database import get_session
 from models.deal import Deal
 from models.account import Account
@@ -68,9 +69,8 @@ class SearchResponse(BaseModel):
 @router.get("", response_model=SearchResponse)
 async def search(
     q: str,
-    user_id: Optional[str] = None,
-    organization_id: Optional[str] = None,
     limit: int = 10,
+    auth: AuthContext = Depends(get_current_auth),
 ) -> SearchResponse:
     """
     Search deals and accounts by name.
@@ -88,27 +88,18 @@ async def search(
             total_accounts=0,
         )
     
-    # Get organization ID
-    org_uuid: Optional[UUID] = None
-    
-    if organization_id:
-        try:
-            org_uuid = UUID(organization_id)
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid organization ID")
-    elif user_id:
-        try:
-            user_uuid = UUID(user_id)
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid user ID")
-        
-        async with get_session() as session:
-            user = await session.get(User, user_uuid)
-            if not user or not user.organization_id:
-                raise HTTPException(status_code=404, detail="User not found")
-            org_uuid = user.organization_id
-    else:
-        raise HTTPException(status_code=400, detail="Either user_id or organization_id required")
+    # Never trust user_id/organization_id query params.
+    # AuthContext is derived from verified JWT claims and DB lookup.
+    if not auth.organization_id:
+        return SearchResponse(
+            query=q,
+            deals=[],
+            accounts=[],
+            total_deals=0,
+            total_accounts=0,
+        )
+
+    org_uuid: UUID = auth.organization_id
     
     search_pattern = f"%{q.strip()}%"
     

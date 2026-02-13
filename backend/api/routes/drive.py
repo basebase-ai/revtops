@@ -9,12 +9,12 @@ from datetime import datetime
 from typing import Any, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
 
+from api.auth_middleware import AuthContext, get_current_auth
 from connectors.google_drive import GoogleDriveConnector
 from models.database import get_session
-from models.user import User
 
 logger = logging.getLogger(__name__)
 
@@ -71,8 +71,7 @@ class DriveFileContentResponse(BaseModel):
 @router.post("/sync", response_model=DriveSyncResponse)
 async def sync_drive(
     background_tasks: BackgroundTasks,
-    user_id: Optional[str] = None,
-    organization_id: Optional[str] = None,
+    auth: AuthContext = Depends(get_current_auth),
 ) -> DriveSyncResponse:
     """
     Trigger a full metadata sync of the user's Google Drive.
@@ -80,7 +79,7 @@ async def sync_drive(
     Runs in the background. File metadata is stored in the database
     so the agent can search without hitting Google's API.
     """
-    org_id, usr_id = await _get_org_and_user(user_id, organization_id)
+    org_id, usr_id = _get_org_and_user(auth)
 
     background_tasks.add_task(_run_sync, org_id=org_id, user_id=usr_id)
 
@@ -93,16 +92,15 @@ async def sync_drive(
 @router.get("/search", response_model=DriveSearchResponse)
 async def search_files(
     q: str,
-    user_id: Optional[str] = None,
-    organization_id: Optional[str] = None,
     limit: int = 20,
+    auth: AuthContext = Depends(get_current_auth),
 ) -> DriveSearchResponse:
     """
     Search synced Drive files by name (case-insensitive substring match).
 
     Requires a prior sync to have been completed.
     """
-    org_id, usr_id = await _get_org_and_user(user_id, organization_id)
+    org_id, usr_id = _get_org_and_user(auth)
 
     try:
         connector = GoogleDriveConnector(org_id, usr_id)
@@ -121,8 +119,7 @@ async def search_files(
 @router.get("/files/{external_id}/content", response_model=DriveFileContentResponse)
 async def read_file_content(
     external_id: str,
-    user_id: Optional[str] = None,
-    organization_id: Optional[str] = None,
+    auth: AuthContext = Depends(get_current_auth),
 ) -> DriveFileContentResponse:
     """
     Read the text content of a Google Drive file.
@@ -130,7 +127,7 @@ async def read_file_content(
     Google Docs → plain text, Sheets → CSV, Slides → plain text.
     Other text-based files are downloaded directly.
     """
-    org_id, usr_id = await _get_org_and_user(user_id, organization_id)
+    org_id, usr_id = _get_org_and_user(auth)
 
     try:
         connector = GoogleDriveConnector(org_id, usr_id)
@@ -156,31 +153,12 @@ async def read_file_content(
 # =============================================================================
 
 
-async def _get_org_and_user(
-    user_id: Optional[str],
-    organization_id: Optional[str],
-) -> tuple[str, str]:
-    """Resolve org and user IDs from request params."""
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Authentication required")
+def _get_org_and_user(auth: AuthContext) -> tuple[str, str]:
+    """Resolve org and user IDs from verified auth context only."""
+    if not auth.organization_id:
+        raise HTTPException(status_code=403, detail="No organization assigned for authenticated user")
 
-    org_id: str = ""
-
-    if organization_id:
-        org_id = organization_id
-    else:
-        async with get_session() as session:
-            try:
-                user_uuid = UUID(user_id)
-            except ValueError:
-                raise HTTPException(status_code=400, detail="Invalid user ID")
-
-            user = await session.get(User, user_uuid)
-            if not user or not user.organization_id:
-                raise HTTPException(status_code=404, detail="User not found")
-            org_id = str(user.organization_id)
-
-    return org_id, user_id
+    return str(auth.organization_id), str(auth.user_id)
 
 
 async def _run_sync(org_id: str, user_id: str) -> None:
