@@ -469,6 +469,7 @@ class ChatOrchestrator:
         source_user_id: str | None = None,
         source_user_email: str | None = None,
         workflow_context: dict[str, Any] | None = None,
+        system_instructions: str | None = None,
         source: str = "web",
     ) -> None:
         """
@@ -489,6 +490,8 @@ class ChatOrchestrator:
                 - is_workflow: bool
                 - workflow_id: str
                 - auto_approve_tools: list[str]
+            system_instructions: Optional hidden system instructions that should
+                guide the model without being saved as a user-visible message.
             source: Where the message originated from (e.g. "web", "slack_dm",
                 "slack_mention", "slack_thread", "workflow")
         """
@@ -503,6 +506,7 @@ class ChatOrchestrator:
         self.source_user_id = source_user_id
         self.source_user_email = source_user_email
         self.workflow_context = workflow_context
+        self.system_instructions = system_instructions
         self.source: str = source
         self.client = AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
         # Track if we've saved the assistant message (for early save during tool execution)
@@ -621,6 +625,9 @@ class ChatOrchestrator:
 
         # Build system prompt with user and time context
         system_prompt = SYSTEM_PROMPT
+
+        if self.system_instructions:
+            system_prompt += f"\n\n## Additional System Instructions\n{self.system_instructions}"
 
         # Resolve user_name, user_email, and organization_name if not already set
         if self.user_id and (not self.user_name or not self.user_email or not self.organization_name):
