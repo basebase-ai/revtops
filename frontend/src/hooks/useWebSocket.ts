@@ -133,7 +133,18 @@ export function useWebSocket(path: string, options?: UseWebSocketOptions, reconn
     };
 
     wsRef.current = ws;
-  }, [path, reconnectKey]);
+  }, [path]);
+
+  // When reconnectKey changes (e.g. org switch), force a full reconnect
+  const reconnectKeyRef = useRef<string | undefined>(reconnectKey);
+  useEffect(() => {
+    if (reconnectKeyRef.current !== undefined && reconnectKeyRef.current !== reconnectKey) {
+      reconnectAttemptsRef.current = 0;
+      wsRef.current?.close();
+      void connect();
+    }
+    reconnectKeyRef.current = reconnectKey;
+  }, [reconnectKey, connect]);
 
   const reconnect = useCallback(() => {
     reconnectAttemptsRef.current = 0;
