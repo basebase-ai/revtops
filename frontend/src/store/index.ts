@@ -1111,7 +1111,35 @@ export const useAppStore = create<AppState>()(
       updateConversationToolMessage: (conversationId, toolId, updates) => {
         const { conversations } = get();
         const current = conversations[conversationId];
-        if (!current) return;
+        const defaultToolBlock = {
+          type: "tool_use" as const,
+          id: toolId,
+          name: updates.toolName ?? "workflow_tool",
+          input: updates.input ?? {},
+          result: (updates.result as Record<string, unknown>) ?? {},
+          status: (updates.status as "pending" | "running" | "complete" | undefined) ?? "running",
+        };
+
+        if (!current) {
+          const message = {
+            id: `tool-progress-${toolId}-${Date.now()}`,
+            role: "assistant" as const,
+            contentBlocks: [defaultToolBlock],
+            timestamp: new Date(),
+          };
+          set({
+            conversations: {
+              ...conversations,
+              [conversationId]: {
+                ...defaultConversationState,
+                messages: [message],
+              },
+            },
+          });
+          return;
+        }
+
+        let foundMatchingTool = false;
 
         const updated = current.messages.map((msg) => {
           const blocks = msg.contentBlocks ?? [];
@@ -1119,6 +1147,7 @@ export const useAppStore = create<AppState>()(
             (block) => block.type === "tool_use" && block.id === toolId,
           );
           if (!hasMatchingTool) return msg;
+          foundMatchingTool = true;
 
           const updatedBlocks = blocks.map((block) => {
             if (block.type === "tool_use" && block.id === toolId) {
@@ -1142,6 +1171,24 @@ export const useAppStore = create<AppState>()(
           });
           return { ...msg, contentBlocks: updatedBlocks };
         });
+
+        if (!foundMatchingTool) {
+          const lastMsg = updated[updated.length - 1];
+          if (lastMsg && lastMsg.role === "assistant") {
+            updated[updated.length - 1] = {
+              ...lastMsg,
+              contentBlocks: [...(lastMsg.contentBlocks ?? []), defaultToolBlock],
+            };
+          } else {
+            updated.push({
+              id: `tool-progress-${toolId}-${Date.now()}`,
+              role: "assistant",
+              contentBlocks: [defaultToolBlock],
+              timestamp: new Date(),
+            });
+          }
+        }
+
         set({
           conversations: {
             ...conversations,
