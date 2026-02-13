@@ -561,6 +561,7 @@ class ChatOrchestrator:
         self,
         user_message: str,
         save_user_message: bool = True,
+        persisted_user_message: str | None = None,
         skip_history: bool = False,
         attachment_ids: list[str] | None = None,
     ) -> AsyncGenerator[str, None]:
@@ -570,6 +571,8 @@ class ChatOrchestrator:
         Args:
             user_message: The user's message text
             save_user_message: If False, don't save user_message to DB (for internal system messages)
+            persisted_user_message: Optional alternate text to persist in DB while
+                still sending user_message to the model.
             skip_history: If True, skip loading history from DB (e.g. first message in a new conversation)
             attachment_ids: Optional list of upload IDs for attached files
 
@@ -596,7 +599,8 @@ class ChatOrchestrator:
 
         # Fire-and-forget user message save — it's for persistence, not the Claude call.
         if save_user_message:
-            asyncio.create_task(self._save_user_message_safe(user_message, attachment_meta))
+            message_to_persist = persisted_user_message if persisted_user_message is not None else user_message
+            asyncio.create_task(self._save_user_message_safe(message_to_persist, attachment_meta))
 
         # Skip history DB call for new conversations (zero messages to load).
         if skip_history:
@@ -723,7 +727,9 @@ WHERE scheduled_start >= '2026-01-27'::date AND scheduled_start < '2026-01-28'::
 
         # Update conversation title if first message
         if is_first_message:
-            title = self._generate_title(user_message)
+            title = self._generate_title(
+                persisted_user_message if persisted_user_message is not None else user_message
+            )
             await self._update_conversation_title(title)
 
     async def _stream_with_tools(
