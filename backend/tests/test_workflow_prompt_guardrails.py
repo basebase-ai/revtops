@@ -24,3 +24,4 @@ def test_child_workflow_prompt_marks_usage_as_explicit_only() -> None:
 def test_workflow_nesting_guardrail_mentions_explicit_requests() -> None:
     assert "Do NOT create or invoke child workflows" in WORKFLOW_NESTING_GUARDRAIL
     assert "explicitly asks" in WORKFLOW_NESTING_GUARDRAIL
+    assert "at 5 or fewer" in WORKFLOW_NESTING_GUARDRAIL
