@@ -13,7 +13,7 @@ Responsibilities:
 import asyncio
 import json
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, AsyncGenerator
 from uuid import UUID
 
@@ -468,6 +468,7 @@ class ChatOrchestrator:
         source_user_id: str | None = None,
         source_user_email: str | None = None,
         workflow_context: dict[str, Any] | None = None,
+        source: str = "web",
     ) -> None:
         """
         Initialize the orchestrator.
@@ -487,6 +488,8 @@ class ChatOrchestrator:
                 - is_workflow: bool
                 - workflow_id: str
                 - auto_approve_tools: list[str]
+            source: Where the message originated from (e.g. "web", "slack_dm",
+                "slack_mention", "slack_thread", "workflow")
         """
         self.user_id = user_id
         self.organization_id = organization_id
@@ -499,24 +502,30 @@ class ChatOrchestrator:
         self.source_user_id = source_user_id
         self.source_user_email = source_user_email
         self.workflow_context = workflow_context
+        self.source: str = source
         self.client = AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
         # Track if we've saved the assistant message (for early save during tool execution)
         self._assistant_message_saved = False
 
     async def _resolve_user_context(self) -> None:
-        """Fetch user name and organization name from DB if not already set."""
+        """Fetch user name, email, and organization name from DB if not already set."""
         from models.user import User
         from models.organization import Organization
 
         try:
             async with get_session(organization_id=self.organization_id) as session:
-                if not self.user_name and self.user_id:
+                if self.user_id and (not self.user_name or not self.user_email):
                     result = await session.execute(
-                        select(User.name).where(User.id == UUID(self.user_id))
+                        select(User.name, User.email).where(User.id == UUID(self.user_id))
                     )
-                    name: str | None = result.scalar_one_or_none()
-                    if name:
-                        self.user_name = name
+                    row = result.one_or_none()
+                    if row:
+                        fetched_name: str | None = row[0]
+                        fetched_email: str | None = row[1]
+                        if not self.user_name and fetched_name:
+                            self.user_name = fetched_name
+                        if not self.user_email and fetched_email:
+                            self.user_email = fetched_email
 
                 if not self.organization_name and self.organization_id:
                     result = await session.execute(
@@ -612,13 +621,23 @@ class ChatOrchestrator:
         # Build system prompt with user and time context
         system_prompt = SYSTEM_PROMPT
 
-        # Resolve user_name and organization_name if not already set
-        if self.user_id and (not self.user_name or not self.organization_name):
+        # Resolve user_name, user_email, and organization_name if not already set
+        if self.user_id and (not self.user_name or not self.user_email or not self.organization_name):
             await self._resolve_user_context()
         
+        # Add message origination context
+        source_label: str = {
+            "slack_dm": "Slack direct message",
+            "slack_mention": "Slack @mention in a channel",
+            "slack_thread": "Slack thread reply",
+            "workflow": "automated workflow",
+            "web": "web application",
+        }.get(self.source, self.source)
+        system_prompt += f"\n\n## Message Source\nThis conversation is from: **{source_label}**."
+
         # Add user context so the agent knows who "me" is
         if self.user_email and self.user_id:
-            user_context = f"\n\n## Current User\n"
+            user_context = "\n\n## Current User\n"
             if self.user_name:
                 user_context += f"- Name: {self.user_name}\n"
             user_context += f"- Email: {self.user_email}\n"
@@ -629,8 +648,8 @@ class ChatOrchestrator:
             user_context += "For example, to find the user's company, join the users table (filter by email) to the organizations table."
             system_prompt += user_context
         elif not self.user_id:
-            # Slack conversation - no specific RevTops user context
-            system_prompt += "\n\n## Current User\nThis conversation is from Slack. The specific user is not identified in Revtops."
+            # Slack thread or unlinked conversation — no specific user context
+            system_prompt += "\n\n## Current User\nThe specific user is not identified in Revtops."
 
         # Add Slack channel context so the agent can scope queries to the right channel
         slack_channel_id: str | None = (self.workflow_context or {}).get("slack_channel_id")
@@ -645,14 +664,17 @@ When the user asks about activity in "this channel", query the activities table 
 WHERE source_system = 'slack' AND custom_fields->>'channel_id' = '{slack_channel_id}'
 ```
 The activities table contains synced Slack messages with these relevant custom_fields keys: channel_id, channel_name, user_id, thread_ts."""
-        
-        if self.local_time or self.timezone:
-            time_context = "\n\n## Current Time Context\n"
-            if self.local_time:
-                time_context += f"- User's local time: {self.local_time}\n"
-            if self.timezone:
-                time_context += f"- User's timezone: {self.timezone}\n"
-            time_context += """
+
+        # Always inject time context — use server UTC as fallback when client
+        # does not provide local_time / timezone (e.g. Slack and workflow invocations).
+        server_utc_now: str = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        time_context = "\n\n## Current Time Context\n"
+        time_context += f"- Current server time (UTC): {server_utc_now}\n"
+        if self.local_time:
+            time_context += f"- User's local time: {self.local_time}\n"
+        if self.timezone:
+            time_context += f"- User's timezone: {self.timezone}\n"
+        time_context += """
 **IMPORTANT - Datetime Handling**:
 
 1. **Storage**: All database timestamps are stored and returned in UTC.
@@ -660,7 +682,7 @@ The activities table contains synced Slack messages with these relevant custom_f
 2. **Format**: All datetime values in query results use ISO 8601 format with 'Z' suffix (e.g., "2026-02-04T18:00:00Z"). This 'Z' indicates UTC time.
 
 3. **User Queries**: When the user asks about "today", "this morning", "yesterday", etc., convert their local date to UTC for queries:
-   - Extract the user's local date from their local_time
+   - Extract the user's local date from their local_time (or use the server UTC time if unavailable)
    - Use that date in WHERE clauses, NOT CURRENT_DATE (which is UTC and may differ)
    - Example: If user's local time is 2026-01-27T20:00:00 in America/Los_Angeles, "today" means Jan 27 local time
 
@@ -671,7 +693,7 @@ WHERE scheduled_start >= '2026-01-27'::date AND scheduled_start < '2026-01-28'::
 ```
 
 5. **Displaying Results**: Convert UTC times to the user's timezone when presenting results. Use relative references when helpful (e.g., "in 30 minutes", "3 hours ago")."""
-            system_prompt += time_context
+        system_prompt += time_context
 
         # Load and inject user memories
         if self.user_id and self.organization_id:

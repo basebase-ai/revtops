@@ -806,6 +806,7 @@ async def _execute_workflow_via_agent(
         organization_id=str(workflow.organization_id),
         conversation_id=str(conversation.id),
         workflow_context=workflow_context,
+        source="workflow",
     )
     
     # Process the prompt (this streams through the agent)

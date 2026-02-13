@@ -22,6 +22,7 @@ import {
   SiGmail,
   SiGoogledrive,
   SiGithub,
+  SiLinear,
 } from 'react-icons/si';
 import { HiOutlineCalendar, HiOutlineMail, HiGlobeAlt, HiUserGroup, HiExclamation, HiDeviceMobile, HiMicrophone } from 'react-icons/hi';
 // Custom Apollo.io icon - 8-ray starburst matching their brand
@@ -75,6 +76,7 @@ const ICON_MAP: Record<string, IconType> = {
   google_drive: SiGoogledrive,
   apollo: ApolloIcon,
   github: SiGithub,
+  linear: SiLinear,
 };
 
 // User-scoped providers (each user connects individually vs org-wide connection)
@@ -102,6 +104,7 @@ const INTEGRATION_CONFIG: Record<string, { name: string; description: string; ic
   google_drive: { name: 'Google Drive', description: 'Sync files — search and read Docs, Sheets, Slides from Drive', icon: 'google_drive', color: 'from-yellow-500 to-amber-500' },
   apollo: { name: 'Apollo.io', description: 'Data enrichment - Contact titles, companies, emails', icon: 'apollo', color: 'from-yellow-400 to-yellow-500' },
   github: { name: 'GitHub', description: 'Track repos, commits, and pull requests by team', icon: 'github', color: 'from-gray-600 to-gray-700' },
+  linear: { name: 'Linear', description: 'Issue tracking - sync and manage teams, projects, and issues', icon: 'linear', color: 'from-indigo-500 to-violet-600' },
 };
 
 const SUPPORTED_PROVIDERS = new Set(Object.keys(INTEGRATION_CONFIG));
@@ -872,6 +875,8 @@ export function DataSources(): JSX.Element {
       'from-violet-500 to-violet-600': 'bg-violet-500',
       'from-yellow-400 to-yellow-500': 'bg-yellow-400',
       'from-yellow-500 to-amber-500': 'bg-yellow-500',
+      'from-indigo-500 to-violet-600': 'bg-indigo-500',
+      'from-gray-600 to-gray-700': 'bg-gray-600',
     };
     return colorMap[color] ?? 'bg-surface-600';
   };

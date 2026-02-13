@@ -29,6 +29,7 @@ from models.pending_operation import PendingOperation, CrmOperation  # CrmOperat
 from models.database import get_session
 from models.deal import Deal
 from models.integration import Integration
+from models.tracker_team import TrackerTeam
 
 # Import the unified tool registry
 from agents.registry import get_tools_for_claude, get_tool, requires_approval
@@ -139,7 +140,7 @@ class ToolProgressUpdater:
 # Note: Row-Level Security (RLS) handles organization filtering at the database level
 ALLOWED_TABLES: set[str] = {
     "deals", "accounts", "contacts", "activities", "meetings", "integrations", "users", "organizations",
-    "pipelines", "pipeline_stages", "workflows", "workflow_runs", "user_mappings_for_identity",
+    "pipelines", "pipeline_stages", "goals", "workflows", "workflow_runs", "user_mappings_for_identity",
     "github_repositories", "github_commits", "github_pull_requests",
     "shared_files",
 }
@@ -335,6 +336,21 @@ async def execute_tool(
     elif tool_name == "delete_memory":
         result = await _delete_memory(tool_input, organization_id, user_id)
         logger.info("[Tools] delete_memory completed: %s", result.get("status", result.get("error")))
+        return result
+
+    elif tool_name == "create_linear_issue":
+        result = await _create_linear_issue(tool_input, organization_id, user_id, skip_approval)
+        logger.info("[Tools] create_linear_issue completed: %s", result.get("status", result.get("error")))
+        return result
+
+    elif tool_name == "update_linear_issue":
+        result = await _update_linear_issue(tool_input, organization_id, user_id, skip_approval)
+        logger.info("[Tools] update_linear_issue completed: %s", result.get("status", result.get("error")))
+        return result
+
+    elif tool_name == "search_linear_issues":
+        result = await _search_linear_issues(tool_input, organization_id)
+        logger.info("[Tools] search_linear_issues returned %d results", len(result.get("issues", [])))
         return result
 
     else:
@@ -4524,3 +4540,331 @@ async def _delete_memory(
 async def execute_create_github_issue(params: dict[str, Any], organization_id: str) -> dict[str, Any]:
     """Backward-compatible alias for deprecated function name."""
     return await execute_github_issues_access(params, organization_id)
+
+
+# =============================================================================
+# Linear Tools
+# =============================================================================
+
+async def _create_linear_issue(
+    params: dict[str, Any],
+    organization_id: str,
+    user_id: str | None,
+    skip_approval: bool = False,
+) -> dict[str, Any]:
+    """Create a Linear issue (with approval workflow)."""
+    team_key: str = params.get("team_key", "").strip()
+    title: str = params.get("title", "").strip()
+    description: str | None = params.get("description")
+    priority: int | None = params.get("priority")
+    assignee_name: str | None = params.get("assignee_name")
+    project_name: str | None = params.get("project_name")
+    labels: list[str] | None = params.get("labels")
+
+    if not team_key:
+        return {"error": "team_key is required (e.g. 'ENG'). Query tracker_teams WHERE source_system='linear' for valid keys."}
+    if not title:
+        return {"error": "title is required."}
+
+    # Check for active Linear integration
+    async with get_session(organization_id=organization_id) as session:
+        result = await session.execute(
+            select(Integration).where(
+                Integration.organization_id == UUID(organization_id),
+                Integration.provider == "linear",
+                Integration.is_active == True,
+            )
+        )
+        integration: Integration | None = result.scalar_one_or_none()
+
+        if not integration:
+            return {
+                "error": "No active Linear integration found. Please connect Linear in Data Sources.",
+                "suggestion": "Go to Data Sources and connect your Linear workspace.",
+            }
+
+    if skip_approval:
+        logger.info("[Tools._create_linear_issue] Auto-approved, creating immediately")
+        return await execute_create_linear_issue(params, organization_id)
+
+    # Create pending operation for approval
+    operation_id: str = str(uuid4())
+    store_pending_operation(
+        operation_id=operation_id,
+        tool_name="create_linear_issue",
+        params=params,
+        organization_id=organization_id,
+        user_id=user_id,
+    )
+
+    return {
+        "type": "pending_approval",
+        "status": "pending_approval",
+        "operation_id": operation_id,
+        "tool_name": "create_linear_issue",
+        "preview": {
+            "team_key": team_key,
+            "title": title,
+            "description": (description or "")[:300],
+            "priority": priority,
+            "assignee_name": assignee_name,
+            "project_name": project_name,
+            "labels": labels,
+        },
+        "message": f"Ready to create Linear issue '{title}' in team {team_key}. Please review and click Approve.",
+    }
+
+
+async def execute_create_linear_issue(
+    params: dict[str, Any], organization_id: str
+) -> dict[str, Any]:
+    """Actually create the Linear issue (called after user approval)."""
+    from connectors.linear import LinearConnector
+
+    team_key: str = params.get("team_key", "").strip()
+    title: str = params.get("title", "").strip()
+    description: str | None = params.get("description")
+    priority: int | None = params.get("priority")
+    assignee_name: str | None = params.get("assignee_name")
+    project_name: str | None = params.get("project_name")
+
+    connector: LinearConnector = LinearConnector(organization_id=organization_id)
+
+    try:
+        # Resolve team key → Linear team ID
+        team: dict[str, Any] | None = await connector.resolve_team_by_key(team_key)
+        if not team:
+            return {"status": "failed", "error": f"Team with key '{team_key}' not found in Linear."}
+
+        # Resolve optional assignee
+        assignee_id: str | None = None
+        if assignee_name:
+            user: dict[str, Any] | None = await connector.resolve_assignee_by_name(assignee_name)
+            if user:
+                assignee_id = user["id"]
+            else:
+                logger.warning("Could not resolve Linear user '%s'", assignee_name)
+
+        # Resolve optional project
+        project_id: str | None = None
+        if project_name:
+            project: dict[str, Any] | None = await connector.resolve_project_by_name(project_name)
+            if project:
+                project_id = project["id"]
+            else:
+                logger.warning("Could not resolve Linear project '%s'", project_name)
+
+        issue: dict[str, Any] = await connector.create_issue(
+            team_id=team["id"],
+            title=title,
+            description=description,
+            priority=priority,
+            assignee_id=assignee_id,
+            project_id=project_id,
+        )
+
+        return {
+            "status": "completed",
+            "message": f"Created Linear issue {issue['identifier']}: {issue['title']}",
+            "issue": issue,
+        }
+    except Exception as exc:
+        logger.error("Failed to create Linear issue: %s", exc)
+        return {"status": "failed", "error": f"Failed to create Linear issue: {exc}"}
+
+
+async def _update_linear_issue(
+    params: dict[str, Any],
+    organization_id: str,
+    user_id: str | None,
+    skip_approval: bool = False,
+) -> dict[str, Any]:
+    """Update a Linear issue (with approval workflow)."""
+    issue_identifier: str = params.get("issue_identifier", "").strip()
+    if not issue_identifier:
+        return {"error": "issue_identifier is required (e.g. 'ENG-123')."}
+
+    # Check at least one update field is provided
+    update_fields: list[str] = ["title", "description", "state_name", "priority", "assignee_name"]
+    has_update: bool = any(params.get(f) is not None for f in update_fields)
+    if not has_update:
+        return {"error": "At least one field to update must be provided (title, description, state_name, priority, assignee_name)."}
+
+    # Check for active Linear integration
+    async with get_session(organization_id=organization_id) as session:
+        result = await session.execute(
+            select(Integration).where(
+                Integration.organization_id == UUID(organization_id),
+                Integration.provider == "linear",
+                Integration.is_active == True,
+            )
+        )
+        integration: Integration | None = result.scalar_one_or_none()
+
+        if not integration:
+            return {
+                "error": "No active Linear integration found. Please connect Linear in Data Sources.",
+            }
+
+    if skip_approval:
+        logger.info("[Tools._update_linear_issue] Auto-approved, updating immediately")
+        return await execute_update_linear_issue(params, organization_id)
+
+    operation_id: str = str(uuid4())
+    store_pending_operation(
+        operation_id=operation_id,
+        tool_name="update_linear_issue",
+        params=params,
+        organization_id=organization_id,
+        user_id=user_id,
+    )
+
+    # Build preview of what's changing
+    changes: dict[str, Any] = {}
+    for field in update_fields:
+        val: Any = params.get(field)
+        if val is not None:
+            changes[field] = val
+
+    return {
+        "type": "pending_approval",
+        "status": "pending_approval",
+        "operation_id": operation_id,
+        "tool_name": "update_linear_issue",
+        "preview": {
+            "issue_identifier": issue_identifier,
+            "changes": changes,
+        },
+        "message": f"Ready to update Linear issue {issue_identifier}. Please review and click Approve.",
+    }
+
+
+async def execute_update_linear_issue(
+    params: dict[str, Any], organization_id: str
+) -> dict[str, Any]:
+    """Actually update the Linear issue (called after user approval)."""
+    from connectors.linear import LinearConnector
+    from models.tracker_issue import TrackerIssue
+
+    issue_identifier: str = params.get("issue_identifier", "").strip()
+    connector: LinearConnector = LinearConnector(organization_id=organization_id)
+
+    try:
+        # Look up the Linear issue ID from our synced data
+        org_uuid: UUID = UUID(organization_id)
+        linear_issue_id: str | None = None
+        linear_team_id: str | None = None
+
+        async with get_session(organization_id=organization_id) as session:
+            result = await session.execute(
+                select(TrackerIssue.source_id, TrackerTeam.source_id)
+                .join(TrackerTeam, TrackerIssue.team_id == TrackerTeam.id)
+                .where(
+                    TrackerIssue.organization_id == org_uuid,
+                    TrackerIssue.source_system == "linear",
+                    TrackerIssue.identifier == issue_identifier,
+                )
+            )
+            row = result.first()
+            if row:
+                linear_issue_id = row[0]
+                linear_team_id = row[1]
+
+        if not linear_issue_id or not linear_team_id:
+            return {
+                "status": "failed",
+                "error": f"Issue '{issue_identifier}' not found in synced data. Try running a sync first.",
+            }
+
+        # Resolve state name → state ID if provided
+        state_id: str | None = None
+        state_name: str | None = params.get("state_name")
+        if state_name:
+            state: dict[str, Any] | None = await connector.resolve_state_by_name(
+                linear_team_id, state_name
+            )
+            if state:
+                state_id = state["id"]
+            else:
+                return {
+                    "status": "failed",
+                    "error": f"Workflow state '{state_name}' not found for this team.",
+                }
+
+        # Resolve assignee name → user ID if provided
+        assignee_id: str | None = None
+        assignee_name: str | None = params.get("assignee_name")
+        if assignee_name:
+            user: dict[str, Any] | None = await connector.resolve_assignee_by_name(assignee_name)
+            if user:
+                assignee_id = user["id"]
+            else:
+                logger.warning("Could not resolve Linear user '%s'", assignee_name)
+
+        issue: dict[str, Any] = await connector.update_issue(
+            issue_id=linear_issue_id,
+            title=params.get("title"),
+            description=params.get("description"),
+            state_id=state_id,
+            priority=params.get("priority"),
+            assignee_id=assignee_id,
+        )
+
+        return {
+            "status": "completed",
+            "message": f"Updated Linear issue {issue['identifier']}",
+            "issue": issue,
+        }
+    except Exception as exc:
+        logger.error("Failed to update Linear issue: %s", exc)
+        return {"status": "failed", "error": f"Failed to update Linear issue: {exc}"}
+
+
+async def _search_linear_issues(
+    params: dict[str, Any],
+    organization_id: str,
+) -> dict[str, Any]:
+    """Search issues in Linear via the API (real-time, not synced data)."""
+    query_text: str = params.get("query", "").strip()
+    team_key: str | None = params.get("team_key")
+    limit: int = min(params.get("limit", 20), 50)
+
+    if not query_text:
+        return {"error": "query is required."}
+
+    # Check for active Linear integration
+    async with get_session(organization_id=organization_id) as session:
+        result = await session.execute(
+            select(Integration).where(
+                Integration.organization_id == UUID(organization_id),
+                Integration.provider == "linear",
+                Integration.is_active == True,
+            )
+        )
+        integration: Integration | None = result.scalar_one_or_none()
+
+        if not integration:
+            return {
+                "error": "No active Linear integration found. Please connect Linear in Data Sources.",
+            }
+
+    from connectors.linear import LinearConnector
+
+    connector: LinearConnector = LinearConnector(organization_id=organization_id)
+
+    try:
+        issues: list[dict[str, Any]] = await connector.search_issues(
+            query_text=query_text,
+            team_key=team_key,
+            limit=limit,
+        )
+
+        return {
+            "issues": issues,
+            "count": len(issues),
+            "query": query_text,
+            "team_key": team_key,
+        }
+    except Exception as exc:
+        logger.error("Failed to search Linear issues: %s", exc)
+        return {"error": f"Failed to search Linear: {exc}"}

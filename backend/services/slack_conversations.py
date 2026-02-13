@@ -1505,6 +1505,7 @@ async def process_slack_dm(
         source_user_id=user_id,
         source_user_email=slack_user_email,
         workflow_context=None,
+        source="slack_dm",
     )
 
     total_length: int = await _stream_and_post_responses(
@@ -1623,6 +1624,7 @@ async def process_slack_mention(
         source_user_id=user_id,
         source_user_email=slack_user_email,
         workflow_context=None,
+        source="slack_mention",
     )
 
     total_length: int = await _stream_and_post_responses(
@@ -1735,6 +1737,7 @@ async def process_slack_thread_reply(
         source_user_id=user_id,
         source_user_email=slack_user_email,
         workflow_context={"slack_channel_id": channel_id},
+        source="slack_thread",
     )
 
     total_length: int = await _stream_and_post_responses(
