@@ -35,6 +35,7 @@ from models.integration import Integration
 from models.organization import Organization
 from models.agent_task import AgentTask
 from models.conversation import Conversation
+from models.workflow import Workflow, WorkflowRun
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -182,6 +183,9 @@ def _parse_celery_args(args: Any) -> list[Any]:
     if isinstance(args, tuple):
         return list(args)
     if isinstance(args, str):
+        args = args.strip()
+        if not args:
+            return []
         try:
             parsed = ast.literal_eval(args)
             if isinstance(parsed, tuple):
@@ -192,6 +196,18 @@ def _parse_celery_args(args: Any) -> list[Any]:
         except Exception:
             return [args]
     return []
+
+
+def _get_celery_task_args(task: dict[str, Any]) -> list[Any]:
+    """Extract Celery task args across protocol/version variants."""
+    parsed_args = _parse_celery_args(task.get("args"))
+    if parsed_args:
+        return parsed_args
+    # Celery can report repr-only fields depending on worker/protocol versions.
+    parsed_argsrepr = _parse_celery_args(task.get("argsrepr"))
+    if parsed_argsrepr:
+        logger.debug("Parsed Celery args from argsrepr for task %s", task.get("id"))
+    return parsed_argsrepr
 
 
 def _parse_celery_kwargs(kwargs: Any) -> dict[str, Any]:
@@ -210,12 +226,31 @@ def _parse_celery_kwargs(kwargs: Any) -> dict[str, Any]:
     return {}
 
 
+def _get_celery_task_kwargs(task: dict[str, Any]) -> dict[str, Any]:
+    """Extract Celery task kwargs across protocol/version variants."""
+    parsed_kwargs = _parse_celery_kwargs(task.get("kwargs"))
+    if parsed_kwargs:
+        return parsed_kwargs
+    # Celery can report repr-only fields depending on worker/protocol versions.
+    parsed_kwargsrepr = _parse_celery_kwargs(task.get("kwargsrepr"))
+    if parsed_kwargsrepr:
+        logger.debug("Parsed Celery kwargs from kwargsrepr for task %s", task.get("id"))
+    return parsed_kwargsrepr
+
+
+def _is_workflow_task(task_name: str) -> bool:
+    """Whether a task name represents workflow execution."""
+    normalized_name = task_name.strip()
+    if not normalized_name:
+        return False
+    return normalized_name.endswith(".workflows.execute_workflow") or normalized_name == "workers.tasks.workflows.execute_workflow"
+
+
 def _is_trackable_admin_task(task_name: str) -> bool:
     """Whether a Celery task should appear in the admin running-jobs pane."""
-    if task_name.startswith("workers.tasks.sync"):
+    if ".tasks.sync." in task_name or task_name.startswith("workers.tasks.sync"):
         return True
-    # Be defensive: workers can expose full dotted paths depending on import wiring.
-    return task_name == "workers.tasks.workflows.execute_workflow" or task_name.endswith(".workflows.execute_workflow")
+    return _is_workflow_task(task_name)
 
 
 def _extract_workflow_task_org_id(args: list[Any], kwargs: dict[str, Any]) -> str | None:
@@ -229,6 +264,38 @@ def _extract_workflow_task_org_id(args: list[Any], kwargs: dict[str, Any]) -> st
         # Best-effort fallback for older/variant signatures.
         return str(args[-1])
     return None
+
+
+def _is_active_workflow_run_status(status: str) -> bool:
+    """Whether a workflow_run row represents in-progress work."""
+    normalized = status.strip().lower()
+    return normalized in {"pending", "running"}
+
+
+def _build_workflow_run_admin_job(
+    run: WorkflowRun,
+    workflow_name: str | None,
+    organization_name: str | None,
+) -> AdminRunningJob:
+    """Build an admin running-job payload from a workflow_runs row."""
+    trigger_label = run.triggered_by or "unknown"
+    workflow_label = workflow_name or str(run.workflow_id)
+    return AdminRunningJob(
+        id=str(run.id),
+        type="workflow",
+        status=run.status,
+        organization_id=str(run.organization_id),
+        organization_name=organization_name,
+        started_at=run.started_at.isoformat() if run.started_at else None,
+        title=f"Workflow run: {workflow_label}",
+        description=f"Status={run.status} trigger={trigger_label}",
+        metadata={
+            "source": "workflow_runs",
+            "workflow_id": str(run.workflow_id),
+            "workflow_name": workflow_name,
+            "triggered_by": run.triggered_by,
+        },
+    )
 
 
 @router.get("/admin/integrations", response_model=AdminIntegrationsResponse)
@@ -344,6 +411,13 @@ async def list_admin_running_jobs(user_id: str) -> AdminRunningJobsResponse:
             .order_by(AgentTask.started_at.desc())
         )
 
+        workflow_run_rows = await session.execute(
+            select(WorkflowRun, Workflow.name)
+            .join(Workflow, WorkflowRun.workflow_id == Workflow.id)
+            .where(WorkflowRun.status.in_(["pending", "running"]))
+            .order_by(WorkflowRun.started_at.desc())
+        )
+
     jobs: list[AdminRunningJob] = []
 
     for agent_task, conversation in chat_rows.all():
@@ -366,6 +440,22 @@ async def list_admin_running_jobs(user_id: str) -> AdminRunningJobsResponse:
             )
         )
 
+    workflow_runs_added = 0
+    for workflow_run, workflow_name in workflow_run_rows.all():
+        if not _is_active_workflow_run_status(workflow_run.status):
+            continue
+        org_id = str(workflow_run.organization_id)
+        jobs.append(
+            _build_workflow_run_admin_job(
+                run=workflow_run,
+                workflow_name=workflow_name,
+                organization_name=org_name_by_id.get(org_id),
+            )
+        )
+        workflow_runs_added += 1
+
+    logger.info("Added %d workflow_runs records to admin running jobs", workflow_runs_added)
+
     try:
         inspector = celery_app.control.inspect(timeout=1.5)
         active_by_worker = inspector.active() or {}
@@ -376,14 +466,14 @@ async def list_admin_running_jobs(user_id: str) -> AdminRunningJobsResponse:
 
     for worker_name, active_tasks in active_by_worker.items():
         for task in active_tasks:
-            task_name = str(task.get("name", ""))
+            task_name = str(task.get("name") or task.get("type") or "")
             if not _is_trackable_admin_task(task_name):
                 continue
 
             task_id = str(task.get("id"))
-            args = _parse_celery_args(task.get("args"))
-            kwargs = _parse_celery_kwargs(task.get("kwargs"))
-            is_workflow_task = task_name == "workers.tasks.workflows.execute_workflow" or task_name.endswith(".workflows.execute_workflow")
+            args = _get_celery_task_args(task)
+            kwargs = _get_celery_task_kwargs(task)
+            is_workflow_task = _is_workflow_task(task_name)
             task_type = "workflow" if is_workflow_task else "connector_sync"
 
             if task_type == "workflow":
