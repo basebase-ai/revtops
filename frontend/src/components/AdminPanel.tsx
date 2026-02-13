@@ -7,7 +7,7 @@
  */
 
 import { useEffect, useState, useCallback } from 'react';
-import { API_BASE } from '../lib/api';
+import { API_BASE, apiRequest } from '../lib/api';
 import { useAppStore, type UserProfile, type OrganizationInfo } from '../store';
 
 type AdminTab = 'waitlist' | 'users' | 'organizations' | 'sources' | 'jobs';
@@ -121,21 +121,16 @@ export function AdminPanel(): JSX.Element {
     setError(null);
 
     try {
-      const response = await fetch(
-        `${API_BASE}/waitlist/admin/list?status=${filter}&user_id=${user.id}`
+      const { data, error: requestError } = await apiRequest<{ entries: WaitlistEntry[]; total: number }>(
+        `/waitlist/admin/list?status=${encodeURIComponent(filter)}`
       );
 
-      if (!response.ok) {
-        if (response.status === 403) {
-          setError('Access denied. You need global_admin role.');
-        } else {
-          setError('Failed to fetch waitlist');
-        }
+      if (requestError || !data) {
+        setError(requestError ?? 'Failed to fetch waitlist');
         setEntries([]);
         return;
       }
 
-      const data = await response.json() as { entries: WaitlistEntry[]; total: number };
       setEntries(data.entries);
     } catch (err) {
       setError('Failed to connect to server');
@@ -152,21 +147,16 @@ export function AdminPanel(): JSX.Element {
     setUsersError(null);
 
     try {
-      const response = await fetch(
-        `${API_BASE}/waitlist/admin/users?user_id=${user.id}`
+      const { data, error: requestError } = await apiRequest<{ users: AdminUser[]; total: number }>(
+        '/waitlist/admin/users'
       );
 
-      if (!response.ok) {
-        if (response.status === 403) {
-          setUsersError('Access denied. You need global_admin role.');
-        } else {
-          setUsersError('Failed to fetch users');
-        }
+      if (requestError || !data) {
+        setUsersError(requestError ?? 'Failed to fetch users');
         setAdminUsers([]);
         return;
       }
 
-      const data = await response.json() as { users: AdminUser[]; total: number };
       setAdminUsers(data.users);
     } catch (err) {
       setUsersError('Failed to connect to server');
@@ -183,21 +173,16 @@ export function AdminPanel(): JSX.Element {
     setOrgsError(null);
 
     try {
-      const response = await fetch(
-        `${API_BASE}/waitlist/admin/organizations?user_id=${user.id}`
+      const { data, error: requestError } = await apiRequest<{ organizations: AdminOrganization[]; total: number }>(
+        '/waitlist/admin/organizations'
       );
 
-      if (!response.ok) {
-        if (response.status === 403) {
-          setOrgsError('Access denied. You need global_admin role.');
-        } else {
-          setOrgsError('Failed to fetch organizations');
-        }
+      if (requestError || !data) {
+        setOrgsError(requestError ?? 'Failed to fetch organizations');
         setAdminOrgs([]);
         return;
       }
 
-      const data = await response.json() as { organizations: AdminOrganization[]; total: number };
       setAdminOrgs(data.organizations);
     } catch (err) {
       setOrgsError('Failed to connect to server');
@@ -308,18 +293,17 @@ export function AdminPanel(): JSX.Element {
 
   const handleInvite = async (targetUserId: string): Promise<void> => {
     if (!user) return;
-    
+
     setInviting(targetUserId);
 
     try {
-      const response = await fetch(
-        `${API_BASE}/waitlist/admin/${targetUserId}/invite?user_id=${user.id}`,
+      const { error: requestError } = await apiRequest<{ success: boolean; message: string }>(
+        `/waitlist/admin/${targetUserId}/invite`,
         { method: 'POST' }
       );
 
-      if (!response.ok) {
-        const data = await response.json() as { detail?: string };
-        throw new Error(data.detail ?? 'Failed to invite');
+      if (requestError) {
+        throw new Error(requestError);
       }
 
       // Refresh the list

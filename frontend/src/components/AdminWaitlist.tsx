@@ -2,11 +2,11 @@
  * Admin Waitlist management page.
  * 
  * Allows admins to view and invite users from the waitlist.
- * Access controlled via admin_key query parameter.
+ * Access controlled via authenticated JWT + global_admin backend checks.
  */
 
 import { useEffect, useState, useCallback } from 'react';
-import { API_BASE } from '../lib/api';
+import { apiRequest } from '../lib/api';
 
 interface WaitlistEntry {
   id: string;
@@ -25,11 +25,7 @@ interface WaitlistEntry {
   created_at: string | null;
 }
 
-interface AdminWaitlistProps {
-  adminKey: string;
-}
-
-export function AdminWaitlist({ adminKey }: AdminWaitlistProps): JSX.Element {
+export function AdminWaitlist(): JSX.Element {
   const [entries, setEntries] = useState<WaitlistEntry[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
@@ -41,21 +37,16 @@ export function AdminWaitlist({ adminKey }: AdminWaitlistProps): JSX.Element {
     setError(null);
 
     try {
-      const response = await fetch(
-        `${API_BASE}/waitlist/admin?admin_key=${encodeURIComponent(adminKey)}&status=${filter}`
+      const { data, error: requestError } = await apiRequest<{ entries: WaitlistEntry[]; total: number }>(
+        `/waitlist/admin?status=${encodeURIComponent(filter)}`
       );
 
-      if (!response.ok) {
-        if (response.status === 403) {
-          setError('Invalid admin key');
-        } else {
-          setError('Failed to fetch waitlist');
-        }
+      if (requestError || !data) {
+        setError(requestError ?? 'Failed to fetch waitlist');
         setEntries([]);
         return;
       }
 
-      const data = await response.json() as { entries: WaitlistEntry[]; total: number };
       setEntries(data.entries);
     } catch (err) {
       setError('Failed to connect to server');
@@ -63,7 +54,7 @@ export function AdminWaitlist({ adminKey }: AdminWaitlistProps): JSX.Element {
     } finally {
       setLoading(false);
     }
-  }, [adminKey, filter]);
+  }, [filter]);
 
   useEffect(() => {
     void fetchWaitlist();
@@ -73,14 +64,13 @@ export function AdminWaitlist({ adminKey }: AdminWaitlistProps): JSX.Element {
     setInviting(userId);
 
     try {
-      const response = await fetch(
-        `${API_BASE}/waitlist/admin/${userId}/invite?admin_key=${encodeURIComponent(adminKey)}`,
+      const { error: requestError } = await apiRequest<{ success: boolean; message: string }>(
+        `/waitlist/admin/${userId}/invite`,
         { method: 'POST' }
       );
 
-      if (!response.ok) {
-        const data = await response.json() as { detail?: string };
-        throw new Error(data.detail ?? 'Failed to invite');
+      if (requestError) {
+        throw new Error(requestError);
       }
 
       // Refresh the list
