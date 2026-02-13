@@ -1284,18 +1284,23 @@ function getToolStatusText(
       }
       return progressMsg || `Creating ${artifactType}...`;
     }
-    case 'crm_write': {
+    case 'write_to_system_of_record': {
+      const targetSystem = typeof input?.target_system === 'string' ? input.target_system : '';
       const recordType = typeof input?.record_type === 'string' ? input.record_type : 'record';
       const recordCount = Array.isArray(input?.records) ? input.records.length : 0;
+      const systemLabel = targetSystem || 'system';
       if (recordCount === 0) {
-        // Input still streaming — we don't know the count yet
-        return `Preparing ${recordType}s for CRM...`;
+        return `Preparing ${recordType}s for ${systemLabel}...`;
       }
       const pluralType = recordCount === 1 ? recordType : `${recordType}s`;
+      const DIRECT_WRITE_THRESHOLD = 5;
       if (isComplete) {
-        return `Prepared ${recordCount} ${pluralType} for review`;
+        const verb = typeof input?.operation === 'string' && input.operation === 'update' ? 'Updated' : 'Created';
+        return recordCount > DIRECT_WRITE_THRESHOLD
+          ? `Prepared ${recordCount} ${pluralType} for review`
+          : `${verb} ${recordCount} ${pluralType} in ${systemLabel}`;
       }
-      return `Preparing ${recordCount} ${pluralType} for CRM...`;
+      return `Writing ${recordCount} ${pluralType} to ${systemLabel}...`;
     }
     case 'loop_over': {
       const workflowName = typeof result?.workflow_name === 'string' 

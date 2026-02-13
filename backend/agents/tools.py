@@ -4,10 +4,11 @@ Tool definitions and execution for Claude.
 Tools are organized by category (see registry.py):
 - LOCAL_READ: run_sql_query, search_activities
 - LOCAL_WRITE: create_artifact, create_workflow, trigger_workflow
-- EXTERNAL_READ: web_search, fetch_url, enrich_contacts_with_apollo, enrich_company_with_apollo
-- EXTERNAL_WRITE: crm_write, send_email_from, send_slack, github_issues_access, trigger_sync
+- EXTERNAL_READ: web_search, fetch_url, enrich_contacts_with_apollo, enrich_company_with_apollo, search_system_of_record
+- EXTERNAL_WRITE: write_to_system_of_record, send_email_from, send_slack, trigger_sync
 
-EXTERNAL_WRITE tools require user approval by default (can be overridden in settings).
+All writes to external systems (CRM, issue trackers, code repos) go through
+write_to_system_of_record, which dispatches to the correct handler by target_system.
 """
 
 import json
@@ -282,10 +283,10 @@ async def execute_tool(
         logger.info("[Tools] enrich_company_with_apollo completed")
         return result
 
-    elif tool_name == "crm_write":
+    elif tool_name == "write_to_system_of_record":
         conversation_id: str | None = (context or {}).get("conversation_id")
-        result = await _crm_write(tool_input, organization_id, user_id, skip_approval, conversation_id=conversation_id)
-        logger.info("[Tools] crm_write completed: %s", result.get("status", result.get("error", "unknown")))
+        result = await _write_to_system_of_record(tool_input, organization_id, user_id, skip_approval, conversation_id=conversation_id)
+        logger.info("[Tools] write_to_system_of_record completed: %s", result.get("status", result.get("error", "unknown")))
         return result
 
     elif tool_name == "send_email_from":
@@ -296,17 +297,6 @@ async def execute_tool(
     elif tool_name == "send_slack":
         result = await _send_slack(tool_input, organization_id, user_id, skip_approval)
         logger.info("[Tools] send_slack completed: %s", result.get("status"))
-        return result
-
-    elif tool_name == "github_issues_access":
-        result = await _github_issues_access(tool_input, organization_id, user_id, skip_approval)
-        logger.info("[Tools] github_issues_access completed: %s", result.get("status", result.get("error", "unknown")))
-        return result
-
-    elif tool_name == "create_github_issue":
-        logger.warning("[Tools] create_github_issue is deprecated, remapping to github_issues_access")
-        result = await _github_issues_access(tool_input, organization_id, user_id, skip_approval)
-        logger.info("[Tools] create_github_issue completed via github_issues_access: %s", result.get("status", result.get("error", "unknown")))
         return result
 
     elif tool_name == "trigger_sync":
@@ -337,21 +327,6 @@ async def execute_tool(
     elif tool_name == "delete_memory":
         result = await _delete_memory(tool_input, organization_id, user_id)
         logger.info("[Tools] delete_memory completed: %s", result.get("status", result.get("error")))
-        return result
-
-    elif tool_name == "create_linear_issue":
-        result = await _create_linear_issue(tool_input, organization_id, user_id, skip_approval)
-        logger.info("[Tools] create_linear_issue completed: %s", result.get("status", result.get("error")))
-        return result
-
-    elif tool_name == "update_linear_issue":
-        result = await _update_linear_issue(tool_input, organization_id, user_id, skip_approval)
-        logger.info("[Tools] update_linear_issue completed: %s", result.get("status", result.get("error")))
-        return result
-
-    elif tool_name == "search_linear_issues":
-        result = await _search_linear_issues(tool_input, organization_id)
-        logger.info("[Tools] search_linear_issues returned %d results", len(result.get("issues", [])))
         return result
 
     else:
@@ -1409,7 +1384,36 @@ def _truncate_result(url: str, content: str, *, mode: str, max_chars: int) -> di
     return result
 
 
-async def _crm_write(
+# =============================================================================
+# Generic System-of-Record Write Dispatcher
+# =============================================================================
+# All external writes route through write_to_system_of_record, which dispatches
+# to the correct handler based on target_system. Adding a new integration is just
+# adding a new entry in _WRITE_HANDLERS.
+
+# Handler type: (records, record_type, operation, org_id, user_id, skip_approval, conversation_id) -> result
+from typing import Callable, Awaitable as _Awaitable
+
+_WriteHandler = Callable[
+    [list[dict[str, Any]], str, str, str, str | None, bool, str | None],
+    _Awaitable[dict[str, Any]],
+]
+
+# CRM systems whose bulk writes go through the ChangeSession / pending-changes flow
+_CRM_SYSTEMS: frozenset[str] = frozenset({"hubspot", "salesforce"})
+
+# Writes touching this many records or fewer execute immediately.
+# Above this threshold, CRM writes go through the Pending Changes UI for review.
+_DIRECT_WRITE_THRESHOLD: int = 5
+
+# Systems that support the "issue" record type via tracker connectors
+_TRACKER_SYSTEMS: frozenset[str] = frozenset({"linear", "jira", "asana"})
+
+# Systems that support the "issue" record type via code-repo connectors
+_CODE_REPO_SYSTEMS: frozenset[str] = frozenset({"github", "gitlab"})
+
+
+async def _write_to_system_of_record(
     params: dict[str, Any],
     organization_id: str,
     user_id: str | None,
@@ -1417,11 +1421,397 @@ async def _crm_write(
     conversation_id: str | None = None,
 ) -> dict[str, Any]:
     """
-    Create or update CRM records with user approval workflow.
-    
-    This function validates input, checks for duplicates, and either:
-    - Creates a pending CrmOperation for user approval (default)
-    - Executes immediately if skip_approval is True (auto-approved user/workflow)
+    Universal write dispatcher for all external systems of record.
+
+    Routes to the correct handler based on target_system.
+    The record count determines the execution mode:
+      - ≤ _DIRECT_WRITE_THRESHOLD  →  execute immediately
+      - >  _DIRECT_WRITE_THRESHOLD →  pending changes UI for review
+    """
+    target_system: str = params.get("target_system", "").lower().strip()
+    record_type: str = params.get("record_type", "").lower().strip()
+    operation: str = params.get("operation", "create").lower().strip()
+    records: list[dict[str, Any]] | Any = params.get("records", [])
+
+    if not target_system:
+        return {"error": "target_system is required (e.g. 'hubspot', 'linear', 'github')."}
+    if not record_type:
+        return {"error": "record_type is required (e.g. 'contact', 'issue', 'deal')."}
+    if operation not in ("create", "update"):
+        return {"error": f"Invalid operation '{operation}'. Must be 'create' or 'update'."}
+    if not records or not isinstance(records, list):
+        return {"error": "records must be a non-empty array of objects."}
+
+    all_systems: frozenset[str] = _CRM_SYSTEMS | _TRACKER_SYSTEMS | _CODE_REPO_SYSTEMS
+    if target_system not in all_systems:
+        return {"error": f"Unsupported target_system '{target_system}'. Supported: {', '.join(sorted(all_systems))}"}
+
+    # Validate record_type for non-CRM systems
+    if target_system in (_TRACKER_SYSTEMS | _CODE_REPO_SYSTEMS) and record_type != "issue":
+        return {"error": f"Unsupported record_type '{record_type}' for {target_system}. Only 'issue' is supported."}
+
+    direct_execute: bool = len(records) <= _DIRECT_WRITE_THRESHOLD
+
+    if direct_execute:
+        # ── Small write: execute immediately against external API ──
+        return await _execute_direct_write(
+            target_system, record_type, operation, records,
+            organization_id, user_id, skip_approval, conversation_id,
+        )
+    else:
+        # ── Large write: go through Pending Changes UI for review ──
+        return await _execute_pending_write(
+            target_system, record_type, operation, records,
+            organization_id, user_id, skip_approval, conversation_id,
+        )
+
+
+async def _execute_direct_write(
+    target_system: str,
+    record_type: str,
+    operation: str,
+    records: list[dict[str, Any]],
+    organization_id: str,
+    user_id: str | None,
+    skip_approval: bool = False,
+    conversation_id: str | None = None,
+) -> dict[str, Any]:
+    """Small write (≤ threshold): execute immediately against the external API."""
+
+    if target_system in _CRM_SYSTEMS:
+        crm_params: dict[str, Any] = {
+            "target_system": target_system,
+            "record_type": record_type,
+            "operation": operation,
+            "records": records,
+        }
+        return await _crm_write(
+            crm_params, organization_id, user_id, skip_approval,
+            conversation_id=conversation_id, direct_execute=True,
+        )
+
+    if target_system in _TRACKER_SYSTEMS:
+        return await _handle_tracker_write(target_system, operation, records, organization_id, user_id)
+
+    if target_system in _CODE_REPO_SYSTEMS:
+        return await _handle_code_repo_write(target_system, operation, records, organization_id)
+
+    return {"error": f"Direct write not supported for '{target_system}'."}
+
+
+async def _execute_pending_write(
+    target_system: str,
+    record_type: str,
+    operation: str,
+    records: list[dict[str, Any]],
+    organization_id: str,
+    user_id: str | None,
+    skip_approval: bool = False,
+    conversation_id: str | None = None,
+) -> dict[str, Any]:
+    """Large write (> threshold): route through Pending Changes UI for review."""
+
+    if target_system in _CRM_SYSTEMS:
+        crm_params: dict[str, Any] = {
+            "target_system": target_system,
+            "record_type": record_type,
+            "operation": operation,
+            "records": records,
+        }
+        return await _crm_write(
+            crm_params, organization_id, user_id, skip_approval,
+            conversation_id=conversation_id, direct_execute=False,
+        )
+
+    # Non-CRM bulk writes: pending changes not yet supported, execute immediately
+    # TODO: extend Pending Changes UI to support tracker / code-repo bulk writes
+    logger.warning(
+        "[Tools] Bulk write (%d records) to %s — pending changes not yet supported, executing directly",
+        len(records), target_system,
+    )
+    return await _execute_direct_write(
+        target_system, record_type, operation, records,
+        organization_id, user_id, skip_approval, conversation_id,
+    )
+
+
+async def _handle_tracker_write(
+    target_system: str,
+    operation: str,
+    records: list[dict[str, Any]],
+    organization_id: str,
+    user_id: str | None,
+) -> dict[str, Any]:
+    """Handle writes to issue tracker systems (Linear, Jira, Asana)."""
+    # Check for active integration
+    async with get_session(organization_id=organization_id) as session:
+        result = await session.execute(
+            select(Integration).where(
+                Integration.organization_id == UUID(organization_id),
+                Integration.provider == target_system,
+                Integration.is_active == True,
+            )
+        )
+        integration: Integration | None = result.scalar_one_or_none()
+        if not integration:
+            return {
+                "error": f"No active {target_system} integration found. Please connect {target_system} in Data Sources.",
+            }
+
+    if target_system == "linear":
+        return await _handle_linear_write(operation, records, organization_id)
+    # Future: elif target_system == "jira": ...
+    # Future: elif target_system == "asana": ...
+
+    return {"error": f"Issue tracker '{target_system}' is not yet implemented."}
+
+
+async def _handle_linear_write(
+    operation: str,
+    records: list[dict[str, Any]],
+    organization_id: str,
+) -> dict[str, Any]:
+    """Handle create/update for Linear issues. Each record is processed individually."""
+    from connectors.linear import LinearConnector
+
+    connector: LinearConnector = LinearConnector(organization_id=organization_id)
+    results: list[dict[str, Any]] = []
+    errors: list[str] = []
+
+    for i, record in enumerate(records):
+        try:
+            if operation == "create":
+                issue_result: dict[str, Any] = await _execute_linear_create(connector, record)
+            else:
+                issue_result = await _execute_linear_update(connector, record, organization_id)
+            results.append(issue_result)
+        except Exception as exc:
+            error_msg: str = f"Record {i + 1}: {exc}"
+            logger.error("[Tools._handle_linear_write] %s", error_msg)
+            errors.append(error_msg)
+
+    if errors and not results:
+        return {"status": "failed", "errors": errors}
+
+    summary_parts: list[str] = []
+    for r in results:
+        identifier: str = r.get("identifier", "?")
+        title: str = r.get("title", "")
+        summary_parts.append(f"{identifier}: {title}")
+
+    return {
+        "status": "completed",
+        "message": f"{'Created' if operation == 'create' else 'Updated'} {len(results)} Linear issue(s)",
+        "issues": results,
+        "errors": errors if errors else None,
+    }
+
+
+async def _execute_linear_create(
+    connector: "LinearConnector",  # type: ignore[name-defined]
+    record: dict[str, Any],
+) -> dict[str, Any]:
+    """Create a single Linear issue from a record dict."""
+    team_key: str = record.get("team_key", "").strip()
+    title: str = record.get("title", "").strip()
+    if not team_key:
+        raise ValueError("team_key is required (e.g. 'ENG')")
+    if not title:
+        raise ValueError("title is required")
+
+    team: dict[str, Any] | None = await connector.resolve_team_by_key(team_key)
+    if not team:
+        raise ValueError(f"Team with key '{team_key}' not found in Linear")
+
+    assignee_id: str | None = None
+    assignee_name: str | None = record.get("assignee_name")
+    if assignee_name:
+        user: dict[str, Any] | None = await connector.resolve_assignee_by_name(assignee_name)
+        if user:
+            assignee_id = user["id"]
+        else:
+            logger.warning("Could not resolve Linear user '%s'", assignee_name)
+
+    project_id: str | None = None
+    project_name: str | None = record.get("project_name")
+    if project_name:
+        project: dict[str, Any] | None = await connector.resolve_project_by_name(project_name)
+        if project:
+            project_id = project["id"]
+        else:
+            logger.warning("Could not resolve Linear project '%s'", project_name)
+
+    issue: dict[str, Any] = await connector.create_issue(
+        team_id=team["id"],
+        title=title,
+        description=record.get("description"),
+        priority=record.get("priority"),
+        assignee_id=assignee_id,
+        project_id=project_id,
+    )
+    return issue
+
+
+async def _execute_linear_update(
+    connector: "LinearConnector",  # type: ignore[name-defined]
+    record: dict[str, Any],
+    organization_id: str,
+) -> dict[str, Any]:
+    """Update a single Linear issue from a record dict."""
+    from models.tracker_issue import TrackerIssue
+
+    issue_identifier: str = record.get("issue_identifier", "").strip()
+    if not issue_identifier:
+        raise ValueError("issue_identifier is required (e.g. 'ENG-123')")
+
+    update_fields: list[str] = ["title", "description", "state_name", "priority", "assignee_name"]
+    has_update: bool = any(record.get(f) is not None for f in update_fields)
+    if not has_update:
+        raise ValueError("At least one field to update must be provided (title, description, state_name, priority, assignee_name)")
+
+    # Look up the Linear issue ID from synced data
+    org_uuid: UUID = UUID(organization_id)
+    linear_issue_id: str | None = None
+    linear_team_id: str | None = None
+
+    async with get_session(organization_id=organization_id) as session:
+        row_result = await session.execute(
+            select(TrackerIssue.source_id, TrackerTeam.source_id)
+            .join(TrackerTeam, TrackerIssue.team_id == TrackerTeam.id)
+            .where(
+                TrackerIssue.organization_id == org_uuid,
+                TrackerIssue.source_system == "linear",
+                TrackerIssue.identifier == issue_identifier,
+            )
+        )
+        row = row_result.first()
+        if row:
+            linear_issue_id = row[0]
+            linear_team_id = row[1]
+
+    if not linear_issue_id or not linear_team_id:
+        raise ValueError(f"Issue '{issue_identifier}' not found in synced data. Try running a sync first.")
+
+    # Resolve state name → state ID
+    state_id: str | None = None
+    state_name: str | None = record.get("state_name")
+    if state_name:
+        state: dict[str, Any] | None = await connector.resolve_state_by_name(linear_team_id, state_name)
+        if state:
+            state_id = state["id"]
+        else:
+            raise ValueError(f"Workflow state '{state_name}' not found for this team")
+
+    # Resolve assignee name → user ID
+    assignee_id: str | None = None
+    assignee_name: str | None = record.get("assignee_name")
+    if assignee_name:
+        user: dict[str, Any] | None = await connector.resolve_assignee_by_name(assignee_name)
+        if user:
+            assignee_id = user["id"]
+        else:
+            logger.warning("Could not resolve Linear user '%s'", assignee_name)
+
+    issue: dict[str, Any] = await connector.update_issue(
+        issue_id=linear_issue_id,
+        title=record.get("title"),
+        description=record.get("description"),
+        state_id=state_id,
+        priority=record.get("priority"),
+        assignee_id=assignee_id,
+    )
+    return issue
+
+
+async def _handle_code_repo_write(
+    target_system: str,
+    operation: str,
+    records: list[dict[str, Any]],
+    organization_id: str,
+) -> dict[str, Any]:
+    """Handle writes to code repository systems (GitHub, GitLab)."""
+    if operation != "create":
+        return {"error": f"Only 'create' operation is supported for {target_system} issues."}
+
+    # Check for active integration
+    async with get_session(organization_id=organization_id) as session:
+        result = await session.execute(
+            select(Integration).where(
+                Integration.organization_id == UUID(organization_id),
+                Integration.provider == target_system,
+                Integration.is_active == True,
+            )
+        )
+        integration: Integration | None = result.scalar_one_or_none()
+        if not integration:
+            return {
+                "error": f"No active {target_system} integration found. Please connect {target_system} in Data Sources.",
+            }
+
+    if target_system == "github":
+        return await _handle_github_write(records, organization_id)
+    # Future: elif target_system == "gitlab": ...
+
+    return {"error": f"Code repository '{target_system}' is not yet implemented."}
+
+
+async def _handle_github_write(
+    records: list[dict[str, Any]],
+    organization_id: str,
+) -> dict[str, Any]:
+    """Handle creating GitHub issues. Each record is processed individually."""
+    from connectors.github import GitHubConnector
+
+    connector: GitHubConnector = GitHubConnector(organization_id=organization_id)
+    results: list[dict[str, Any]] = []
+    errors: list[str] = []
+
+    for i, record in enumerate(records):
+        repo_full_name: str = record.get("repo_full_name", "").strip()
+        title: str = record.get("title", "").strip()
+
+        if not repo_full_name or "/" not in repo_full_name:
+            errors.append(f"Record {i + 1}: repo_full_name is required in 'owner/repo' format")
+            continue
+        if not title:
+            errors.append(f"Record {i + 1}: title is required")
+            continue
+
+        try:
+            issue: dict[str, Any] = await connector.create_issue(
+                repo_full_name=repo_full_name,
+                title=title,
+                body=record.get("body"),
+                labels=record.get("labels"),
+                assignees=record.get("assignees"),
+            )
+            results.append(issue)
+        except Exception as exc:
+            error_msg: str = f"Record {i + 1}: {exc}"
+            logger.error("[Tools._handle_github_write] %s", error_msg)
+            errors.append(error_msg)
+
+    if errors and not results:
+        return {"status": "failed", "errors": errors}
+
+    return {
+        "status": "completed",
+        "message": f"Created {len(results)} GitHub issue(s)",
+        "issues": results,
+        "errors": errors if errors else None,
+    }
+
+
+async def _crm_write(
+    params: dict[str, Any],
+    organization_id: str,
+    user_id: str | None,
+    skip_approval: bool = False,
+    conversation_id: str | None = None,
+    direct_execute: bool = False,
+) -> dict[str, Any]:
+    """
+    Create or update CRM records.
     
     Args:
         params: CRM operation parameters
@@ -1429,6 +1819,8 @@ async def _crm_write(
         user_id: User UUID
         skip_approval: If True, execute immediately without approval
         conversation_id: Conversation UUID for grouping into a ChangeSession
+        direct_execute: If True, write directly to the external CRM API
+            (skip ChangeSession / Pending Changes). Used for small writes.
     """
     target_system = params.get("target_system", "").lower()
     record_type = params.get("record_type", "").lower()
@@ -1648,11 +2040,39 @@ async def _crm_write(
         will_update = len(duplicate_warnings)
         will_create = len(validated_records) - will_update
     
-    # Local-first: Execute immediately, creates records locally with sync_status='pending'
-    # User can then use the bottom panel to "Commit All" to HubSpot or "Undo All" to discard
-    logger.info("[Tools._crm_write] Executing local-first CRM operation")
-    result = await execute_crm_operation(operation_id, skip_duplicates=True, organization_id=organization_id)
-    return result
+    if direct_execute:
+        # ── Small write: push directly to external CRM, no Pending Changes ──
+        logger.info("[Tools._crm_write] Direct-executing CRM operation (small write)")
+        async with get_session(organization_id=organization_id) as session:
+            crm_op = await session.get(CrmOperation, UUID(operation_id))
+            if not crm_op:
+                return {"status": "failed", "error": "CrmOperation not found after creation"}
+            crm_op.status = "executing"
+            await session.commit()
+
+            direct_result: dict[str, Any] = await _execute_hubspot_operation(
+                crm_op, skip_duplicates=True, user_id=user_id,
+            )
+
+            # Reload to update status
+            await session.refresh(crm_op)
+            if "error" in direct_result:
+                crm_op.status = "failed"
+                crm_op.error_message = direct_result.get("error")
+            else:
+                crm_op.status = "completed"
+                crm_op.success_count = direct_result.get("success_count", 0)
+                crm_op.failure_count = direct_result.get("failure_count", 0)
+                crm_op.result = direct_result
+            crm_op.executed_at = datetime.utcnow()
+            await session.commit()
+
+        return direct_result
+    else:
+        # ── Large write: local-first with Pending Changes review ──
+        logger.info("[Tools._crm_write] Executing local-first CRM operation (pending changes)")
+        result = await execute_crm_operation(operation_id, skip_duplicates=True, organization_id=organization_id)
+        return result
 
 
 async def execute_crm_operation(
@@ -2035,6 +2455,29 @@ async def _execute_hubspot_operation(
             "created": [],
         }
     
+    # ── Default hubspot_owner_id to the requesting user when creating ──
+    if crm_op.operation == "create" and user_id:
+        needs_owner: bool = any(
+            not record.get("hubspot_owner_id") for record in records_to_process
+        )
+        if needs_owner:
+            try:
+                from uuid import UUID as _UUID
+                hs_owner_id: str | None = await connector.map_user_to_hs_owner(_UUID(user_id))
+                if hs_owner_id:
+                    for record in records_to_process:
+                        if not record.get("hubspot_owner_id"):
+                            record["hubspot_owner_id"] = hs_owner_id
+                    logger.info(
+                        "[Tools._execute_hubspot_operation] Defaulted hubspot_owner_id=%s for %d record(s)",
+                        hs_owner_id, len(records_to_process),
+                    )
+            except Exception as owner_exc:
+                logger.warning(
+                    "[Tools._execute_hubspot_operation] Could not resolve owner for user %s: %s",
+                    user_id, owner_exc,
+                )
+
     # Determine if this is an engagement type
     _engagement_types: frozenset[str] = frozenset({"call", "email", "meeting", "note"})
     is_engagement: bool = crm_op.record_type in _engagement_types
@@ -3634,126 +4077,6 @@ async def execute_send_slack(
 
 
 
-async def _github_issues_access(
-    params: dict[str, Any], organization_id: str, user_id: str | None, skip_approval: bool = False
-) -> dict[str, Any]:
-    """
-    Create a GitHub issue in a repository.
-
-    Requires approval by default unless auto-approved.
-    """
-    repo_full_name = params.get("repo_full_name", "").strip()
-    title = params.get("title", "").strip()
-    body = params.get("body")
-    labels = params.get("labels")
-    assignees = params.get("assignees")
-
-    if not repo_full_name:
-        return {"error": "repo_full_name is required (owner/repo)."}
-    if "/" not in repo_full_name:
-        return {"error": "repo_full_name must be in 'owner/repo' format."}
-    if not title:
-        return {"error": "Issue title is required."}
-
-    # Validate optional fields early so approval preview is trustworthy
-    if labels is not None and not isinstance(labels, list):
-        return {"error": "labels must be an array of strings."}
-    if assignees is not None and not isinstance(assignees, list):
-        return {"error": "assignees must be an array of GitHub usernames."}
-
-    async with get_session(organization_id=organization_id) as session:
-        result = await session.execute(
-            select(Integration).where(
-                Integration.organization_id == UUID(organization_id),
-                Integration.provider == "github",
-                Integration.is_active == True,
-            )
-        )
-        integration = result.scalar_one_or_none()
-
-        if not integration:
-            return {
-                "error": "No active GitHub integration found. Please connect GitHub in Data Sources.",
-                "suggestion": "Go to Data Sources and connect GitHub before filing issues.",
-            }
-
-    if skip_approval:
-        logger.info("[Tools._github_issues_access] Auto-approved, creating issue immediately")
-        return await execute_github_issues_access(params, organization_id)
-
-    operation_id = str(uuid4())
-    store_pending_operation(
-        operation_id=operation_id,
-        tool_name="github_issues_access",
-        params=params,
-        organization_id=organization_id,
-        user_id=user_id or "",
-    )
-
-    return {
-        "type": "pending_approval",
-        "status": "pending_approval",
-        "operation_id": operation_id,
-        "tool_name": "github_issues_access",
-        "preview": {
-            "repo_full_name": repo_full_name,
-            "title": title,
-            "body": (body[:500] + "...") if isinstance(body, str) and len(body) > 500 else body,
-            "labels": labels or [],
-            "assignees": assignees or [],
-        },
-        "message": f"Ready to create GitHub issue in {repo_full_name}. Please review and click Approve to create it.",
-    }
-
-
-async def execute_github_issues_access(
-    params: dict[str, Any], organization_id: str
-) -> dict[str, Any]:
-    """Actually create a GitHub issue (called after user approval)."""
-    from connectors.github import GitHubConnector
-
-    repo_full_name = params.get("repo_full_name", "").strip()
-    title = params.get("title", "").strip()
-    body = params.get("body")
-    labels = params.get("labels")
-    assignees = params.get("assignees")
-
-    if not repo_full_name or not title:
-        return {
-            "status": "failed",
-            "error": "repo_full_name and title are required.",
-        }
-
-    try:
-        connector = GitHubConnector(organization_id=organization_id)
-        issue = await connector.create_issue(
-            repo_full_name=repo_full_name,
-            title=title,
-            body=body,
-            labels=labels,
-            assignees=assignees,
-        )
-        logger.info("[Tools] Created GitHub issue %s in %s", issue.get("number"), repo_full_name)
-        return {
-            "status": "completed",
-            "message": f"Created GitHub issue #{issue.get('number')} in {repo_full_name}",
-            "issue": issue,
-        }
-    except httpx.HTTPStatusError as e:
-        logger.error("[Tools.execute_github_issues_access] GitHub API failed: %s", str(e))
-        detail = e.response.text[:500] if e.response is not None else str(e)
-        return {
-            "status": "failed",
-            "error": f"GitHub API error: {detail}",
-        }
-    except Exception as e:
-        logger.error("[Tools.execute_github_issues_access] Failed: %s", str(e))
-        return {
-            "status": "failed",
-            "error": str(e),
-        }
-
-
 async def _trigger_sync(
     params: dict[str, Any], organization_id: str
 ) -> dict[str, Any]:
@@ -4537,335 +4860,3 @@ async def _delete_memory(
     return {"status": "deleted", "memory_id": memory_id}
 
 
-
-async def execute_create_github_issue(params: dict[str, Any], organization_id: str) -> dict[str, Any]:
-    """Backward-compatible alias for deprecated function name."""
-    return await execute_github_issues_access(params, organization_id)
-
-
-# =============================================================================
-# Linear Tools
-# =============================================================================
-
-async def _create_linear_issue(
-    params: dict[str, Any],
-    organization_id: str,
-    user_id: str | None,
-    skip_approval: bool = False,
-) -> dict[str, Any]:
-    """Create a Linear issue (with approval workflow)."""
-    team_key: str = params.get("team_key", "").strip()
-    title: str = params.get("title", "").strip()
-    description: str | None = params.get("description")
-    priority: int | None = params.get("priority")
-    assignee_name: str | None = params.get("assignee_name")
-    project_name: str | None = params.get("project_name")
-    labels: list[str] | None = params.get("labels")
-
-    if not team_key:
-        return {"error": "team_key is required (e.g. 'ENG'). Query tracker_teams WHERE source_system='linear' for valid keys."}
-    if not title:
-        return {"error": "title is required."}
-
-    # Check for active Linear integration
-    async with get_session(organization_id=organization_id) as session:
-        result = await session.execute(
-            select(Integration).where(
-                Integration.organization_id == UUID(organization_id),
-                Integration.provider == "linear",
-                Integration.is_active == True,
-            )
-        )
-        integration: Integration | None = result.scalar_one_or_none()
-
-        if not integration:
-            return {
-                "error": "No active Linear integration found. Please connect Linear in Data Sources.",
-                "suggestion": "Go to Data Sources and connect your Linear workspace.",
-            }
-
-    if skip_approval:
-        logger.info("[Tools._create_linear_issue] Auto-approved, creating immediately")
-        return await execute_create_linear_issue(params, organization_id)
-
-    # Create pending operation for approval
-    operation_id: str = str(uuid4())
-    store_pending_operation(
-        operation_id=operation_id,
-        tool_name="create_linear_issue",
-        params=params,
-        organization_id=organization_id,
-        user_id=user_id,
-    )
-
-    return {
-        "type": "pending_approval",
-        "status": "pending_approval",
-        "operation_id": operation_id,
-        "tool_name": "create_linear_issue",
-        "preview": {
-            "team_key": team_key,
-            "title": title,
-            "description": (description or "")[:300],
-            "priority": priority,
-            "assignee_name": assignee_name,
-            "project_name": project_name,
-            "labels": labels,
-        },
-        "message": f"Ready to create Linear issue '{title}' in team {team_key}. Please review and click Approve.",
-    }
-
-
-async def execute_create_linear_issue(
-    params: dict[str, Any], organization_id: str
-) -> dict[str, Any]:
-    """Actually create the Linear issue (called after user approval)."""
-    from connectors.linear import LinearConnector
-
-    team_key: str = params.get("team_key", "").strip()
-    title: str = params.get("title", "").strip()
-    description: str | None = params.get("description")
-    priority: int | None = params.get("priority")
-    assignee_name: str | None = params.get("assignee_name")
-    project_name: str | None = params.get("project_name")
-
-    connector: LinearConnector = LinearConnector(organization_id=organization_id)
-
-    try:
-        # Resolve team key → Linear team ID
-        team: dict[str, Any] | None = await connector.resolve_team_by_key(team_key)
-        if not team:
-            return {"status": "failed", "error": f"Team with key '{team_key}' not found in Linear."}
-
-        # Resolve optional assignee
-        assignee_id: str | None = None
-        if assignee_name:
-            user: dict[str, Any] | None = await connector.resolve_assignee_by_name(assignee_name)
-            if user:
-                assignee_id = user["id"]
-            else:
-                logger.warning("Could not resolve Linear user '%s'", assignee_name)
-
-        # Resolve optional project
-        project_id: str | None = None
-        if project_name:
-            project: dict[str, Any] | None = await connector.resolve_project_by_name(project_name)
-            if project:
-                project_id = project["id"]
-            else:
-                logger.warning("Could not resolve Linear project '%s'", project_name)
-
-        issue: dict[str, Any] = await connector.create_issue(
-            team_id=team["id"],
-            title=title,
-            description=description,
-            priority=priority,
-            assignee_id=assignee_id,
-            project_id=project_id,
-        )
-
-        return {
-            "status": "completed",
-            "message": f"Created Linear issue {issue['identifier']}: {issue['title']}",
-            "issue": issue,
-        }
-    except Exception as exc:
-        logger.error("Failed to create Linear issue: %s", exc)
-        return {"status": "failed", "error": f"Failed to create Linear issue: {exc}"}
-
-
-async def _update_linear_issue(
-    params: dict[str, Any],
-    organization_id: str,
-    user_id: str | None,
-    skip_approval: bool = False,
-) -> dict[str, Any]:
-    """Update a Linear issue (with approval workflow)."""
-    issue_identifier: str = params.get("issue_identifier", "").strip()
-    if not issue_identifier:
-        return {"error": "issue_identifier is required (e.g. 'ENG-123')."}
-
-    # Check at least one update field is provided
-    update_fields: list[str] = ["title", "description", "state_name", "priority", "assignee_name"]
-    has_update: bool = any(params.get(f) is not None for f in update_fields)
-    if not has_update:
-        return {"error": "At least one field to update must be provided (title, description, state_name, priority, assignee_name)."}
-
-    # Check for active Linear integration
-    async with get_session(organization_id=organization_id) as session:
-        result = await session.execute(
-            select(Integration).where(
-                Integration.organization_id == UUID(organization_id),
-                Integration.provider == "linear",
-                Integration.is_active == True,
-            )
-        )
-        integration: Integration | None = result.scalar_one_or_none()
-
-        if not integration:
-            return {
-                "error": "No active Linear integration found. Please connect Linear in Data Sources.",
-            }
-
-    if skip_approval:
-        logger.info("[Tools._update_linear_issue] Auto-approved, updating immediately")
-        return await execute_update_linear_issue(params, organization_id)
-
-    operation_id: str = str(uuid4())
-    store_pending_operation(
-        operation_id=operation_id,
-        tool_name="update_linear_issue",
-        params=params,
-        organization_id=organization_id,
-        user_id=user_id,
-    )
-
-    # Build preview of what's changing
-    changes: dict[str, Any] = {}
-    for field in update_fields:
-        val: Any = params.get(field)
-        if val is not None:
-            changes[field] = val
-
-    return {
-        "type": "pending_approval",
-        "status": "pending_approval",
-        "operation_id": operation_id,
-        "tool_name": "update_linear_issue",
-        "preview": {
-            "issue_identifier": issue_identifier,
-            "changes": changes,
-        },
-        "message": f"Ready to update Linear issue {issue_identifier}. Please review and click Approve.",
-    }
-
-
-async def execute_update_linear_issue(
-    params: dict[str, Any], organization_id: str
-) -> dict[str, Any]:
-    """Actually update the Linear issue (called after user approval)."""
-    from connectors.linear import LinearConnector
-    from models.tracker_issue import TrackerIssue
-
-    issue_identifier: str = params.get("issue_identifier", "").strip()
-    connector: LinearConnector = LinearConnector(organization_id=organization_id)
-
-    try:
-        # Look up the Linear issue ID from our synced data
-        org_uuid: UUID = UUID(organization_id)
-        linear_issue_id: str | None = None
-        linear_team_id: str | None = None
-
-        async with get_session(organization_id=organization_id) as session:
-            result = await session.execute(
-                select(TrackerIssue.source_id, TrackerTeam.source_id)
-                .join(TrackerTeam, TrackerIssue.team_id == TrackerTeam.id)
-                .where(
-                    TrackerIssue.organization_id == org_uuid,
-                    TrackerIssue.source_system == "linear",
-                    TrackerIssue.identifier == issue_identifier,
-                )
-            )
-            row = result.first()
-            if row:
-                linear_issue_id = row[0]
-                linear_team_id = row[1]
-
-        if not linear_issue_id or not linear_team_id:
-            return {
-                "status": "failed",
-                "error": f"Issue '{issue_identifier}' not found in synced data. Try running a sync first.",
-            }
-
-        # Resolve state name → state ID if provided
-        state_id: str | None = None
-        state_name: str | None = params.get("state_name")
-        if state_name:
-            state: dict[str, Any] | None = await connector.resolve_state_by_name(
-                linear_team_id, state_name
-            )
-            if state:
-                state_id = state["id"]
-            else:
-                return {
-                    "status": "failed",
-                    "error": f"Workflow state '{state_name}' not found for this team.",
-                }
-
-        # Resolve assignee name → user ID if provided
-        assignee_id: str | None = None
-        assignee_name: str | None = params.get("assignee_name")
-        if assignee_name:
-            user: dict[str, Any] | None = await connector.resolve_assignee_by_name(assignee_name)
-            if user:
-                assignee_id = user["id"]
-            else:
-                logger.warning("Could not resolve Linear user '%s'", assignee_name)
-
-        issue: dict[str, Any] = await connector.update_issue(
-            issue_id=linear_issue_id,
-            title=params.get("title"),
-            description=params.get("description"),
-            state_id=state_id,
-            priority=params.get("priority"),
-            assignee_id=assignee_id,
-        )
-
-        return {
-            "status": "completed",
-            "message": f"Updated Linear issue {issue['identifier']}",
-            "issue": issue,
-        }
-    except Exception as exc:
-        logger.error("Failed to update Linear issue: %s", exc)
-        return {"status": "failed", "error": f"Failed to update Linear issue: {exc}"}
-
-
-async def _search_linear_issues(
-    params: dict[str, Any],
-    organization_id: str,
-) -> dict[str, Any]:
-    """Search issues in Linear via the API (real-time, not synced data)."""
-    query_text: str = params.get("query", "").strip()
-    team_key: str | None = params.get("team_key")
-    limit: int = min(params.get("limit", 20), 50)
-
-    if not query_text:
-        return {"error": "query is required."}
-
-    # Check for active Linear integration
-    async with get_session(organization_id=organization_id) as session:
-        result = await session.execute(
-            select(Integration).where(
-                Integration.organization_id == UUID(organization_id),
-                Integration.provider == "linear",
-                Integration.is_active == True,
-            )
-        )
-        integration: Integration | None = result.scalar_one_or_none()
-
-        if not integration:
-            return {
-                "error": "No active Linear integration found. Please connect Linear in Data Sources.",
-            }
-
-    from connectors.linear import LinearConnector
-
-    connector: LinearConnector = LinearConnector(organization_id=organization_id)
-
-    try:
-        issues: list[dict[str, Any]] = await connector.search_issues(
-            query_text=query_text,
-            team_key=team_key,
-            limit=limit,
-        )
-
-        return {
-            "issues": issues,
-            "count": len(issues),
-            "query": query_text,
-            "team_key": team_key,
-        }
-    except Exception as exc:
-        logger.error("Failed to search Linear issues: %s", exc)
-        return {"error": f"Failed to search Linear: {exc}"}

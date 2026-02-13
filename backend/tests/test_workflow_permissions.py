@@ -62,7 +62,7 @@ def test_apply_user_permissions_removes_restricted_tools_without_explicit_allow(
         return await apply_user_auto_approve_permissions(
             session=session,
             user_id=UUID("00000000-0000-0000-0000-000000000001"),
-            auto_approve_tools=["save_memory", "send_slack", "github_issues_access"],
+            auto_approve_tools=["save_memory", "send_slack", "write_to_system_of_record"],
         )
 
     effective = asyncio.run(_run())
@@ -70,14 +70,14 @@ def test_apply_user_permissions_removes_restricted_tools_without_explicit_allow(
 
 
 def test_apply_user_permissions_keeps_explicitly_allowed_restricted_tools() -> None:
-    session = _FakeSession(allowed_tools=["save_memory", "github_issues_access"])
+    session = _FakeSession(allowed_tools=["save_memory", "write_to_system_of_record"])
 
     async def _run() -> list[str]:
         return await apply_user_auto_approve_permissions(
             session=session,
             user_id=UUID("00000000-0000-0000-0000-000000000001"),
-            auto_approve_tools=["save_memory", "send_slack", "github_issues_access"],
+            auto_approve_tools=["save_memory", "send_slack", "write_to_system_of_record"],
         )
 
     effective = asyncio.run(_run())
-    assert effective == ["save_memory", "send_slack", "github_issues_access"]
+    assert effective == ["save_memory", "send_slack", "write_to_system_of_record"]

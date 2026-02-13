@@ -162,7 +162,6 @@ from agents.tools import (
     update_tool_call_result,
     execute_send_email_from,
     execute_send_slack,
-    execute_github_issues_access,
     execute_save_memory,
 )
 from models.conversation import Conversation
@@ -214,10 +213,7 @@ async def _execute_tool_approval(
         remove_pending_operation,
         execute_send_email_from,
         execute_send_slack,
-        execute_github_issues_access,
         execute_save_memory,
-        execute_create_linear_issue,
-        execute_update_linear_issue,
     )
     
     # First check if this is in our in-memory pending operations store
@@ -248,20 +244,8 @@ async def _execute_tool_approval(
             result = await execute_send_slack(params, op_org_id)
             result["tool_name"] = tool_name
             return result
-        elif tool_name == "github_issues_access":
-            result = await execute_github_issues_access(params, op_org_id)
-            result["tool_name"] = tool_name
-            return result
         elif tool_name == "save_memory":
             result = await execute_save_memory(params, op_org_id, op_user_id)
-            result["tool_name"] = tool_name
-            return result
-        elif tool_name == "create_linear_issue":
-            result = await execute_create_linear_issue(params, op_org_id)
-            result["tool_name"] = tool_name
-            return result
-        elif tool_name == "update_linear_issue":
-            result = await execute_update_linear_issue(params, op_org_id)
             result["tool_name"] = tool_name
             return result
         else:
@@ -282,7 +266,7 @@ async def _execute_tool_approval(
                 result = await execute_crm_operation(operation_id, skip_duplicates)
             else:
                 result = await cancel_crm_operation(operation_id)
-            result["tool_name"] = "crm_write"
+            result["tool_name"] = "write_to_system_of_record"
             return result
     
     # Operation not found
