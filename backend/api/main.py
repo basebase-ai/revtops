@@ -35,6 +35,11 @@ logging.getLogger("agents").setLevel(logging.DEBUG)
 app = FastAPI(title="Revenue Copilot API", version="1.0.0")
 
 # CORS configuration - allow frontend origins
+def _normalize_origin(origin: str) -> str:
+    """Normalize origin values for robust CORS/CSRF checks."""
+    return origin.strip().rstrip("/")
+
+
 cors_origins: list[str] = [
     "http://localhost:5173",  # Vite dev server
     "http://localhost:3000",
@@ -48,7 +53,7 @@ cors_origins: list[str] = [
 
 # Add production frontend URL from environment (if different)
 frontend_url = os.environ.get("FRONTEND_URL")
-if frontend_url and frontend_url not in cors_origins:
+if frontend_url:
     cors_origins.append(frontend_url)
 
 # For Railway deployments, allow the railway.app domain
@@ -56,12 +61,15 @@ railway_domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN")
 if railway_domain:
     cors_origins.append(f"https://{railway_domain}")
 
+allowed_origins = {_normalize_origin(origin) for origin in cors_origins}
+
 
 def get_cors_headers(origin: str | None) -> dict[str, str]:
     """Return CORS headers if origin is allowed."""
-    if origin and origin in cors_origins:
+    normalized_origin = _normalize_origin(origin) if origin else None
+    if normalized_origin and normalized_origin in allowed_origins:
         return {
-            "Access-Control-Allow-Origin": origin,
+            "Access-Control-Allow-Origin": normalized_origin,
             "Access-Control-Allow-Credentials": "true",
             "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, PATCH",
             "Access-Control-Allow-Headers": "*",
@@ -71,12 +79,37 @@ def get_cors_headers(origin: str | None) -> dict[str, str]:
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=cors_origins,
+    allow_origins=sorted(allowed_origins),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def csrf_protection_middleware(request: Request, call_next):
+    """Block unsafe cross-site cookie requests as a CSRF defense-in-depth layer."""
+    unsafe_methods = {"POST", "PUT", "PATCH", "DELETE"}
+    if request.method in unsafe_methods:
+        origin = request.headers.get("origin")
+        has_cookies = "cookie" in request.headers
+        if origin and has_cookies:
+            normalized_origin = _normalize_origin(origin)
+            if normalized_origin not in allowed_origins:
+                logging.warning(
+                    "Blocked potential CSRF request",
+                    extra={
+                        "method": request.method,
+                        "path": request.url.path,
+                        "origin": origin,
+                    },
+                )
+                return JSONResponse(
+                    status_code=403,
+                    content={"detail": "CSRF validation failed"},
+                )
+    return await call_next(request)
 
 # Global exception handler to ensure CORS headers on all errors
 @app.exception_handler(Exception)
