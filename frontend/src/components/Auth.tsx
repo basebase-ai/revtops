@@ -8,6 +8,7 @@
 import { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
 import { isPersonalEmail } from '../lib/email';
+import { validateGoodPassword } from '../lib/password';
 
 interface AuthProps {
   onBack: () => void;
@@ -49,6 +50,13 @@ export function Auth({ onBack, onSuccess }: AuthProps): JSX.Element {
 
     try {
       if (mode === 'signup') {
+        const passwordValidation = validateGoodPassword(password, email);
+        if (!passwordValidation.isValid) {
+          setError(passwordValidation.errors[0] ?? 'Password does not meet security requirements.');
+          setLoading(false);
+          return;
+        }
+
         const { error } = await supabase.auth.signUp({
           email,
           password,
@@ -70,8 +78,10 @@ export function Auth({ onBack, onSuccess }: AuthProps): JSX.Element {
           setLoading(false);
           return;
         }
-        if (newPassword.length < 6) {
-          setError('Password must be at least 6 characters');
+
+        const passwordValidation = validateGoodPassword(newPassword, email);
+        if (!passwordValidation.isValid) {
+          setError(passwordValidation.errors[0] ?? 'Password does not meet security requirements.');
           setLoading(false);
           return;
         }
@@ -271,10 +281,15 @@ export function Auth({ onBack, onSuccess }: AuthProps): JSX.Element {
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   required
-                  minLength={6}
+                  minLength={12}
                   className="input"
                   placeholder="••••••••"
                 />
+                {mode === 'signup' && (
+                  <p className="text-xs text-surface-500 mt-2">
+                    Use 12+ characters and at least 3 of: uppercase, lowercase, number, symbol.
+                  </p>
+                )}
               </div>
             )}
 
@@ -291,7 +306,7 @@ export function Auth({ onBack, onSuccess }: AuthProps): JSX.Element {
                     value={newPassword}
                     onChange={(e) => setNewPassword(e.target.value)}
                     required
-                    minLength={6}
+                    minLength={12}
                     className="input"
                     placeholder="••••••••"
                   />
@@ -306,7 +321,7 @@ export function Auth({ onBack, onSuccess }: AuthProps): JSX.Element {
                     value={confirmPassword}
                     onChange={(e) => setConfirmPassword(e.target.value)}
                     required
-                    minLength={6}
+                    minLength={12}
                     className="input"
                     placeholder="••••••••"
                   />
