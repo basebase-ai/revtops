@@ -11,11 +11,12 @@ import json
 import logging
 import re
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
-from sqlalchemy import select, text, update
+from sqlalchemy import or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from agents.orchestrator import ChatOrchestrator
@@ -328,15 +329,18 @@ async def refresh_slack_user_mappings_from_directory(
     async with get_admin_session() as session:
         # Include users from organization_memberships (multi-org support).
         org_uuid: UUID = UUID(organization_id)
-        direct_query = select(User).where(User.organization_id == org_uuid)
-        membership_query = (
-            select(User)
-            .join(OrganizationMembership, OrganizationMembership.user_id == User.id)
+        membership_subq = (
+            select(OrganizationMembership.user_id)
             .where(OrganizationMembership.organization_id == org_uuid)
             .where(OrganizationMembership.status == "active")
         )
-        combined_query = direct_query.union(membership_query)
-        users_result = await session.execute(combined_query)
+        users_query = select(User).where(
+            or_(
+                User.organization_id == org_uuid,
+                User.id.in_(membership_subq),
+            )
+        )
+        users_result = await session.execute(users_query)
         org_users: list[User] = list(users_result.scalars().all())
 
     email_to_user: dict[str, User] = {}
@@ -985,6 +989,30 @@ def _extract_slack_display_name(slack_user: dict[str, Any] | None) -> str | None
     return display_name or None
 
 
+def _extract_slack_timezone(slack_user: dict[str, Any] | None) -> str | None:
+    """Extract the IANA timezone string (e.g. ``America/Los_Angeles``) from a
+    Slack ``users.info`` response.  Returns ``None`` when unavailable."""
+    if not slack_user:
+        return None
+    tz: str = (slack_user.get("tz") or "").strip()
+    return tz or None
+
+
+def _compute_local_time_iso(timezone: str | None) -> str | None:
+    """Return the current time in *timezone* as an ISO-8601 string, or
+    ``None`` if the timezone is unknown / invalid."""
+    if not timezone:
+        return None
+    try:
+        zone: ZoneInfo = ZoneInfo(timezone)
+        return datetime.now(UTC).astimezone(zone).strftime("%Y-%m-%dT%H:%M:%S")
+    except (KeyError, Exception):
+        logger.warning(
+            "[slack_conversations] Invalid IANA timezone from Slack: %s", timezone,
+        )
+        return None
+
+
 async def resolve_revtops_user_for_slack_actor(
     organization_id: str,
     slack_user_id: str,
@@ -996,15 +1024,18 @@ async def resolve_revtops_user_for_slack_actor(
         # Find users who belong to this org — either via their active org
         # or via the organization_memberships table (multi-org support).
         org_uuid: UUID = UUID(organization_id)
-        direct_query = select(User).where(User.organization_id == org_uuid)
-        membership_query = (
-            select(User)
-            .join(OrganizationMembership, OrganizationMembership.user_id == User.id)
+        membership_subq = (
+            select(OrganizationMembership.user_id)
             .where(OrganizationMembership.organization_id == org_uuid)
             .where(OrganizationMembership.status == "active")
         )
-        combined_query = direct_query.union(membership_query)
-        users_result = await session.execute(combined_query)
+        users_query = select(User).where(
+            or_(
+                User.organization_id == org_uuid,
+                User.id.in_(membership_subq),
+            )
+        )
+        users_result = await session.execute(users_query)
         org_users: list[User] = list(users_result.scalars().all())
 
         # "Connected their Slack" can be represented by either user-scoped Slack
@@ -1581,20 +1612,15 @@ async def process_slack_dm(
         slack_user_id=user_id,
         slack_user=slack_user,
     )
-    slack_user_name = _extract_slack_display_name(slack_user)
-    slack_user_email = _extract_slack_email(slack_user)
+    slack_user_name: str | None = _extract_slack_display_name(slack_user)
+    slack_user_email: str | None = _extract_slack_email(slack_user)
+    slack_user_tz: str | None = _extract_slack_timezone(slack_user)
     if not linked_user:
-        logger.warning(
-            "[slack_conversations] No linked RevTops user for Slack actor=%s org=%s",
+        logger.info(
+            "[slack_conversations] No linked RevTops user for Slack actor=%s org=%s; proceeding without user context",
             user_id,
             organization_id,
         )
-        await _post_cannot_action_response(
-            connector=connector,
-            channel=channel_id,
-        )
-        await connector.remove_reaction(channel=channel_id, timestamp=event_ts)
-        return {"status": "error", "error": "No linked RevTops user for Slack actor"}
 
     # Find or create conversation
     conversation = await find_or_create_conversation(
@@ -1611,6 +1637,7 @@ async def process_slack_dm(
         attachment_ids = await _download_and_store_slack_files(connector, files)
 
     # Process message through orchestrator
+    local_time_iso: str | None = _compute_local_time_iso(slack_user_tz)
     orchestrator = ChatOrchestrator(
         user_id=str(linked_user.id) if linked_user else None,
         organization_id=organization_id,
@@ -1620,6 +1647,8 @@ async def process_slack_dm(
         source_user_email=slack_user_email,
         workflow_context=None,
         source="slack_dm",
+        timezone=slack_user_tz,
+        local_time=local_time_iso,
     )
 
     total_length: int = await _stream_and_post_responses(
@@ -1701,21 +1730,15 @@ async def process_slack_mention(
         slack_user_id=user_id,
         slack_user=slack_user,
     )
-    slack_user_name = _extract_slack_display_name(slack_user)
-    slack_user_email = _extract_slack_email(slack_user)
+    slack_user_name: str | None = _extract_slack_display_name(slack_user)
+    slack_user_email: str | None = _extract_slack_email(slack_user)
+    slack_user_tz: str | None = _extract_slack_timezone(slack_user)
     if not linked_user:
-        logger.warning(
-            "[slack_conversations] No linked RevTops user for Slack actor=%s org=%s",
+        logger.info(
+            "[slack_conversations] No linked RevTops user for Slack actor=%s org=%s; proceeding without user context",
             user_id,
             organization_id,
         )
-        await _post_cannot_action_response(
-            connector=connector,
-            channel=channel_id,
-            thread_ts=thread_ts,
-        )
-        await connector.remove_reaction(channel=channel_id, timestamp=thread_ts)
-        return {"status": "error", "error": "No linked RevTops user for Slack actor"}
     conversation = await find_or_create_conversation(
         organization_id=organization_id,
         slack_channel_id=source_channel_id,
@@ -1730,6 +1753,7 @@ async def process_slack_mention(
         attachment_ids = await _download_and_store_slack_files(connector, files)
 
     # Process message through orchestrator
+    local_time_iso: str | None = _compute_local_time_iso(slack_user_tz)
     orchestrator = ChatOrchestrator(
         user_id=str(linked_user.id) if linked_user else None,
         organization_id=organization_id,
@@ -1739,6 +1763,8 @@ async def process_slack_mention(
         source_user_email=slack_user_email,
         workflow_context=None,
         source="slack_mention",
+        timezone=slack_user_tz,
+        local_time=local_time_iso,
     )
 
     total_length: int = await _stream_and_post_responses(
@@ -1830,7 +1856,8 @@ async def process_slack_thread_reply(
         organization_id=organization_id,
         slack_user_id=user_id,
     )
-    slack_user_email = _extract_slack_email(slack_user)
+    slack_user_email: str | None = _extract_slack_email(slack_user)
+    slack_user_tz: str | None = _extract_slack_timezone(slack_user)
     await resolve_revtops_user_for_slack_actor(
         organization_id=organization_id,
         slack_user_id=user_id,
@@ -1843,6 +1870,7 @@ async def process_slack_thread_reply(
         attachment_ids = await _download_and_store_slack_files(connector, files)
 
     # Process message through orchestrator, posting incrementally
+    local_time_iso: str | None = _compute_local_time_iso(slack_user_tz)
     orchestrator = ChatOrchestrator(
         user_id=None,
         organization_id=organization_id,
@@ -1852,6 +1880,8 @@ async def process_slack_thread_reply(
         source_user_email=slack_user_email,
         workflow_context={"slack_channel_id": channel_id},
         source="slack_thread",
+        timezone=slack_user_tz,
+        local_time=local_time_iso,
     )
 
     total_length: int = await _stream_and_post_responses(
