@@ -1,7 +1,7 @@
 """Enable RLS on workflow_runs for tenant-safe workflow execution history reads.
 
 Revision ID: 057_enable_workflow_runs_rls
-Revises: 056_grant_workflow_runs_read_access
+Revises: 056_workflow_runs_read_access
 Create Date: 2026-02-13
 """
 from typing import Sequence, Union
@@ -11,7 +11,7 @@ from sqlalchemy import text
 
 # revision identifiers, used by Alembic.
 revision: str = "057_enable_workflow_runs_rls"
-down_revision: Union[str, None] = "056_grant_workflow_runs_read_access"
+down_revision: Union[str, None] = "056_workflow_runs_read_access"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
