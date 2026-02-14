@@ -1,6 +1,6 @@
 """Grant workflow execution tables read access to application role.
 
-Revision ID: 056_grant_workflow_runs_read_access
+Revision ID: 056_workflow_runs_read_access
 Revises: 055
 Create Date: 2026-02-13
 """
@@ -10,7 +10,7 @@ from alembic import op
 from sqlalchemy import text
 
 # revision identifiers, used by Alembic.
-revision: str = "056_grant_workflow_runs_read_access"
+revision: str = "056_workflow_runs_read_access"
 down_revision: Union[str, None] = "055"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
