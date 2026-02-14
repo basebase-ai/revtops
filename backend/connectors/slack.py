@@ -689,8 +689,8 @@ class SlackConnector(BaseConnector):
         emoji: str = "eyes",
     ) -> None:
         """Add an emoji reaction to a message (best-effort)."""
-        logger.debug(
-            "[slack] add_reaction channel=%s timestamp=%s emoji=%s",
+        logger.info(
+            "[slack] add_reaction called channel=%s timestamp=%s emoji=%s",
             channel,
             timestamp,
             emoji,
@@ -701,7 +701,7 @@ class SlackConnector(BaseConnector):
                 "reactions.add",
                 json_data={"channel": channel, "timestamp": timestamp, "name": emoji},
             )
-            logger.debug("[slack] add_reaction succeeded channel=%s timestamp=%s", channel, timestamp)
+            logger.info("[slack] add_reaction succeeded channel=%s timestamp=%s", channel, timestamp)
         except Exception as exc:
             logger.warning(
                 "[slack] add_reaction failed channel=%s timestamp=%s emoji=%s error=%s",
