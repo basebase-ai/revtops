@@ -30,7 +30,8 @@ const TOOL_LABELS: Record<string, string> = {
   send_email_from: 'Send Email',
   send_slack: 'Post to Slack',
   trigger_sync: 'Trigger Sync',
-  save_memory: 'Save Interim Values',
+
+  keep_notes: 'Keep Notes',
 };
 
 // Tool descriptions for the UI
@@ -39,7 +40,8 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
   send_email_from: 'Send emails from your connected Gmail or Outlook',
   send_slack: 'Post messages to your connected Slack workspace',
   trigger_sync: 'Trigger data sync from connected integrations',
-  save_memory: 'Allow workflows to persist interim values for later steps',
+
+  keep_notes: 'Allow workflows to persist workflow-scoped notes for later runs',
 };
 
 export function ToolSettings({ userId, onClose }: ToolSettingsProps): JSX.Element {

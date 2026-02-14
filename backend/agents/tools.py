@@ -14,6 +14,7 @@ write_to_system_of_record, which dispatches to the correct handler by target_sys
 import json
 import logging
 import re
+from collections.abc import Awaitable, Callable
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Any
@@ -148,9 +149,10 @@ ALLOWED_TABLES: set[str] = {
 }
 
 
-def get_tools() -> list[dict[str, Any]]:
+def get_tools(context: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     """Return tool definitions for Claude from the unified registry."""
-    return get_tools_for_claude()
+    in_workflow = bool((context or {}).get("is_workflow"))
+    return get_tools_for_claude(in_workflow=in_workflow)
 
 
 async def _should_skip_approval(
@@ -230,51 +232,81 @@ async def execute_tool(
         logger.warning("[Tools] No organization_id - returning error")
         return {"error": "No organization associated with user. Please complete onboarding."}
     
+    normalized_tool_name = tool_name
+    if tool_name == "create_github_issue":
+        logger.warning("[Tools] create_github_issue is deprecated, remapping to github_issues_access")
+        normalized_tool_name = "github_issues_access"
+
     # Check if this tool should bypass approval (for auto-approved workflows)
     skip_approval = await _should_skip_approval(tool_name, user_id, context)
-    
-    if tool_name == "run_sql_query":
-        result = await _run_sql_query(tool_input, organization_id, user_id)
+
+    if normalized_tool_name == "save_memory" and context and context.get("is_workflow"):
+        logger.info("[Tools] Blocking save_memory during workflow execution; use keep_notes instead")
+        return {"error": "save_memory is not available in workflows. Use keep_notes for workflow-scoped notes."}
+
+    conversation_id: str | None = (context or {}).get("conversation_id")
+    tool_handlers: dict[str, Callable[[], Awaitable[dict[str, Any]]]] = {
+        "run_sql_query": lambda: _run_sql_query(tool_input, organization_id, user_id),
+        "run_sql_write": lambda: _run_sql_write(tool_input, organization_id, user_id, context),
+        "search_activities": lambda: _search_activities(tool_input, organization_id, user_id),
+        "web_search": lambda: _web_search(tool_input),
+        "trigger_workflow": lambda: _trigger_workflow(tool_input, organization_id),
+        "run_workflow": lambda: _run_workflow(tool_input, organization_id, user_id, context),
+        "loop_over": lambda: _loop_over(tool_input, organization_id, user_id, context),
+        "fetch_url": lambda: _fetch_url(tool_input),
+        "enrich_contacts_with_apollo": lambda: _enrich_contacts_with_apollo(tool_input, organization_id),
+        "enrich_company_with_apollo": lambda: _enrich_company_with_apollo(tool_input, organization_id),
+        "crm_write": lambda: _crm_write(
+            tool_input,
+            organization_id,
+            user_id,
+            skip_approval,
+            conversation_id=conversation_id,
+        ),
+        "send_email_from": lambda: _send_email_from(tool_input, organization_id, user_id, skip_approval),
+        "send_slack": lambda: _send_slack(tool_input, organization_id, user_id, skip_approval),
+        "github_issues_access": lambda: _github_issues_access(tool_input, organization_id, user_id, skip_approval),
+        "trigger_sync": lambda: _trigger_sync(tool_input, organization_id),
+        "search_cloud_files": lambda: _search_cloud_files(tool_input, organization_id, user_id),
+        "read_cloud_file": lambda: _read_cloud_file(tool_input, organization_id, user_id),
+        "create_artifact": lambda: _create_artifact(tool_input, organization_id, user_id, context),
+        "keep_notes": lambda: _keep_notes(tool_input, organization_id, user_id, context, skip_approval),
+        "save_memory": lambda: _save_memory(tool_input, organization_id, user_id, skip_approval),
+        "delete_memory": lambda: _delete_memory(tool_input, organization_id, user_id),
+        "create_linear_issue": lambda: _create_linear_issue(tool_input, organization_id, user_id, skip_approval),
+        "update_linear_issue": lambda: _update_linear_issue(tool_input, organization_id, user_id, skip_approval),
+        "search_linear_issues": lambda: _search_linear_issues(tool_input, organization_id),
+    }
+
+    handler = tool_handlers.get(normalized_tool_name)
+    if handler is None:
+        logger.error("[Tools] Unknown tool: %s", tool_name)
+        return {"error": f"Unknown tool: {tool_name}"}
+
+    result = await handler()
+    _log_tool_execution_result(tool_name, normalized_tool_name, result)
+    return result
+
+
+def _log_tool_execution_result(
+    requested_tool_name: str,
+    executed_tool_name: str,
+    result: dict[str, Any],
+) -> None:
+    """Centralize tool execution logging so execute_tool remains easy to scan."""
+    if executed_tool_name == "run_sql_query":
         logger.info("[Tools] run_sql_query returned %d rows", result.get("row_count", 0))
-        return result
-
-    elif tool_name == "run_sql_write":
-        result = await _run_sql_write(tool_input, organization_id, user_id, context)
-        logger.info("[Tools] run_sql_write completed: %s", result)
-        return result
-
-    elif tool_name == "search_activities":
-        result = await _search_activities(tool_input, organization_id, user_id)
+    elif executed_tool_name == "search_activities":
         logger.info("[Tools] search_activities returned %d results", len(result.get("results", [])))
-        return result
-
-    elif tool_name == "web_search":
-        result = await _web_search(tool_input)
-        logger.info("[Tools] web_search completed")
-        return result
-
-    elif tool_name == "trigger_workflow":
-        result = await _trigger_workflow(tool_input, organization_id)
-        logger.info("[Tools] trigger_workflow completed: %s", result)
-        return result
-
-    elif tool_name == "run_workflow":
-        result = await _run_workflow(tool_input, organization_id, user_id, context)
-        logger.info("[Tools] run_workflow completed: %s", result.get("status"))
-        return result
-
-    elif tool_name == "loop_over":
-        result = await _loop_over(tool_input, organization_id, user_id, context)
-        logger.info("[Tools] loop_over completed: %d/%d successful", result.get("succeeded", 0), result.get("total", 0))
-        return result
-
-    elif tool_name == "fetch_url":
-        result = await _fetch_url(tool_input)
+    elif executed_tool_name == "loop_over":
+        logger.info(
+            "[Tools] loop_over completed: %d/%d successful",
+            result.get("succeeded", 0),
+            result.get("total", 0),
+        )
+    elif executed_tool_name == "fetch_url":
         logger.info("[Tools] fetch_url completed: %s", result.get("url"))
-        return result
-
-    elif tool_name == "enrich_contacts_with_apollo":
-        result = await _enrich_contacts_with_apollo(tool_input, organization_id)
+    elif executed_tool_name == "enrich_contacts_with_apollo":
         logger.info("[Tools] enrich_contacts_with_apollo completed: %d results", len(result.get("enriched", [])))
         return result
 
@@ -307,31 +339,20 @@ async def execute_tool(
     elif tool_name == "search_cloud_files":
         result = await _search_cloud_files(tool_input, organization_id, user_id)
         logger.info("[Tools] search_cloud_files returned %d results", len(result.get("files", [])))
-        return result
-
-    elif tool_name == "read_cloud_file":
-        result = await _read_cloud_file(tool_input, organization_id, user_id)
+    elif executed_tool_name == "read_cloud_file":
         logger.info("[Tools] read_cloud_file completed: %s", result.get("file_name", "unknown"))
-        return result
-
-    elif tool_name == "create_artifact":
-        result = await _create_artifact(tool_input, organization_id, user_id, context)
+    elif executed_tool_name == "create_artifact":
         logger.info("[Tools] create_artifact completed: %s", result.get("artifact_id"))
-        return result
-
-    elif tool_name == "save_memory":
-        result = await _save_memory(tool_input, organization_id, user_id, skip_approval)
+    elif executed_tool_name == "keep_notes":
+        logger.info("[Tools] keep_notes completed: %s", result.get("note_id", result.get("error", result.get("status"))))
+    elif executed_tool_name == "save_memory":
         logger.info("[Tools] save_memory completed: %s", result.get("memory_id", result.get("error", result.get("status"))))
-        return result
-
-    elif tool_name == "delete_memory":
-        result = await _delete_memory(tool_input, organization_id, user_id)
+    elif executed_tool_name == "delete_memory":
         logger.info("[Tools] delete_memory completed: %s", result.get("status", result.get("error")))
         return result
 
     else:
-        logger.error("[Tools] Unknown tool: %s", tool_name)
-        return {"error": f"Unknown tool: {tool_name}"}
+        logger.info("[Tools] %s completed: %s", requested_tool_name, result.get("status", result))
 
 
 def _validate_sql_query(query: str) -> tuple[bool, str | None]:
@@ -4814,6 +4835,103 @@ async def _read_cloud_file(
 # =============================================================================
 # User Memory Tools
 # =============================================================================
+
+
+async def _keep_notes(
+    params: dict[str, Any],
+    organization_id: str,
+    user_id: str | None,
+    context: dict[str, Any] | None,
+    skip_approval: bool = False,
+) -> dict[str, Any]:
+    """Save a workflow-scoped note that can be reused in future runs."""
+    content: str = params.get("content", "").strip()
+    if not content:
+        return {"error": "content is required."}
+
+    workflow_id: str | None = (context or {}).get("workflow_id")
+    run_id: str | None = (context or {}).get("workflow_run_id")
+    if not workflow_id or not run_id:
+        return {"error": "keep_notes can only be used in a workflow run."}
+
+    if skip_approval:
+        logger.info("[Tools._keep_notes] Auto-approved, saving note immediately")
+        return await execute_keep_notes(params, organization_id, user_id, workflow_id, run_id)
+
+    operation_id = str(uuid4())
+    pending_params = dict(params)
+    pending_params["workflow_id"] = workflow_id
+    pending_params["run_id"] = run_id
+    store_pending_operation(
+        operation_id=operation_id,
+        tool_name="keep_notes",
+        params=pending_params,
+        organization_id=organization_id,
+        user_id=user_id,
+    )
+
+    return {
+        "type": "pending_approval",
+        "status": "pending_approval",
+        "operation_id": operation_id,
+        "tool_name": "keep_notes",
+        "preview": {
+            "content": content[:500] + ("..." if len(content) > 500 else ""),
+        },
+        "message": "Ready to keep workflow notes. Please review and click Approve to persist them.",
+    }
+
+
+async def execute_keep_notes(
+    params: dict[str, Any],
+    organization_id: str,
+    user_id: str | None,
+    workflow_id: str,
+    run_id: str | None = None,
+) -> dict[str, Any]:
+    """Persist a workflow-scoped note onto the active workflow run."""
+    content: str = params.get("content", "").strip()
+    if not content:
+        return {"status": "failed", "error": "content is required."}
+
+    from datetime import datetime, timezone
+    from sqlalchemy import and_
+    from models.workflow import WorkflowRun
+
+    if not run_id:
+        return {"status": "failed", "error": "run_id is required for keep_notes."}
+
+    async with get_session(organization_id=organization_id) as session:
+        result = await session.execute(
+            select(WorkflowRun).where(
+                and_(
+                    WorkflowRun.id == UUID(run_id),
+                    WorkflowRun.organization_id == UUID(organization_id),
+                    WorkflowRun.workflow_id == UUID(workflow_id),
+                )
+            )
+        )
+        run: WorkflowRun | None = result.scalar_one_or_none()
+        if not run:
+            logger.warning(
+                "[Tools.execute_keep_notes] Workflow run not found: run_id=%s workflow_id=%s",
+                run_id,
+                workflow_id,
+            )
+            return {"status": "failed", "error": "Workflow run not found for keep_notes."}
+
+        notes = list(run.workflow_notes or [])
+        notes.append(
+            {
+                "content": content,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "created_by_user_id": user_id,
+            }
+        )
+        run.workflow_notes = notes
+        await session.commit()
+
+    return {"note_id": f"{run_id}:{len(notes) - 1}", "content": content, "status": "saved"}
 
 
 async def _save_memory(

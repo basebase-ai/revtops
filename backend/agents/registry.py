@@ -52,6 +52,9 @@ class ToolDefinition:
     
     default_requires_approval: bool
     """Whether this tool requires user approval by default."""
+
+    workflow_only: bool = False
+    """Whether this tool should only be exposed during workflow executions."""
     
     # Note: execute_fn is set separately to avoid circular imports
     # The actual execution functions are in tools.py
@@ -70,6 +73,7 @@ def register_tool(
     input_schema: dict[str, Any],
     category: ToolCategory,
     default_requires_approval: bool = False,
+    workflow_only: bool = False,
 ) -> None:
     """Register a tool in the registry."""
     TOOL_DEFINITIONS[name] = ToolDefinition(
@@ -78,6 +82,7 @@ def register_tool(
         input_schema=input_schema,
         category=category,
         default_requires_approval=default_requires_approval,
+        workflow_only=workflow_only,
     )
 
 
@@ -105,6 +110,8 @@ Available tables:
 - users: Team members (email, name, role)
 - user_mappings_for_identity: Slack identity links (external_userid, external_email, match_source)
 - organizations: User's company info (name, logo_url)
+- workflows: Workflow definitions (name, trigger_type, prompt, is_enabled, auto_approve_tools). Useful for listing and inspecting automations.
+- workflow_runs: Workflow execution history (workflow_id, status, started_at, completed_at, output, workflow_notes). Useful for querying past run outcomes and notes.
 - github_repositories: Tracked GitHub repos (full_name, owner, name, is_tracked, last_sync_at). Join to commits/PRs via repository_id.
 - github_commits: Commits on tracked repos (repository_id, sha, message, author_name, author_email, author_login, author_date, additions, deletions, user_id). Use organization_id in WHERE.
 - github_pull_requests: PRs on tracked repos (repository_id, number, title, state, author_login, created_date, merged_date, additions, deletions, user_id). Use organization_id in WHERE.
@@ -833,6 +840,34 @@ Parameters:
 # User Memory Tools - Save/delete persistent per-user preferences
 # -----------------------------------------------------------------------------
 
+# -----------------------------------------------------------------------------
+# Workflow Notes Tool - Save workflow-scoped notes shared across runs
+# -----------------------------------------------------------------------------
+
+register_tool(
+    name="keep_notes",
+    description="""Store workflow-scoped notes that should be available to future runs of the same workflow.
+
+Notes are persisted on `workflow_runs.workflow_notes`, which is the canonical field for workflow execution notes/state shared across runs of the same workflow.
+
+Use this in workflow executions for interim findings, state, or progress breadcrumbs that future runs can reference.
+
+This is workflow-scoped memory, not user-wide memory.""",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "content": {
+                "type": "string",
+                "description": "The note content to store for this workflow.",
+            },
+        },
+        "required": ["content"],
+    },
+    category=ToolCategory.LOCAL_WRITE,
+    default_requires_approval=False,
+    workflow_only=True,
+)
+
 register_tool(
     name="save_memory",
     description="""Save a memory or preference for the current user that will be recalled at the start of every future conversation.
@@ -889,7 +924,7 @@ def get_all_tools() -> list[ToolDefinition]:
     return list(TOOL_DEFINITIONS.values())
 
 
-def get_tools_for_claude() -> list[dict[str, Any]]:
+def get_tools_for_claude(in_workflow: bool = False) -> list[dict[str, Any]]:
     """Get tool definitions formatted for Claude's API."""
     return [
         {
@@ -898,6 +933,7 @@ def get_tools_for_claude() -> list[dict[str, Any]]:
             "input_schema": tool.input_schema,
         }
         for tool in TOOL_DEFINITIONS.values()
+        if in_workflow or not tool.workflow_only
     ]
 
 
