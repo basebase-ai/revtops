@@ -43,4 +43,5 @@ def downgrade() -> None:
     conn = op.get_bind()
 
     conn.execute(text("DROP POLICY IF EXISTS workflow_runs_org_isolation ON workflow_runs"))
+    conn.execute(text("ALTER TABLE workflow_runs NO FORCE ROW LEVEL SECURITY"))
     conn.execute(text("ALTER TABLE workflow_runs DISABLE ROW LEVEL SECURITY"))

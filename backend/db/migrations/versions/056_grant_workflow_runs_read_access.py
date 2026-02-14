@@ -20,14 +20,38 @@ def upgrade() -> None:
     conn = op.get_bind()
 
     # Workflows execute under revtops_app (via get_session + SET ROLE).
-    # Grant explicit SELECT access to ensure run_sql_query can read
-    # workflow definitions and run history during active workflow execution.
-    conn.execute(text("GRANT SELECT ON TABLE workflows TO revtops_app"))
-    conn.execute(text("GRANT SELECT ON TABLE workflow_runs TO revtops_app"))
+    # Grant explicit SELECT access only when the role exists to avoid
+    # failing local/dev migrations where the role may be absent.
+    conn.execute(
+        text(
+            """
+            DO $$
+            BEGIN
+                IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'revtops_app') THEN
+                    GRANT SELECT ON TABLE workflows TO revtops_app;
+                    GRANT SELECT ON TABLE workflow_runs TO revtops_app;
+                END IF;
+            END
+            $$;
+            """
+        )
+    )
 
 
 def downgrade() -> None:
     conn = op.get_bind()
 
-    conn.execute(text("REVOKE SELECT ON TABLE workflow_runs FROM revtops_app"))
-    conn.execute(text("REVOKE SELECT ON TABLE workflows FROM revtops_app"))
+    conn.execute(
+        text(
+            """
+            DO $$
+            BEGIN
+                IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'revtops_app') THEN
+                    REVOKE SELECT ON TABLE workflow_runs FROM revtops_app;
+                    REVOKE SELECT ON TABLE workflows FROM revtops_app;
+                END IF;
+            END
+            $$;
+            """
+        )
+    )
