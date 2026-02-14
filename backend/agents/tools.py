@@ -308,36 +308,17 @@ def _log_tool_execution_result(
         logger.info("[Tools] fetch_url completed: %s", result.get("url"))
     elif executed_tool_name == "enrich_contacts_with_apollo":
         logger.info("[Tools] enrich_contacts_with_apollo completed: %d results", len(result.get("enriched", [])))
-        return result
-
-    elif tool_name == "enrich_company_with_apollo":
-        result = await _enrich_company_with_apollo(tool_input, organization_id)
+    elif executed_tool_name == "enrich_company_with_apollo":
         logger.info("[Tools] enrich_company_with_apollo completed")
-        return result
-
-    elif tool_name == "write_to_system_of_record":
-        conversation_id: str | None = (context or {}).get("conversation_id")
-        result = await _write_to_system_of_record(tool_input, organization_id, user_id, skip_approval, conversation_id=conversation_id)
+    elif executed_tool_name == "crm_write":
         logger.info("[Tools] write_to_system_of_record completed: %s", result.get("status", result.get("error", "unknown")))
-        return result
-
-    elif tool_name == "send_email_from":
-        result = await _send_email_from(tool_input, organization_id, user_id, skip_approval)
+    elif executed_tool_name == "send_email_from":
         logger.info("[Tools] send_email_from completed: %s", result.get("status"))
-        return result
-
-    elif tool_name == "send_slack":
-        result = await _send_slack(tool_input, organization_id, user_id, skip_approval)
+    elif executed_tool_name == "send_slack":
         logger.info("[Tools] send_slack completed: %s", result.get("status"))
-        return result
-
-    elif tool_name == "trigger_sync":
-        result = await _trigger_sync(tool_input, organization_id)
+    elif executed_tool_name == "trigger_sync":
         logger.info("[Tools] trigger_sync completed: %s", result.get("status"))
-        return result
-
-    elif tool_name == "search_cloud_files":
-        result = await _search_cloud_files(tool_input, organization_id, user_id)
+    elif executed_tool_name == "search_cloud_files":
         logger.info("[Tools] search_cloud_files returned %d results", len(result.get("files", [])))
     elif executed_tool_name == "read_cloud_file":
         logger.info("[Tools] read_cloud_file completed: %s", result.get("file_name", "unknown"))
@@ -349,7 +330,6 @@ def _log_tool_execution_result(
         logger.info("[Tools] save_memory completed: %s", result.get("memory_id", result.get("error", result.get("status"))))
     elif executed_tool_name == "delete_memory":
         logger.info("[Tools] delete_memory completed: %s", result.get("status", result.get("error")))
-        return result
 
     else:
         logger.info("[Tools] %s completed: %s", requested_tool_name, result.get("status", result))
@@ -5025,5 +5005,4 @@ async def _delete_memory(
         await session.commit()
 
     return {"status": "deleted", "memory_id": memory_id}
-
 
