@@ -15,7 +15,7 @@ import json
 import logging
 from datetime import UTC, datetime
 from typing import Any, AsyncGenerator
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from anthropic import APIStatusError, AsyncAnthropic
 from sqlalchemy import select, update
@@ -511,7 +511,11 @@ class ChatOrchestrator:
         self.source: str = source
         self.client = AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
         # Track if we've saved the assistant message (for early save during tool execution)
-        self._assistant_message_saved = False
+        self._assistant_message_saved: bool = False
+        # Deterministic UUID for the current turn's assistant message.
+        # Generated before the early save so both early and final saves target
+        # the same row — no "find latest assistant message" guessing.
+        self._current_message_id: UUID | None = None
 
     async def _resolve_user_context(self) -> None:
         """Fetch user name, email, and organization name from DB if not already set."""
@@ -943,15 +947,32 @@ WHERE scheduled_start >= '2026-01-27'::date AND scheduled_start < '2026-01-28'::
             # This persists the "running" tool_use blocks for reconnect catchup,
             # but the UI gets tool_call events via the yield above — no need to wait.
             if self.conversation_id:
-                logger.info(
-                    "[Orchestrator] Early save (background): %d blocks, _assistant_message_saved=%s",
-                    len(content_blocks),
-                    self._assistant_message_saved,
-                )
                 # Copy blocks snapshot for background save (list is mutated during tool execution)
                 blocks_snapshot: list[dict[str, Any]] = [dict(b) for b in content_blocks]
-                asyncio.create_task(self._save_assistant_message_safe(blocks_snapshot))
-                self._assistant_message_saved = True
+
+                if not self._assistant_message_saved:
+                    # First tool round in this turn — INSERT a new message
+                    # with a pre-generated UUID so both early and final saves
+                    # target the same row (no "find latest" guessing).
+                    self._current_message_id = uuid4()
+                    logger.info(
+                        "[Orchestrator] Early save INSERT (background): msg_id=%s, %d blocks",
+                        self._current_message_id,
+                        len(blocks_snapshot),
+                    )
+                    asyncio.create_task(self._early_insert_assistant_message_safe(
+                        message_id=self._current_message_id,
+                        blocks=blocks_snapshot,
+                    ))
+                    self._assistant_message_saved = True
+                else:
+                    # Subsequent tool round — UPDATE the same message by ID
+                    logger.info(
+                        "[Orchestrator] Early save UPDATE (background): msg_id=%s, %d blocks",
+                        self._current_message_id,
+                        len(blocks_snapshot),
+                    )
+                    asyncio.create_task(self._save_assistant_message_safe(blocks_snapshot))
             
             # === EXECUTE TOOLS: Process each tool and update results ===
             tool_results: list[dict[str, Any]] = []
@@ -1112,6 +1133,38 @@ WHERE scheduled_start >= '2026-01-27'::date AND scheduled_start < '2026-01-28'::
             await self._save_assistant_message(blocks)
         except Exception as e:
             logger.warning("[Orchestrator] Background early save failed: %s", e)
+
+    async def _early_insert_assistant_message_safe(
+        self,
+        message_id: UUID,
+        blocks: list[dict[str, Any]],
+    ) -> None:
+        """Insert a brand-new assistant message row with a pre-generated UUID.
+
+        Used for the first early save of a turn so subsequent saves (both
+        background and final) can UPDATE by this exact ID instead of relying
+        on "find latest assistant message" which races across turns.
+        """
+        try:
+            conv_uuid: UUID | None = UUID(self.conversation_id) if self.conversation_id else None
+            user_uuid: UUID | None = UUID(self.user_id) if self.user_id else None
+            org_uuid: UUID | None = UUID(self.organization_id) if self.organization_id else None
+
+            async with get_session(organization_id=self.organization_id) as session:
+                session.add(
+                    ChatMessage(
+                        id=message_id,
+                        conversation_id=conv_uuid,
+                        user_id=user_uuid,
+                        organization_id=org_uuid,
+                        role="assistant",
+                        content_blocks=blocks,
+                    )
+                )
+                await session.commit()
+                logger.info("[Orchestrator] Early INSERT assistant message %s", message_id)
+        except Exception as e:
+            logger.warning("[Orchestrator] Background early INSERT failed: %s", e)
 
     async def _update_tool_result_safe(
         self, conversation_id: str, tool_id: str, result: dict[str, Any], org_id: str | None,
@@ -1319,50 +1372,51 @@ WHERE scheduled_start >= '2026-01-27'::date AND scheduled_start < '2026-01-28'::
 
     async def _save_assistant_message(self, assistant_blocks: list[dict[str, Any]]) -> None:
         """Save or update assistant message in database."""
-        conv_uuid = UUID(self.conversation_id) if self.conversation_id else None
-        user_uuid = UUID(self.user_id) if self.user_id else None
+        conv_uuid: UUID | None = UUID(self.conversation_id) if self.conversation_id else None
+        user_uuid: UUID | None = UUID(self.user_id) if self.user_id else None
+        org_uuid: UUID | None = UUID(self.organization_id) if self.organization_id else None
         logger.info(
-            "[Orchestrator] _save_assistant_message: _saved=%s, conv=%s",
+            "[Orchestrator] _save_assistant_message: _saved=%s, msg_id=%s, conv=%s",
             self._assistant_message_saved,
+            self._current_message_id,
             conv_uuid,
         )
 
         async with get_session(organization_id=self.organization_id) as session:
-            if self._assistant_message_saved:
-                # UPDATE existing message (we saved early during tool execution)
-                # Find the latest assistant message and update its content
-                query = (
-                    select(ChatMessage)
-                    .where(ChatMessage.conversation_id == conv_uuid)
-                    .where(ChatMessage.role == "assistant")
-                    .order_by(ChatMessage.created_at.desc())
-                    .limit(1)
+            if self._assistant_message_saved and self._current_message_id is not None:
+                # UPDATE the specific message we inserted during the early save.
+                # Using the exact ID avoids the old bug where "find latest assistant
+                # message" would match a *previous* turn's row and overwrite it.
+                result = await session.execute(
+                    select(ChatMessage).where(ChatMessage.id == self._current_message_id)
                 )
-                result = await session.execute(query)
-                message = result.scalar_one_or_none()
-                
+                message: ChatMessage | None = result.scalar_one_or_none()
+
                 if message:
-                    logger.info("[Orchestrator] UPDATE existing assistant message %s", message.id)
+                    logger.info("[Orchestrator] UPDATE assistant message %s", message.id)
                     message.content_blocks = assistant_blocks
                 else:
-                    # Fallback to insert if not found
+                    # Early INSERT may not have committed yet — insert with the same ID
+                    logger.info("[Orchestrator] Early INSERT not found, INSERT msg_id=%s", self._current_message_id)
                     session.add(
                         ChatMessage(
+                            id=self._current_message_id,
                             conversation_id=conv_uuid,
                             user_id=user_uuid,
-                            organization_id=UUID(self.organization_id) if self.organization_id else None,
+                            organization_id=org_uuid,
                             role="assistant",
                             content_blocks=assistant_blocks,
                         )
                     )
             else:
-                # INSERT new message
+                # No early save happened (e.g. pure-text response with no tools).
+                # INSERT a brand-new message.
                 logger.info("[Orchestrator] INSERT new assistant message")
                 session.add(
                     ChatMessage(
                         conversation_id=conv_uuid,
                         user_id=user_uuid,
-                        organization_id=UUID(self.organization_id) if self.organization_id else None,
+                        organization_id=org_uuid,
                         role="assistant",
                         content_blocks=assistant_blocks,
                     )
