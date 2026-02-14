@@ -5,7 +5,6 @@ Provides CRUD operations for user-defined workflow automations.
 """
 from __future__ import annotations
 
-import logging
 from datetime import datetime
 from typing import Any, Optional
 from uuid import UUID
@@ -18,19 +17,6 @@ from models.database import get_session
 from models.workflow import Workflow, WorkflowRun
 
 router = APIRouter()
-logger = logging.getLogger(__name__)
-
-
-DISALLOWED_WORKFLOW_TOOLS = {"save_memory"}
-
-
-def _sanitize_workflow_auto_approve_tools(tools: list[str] | None) -> list[str]:
-    """Remove tool permissions that workflows are not allowed to use."""
-    sanitized = [tool for tool in (tools or []) if tool not in DISALLOWED_WORKFLOW_TOOLS]
-    removed = [tool for tool in (tools or []) if tool in DISALLOWED_WORKFLOW_TOOLS]
-    for tool in removed:
-        logger.info("[Workflows API] Removing disallowed workflow tool: %s", tool)
-    return sanitized
 
 
 # ============================================================================
@@ -251,7 +237,7 @@ async def create_workflow(
             trigger_config=request.trigger_config.model_dump(exclude_none=True),
             steps=[s.model_dump() for s in request.steps],
             prompt=request.prompt,
-            auto_approve_tools=_sanitize_workflow_auto_approve_tools(request.auto_approve_tools),
+            auto_approve_tools=request.auto_approve_tools,
             input_schema=request.input_schema,
             output_schema=request.output_schema,
             child_workflows=request.child_workflows,
@@ -306,7 +292,7 @@ async def update_workflow(
         if request.prompt is not None:
             workflow.prompt = request.prompt
         if request.auto_approve_tools is not None:
-            workflow.auto_approve_tools = _sanitize_workflow_auto_approve_tools(request.auto_approve_tools)
+            workflow.auto_approve_tools = request.auto_approve_tools
         if request.input_schema is not None:
             workflow.input_schema = request.input_schema
         if request.output_schema is not None:

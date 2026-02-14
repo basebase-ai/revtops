@@ -217,11 +217,6 @@ class WorkflowRun(Base):
     # Final output (what was sent/returned)
     output: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB, nullable=True)
 
-    # Workflow-scoped notes persisted on runs and reused by future runs
-    workflow_notes: Mapped[list[dict[str, Any]]] = mapped_column(
-        JSONB, nullable=False, default=list
-    )
-
     # Error information
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
@@ -245,7 +240,6 @@ class WorkflowRun(Base):
             "status": self.status,
             "steps_completed": self.steps_completed,
             "output": self.output,
-            "workflow_notes": self.workflow_notes,
             "error_message": self.error_message,
             "started_at": f"{self.started_at.isoformat()}Z",
             "completed_at": f"{self.completed_at.isoformat()}Z" if self.completed_at else None,

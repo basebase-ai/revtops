@@ -736,8 +736,7 @@ function WorkflowModal({
     { id: 'send_slack', label: 'Post to Slack', description: 'Send messages to Slack channels' },
     { id: 'send_email_from', label: 'Send Email', description: 'Send emails from your connected account' },
     { id: 'write_to_system_of_record', label: 'Write to System of Record', description: 'Create or update records in any connected system (CRM, issue trackers, code repos)' },
-    { id: 'keep_notes', label: 'Keep Notes', description: 'Store workflow-scoped notes shared across workflow runs' },
-
+    { id: 'save_memory', label: 'Save Interim Values', description: 'Store intermediate values and preferences for later workflow steps' },
     { id: 'run_sql_write', label: 'Write Data', description: 'Insert, update, or delete records' },
   ];
 
