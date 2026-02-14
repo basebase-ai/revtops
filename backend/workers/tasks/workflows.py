@@ -37,6 +37,39 @@ WORKFLOW_NESTING_GUARDRAIL = (
 )
 
 
+def _format_datetime_for_prompt(value: datetime | None) -> str:
+    """Format datetime in a stable UTC ISO-8601 representation for prompts/context."""
+    if value is None:
+        return "never"
+    return value.replace(microsecond=0).isoformat() + "Z"
+
+
+def build_workflow_runtime_context(
+    workflow_id: str,
+    triggered_by: str,
+    started_at: datetime,
+    last_run_at: datetime | None,
+) -> dict[str, str]:
+    """Build runtime context so every workflow run carries core execution metadata."""
+    return {
+        "workflow_id": workflow_id,
+        "invoked_by": triggered_by,
+        "current_datetime": _format_datetime_for_prompt(started_at),
+        "last_run_at": _format_datetime_for_prompt(last_run_at),
+    }
+
+
+def format_workflow_runtime_context_for_prompt(runtime_context: dict[str, str]) -> str:
+    """Render workflow runtime context as explicit instructions in the agent prompt."""
+    return (
+        "Workflow runtime context:\n"
+        f"- Current workflow ID: {runtime_context['workflow_id']}\n"
+        f"- Invoked by: {runtime_context['invoked_by']}\n"
+        f"- Current date/time (UTC): {runtime_context['current_datetime']}\n"
+        f"- Last run time (UTC): {runtime_context['last_run_at']}"
+    )
+
+
 # =============================================================================
 # Schema Validation and Parameter Formatting
 # =============================================================================
@@ -605,6 +638,13 @@ async def _execute_workflow(
         await session.flush()
         run_id = run.id
         
+        runtime_context = build_workflow_runtime_context(
+            workflow_id=str(workflow.id),
+            triggered_by=triggered_by,
+            started_at=started_at,
+            last_run_at=workflow.last_run_at,
+        )
+
         # Check if this workflow uses the new prompt-based execution
         if workflow.prompt and workflow.prompt.strip():
             # NEW: Execute via agent conversation
@@ -614,6 +654,7 @@ async def _execute_workflow(
                     run=run,
                     triggered_by=triggered_by,
                     trigger_data=trigger_data,
+                    runtime_context=runtime_context,
                     session=session,
                     existing_conversation_id=conversation_id,
                 )
@@ -643,6 +684,7 @@ async def _execute_workflow_via_agent(
     run: Any,
     triggered_by: str,
     trigger_data: dict[str, Any] | None,
+    runtime_context: dict[str, str],
     session: Any,
     existing_conversation_id: str | None = None,
 ) -> dict[str, Any]:
@@ -755,6 +797,7 @@ async def _execute_workflow_via_agent(
     
     # Build the prompt with typed parameters or raw trigger data
     prompt = workflow.prompt
+    prompt += f"\n\n{format_workflow_runtime_context_for_prompt(runtime_context)}"
 
     # Prevent unrequested nested workflow orchestration
     prompt += f"\n\n{WORKFLOW_NESTING_GUARDRAIL}"
@@ -812,6 +855,9 @@ async def _execute_workflow_via_agent(
     workflow_context: dict[str, Any] = {
         "is_workflow": True,
         "workflow_id": str(workflow.id),
+        "invoked_by": runtime_context["invoked_by"],
+        "current_datetime": runtime_context["current_datetime"],
+        "last_run_at": runtime_context["last_run_at"],
         "auto_approve_tools": effective_auto_approve_tools,
         "call_stack": call_stack,  # For nested workflow recursion detection
     }
@@ -885,6 +931,9 @@ async def _execute_workflow_legacy(
             "trigger_data": trigger_data or {},
             "organization_id": str(workflow.organization_id),
             "workflow_id": str(workflow.id),
+            "invoked_by": run.triggered_by,
+            "current_datetime": _format_datetime_for_prompt(run.started_at),
+            "last_run_at": _format_datetime_for_prompt(workflow.last_run_at),
         }
         
         for i, step in enumerate(workflow.steps):
