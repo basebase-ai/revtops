@@ -236,6 +236,9 @@ async def execute_tool(
     if tool_name == "create_github_issue":
         logger.warning("[Tools] create_github_issue is deprecated, remapping to github_issues_access")
         normalized_tool_name = "github_issues_access"
+    elif tool_name == "write_to_system_of_record":
+        logger.info("[Tools] Routing write_to_system_of_record to unified system-of-record dispatcher")
+        normalized_tool_name = "write_to_system_of_record"
 
     # Check if this tool should bypass approval (for auto-approved workflows)
     skip_approval = await _should_skip_approval(tool_name, user_id, context)
@@ -257,6 +260,13 @@ async def execute_tool(
         "enrich_contacts_with_apollo": lambda: _enrich_contacts_with_apollo(tool_input, organization_id),
         "enrich_company_with_apollo": lambda: _enrich_company_with_apollo(tool_input, organization_id),
         "crm_write": lambda: _crm_write(
+            tool_input,
+            organization_id,
+            user_id,
+            skip_approval,
+            conversation_id=conversation_id,
+        ),
+        "write_to_system_of_record": lambda: _write_to_system_of_record(
             tool_input,
             organization_id,
             user_id,
@@ -310,7 +320,7 @@ def _log_tool_execution_result(
         logger.info("[Tools] enrich_contacts_with_apollo completed: %d results", len(result.get("enriched", [])))
     elif executed_tool_name == "enrich_company_with_apollo":
         logger.info("[Tools] enrich_company_with_apollo completed")
-    elif executed_tool_name == "crm_write":
+    elif executed_tool_name in {"crm_write", "write_to_system_of_record"}:
         logger.info("[Tools] write_to_system_of_record completed: %s", result.get("status", result.get("error", "unknown")))
     elif executed_tool_name == "send_email_from":
         logger.info("[Tools] send_email_from completed: %s", result.get("status"))
@@ -5005,4 +5015,3 @@ async def _delete_memory(
         await session.commit()
 
     return {"status": "deleted", "memory_id": memory_id}
-
