@@ -689,16 +689,27 @@ class SlackConnector(BaseConnector):
         emoji: str = "eyes",
     ) -> None:
         """Add an emoji reaction to a message (best-effort)."""
+        logger.debug(
+            "[slack] add_reaction channel=%s timestamp=%s emoji=%s",
+            channel,
+            timestamp,
+            emoji,
+        )
         try:
             await self._make_request(
                 "POST",
                 "reactions.add",
                 json_data={"channel": channel, "timestamp": timestamp, "name": emoji},
             )
-        except Exception:
-            # Silently ignore — reactions require the reactions:write scope
-            # which may not be granted yet.
-            pass
+            logger.debug("[slack] add_reaction succeeded channel=%s timestamp=%s", channel, timestamp)
+        except Exception as exc:
+            logger.warning(
+                "[slack] add_reaction failed channel=%s timestamp=%s emoji=%s error=%s",
+                channel,
+                timestamp,
+                emoji,
+                exc,
+            )
 
     async def remove_reaction(
         self,
