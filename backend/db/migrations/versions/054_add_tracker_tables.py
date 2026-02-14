@@ -1,7 +1,7 @@
 """Add generic issue tracker tables: teams, projects, issues.
 
-Revision ID: 051
-Revises: 050
+Revision ID: 054
+Revises: 053
 Create Date: 2026-02-12
 
 Adds three tables shared across issue tracking providers (Linear, Jira, Asana):
