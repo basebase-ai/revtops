@@ -232,7 +232,7 @@ async def _process_event_callback_impl(payload: dict[str, Any]) -> None:
             channel_id = event.get("channel", "")
             user_id = event.get("user", "")
             text = event.get("text", "")
-            event_ts = event.get("event_ts", "")
+            message_ts = event.get("ts") or event.get("event_ts", "")
             files: list[dict[str, Any]] = event.get("files", [])
             if not text.strip() and not files:
                 return
@@ -242,7 +242,7 @@ async def _process_event_callback_impl(payload: dict[str, Any]) -> None:
                 channel_id=channel_id,
                 user_id=user_id,
                 message_text=text,
-                event_ts=event_ts,
+                event_ts=message_ts,
                 files=files,
             )
             return
