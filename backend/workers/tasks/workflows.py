@@ -20,7 +20,7 @@ if str(_backend_dir) not in sys.path:
 import asyncio
 import json
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
@@ -412,6 +412,75 @@ def extract_structured_output(response_text: str) -> dict[str, Any] | None:
     return None
 
 
+def _format_iso8601_utc(value: datetime | None) -> str | None:
+    """Format datetime as ISO-8601 UTC string for workflow context."""
+    if value is None:
+        return None
+    return value.isoformat(timespec="seconds") + "Z"
+
+
+def build_workflow_runtime_context(
+    workflow: Any,
+    run: Any,
+    triggered_by: str,
+    trigger_data: dict[str, Any] | None,
+    execution_started_at: datetime,
+) -> dict[str, str | None]:
+    """Build runtime metadata that every workflow execution should know."""
+    context_generated_at = datetime.now(UTC).replace(tzinfo=None)
+
+    invoker = f"process:{triggered_by}"
+    if trigger_data and isinstance(trigger_data.get("_invoked_by"), dict):
+        invoked_by = trigger_data.get("_invoked_by") or {}
+        source = (invoked_by.get("source") or "process").strip()
+        identifier = str(invoked_by.get("id") or triggered_by).strip()
+        invoker = f"{source}:{identifier}"
+    elif trigger_data and isinstance(trigger_data.get("_parent_context"), dict):
+        parent_context = trigger_data.get("_parent_context") or {}
+        parent_workflow_id = parent_context.get("parent_workflow_id")
+        if parent_workflow_id:
+            invoker = f"workflow:{parent_workflow_id}"
+    elif triggered_by == "manual":
+        invoker = f"user:{workflow.created_by_user_id}"
+
+    runtime_context: dict[str, str | None] = {
+        "workflow_id": str(workflow.id),
+        "invoked_by": invoker,
+        "current_datetime": _format_iso8601_utc(context_generated_at),
+        "execution_started_at": _format_iso8601_utc(execution_started_at),
+        "last_run_at": _format_iso8601_utc(workflow.last_run_at),
+        "run_id": str(run.id),
+    }
+
+    logger.info(
+        "[Workflow] Runtime context workflow_id=%s run_id=%s invoked_by=%s current_datetime=%s last_run_at=%s",
+        runtime_context["workflow_id"],
+        runtime_context["run_id"],
+        runtime_context["invoked_by"],
+        runtime_context["current_datetime"],
+        runtime_context["last_run_at"],
+    )
+    return runtime_context
+
+
+def format_workflow_runtime_context_for_prompt(
+    runtime_context: dict[str, str | None],
+) -> str:
+    """Format workflow runtime metadata for injection into the workflow prompt."""
+    last_run_value = runtime_context.get("last_run_at") or "never"
+    return "\n".join(
+        [
+            "Workflow runtime context (always use this metadata while executing):",
+            f"- Current workflow ID: {runtime_context.get('workflow_id')}",
+            f"- Invoked by: {runtime_context.get('invoked_by')}",
+            f"- Current date/time (UTC): {runtime_context.get('current_datetime')}",
+            f"- This run started at (UTC): {runtime_context.get('execution_started_at')}",
+            f"- Last run time (UTC): {last_run_value}",
+            f"- Current run ID: {runtime_context.get('run_id')}",
+        ]
+    )
+
+
 def run_async(coro: Any) -> Any:
     """Run an async function in a sync context (for Celery tasks).
     
@@ -764,6 +833,17 @@ async def _execute_workflow_via_agent(
     prompt = workflow.prompt
     persisted_prompt = workflow.prompt
 
+    runtime_context = build_workflow_runtime_context(
+        workflow=workflow,
+        run=run,
+        triggered_by=triggered_by,
+        trigger_data=trigger_data,
+        execution_started_at=run.started_at,
+    )
+    runtime_context_text = format_workflow_runtime_context_for_prompt(runtime_context)
+    prompt += f"\n\n{runtime_context_text}"
+    # persisted_prompt += f"\n\n{runtime_context_text}" I don't think we disclose this context to the user?
+
     # If schema is defined, inject typed parameters; otherwise use raw trigger data
     typed_params = format_typed_parameters(user_trigger_data, input_schema)
     if typed_params:
@@ -822,6 +902,7 @@ async def _execute_workflow_via_agent(
         "is_workflow": True,
         "workflow_id": str(workflow.id),
         "workflow_run_id": str(run.id),
+        "runtime_context": runtime_context,
         "auto_approve_tools": effective_auto_approve_tools,
         "call_stack": call_stack,  # For nested workflow recursion detection
         "execution_guardrails": [WORKFLOW_NESTING_GUARDRAIL],
