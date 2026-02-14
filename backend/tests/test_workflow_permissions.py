@@ -70,22 +70,22 @@ def test_apply_user_permissions_removes_only_github_without_explicit_allow() -> 
         return await apply_user_auto_approve_permissions(
             session=session,
             user_id=UUID("00000000-0000-0000-0000-000000000001"),
-            auto_approve_tools=["keep_notes", "send_slack", "github_issues_access"],
+            auto_approve_tools=["keep_notes", "send_slack", "write_to_system_of_record"],
         )
 
     effective = asyncio.run(_run())
     assert effective == ["keep_notes", "send_slack"]
 
 
-def test_apply_user_permissions_keeps_explicitly_allowed_github_tool() -> None:
-    session = _FakeSession(allowed_tools=["github_issues_access"])
+def test_apply_user_permissions_keeps_explicitly_allowed_restricted_tools() -> None:
+    session = _FakeSession(allowed_tools=["write_to_system_of_record"])
 
     async def _run() -> list[str]:
         return await apply_user_auto_approve_permissions(
             session=session,
             user_id=UUID("00000000-0000-0000-0000-000000000001"),
-            auto_approve_tools=["keep_notes", "send_slack", "github_issues_access"],
+            auto_approve_tools=["keep_notes", "send_slack", "write_to_system_of_record"],
         )
 
     effective = asyncio.run(_run())
-    assert effective == ["keep_notes", "send_slack", "github_issues_access"]
+    assert effective == ["keep_notes", "send_slack", "write_to_system_of_record"]

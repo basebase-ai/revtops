@@ -23,7 +23,7 @@ class UserToolSetting(Base):
     """
     Stores per-user auto-approve settings for tools.
     
-    By default, EXTERNAL_WRITE tools (crm_write, send_email_from, send_slack)
+    By default, EXTERNAL_WRITE tools (write_to_system_of_record, send_email_from, send_slack)
     require approval. Users can enable auto-approve to skip the approval step.
     
     This is similar to Cursor's "yolo mode" - giving users control over

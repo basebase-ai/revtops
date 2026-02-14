@@ -55,6 +55,7 @@ async def _sync_integration(organization_id: str, provider: str) -> dict[str, An
     from connectors.github import GitHubConnector
     from connectors.gmail import GmailConnector
     from connectors.linear import LinearConnector
+    from connectors.asana import AsanaConnector
     from connectors.google_calendar import GoogleCalendarConnector
     from connectors.hubspot import HubSpotConnector
     from connectors.microsoft_calendar import MicrosoftCalendarConnector
@@ -76,6 +77,7 @@ async def _sync_integration(organization_id: str, provider: str) -> dict[str, An
         "microsoft_mail": MicrosoftMailConnector,
         "github": GitHubConnector,
         "linear": LinearConnector,
+        "asana": AsanaConnector,
     }
 
     connector_class = connectors.get(provider)

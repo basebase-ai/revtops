@@ -26,21 +26,21 @@ interface ToolSettingsProps {
 
 // Tool display names
 const TOOL_LABELS: Record<string, string> = {
-  crm_write: 'CRM Write',
+  write_to_system_of_record: 'Write to System of Record',
   send_email_from: 'Send Email',
   send_slack: 'Post to Slack',
   trigger_sync: 'Trigger Sync',
-  github_issues_access: 'GitHub Issues Access',
+
   keep_notes: 'Keep Notes',
 };
 
 // Tool descriptions for the UI
 const TOOL_DESCRIPTIONS: Record<string, string> = {
-  crm_write: 'Create or update contacts, companies, and deals in HubSpot',
+  write_to_system_of_record: 'Create or update records in any connected system (CRM, issue trackers, code repos)',
   send_email_from: 'Send emails from your connected Gmail or Outlook',
   send_slack: 'Post messages to your connected Slack workspace',
   trigger_sync: 'Trigger data sync from connected integrations',
-  github_issues_access: 'Create GitHub issues (no code changes)',
+
   keep_notes: 'Allow workflows to persist workflow-scoped notes for later runs',
 };
 

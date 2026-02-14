@@ -72,6 +72,7 @@ class Settings(BaseSettings):
     NANGO_APOLLO_INTEGRATION_ID: str = "apollo"
     NANGO_GITHUB_INTEGRATION_ID: str = "github"
     NANGO_LINEAR_INTEGRATION_ID: str = "linear"
+    NANGO_ASANA_INTEGRATION_ID: str = "asana"
 
     # App
     SECRET_KEY: str = "dev-secret-change-in-production"
@@ -170,6 +171,7 @@ NANGO_INTEGRATION_IDS: dict[str, str] = {
     "apollo": settings.NANGO_APOLLO_INTEGRATION_ID,
     "github": settings.NANGO_GITHUB_INTEGRATION_ID,
     "linear": settings.NANGO_LINEAR_INTEGRATION_ID,
+    "asana": settings.NANGO_ASANA_INTEGRATION_ID,
 }
 
 # Provider scope mapping: which integrations are user-scoped vs org-scoped
@@ -189,6 +191,7 @@ PROVIDER_SCOPES: dict[str, str] = {
     "apollo": "organization",
     "github": "organization",
     "linear": "organization",
+    "asana": "organization",
 }
 
 

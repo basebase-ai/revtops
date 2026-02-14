@@ -453,100 +453,94 @@ Requires company domain (e.g., "acme.com") to look up.""",
 # -----------------------------------------------------------------------------
 
 register_tool(
-    name="crm_write",
-    description="""Create or update records in the CRM (HubSpot) in bulk.
+    name="write_to_system_of_record",
+    description="""Create or update records in any connected system of record.
 
-Use this when the user wants to add, update, or import contacts, companies, deals, or
-engagement activities (calls, emails, meetings, notes).
-This tool accepts a batch of records (up to 100) and routes them through a review workflow:
-changes appear as "pending" in the Pending Changes panel where the user can Commit or Discard.
+This is the universal tool for writing to external systems — CRMs, issue trackers,
+code repositories, and any other connected integration. Use it whenever the user asks
+to create or update records in an external system.
 
-Property names for each record type:
-- **contact**: email (required), firstname, lastname, company, jobtitle, phone
-- **company**: name (required), domain, industry, numberofemployees
-- **deal**: dealname (required), amount, dealstage, closedate, pipeline
-- **call**: hs_timestamp (required), hs_call_title, hs_call_body, hs_call_duration (ms),
+Supported systems and record types:
+
+**CRM (hubspot):**
+- record_type "contact": email (required), firstname, lastname, company, jobtitle, phone
+- record_type "company": name (required), domain, industry, numberofemployees
+- record_type "deal": dealname (required), amount, dealstage, closedate, pipeline
+- record_type "call": hs_timestamp (required), hs_call_title, hs_call_body, hs_call_duration (ms),
   hs_call_direction (INBOUND/OUTBOUND), hs_call_status (COMPLETED/NO_ANSWER/BUSY/etc),
   hs_call_disposition, hubspot_owner_id
-- **email**: hs_timestamp (required), hs_email_subject, hs_email_text,
+- record_type "email": hs_timestamp (required), hs_email_subject, hs_email_text,
   hs_email_direction (EMAIL=outbound/INCOMING_EMAIL/FORWARDED_EMAIL),
   hs_email_status (SENT/BOUNCED/etc), hubspot_owner_id
-- **meeting**: hs_timestamp (required), hs_meeting_title, hs_meeting_body,
+- record_type "meeting": hs_timestamp (required), hs_meeting_title, hs_meeting_body,
   hs_meeting_start_time, hs_meeting_end_time, hs_meeting_location,
   hs_meeting_outcome (SCHEDULED/COMPLETED/RESCHEDULED/NO_SHOW/CANCELED), hubspot_owner_id
-- **note**: hs_timestamp (required), hs_note_body (max 65536 chars), hubspot_owner_id
+- record_type "note": hs_timestamp (required), hs_note_body (max 65536 chars), hubspot_owner_id
+For engagements (call/email/meeting/note), each record can include "associations":
+  [{"to_object_type": "contact", "to_object_id": "12345"}, ...]
+For updates (contacts/companies/deals only), each record MUST include an "id" field.
+Bulk CRM writes (multiple records) go through the Pending Changes panel for review.
 
-For engagements (call/email/meeting/note), each record can include an "associations" array
-to link the activity to existing HubSpot records:
-  "associations": [
-    {"to_object_type": "contact", "to_object_id": "12345"},
-    {"to_object_type": "deal", "to_object_id": "67890"}
-  ]
-Valid to_object_type values: contact, company, deal.
-The to_object_id must be a HubSpot record ID (use crm_search to find IDs).
+**Issue trackers (linear, jira, asana):**
+- record_type "issue", operation "create": team_key (required), title (required),
+  description, priority (0-4), assignee_name, project_name, labels
+- record_type "issue", operation "update": issue_identifier (required, e.g. 'ENG-123'),
+  title, description, state_name, priority (0-4), assignee_name
+  Query tracker_teams WHERE source_system='linear' for valid team keys.
+  Query tracker_issues for valid issue identifiers.
 
-For updates (contacts/companies/deals only), each record MUST include an "id" field with the existing record UUID.
+**Code repositories (github, gitlab):**
+- record_type "issue", operation "create": repo_full_name (required, 'owner/repo'),
+  title (required), body, labels, assignees
 
-Example: create 3 contacts from a CSV:
+Single-record writes execute immediately. Bulk CRM writes create pending changes.
+
+Example — create a Linear issue:
+{
+  "target_system": "linear",
+  "record_type": "issue",
+  "operation": "create",
+  "records": [{"team_key": "ENG", "title": "Fix login bug", "priority": 2}]
+}
+
+Example — create HubSpot contacts:
 {
   "target_system": "hubspot",
   "record_type": "contact",
   "operation": "create",
   "records": [
-    {"email": "alice@acme.com", "firstname": "Alice", "lastname": "Smith", "company": "Acme"},
-    {"email": "bob@acme.com", "firstname": "Bob", "lastname": "Jones", "company": "Acme"},
-    {"email": "carol@acme.com", "firstname": "Carol", "lastname": "Lee", "company": "Acme"}
+    {"email": "alice@acme.com", "firstname": "Alice", "lastname": "Smith"},
+    {"email": "bob@acme.com", "firstname": "Bob", "lastname": "Jones"}
   ]
 }
 
-Example: log a call on a deal:
-{
-  "target_system": "hubspot",
-  "record_type": "call",
-  "operation": "create",
-  "records": [
-    {
-      "hs_timestamp": "2025-03-17T10:30:00Z",
-      "hs_call_title": "Discovery Call",
-      "hs_call_body": "Discussed product needs and timeline",
-      "hs_call_duration": "1800000",
-      "hs_call_direction": "OUTBOUND",
-      "hs_call_status": "COMPLETED",
-      "associations": [{"to_object_type": "deal", "to_object_id": "67890"}]
-    }
-  ]
-}
-
-IMPORTANT: Always explain what you're going to create/update BEFORE calling this tool.
-Do NOT add any text after the tool call - let the pending changes panel speak for itself.""",
+IMPORTANT: Always explain what you're going to create/update BEFORE calling this tool.""",
     input_schema={
         "type": "object",
         "properties": {
             "target_system": {
                 "type": "string",
-                "enum": ["hubspot"],
-                "description": "Target CRM system",
+                "description": "Target system to write to (e.g. 'hubspot', 'linear', 'github', 'jira', 'salesforce', 'gitlab', 'asana')",
             },
             "record_type": {
                 "type": "string",
-                "enum": ["contact", "company", "deal", "call", "email", "meeting", "note"],
-                "description": "Type of CRM record or engagement",
+                "description": "Type of record (e.g. 'contact', 'company', 'deal', 'issue', 'call', 'email', 'meeting', 'note')",
             },
             "operation": {
                 "type": "string",
                 "enum": ["create", "update"],
-                "description": "Whether to create new records or update existing ones. Engagements only support 'create'.",
+                "description": "Whether to create new records or update existing ones",
             },
             "records": {
                 "type": "array",
                 "items": {"type": "object"},
-                "description": "Array of record objects (max 100). For updates, each must include 'id'. For engagements, each can include 'associations'.",
+                "description": "Array of record objects. Fields vary by target_system and record_type. Max 100 for CRM systems.",
             },
         },
         "required": ["target_system", "record_type", "operation", "records"],
     },
     category=ToolCategory.EXTERNAL_WRITE,
-    default_requires_approval=False,  # Has its own review flow via ChangeSession
+    default_requires_approval=False,
 )
 
 
@@ -588,7 +582,7 @@ If you haven't connected an email provider, this tool will not work.""",
         "required": ["to", "subject", "body"],
     },
     category=ToolCategory.EXTERNAL_WRITE,
-    default_requires_approval=True,
+    default_requires_approval=False,
 )
 
 
@@ -630,204 +624,6 @@ Examples:
         "required": ["channel", "message"],
     },
     category=ToolCategory.EXTERNAL_WRITE,
-    default_requires_approval=True,
-)
-
-
-register_tool(
-    name="github_issues_access",
-    description="""Create a GitHub issue in a repository your organization has connected.
-
-Use this when the user asks to file/report issues in GitHub.
-
-Required:
-- repo_full_name: Repository in owner/repo format (e.g. 'octocat/Hello-World')
-- title: Issue title
-
-Optional:
-- body: Markdown body content for the issue
-- labels: List of label names
-- assignees: List of GitHub usernames to assign
-
-This only changes GitHub issues (never source code). It is an external write action and should be reviewed before sending unless auto-approved.""",
-    input_schema={
-        "type": "object",
-        "properties": {
-            "repo_full_name": {
-                "type": "string",
-                "description": "Repository in owner/repo format (e.g., 'octocat/Hello-World')",
-            },
-            "title": {
-                "type": "string",
-                "description": "Issue title",
-            },
-            "body": {
-                "type": "string",
-                "description": "Issue body in Markdown (optional)",
-            },
-            "labels": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "Label names to apply (optional)",
-            },
-            "assignees": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "GitHub usernames to assign (optional)",
-            },
-        },
-        "required": ["repo_full_name", "title"],
-    },
-    category=ToolCategory.EXTERNAL_WRITE,
-    default_requires_approval=True,
-)
-
-
-register_tool(
-    name="create_linear_issue",
-    description="""Create an issue in Linear (issue tracking).
-
-Use this when the user asks to create a ticket, task, or issue in Linear.
-
-Required:
-- team_key: Team key (e.g. 'ENG', 'PROD'). Use run_sql_query on tracker_teams WHERE source_system='linear' to find valid keys.
-- title: Issue title
-
-Optional:
-- description: Markdown body for the issue
-- priority: 0=No priority, 1=Urgent, 2=High, 3=Medium, 4=Low
-- assignee_name: Display name of the assignee (resolved to Linear user)
-- project_name: Project name to add the issue to
-- labels: List of label names
-
-This is an external write action and requires approval unless auto-approved.""",
-    input_schema={
-        "type": "object",
-        "properties": {
-            "team_key": {
-                "type": "string",
-                "description": "Team key (e.g. 'ENG'). Query tracker_teams WHERE source_system='linear' for valid keys.",
-            },
-            "title": {
-                "type": "string",
-                "description": "Issue title",
-            },
-            "description": {
-                "type": "string",
-                "description": "Issue body in Markdown (optional)",
-            },
-            "priority": {
-                "type": "integer",
-                "description": "Priority: 0=None, 1=Urgent, 2=High, 3=Medium, 4=Low",
-                "enum": [0, 1, 2, 3, 4],
-            },
-            "assignee_name": {
-                "type": "string",
-                "description": "Display name of the person to assign (optional)",
-            },
-            "project_name": {
-                "type": "string",
-                "description": "Project name to attach this issue to (optional)",
-            },
-            "labels": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "Label names to apply (optional)",
-            },
-        },
-        "required": ["team_key", "title"],
-    },
-    category=ToolCategory.EXTERNAL_WRITE,
-    default_requires_approval=True,
-)
-
-
-register_tool(
-    name="update_linear_issue",
-    description="""Update an existing issue in Linear.
-
-Use this when the user asks to change an issue's title, description, state, priority, or assignee.
-
-Required:
-- issue_identifier: The issue identifier like 'ENG-123'. Query tracker_issues WHERE source_system='linear' to find identifiers.
-
-All other fields are optional — only provide the ones to change:
-- title: New title
-- description: New description (Markdown)
-- state_name: New state (e.g. 'In Progress', 'Done'). Must match a valid workflow state for the issue's team.
-- priority: 0=None, 1=Urgent, 2=High, 3=Medium, 4=Low
-- assignee_name: Display name of the new assignee
-
-This is an external write action and requires approval unless auto-approved.""",
-    input_schema={
-        "type": "object",
-        "properties": {
-            "issue_identifier": {
-                "type": "string",
-                "description": "Issue identifier like 'ENG-123'",
-            },
-            "title": {
-                "type": "string",
-                "description": "New title (optional)",
-            },
-            "description": {
-                "type": "string",
-                "description": "New description in Markdown (optional)",
-            },
-            "state_name": {
-                "type": "string",
-                "description": "New state name, e.g. 'In Progress', 'Done' (optional)",
-            },
-            "priority": {
-                "type": "integer",
-                "description": "Priority: 0=None, 1=Urgent, 2=High, 3=Medium, 4=Low",
-                "enum": [0, 1, 2, 3, 4],
-            },
-            "assignee_name": {
-                "type": "string",
-                "description": "Display name of the new assignee (optional)",
-            },
-        },
-        "required": ["issue_identifier"],
-    },
-    category=ToolCategory.EXTERNAL_WRITE,
-    default_requires_approval=True,
-)
-
-
-register_tool(
-    name="search_linear_issues",
-    description="""Search issues in Linear in real-time (not just synced data).
-
-Use this when the user wants to find issues by keyword, filter by team, or get the latest status
-from Linear directly. This calls the Linear API live, so results are always up-to-date.
-
-For querying synced/historical data, use run_sql_query on tracker_issues WHERE source_system='linear' instead.
-
-Examples:
-- "Search Linear for authentication bugs"
-- "Find open issues assigned to Alice in ENG"
-- "Look for issues about the onboarding flow" """,
-    input_schema={
-        "type": "object",
-        "properties": {
-            "query": {
-                "type": "string",
-                "description": "Search query text",
-            },
-            "team_key": {
-                "type": "string",
-                "description": "Optional team key to filter (e.g. 'ENG')",
-            },
-            "limit": {
-                "type": "integer",
-                "description": "Max results (default 20, max 50)",
-                "default": 20,
-            },
-        },
-        "required": ["query"],
-    },
-    category=ToolCategory.EXTERNAL_READ,
     default_requires_approval=False,
 )
 
@@ -1092,7 +888,7 @@ Do NOT save conversation-specific context (like "user asked about deal X") — o
         "required": ["content"],
     },
     category=ToolCategory.LOCAL_WRITE,
-    default_requires_approval=True,
+    default_requires_approval=False,
 )
 
 register_tool(

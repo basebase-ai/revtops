@@ -1363,6 +1363,7 @@ async def get_available_integrations() -> AvailableIntegrationsResponse:
             {"id": "apollo", "name": "Apollo.io", "description": "Data enrichment - Update contact job titles, companies, emails"},
             {"id": "github", "name": "GitHub", "description": "Track repos, commits, and pull requests by team"},
             {"id": "linear", "name": "Linear", "description": "Issue tracking - sync and manage teams, projects, and issues"},
+            {"id": "asana", "name": "Asana", "description": "Project management - sync and manage teams, projects, and tasks"},
         ]
     )
 
@@ -1567,6 +1568,29 @@ async def confirm_integration(
                 nango_connection_id,
                 slack_user_payload,
             )
+        # For Slack, ensure team_id is present in connection_metadata.
+        # Nango may store the Slack OAuth response in credentials.raw which
+        # contains team.id, or the auth.test response may be in data.
+        if request.provider == "slack":
+            if connection_metadata is None:
+                connection_metadata = {}
+            if "team_id" not in connection_metadata:
+                # Try credentials.raw.team.id (Slack OAuth v2 response)
+                creds_raw: dict[str, Any] = (connection.get("credentials") or {}).get("raw") or {}
+                raw_team: dict[str, Any] = creds_raw.get("team") or {}
+                raw_team_id: Optional[str] = raw_team.get("id") or creds_raw.get("team_id")
+                if raw_team_id:
+                    connection_metadata["team_id"] = raw_team_id
+                    logger.info(
+                        "[Confirm] Extracted Slack team_id=%s from credentials.raw for connection_id=%s",
+                        raw_team_id,
+                        nango_connection_id,
+                    )
+                else:
+                    logger.warning(
+                        "[Confirm] Could not extract Slack team_id from Nango connection for connection_id=%s",
+                        nango_connection_id,
+                    )
         if connection_metadata:
             print(
                 f"[Confirm] Retrieved Nango metadata for provider={request.provider}, "
@@ -2343,6 +2367,7 @@ async def run_initial_sync(
     from connectors.zoom import ZoomConnector
     from connectors.github import GitHubConnector
     from connectors.linear import LinearConnector
+    from connectors.asana import AsanaConnector
 
     # Google Drive uses a different sync pattern (not BaseConnector)
     if provider == "google_drive":
@@ -2361,6 +2386,7 @@ async def run_initial_sync(
         "zoom": ZoomConnector,
         "github": GitHubConnector,
         "linear": LinearConnector,
+        "asana": AsanaConnector,
     }
 
     connector_class = connectors.get(provider)

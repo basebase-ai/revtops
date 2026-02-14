@@ -320,11 +320,27 @@ class HubSpotConnector(BaseConnector):
         ]
 
         raw_deals = await self._paginate_results(
-            "/crm/v3/objects/deals", properties=properties
+            "/crm/v3/objects/deals",
+            properties=properties,
+            associations=["companies"],
         )
 
         # Pre-load owner email cache
         await self._ensure_owner_email_cache()
+
+        # Build a map of HubSpot company IDs -> internal account IDs for deal-to-account linking
+        hs_company_id_to_account_id: dict[str, uuid.UUID] = {}
+        async with get_session(organization_id=self.organization_id) as session:
+            result = await session.execute(
+                select(Account).where(
+                    Account.organization_id == uuid.UUID(self.organization_id),
+                    Account.source_system == self.source_system,
+                )
+            )
+            accounts: list[Account] = list(result.scalars().all())
+            for account in accounts:
+                hs_company_id_to_account_id[account.source_id] = account.id
+        print(f"[HubSpot] Pre-loaded {len(hs_company_id_to_account_id)} account IDs for deal-to-account linking")
 
         # Build existing source_id -> UUID map
         existing_map: dict[str, uuid.UUID] = {}
@@ -342,8 +358,20 @@ class HubSpotConnector(BaseConnector):
         # Build all row dicts in memory
         rows: list[dict[str, Any]] = []
         for raw_deal in raw_deals:
+            # Extract associated company ID from associations
+            deal_account_id: Optional[uuid.UUID] = None
+            associations = raw_deal.get("associations", {})
+            companies_assoc = associations.get("companies", {})
+            company_results: list[dict[str, Any]] = companies_assoc.get("results", [])
+            if company_results:
+                hs_company_id: Optional[str] = company_results[0].get("id")
+                if hs_company_id:
+                    deal_account_id = hs_company_id_to_account_id.get(hs_company_id)
+
             deal: Deal = await self._normalize_deal(
-                raw_deal, existing_id=existing_map.get(raw_deal.get("id", ""))
+                raw_deal,
+                existing_id=existing_map.get(raw_deal.get("id", "")),
+                account_id=deal_account_id,
             )
             rows.append({
                 "id": deal.id, "organization_id": deal.organization_id,
@@ -353,6 +381,7 @@ class HubSpotConnector(BaseConnector):
                 "created_date": deal.created_date,
                 "last_modified_date": deal.last_modified_date,
                 "owner_id": deal.owner_id,
+                "account_id": deal.account_id,
                 "visible_to_user_ids": deal.visible_to_user_ids,
                 "custom_fields": deal.custom_fields,
                 "synced_at": datetime.utcnow(), "sync_status": "synced",
@@ -362,7 +391,7 @@ class HubSpotConnector(BaseConnector):
         BATCH_SIZE: int = 500
         update_cols: list[str] = [
             "name", "amount", "stage", "pipeline_id", "close_date",
-            "created_date", "last_modified_date", "owner_id",
+            "created_date", "last_modified_date", "owner_id", "account_id",
             "visible_to_user_ids", "custom_fields", "synced_at",
         ]
         async with get_session(organization_id=self.organization_id) as session:
@@ -389,7 +418,10 @@ class HubSpotConnector(BaseConnector):
         return len(rows)
 
     async def _normalize_deal(
-        self, hs_deal: dict[str, Any], existing_id: Optional[uuid.UUID] = None
+        self,
+        hs_deal: dict[str, Any],
+        existing_id: Optional[uuid.UUID] = None,
+        account_id: Optional[uuid.UUID] = None,
     ) -> Deal:
         """Transform HubSpot Deal to our Deal model."""
         props = hs_deal.get("properties", {})
@@ -459,6 +491,7 @@ class HubSpotConnector(BaseConnector):
             created_date=created_date,
             last_modified_date=last_modified,
             owner_id=owner_id,
+            account_id=account_id,
             visible_to_user_ids=[owner_id] if owner_id else [],
             custom_fields={"pipeline": hs_pipeline_id},  # Keep source ID for reference
         )
@@ -895,6 +928,43 @@ class HubSpotConnector(BaseConnector):
             activity_date=activity_date,
         )
 
+    async def _discover_goal_owner_property(self) -> Optional[str]:
+        """
+        Discover the property name used for goal assignee/owner on goal_targets.
+
+        HubSpot's documented goal properties don't include the assignee, but the
+        CRM Properties API reveals all available properties including undocumented
+        ones. We look for owner/assignee-related properties in priority order.
+        """
+        try:
+            data: dict[str, Any] = await self._make_request(
+                "GET", "/crm/v3/properties/goal_targets"
+            )
+            prop_names: set[str] = {
+                p.get("name", "") for p in data.get("results", [])
+            }
+            print(f"[HubSpot] Discovered {len(prop_names)} goal_target properties: "
+                  f"{sorted(n for n in prop_names if 'owner' in n or 'user' in n or 'assignee' in n)}")
+
+            # Check candidates in priority order
+            candidates: list[str] = [
+                "hubspot_owner_id",       # Standard owner field on most CRM objects
+                "hs_assignee_user_id",    # Possible assignee field
+                "hs_user_id",             # Possible user field
+                "hs_owner_id",            # Alternate owner field
+            ]
+            for candidate in candidates:
+                if candidate in prop_names:
+                    print(f"[HubSpot] Using '{candidate}' as goal owner/assignee property")
+                    return candidate
+
+            print("[HubSpot] WARNING: No owner/assignee property found on goal_targets")
+            return None
+        except httpx.HTTPStatusError as e:
+            print(f"[HubSpot] WARNING: Could not discover goal properties ({e}), "
+                  "goal owner mapping will be skipped")
+            return None
+
     async def sync_goals(self) -> int:
         """Sync goals/quotas/targets from HubSpot."""
         await broadcast_sync_progress(
@@ -905,6 +975,9 @@ class HubSpotConnector(BaseConnector):
             step="fetching goals",
         )
 
+        # Discover the correct owner/assignee property for goal_targets
+        goal_owner_prop: Optional[str] = await self._discover_goal_owner_property()
+
         properties: list[str] = [
             "hs_goal_name",
             "hs_target_amount",
@@ -912,6 +985,8 @@ class HubSpotConnector(BaseConnector):
             "hs_end_datetime",
             "hs_created_by_user_id",
         ]
+        if goal_owner_prop and goal_owner_prop not in properties:
+            properties.append(goal_owner_prop)
 
         try:
             raw_goals: list[dict[str, Any]] = await self._paginate_results(
@@ -926,6 +1001,9 @@ class HubSpotConnector(BaseConnector):
         if not raw_goals:
             print("[HubSpot] No goals found")
             return 0
+
+        # Pre-load owner email cache for owner mapping
+        await self._ensure_owner_email_cache()
 
         # Build existing source_id -> UUID map
         existing_map: dict[str, uuid.UUID] = {}
@@ -973,6 +1051,14 @@ class HubSpotConnector(BaseConnector):
                 except Exception:
                     pass
 
+            # Map goal owner/assignee to internal user
+            # The assignee (who the goal is FOR) differs from the creator
+            owner_id: Optional[uuid.UUID] = None
+            if goal_owner_prop:
+                hs_owner_value: Optional[str] = props.get(goal_owner_prop)
+                if hs_owner_value:
+                    owner_id = await self._map_hs_owner_to_user(hs_owner_value)
+
             goal_name: str = props.get("hs_goal_name") or f"Goal {hs_id}"
 
             rows.append({
@@ -984,6 +1070,7 @@ class HubSpotConnector(BaseConnector):
                 "target_amount": target_amount,
                 "start_date": start_date,
                 "end_date": end_date,
+                "owner_id": owner_id,
                 "synced_at": datetime.utcnow(),
                 "sync_status": "synced",
             })
@@ -991,7 +1078,8 @@ class HubSpotConnector(BaseConnector):
         # Bulk upsert in batches
         BATCH_SIZE: int = 500
         update_cols: list[str] = [
-            "name", "target_amount", "start_date", "end_date", "synced_at",
+            "name", "target_amount", "start_date", "end_date",
+            "owner_id", "synced_at",
         ]
         async with get_session(organization_id=self.organization_id) as session:
             for i in range(0, len(rows), BATCH_SIZE):
@@ -1141,6 +1229,49 @@ class HubSpotConnector(BaseConnector):
             await session.commit()
             self._owner_cache[hs_owner_id] = None
             return None
+
+    async def map_user_to_hs_owner(self, user_id: uuid.UUID) -> Optional[str]:
+        """Return the HubSpot owner ID for a local user, or ``None``.
+
+        Resolution order:
+        1. Existing identity mapping in ``user_mappings_for_identity``
+           (source='hubspot', user_id=<user_id>).
+        2. Fall back to the bulk owner email cache (email match).
+        """
+        # 1. Check identity mapping table
+        async with get_session(organization_id=self.organization_id) as session:
+            from models.slack_user_mapping import SlackUserMapping as IdentityMapping
+
+            result = await session.execute(
+                select(IdentityMapping).where(
+                    IdentityMapping.organization_id == uuid.UUID(self.organization_id),
+                    IdentityMapping.user_id == user_id,
+                    IdentityMapping.source == "hubspot",
+                    IdentityMapping.external_userid.isnot(None),
+                )
+            )
+            mapping: Optional[IdentityMapping] = result.scalar_one_or_none()
+            if mapping and mapping.external_userid:
+                return mapping.external_userid
+
+            # 2. Fetch user email and match against HubSpot owners
+            user_result = await session.execute(
+                select(User).where(User.id == user_id)
+            )
+            user: Optional[User] = user_result.scalar_one_or_none()
+            if not user or not user.email:
+                return None
+
+        # Ensure owner email cache is populated
+        await self._ensure_owner_email_cache()
+
+        # Reverse lookup: email → owner ID
+        user_email_lower: str = user.email.lower()
+        for hs_owner_id, owner_email in self._owner_email_cache.items():
+            if owner_email.lower() == user_email_lower:
+                return hs_owner_id
+
+        return None
 
     async def fetch_owners(self) -> list[dict[str, Any]]:
         """

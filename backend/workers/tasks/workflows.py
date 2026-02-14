@@ -309,7 +309,7 @@ async def apply_user_auto_approve_permissions(
     auto_approve_tools: list[str],
 ) -> list[str]:
     """Restrict workflow auto-approve tools to explicit per-user permissions."""
-    tools_requiring_explicit_permissions = {"github_issues_access"}
+    tools_requiring_explicit_permissions = {"write_to_system_of_record"}
     restricted_tools = [tool for tool in auto_approve_tools if tool in tools_requiring_explicit_permissions]
     if not restricted_tools:
         return auto_approve_tools
@@ -759,20 +759,25 @@ async def _execute_workflow_via_agent(
                 "error": error_msg,
             }
     
-    # Build the prompt with typed parameters or raw trigger data
+    # Build execution and persisted prompts separately so internal execution
+    # guardrails are enforced without being shown in workflow run UI.
     prompt = workflow.prompt
+    persisted_prompt = workflow.prompt
 
     # If schema is defined, inject typed parameters; otherwise use raw trigger data
     typed_params = format_typed_parameters(user_trigger_data, input_schema)
     if typed_params:
         prompt += f"\n\n{typed_params}"
+        persisted_prompt += f"\n\n{typed_params}"
     elif user_trigger_data:
         prompt += f"\n\nTrigger data: {user_trigger_data}"
+        persisted_prompt += f"\n\nTrigger data: {user_trigger_data}"
     
     # Add output format instructions if schema is defined
     output_instruction = format_output_schema_instruction(output_schema)
     if output_instruction:
         prompt += f"\n\n{output_instruction}"
+        persisted_prompt += f"\n\n{output_instruction}"
     
     # Resolve and inject child workflows
     child_workflow_ids: list[str] = getattr(workflow, "child_workflows", []) or []
@@ -784,6 +789,7 @@ async def _execute_workflow_via_agent(
         child_workflows_text = format_child_workflows_for_prompt(resolved_children)
         if child_workflows_text:
             prompt += f"\n\n{child_workflows_text}"
+            persisted_prompt += f"\n\n{child_workflows_text}"
     
     # Extract call_stack from parent context for recursion detection
     call_stack: list[str] = []
@@ -832,7 +838,11 @@ async def _execute_workflow_via_agent(
     # Process the prompt (this streams through the agent)
     # Since we're in a background worker, we consume the generator fully
     response_text = ""
-    async for chunk in orchestrator.process_message(prompt, save_user_message=True):
+    async for chunk in orchestrator.process_message(
+        prompt,
+        save_user_message=True,
+        persisted_user_message=persisted_prompt,
+    ):
         # Collect text chunks (JSON chunks are tool events)
         if not chunk.startswith("{"):
             response_text += chunk
