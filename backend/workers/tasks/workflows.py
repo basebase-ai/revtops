@@ -842,7 +842,7 @@ async def _execute_workflow_via_agent(
     )
     runtime_context_text = format_workflow_runtime_context_for_prompt(runtime_context)
     prompt += f"\n\n{runtime_context_text}"
-    persisted_prompt += f"\n\n{runtime_context_text}"
+    # persisted_prompt += f"\n\n{runtime_context_text}" I don't think we disclose this context to the user?
 
     # If schema is defined, inject typed parameters; otherwise use raw trigger data
     typed_params = format_typed_parameters(user_trigger_data, input_schema)
