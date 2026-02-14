@@ -24,6 +24,7 @@ from models.activity import Activity
 from models.conversation import Conversation
 from models.database import get_admin_session, get_session
 from models.integration import Integration
+from models.organization_membership import OrganizationMembership
 from models.slack_user_mapping import SlackUserMapping
 from models.user import User
 from services.nango import extract_connection_metadata, get_nango_client
@@ -325,9 +326,18 @@ async def refresh_slack_user_mappings_from_directory(
         organization_id,
     )
     async with get_admin_session() as session:
-        users_query = select(User).where(User.organization_id == UUID(organization_id))
-        users_result = await session.execute(users_query)
-        org_users = users_result.scalars().all()
+        # Include users from organization_memberships (multi-org support).
+        org_uuid: UUID = UUID(organization_id)
+        direct_query = select(User).where(User.organization_id == org_uuid)
+        membership_query = (
+            select(User)
+            .join(OrganizationMembership, OrganizationMembership.user_id == User.id)
+            .where(OrganizationMembership.organization_id == org_uuid)
+            .where(OrganizationMembership.status == "active")
+        )
+        combined_query = direct_query.union(membership_query)
+        users_result = await session.execute(combined_query)
+        org_users: list[User] = list(users_result.scalars().all())
 
     email_to_user: dict[str, User] = {}
     for user in org_users:
@@ -983,9 +993,19 @@ async def resolve_revtops_user_for_slack_actor(
     """Resolve the RevTops user linked to a Slack actor in this organization."""
 
     async with get_admin_session() as session:
-        users_query = select(User).where(User.organization_id == UUID(organization_id))
-        users_result = await session.execute(users_query)
-        org_users = users_result.scalars().all()
+        # Find users who belong to this org — either via their active org
+        # or via the organization_memberships table (multi-org support).
+        org_uuid: UUID = UUID(organization_id)
+        direct_query = select(User).where(User.organization_id == org_uuid)
+        membership_query = (
+            select(User)
+            .join(OrganizationMembership, OrganizationMembership.user_id == User.id)
+            .where(OrganizationMembership.organization_id == org_uuid)
+            .where(OrganizationMembership.status == "active")
+        )
+        combined_query = direct_query.union(membership_query)
+        users_result = await session.execute(combined_query)
+        org_users: list[User] = list(users_result.scalars().all())
 
         # "Connected their Slack" can be represented by either user-scoped Slack
         # integrations (user_id) or organization-scoped Slack integrations that were
