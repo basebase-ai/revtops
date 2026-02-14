@@ -57,6 +57,8 @@ async def find_organization_by_slack_team(team_id: str) -> str | None:
     Find the organization ID for a Slack team/workspace.
 
     Matches the incoming team_id against metadata on active Slack integrations.
+    Falls back to calling Slack's ``auth.test`` to resolve and backfill the
+    team_id when it is missing from ``extra_data``.
 
     Args:
         team_id: Slack workspace/team ID (e.g., "T04ABCDEF")
@@ -71,10 +73,11 @@ async def find_organization_by_slack_team(team_id: str) -> str | None:
             .where(Integration.is_active == True)
         )
         result = await session.execute(query)
-        integrations = result.scalars().all()
+        integrations: list[Integration] = list(result.scalars().all())
 
+        # --- Fast path: match on stored team_id in extra_data ---
         for integration in integrations:
-            extra_data = integration.extra_data or {}
+            extra_data: dict[str, Any] = integration.extra_data or {}
             if extra_data.get("team_id") == team_id:
                 logger.info(
                     "[slack_conversations] Matched Slack team %s to org %s via integration metadata",
@@ -91,8 +94,99 @@ async def find_organization_by_slack_team(team_id: str) -> str | None:
             )
             return str(integrations[0].organization_id)
 
+        # --- Slow path: resolve team_id via auth.test for integrations missing it ---
+        integrations_missing_team_id: list[Integration] = [
+            i for i in integrations if not (i.extra_data or {}).get("team_id")
+        ]
+        if integrations_missing_team_id:
+            logger.info(
+                "[slack_conversations] %d Slack integration(s) missing team_id in extra_data; resolving via auth.test",
+                len(integrations_missing_team_id),
+            )
+            for integration in integrations_missing_team_id:
+                resolved_team_id: str | None = await _resolve_team_id_via_auth_test(integration)
+                if resolved_team_id is None:
+                    continue
+                # Backfill the team_id so future lookups use the fast path
+                merged_extra: dict[str, Any] = dict(integration.extra_data or {})
+                merged_extra["team_id"] = resolved_team_id
+                await _update_integration_metadata(integration.id, merged_extra)
+                logger.info(
+                    "[slack_conversations] Backfilled team_id=%s for Slack integration %s (org %s)",
+                    resolved_team_id,
+                    integration.id,
+                    integration.organization_id,
+                )
+                if resolved_team_id == team_id:
+                    logger.info(
+                        "[slack_conversations] Matched Slack team %s to org %s via auth.test",
+                        team_id,
+                        integration.organization_id,
+                    )
+                    return str(integration.organization_id)
+
     logger.warning("[slack_conversations] No Slack integration found for team=%s", team_id)
     return None
+
+
+async def _resolve_team_id_via_auth_test(integration: Integration) -> str | None:
+    """Call Slack ``auth.test`` to discover the team_id for an integration.
+
+    Returns the team_id string, or None on failure.
+    """
+    import httpx
+
+    nango_connection_id: str | None = integration.nango_connection_id
+    if not nango_connection_id:
+        logger.warning(
+            "[slack_conversations] Cannot resolve team_id: integration %s has no nango_connection_id",
+            integration.id,
+        )
+        return None
+
+    try:
+        nango = get_nango_client()
+        nango_integration_id: str = get_nango_integration_id("slack")
+        token: str = await nango.get_token(nango_integration_id, nango_connection_id)
+    except Exception as exc:
+        logger.warning(
+            "[slack_conversations] Failed to get Slack token for integration %s: %s",
+            integration.id,
+            exc,
+        )
+        return None
+
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                "https://slack.com/api/auth.test",
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=10.0,
+            )
+            resp.raise_for_status()
+            data: dict[str, Any] = resp.json()
+            if not data.get("ok"):
+                logger.warning(
+                    "[slack_conversations] auth.test failed for integration %s: %s",
+                    integration.id,
+                    data.get("error", "unknown"),
+                )
+                return None
+            resolved: str | None = data.get("team_id")
+            if resolved:
+                logger.info(
+                    "[slack_conversations] auth.test returned team_id=%s for integration %s",
+                    resolved,
+                    integration.id,
+                )
+            return resolved
+    except Exception as exc:
+        logger.warning(
+            "[slack_conversations] auth.test request failed for integration %s: %s",
+            integration.id,
+            exc,
+        )
+        return None
 
 
 def _extract_slack_user_ids(extra_data: dict[str, Any]) -> set[str]:
