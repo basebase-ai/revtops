@@ -129,6 +129,40 @@ async def is_duplicate_event(event_id: str) -> bool:
         return False
 
 
+async def is_duplicate_message(channel_id: str, message_ts: str) -> bool:
+    """
+    Cross-event-type dedup for the same Slack message.
+
+    When a user @mentions the bot in a thread, Slack fires *two* events with
+    different ``event_id`` values:
+      1. ``app_mention`` — handled by :func:`process_slack_mention`
+      2. ``message``     — handled by :func:`process_slack_thread_reply`
+
+    Both events share the same ``channel`` + ``ts`` (the message timestamp).
+    This function claims a Redis lock on ``channel:ts`` so only the first
+    event to arrive gets processed; the second is skipped.
+
+    Uses a short TTL (5 minutes) since the two events arrive within seconds.
+
+    Args:
+        channel_id: Slack channel ID
+        message_ts: Message timestamp (``event.ts``)
+
+    Returns:
+        True if this message was already claimed by another event type
+    """
+    if not channel_id or not message_ts:
+        return False
+    try:
+        redis_client = await get_redis()
+        key: str = f"revtops:slack_msg_dedup:{channel_id}:{message_ts}"
+        was_set: bool | None = await redis_client.set(key, "1", nx=True, ex=300)
+        return not was_set
+    except Exception as e:
+        logger.error("[slack_events] Redis error during message dedup: %s", e)
+        return False
+
+
 async def cache_incoming_event_payload(
     body: bytes,
     payload: dict[str, Any],
@@ -252,9 +286,21 @@ async def _process_event_callback_impl(payload: dict[str, Any]) -> None:
             channel_id = event.get("channel", "")
             user_id = event.get("user", "")
             text = event.get("text", "")
+            message_ts: str = event.get("ts", "")
             files: list[dict[str, Any]] = event.get("files", [])
             if not text.strip() and not files:
                 return
+
+            # Cross-event-type dedup: if the same message already triggered
+            # an app_mention handler, skip the redundant thread-reply path.
+            if message_ts and channel_id and await is_duplicate_message(channel_id, message_ts):
+                logger.info(
+                    "[slack_events] Skipping duplicate message %s:%s (already claimed by another event type)",
+                    channel_id,
+                    message_ts,
+                )
+                return
+
             logger.info(
                 "[slack_events] Processing thread reply from %s in %s (thread %s): %s (files=%d)",
                 user_id, channel_id, thread_ts, text[:50], len(files),
@@ -265,7 +311,7 @@ async def _process_event_callback_impl(payload: dict[str, Any]) -> None:
                 user_id=user_id,
                 message_text=text,
                 thread_ts=thread_ts,
-                event_ts=event.get("ts", ""),
+                event_ts=message_ts,
                 files=files,
             )
             return
@@ -275,10 +321,22 @@ async def _process_event_callback_impl(payload: dict[str, Any]) -> None:
         user_id = event.get("user", "")
         text = re.sub(r"<@[A-Z0-9]+>\s*", "", event.get("text", "")).strip()
         event_ts = event.get("event_ts", "")
+        message_ts = event.get("ts", "") or event_ts
         thread_ts = event.get("thread_ts")
         files: list[dict[str, Any]] = event.get("files", [])
         if not text and not files:
             return
+
+        # Cross-event-type dedup: if the same message already triggered
+        # a thread-reply handler, skip the redundant app_mention path.
+        if message_ts and channel_id and await is_duplicate_message(channel_id, message_ts):
+            logger.info(
+                "[slack_events] Skipping duplicate message %s:%s (already claimed by another event type)",
+                channel_id,
+                message_ts,
+            )
+            return
+
         logger.info("[slack_events] Processing @mention from %s in %s: %s (files=%d)", user_id, channel_id, text[:50], len(files))
         await process_slack_mention(
             team_id=team_id,
