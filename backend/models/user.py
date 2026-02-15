@@ -42,7 +42,7 @@ class User(Base):
     avatar_url: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
     agent_global_commands: Mapped[Optional[str]] = mapped_column(String(4000), nullable=True)
     phone_number: Mapped[Optional[str]] = mapped_column(
-        String(30), nullable=True
+        String(30), nullable=True, unique=True
     )  # E.164 format, e.g. "+14155551234"
 
     # Waitlist fields

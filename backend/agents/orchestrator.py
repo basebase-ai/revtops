@@ -902,6 +902,7 @@ class ChatOrchestrator:
             "slack_thread": "Slack thread reply",
             "workflow": "automated workflow",
             "web": "web application",
+            "sms": "SMS text message",
         }.get(self.source, self.source)
         system_prompt += f"\n\n## Message Source\nThis conversation is from: **{source_label}**."
 
@@ -1027,7 +1028,7 @@ WHERE scheduled_start >= '2026-01-27'::date AND scheduled_start < '2026-01-28'::
                     system_prompt += f"- [{mem['id']}] {mem['content']}\n"
 
             # -- Profile completeness signal (guides context-gathering behaviour) --
-            is_private: bool = self.source in ("slack_dm", "web")
+            is_private: bool = self.source in ("slack_dm", "web", "sms")
             if is_private:
                 completeness_parts: list[str] = []
 

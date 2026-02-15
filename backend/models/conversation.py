@@ -8,6 +8,7 @@ Conversations can be:
 Sources:
 - source='web': From the web chat interface (has user_id)
 - source='slack': From Slack DMs (user_id is NULL, uses source_user_id)
+- source='sms': From inbound SMS via Twilio (user resolved via phone_number)
 """
 from __future__ import annotations
 
@@ -25,7 +26,7 @@ from models.database import Base
 ConversationType = Literal["agent", "workflow"]
 
 # Conversation sources
-ConversationSource = Literal["web", "slack"]
+ConversationSource = Literal["web", "slack", "sms"]
 
 
 class Conversation(Base):
