@@ -392,9 +392,14 @@ export function Chat({
             setConversationMessages(chatId, loadedMessages);
           }
           
-          // If we have substantial messages, stop polling
-          if (loadedMessages.length > 5) {
-            console.log('[Chat] Stopping polling - have enough messages');
+          // Stop polling if we have enough messages or the workflow finished
+          const lastMsg = loadedMessages[loadedMessages.length - 1];
+          const hasRunningTools = lastMsg?.role === 'assistant' && lastMsg.contentBlocks?.some(
+            (b: Record<string, unknown>) => b.type === 'tool_use' && b.status !== 'complete'
+          );
+          const workflowDone = loadedMessages.length >= 2 && lastMsg?.role === 'assistant' && !hasRunningTools;
+          if (loadedMessages.length > 5 || workflowDone) {
+            console.log('[Chat] Stopping polling -', workflowDone ? 'workflow complete' : 'enough messages');
             setIsWorkflowPolling(false);
             clearInterval(pollInterval);
           }

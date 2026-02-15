@@ -732,13 +732,16 @@ function WorkflowModal({
   // Tools that can be auto-approved for workflows
   const availableAutoApproveTools = [
     { id: 'run_sql_query', label: 'Query Data', description: 'Run SQL queries to read from your synced data' },
+    { id: 'bulk_tool_run', label: 'Bulk Tool Run', description: 'Run a tool in parallel over many items (e.g., web search across all contacts)' },
+    { id: 'monitor_operation', label: 'Monitor Operation', description: 'Wait for a bulk operation to complete with live progress' },
+    { id: 'web_search', label: 'Web Search', description: 'Search the web for real-time information' },
     { id: 'run_workflow', label: 'Run Workflow', description: 'Execute another workflow and wait for results' },
     { id: 'loop_over', label: 'Loop Over Items', description: 'Run a workflow for each item in a list' },
     { id: 'send_slack', label: 'Post to Slack', description: 'Send messages to Slack channels' },
     { id: 'send_email_from', label: 'Send Email', description: 'Send emails from your connected account' },
     { id: 'write_to_system_of_record', label: 'Write to System of Record', description: 'Create or update records in any connected system (CRM, issue trackers, code repos)' },
     { id: 'keep_notes', label: 'Keep Notes', description: 'Store workflow-scoped notes shared across workflow runs' },
-
+    { id: 'fetch_url', label: 'Fetch URL', description: 'Fetch and read content from a web page' },
     { id: 'run_sql_write', label: 'Write Data', description: 'Insert, update, or delete records' },
   ];
 
