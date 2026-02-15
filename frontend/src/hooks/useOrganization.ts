@@ -31,6 +31,7 @@ export interface TeamMember {
   email: string;
   role: string | null;
   avatarUrl: string | null;
+  jobTitle: string | null;
   status: string | null;
   identities: IdentityMapping[];
 }
@@ -58,6 +59,7 @@ interface TeamMembersApiResponse {
     email: string;
     role: string | null;
     avatar_url: string | null;
+    job_title: string | null;
     status: string | null;
     identities: IdentityMappingApiResponse[];
   }>;
@@ -111,6 +113,7 @@ async function fetchTeamMembers(orgId: string, userId: string): Promise<TeamMemb
       email: m.email,
       role: m.role,
       avatarUrl: m.avatar_url,
+      jobTitle: m.job_title ?? null,
       status: m.status ?? null,
       identities: (m.identities ?? []).map(mapIdentity),
     })),

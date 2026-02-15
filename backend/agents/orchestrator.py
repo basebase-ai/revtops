@@ -302,18 +302,42 @@ id, organization_id, account_id, name, email, title, phone, custom_fields
 **Internal** team members - your colleagues and teammates who use Revtops.
 Use this table when the user asks about "my teammates", "our team", "sales reps", "AEs", or members of their organization.
 ```
-id, organization_id, email, name, role, avatar_url, created_at, last_login
+id, organization_id, email, name, role, avatar_url, phone_number, created_at, last_login
 ```
-- `role`: Job role like 'ae', 'sales_manager', 'cro', 'admin'
+- `role`: Platform role — 'admin' or 'member'
+- `phone_number`: E.164 format (e.g. "+14155551234"), used for urgent SMS alerts
 - Users are linked to organizations via organization_id
 
-Example queries for users:
+### org_members
+**Organization membership** — links users to organizations with role, job title, and reporting structure.
+Every user has one row per org they belong to. Use this table for job titles, reporting chains, and team hierarchy.
+```
+id, user_id, organization_id, role, status, title, reports_to_membership_id,
+invited_by_user_id, invited_at, joined_at, created_at
+```
+- `title`: Job title (e.g. "CTO", "VP Sales", "Account Executive — Western Region"). **Writable via run_sql_write.**
+- `reports_to_membership_id`: FK to another `org_members.id` — who this person reports to. **Writable via run_sql_write.**
+- `role`: Platform role — 'admin', 'member'
+- `status`: 'active', 'invited', 'deactivated'
+
+Example queries:
 ```sql
--- List all teammates in the user's organization
-SELECT id, name, email, role FROM users WHERE organization_id = :org_id
+-- List teammates with job titles and who they report to
+SELECT om.id, u.name, u.email, om.title, mgr.title AS manager_title, mgr_u.name AS manager_name
+FROM org_members om
+JOIN users u ON u.id = om.user_id
+LEFT JOIN org_members mgr ON mgr.id = om.reports_to_membership_id
+LEFT JOIN users mgr_u ON mgr_u.id = mgr.user_id
+WHERE om.status = 'active'
 
 -- Find a specific teammate by name
 SELECT * FROM users WHERE name ILIKE '%john%'
+
+-- Set a member's job title
+UPDATE org_members SET title = 'VP Sales' WHERE id = '{membership_id}'
+
+-- Set reporting relationship
+UPDATE org_members SET reports_to_membership_id = '{manager_membership_id}' WHERE id = '{membership_id}'
 ```
 
 ### user_mappings_for_identity
@@ -455,7 +479,68 @@ Team chat messages from Slack and similar tools.
    - `users` = internal teammates (colleagues, sales reps, team members)
    - `contacts` = external people (customers, prospects, leads at other companies)
 
-You have access to the user's CRM data, emails, calendar, meeting transcripts, and team messages - all normalized and deduplicated."""
+You have access to the user's CRM data, emails, calendar, meeting transcripts, and team messages - all normalized and deduplicated.
+
+## Context Gathering
+
+You have a rich profile system with three levels: personal (user), organization, and job role.
+Each level's memories are injected into this prompt under "Context Profile" when available.
+
+### Structured fields vs. memories
+
+Some profile data lives in **structured database columns** (queryable, relational). Everything else
+goes into the `memories` table as free-text.
+
+**Structured fields you should set via `run_sql_write`:**
+
+1. `org_members.title` (varchar 255) — the member's job title (e.g. "CTO", "VP Sales").
+   - Every user in the org has a row in `org_members`. You can look up any member's
+     membership id with:
+     `SELECT om.id, u.name FROM org_members om JOIN users u ON u.id = om.user_id WHERE om.organization_id = '{org_id}'`
+   - Set the title:
+     `UPDATE org_members SET title = 'CTO' WHERE id = '{membership_id}'`
+   - You can also set titles for **other** org members the user tells you about (e.g. "Jon is our CEO").
+
+2. `org_members.reports_to_membership_id` (uuid FK → org_members.id) —
+   who this member reports to.
+   - Look up the manager's membership id first, then:
+     `UPDATE org_members SET reports_to_membership_id = '{manager_membership_id}' WHERE id = '{user_membership_id}'`
+
+**When to use structured fields vs. memories:**
+- Job title → structured column (`org_members.title`)
+- Reporting relationship → structured column (`org_members.reports_to_membership_id`)
+- Phone number → `save_phone_number` tool
+- Everything else (preferences, responsibilities, projects, company facts) → `save_memory`
+
+### When and what to ask
+
+When profile information is missing and you are in a **PRIVATE** conversation (Slack DM or web chat — NOT
+a channel @mention, thread reply, or automated workflow), **after completing the user's primary request**,
+ask 1-2 friendly questions to learn more about them. Prioritize in this order:
+
+1. **Job**: title, general responsibilities, current projects or initiatives
+2. **Organization**: what the company does, approximate size, mission
+3. **Personal**: location, timezone, work-style preferences
+
+Use `save_memory` with the appropriate `entity_type` to persist what you learn:
+- `entity_type="user"` for personal facts/preferences
+- `entity_type="organization"` for company-wide facts
+- `entity_type="organization_member"` for role/job-specific facts
+
+**Phone number**: If the user has no phone number on file and has not declined to share one
+(check the Profile Completeness section), ask for it in a natural way — explain it allows you
+to send them urgent SMS alerts when a workflow detects something important. If they decline,
+save a memory with `entity_type="user"`: "User declined to share phone number" so you never ask again.
+Use the `save_phone_number` tool (not `save_memory`) to store the actual number.
+
+**Rules**:
+- Never ask context-gathering questions in group channels, thread replies, or workflow executions.
+- Never ask more than 2 context-gathering questions per conversation.
+- Be natural — weave questions into the conversation flow rather than interrogating.
+- If the user volunteers information unprompted, save it as a memory at the appropriate level.
+- When the user shares a job title (theirs or a colleague's), ALWAYS set the structured column
+  via `run_sql_write` in addition to saving a memory if there are other details worth remembering.
+- Use `update_memory` when existing information becomes stale (e.g. user got promoted, project completed)."""
 
 
 class ChatOrchestrator:
@@ -519,27 +604,42 @@ class ChatOrchestrator:
         self._current_message_id: UUID | None = None
 
     async def _resolve_user_context(self) -> None:
-        """Fetch user context fields from DB if not already set."""
+        """Fetch user context fields (name, email, phone, commands) from DB if not already set."""
         from models.user import User
         from models.organization import Organization
 
         try:
             async with get_session(organization_id=self.organization_id) as session:
-                if self.user_id and (not self.user_name or not self.user_email or self.agent_global_commands is None):
+                if self.user_id and (
+                    not self.user_name
+                    or not self.user_email
+                    or self.agent_global_commands is None
+                ):
                     result = await session.execute(
-                        select(User.name, User.email, User.agent_global_commands).where(User.id == UUID(self.user_id))
+                        select(
+                            User.name,
+                            User.email,
+                            User.agent_global_commands,
+                            User.phone_number,
+                        ).where(User.id == UUID(self.user_id))
                     )
                     row = result.one_or_none()
                     if row:
                         fetched_name: str | None = row[0]
                         fetched_email: str | None = row[1]
                         fetched_agent_global_commands: str | None = row[2]
+                        fetched_phone: str | None = row[3]
                         if not self.user_name and fetched_name:
                             self.user_name = fetched_name
                         if not self.user_email and fetched_email:
                             self.user_email = fetched_email
                         if fetched_agent_global_commands:
                             self.agent_global_commands = fetched_agent_global_commands
+                        self._phone_number = fetched_phone
+                    else:
+                        self._phone_number = None
+                else:
+                    self._phone_number = None
 
                 if not self.organization_name and self.organization_id:
                     result = await session.execute(
@@ -552,23 +652,99 @@ class ChatOrchestrator:
                         self.organization_name = org_name
         except Exception:
             logger.warning("Failed to resolve user context", exc_info=True)
+            self._phone_number = None
 
-    async def _load_user_memories(self) -> list[dict[str, str]]:
-        """Load all saved memories for the current user."""
-        from models.user_memory import UserMemory
+    async def _load_context_profile(self) -> dict[str, Any]:
+        """Load the three-tier context profile: user, organization, and job memories + structured fields.
+
+        Returns a dict with keys:
+            user_memories: list of {id, content}
+            org_memories: list of {id, content}
+            job_memories: list of {id, content}
+            membership_title: str | None
+            reports_to_name: str | None
+            phone_number: str | None
+        """
+        from models.memory import Memory
+        from models.org_member import OrgMember
+
+        profile: dict[str, Any] = {
+            "user_memories": [],
+            "org_memories": [],
+            "job_memories": [],
+            "membership_title": None,
+            "reports_to_name": None,
+            "phone_number": getattr(self, "_phone_number", None),
+        }
 
         try:
             async with get_session(organization_id=self.organization_id) as session:
+                # Load all memories for this org in one query, then split by entity_type
                 result = await session.execute(
-                    select(UserMemory)
-                    .where(UserMemory.user_id == UUID(self.user_id))  # type: ignore[arg-type]
-                    .order_by(UserMemory.created_at.asc())
+                    select(Memory)
+                    .where(Memory.organization_id == UUID(self.organization_id))  # type: ignore[arg-type]
+                    .where(
+                        Memory.entity_type.in_(["user", "organization", "organization_member"])
+                    )
+                    .order_by(Memory.created_at.asc())
                 )
-                rows: list[UserMemory] = list(result.scalars().all())
-                return [{"id": str(m.id), "content": m.content} for m in rows]
+                all_memories: list[Memory] = list(result.scalars().all())
+
+                user_uuid: UUID | None = UUID(self.user_id) if self.user_id else None
+                org_uuid: UUID = UUID(self.organization_id)  # type: ignore[arg-type]
+
+                # Look up the user's org membership for structured fields
+                membership_id: UUID | None = None
+                if user_uuid:
+                    mem_result = await session.execute(
+                        select(OrgMember).where(
+                            OrgMember.user_id == user_uuid,
+                            OrgMember.organization_id == org_uuid,
+                        )
+                    )
+                    membership: OrgMember | None = mem_result.scalar_one_or_none()
+                    if membership:
+                        membership_id = membership.id
+                        profile["membership_title"] = membership.title
+
+                        # Resolve reports_to name
+                        if membership.reports_to_membership_id:
+                            mgr_result = await session.execute(
+                                select(OrgMember).where(
+                                    OrgMember.id == membership.reports_to_membership_id
+                                )
+                            )
+                            mgr: OrgMember | None = mgr_result.scalar_one_or_none()
+                            if mgr:
+                                from models.user import User
+
+                                mgr_user_result = await session.execute(
+                                    select(User.name).where(User.id == mgr.user_id)
+                                )
+                                mgr_name: str | None = mgr_user_result.scalar_one_or_none()
+                                title_suffix: str = f" ({mgr.title})" if mgr.title else ""
+                                profile["reports_to_name"] = (
+                                    f"{mgr_name}{title_suffix}" if mgr_name else None
+                                )
+
+                # Split memories by entity_type
+                for mem in all_memories:
+                    entry: dict[str, str] = {"id": str(mem.id), "content": mem.content}
+                    if mem.entity_type == "user" and user_uuid and mem.entity_id == user_uuid:
+                        profile["user_memories"].append(entry)
+                    elif mem.entity_type == "organization" and mem.entity_id == org_uuid:
+                        profile["org_memories"].append(entry)
+                    elif (
+                        mem.entity_type == "organization_member"
+                        and membership_id
+                        and mem.entity_id == membership_id
+                    ):
+                        profile["job_memories"].append(entry)
+
         except Exception:
-            logger.warning("Failed to load user memories", exc_info=True)
-            return []
+            logger.warning("Failed to load context profile", exc_info=True)
+
+        return profile
 
     async def _load_workflow_notes(self, workflow_id: str) -> list[str]:
         """Load persisted notes for a workflow."""
@@ -742,16 +918,86 @@ WHERE scheduled_start >= '2026-01-27'::date AND scheduled_start < '2026-01-28'::
 5. **Displaying Results**: Convert UTC times to the user's timezone when presenting results. Use relative references when helpful (e.g., "in 30 minutes", "3 hours ago")."""
         system_prompt += time_context
 
-        # Load and inject user memories
+        # Load and inject three-tier context profile (user, org, job memories + structured fields)
         if self.user_id and self.organization_id:
-            memories = await self._load_user_memories()
-            if memories:
-                memory_context = "\n\n## User Memories\n"
-                memory_context += "These are preferences and facts the user previously asked you to remember. Follow them.\n\n"
-                for mem in memories:
-                    memory_context += f"- [{mem['id']}] {mem['content']}\n"
-                memory_context += "\nIf the user asks you to forget something, use the delete_memory tool with the memory_id shown in brackets above."
-                system_prompt += memory_context
+            profile: dict[str, Any] = await self._load_context_profile()
+
+            user_memories: list[dict[str, str]] = profile["user_memories"]
+            org_memories: list[dict[str, str]] = profile["org_memories"]
+            job_memories: list[dict[str, str]] = profile["job_memories"]
+            membership_title: str | None = profile["membership_title"]
+            reports_to_name: str | None = profile["reports_to_name"]
+            phone_number: str | None = profile["phone_number"]
+
+            has_any_context: bool = bool(
+                user_memories or org_memories or job_memories
+                or membership_title or reports_to_name or phone_number
+            )
+
+            if has_any_context:
+                system_prompt += "\n\n# Context Profile"
+                system_prompt += "\nThese are persisted facts about the user, their organization, and their role."
+                system_prompt += " Follow preferences. Use delete_memory / update_memory with the [memory_id] shown in brackets to manage entries.\n"
+
+            # -- User profile section --
+            if user_memories or phone_number:
+                system_prompt += "\n## Your Profile\n"
+                if self.user_name:
+                    system_prompt += f"- Name: {self.user_name}\n"
+                if phone_number:
+                    system_prompt += f"- Phone: {phone_number}\n"
+                for mem in user_memories:
+                    system_prompt += f"- [{mem['id']}] {mem['content']}\n"
+
+            # -- Organization profile section --
+            if org_memories:
+                org_label: str = f" ({self.organization_name})" if self.organization_name else ""
+                system_prompt += f"\n## Organization Profile{org_label}\n"
+                for mem in org_memories:
+                    system_prompt += f"- [{mem['id']}] {mem['content']}\n"
+
+            # -- Job / role profile section --
+            if membership_title or reports_to_name or job_memories:
+                org_label_job: str = f" at {self.organization_name}" if self.organization_name else ""
+                system_prompt += f"\n## Your Role{org_label_job}\n"
+                if membership_title:
+                    system_prompt += f"- Title: {membership_title}\n"
+                if reports_to_name:
+                    system_prompt += f"- Reports to: {reports_to_name}\n"
+                for mem in job_memories:
+                    system_prompt += f"- [{mem['id']}] {mem['content']}\n"
+
+            # -- Profile completeness signal (guides context-gathering behaviour) --
+            is_private: bool = self.source in ("slack_dm", "web")
+            if is_private:
+                completeness_parts: list[str] = []
+
+                user_count: int = len(user_memories)
+                phone_status: str = "phone number set" if phone_number else "no phone number"
+                # Check if user declined phone
+                phone_declined: bool = any(
+                    "declined" in m["content"].lower() and "phone" in m["content"].lower()
+                    for m in user_memories
+                )
+                if not phone_number and phone_declined:
+                    phone_status = "phone number declined"
+                completeness_parts.append(f"User profile: {user_count} memories, {phone_status}")
+
+                org_count: int = len(org_memories)
+                org_status: str = f"{org_count} memories" if org_count else "0 memories (needs attention)"
+                completeness_parts.append(f"Organization profile: {org_status}")
+
+                job_count: int = len(job_memories)
+                title_status: str = "title set" if membership_title else "no title set"
+                job_status: str = f"{job_count} memories, {title_status}"
+                if not job_count and not membership_title:
+                    job_status += " (needs attention)"
+                completeness_parts.append(f"Job profile: {job_status}")
+
+                system_prompt += "\n## Profile Completeness\n"
+                for part in completeness_parts:
+                    system_prompt += f"- {part}\n"
+
         workflow_id: str | None = (self.workflow_context or {}).get("workflow_id")
         if workflow_id and self.organization_id:
             system_prompt += "\n\n## Workflow Memory Rules\nIn workflow executions, NEVER use save_memory. Use keep_notes for workflow-scoped notes. The canonical persistence field for workflow execution notes/state is workflow_runs.workflow_notes."

@@ -142,6 +142,7 @@ class ToolProgressUpdater:
 # Note: Row-Level Security (RLS) handles organization filtering at the database level
 ALLOWED_TABLES: set[str] = {
     "deals", "accounts", "contacts", "activities", "meetings", "integrations", "users", "organizations",
+    "org_members",
     "pipelines", "pipeline_stages", "goals", "workflows", "workflow_runs", "user_mappings_for_identity",
     "github_repositories", "github_commits", "github_pull_requests",
     "shared_files",
@@ -243,9 +244,9 @@ async def execute_tool(
     # Check if this tool should bypass approval (for auto-approved workflows)
     skip_approval = await _should_skip_approval(tool_name, user_id, context)
 
-    if normalized_tool_name == "save_memory" and context and context.get("is_workflow"):
-        logger.info("[Tools] Blocking save_memory during workflow execution; use keep_notes instead")
-        return {"error": "save_memory is not available in workflows. Use keep_notes for workflow-scoped notes."}
+    if normalized_tool_name in ("save_memory", "update_memory", "save_phone_number") and context and context.get("is_workflow"):
+        logger.info("[Tools] Blocking %s during workflow execution", normalized_tool_name)
+        return {"error": f"{normalized_tool_name} is not available in workflows. Use keep_notes for workflow-scoped notes."}
 
     conversation_id: str | None = (context or {}).get("conversation_id")
     tool_handlers: dict[str, Callable[[], Awaitable[dict[str, Any]]]] = {
@@ -283,6 +284,8 @@ async def execute_tool(
         "keep_notes": lambda: _keep_notes(tool_input, organization_id, user_id, context, skip_approval),
         "save_memory": lambda: _save_memory(tool_input, organization_id, user_id, skip_approval),
         "delete_memory": lambda: _delete_memory(tool_input, organization_id, user_id),
+        "update_memory": lambda: _update_memory(tool_input, organization_id, user_id),
+        "save_phone_number": lambda: _save_phone_number(tool_input, organization_id, user_id),
         "create_linear_issue": lambda: _create_linear_issue(tool_input, organization_id, user_id, skip_approval),
         "update_linear_issue": lambda: _update_linear_issue(tool_input, organization_id, user_id, skip_approval),
         "search_linear_issues": lambda: _search_linear_issues(tool_input, organization_id),
@@ -493,6 +496,7 @@ WRITABLE_TABLES: set[str] = {
     "contacts",
     "deals",
     "accounts",
+    "org_members",
 }
 
 # CRM tables that go through pending operations (review before commit)
@@ -4930,12 +4934,16 @@ async def _save_memory(
     user_id: str | None,
     skip_approval: bool = False,
 ) -> dict[str, Any]:
-    """Save a persistent memory for the current user."""
+    """Save a persistent memory at the user, organization, or job level."""
     content: str = params.get("content", "").strip()
     if not content:
         return {"error": "content is required."}
     if not user_id:
         return {"error": "Cannot save memory without a user context."}
+
+    entity_type: str = params.get("entity_type", "user").strip()
+    if entity_type not in ("user", "organization", "organization_member"):
+        return {"error": f"Invalid entity_type '{entity_type}'. Must be 'user', 'organization', or 'organization_member'."}
 
     if skip_approval:
         logger.info("[Tools._save_memory] Auto-approved, saving memory immediately")
@@ -4957,6 +4965,7 @@ async def _save_memory(
         "tool_name": "save_memory",
         "preview": {
             "content": content[:500] + ("..." if len(content) > 500 else ""),
+            "entity_type": entity_type,
         },
         "message": "Ready to save memory. Please review and click Approve to persist it.",
     }
@@ -4967,24 +4976,60 @@ async def execute_save_memory(
     organization_id: str,
     user_id: str,
 ) -> dict[str, Any]:
-    """Persist a user memory after approval."""
+    """Persist a memory after approval."""
     content: str = params.get("content", "").strip()
     if not content:
         return {"status": "failed", "error": "content is required."}
 
-    from models.user_memory import UserMemory
+    entity_type: str = params.get("entity_type", "user").strip()
+    category: str | None = params.get("category")
+    if category:
+        category = category.strip() or None
 
-    memory = UserMemory(
-        user_id=UUID(user_id),
+    from models.memory import Memory
+    from models.org_member import OrgMember
+
+    # Resolve the entity_id based on entity_type
+    entity_id: UUID
+    if entity_type == "user":
+        entity_id = UUID(user_id)
+    elif entity_type == "organization":
+        entity_id = UUID(organization_id)
+    elif entity_type == "organization_member":
+        # Look up the membership for this user + org
+        async with get_session(organization_id=organization_id) as session:
+            result = await session.execute(
+                select(OrgMember.id).where(
+                    OrgMember.user_id == UUID(user_id),
+                    OrgMember.organization_id == UUID(organization_id),
+                )
+            )
+            membership_id: UUID | None = result.scalar_one_or_none()
+            if not membership_id:
+                return {"status": "failed", "error": "No organization membership found for this user."}
+            entity_id = membership_id
+    else:
+        return {"status": "failed", "error": f"Invalid entity_type '{entity_type}'."}
+
+    memory = Memory(
+        entity_type=entity_type,
+        entity_id=entity_id,
         organization_id=UUID(organization_id),
+        category=category,
         content=content,
+        created_by_user_id=UUID(user_id),
     )
 
     async with get_session(organization_id=organization_id) as session:
         session.add(memory)
         await session.commit()
 
-    return {"memory_id": str(memory.id), "content": content, "status": "saved"}
+    return {
+        "memory_id": str(memory.id),
+        "entity_type": entity_type,
+        "content": content,
+        "status": "saved",
+    }
 
 
 async def _delete_memory(
@@ -4999,19 +5044,105 @@ async def _delete_memory(
     if not user_id:
         return {"error": "Cannot delete memory without a user context."}
 
-    from models.user_memory import UserMemory
+    from models.memory import Memory
 
     async with get_session(organization_id=organization_id) as session:
         result = await session.execute(
-            select(UserMemory).where(
-                UserMemory.id == UUID(memory_id),
-                UserMemory.user_id == UUID(user_id),
+            select(Memory).where(
+                Memory.id == UUID(memory_id),
+                Memory.organization_id == UUID(organization_id),
             )
         )
-        memory: UserMemory | None = result.scalar_one_or_none()
+        memory: Memory | None = result.scalar_one_or_none()
         if not memory:
-            return {"error": f"Memory {memory_id} not found or does not belong to this user."}
+            return {"error": f"Memory {memory_id} not found."}
+
+        # User-level and job-level memories can only be deleted by the owner.
+        # Org-level memories can be deleted by any org member.
+        if memory.entity_type != "organization":
+            if memory.created_by_user_id and str(memory.created_by_user_id) != user_id:
+                return {"error": f"Memory {memory_id} does not belong to this user."}
+
         await session.delete(memory)
         await session.commit()
 
     return {"status": "deleted", "memory_id": memory_id}
+
+
+async def _update_memory(
+    params: dict[str, Any],
+    organization_id: str,
+    user_id: str | None,
+) -> dict[str, Any]:
+    """Update the content of an existing memory."""
+    memory_id: str = params.get("memory_id", "").strip()
+    if not memory_id:
+        return {"error": "memory_id is required."}
+    new_content: str = params.get("content", "").strip()
+    if not new_content:
+        return {"error": "content is required."}
+    if not user_id:
+        return {"error": "Cannot update memory without a user context."}
+
+    from models.memory import Memory
+
+    async with get_session(organization_id=organization_id) as session:
+        result = await session.execute(
+            select(Memory).where(
+                Memory.id == UUID(memory_id),
+                Memory.organization_id == UUID(organization_id),
+            )
+        )
+        memory: Memory | None = result.scalar_one_or_none()
+        if not memory:
+            return {"error": f"Memory {memory_id} not found."}
+
+        # Permission check: same rules as delete
+        if memory.entity_type != "organization":
+            if memory.created_by_user_id and str(memory.created_by_user_id) != user_id:
+                return {"error": f"Memory {memory_id} does not belong to this user."}
+
+        memory.content = new_content
+        await session.commit()
+
+    return {"status": "updated", "memory_id": memory_id, "content": new_content}
+
+
+async def _save_phone_number(
+    params: dict[str, Any],
+    organization_id: str,
+    user_id: str | None,
+) -> dict[str, Any]:
+    """Save a phone number to the user's profile."""
+    phone: str = params.get("phone_number", "").strip()
+    if not phone:
+        return {"error": "phone_number is required."}
+    if not user_id:
+        return {"error": "Cannot save phone number without a user context."}
+
+    # Basic E.164 validation: must start with + and contain 7-15 digits
+    import re as _re
+
+    digits_only: str = _re.sub(r"[^\d]", "", phone)
+    if not phone.startswith("+"):
+        # Try to normalise: prepend + if all digits
+        phone = f"+{digits_only}"
+    else:
+        phone = f"+{digits_only}"
+
+    if len(digits_only) < 7 or len(digits_only) > 15:
+        return {"error": "Invalid phone number. Expected E.164 format, e.g. +14155551234 (7-15 digits)."}
+
+    from models.user import User
+
+    async with get_session(organization_id=organization_id) as session:
+        result = await session.execute(
+            select(User).where(User.id == UUID(user_id))
+        )
+        user: User | None = result.scalar_one_or_none()
+        if not user:
+            return {"error": "User not found."}
+        user.phone_number = phone
+        await session.commit()
+
+    return {"status": "saved", "phone_number": phone}

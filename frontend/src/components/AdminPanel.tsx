@@ -346,6 +346,8 @@ export function AdminPanel(): JSX.Element {
         name: data.name,
         avatarUrl: data.avatar_url,
         agentGlobalCommands: null,
+        phoneNumber: null,
+        jobTitle: null,
         roles: data.roles,
       };
 
