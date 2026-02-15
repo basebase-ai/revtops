@@ -1,5 +1,5 @@
 """
-Organization membership model for multi-org support.
+Organization member model for multi-org support.
 
 Tracks which organizations a user belongs to and their role in each.
 User.organization_id remains the "active org" for the current session.
@@ -10,7 +10,7 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import DateTime, ForeignKey, String, UniqueConstraint
+from sqlalchemy import DateTime, ForeignKey, Index, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -21,10 +21,10 @@ if TYPE_CHECKING:
     from models.organization import Organization
 
 
-class OrganizationMembership(Base):
+class OrgMember(Base):
     """Tracks a user's membership in an organization."""
 
-    __tablename__ = "organization_memberships"
+    __tablename__ = "org_members"
     __table_args__ = (
         UniqueConstraint("user_id", "organization_id", name="uq_membership_user_org"),
     )
@@ -44,6 +44,15 @@ class OrganizationMembership(Base):
     status: Mapped[str] = mapped_column(
         String(20), nullable=False, default="active"
     )  # 'invited', 'active', 'deactivated'
+    title: Mapped[Optional[str]] = mapped_column(
+        String(255), nullable=True
+    )  # Job title, e.g. "VP Sales", "Account Executive Western Region"
+    reports_to_membership_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("org_members.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     invited_by_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL", onupdate="CASCADE"), nullable=True
     )
@@ -59,6 +68,11 @@ class OrganizationMembership(Base):
     )
     organization: Mapped["Organization"] = relationship(
         "Organization", foreign_keys=[organization_id]
+    )
+    reports_to: Mapped[Optional["OrgMember"]] = relationship(
+        "OrgMember",
+        remote_side="OrgMember.id",
+        foreign_keys=[reports_to_membership_id],
     )
     invited_by: Mapped[Optional["User"]] = relationship(
         "User", foreign_keys=[invited_by_user_id]

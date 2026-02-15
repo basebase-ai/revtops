@@ -22,6 +22,8 @@ interface ProfilePanelProps {
 
 export function ProfilePanel({ user, onClose, onLogout, onUpdateUser }: ProfilePanelProps): JSX.Element {
   const [name, setName] = useState(user.name ?? '');
+  const [jobTitle, setJobTitle] = useState(user.jobTitle ?? '');
+  const [phoneNumber, setPhoneNumber] = useState(user.phoneNumber ?? '');
   const [agentGlobalCommands, setAgentGlobalCommands] = useState(user.agentGlobalCommands ?? '');
   const [isSaving, setIsSaving] = useState(false);
   // Only use local state for a NEW avatar selection, otherwise use the user prop directly
@@ -48,6 +50,8 @@ export function ProfilePanel({ user, onClose, onLogout, onUpdateUser }: ProfileP
           name: name || null,
           avatar_url: avatarPreview,
           agent_global_commands: trimmedAgentGlobalCommands || null,
+          phone_number: phoneNumber.trim() || null,
+          job_title: jobTitle.trim() || null,
         }),
       });
 
@@ -56,13 +60,21 @@ export function ProfilePanel({ user, onClose, onLogout, onUpdateUser }: ProfileP
         throw new Error(data.detail ?? 'Failed to update profile');
       }
 
-      const updatedUser = await response.json() as { name: string | null; avatar_url: string | null; agent_global_commands: string | null };
+      const updatedUser = await response.json() as {
+        name: string | null;
+        avatar_url: string | null;
+        agent_global_commands: string | null;
+        phone_number: string | null;
+        job_title: string | null;
+      };
       
       // Update the store
       onUpdateUser({
         name: updatedUser.name,
         avatarUrl: updatedUser.avatar_url,
         agentGlobalCommands: updatedUser.agent_global_commands,
+        phoneNumber: updatedUser.phone_number,
+        jobTitle: updatedUser.job_title,
       });
       
       onClose();
@@ -172,6 +184,37 @@ export function ProfilePanel({ user, onClose, onLogout, onUpdateUser }: ProfileP
               />
             </div>
 
+
+            <div>
+              <label className="block text-sm font-medium text-surface-200 mb-2">
+                Job title
+              </label>
+              <input
+                type="text"
+                value={jobTitle}
+                onChange={(e) => setJobTitle(e.target.value)}
+                placeholder="e.g. VP of Sales, Account Executive"
+                className="input-field"
+                maxLength={255}
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-surface-200 mb-2">
+                Phone number
+              </label>
+              <input
+                type="tel"
+                value={phoneNumber}
+                onChange={(e) => setPhoneNumber(e.target.value)}
+                placeholder="e.g. +1 415-555-1234"
+                className="input-field"
+                maxLength={30}
+              />
+              <p className="text-xs text-surface-500 mt-1">
+                Used for urgent SMS alerts from workflows
+              </p>
+            </div>
 
             <div>
               <label className="block text-sm font-medium text-surface-200 mb-2">

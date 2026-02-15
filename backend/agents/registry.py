@@ -872,9 +872,14 @@ This is workflow-scoped memory, not user-wide memory.""",
 
 register_tool(
     name="save_memory",
-    description="""Save a memory or preference for the current user that will be recalled at the start of every future conversation.
+    description="""Save a memory or preference that will be recalled at the start of every future conversation.
 
-Use this when the user explicitly asks you to "remember" something, or states a preference they want persisted (e.g. "always be concise", "my territory is EMEA", "I prefer tables over lists").
+Memories are scoped to one of three levels via entity_type:
+- "user": Personal facts and preferences about the user (default). E.g. "User prefers concise answers", "User is based in San Francisco".
+- "organization": Facts about the company shared across all org members. E.g. "Company sells B2B SaaS", "~200 employees, $30M ARR".
+- "organization_member": Facts about the user's specific role/job. E.g. "Manages a team of 12 AEs across NA", "Currently leading Q1 pipeline review".
+
+Use this when the user explicitly asks you to "remember" something, states a preference, or shares context about themselves, their role, or their company.
 
 Each memory should be a single, self-contained statement. Save multiple memories as separate calls if the user gives you several things to remember.
 
@@ -884,7 +889,17 @@ Do NOT save conversation-specific context (like "user asked about deal X") — o
         "properties": {
             "content": {
                 "type": "string",
-                "description": "The memory to save. A concise, self-contained statement (e.g. 'User prefers concise answers' or 'User manages the EMEA territory').",
+                "description": "The memory to save. A concise, self-contained statement (e.g. 'User prefers concise answers' or 'Company mission: Make every sales rep a top performer').",
+            },
+            "entity_type": {
+                "type": "string",
+                "enum": ["user", "organization", "organization_member"],
+                "description": "The level to associate this memory with. Defaults to 'user'.",
+                "default": "user",
+            },
+            "category": {
+                "type": "string",
+                "description": "Optional grouping category (e.g. 'preference', 'personal', 'professional', 'project').",
             },
         },
         "required": ["content"],
@@ -895,7 +910,7 @@ Do NOT save conversation-specific context (like "user asked about deal X") — o
 
 register_tool(
     name="delete_memory",
-    description="""Delete a previously saved memory for the current user.
+    description="""Delete a previously saved memory.
 
 Use this when the user asks you to forget something, or when a previously saved memory is no longer relevant. You must provide the exact memory_id (UUID) from the memories listed in the system prompt.""",
     input_schema={
@@ -907,6 +922,48 @@ Use this when the user asks you to forget something, or when a previously saved 
             },
         },
         "required": ["memory_id"],
+    },
+    category=ToolCategory.LOCAL_WRITE,
+    default_requires_approval=False,
+)
+
+register_tool(
+    name="update_memory",
+    description="""Update the content of an existing memory.
+
+Use this when a previously saved memory needs to be revised (e.g. user got promoted, a project was completed, a preference changed). You must provide the exact memory_id (UUID) from the memories listed in the system prompt and the new content.""",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "memory_id": {
+                "type": "string",
+                "description": "UUID of the memory to update.",
+            },
+            "content": {
+                "type": "string",
+                "description": "The updated memory content.",
+            },
+        },
+        "required": ["memory_id", "content"],
+    },
+    category=ToolCategory.LOCAL_WRITE,
+    default_requires_approval=False,
+)
+
+register_tool(
+    name="save_phone_number",
+    description="""Save the user's phone number to their profile.
+
+Use this when the user shares their phone number. The number will be normalised to E.164 format (e.g. +14155551234). This enables urgent SMS alerts from workflows.""",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "phone_number": {
+                "type": "string",
+                "description": "The phone number in any common format. Will be normalised to E.164.",
+            },
+        },
+        "required": ["phone_number"],
     },
     category=ToolCategory.LOCAL_WRITE,
     default_requires_approval=False,

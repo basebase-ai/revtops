@@ -341,6 +341,9 @@ export function OrganizationPanel({ organization, currentUser, onClose }: Organi
                                   </span>
                                 )}
                               </div>
+                              {member.jobTitle && (
+                                <p className="text-sm text-surface-300 truncate">{member.jobTitle}</p>
+                              )}
                               <p className="text-sm text-surface-400 truncate">{member.email}</p>
                             </div>
                             {/* Identity count badges */}

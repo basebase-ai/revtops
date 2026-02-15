@@ -136,6 +136,8 @@ function App(): JSX.Element {
               name: null,
               avatarUrl: null,
               agentGlobalCommands: null,
+              phoneNumber: null,
+              jobTitle: null,
               roles: [],
             });
             setOrganization({
@@ -223,6 +225,8 @@ function App(): JSX.Element {
       name,
       avatarUrl,
       agentGlobalCommands: existingUser?.agentGlobalCommands ?? null,
+      phoneNumber: existingUser?.phoneNumber ?? null,
+      jobTitle: existingUser?.jobTitle ?? null,
       roles: [],
     });
 
@@ -261,6 +265,8 @@ function App(): JSX.Element {
           name: string | null;
           roles: string[];
           agent_global_commands: string | null;
+          phone_number: string | null;
+          job_title: string | null;
           organization_id: string | null;
           organization: { id: string; name: string; logo_url: string | null } | null;
         };
@@ -273,6 +279,8 @@ function App(): JSX.Element {
           name: userData.name ?? name,
           avatarUrl: userData.avatar_url ?? avatarUrl,
           agentGlobalCommands: userData.agent_global_commands ?? existingUser?.agentGlobalCommands ?? null,
+          phoneNumber: userData.phone_number ?? existingUser?.phoneNumber ?? null,
+          jobTitle: userData.job_title ?? existingUser?.jobTitle ?? null,
           roles: userData.roles ?? [],
         });
         

@@ -20,8 +20,8 @@ from models.change_session import ChangeSession
 from models.record_snapshot import RecordSnapshot
 from models.slack_user_mapping import SlackUserMapping
 from models.shared_file import SharedFile
-from models.user_memory import UserMemory
-from models.organization_membership import OrganizationMembership
+from models.memory import Memory
+from models.org_member import OrgMember
 from models.goal import Goal
 from models.tracker_team import TrackerTeam
 from models.tracker_project import TrackerProject
@@ -54,8 +54,8 @@ __all__ = [
     "RecordSnapshot",
     "SlackUserMapping",
     "SharedFile",
-    "UserMemory",
-    "OrganizationMembership",
+    "Memory",
+    "OrgMember",
     "Goal",
     "TrackerTeam",
     "TrackerProject",

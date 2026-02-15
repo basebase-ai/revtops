@@ -1,19 +1,61 @@
-# Revtops: Your Revenue Copilot
+# Revtops: Agentic Intelligence for Revenue Teams
 
-AI-powered revenue operations assistant that connects to HubSpot, Slack, Google Calendar (and Salesforce), normalizes data, and enables natural language querying and analysis through a chat interface.
+Revtops is an **agentic intelligence framework** that connects to the siloed tools and data sources your company already uses — CRM, email, calendars, Slack, issue trackers, code repos, meeting transcripts, and more — and exposes a unified AI agent that helps employees work faster, smarter, and with full context.
 
-> **Note:** This repository contains the authenticated app experience only. The public-facing website (landing page, blog, waitlist) is now served from a separate repository at [www.revtops.com](https://www.revtops.com).
+Instead of switching between a dozen tabs, employees ask **Penny** (our AI agent) questions in natural language — via the **web app** or **Slack** — and get instant, data-backed answers, reports, and actions across every connected system.
+
+### What Can Revtops Do?
+
+- **Answer questions across all your data** — "What deals closed this quarter?", "Show me all emails with Acme Corp", "What's on my calendar tomorrow?"
+- **Take action on your behalf** — Update CRM records, send emails, post to Slack channels, create issues in Linear — all with an approval workflow for safety
+- **Automate recurring work** — Schedule daily deal summaries, stale-deal alerts, weekly pipeline reports, post-sync analysis — delivered to Slack or email on a cron
+- **Generate reports and artifacts** — Interactive charts, PDF reports, dashboards — created on demand from live data
+- **Enrich your data** — Pull in company and contact intelligence from Apollo.io automatically
+- **Search semantically** — Full-text and vector search across emails, meetings, messages, and notes
+- **Remember context** — Persistent memory across conversations so the agent learns your preferences over time
+
+### Integrated Data Sources
+
+| Category | Sources |
+|---|---|
+| **CRM** | HubSpot, Salesforce |
+| **Email** | Gmail, Microsoft Outlook |
+| **Calendar** | Google Calendar, Microsoft Calendar |
+| **Messaging** | Slack (messages, DMs, channels) |
+| **Meeting Transcripts** | Fireflies, Zoom |
+| **Issue Tracking** | Linear, Asana |
+| **Code & Repos** | GitHub (repos, commits, PRs) |
+| **File Storage** | Google Drive (Docs, Sheets, Slides) |
+| **Data Enrichment** | Apollo.io (contacts & companies) |
+
+All integrations connect via OAuth through [Nango](https://nango.dev) — tokens are securely stored and auto-refreshed without any custom credential management.
+
+### How Users Interact
+
+- **Web App** — Full-featured React interface with real-time chat (WebSocket-streamed), a data browser, semantic search, workflow manager, and a pending-changes approval panel for CRM writes.
+- **Slack** — DM the bot or @mention it in any channel. Penny reads the thread context and responds inline. Conversations sync between Slack and the web app.
+
+### Synchronous and Asynchronous Agent Operation
+
+Revtops supports multiple execution modes:
+
+- **Synchronous (real-time)** — Users chat with Penny via WebSocket. Tool calls execute inline and results stream back token-by-token.
+- **Asynchronous (background)** — Workflows run on a Celery task queue. Scheduled (cron), event-driven (e.g. "after every data sync"), or manually triggered.
+- **Agent Swarms** — Complex tasks can be decomposed into prompt-based workflows that spawn child agents, each tackling a sub-problem. Workflows can trigger other workflows, enabling multi-agent coordination to solve problems no single agent pass could handle.
+
+> **Note:** This repository contains the authenticated app experience only. The public-facing website (landing page, blog, waitlist) is served from a separate repository at [www.revtops.com](https://www.revtops.com).
 
 ## Tech Stack
 
-- **Frontend**: React + TypeScript + Tailwind CSS + Vite + Zustand (primary) + React Query (mutations)
-- **Backend**: Python 3.11 + FastAPI + SQLAlchemy
-- **Database**: PostgreSQL 15 with JSONB support
+- **Frontend**: React 18 + TypeScript + Tailwind CSS + Vite + Zustand (primary state) + React Query (mutations) + Plotly.js (charts)
+- **Backend**: Python 3.11 + FastAPI + SQLAlchemy (async)
+- **Database**: PostgreSQL 15 with JSONB + pgvector (embeddings)
+- **Task Queue**: Celery + Redis (async workflows, scheduled jobs)
 - **Cache**: Redis
-- **Auth**: [Supabase](https://supabase.com) - Google OAuth & session management
-- **LLM**: Anthropic Claude API (Opus 4.5)
-- **OAuth (Integrations)**: [Nango](https://nango.dev) - Unified OAuth for all integrations
-- **Integrations**: HubSpot, Slack, Google Calendar, Salesforce
+- **Auth**: [Supabase](https://supabase.com) — Google OAuth & session management
+- **AI**: Anthropic Claude (Opus 4.5) for agent reasoning; OpenAI for embeddings
+- **OAuth (Integrations)**: [Nango](https://nango.dev) — Unified OAuth for all integrations
+- **PDF Generation**: WeasyPrint
 - **Deployment**: Docker + docker-compose (dev), Railway (production)
 
 ## Quick Start
@@ -23,7 +65,8 @@ AI-powered revenue operations assistant that connects to HubSpot, Slack, Google 
 - Docker and Docker Compose
 - [Supabase project](https://supabase.com) with Google OAuth configured
 - [Nango account](https://app.nango.dev) with integrations configured
-- Anthropic API key
+- Anthropic API key (Claude — agent reasoning)
+- OpenAI API key (embeddings for semantic search)
 - Python 3.10+ (brew or venv; op-ed: use pyenv to force this globally)
 - Dependencies - python -m pip install -r requirements.txt (from the backend directory; again, be env mindful)
 
@@ -81,12 +124,22 @@ cp env.example .env
 
 2. **Configure Nango integrations:**
 
-In your Nango dashboard, configure these integrations:
+In your Nango dashboard, configure the integrations you need:
 
 - `hubspot` - HubSpot CRM
+- `salesforce` - Salesforce CRM
 - `slack` - Slack workspace
 - `google-calendar` - Google Calendar
-- `salesforce` - Salesforce (optional)
+- `microsoft-calendar` - Microsoft Outlook Calendar
+- `gmail` - Gmail
+- `microsoft-mail` - Microsoft Outlook Mail
+- `fireflies` - Fireflies meeting transcripts
+- `zoom` - Zoom meetings
+- `linear` - Linear issue tracking
+- `asana` - Asana project management
+- `github` - GitHub repos & PRs
+- `apollo` - Apollo.io data enrichment
+- `google-drive` - Google Drive files
 
 3. **Start all services:**
 
@@ -216,7 +269,8 @@ revtops/
 ├── backend/
 │   ├── api/               # FastAPI routes and WebSocket handlers
 │   ├── agents/            # Claude orchestration and tools
-│   ├── connectors/        # HubSpot, Slack, Google Calendar, Salesforce
+│   ├── connectors/        # HubSpot, Salesforce, Slack, Gmail, Outlook, Google Calendar, Microsoft Calendar, Fireflies, Zoom, Linear, Asana, GitHub, Apollo, Google Drive
+│   ├── workers/           # Celery tasks (sync, workflows, async agent runs)
 │   ├── models/            # SQLAlchemy models
 │   ├── services/          # Nango client and other services
 │   └── db/                # Database migrations and queries
@@ -421,7 +475,8 @@ We use [Nango](https://nango.dev) to handle all OAuth complexity:
 | ------------------- | ----------------------------------- |
 | `DATABASE_URL`      | PostgreSQL connection string        |
 | `REDIS_URL`         | Redis connection string             |
-| `ANTHROPIC_API_KEY` | Anthropic API key for Claude        |
+| `ANTHROPIC_API_KEY` | Anthropic API key for Claude (agent reasoning) |
+| `OPENAI_API_KEY`    | OpenAI API key (embeddings for semantic search) |
 | `SECRET_KEY`        | Application secret for sessions     |
 | `FRONTEND_URL`      | Frontend URL for CORS and redirects |
 | `SUPABASE_URL`      | Supabase project URL (from Railway) |
@@ -479,10 +534,25 @@ User Message → WebSocket → Orchestrator → Claude API
 
 ### Available Tools
 
-| Tool              | Description                                                               |
-| ----------------- | ------------------------------------------------------------------------- |
-| `run_sql_query`   | Execute arbitrary read-only SQL SELECT queries with automatic org scoping |
-| `create_artifact` | Save dashboards, reports, or analyses                                     |
+| Tool | Description |
+|---|---|
+| `run_sql_query` | Execute read-only SQL SELECT queries with automatic org scoping |
+| `run_sql_write` | INSERT/UPDATE/DELETE for internal tables |
+| `search_activities` | Semantic search across emails, meetings, and messages |
+| `create_artifact` | Generate reports, charts, and PDF documents |
+| `create_workflow` | Create scheduled, event-driven, or manual workflows |
+| `trigger_workflow` | Manually trigger an existing workflow |
+| `write_to_system_of_record` | Universal write tool for CRMs, issue trackers, code repos |
+| `send_email_from` | Send email from the user's connected Gmail or Outlook |
+| `send_slack` | Post messages to Slack channels |
+| `web_search` | Search the web for real-time information |
+| `fetch_url` | Fetch and parse web page content |
+| `enrich_contacts_with_apollo` | Enrich contacts via Apollo.io |
+| `enrich_company_with_apollo` | Enrich company data via Apollo.io |
+| `trigger_sync` | Trigger a data sync for any connected integration |
+| `save_memory` | Persist information across conversations |
+| `delete_memory` | Remove a saved memory |
+| `keep_notes` | Workflow-scoped scratchpad for multi-step reasoning |
 
 ### Tool Execution Flow
 
@@ -550,17 +620,46 @@ value = _serialize_value(datetime_from_db)  # Returns "2026-02-04T18:00:00Z"
 | Compare naive and aware datetimes | Convert both to UTC-aware first |
 | `f"{dt.isoformat()}"` (inconsistent) | `f"{dt.strftime('%Y-%m-%dT%H:%M:%SZ')}"` |
 
+## Agent Tool Categories
+
+The agent's tools are organized by risk level with an approval system for safety:
+
+| Category | Approval | Examples |
+|---|---|---|
+| **Local Read** | None | SQL queries, semantic search across activities |
+| **Local Write** | Tracked | Create artifacts/reports, create workflows, write to internal tables |
+| **External Read** | None | Web search, fetch URLs, enrich contacts/companies via Apollo |
+| **External Write** | User approval required | Update CRM records, send emails, post to Slack, trigger syncs |
+
+Users review and approve external writes in the **Pending Changes** panel before they execute.
+
+## Workflows
+
+Revtops workflows automate recurring agent tasks:
+
+- **Schedule-based** — Cron expressions (e.g. "every weekday at 9am")
+- **Event-based** — Triggered by system events (e.g. "after data sync completes")
+- **Manual** — Triggered on demand by users or other workflows
+
+Workflows can be defined as natural-language prompts (the agent interprets and executes them) or as structured step sequences. Actions include SQL queries, LLM processing, Slack messages, emails, and SMS.
+
 ## Features
 
-- **Google OAuth via Supabase**: Simple sign-in with Google accounts (work email required)
-- **Multi-Integration Support**: Connect HubSpot, Slack, Google Calendar, Salesforce
-- **Unified OAuth via Nango**: Secure, automatic token management for integrations
-- **Natural Language Queries**: Ask questions about your pipeline in plain English
-- **Real-time Chat**: WebSocket-based streaming responses with conversation history
-- **Multiple Conversations**: Create and switch between chat threads
-- **Data Normalization**: All CRM data normalized to a common schema
-- **Activity Tracking**: Slack messages and calendar events as activities
-- **Waitlist Integration**: Users join via public website, backend manages access control
+- **Agentic Intelligence** — AI agent with full tool access across all connected data sources
+- **14+ Integrations** — CRM, email, calendar, Slack, issue trackers, code repos, meeting transcripts, file storage, enrichment
+- **Web App + Slack** — Interact via browser or directly in Slack (DMs and @mentions)
+- **Real-time Streaming** — WebSocket-based chat with token-by-token response streaming
+- **Automated Workflows** — Scheduled, event-driven, and manual automation with natural-language definitions
+- **Agent Swarms** — Workflows can spawn child agents for complex multi-step tasks
+- **Approval Workflow** — External writes (CRM updates, emails, Slack posts) require user approval
+- **Semantic Search** — Vector-powered search across emails, meetings, messages, and notes
+- **Artifact Generation** — Interactive charts (Plotly), PDF reports, dashboards — created from live data
+- **Data Enrichment** — Apollo.io integration for contact and company intelligence
+- **Persistent Memory** — Agent remembers preferences and context across conversations
+- **Multiple Conversations** — Create and switch between chat threads
+- **Data Normalization** — All external data normalized to a common schema
+- **Google OAuth via Supabase** — Simple sign-in with Google accounts (work email required)
+- **Unified OAuth via Nango** — Secure, automatic token management for all integrations
 
 ## License
 

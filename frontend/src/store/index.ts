@@ -26,6 +26,8 @@ export interface UserProfile {
   name: string | null;
   avatarUrl: string | null;
   agentGlobalCommands: string | null;
+  phoneNumber: string | null;
+  jobTitle: string | null;
   roles: string[]; // Global roles like ['global_admin']
 }
 
@@ -1427,6 +1429,8 @@ export const useAppStore = create<AppState>()(
             avatar_url: string | null;
             name: string | null;
             agent_global_commands: string | null;
+            phone_number: string | null;
+            job_title: string | null;
             roles: string[];
             organization: {
               id: string;
@@ -1442,6 +1446,8 @@ export const useAppStore = create<AppState>()(
             data.avatar_url !== user.avatarUrl ||
             data.name !== user.name ||
             data.agent_global_commands !== user.agentGlobalCommands ||
+            data.phone_number !== user.phoneNumber ||
+            data.job_title !== user.jobTitle ||
             JSON.stringify(newRoles) !== JSON.stringify(user.roles)
           ) {
             setUser({
@@ -1450,6 +1456,8 @@ export const useAppStore = create<AppState>()(
               name: data.name ?? user.name,
               avatarUrl: data.avatar_url ?? user.avatarUrl,
               agentGlobalCommands: data.agent_global_commands ?? user.agentGlobalCommands,
+              phoneNumber: data.phone_number ?? user.phoneNumber,
+              jobTitle: data.job_title ?? user.jobTitle,
               roles: newRoles,
             });
           }
