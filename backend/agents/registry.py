@@ -480,7 +480,9 @@ Bulk CRM writes (multiple records) go through the Pending Changes panel for revi
 - record_type "issue", operation "create": repo_full_name (required, 'owner/repo'),
   title (required), body, labels, assignees
 
-Single-record writes execute immediately. Bulk CRM writes create pending changes.
+Single-record writes execute immediately. Bulk CRM writes (>5 records) create pending changes.
+Set require_review=true to ALWAYS route through Pending Changes for human review,
+regardless of record count. Use this in workflows where accuracy matters.
 
 Example — create a Linear issue:
 {
@@ -522,6 +524,10 @@ IMPORTANT: Always explain what you're going to create/update BEFORE calling this
                 "type": "array",
                 "items": {"type": "object"},
                 "description": "Array of record objects. Fields vary by target_system and record_type. Max 100 for CRM systems.",
+            },
+            "require_review": {
+                "type": "boolean",
+                "description": "If true, always route through Pending Changes for human review instead of writing directly. Use for bulk enrichment or any workflow where a human should verify changes before they go live.",
             },
         },
         "required": ["target_system", "record_type", "operation", "records"],

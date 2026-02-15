@@ -1487,7 +1487,11 @@ async def _write_to_system_of_record(
     if target_system in (_TRACKER_SYSTEMS | _CODE_REPO_SYSTEMS) and record_type != "issue":
         return {"error": f"Unsupported record_type '{record_type}' for {target_system}. Only 'issue' is supported."}
 
-    direct_execute: bool = len(records) <= _DIRECT_WRITE_THRESHOLD
+    require_review: bool = bool(params.get("require_review", False))
+    direct_execute: bool = (
+        len(records) <= _DIRECT_WRITE_THRESHOLD
+        and not require_review
+    )
 
     if direct_execute:
         # ── Small write: execute immediately against external API ──
@@ -1496,7 +1500,9 @@ async def _write_to_system_of_record(
             organization_id, user_id, skip_approval, conversation_id,
         )
     else:
-        # ── Large write: go through Pending Changes UI for review ──
+        # ── Large write or require_review: go through Pending Changes UI ──
+        if require_review and target_system not in _CRM_SYSTEMS:
+            return {"error": f"require_review is only supported for CRM systems, not '{target_system}'."}
         return await _execute_pending_write(
             target_system, record_type, operation, records,
             organization_id, user_id, skip_approval, conversation_id,
