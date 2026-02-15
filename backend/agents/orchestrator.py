@@ -503,6 +503,7 @@ class ChatOrchestrator:
         self.user_email = user_email
         self.user_name = user_name
         self.organization_name = organization_name
+        self.agent_global_commands: str | None = None
         self.local_time = local_time
         self.timezone = timezone
         self.source_user_id = source_user_id
@@ -518,24 +519,27 @@ class ChatOrchestrator:
         self._current_message_id: UUID | None = None
 
     async def _resolve_user_context(self) -> None:
-        """Fetch user name, email, and organization name from DB if not already set."""
+        """Fetch user context fields from DB if not already set."""
         from models.user import User
         from models.organization import Organization
 
         try:
             async with get_session(organization_id=self.organization_id) as session:
-                if self.user_id and (not self.user_name or not self.user_email):
+                if self.user_id and (not self.user_name or not self.user_email or self.agent_global_commands is None):
                     result = await session.execute(
-                        select(User.name, User.email).where(User.id == UUID(self.user_id))
+                        select(User.name, User.email, User.agent_global_commands).where(User.id == UUID(self.user_id))
                     )
                     row = result.one_or_none()
                     if row:
                         fetched_name: str | None = row[0]
                         fetched_email: str | None = row[1]
+                        fetched_agent_global_commands: str | None = row[2]
                         if not self.user_name and fetched_name:
                             self.user_name = fetched_name
                         if not self.user_email and fetched_email:
                             self.user_email = fetched_email
+                        if fetched_agent_global_commands:
+                            self.agent_global_commands = fetched_agent_global_commands
 
                 if not self.organization_name and self.organization_id:
                     result = await session.execute(
@@ -661,7 +665,7 @@ class ChatOrchestrator:
         system_prompt = SYSTEM_PROMPT
 
         # Resolve user_name, user_email, and organization_name if not already set
-        if self.user_id and (not self.user_name or not self.user_email or not self.organization_name):
+        if self.user_id and (not self.user_name or not self.user_email or not self.organization_name or self.agent_global_commands is None):
             await self._resolve_user_context()
         
         # Add message origination context
@@ -689,6 +693,10 @@ class ChatOrchestrator:
         elif not self.user_id:
             # Slack thread or unlinked conversation — no specific user context
             system_prompt += "\n\n## Current User\nThe specific user is not identified in Revtops."
+
+        if self.agent_global_commands:
+            system_prompt += "\n\n## User Global Commands\nThe user configured these standing instructions for every prompt. Follow them unless they conflict with higher-priority system/developer constraints:\n"
+            system_prompt += self.agent_global_commands.strip()
 
         # Add Slack channel context so the agent can scope queries to the right channel
         slack_channel_id: str | None = (self.workflow_context or {}).get("slack_channel_id")

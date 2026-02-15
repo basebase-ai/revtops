@@ -100,6 +100,7 @@ class UserResponse(BaseModel):
     name: Optional[str]
     role: Optional[str]
     avatar_url: Optional[str]
+    agent_global_commands: Optional[str]
     organization_id: Optional[str]
 
 
@@ -185,6 +186,7 @@ async def get_current_user(user_id: Optional[str] = None) -> UserResponse:
             name=user.name,
             role=user.role,
             avatar_url=user.avatar_url,
+            agent_global_commands=user.agent_global_commands,
             organization_id=str(user.organization_id) if user.organization_id else None,
         )
 
@@ -194,6 +196,7 @@ class UpdateProfileRequest(BaseModel):
 
     name: Optional[str] = None
     avatar_url: Optional[str] = None
+    agent_global_commands: Optional[str] = None
 
 
 @router.patch("/me", response_model=UserResponse)
@@ -220,6 +223,8 @@ async def update_profile(
             user.name = request.name
         if request.avatar_url is not None:
             user.avatar_url = request.avatar_url
+        if request.agent_global_commands is not None:
+            user.agent_global_commands = request.agent_global_commands
 
         await session.commit()
         await session.refresh(user)
@@ -230,6 +235,7 @@ async def update_profile(
             name=user.name,
             role=user.role,
             avatar_url=user.avatar_url,
+            agent_global_commands=user.agent_global_commands,
             organization_id=str(user.organization_id) if user.organization_id else None,
         )
 
@@ -264,6 +270,7 @@ class SyncUserRequest(BaseModel):
     email: str
     name: Optional[str] = None
     avatar_url: Optional[str] = None
+    agent_global_commands: Optional[str] = None
     organization_id: Optional[str] = None
 
 
@@ -282,6 +289,7 @@ class SyncUserResponse(BaseModel):
     email: str
     name: Optional[str]
     avatar_url: Optional[str]
+    agent_global_commands: Optional[str]
     organization_id: Optional[str]
     organization: Optional[SyncOrganizationData] = None
     status: str  # 'waitlist', 'invited', 'active'
@@ -434,6 +442,7 @@ async def sync_user(request: SyncUserRequest) -> SyncUserResponse:
                 email=existing.email,
                 name=existing.name,
                 avatar_url=existing.avatar_url,
+                agent_global_commands=existing.agent_global_commands,
                 organization_id=str(existing.organization_id) if existing.organization_id else None,
                 organization=org_data,
                 status=existing.status,
@@ -479,6 +488,7 @@ async def sync_user(request: SyncUserRequest) -> SyncUserResponse:
                     email=request.email,
                     name=request.name,
                     avatar_url=request.avatar_url,
+                    agent_global_commands=request.agent_global_commands,
                     organization_id=existing_org.id,
                     status="active",
                     role="member",
@@ -511,6 +521,7 @@ async def sync_user(request: SyncUserRequest) -> SyncUserResponse:
                     email=new_user.email,
                     name=new_user.name,
                     avatar_url=new_user.avatar_url,
+                    agent_global_commands=new_user.agent_global_commands,
                     organization_id=str(new_user.organization_id),
                     organization=org_data,
                     status=new_user.status,
@@ -1153,6 +1164,7 @@ async def switch_active_organization(
             email=user.email,
             name=user.name,
             avatar_url=user.avatar_url,
+            agent_global_commands=user.agent_global_commands,
             organization_id=str(user.organization_id) if user.organization_id else None,
             organization=org_data,
             status=user.status,
