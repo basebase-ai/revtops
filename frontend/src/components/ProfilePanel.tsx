@@ -20,6 +20,7 @@ interface ProfilePanelProps {
 
 export function ProfilePanel({ user, onClose, onLogout, onUpdateUser }: ProfilePanelProps): JSX.Element {
   const [name, setName] = useState(user.name ?? '');
+  const [agentGlobalCommands, setAgentGlobalCommands] = useState(user.agentGlobalCommands ?? '');
   const [isSaving, setIsSaving] = useState(false);
   // Only use local state for a NEW avatar selection, otherwise use the user prop directly
   const [newAvatarFile, setNewAvatarFile] = useState<string | null>(null);
@@ -38,6 +39,7 @@ export function ProfilePanel({ user, onClose, onLogout, onUpdateUser }: ProfileP
         body: JSON.stringify({
           name: name || null,
           avatar_url: avatarPreview,
+          agent_global_commands: agentGlobalCommands || null,
         }),
       });
 
@@ -46,12 +48,13 @@ export function ProfilePanel({ user, onClose, onLogout, onUpdateUser }: ProfileP
         throw new Error(data.detail ?? 'Failed to update profile');
       }
 
-      const updatedUser = await response.json() as { name: string | null; avatar_url: string | null };
+      const updatedUser = await response.json() as { name: string | null; avatar_url: string | null; agent_global_commands: string | null };
       
       // Update the store
       onUpdateUser({
         name: updatedUser.name,
         avatarUrl: updatedUser.avatar_url,
+        agentGlobalCommands: updatedUser.agent_global_commands,
       });
       
       onClose();
@@ -158,6 +161,19 @@ export function ProfilePanel({ user, onClose, onLogout, onUpdateUser }: ProfileP
                 onChange={(e) => setName(e.target.value)}
                 placeholder="Your name"
                 className="input-field"
+              />
+            </div>
+
+
+            <div>
+              <label className="block text-sm font-medium text-surface-200 mb-2">
+                Agent global commands
+              </label>
+              <textarea
+                value={agentGlobalCommands}
+                onChange={(e) => setAgentGlobalCommands(e.target.value)}
+                placeholder="Persistent instructions that should be included whenever prompts are sent to the agent"
+                className="input-field min-h-28"
               />
             </div>
 

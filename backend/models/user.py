@@ -40,6 +40,7 @@ class User(Base):
         JSONB, nullable=False, default=list
     )  # Global roles like ['global_admin']
     avatar_url: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    agent_global_commands: Mapped[Optional[str]] = mapped_column(String(4000), nullable=True)
     
     # Waitlist fields
     status: Mapped[str] = mapped_column(
@@ -80,5 +81,6 @@ class User(Base):
             "roles": self.roles,
             "status": self.status,
             "avatar_url": self.avatar_url,
+            "agent_global_commands": self.agent_global_commands,
             "organization_id": str(self.organization_id) if self.organization_id else None,
         }
