@@ -185,7 +185,7 @@ export function ProfilePanel({ user, onClose, onLogout, onUpdateUser }: ProfileP
                 maxLength={AGENT_GLOBAL_COMMANDS_MAX_LENGTH}
               />
               <p className="mt-1 text-xs text-surface-500">
-                ({agentGlobalCommands.length})/{AGENT_GLOBAL_COMMANDS_MAX_LENGTH}
+                {agentGlobalCommands.length}/{AGENT_GLOBAL_COMMANDS_MAX_LENGTH}
               </p>
             </div>
 
