@@ -24,7 +24,7 @@ import {
   SiGithub,
   SiLinear,
 } from 'react-icons/si';
-import { HiOutlineCalendar, HiOutlineMail, HiGlobeAlt, HiUserGroup, HiExclamation, HiDeviceMobile, HiMicrophone } from 'react-icons/hi';
+import { HiOutlineCalendar, HiOutlineMail, HiGlobeAlt, HiUserGroup, HiExclamation, HiDeviceMobile, HiMicrophone, HiLightningBolt, HiX } from 'react-icons/hi';
 // Custom Apollo.io icon - 8-ray starburst matching their brand
 const ApolloIcon: IconType = ({ className, ...props }) => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className={className} {...props}>
@@ -257,6 +257,9 @@ export function DataSources(): JSX.Element {
   const [slackShowAddForm, setSlackShowAddForm] = useState(false);
   const [showConnectModal, setShowConnectModal] = useState(false);
   const [connectSearch, setConnectSearch] = useState('');
+  const [pennyBotCtaDismissed, setPennyBotCtaDismissed] = useState<boolean>(
+    () => localStorage.getItem('penny_bot_cta_dismissed') === '1',
+  );
 
   // GitHub: available repos (from token), tracked repo ids, selection, loading
   interface GitHubRepo {
@@ -984,6 +987,55 @@ export function DataSources(): JSX.Element {
       );
     };
 
+    const renderPennyBotCta = (): JSX.Element | null => {
+      if (integration.provider !== 'slack' || state !== 'connected' || pennyBotCtaDismissed) return null;
+
+      const handleDismiss = (): void => {
+        setPennyBotCtaDismissed(true);
+        localStorage.setItem('penny_bot_cta_dismissed', '1');
+      };
+
+      return (
+        <div className="mt-4 pt-4 border-t border-surface-700/50">
+          <div className="relative rounded-lg border border-purple-500/20 bg-purple-500/5 p-3.5">
+            <button
+              type="button"
+              onClick={handleDismiss}
+              className="absolute top-2 right-2 text-surface-500 hover:text-surface-300 transition-colors"
+              aria-label="Dismiss"
+            >
+              <HiX className="w-4 h-4" />
+            </button>
+            <div className="flex items-start gap-3 pr-4">
+              <div className="mt-0.5 flex-shrink-0 rounded-lg bg-purple-500/15 p-1.5">
+                <HiLightningBolt className="w-4 h-4 text-purple-400" />
+              </div>
+              <div className="space-y-1.5">
+                <h4 className="text-sm font-semibold text-surface-100">
+                  Add the Penny bot to Slack
+                </h4>
+                <p className="text-xs leading-relaxed text-surface-400">
+                  This integration syncs your Slack messages so Penny can search and reference them.
+                  To <span className="text-surface-300">DM Penny</span> or <span className="text-surface-300">@mention</span> her
+                  directly in channels, ask your workspace admin to install the
+                  {' '}<span className="font-medium text-purple-300">Penny</span> bot app from the Slack App Directory.
+                </p>
+                <a
+                  href="https://slack.com/apps"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 text-xs font-medium text-purple-400 hover:text-purple-300 transition-colors"
+                >
+                  Browse Slack App Directory
+                  <span aria-hidden="true">&rarr;</span>
+                </a>
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    };
+
     const renderSlackMapping = (): JSX.Element | null => {
       if (integration.provider !== 'slack' || state !== 'connected') return null;
 
@@ -1310,6 +1362,7 @@ export function DataSources(): JSX.Element {
 
         {/* Team connections footer */}
         {renderTeamInfo()}
+        {renderPennyBotCta()}
         {renderSlackMapping()}
         {renderGitHubRepos()}
       </div>

@@ -4,7 +4,7 @@ Tool definitions and execution for Claude.
 Tools are organized by category (see registry.py):
 - LOCAL_READ: run_sql_query, search_activities
 - LOCAL_WRITE: create_artifact, run_sql_write, run_workflow
-- EXTERNAL_READ: web_search, fetch_url, enrich_contacts_with_apollo, enrich_company_with_apollo, search_system_of_record
+- EXTERNAL_READ: web_search, fetch_url, enrich_with_apollo, search_system_of_record
 - EXTERNAL_WRITE: write_to_system_of_record, send_email_from, send_slack, trigger_sync
 
 All writes to external systems (CRM, issue trackers, code repos) go through
@@ -147,6 +147,7 @@ ALLOWED_TABLES: set[str] = {
     "github_repositories", "github_commits", "github_pull_requests",
     "shared_files",
     "tracker_teams", "tracker_projects", "tracker_issues",
+    "bulk_operations", "bulk_operation_results",
 }
 
 
@@ -244,9 +245,11 @@ async def execute_tool(
     # Check if this tool should bypass approval (for auto-approved workflows)
     skip_approval = await _should_skip_approval(tool_name, user_id, context)
 
-    if normalized_tool_name in ("save_memory", "update_memory") and context and context.get("is_workflow"):
-        logger.info("[Tools] Blocking %s during workflow execution", normalized_tool_name)
-        return {"error": f"{normalized_tool_name} is not available in workflows. Use keep_notes for workflow-scoped notes."}
+    if normalized_tool_name == "manage_memory" and context and context.get("is_workflow"):
+        action: str = tool_input.get("action", "save")
+        if action in ("save", "update"):
+            logger.info("[Tools] Blocking manage_memory(%s) during workflow execution", action)
+            return {"error": "manage_memory save/update is not available in workflows. Use keep_notes for workflow-scoped notes."}
 
     conversation_id: str | None = (context or {}).get("conversation_id")
     tool_handlers: dict[str, Callable[[], Awaitable[dict[str, Any]]]] = {
@@ -257,8 +260,7 @@ async def execute_tool(
         "run_workflow": lambda: _run_workflow(tool_input, organization_id, user_id, context),
         "loop_over": lambda: _loop_over(tool_input, organization_id, user_id, context),
         "fetch_url": lambda: _fetch_url(tool_input),
-        "enrich_contacts_with_apollo": lambda: _enrich_contacts_with_apollo(tool_input, organization_id),
-        "enrich_company_with_apollo": lambda: _enrich_company_with_apollo(tool_input, organization_id),
+        "enrich_with_apollo": lambda: _enrich_with_apollo(tool_input, organization_id),
         "crm_write": lambda: _crm_write(
             tool_input,
             organization_id,
@@ -282,12 +284,12 @@ async def execute_tool(
         "read_cloud_file": lambda: _read_cloud_file(tool_input, organization_id, user_id),
         "create_artifact": lambda: _create_artifact(tool_input, organization_id, user_id, context),
         "keep_notes": lambda: _keep_notes(tool_input, organization_id, user_id, context, skip_approval),
-        "save_memory": lambda: _save_memory(tool_input, organization_id, user_id, skip_approval),
-        "delete_memory": lambda: _delete_memory(tool_input, organization_id, user_id),
-        "update_memory": lambda: _update_memory(tool_input, organization_id, user_id),
+        "manage_memory": lambda: _manage_memory(tool_input, organization_id, user_id, skip_approval),
         "create_linear_issue": lambda: _create_linear_issue(tool_input, organization_id, user_id, skip_approval),
         "update_linear_issue": lambda: _update_linear_issue(tool_input, organization_id, user_id, skip_approval),
         "search_linear_issues": lambda: _search_linear_issues(tool_input, organization_id),
+        "bulk_tool_run": lambda: _bulk_tool_run(tool_input, organization_id, user_id, context),
+        "monitor_operation": lambda: _monitor_operation(tool_input, organization_id, context),
     }
 
     handler = tool_handlers.get(normalized_tool_name)
@@ -318,10 +320,8 @@ def _log_tool_execution_result(
         )
     elif executed_tool_name == "fetch_url":
         logger.info("[Tools] fetch_url completed: %s", result.get("url"))
-    elif executed_tool_name == "enrich_contacts_with_apollo":
-        logger.info("[Tools] enrich_contacts_with_apollo completed: %d results", len(result.get("enriched", [])))
-    elif executed_tool_name == "enrich_company_with_apollo":
-        logger.info("[Tools] enrich_company_with_apollo completed")
+    elif executed_tool_name == "enrich_with_apollo":
+        logger.info("[Tools] enrich_with_apollo completed: %s", result.get("status", "done"))
     elif executed_tool_name in {"crm_write", "write_to_system_of_record"}:
         logger.info("[Tools] write_to_system_of_record completed: %s", result.get("status", result.get("error", "unknown")))
     elif executed_tool_name == "send_email_from":
@@ -338,10 +338,8 @@ def _log_tool_execution_result(
         logger.info("[Tools] create_artifact completed: %s", result.get("artifact_id"))
     elif executed_tool_name == "keep_notes":
         logger.info("[Tools] keep_notes completed: %s", result.get("note_id", result.get("error", result.get("status"))))
-    elif executed_tool_name == "save_memory":
-        logger.info("[Tools] save_memory completed: %s", result.get("memory_id", result.get("error", result.get("status"))))
-    elif executed_tool_name == "delete_memory":
-        logger.info("[Tools] delete_memory completed: %s", result.get("status", result.get("error")))
+    elif executed_tool_name == "manage_memory":
+        logger.info("[Tools] manage_memory completed: %s", result.get("memory_id", result.get("status", result.get("error"))))
 
     else:
         logger.info("[Tools] %s completed: %s", requested_tool_name, result.get("status", result))
@@ -3565,6 +3563,16 @@ async def get_crm_operation_status(operation_id: str, organization_id: str | Non
 
 
 
+async def _enrich_with_apollo(
+    params: dict[str, Any], organization_id: str
+) -> dict[str, Any]:
+    """Unified Apollo enrichment dispatcher."""
+    enrich_type: str = params.get("type", "contacts")
+    if enrich_type == "company":
+        return await _enrich_company_with_apollo(params, organization_id)
+    return await _enrich_contacts_with_apollo(params, organization_id)
+
+
 async def _enrich_contacts_with_apollo(
     params: dict[str, Any], organization_id: str
 ) -> dict[str, Any]:
@@ -4920,6 +4928,18 @@ async def execute_keep_notes(
     return {"note_id": f"{run_id}:{len(notes) - 1}", "content": content, "status": "saved"}
 
 
+async def _manage_memory(
+    params: dict[str, Any], organization_id: str, user_id: str | None, skip_approval: bool = False
+) -> dict[str, Any]:
+    """Unified memory dispatcher: save, update, or delete."""
+    action: str = params.get("action", "save")
+    if action == "delete":
+        return await _delete_memory(params, organization_id, user_id)
+    if action == "update":
+        return await _update_memory(params, organization_id, user_id)
+    return await _save_memory(params, organization_id, user_id, skip_approval)
+
+
 async def _save_memory(
     params: dict[str, Any],
     organization_id: str,
@@ -4944,7 +4964,7 @@ async def _save_memory(
     operation_id = str(uuid4())
     store_pending_operation(
         operation_id=operation_id,
-        tool_name="save_memory",
+        tool_name="manage_memory",
         params=params,
         organization_id=organization_id,
         user_id=user_id,
@@ -4954,7 +4974,7 @@ async def _save_memory(
         "type": "pending_approval",
         "status": "pending_approval",
         "operation_id": operation_id,
-        "tool_name": "save_memory",
+        "tool_name": "manage_memory",
         "preview": {
             "content": content[:500] + ("..." if len(content) > 500 else ""),
             "entity_type": entity_type,
@@ -5098,5 +5118,207 @@ async def _update_memory(
         await session.commit()
 
     return {"status": "updated", "memory_id": memory_id, "content": new_content}
+
+
+# =============================================================================
+# Bulk Tool Run — General-purpose parallel tool execution
+# =============================================================================
+
+
+async def _bulk_tool_run(
+    params: dict[str, Any],
+    organization_id: str,
+    user_id: str | None,
+    context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """
+    Run any registered tool over a list of items in parallel via Celery.
+
+    The items are specified via ``items_query`` (a SQL SELECT) or ``items``
+    (an inline list).  The tool is called once per item with params built from
+    ``params_template`` by substituting ``{{field}}`` placeholders.
+
+    Returns immediately with an ``operation_id`` that the agent can monitor
+    via ``monitor_operation``.
+    """
+    from models.bulk_operation import BulkOperation
+    from workers.tasks.bulk_operations import bulk_tool_run_coordinator
+
+    tool_name: str = params.get("tool", "").strip()
+    items_query: str | None = params.get("items_query")
+    inline_items: list[dict[str, Any]] | None = params.get("items")
+    params_template: dict[str, Any] = params.get("params_template", {})
+    rate_limit: int = min(max(params.get("rate_limit_per_minute", 200), 1), 2000)
+    operation_name: str = params.get("operation_name", f"Bulk {tool_name}").strip()
+
+    if not tool_name:
+        return {"error": "tool is required (the name of the tool to run per item)."}
+
+    if not params_template:
+        return {"error": "params_template is required (how to build tool params from each item)."}
+
+    if not items_query and not inline_items:
+        return {
+            "error": "Either items_query (SQL SELECT) or items (inline list) is required.",
+        }
+
+    # Validate items_query is a SELECT
+    if items_query:
+        stripped: str = items_query.strip()
+        if not stripped.upper().startswith("SELECT"):
+            return {"error": "items_query must be a SELECT statement."}
+
+    # Extract conversation / tool_call context for progress broadcasts
+    conversation_id: str | None = (context or {}).get("conversation_id")
+    tool_call_id: str | None = (context or {}).get("tool_id")
+
+    # Create the BulkOperation record
+    async with get_session(organization_id=organization_id) as session:
+        operation = BulkOperation(
+            organization_id=UUID(organization_id),
+            user_id=UUID(user_id) if user_id else None,
+            operation_name=operation_name,
+            tool_name=tool_name,
+            params_template=params_template,
+            items_query=items_query,
+            rate_limit_per_minute=rate_limit,
+            conversation_id=conversation_id,
+            tool_call_id=tool_call_id,
+            status="pending",
+        )
+        session.add(operation)
+        await session.commit()
+        await session.refresh(operation)
+        op_id: str = str(operation.id)
+
+    # If inline items were provided, we need to store them temporarily.
+    # The coordinator will use items_query if present, otherwise it reads
+    # the items from a Redis key (for inline items that are too large for
+    # the Celery message).
+    if inline_items and not items_query:
+        import redis.asyncio as aioredis
+        from config import settings
+
+        r: aioredis.Redis = aioredis.from_url(
+            settings.REDIS_URL, decode_responses=True
+        )
+        try:
+            # Stringify UUIDs in inline items
+            clean_items: list[dict[str, Any]] = []
+            for item in inline_items:
+                clean: dict[str, Any] = {}
+                for k, v in item.items():
+                    if isinstance(v, UUID):
+                        clean[k] = str(v)
+                    else:
+                        clean[k] = v
+                clean_items.append(clean)
+            await r.set(
+                f"bulk_op:{op_id}:items",
+                json.dumps(clean_items),
+                ex=3600 * 6,  # Expire after 6 hours
+            )
+        finally:
+            await r.close()
+
+    # Queue the coordinator task
+    task = bulk_tool_run_coordinator.delay(
+        operation_id=op_id,
+        organization_id=organization_id,
+        user_id=user_id,
+    )
+
+    # Update celery task ID
+    async with get_session(organization_id=organization_id) as session:
+        result = await session.execute(
+            select(BulkOperation).where(BulkOperation.id == UUID(op_id))
+        )
+        op = result.scalar_one()
+        op.celery_task_id = task.id
+        await session.commit()
+
+    return {
+        "status": "queued",
+        "operation_id": op_id,
+        "operation_name": operation_name,
+        "tool": tool_name,
+        "rate_limit_per_minute": rate_limit,
+        "message": (
+            f"Bulk operation '{operation_name}' queued. "
+            f"Use monitor_operation(operation_id='{op_id}') to wait for completion."
+        ),
+    }
+
+
+async def _monitor_operation(
+    params: dict[str, Any],
+    organization_id: str,
+    context: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Poll a bulk operation until completion, broadcasting live progress via WebSocket."""
+    import asyncio
+    from models.bulk_operation import BulkOperation
+
+    op_id: str = params.get("operation_id", "").strip()
+    if not op_id:
+        return {"error": "operation_id is required."}
+
+    progress: ToolProgressUpdater = ToolProgressUpdater(context, organization_id)
+    poll_interval: float = 5.0  # seconds between DB polls
+
+    terminal_statuses: frozenset[str] = frozenset({"completed", "failed", "cancelled"})
+
+    while True:
+        async with get_session(organization_id=organization_id) as session:
+            result = await session.execute(
+                select(BulkOperation).where(
+                    BulkOperation.id == UUID(op_id),
+                    BulkOperation.organization_id == UUID(organization_id),
+                )
+            )
+            operation: BulkOperation | None = result.scalar_one_or_none()
+
+        if not operation:
+            return {"error": f"Bulk operation {op_id} not found."}
+
+        total: int = operation.total_items
+        completed: int = operation.completed_items
+        succeeded: int = operation.succeeded_items
+        failed: int = operation.failed_items
+        status: str = operation.status
+        op_name: str = operation.operation_name or "bulk operation"
+
+        # Broadcast progress to UI
+        await progress.update({
+            "operation_id": op_id,
+            "operation_name": op_name,
+            "total": total,
+            "completed": completed,
+            "succeeded": succeeded,
+            "failed": failed,
+            "status": status,
+        })
+
+        if status in terminal_statuses:
+            response: dict[str, Any] = {
+                "operation_id": op_id,
+                "operation_name": op_name,
+                "status": status,
+                "total_items": total,
+                "succeeded_items": succeeded,
+                "failed_items": failed,
+            }
+            if status == "completed":
+                response["message"] = (
+                    f"Completed: {succeeded} succeeded, {failed} failed out of {total}."
+                )
+            elif status == "failed":
+                response["error"] = operation.error
+                response["message"] = f"Failed: {operation.error}"
+            else:
+                response["message"] = f"Cancelled."
+            return response
+
+        await asyncio.sleep(poll_interval)
 
 

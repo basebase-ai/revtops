@@ -287,7 +287,7 @@ def compute_effective_auto_approve_tools(
         Ordered list of effective tool names.
     """
     configured_tools: list[str] = list(workflow_auto_approve_tools or [])
-    disallowed_workflow_tools = {"save_memory"}
+    disallowed_workflow_tools = {"manage_memory"}
     sanitized_configured_tools = [tool for tool in configured_tools if tool not in disallowed_workflow_tools]
     removed_disallowed_tools = [tool for tool in configured_tools if tool in disallowed_workflow_tools]
     for removed_tool in removed_disallowed_tools:
@@ -1638,7 +1638,12 @@ def process_pending_events(self: Any) -> dict[str, Any]:
     return run_async(_process_pending_events())
 
 
-@celery_app.task(bind=True, name="workers.tasks.workflows.execute_workflow")
+@celery_app.task(
+    bind=True,
+    name="workers.tasks.workflows.execute_workflow",
+    soft_time_limit=6 * 3600,      # 6 hours soft – workflows with monitor_operation can run long
+    time_limit=6 * 3600 + 300,     # 6 hours + 5 min hard kill
+)
 def execute_workflow(
     self: Any,
     workflow_id: str,

@@ -55,9 +55,9 @@ def test_child_workflow_cannot_escalate_if_parent_has_no_permissions() -> None:
     assert effective == []
 
 
-def test_workflow_auto_approve_strips_save_memory() -> None:
+def test_workflow_auto_approve_strips_manage_memory() -> None:
     effective = compute_effective_auto_approve_tools(
-        workflow_auto_approve_tools=["save_memory", "send_slack"],
+        workflow_auto_approve_tools=["manage_memory", "send_slack"],
         parent_auto_approve_tools=None,
     )
     assert effective == ["send_slack"]

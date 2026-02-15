@@ -42,6 +42,7 @@ celery_app = Celery(
     include=[
         "workers.tasks.sync",
         "workers.tasks.workflows",
+        "workers.tasks.bulk_operations",
     ],
 )
 
@@ -75,6 +76,7 @@ celery_app.conf.update(
         Queue("default", Exchange("default"), routing_key="default"),
         Queue("sync", Exchange("sync"), routing_key="sync.#"),
         Queue("workflows", Exchange("workflows"), routing_key="workflow.#"),
+        Queue("enrichment", Exchange("enrichment"), routing_key="enrichment.#"),
     ),
     task_default_queue="default",
     task_default_exchange="default",
@@ -84,6 +86,7 @@ celery_app.conf.update(
     task_routes={
         "workers.tasks.sync.*": {"queue": "sync"},
         "workers.tasks.workflows.*": {"queue": "workflows"},
+        "workers.tasks.bulk_operations.*": {"queue": "enrichment"},
     },
 )
 

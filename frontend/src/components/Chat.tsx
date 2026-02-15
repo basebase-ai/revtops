@@ -1348,6 +1348,31 @@ function getToolStatusText(
       }
       return `Running ${workflowName}...`;
     }
+    case 'bulk_tool_run': {
+      const opName = typeof result?.operation_name === 'string'
+        ? result.operation_name
+        : (typeof input?.operation_name === 'string' ? input.operation_name : 'bulk operation');
+      const total = typeof result?.total === 'number' ? result.total : 0;
+      const completed = typeof result?.completed === 'number' ? result.completed : 0;
+      const succeeded = typeof result?.succeeded === 'number' ? result.succeeded : 0;
+      const failed = typeof result?.failed === 'number' ? result.failed : 0;
+
+      if (isComplete) {
+        if (failed > 0) {
+          return `Completed ${opName}: ${succeeded}/${total} succeeded, ${failed} failed`;
+        }
+        return `Completed ${opName}: ${total} item${total === 1 ? '' : 's'} processed`;
+      }
+
+      if (total > 0) {
+        const pct = Math.round((completed / total) * 100);
+        const progressText = failed > 0
+          ? `${completed}/${total} (${pct}%) — ${succeeded} ok, ${failed} failed`
+          : `${completed}/${total} (${pct}%)`;
+        return `Running ${opName}... ${progressText}`;
+      }
+      return `Queued ${opName}...`;
+    }
     default:
       return isComplete ? `Completed ${toolName}` : `Running ${toolName}...`;
   }
