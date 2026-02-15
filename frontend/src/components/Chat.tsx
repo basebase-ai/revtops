@@ -117,6 +117,7 @@ export function Chat({
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const isUserNearBottomRef = useRef<boolean>(true);
+  const isProgrammaticScrollRef = useRef<boolean>(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pendingTitleRef = useRef<string | null>(null);
@@ -410,14 +411,16 @@ export function Chat({
     };
   }, [chatId, userId, conversationType, messages.length, setConversationMessages]);
 
-  // Track whether user is near the bottom of the scroll container
+  // Track whether user is near the bottom of the scroll container.
+  // Only update on user-initiated scrolls (ignore programmatic ones).
   useEffect(() => {
     const container = messagesContainerRef.current;
     if (!container) return;
 
     const handleScroll = (): void => {
+      if (isProgrammaticScrollRef.current) return;
       const threshold = 100; // px from bottom
-      const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+      const distanceFromBottom: number = container.scrollHeight - container.scrollTop - container.clientHeight;
       isUserNearBottomRef.current = distanceFromBottom <= threshold;
     };
 
@@ -425,10 +428,19 @@ export function Chat({
     return () => container.removeEventListener('scroll', handleScroll);
   }, []);
 
-  // Auto-scroll to bottom only if user hasn't scrolled up
+  // Auto-scroll to bottom only if user hasn't scrolled up.
+  // Use instant scroll during streaming to avoid smooth-scroll animations
+  // that fire intermediate scroll events and defeat the user's scroll-up.
   useEffect(() => {
     if (isUserNearBottomRef.current) {
-      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+      const container = messagesContainerRef.current;
+      if (container) {
+        isProgrammaticScrollRef.current = true;
+        container.scrollTop = container.scrollHeight;
+        requestAnimationFrame(() => {
+          isProgrammaticScrollRef.current = false;
+        });
+      }
     }
   }, [messages, isThinking]);
 

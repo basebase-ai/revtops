@@ -3,7 +3,7 @@ Tool definitions and execution for Claude.
 
 Tools are organized by category (see registry.py):
 - LOCAL_READ: run_sql_query, search_activities
-- LOCAL_WRITE: create_artifact, create_workflow, trigger_workflow
+- LOCAL_WRITE: create_artifact, run_sql_write, run_workflow
 - EXTERNAL_READ: web_search, fetch_url, enrich_contacts_with_apollo, enrich_company_with_apollo, search_system_of_record
 - EXTERNAL_WRITE: write_to_system_of_record, send_email_from, send_slack, trigger_sync
 
@@ -244,7 +244,7 @@ async def execute_tool(
     # Check if this tool should bypass approval (for auto-approved workflows)
     skip_approval = await _should_skip_approval(tool_name, user_id, context)
 
-    if normalized_tool_name in ("save_memory", "update_memory", "save_phone_number") and context and context.get("is_workflow"):
+    if normalized_tool_name in ("save_memory", "update_memory") and context and context.get("is_workflow"):
         logger.info("[Tools] Blocking %s during workflow execution", normalized_tool_name)
         return {"error": f"{normalized_tool_name} is not available in workflows. Use keep_notes for workflow-scoped notes."}
 
@@ -254,7 +254,6 @@ async def execute_tool(
         "run_sql_write": lambda: _run_sql_write(tool_input, organization_id, user_id, context),
         "search_activities": lambda: _search_activities(tool_input, organization_id, user_id),
         "web_search": lambda: _web_search(tool_input),
-        "trigger_workflow": lambda: _trigger_workflow(tool_input, organization_id),
         "run_workflow": lambda: _run_workflow(tool_input, organization_id, user_id, context),
         "loop_over": lambda: _loop_over(tool_input, organization_id, user_id, context),
         "fetch_url": lambda: _fetch_url(tool_input),
@@ -276,6 +275,7 @@ async def execute_tool(
         ),
         "send_email_from": lambda: _send_email_from(tool_input, organization_id, user_id, skip_approval),
         "send_slack": lambda: _send_slack(tool_input, organization_id, user_id, skip_approval),
+        "send_sms": lambda: _send_sms(tool_input, organization_id, user_id),
         "github_issues_access": lambda: _github_issues_access(tool_input, organization_id, user_id, skip_approval),
         "trigger_sync": lambda: _trigger_sync(tool_input, organization_id),
         "search_cloud_files": lambda: _search_cloud_files(tool_input, organization_id, user_id),
@@ -285,7 +285,6 @@ async def execute_tool(
         "save_memory": lambda: _save_memory(tool_input, organization_id, user_id, skip_approval),
         "delete_memory": lambda: _delete_memory(tool_input, organization_id, user_id),
         "update_memory": lambda: _update_memory(tool_input, organization_id, user_id),
-        "save_phone_number": lambda: _save_phone_number(tool_input, organization_id, user_id),
         "create_linear_issue": lambda: _create_linear_issue(tool_input, organization_id, user_id, skip_approval),
         "update_linear_issue": lambda: _update_linear_issue(tool_input, organization_id, user_id, skip_approval),
         "search_linear_issues": lambda: _search_linear_issues(tool_input, organization_id),
@@ -497,6 +496,13 @@ WRITABLE_TABLES: set[str] = {
     "deals",
     "accounts",
     "org_members",
+    "users",
+}
+
+# Per-table column restrictions: only these columns may appear in SET clauses.
+# Tables not listed here have no column restrictions.
+WRITABLE_COLUMNS: dict[str, set[str]] = {
+    "users": {"phone_number"},
 }
 
 # CRM tables that go through pending operations (review before commit)
@@ -508,7 +514,6 @@ CRM_TABLES: set[str] = {
 
 # Tables that are completely off-limits for writes
 PROTECTED_TABLES: set[str] = {
-    "users",
     "organizations", 
     "integrations",
     "activities",
@@ -3558,58 +3563,6 @@ async def get_crm_operation_status(operation_id: str, organization_id: str | Non
         return {"error": str(e)}
 
 
-async def _trigger_workflow(
-    params: dict[str, Any], organization_id: str
-) -> dict[str, Any]:
-    """
-    Manually trigger a workflow execution.
-    
-    Args:
-        params: Contains workflow_id
-        organization_id: Organization UUID
-        
-    Returns:
-        Task ID and status
-    """
-    from models.workflow import Workflow
-    
-    workflow_id = params.get("workflow_id", "").strip()
-    
-    if not workflow_id:
-        return {"error": "workflow_id is required"}
-    
-    try:
-        # Verify workflow exists and belongs to org
-        async with get_session(organization_id=organization_id) as session:
-            result = await session.execute(
-                select(Workflow).where(
-                    Workflow.id == UUID(workflow_id),
-                    Workflow.organization_id == UUID(organization_id),
-                )
-            )
-            workflow = result.scalar_one_or_none()
-            
-            if not workflow:
-                return {"error": f"Workflow {workflow_id} not found"}
-            
-            if not workflow.is_enabled:
-                return {"error": "Workflow is disabled. Enable it first in the Automations tab."}
-        
-        # Queue execution via Celery
-        from workers.tasks.workflows import execute_workflow
-        task = execute_workflow.delay(workflow_id, "manual", None, None, organization_id)
-        
-        return {
-            "success": True,
-            "task_id": task.id,
-            "workflow_id": workflow_id,
-            "workflow_name": workflow.name,
-            "message": f"Workflow '{workflow.name}' triggered. Check the Automations tab for results.",
-        }
-        
-    except Exception as e:
-        logger.error("[Tools._trigger_workflow] Failed: %s", str(e))
-        return {"error": f"Failed to trigger workflow: {str(e)}"}
 
 
 async def _enrich_contacts_with_apollo(
@@ -4109,6 +4062,45 @@ async def execute_send_slack(
         }
 
 
+
+
+async def _send_sms(
+    params: dict[str, Any],
+    organization_id: str,
+    user_id: str | None,
+) -> dict[str, Any]:
+    """Send an SMS text message via Twilio."""
+    from services.sms import send_sms
+
+    to: str = params.get("to", "").strip()
+    body: str = params.get("body", "").strip()
+
+    if not to:
+        return {"error": "to is required (E.164 phone number, e.g. +14155551234)."}
+    if not body:
+        return {"error": "body is required."}
+
+    # Normalise bare US 10-digit numbers
+    import re as _re
+
+    digits_only: str = _re.sub(r"[^\d]", "", to)
+    if not to.startswith("+"):
+        if len(digits_only) == 10:
+            digits_only = f"1{digits_only}"
+        to = f"+{digits_only}"
+
+    if len(digits_only) < 7 or len(digits_only) > 15:
+        return {"error": f"Invalid phone number '{to}'. Expected E.164 format, e.g. +14155551234."}
+
+    result: dict[str, str | bool] = await send_sms(to=to, body=body)
+
+    if result.get("success"):
+        return {
+            "status": "sent",
+            "to": to,
+            "message_sid": result.get("message_sid"),
+        }
+    return {"error": result.get("error", "Failed to send SMS.")}
 
 
 async def _trigger_sync(
@@ -4802,7 +4794,7 @@ async def _read_cloud_file(
                     )
                 )
             )
-            file_record: SharedFile | None = result.scalar_one_or_none()
+            file_record: SharedFile | None = result.scalars().first()
 
         if not file_record:
             return {"error": f"File not found in synced metadata: {external_id}"}
@@ -5108,41 +5100,3 @@ async def _update_memory(
     return {"status": "updated", "memory_id": memory_id, "content": new_content}
 
 
-async def _save_phone_number(
-    params: dict[str, Any],
-    organization_id: str,
-    user_id: str | None,
-) -> dict[str, Any]:
-    """Save a phone number to the user's profile."""
-    phone: str = params.get("phone_number", "").strip()
-    if not phone:
-        return {"error": "phone_number is required."}
-    if not user_id:
-        return {"error": "Cannot save phone number without a user context."}
-
-    # Basic E.164 validation: must start with + and contain 7-15 digits
-    import re as _re
-
-    digits_only: str = _re.sub(r"[^\d]", "", phone)
-    if not phone.startswith("+"):
-        # Try to normalise: prepend + if all digits
-        phone = f"+{digits_only}"
-    else:
-        phone = f"+{digits_only}"
-
-    if len(digits_only) < 7 or len(digits_only) > 15:
-        return {"error": "Invalid phone number. Expected E.164 format, e.g. +14155551234 (7-15 digits)."}
-
-    from models.user import User
-
-    async with get_session(organization_id=organization_id) as session:
-        result = await session.execute(
-            select(User).where(User.id == UUID(user_id))
-        )
-        user: User | None = result.scalar_one_or_none()
-        if not user:
-            return {"error": "User not found."}
-        user.phone_number = phone
-        await session.commit()
-
-    return {"status": "saved", "phone_number": phone}
