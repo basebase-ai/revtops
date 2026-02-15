@@ -107,7 +107,7 @@ Available tables:
 - pipeline_stages: Stages in pipelines (pipeline_id, name, probability)
 - goals: Revenue goals and quotas synced from CRM (name, target_amount, start_date, end_date, goal_type, owner_id, pipeline_id, source_system, source_id, custom_fields JSONB). Compare target_amount against deal totals to measure progress.
 - integrations: Connected data sources (provider, is_active, last_sync_at)
-- users: Team members (email, name, role)
+- users: Team members (email, name, role, phone_number in E.164 format e.g. +14155551234)
 - user_mappings_for_identity: Slack identity links (external_userid, external_email, match_source)
 - organizations: User's company info (name, logo_url)
 - workflows: Workflow definitions (name, trigger_type, prompt, is_enabled, auto_approve_tools). Useful for listing and inspecting automations.
@@ -198,6 +198,7 @@ Writable tables:
 - contacts: (email, firstname, lastname, company, jobtitle, phone) → pending review
 - deals: (dealname, amount, dealstage, closedate) → pending review  
 - accounts: (name, domain, industry, numberofemployees) → pending review
+- users: (phone_number) → immediate. Phone numbers MUST be E.164 format with country code, e.g. +14155551234 for US numbers. If the user gives a 10-digit number like 4159028648, prepend +1.
 - workflows: See workflow format below → immediate
 - artifacts: (type, title, description, data) → immediate
 
@@ -631,6 +632,34 @@ Examples:
 
 
 register_tool(
+    name="send_sms",
+    description="""Send an SMS text message to a phone number via Twilio.
+
+Use this to text the user or any phone number directly. Messages are sent from the Revtops system number.
+
+The recipient number must be in E.164 format (e.g. +14155551234). If the user says "text me" or "send me a text", look up their phone_number from the users table first.
+
+Max message length is 1600 characters.""",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "to": {
+                "type": "string",
+                "description": "Recipient phone number in E.164 format (e.g. +14155551234)",
+            },
+            "body": {
+                "type": "string",
+                "description": "Message text (max 1600 characters)",
+            },
+        },
+        "required": ["to", "body"],
+    },
+    category=ToolCategory.EXTERNAL_WRITE,
+    default_requires_approval=False,
+)
+
+
+register_tool(
     name="trigger_sync",
     description="""Trigger a data sync for a specific integration.
 
@@ -732,31 +761,13 @@ Content is truncated at ~100K characters for very large files.""",
 # -----------------------------------------------------------------------------
 
 register_tool(
-    name="trigger_workflow",
-    description="""Manually trigger a workflow to run now.
-
-Use this to test a workflow or run it on-demand outside its normal schedule.
-The workflow will create a new conversation that you can view in the chat list.""",
-    input_schema={
-        "type": "object",
-        "properties": {
-            "workflow_id": {
-                "type": "string",
-                "description": "UUID of the workflow to trigger",
-            },
-        },
-        "required": ["workflow_id"],
-    },
-    category=ToolCategory.LOCAL_WRITE,
-    default_requires_approval=False,
-)
-
-
-register_tool(
     name="run_workflow",
-    description="""Execute another workflow and wait for its result.
+    description="""Execute a workflow — either to test it manually or to compose workflows.
 
-Use this to compose workflows - a parent workflow can delegate tasks to specialist workflows; it should slightly prefer to use existing workflows, then do the work directly, then create new specialists, rather than delegating by default.
+Use cases:
+1. **Manual trigger**: Set wait_for_completion=false to fire-and-forget (e.g. "test this workflow now").
+2. **Workflow composition**: A parent workflow delegates to specialist child workflows and gets the result back.
+
 For example, an "Enrich All Contacts" workflow could call "Enrich Single Contact" for each contact.
 
 The child workflow executes with its own conversation and returns its output.
@@ -950,24 +961,6 @@ Use this when a previously saved memory needs to be revised (e.g. user got promo
     default_requires_approval=False,
 )
 
-register_tool(
-    name="save_phone_number",
-    description="""Save the user's phone number to their profile.
-
-Use this when the user shares their phone number. The number will be normalised to E.164 format (e.g. +14155551234). This enables urgent SMS alerts from workflows.""",
-    input_schema={
-        "type": "object",
-        "properties": {
-            "phone_number": {
-                "type": "string",
-                "description": "The phone number in any common format. Will be normalised to E.164.",
-            },
-        },
-        "required": ["phone_number"],
-    },
-    category=ToolCategory.LOCAL_WRITE,
-    default_requires_approval=False,
-)
 
 # =============================================================================
 # Helper Functions

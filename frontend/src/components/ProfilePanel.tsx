@@ -164,9 +164,6 @@ export function ProfilePanel({ user, onClose, onLogout, onUpdateUser }: ProfileP
             <p className="text-sm text-surface-400 mt-3">
               Click camera icon to change photo
             </p>
-            {error && (
-              <p className="text-sm text-red-400 mt-2">{error}</p>
-            )}
           </div>
 
           {/* Form Fields */}
@@ -248,15 +245,6 @@ export function ProfilePanel({ user, onClose, onLogout, onUpdateUser }: ProfileP
             </div>
           </div>
 
-          {/* Save Button */}
-          <button
-            onClick={() => void handleSave()}
-            disabled={isSaving}
-            className="w-full btn-primary disabled:opacity-50"
-          >
-            {isSaving ? 'Saving...' : 'Save changes'}
-          </button>
-
           {/* Account Info */}
           <div className="pt-4 border-t border-surface-800">
             <h3 className="text-sm font-medium text-surface-200 mb-3">Account</h3>
@@ -286,8 +274,18 @@ export function ProfilePanel({ user, onClose, onLogout, onUpdateUser }: ProfileP
           </div>
         </div>
 
-        {/* Footer */}
-        <div className="p-6 border-t border-surface-800">
+        {/* Footer - always visible */}
+        <div className="p-6 border-t border-surface-800 space-y-3">
+          {error && (
+            <p className="text-sm text-red-400 text-center">{error}</p>
+          )}
+          <button
+            onClick={() => void handleSave()}
+            disabled={isSaving}
+            className="w-full btn-primary disabled:opacity-50"
+          >
+            {isSaving ? 'Saving...' : 'Save changes'}
+          </button>
           <button
             onClick={handleLogout}
             className="w-full flex items-center justify-center gap-2 px-4 py-3 text-red-400 hover:text-red-300 hover:bg-red-500/10 rounded-lg transition-colors font-medium"
