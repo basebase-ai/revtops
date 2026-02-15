@@ -4802,7 +4802,7 @@ async def _read_cloud_file(
                     )
                 )
             )
-            file_record: SharedFile | None = result.scalar_one_or_none()
+            file_record: SharedFile | None = result.scalars().first()
 
         if not file_record:
             return {"error": f"File not found in synced metadata: {external_id}"}

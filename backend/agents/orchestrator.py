@@ -654,6 +654,55 @@ class ChatOrchestrator:
             logger.warning("Failed to resolve user context", exc_info=True)
             self._phone_number = None
 
+    async def _load_integrations_summary(self) -> str | None:
+        """Build a brief summary of connected integrations and their last sync times."""
+        from models.integration import Integration
+
+        try:
+            async with get_session(organization_id=self.organization_id) as session:
+                result = await session.execute(
+                    select(
+                        Integration.provider,
+                        Integration.scope,
+                        Integration.last_sync_at,
+                        Integration.last_error,
+                    )
+                    .where(
+                        Integration.organization_id == UUID(self.organization_id),
+                        Integration.is_active == True,  # noqa: E712
+                    )
+                    .order_by(Integration.provider)
+                )
+                rows = result.all()
+
+            if not rows:
+                return None
+
+            lines: list[str] = []
+            for row in rows:
+                provider: str = row[0]
+                scope: str = row[1]
+                last_sync: datetime | None = row[2]
+                last_error: str | None = row[3]
+
+                label: str = provider.replace("_", " ").title()
+                if scope == "user":
+                    label += " (per-user)"
+
+                if last_error:
+                    status = "last sync failed"
+                elif last_sync:
+                    status = f"last synced {last_sync.strftime('%Y-%m-%d %H:%M')} UTC"
+                else:
+                    status = "never synced"
+
+                lines.append(f"- {label}: {status}")
+
+            return "\n".join(lines)
+        except Exception:
+            logger.warning("Failed to load integrations summary", exc_info=True)
+            return None
+
     async def _load_context_profile(self) -> dict[str, Any]:
         """Load the three-tier context profile: user, organization, and job memories + structured fields.
 
@@ -917,6 +966,14 @@ WHERE scheduled_start >= '2026-01-27'::date AND scheduled_start < '2026-01-28'::
 
 5. **Displaying Results**: Convert UTC times to the user's timezone when presenting results. Use relative references when helpful (e.g., "in 30 minutes", "3 hours ago")."""
         system_prompt += time_context
+
+        # Inject connected integrations summary
+        if self.organization_id:
+            integrations_summary: str | None = await self._load_integrations_summary()
+            if integrations_summary:
+                system_prompt += "\n\n## Connected Integrations\n"
+                system_prompt += "These data sources are currently integrated and syncing:\n"
+                system_prompt += integrations_summary
 
         # Load and inject three-tier context profile (user, org, job memories + structured fields)
         if self.user_id and self.organization_id:
