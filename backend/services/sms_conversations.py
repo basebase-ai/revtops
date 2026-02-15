@@ -337,7 +337,7 @@ async def process_inbound_sms(
         organization_name = memberships[0][1]
     else:
         # Multi-org: check for pending choice first
-        resolved: tuple[str, str] | None = await _resolve_multi_org(
+        resolved: tuple[str, str, bool] | None = await _resolve_multi_org(
             phone=phone,
             body=body,
             user_id=user.id,
@@ -346,7 +346,11 @@ async def process_inbound_sms(
         if resolved is None:
             # We sent a qualifying question — stop processing this message
             return {"status": "pending_org_choice"}
-        organization_id, organization_name = resolved
+        organization_id, organization_name, body_consumed = resolved
+        if body_consumed:
+            # The message was an org-selection number, not a real message.
+            # Confirmation already sent via SMS — nothing more to do.
+            return {"status": "org_selected", "organization": organization_name}
 
     assert organization_id is not None
 
@@ -423,12 +427,15 @@ async def _resolve_multi_org(
     body: str,
     user_id: UUID,
     memberships: list[tuple[UUID, str]],
-) -> tuple[str, str] | None:
+) -> tuple[str, str, bool] | None:
     """
     Resolve which organisation to use when the user belongs to multiple.
 
-    Returns ``(org_id, org_name)`` if resolved, or ``None`` if we sent a
-    qualifying question and need to wait for the next message.
+    Returns ``(org_id, org_name, body_consumed)`` if resolved, or ``None``
+    if we sent a qualifying question and need to wait for the next message.
+
+    *body_consumed* is ``True`` when the message body was used as an org
+    selection (e.g. "3") and should NOT be forwarded to the orchestrator.
     """
     # 1. Check for a pending org choice prompt
     pending_org_ids: list[str] | None = await _get_pending_org_choice(phone)
@@ -448,7 +455,7 @@ async def _resolve_multi_org(
                     to=phone,
                     body=f"Got it — chatting as {chosen_name}. Send your message!",
                 )
-                return chosen_org_id, chosen_name
+                return chosen_org_id, chosen_name, True  # body consumed
         except ValueError:
             pass
         # Invalid choice — re-send the prompt
@@ -465,7 +472,7 @@ async def _resolve_multi_org(
             (name for oid, name in memberships if str(oid) == org_id),
             "your organisation",
         )
-        return org_id, org_name
+        return org_id, org_name, False  # body NOT consumed
 
     # 3. No recent conversation — send a qualifying question
     await _send_org_picker(phone, memberships)
