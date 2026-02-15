@@ -12,7 +12,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import select, and_
+from sqlalchemy import select, and_, func
 
 from models.database import get_session
 from models.workflow import Workflow, WorkflowRun
@@ -109,6 +109,7 @@ class WorkflowResponse(BaseModel):
     last_error: Optional[str]
     created_at: str
     updated_at: str
+    latest_run_status: Optional[str] = None  # 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
 
 
 class WorkflowRunResponse(BaseModel):
@@ -166,8 +167,41 @@ async def list_workflows(
         result = await session.execute(query)
         workflows = result.scalars().all()
 
+        # Fetch latest run status for each workflow in one query
+        workflow_ids: list[UUID] = [w.id for w in workflows]
+        latest_run_statuses: dict[str, str] = {}
+        if workflow_ids:
+            # Subquery: max started_at per workflow
+            latest_sq = (
+                select(
+                    WorkflowRun.workflow_id,
+                    func.max(WorkflowRun.started_at).label("max_started"),
+                )
+                .where(WorkflowRun.workflow_id.in_(workflow_ids))
+                .group_by(WorkflowRun.workflow_id)
+                .subquery()
+            )
+            # Join back to get the status of that latest run
+            latest_result = await session.execute(
+                select(WorkflowRun.workflow_id, WorkflowRun.status).join(
+                    latest_sq,
+                    and_(
+                        WorkflowRun.workflow_id == latest_sq.c.workflow_id,
+                        WorkflowRun.started_at == latest_sq.c.max_started,
+                    ),
+                )
+            )
+            for wf_id, status in latest_result.all():
+                latest_run_statuses[str(wf_id)] = status
+
         return WorkflowListResponse(
-            workflows=[WorkflowResponse(**w.to_dict()) for w in workflows],
+            workflows=[
+                WorkflowResponse(
+                    **w.to_dict(),
+                    latest_run_status=latest_run_statuses.get(str(w.id)),
+                )
+                for w in workflows
+            ],
             total=len(workflows),
         )
 

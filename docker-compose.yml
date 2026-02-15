@@ -51,7 +51,7 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    command: python -m celery -A workers.celery_app worker --loglevel=info -Q default,sync,workflows
+    command: python -m celery -A workers.celery_app worker --loglevel=info
     volumes:
       - ./backend:/app
     environment:

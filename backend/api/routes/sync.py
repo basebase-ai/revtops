@@ -597,7 +597,12 @@ async def cancel_admin_running_job(
 async def trigger_sync(
     organization_id: str, provider: str, background_tasks: BackgroundTasks
 ) -> SyncTriggerResponse:
-    """Trigger a sync for a specific integration."""
+    """Trigger a sync for a specific integration.
+
+    Per-user integrations (Gmail, Calendar, etc.) may have multiple rows per
+    provider.  We sync each one individually so every connected user gets
+    updated.
+    """
     try:
         customer_uuid = UUID(organization_id)
     except ValueError:
@@ -609,7 +614,7 @@ async def trigger_sync(
             detail=f"Unknown provider: {provider}. Available: {list(CONNECTORS.keys())}",
         )
 
-    # Verify integration exists and is active
+    # Fetch *all* active integrations for this provider (may be per-user)
     async with get_session(organization_id=organization_id) as session:
         result = await session.execute(
             select(Integration).where(
@@ -618,16 +623,16 @@ async def trigger_sync(
                 Integration.is_active == True,
             )
         )
-        integration = result.scalar_one_or_none()
+        integrations = result.scalars().all()
 
-        if not integration:
+        if not integrations:
             raise HTTPException(
                 status_code=404,
                 detail=f"No active {provider} integration found",
             )
 
     # Initialize sync status
-    status_key = _get_status_key(organization_id, provider)
+    status_key: str = _get_status_key(organization_id, provider)
     _sync_status[status_key] = {
         "status": "syncing",
         "started_at": datetime.utcnow(),
@@ -636,8 +641,12 @@ async def trigger_sync(
         "counts": None,
     }
 
-    # Add background task
-    background_tasks.add_task(sync_integration_data, organization_id, provider)
+    # Queue a background sync for each per-user integration
+    for integration in integrations:
+        user_id: str | None = str(integration.user_id) if integration.user_id else None
+        background_tasks.add_task(
+            sync_integration_data, organization_id, provider, user_id
+        )
 
     return SyncTriggerResponse(
         status="syncing", organization_id=organization_id, provider=provider
@@ -725,12 +734,13 @@ async def trigger_sync_all(
     if not integrations:
         raise HTTPException(status_code=404, detail="No active integrations found")
 
-    providers = [i.provider for i in integrations]
+    providers: list[str] = list({i.provider for i in integrations})
 
-    # Trigger sync for each integration
-    for provider in providers:
-        if provider in CONNECTORS:
-            status_key = _get_status_key(organization_id, provider)
+    # Trigger sync for each integration (including per-user variants)
+    for integration in integrations:
+        prov: str = integration.provider
+        if prov in CONNECTORS:
+            status_key: str = _get_status_key(organization_id, prov)
             _sync_status[status_key] = {
                 "status": "syncing",
                 "started_at": datetime.utcnow(),
@@ -738,7 +748,10 @@ async def trigger_sync_all(
                 "error": None,
                 "counts": None,
             }
-            background_tasks.add_task(sync_integration_data, organization_id, provider)
+            uid: str | None = str(integration.user_id) if integration.user_id else None
+            background_tasks.add_task(
+                sync_integration_data, organization_id, prov, uid
+            )
 
     return SyncAllResponse(
         status="syncing",
@@ -747,9 +760,20 @@ async def trigger_sync_all(
     )
 
 
-async def sync_integration_data(organization_id: str, provider: str) -> None:
-    """Background task to sync data for a specific integration."""
-    status_key = _get_status_key(organization_id, provider)
+async def sync_integration_data(
+    organization_id: str,
+    provider: str,
+    user_id: str | None = None,
+) -> None:
+    """Background task to sync data for a specific integration.
+
+    Args:
+        organization_id: UUID of the organization.
+        provider: Integration provider name.
+        user_id: Optional UUID of the user who owns this integration
+                 (for per-user providers like Gmail, Calendar, etc.).
+    """
+    status_key: str = _get_status_key(organization_id, provider)
     connector_class = CONNECTORS.get(provider)
 
     if not connector_class:
@@ -759,8 +783,9 @@ async def sync_integration_data(organization_id: str, provider: str) -> None:
         return
 
     try:
-        print(f"[Sync] Starting sync for {provider} in org {organization_id}")
-        connector = connector_class(organization_id)
+        user_label: str = f" user={user_id}" if user_id else ""
+        print(f"[Sync] Starting sync for {provider} in org {organization_id}{user_label}")
+        connector = connector_class(organization_id, user_id=user_id)
         counts = await connector.sync_all()
         print(f"[Sync] sync_all returned counts: {counts}")
         await connector.update_last_sync(counts)
@@ -1151,7 +1176,7 @@ async def queue_sync(organization_id: str, provider: str) -> QueuedSyncResponse:
             detail=f"Unknown provider: {provider}. Available: {list(CONNECTORS.keys())}",
         )
 
-    # Verify integration exists
+    # Verify at least one integration exists
     async with get_session(organization_id=organization_id) as session:
         result = await session.execute(
             select(Integration).where(
@@ -1160,21 +1185,25 @@ async def queue_sync(organization_id: str, provider: str) -> QueuedSyncResponse:
                 Integration.is_active == True,
             )
         )
-        integration = result.scalar_one_or_none()
+        integrations = result.scalars().all()
 
-        if not integration:
+        if not integrations:
             raise HTTPException(
                 status_code=404,
                 detail=f"No active {provider} integration found",
             )
 
-    # Queue task via Celery
+    # Queue a Celery task for each per-user integration
     from workers.tasks.sync import sync_integration
-    task = sync_integration.delay(organization_id, provider)
+    last_task_id: str = ""
+    for integration in integrations:
+        uid: str | None = str(integration.user_id) if integration.user_id else None
+        task = sync_integration.delay(organization_id, provider, uid)
+        last_task_id = task.id
 
     return QueuedSyncResponse(
         status="queued",
-        task_id=task.id,
+        task_id=last_task_id,
         organization_id=organization_id,
         provider=provider,
     )

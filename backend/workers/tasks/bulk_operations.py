@@ -206,7 +206,7 @@ async def _bulk_tool_run_item_async(
         session.add(result_row)
         await session.commit()
 
-    # Increment Redis progress counters (atomic)
+    # Increment Redis progress counters (atomic) and check if we're the last item
     r: aioredis.Redis = aioredis.from_url(redis_url, decode_responses=True)
     try:
         pipe = r.pipeline()
@@ -215,7 +215,39 @@ async def _bulk_tool_run_item_async(
             pipe.incr(_redis_key(operation_id, "succeeded"))
         else:
             pipe.incr(_redis_key(operation_id, "failed"))
-        await pipe.execute()
+        counters: list[int] = await pipe.execute()
+        new_completed: int = counters[0]  # result of INCR completed
+
+        # If this was the last item, finalise the operation
+        total_raw: str | None = await r.get(_redis_key(operation_id, "total"))
+        total_items: int = int(total_raw) if total_raw else 0
+
+        if total_items > 0 and new_completed >= total_items:
+            logger.info(
+                "[BulkOp] Last item done for operation %s — finalising",
+                operation_id[:8],
+            )
+            succeeded_raw: str | None = await r.get(_redis_key(operation_id, "succeeded"))
+            failed_raw: str | None = await r.get(_redis_key(operation_id, "failed"))
+            final_succeeded: int = int(succeeded_raw) if succeeded_raw else 0
+            final_failed: int = int(failed_raw) if failed_raw else 0
+
+            async with get_session(organization_id=organization_id) as session:
+                from models.bulk_operation import BulkOperation
+                op_result = await session.execute(
+                    select(BulkOperation).where(BulkOperation.id == UUID(operation_id))
+                )
+                op: BulkOperation = op_result.scalar_one()
+                op.status = "completed"
+                op.completed_items = new_completed
+                op.succeeded_items = final_succeeded
+                op.failed_items = final_failed
+                op.completed_at = datetime.now(timezone.utc)
+                await session.commit()
+
+            # Clean up Redis keys
+            for field in ("completed", "succeeded", "failed", "total"):
+                await r.delete(_redis_key(operation_id, field))
     finally:
         await r.close()
 
@@ -381,6 +413,7 @@ async def _bulk_tool_run_coordinator_async(
     # --- Initialise Redis progress counters ---
     r: aioredis.Redis = aioredis.from_url(redis_url, decode_responses=True)
     try:
+        await r.set(_redis_key(operation_id, "total"), total_items)
         await r.set(_redis_key(operation_id, "completed"), already_done)
         # Re-count succeeded/failed from DB for accurate resume
         async with get_session(organization_id=organization_id) as session:
@@ -417,127 +450,26 @@ async def _bulk_tool_run_coordinator_async(
 
     if task_signatures:
         job = celery_group(task_signatures)
-        job.apply_async(queue="enrichment")
+        job.apply_async()
         logger.info(
             "[BulkOp] Dispatched %d tasks for operation %s",
             len(task_signatures), operation_id[:8],
         )
 
-    # --- Poll progress and broadcast WebSocket updates ---
-    r = aioredis.from_url(redis_url, decode_responses=True)
-    try:
-        while True:
-            await asyncio.sleep(_PROGRESS_BROADCAST_INTERVAL)
-
-            completed_raw: Optional[str] = await r.get(_redis_key(operation_id, "completed"))
-            succeeded_raw: Optional[str] = await r.get(_redis_key(operation_id, "succeeded"))
-            failed_raw: Optional[str] = await r.get(_redis_key(operation_id, "failed"))
-
-            completed: int = int(completed_raw) if completed_raw else 0
-            succeeded: int = int(succeeded_raw) if succeeded_raw else 0
-            failed: int = int(failed_raw) if failed_raw else 0
-
-            # Broadcast progress via WebSocket
-            if conversation_id and tool_call_id:
-                try:
-                    from api.websockets import broadcast_tool_progress
-                    await broadcast_tool_progress(
-                        organization_id=organization_id,
-                        conversation_id=conversation_id,
-                        tool_id=tool_call_id,
-                        tool_name="bulk_tool_run",
-                        result={
-                            "operation_id": operation_id,
-                            "operation_name": op_name,
-                            "completed": completed,
-                            "total": total_items,
-                            "succeeded": succeeded,
-                            "failed": failed,
-                        },
-                        status="running",
-                    )
-                except Exception as ws_err:
-                    logger.debug("[BulkOp] WebSocket broadcast failed: %s", ws_err)
-
-            # Update DB progress periodically
-            async with get_session(organization_id=organization_id) as session:
-                result = await session.execute(
-                    select(BulkOperation).where(BulkOperation.id == UUID(operation_id))
-                )
-                op = result.scalar_one()
-                op.completed_items = completed
-                op.succeeded_items = succeeded
-                op.failed_items = failed
-                await session.commit()
-
-            # Check if done
-            if completed >= total_items:
-                break
-
-    finally:
-        # Clean up Redis keys
-        for field in ("completed", "succeeded", "failed"):
-            await r.delete(_redis_key(operation_id, field))
-        await r.close()
-
-    # --- Finalise operation ---
-    async with get_session(organization_id=organization_id) as session:
-        result = await session.execute(
-            select(BulkOperation).where(BulkOperation.id == UUID(operation_id))
-        )
-        op = result.scalar_one()
-
-        # Re-count from DB for accuracy
-        count_result = await session.execute(
-            select(
-                sa_func.count().label("total"),
-                sa_func.count().filter(BulkOperationResult.success == True).label("ok"),
-                sa_func.count().filter(BulkOperationResult.success == False).label("fail"),
-            ).where(BulkOperationResult.bulk_operation_id == UUID(operation_id))
-        )
-        counts = count_result.one()
-
-        op.status = "completed"
-        op.completed_items = counts.total
-        op.succeeded_items = counts.ok
-        op.failed_items = counts.fail
-        op.completed_at = datetime.now(timezone.utc)
-        await session.commit()
-
-        final_status: str = op.status
-
-    # Final WebSocket broadcast
-    if conversation_id and tool_call_id:
-        try:
-            from api.websockets import broadcast_tool_progress
-            await broadcast_tool_progress(
-                organization_id=organization_id,
-                conversation_id=conversation_id,
-                tool_id=tool_call_id,
-                tool_name="bulk_tool_run",
-                result={
-                    "operation_id": operation_id,
-                    "operation_name": op_name,
-                    "completed": counts.total,
-                    "total": total_items,
-                    "succeeded": counts.ok,
-                    "failed": counts.fail,
-                    "message": f"Completed: {counts.ok} succeeded, {counts.fail} failed.",
-                },
-                status="complete",
-            )
-        except Exception as ws_err:
-            logger.debug("[BulkOp] Final WebSocket broadcast failed: %s", ws_err)
-
+    # Coordinator returns immediately after dispatch.
+    # Progress polling + DB updates are handled by monitor_operation (called
+    # by the agent) and by each bulk_tool_run_item updating Redis counters.
+    # Finalisation (marking the operation "completed") is handled by each
+    # item task: the last item to finish checks if completed == total and
+    # flips the status.
     logger.info(
-        "[BulkOp] Operation %s completed: %d/%d succeeded, %d failed",
-        operation_id[:8], counts.ok, total_items, counts.fail,
+        "[BulkOp] Coordinator done for operation %s — dispatched %d items, returning",
+        operation_id[:8], remaining_count,
     )
 
     return {
-        "status": final_status,
+        "status": "running",
         "operation_id": operation_id,
         "total_items": total_items,
-        "succeeded": counts.ok,
-        "failed": counts.fail,
+        "dispatched": remaining_count,
     }

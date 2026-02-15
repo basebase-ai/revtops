@@ -5255,70 +5255,97 @@ async def _monitor_operation(
     organization_id: str,
     context: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    """Poll a bulk operation until completion, broadcasting live progress via WebSocket."""
+    """Poll a bulk operation until completion, broadcasting live progress via WebSocket.
+
+    Reads real-time progress from Redis counters (updated atomically by each
+    item task) and checks the DB for terminal status (set by the last item).
+    """
     import asyncio
+    import redis.asyncio as aioredis
     from models.bulk_operation import BulkOperation
+    from config import settings
 
     op_id: str = params.get("operation_id", "").strip()
     if not op_id:
         return {"error": "operation_id is required."}
 
     progress: ToolProgressUpdater = ToolProgressUpdater(context, organization_id)
-    poll_interval: float = 5.0  # seconds between DB polls
-
+    poll_interval: float = 5.0
     terminal_statuses: frozenset[str] = frozenset({"completed", "failed", "cancelled"})
 
-    while True:
-        async with get_session(organization_id=organization_id) as session:
-            result = await session.execute(
-                select(BulkOperation).where(
-                    BulkOperation.id == UUID(op_id),
-                    BulkOperation.organization_id == UUID(organization_id),
+    def _rkey(field: str) -> str:
+        return f"bulk_op:{op_id}:{field}"
+
+    r: aioredis.Redis = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+    try:
+        while True:
+            # Read real-time counters from Redis
+            total_raw: str | None = await r.get(_rkey("total"))
+            completed_raw: str | None = await r.get(_rkey("completed"))
+            succeeded_raw: str | None = await r.get(_rkey("succeeded"))
+            failed_raw: str | None = await r.get(_rkey("failed"))
+
+            total: int = int(total_raw) if total_raw else 0
+            completed: int = int(completed_raw) if completed_raw else 0
+            succeeded: int = int(succeeded_raw) if succeeded_raw else 0
+            failed: int = int(failed_raw) if failed_raw else 0
+
+            # Check DB for status (terminal status set by last item task)
+            async with get_session(organization_id=organization_id) as session:
+                result = await session.execute(
+                    select(BulkOperation).where(
+                        BulkOperation.id == UUID(op_id),
+                        BulkOperation.organization_id == UUID(organization_id),
+                    )
                 )
-            )
-            operation: BulkOperation | None = result.scalar_one_or_none()
+                operation: BulkOperation | None = result.scalar_one_or_none()
 
-        if not operation:
-            return {"error": f"Bulk operation {op_id} not found."}
+            if not operation:
+                return {"error": f"Bulk operation {op_id} not found."}
 
-        total: int = operation.total_items
-        completed: int = operation.completed_items
-        succeeded: int = operation.succeeded_items
-        failed: int = operation.failed_items
-        status: str = operation.status
-        op_name: str = operation.operation_name or "bulk operation"
+            status: str = operation.status
+            op_name: str = operation.operation_name or "bulk operation"
 
-        # Broadcast progress to UI
-        await progress.update({
-            "operation_id": op_id,
-            "operation_name": op_name,
-            "total": total,
-            "completed": completed,
-            "succeeded": succeeded,
-            "failed": failed,
-            "status": status,
-        })
+            # Use Redis counters if available, fall back to DB
+            if total == 0:
+                total = operation.total_items
+                completed = operation.completed_items
+                succeeded = operation.succeeded_items
+                failed = operation.failed_items
 
-        if status in terminal_statuses:
-            response: dict[str, Any] = {
+            # Broadcast progress to UI
+            await progress.update({
                 "operation_id": op_id,
                 "operation_name": op_name,
+                "total": total,
+                "completed": completed,
+                "succeeded": succeeded,
+                "failed": failed,
                 "status": status,
-                "total_items": total,
-                "succeeded_items": succeeded,
-                "failed_items": failed,
-            }
-            if status == "completed":
-                response["message"] = (
-                    f"Completed: {succeeded} succeeded, {failed} failed out of {total}."
-                )
-            elif status == "failed":
-                response["error"] = operation.error
-                response["message"] = f"Failed: {operation.error}"
-            else:
-                response["message"] = f"Cancelled."
-            return response
+            })
 
-        await asyncio.sleep(poll_interval)
+            if status in terminal_statuses:
+                response: dict[str, Any] = {
+                    "operation_id": op_id,
+                    "operation_name": op_name,
+                    "status": status,
+                    "total_items": total,
+                    "succeeded_items": succeeded,
+                    "failed_items": failed,
+                }
+                if status == "completed":
+                    response["message"] = (
+                        f"Completed: {succeeded} succeeded, {failed} failed out of {total}."
+                    )
+                elif status == "failed":
+                    response["error"] = operation.error
+                    response["message"] = f"Failed: {operation.error}"
+                else:
+                    response["message"] = "Cancelled."
+                return response
+
+            await asyncio.sleep(poll_interval)
+    finally:
+        await r.close()
 
 

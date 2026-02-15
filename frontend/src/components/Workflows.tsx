@@ -44,6 +44,7 @@ interface Workflow {
   last_error: string | null;
   created_at: string;
   updated_at: string;
+  latest_run_status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | null;
 }
 
 interface WorkflowRun {
@@ -1085,11 +1086,18 @@ export function Workflows(): JSX.Element {
   const [showModal, setShowModal] = useState(false);
   const [editingWorkflow, setEditingWorkflow] = useState<Workflow | null>(null);
 
-  // Fetch workflows
+  // Fetch workflows — poll every 5s when any workflow is running/pending
   const { data: workflows = [], isLoading, error, refetch } = useQuery({
     queryKey: ['workflows', organization?.id],
     queryFn: () => fetchWorkflows(organization?.id ?? ''),
     enabled: !!organization?.id,
+    refetchInterval: (query) => {
+      const wfs = query.state.data;
+      const hasActive = wfs?.some(
+        (w) => w.latest_run_status === 'running' || w.latest_run_status === 'pending'
+      );
+      return hasActive ? 5000 : false;
+    },
   });
 
   const { data: teamMembersData } = useTeamMembers(organization?.id ?? null, user?.id ?? null);
@@ -1366,20 +1374,37 @@ function WorkflowCard({
     }
   };
 
+  const isActive = workflow.latest_run_status === 'running' || workflow.latest_run_status === 'pending';
+
   return (
     <div
       onClick={onClick}
       onKeyDown={handleCardKeyDown}
       role="button"
       tabIndex={0}
-      className="text-left p-4 bg-surface-900 border border-surface-800 rounded-xl hover:border-surface-700 transition-colors cursor-pointer"
+      className={`text-left p-4 bg-surface-900 border rounded-xl hover:border-surface-700 transition-colors cursor-pointer ${
+        isActive ? 'border-blue-500/40' : 'border-surface-800'
+      }`}
     >
       <div className="flex items-start justify-between mb-2">
         <h3 className="font-medium text-surface-100 truncate flex-1">{workflow.name}</h3>
         <div className="ml-2 flex items-center gap-2">
-          <span className={`w-2 h-2 rounded-full ${workflow.is_enabled ? 'bg-green-500' : 'bg-surface-600'}`} />
+          {isActive ? (
+            <span className="relative flex h-2.5 w-2.5">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
+              <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-blue-500" />
+            </span>
+          ) : (
+            <span className={`w-2 h-2 rounded-full ${workflow.is_enabled ? 'bg-green-500' : 'bg-surface-600'}`} />
+          )}
         </div>
       </div>
+
+      {isActive && (
+        <p className="text-xs text-blue-400 mb-2 font-medium">
+          {workflow.latest_run_status === 'running' ? 'Running...' : 'Starting...'}
+        </p>
+      )}
       
       <p className="text-xs text-surface-500 mb-3">{getTriggerDescription(workflow)}</p>
       <p className="text-xs text-surface-500 mb-3">Created by {creatorDisplay}</p>

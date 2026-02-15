@@ -45,10 +45,20 @@ def run_async(coro: Any) -> Any:
         loop.close()
 
 
-async def _sync_integration(organization_id: str, provider: str) -> dict[str, Any]:
+async def _sync_integration(
+    organization_id: str,
+    provider: str,
+    user_id: str | None = None,
+) -> dict[str, Any]:
     """
     Internal async function to sync a single integration.
-    
+
+    Args:
+        organization_id: UUID of the organization.
+        provider: Integration provider name.
+        user_id: Optional UUID of the user who owns this integration
+                 (for per-user providers like Gmail, Calendar, etc.).
+
     Returns sync results including counts and any errors.
     """
     from connectors.fireflies import FirefliesConnector
@@ -90,8 +100,9 @@ async def _sync_integration(organization_id: str, provider: str) -> dict[str, An
         }
 
     try:
-        logger.info(f"Starting sync for {provider} in org {organization_id}")
-        connector = connector_class(organization_id)
+        user_label: str = f" user={user_id}" if user_id else ""
+        logger.info(f"Starting sync for {provider} in org {organization_id}{user_label}")
+        connector = connector_class(organization_id, user_id=user_id)
         counts = await connector.sync_all()
         await connector.update_last_sync(counts)
 
@@ -163,7 +174,7 @@ async def _sync_integration(organization_id: str, provider: str) -> dict[str, An
         }
 
 
-async def _get_all_active_integrations() -> list[dict[str, str]]:
+async def _get_all_active_integrations() -> list[dict[str, str | None]]:
     """Get all active integrations across all organizations."""
     from sqlalchemy import select
     from models.database import get_admin_session
@@ -180,13 +191,14 @@ async def _get_all_active_integrations() -> list[dict[str, str]]:
             {
                 "organization_id": str(i.organization_id),
                 "provider": i.provider,
+                "user_id": str(i.user_id) if i.user_id else None,
             }
             for i in integrations
         ]
 
 
-async def _get_org_integrations(organization_id: str) -> list[str]:
-    """Get all active integration providers for an organization."""
+async def _get_org_integrations(organization_id: str) -> list[dict[str, str | None]]:
+    """Get all active integrations for an organization (including per-user)."""
     from sqlalchemy import select
     from models.database import get_session
     from models.integration import Integration
@@ -199,12 +211,21 @@ async def _get_org_integrations(organization_id: str) -> list[str]:
             )
         )
         integrations = result.scalars().all()
-        return [i.provider for i in integrations]
+        return [
+            {
+                "provider": i.provider,
+                "user_id": str(i.user_id) if i.user_id else None,
+            }
+            for i in integrations
+        ]
 
 
 @celery_app.task(bind=True, name="workers.tasks.sync.sync_integration")
 def sync_integration(
-    self: Any, organization_id: str, provider: str
+    self: Any,
+    organization_id: str,
+    provider: str,
+    user_id: str | None = None,
 ) -> dict[str, Any]:
     """
     Celery task to sync a single integration.
@@ -212,12 +233,14 @@ def sync_integration(
     Args:
         organization_id: UUID of the organization
         provider: Integration provider name (e.g., 'hubspot', 'salesforce')
+        user_id: Optional UUID of the user who owns this integration
     
     Returns:
         Dict with sync status, counts, and any errors
     """
-    logger.info(f"Task {self.request.id}: Syncing {provider} for org {organization_id}")
-    return run_async(_sync_integration(organization_id, provider))
+    user_label: str = f" user={user_id}" if user_id else ""
+    logger.info(f"Task {self.request.id}: Syncing {provider} for org {organization_id}{user_label}")
+    return run_async(_sync_integration(organization_id, provider, user_id=user_id))
 
 
 @celery_app.task(bind=True, name="workers.tasks.sync.sync_organization")
@@ -234,11 +257,14 @@ def sync_organization(self: Any, organization_id: str) -> dict[str, Any]:
     logger.info(f"Task {self.request.id}: Syncing all integrations for org {organization_id}")
     
     async def _sync_all_for_org() -> dict[str, Any]:
-        providers = await _get_org_integrations(organization_id)
+        integration_entries: list[dict[str, str | None]] = await _get_org_integrations(organization_id)
         results: dict[str, Any] = {}
         
-        for provider in providers:
-            results[provider] = await _sync_integration(organization_id, provider)
+        for entry in integration_entries:
+            provider: str = entry["provider"]  # type: ignore[assignment]
+            uid: str | None = entry["user_id"]
+            key: str = f"{provider}:{uid}" if uid else provider
+            results[key] = await _sync_integration(organization_id, provider, user_id=uid)
         
         return {
             "organization_id": organization_id,
@@ -262,31 +288,34 @@ def sync_all_organizations(self: Any) -> dict[str, Any]:
     logger.info(f"Task {self.request.id}: Starting hourly sync for all organizations")
     
     async def _sync_all() -> dict[str, Any]:
-        integrations = await _get_all_active_integrations()
+        all_integrations: list[dict[str, str | None]] = await _get_all_active_integrations()
         
         # Group by organization
-        orgs: dict[str, list[str]] = {}
-        for integration in integrations:
-            org_id = integration["organization_id"]
+        orgs: dict[str, list[dict[str, str | None]]] = {}
+        for integration in all_integrations:
+            org_id: str = integration["organization_id"]  # type: ignore[assignment]
             if org_id not in orgs:
                 orgs[org_id] = []
-            orgs[org_id].append(integration["provider"])
+            orgs[org_id].append(integration)
         
         results: dict[str, dict[str, Any]] = {}
-        total_synced = 0
-        total_failed = 0
+        total_synced: int = 0
+        total_failed: int = 0
         
-        for org_id, providers in orgs.items():
+        for org_id, entries in orgs.items():
             results[org_id] = {}
-            for provider in providers:
-                result = await _sync_integration(org_id, provider)
-                results[org_id][provider] = result
+            for entry in entries:
+                provider: str = entry["provider"]  # type: ignore[assignment]
+                uid: str | None = entry["user_id"]
+                key: str = f"{provider}:{uid}" if uid else provider
+                result = await _sync_integration(org_id, provider, user_id=uid)
+                results[org_id][key] = result
                 if result["status"] == "completed":
                     total_synced += 1
                 else:
                     total_failed += 1
         
-        summary = {
+        summary: dict[str, Any] = {
             "total_organizations": len(orgs),
             "total_integrations_synced": total_synced,
             "total_integrations_failed": total_failed,
