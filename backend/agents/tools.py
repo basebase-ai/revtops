@@ -5259,8 +5259,13 @@ async def _monitor_operation(
 
     Reads real-time progress from Redis counters (updated atomically by each
     item task) and checks the DB for terminal status (set by the last item).
+
+    Safety features:
+    - Max polling duration (4 hours) to prevent zombie tasks
+    - Stale detection: if no progress changes for 10 minutes, bail out
     """
     import asyncio
+    import time
     import redis.asyncio as aioredis
     from models.bulk_operation import BulkOperation
     from config import settings
@@ -5273,12 +5278,34 @@ async def _monitor_operation(
     poll_interval: float = 5.0
     terminal_statuses: frozenset[str] = frozenset({"completed", "failed", "cancelled"})
 
+    # Safety limits
+    max_poll_seconds: float = 4 * 3600  # 4 hours absolute max
+    stale_timeout_seconds: float = 600.0  # 10 minutes with no progress change
+    start_time: float = time.monotonic()
+    last_progress_change_time: float = start_time
+    last_completed: int = -1
+
     def _rkey(field: str) -> str:
         return f"bulk_op:{op_id}:{field}"
 
     r: aioredis.Redis = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
     try:
         while True:
+            elapsed: float = time.monotonic() - start_time
+
+            # Absolute timeout
+            if elapsed > max_poll_seconds:
+                logger.warning(
+                    "[monitor_operation] Aborting after %.0fs for operation %s",
+                    elapsed, op_id[:8],
+                )
+                return {
+                    "operation_id": op_id,
+                    "status": "timeout",
+                    "error": f"Monitoring timed out after {elapsed / 3600:.1f} hours.",
+                    "message": "The operation may still be running. Check status with run_sql_query.",
+                }
+
             # Read real-time counters from Redis
             total_raw: str | None = await r.get(_rkey("total"))
             completed_raw: str | None = await r.get(_rkey("completed"))
@@ -5312,6 +5339,29 @@ async def _monitor_operation(
                 completed = operation.completed_items
                 succeeded = operation.succeeded_items
                 failed = operation.failed_items
+
+            # Track stale progress
+            if completed != last_completed:
+                last_completed = completed
+                last_progress_change_time = time.monotonic()
+            elif time.monotonic() - last_progress_change_time > stale_timeout_seconds:
+                logger.warning(
+                    "[monitor_operation] No progress for %.0fs on operation %s (completed=%d/%d), aborting",
+                    stale_timeout_seconds, op_id[:8], completed, total,
+                )
+                return {
+                    "operation_id": op_id,
+                    "operation_name": op_name,
+                    "status": "stale",
+                    "total_items": total,
+                    "succeeded_items": succeeded,
+                    "failed_items": failed,
+                    "error": f"No progress for {stale_timeout_seconds / 60:.0f} minutes.",
+                    "message": (
+                        f"Stale: {completed}/{total} completed but no progress for "
+                        f"{stale_timeout_seconds / 60:.0f} min. Check status with run_sql_query."
+                    ),
+                }
 
             # Broadcast progress to UI
             await progress.update({

@@ -63,6 +63,24 @@ def run_async(coro: Any) -> Any:
         loop.close()
 
 
+async def _mark_operation_failed(operation_id: str, organization_id: str, error: str) -> None:
+    """Mark a bulk operation as failed in the DB so monitor_operation can detect it."""
+    from models.database import get_session
+    from models.bulk_operation import BulkOperation
+
+    async with get_session(organization_id=organization_id) as session:
+        result = await session.execute(
+            select(BulkOperation).where(BulkOperation.id == UUID(operation_id))
+        )
+        op: BulkOperation | None = result.scalar_one_or_none()
+        if op:
+            op.status = "failed"
+            op.error = error[:2000]  # Truncate long tracebacks
+            op.completed_at = datetime.now(timezone.utc)
+            await session.commit()
+            logger.info("[BulkOp] Marked operation %s as failed: %s", operation_id[:8], error[:200])
+
+
 def _render_template(template: dict[str, Any], item: dict[str, Any]) -> dict[str, Any]:
     """
     Render a params_template dict by substituting ``{{key}}`` placeholders
@@ -276,14 +294,23 @@ def bulk_tool_run_coordinator(
     user_id: Optional[str],
 ) -> dict[str, Any]:
     """Fan out per-item tasks and poll progress until done."""
-    return run_async(
-        _bulk_tool_run_coordinator_async(
-            celery_task=self,
-            operation_id=operation_id,
-            organization_id=organization_id,
-            user_id=user_id,
+    try:
+        return run_async(
+            _bulk_tool_run_coordinator_async(
+                celery_task=self,
+                operation_id=operation_id,
+                organization_id=organization_id,
+                user_id=user_id,
+            )
         )
-    )
+    except Exception as exc:
+        # Mark the operation as failed so monitor_operation doesn't hang
+        logger.error("[BulkOp] Coordinator failed for %s: %s", operation_id[:8], exc)
+        try:
+            run_async(_mark_operation_failed(operation_id, organization_id, str(exc)))
+        except Exception as mark_err:
+            logger.error("[BulkOp] Failed to mark operation %s as failed: %s", operation_id[:8], mark_err)
+        raise
 
 
 async def _bulk_tool_run_coordinator_async(
