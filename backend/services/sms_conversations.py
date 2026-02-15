@@ -330,6 +330,7 @@ async def process_inbound_sms(
 
     organization_id: str | None = None
     organization_name: str | None = None
+    body_consumed: bool = False
 
     if len(memberships) == 1:
         # Fast path: single org
@@ -347,10 +348,6 @@ async def process_inbound_sms(
             # We sent a qualifying question — stop processing this message
             return {"status": "pending_org_choice"}
         organization_id, organization_name, body_consumed = resolved
-        if body_consumed:
-            # The message was an org-selection number, not a real message.
-            # Confirmation already sent via SMS — nothing more to do.
-            return {"status": "org_selected", "organization": organization_name}
 
     assert organization_id is not None
 
@@ -362,12 +359,18 @@ async def process_inbound_sms(
     )
 
     # ── 3. Find or create conversation ───────────────────────────────────
+    # Always create so that future messages route to this org automatically.
     conversation: Conversation = await find_or_create_sms_conversation(
         organization_id=organization_id,
         phone_number=phone,
         user_id=user_id,
         user_name=user_name,
     )
+
+    if body_consumed:
+        # The message was an org-selection number, not a real message.
+        # Confirmation already sent via SMS — nothing more to do.
+        return {"status": "org_selected", "organization": organization_name}
 
     # ── 4. Run through orchestrator ──────────────────────────────────────
     orchestrator = ChatOrchestrator(
