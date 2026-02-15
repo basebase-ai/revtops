@@ -41,6 +41,32 @@ logger = logging.getLogger(__name__)
 
 _DIGITS_RE: re.Pattern[str] = re.compile(r"[^\d]")
 
+# Precompiled patterns for markdown stripping (order matters)
+_MD_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"```[a-z]*\n(.*?)```", re.DOTALL), r"\1"),  # fenced code blocks
+    (re.compile(r"`([^`]+)`"), r"\1"),                         # inline code
+    (re.compile(r"!\[([^\]]*)\]\([^)]+\)"), r"\1"),           # images
+    (re.compile(r"\[([^\]]+)\]\(([^)]+)\)"), r"\1 (\2)"),     # links → "text (url)"
+    (re.compile(r"^#{1,6}\s+", re.MULTILINE), ""),            # headings
+    (re.compile(r"\*\*\*(.+?)\*\*\*"), r"\1"),                # bold+italic
+    (re.compile(r"\*\*(.+?)\*\*"), r"\1"),                    # bold
+    (re.compile(r"\*(.+?)\*"), r"\1"),                        # italic
+    (re.compile(r"__(.+?)__"), r"\1"),                        # bold (underscore)
+    (re.compile(r"_(.+?)_"), r"\1"),                          # italic (underscore)
+    (re.compile(r"~~(.+?)~~"), r"\1"),                        # strikethrough
+    (re.compile(r"^>\s?", re.MULTILINE), ""),                 # blockquotes
+    (re.compile(r"^[-*]{3,}\s*$", re.MULTILINE), ""),         # horizontal rules
+    (re.compile(r"\n{3,}"), "\n\n"),                          # collapse blank lines
+]
+
+
+def _strip_markdown(text: str) -> str:
+    """Convert markdown to plain text suitable for SMS."""
+    result: str = text
+    for pattern, replacement in _MD_PATTERNS:
+        result = pattern.sub(replacement, result)
+    return result.strip()
+
 
 def _normalise_e164(phone: str) -> str:
     """
@@ -220,8 +246,11 @@ async def _send_sms_reply(to: str, text: str) -> None:
     """
     Send one or more SMS messages, splitting on segment boundaries if the
     reply exceeds Twilio's 1600-character concatenated limit.
+
+    Markdown is stripped before sending since SMS is plain-text only.
     """
-    if not text.strip():
+    text = _strip_markdown(text)
+    if not text:
         return
 
     # If it fits in one message, send directly
