@@ -23,7 +23,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select, text
 
 from config import settings, get_nango_integration_id, get_provider_scope
@@ -196,7 +196,7 @@ class UpdateProfileRequest(BaseModel):
 
     name: Optional[str] = None
     avatar_url: Optional[str] = None
-    agent_global_commands: Optional[str] = None
+    agent_global_commands: Optional[str] = Field(default=None, max_length=500)
 
 
 @router.patch("/me", response_model=UserResponse)
