@@ -18,7 +18,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any
 from uuid import UUID
 
@@ -140,7 +140,7 @@ async def _find_most_recent_sms_conversation(
     Find the most-recently-updated SMS conversation for this user across
     all organisations.  Returns None if nothing within *max_age_hours*.
     """
-    cutoff: datetime = datetime.now(UTC) - timedelta(hours=max_age_hours)
+    cutoff: datetime = datetime.utcnow() - timedelta(hours=max_age_hours)
     async with get_admin_session() as session:
         result = await session.execute(
             select(Conversation)
