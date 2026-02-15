@@ -355,7 +355,7 @@ async def _execute_tool_approval(
             result = await execute_send_slack(params, op_org_id)
             result["tool_name"] = tool_name
             return result
-        elif tool_name == "save_memory":
+        elif tool_name == "manage_memory":
             result = await execute_save_memory(params, op_org_id, op_user_id)
             result["tool_name"] = tool_name
             return result

@@ -375,18 +375,24 @@ For general web research where you don't have a specific URL, use web_search ins
 
 
 register_tool(
-    name="enrich_contacts_with_apollo",
-    description="""Enrich contacts using Apollo.io's database to get current job titles, companies, and contact info.
+    name="enrich_with_apollo",
+    description="""Enrich contacts or a company using Apollo.io's database.
 
-Use this when users want to:
-- Update outdated job titles and companies for contacts
-- Fill in missing information like email, phone, LinkedIn
-- Verify and refresh contact data quality
+Set type to "contacts" (default) to enrich people, or "company" to enrich a single company by domain.
 
-IMPORTANT: This requires Apollo.io integration and consumes credits.""",
+For contacts: updates job titles, companies, emails, phones, LinkedIn URLs.
+For companies: returns industry, employee count, revenue, technologies, description.
+
+Requires Apollo.io integration and consumes credits.""",
     input_schema={
         "type": "object",
         "properties": {
+            "type": {
+                "type": "string",
+                "enum": ["contacts", "company"],
+                "description": "What to enrich: 'contacts' for people, 'company' for a single company.",
+                "default": "contacts",
+            },
             "contacts": {
                 "type": "array",
                 "items": {
@@ -400,7 +406,11 @@ IMPORTANT: This requires Apollo.io integration and consumes credits.""",
                         "organization_name": {"type": "string"},
                     },
                 },
-                "description": "List of contacts to enrich",
+                "description": "List of contacts to enrich (when type='contacts')",
+            },
+            "domain": {
+                "type": "string",
+                "description": "Company domain to enrich (when type='company', e.g. 'acme.com')",
             },
             "reveal_personal_emails": {
                 "type": "boolean",
@@ -418,33 +428,7 @@ IMPORTANT: This requires Apollo.io integration and consumes credits.""",
                 "default": 50,
             },
         },
-        "required": ["contacts"],
-    },
-    category=ToolCategory.EXTERNAL_READ,
-    default_requires_approval=False,
-)
-
-
-register_tool(
-    name="enrich_company_with_apollo",
-    description="""Enrich a company/organization using Apollo.io's database.
-
-Get detailed company information like:
-- Industry and sub-industry
-- Employee count and revenue estimates
-- Technologies used
-- Company description and keywords
-
-Requires company domain (e.g., "acme.com") to look up.""",
-    input_schema={
-        "type": "object",
-        "properties": {
-            "domain": {
-                "type": "string",
-                "description": "Company domain to enrich (e.g., 'acme.com')",
-            },
-        },
-        "required": ["domain"],
+        "required": [],
     },
     category=ToolCategory.EXTERNAL_READ,
     default_requires_approval=False,
@@ -882,82 +866,135 @@ This is workflow-scoped memory, not user-wide memory.""",
 )
 
 register_tool(
-    name="save_memory",
-    description="""Save a memory or preference that will be recalled at the start of every future conversation.
+    name="manage_memory",
+    description="""Save, update, or delete a persistent memory that is recalled at the start of every future conversation.
 
-Memories are scoped to one of three levels via entity_type:
-- "user": Personal facts and preferences about the user (default). E.g. "User prefers concise answers", "User is based in San Francisco".
-- "organization": Facts about the company shared across all org members. E.g. "Company sells B2B SaaS", "~200 employees, $30M ARR".
-- "organization_member": Facts about the user's specific role/job. E.g. "Manages a team of 12 AEs across NA", "Currently leading Q1 pipeline review".
+Actions:
+- "save" (default): Create a new memory. Requires content.
+- "update": Revise an existing memory. Requires memory_id and content.
+- "delete": Remove a memory. Requires memory_id.
 
-Use this when the user explicitly asks you to "remember" something, states a preference, or shares context about themselves, their role, or their company.
+Memories are scoped via entity_type:
+- "user": Personal facts/preferences (default).
+- "organization": Company-wide facts shared across all members.
+- "organization_member": Facts about the user's specific role.
 
-Each memory should be a single, self-contained statement. Save multiple memories as separate calls if the user gives you several things to remember.
-
-Do NOT save conversation-specific context (like "user asked about deal X") — only persistent preferences and facts.""",
+Use when the user asks you to "remember" or "forget" something, or when a saved memory needs revision.
+Each memory should be a single, self-contained statement. Do NOT save conversation-specific context.""",
     input_schema={
         "type": "object",
         "properties": {
+            "action": {
+                "type": "string",
+                "enum": ["save", "update", "delete"],
+                "description": "What to do: save a new memory, update an existing one, or delete one.",
+                "default": "save",
+            },
             "content": {
                 "type": "string",
-                "description": "The memory to save. A concise, self-contained statement (e.g. 'User prefers concise answers' or 'Company mission: Make every sales rep a top performer').",
+                "description": "The memory content (required for save and update).",
+            },
+            "memory_id": {
+                "type": "string",
+                "description": "UUID of the memory to update or delete (required for update and delete).",
             },
             "entity_type": {
                 "type": "string",
                 "enum": ["user", "organization", "organization_member"],
-                "description": "The level to associate this memory with. Defaults to 'user'.",
+                "description": "Scope level. Defaults to 'user'.",
                 "default": "user",
             },
             "category": {
                 "type": "string",
-                "description": "Optional grouping category (e.g. 'preference', 'personal', 'professional', 'project').",
+                "description": "Optional grouping category (e.g. 'preference', 'personal', 'professional').",
             },
         },
-        "required": ["content"],
+        "required": [],
     },
     category=ToolCategory.LOCAL_WRITE,
     default_requires_approval=False,
 )
 
-register_tool(
-    name="delete_memory",
-    description="""Delete a previously saved memory.
+# -----------------------------------------------------------------------------
+# Bulk Operations — General-purpose parallel tool execution
+# -----------------------------------------------------------------------------
 
-Use this when the user asks you to forget something, or when a previously saved memory is no longer relevant. You must provide the exact memory_id (UUID) from the memories listed in the system prompt.""",
+register_tool(
+    name="bulk_tool_run",
+    description="""Run any tool over a large list of items in parallel.
+
+Use this for batch operations that would be too slow sequentially — enriching thousands of contacts, researching hundreds of companies, fetching many URLs, etc.
+
+Each item is used to render params_template (with {{field}} placeholders), then the specified tool is called once per item. Results are stored in the bulk_operation_results table and can be queried via run_sql_query.
+
+The operation runs in the background via Celery workers. Returns immediately with an operation_id. Follow with monitor_operation to wait for completion, or query bulk_operations / bulk_operation_results tables via run_sql_query.
+
+IMPORTANT:
+- items_query should be a SQL SELECT that returns the fields needed by params_template
+- params_template uses {{column_name}} placeholders that get filled from each row
+- rate_limit_per_minute controls how fast the external API is hit (default 200/min)
+
+Example: Enrich all contacts with web search
+  tool: "web_search"
+  items_query: "SELECT id, name, email, title FROM contacts"
+  params_template: {"query": "What is {{name}}'s ({{email}}) current job title and company?"}
+  rate_limit_per_minute: 200""",
     input_schema={
         "type": "object",
         "properties": {
-            "memory_id": {
+            "tool": {
                 "type": "string",
-                "description": "UUID of the memory to delete.",
+                "description": "Name of the tool to run for each item (e.g., 'web_search', 'fetch_url', 'enrich_with_apollo').",
+            },
+            "items_query": {
+                "type": "string",
+                "description": "SQL SELECT query that returns the items to process. Each row becomes an item dict. Column names map to {{placeholder}} names in params_template.",
+            },
+            "items": {
+                "type": "array",
+                "items": {"type": "object"},
+                "description": "Alternative to items_query: an inline list of item dicts. Use items_query for large lists (>100 items).",
+            },
+            "params_template": {
+                "type": "object",
+                "description": "Template for the tool's input params. Use {{column_name}} placeholders that will be filled from each item.",
+            },
+            "rate_limit_per_minute": {
+                "type": "integer",
+                "description": "Maximum API calls per minute (shared across all workers). Default 200. Set lower for APIs with strict rate limits.",
+                "default": 200,
+            },
+            "operation_name": {
+                "type": "string",
+                "description": "Human-readable name for this operation (shown in progress updates).",
             },
         },
-        "required": ["memory_id"],
+        "required": ["tool", "params_template"],
     },
-    category=ToolCategory.LOCAL_WRITE,
+    category=ToolCategory.EXTERNAL_READ,
     default_requires_approval=False,
 )
 
 register_tool(
-    name="update_memory",
-    description="""Update the content of an existing memory.
+    name="monitor_operation",
+    description="""Wait for a long-running bulk operation to complete, with live progress updates.
 
-Use this when a previously saved memory needs to be revised (e.g. user got promoted, a project was completed, a preference changed). You must provide the exact memory_id (UUID) from the memories listed in the system prompt and the new content.""",
+Call this after bulk_tool_run to block until the operation finishes. Progress is broadcast to the UI in real time. When the operation completes, returns the final status with success/failure counts.
+
+This tool may run for minutes or hours depending on the operation size. The UI will show live progress (e.g., "Running Enrich contacts... 3,421/14,000 (24%)").
+
+To check progress without blocking, query the bulk_operations table via run_sql_query instead.""",
     input_schema={
         "type": "object",
         "properties": {
-            "memory_id": {
+            "operation_id": {
                 "type": "string",
-                "description": "UUID of the memory to update.",
-            },
-            "content": {
-                "type": "string",
-                "description": "The updated memory content.",
+                "description": "UUID of the bulk operation to monitor (returned by bulk_tool_run).",
             },
         },
-        "required": ["memory_id", "content"],
+        "required": ["operation_id"],
     },
-    category=ToolCategory.LOCAL_WRITE,
+    category=ToolCategory.LOCAL_READ,
     default_requires_approval=False,
 )
 

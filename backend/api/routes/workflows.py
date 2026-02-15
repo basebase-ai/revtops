@@ -21,7 +21,7 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
-DISALLOWED_WORKFLOW_TOOLS = {"save_memory"}
+DISALLOWED_WORKFLOW_TOOLS = {"manage_memory"}
 
 
 def _sanitize_workflow_auto_approve_tools(tools: list[str] | None) -> list[str]:

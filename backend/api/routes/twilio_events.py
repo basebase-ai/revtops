@@ -131,17 +131,29 @@ async def _is_duplicate_message(message_sid: str) -> bool:
 # Webhook endpoint
 # ---------------------------------------------------------------------------
 
-def _reconstruct_webhook_url(request: Request) -> str:
+def _resolve_webhook_url(request: Request) -> str:
     """
-    Reconstruct the full webhook URL as Twilio sees it.
+    Return the canonical webhook URL for Twilio signature validation.
 
-    When running behind a reverse proxy / load balancer the ``Host`` and
-    scheme may differ from what FastAPI sees.  We use the standard
-    ``X-Forwarded-*`` headers when available, falling back to the request
-    URL.
+    Twilio computes its signature against the *exact* URL configured in the
+    console.  Behind a reverse proxy / load-balancer the scheme, host, and
+    port that FastAPI sees often differ from the public URL, causing
+    signature mismatches.
+
+    Preferred: set ``TWILIO_WEBHOOK_URL`` in env to the exact public URL
+    (e.g. ``https://api.revtops.com/api/twilio/webhook``).
+
+    Fallback: reconstruct from ``X-Forwarded-*`` headers.
     """
+    configured_url: str | None = settings.TWILIO_WEBHOOK_URL
+    if configured_url:
+        return configured_url.rstrip("/")
+
     scheme: str = request.headers.get("x-forwarded-proto", request.url.scheme)
-    host: str = request.headers.get("x-forwarded-host", request.headers.get("host", request.url.hostname or "localhost"))
+    host: str = request.headers.get(
+        "x-forwarded-host",
+        request.headers.get("host", request.url.hostname or "localhost"),
+    )
     path: str = request.url.path
     return f"{scheme}://{host}{path}"
 
@@ -162,7 +174,7 @@ async def handle_twilio_webhook(request: Request) -> Response:
 
     # Validate signature
     twilio_signature: str = request.headers.get("X-Twilio-Signature", "")
-    webhook_url: str = _reconstruct_webhook_url(request)
+    webhook_url: str = _resolve_webhook_url(request)
 
     if not verify_twilio_signature(webhook_url, form, twilio_signature):
         logger.warning("[twilio_events] Invalid Twilio signature for %s", webhook_url)
