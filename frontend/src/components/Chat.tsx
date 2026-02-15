@@ -395,7 +395,7 @@ export function Chat({
           // Stop polling if we have enough messages or the workflow finished
           const lastMsg = loadedMessages[loadedMessages.length - 1];
           const hasRunningTools = lastMsg?.role === 'assistant' && lastMsg.contentBlocks?.some(
-            (b: Record<string, unknown>) => b.type === 'tool_use' && b.status !== 'complete'
+            (b) => b.type === 'tool_use' && (b as ToolUseBlock).status !== 'complete'
           );
           const workflowDone = loadedMessages.length >= 2 && lastMsg?.role === 'assistant' && !hasRunningTools;
           if (loadedMessages.length > 5 || workflowDone) {
