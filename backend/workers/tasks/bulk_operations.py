@@ -172,44 +172,60 @@ async def _bulk_tool_run_item_async(
     from agents.tools import execute_tool
     from workers.rate_limiter import RedisRateLimiter
 
-    # Acquire rate-limit token
-    limiter = RedisRateLimiter(
-        redis_url=redis_url,
-        key=rate_limit_key,
-        rate_per_minute=rate_limit_per_minute,
-    )
-    try:
-        acquired: bool = await limiter.acquire(timeout=300)
-        if not acquired:
-            raise RuntimeError("Rate-limit token acquisition timed out (300s)")
-    finally:
-        await limiter.close()
+    # Retry config for transient errors (rate-limit 429, server errors, etc.)
+    max_retries: int = 5
+    base_backoff: float = 5.0  # seconds
 
-    # Execute the tool
     success: bool = False
     error_msg: Optional[str] = None
     result_data: Optional[dict[str, Any]] = None
 
-    try:
-        result_data = await execute_tool(
-            tool_name=tool_name,
-            tool_input=rendered_params,
-            organization_id=organization_id,
-            user_id=user_id,
+    for attempt in range(max_retries + 1):
+        # Acquire rate-limit token before each attempt
+        limiter = RedisRateLimiter(
+            redis_url=redis_url,
+            key=rate_limit_key,
+            rate_per_minute=rate_limit_per_minute,
         )
-        # Treat result with "error" key as failure
-        if isinstance(result_data, dict) and "error" in result_data:
-            error_msg = str(result_data["error"])
+        try:
+            acquired: bool = await limiter.acquire(timeout=300)
+            if not acquired:
+                raise RuntimeError("Rate-limit token acquisition timed out (300s)")
+        finally:
+            await limiter.close()
+
+        # Execute the tool
+        try:
+            result_data = await execute_tool(
+                tool_name=tool_name,
+                tool_input=rendered_params,
+                organization_id=organization_id,
+                user_id=user_id,
+            )
+            # Treat result with "error" key as failure
+            if isinstance(result_data, dict) and "error" in result_data:
+                error_str: str = str(result_data["error"])
+                # Retry on rate-limit (429) or server errors (5xx)
+                if attempt < max_retries and ("429" in error_str or "rate limit" in error_str.lower() or "500" in error_str or "502" in error_str or "503" in error_str):
+                    backoff: float = base_backoff * (2 ** attempt)
+                    logger.warning(
+                        "[BulkOp] Item %d transient error (attempt %d/%d), retrying in %.1fs: %s",
+                        item_index, attempt + 1, max_retries, backoff, error_str[:200],
+                    )
+                    await asyncio.sleep(backoff)
+                    continue
+                error_msg = error_str
+                success = False
+            else:
+                success = True
+        except Exception as exc:
+            error_msg = str(exc)
             success = False
-        else:
-            success = True
-    except Exception as exc:
-        error_msg = str(exc)
-        success = False
-        logger.error(
-            "[BulkOp] Item %d failed for op %s: %s",
-            item_index, operation_id[:8], error_msg,
-        )
+            logger.error(
+                "[BulkOp] Item %d failed for op %s: %s",
+                item_index, operation_id[:8], error_msg,
+            )
+        break  # Exit retry loop on success or non-retryable error
 
     # Persist result row
     async with get_session(organization_id=organization_id) as session:

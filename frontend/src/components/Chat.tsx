@@ -392,14 +392,21 @@ export function Chat({
             setConversationMessages(chatId, loadedMessages);
           }
           
-          // Stop polling if we have enough messages or the workflow finished
+          // Stop polling when the workflow is truly finished.
+          // The agent always ends with a text summary after all tool calls,
+          // so we check that (a) there are no running tools AND (b) the last
+          // content block is a text block (not a tool_use that might be
+          // followed by more tool calls in the next orchestrator turn).
           const lastMsg = loadedMessages[loadedMessages.length - 1];
-          const hasRunningTools = lastMsg?.role === 'assistant' && lastMsg.contentBlocks?.some(
+          const blocks = lastMsg?.contentBlocks || [];
+          const lastBlock = blocks[blocks.length - 1];
+          const hasRunningTools: boolean = lastMsg?.role === 'assistant' && blocks.some(
             (b) => b.type === 'tool_use' && (b as ToolUseBlock).status !== 'complete'
           );
-          const workflowDone = loadedMessages.length >= 2 && lastMsg?.role === 'assistant' && !hasRunningTools;
-          if (loadedMessages.length > 5 || workflowDone) {
-            console.log('[Chat] Stopping polling -', workflowDone ? 'workflow complete' : 'enough messages');
+          const endsWithText: boolean = lastBlock?.type === 'text' && typeof lastBlock.text === 'string' && lastBlock.text.length > 0;
+          const workflowDone: boolean = loadedMessages.length >= 2 && lastMsg?.role === 'assistant' && !hasRunningTools && endsWithText;
+          if (workflowDone) {
+            console.log('[Chat] Stopping polling - workflow complete (ends with text, no running tools)');
             setIsWorkflowPolling(false);
             clearInterval(pollInterval);
           }
