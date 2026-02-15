@@ -19,7 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from api.websockets import websocket_endpoint
-from api.routes import artifacts, auth, change_sessions, chat, data, deals, drive, search, slack_events, slack_user_mappings, sync, tool_settings, waitlist, workflows
+from api.routes import artifacts, auth, change_sessions, chat, data, deals, drive, search, slack_events, slack_user_mappings, sync, tool_settings, twilio_events, waitlist, workflows
 from models.database import init_db, close_db, get_pool_status
 from config import log_missing_env_vars
 
@@ -140,6 +140,7 @@ app.include_router(tool_settings.router, prefix="/api", tags=["tools"])
 app.include_router(change_sessions.router, prefix="/api", tags=["change-sessions"])
 app.include_router(slack_events.router, prefix="/api/slack", tags=["slack"])
 app.include_router(slack_user_mappings.router, prefix="/api/slack", tags=["slack-user-mappings"])
+app.include_router(twilio_events.router, prefix="/api/twilio", tags=["twilio"])
 
 # WebSocket - authenticated via JWT token in query parameter
 app.add_api_websocket_route("/ws/chat", websocket_endpoint)
