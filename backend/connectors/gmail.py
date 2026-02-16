@@ -155,29 +155,100 @@ class GmailConnector(BaseConnector):
         """
         Sync Gmail emails as activities.
 
-        This captures email activity that can be correlated
-        with deals and accounts.
+        This captures email activity and resolves email addresses to
+        CRM contacts, accounts, and deals using synced HubSpot data.
         """
-        # Get emails from the last 30 days
-        after = datetime.utcnow() - timedelta(days=30)
-        before = datetime.utcnow()
+        from connectors.resolution import build_activity_resolver
+        from sqlalchemy import select
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-        messages = await self.get_messages(
+        # Get emails from the last 30 days
+        after: datetime = datetime.utcnow() - timedelta(days=30)
+        before: datetime = datetime.utcnow()
+
+        messages: list[dict[str, Any]] = await self.get_messages(
             after=after,
             before=before,
             max_results=500,
         )
 
-        # Progress already broadcast during fetch phase
-        count = 0
-        async with get_session(organization_id=self.organization_id) as session:
-            for message in messages:
-                activity = self._normalize_message(message)
-                if activity:
-                    await session.merge(activity)
-                    count += 1
+        # Build resolver from existing CRM data in the database
+        resolver = await build_activity_resolver(self.organization_id)
 
-            await session.commit()
+        # Pre-load existing source_id -> UUID map to avoid duplicate inserts
+        org_uuid: uuid.UUID = uuid.UUID(self.organization_id)
+        existing_map: dict[str, uuid.UUID] = {}
+        async with get_session(organization_id=self.organization_id) as session:
+            result = await session.execute(
+                select(Activity.source_id, Activity.id).where(
+                    Activity.organization_id == org_uuid,
+                    Activity.source_system == self.source_system,
+                    Activity.source_id.isnot(None),
+                )
+            )
+            for row in result.all():
+                existing_map[row[0]] = row[1]
+
+        # Build row dicts for bulk upsert
+        rows: list[dict[str, Any]] = []
+        for message in messages:
+            activity: Optional[Activity] = self._normalize_message(message)
+            if not activity:
+                continue
+
+            # Reuse existing ID if this message was previously synced
+            source_id: str = activity.source_id or ""
+            existing_id: Optional[uuid.UUID] = existing_map.get(source_id)
+            if existing_id:
+                activity.id = existing_id
+
+            # Collect all email addresses from this message
+            cf: dict[str, Any] = activity.custom_fields or {}
+            all_emails: list[str] = []
+            from_email: Optional[str] = cf.get("from_email")
+            if from_email:
+                all_emails.append(from_email)
+            all_emails.extend(cf.get("to_emails") or [])
+            all_emails.extend(cf.get("cc_emails") or [])
+
+            # Resolve to CRM entities
+            resolved = resolver.resolve(all_emails)
+
+            rows.append({
+                "id": activity.id,
+                "organization_id": activity.organization_id,
+                "source_system": activity.source_system,
+                "source_id": activity.source_id,
+                "type": activity.type,
+                "subject": activity.subject,
+                "description": activity.description,
+                "activity_date": activity.activity_date,
+                "contact_id": resolved.contact_id,
+                "account_id": resolved.account_id,
+                "deal_id": resolved.deal_id,
+                "custom_fields": activity.custom_fields,
+                "synced_at": datetime.utcnow(),
+            })
+
+        # Bulk upsert in batches
+        BATCH_SIZE: int = 500
+        update_cols: list[str] = [
+            "type", "subject", "description", "activity_date",
+            "contact_id", "account_id", "deal_id",
+            "custom_fields", "synced_at",
+        ]
+        count: int = 0
+        async with get_session(organization_id=self.organization_id) as session:
+            for i in range(0, len(rows), BATCH_SIZE):
+                batch: list[dict[str, Any]] = rows[i : i + BATCH_SIZE]
+                stmt = pg_insert(Activity).values(batch)
+                stmt = stmt.on_conflict_do_update(
+                    index_elements=["id"],
+                    set_={col: stmt.excluded[col] for col in update_cols},
+                )
+                await session.execute(stmt)
+                await session.commit()
+                count = i + len(batch)
 
         return count
 

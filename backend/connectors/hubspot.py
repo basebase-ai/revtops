@@ -39,9 +39,9 @@ class HubSpotConnector(BaseConnector):
 
     source_system = "hubspot"
 
-    def __init__(self, organization_id: str) -> None:
+    def __init__(self, organization_id: str, user_id: Optional[str] = None) -> None:
         """Initialize connector with owner and pipeline caches."""
-        super().__init__(organization_id)
+        super().__init__(organization_id, user_id=user_id)
         # Cache for HubSpot owner ID -> internal user ID mapping
         self._owner_cache: dict[str, Optional[uuid.UUID]] = {}
         # Cache for HubSpot pipeline ID -> internal pipeline ID mapping
@@ -785,10 +785,59 @@ class HubSpotConnector(BaseConnector):
         )
 
     async def sync_activities(self) -> int:
-        """Sync engagements (calls, emails, meetings, notes) from HubSpot."""
-        total_count: int = 0
+        """Sync engagements (calls, emails, meetings, notes) from HubSpot.
 
-        # Sync different engagement types
+        Each HubSpot engagement can be associated with deals, contacts, and
+        companies.  We request those associations from the API and resolve them
+        to internal FK UUIDs so that activities are properly linked.
+        """
+        total_count: int = 0
+        org_uuid: uuid.UUID = uuid.UUID(self.organization_id)
+
+        # -- Pre-build lookup maps (HS source_id → internal UUID) -----------
+        hs_deal_id_to_deal_id: dict[str, uuid.UUID] = {}
+        hs_contact_id_to_contact_id: dict[str, uuid.UUID] = {}
+        hs_company_id_to_account_id: dict[str, uuid.UUID] = {}
+
+        async with get_session(organization_id=self.organization_id) as session:
+            # Deals
+            result = await session.execute(
+                select(Deal.source_id, Deal.id).where(
+                    Deal.organization_id == org_uuid,
+                    Deal.source_system == self.source_system,
+                )
+            )
+            for row in result.all():
+                hs_deal_id_to_deal_id[row[0]] = row[1]
+
+            # Contacts
+            result = await session.execute(
+                select(Contact.source_id, Contact.id).where(
+                    Contact.organization_id == org_uuid,
+                    Contact.source_system == self.source_system,
+                )
+            )
+            for row in result.all():
+                hs_contact_id_to_contact_id[row[0]] = row[1]
+
+            # Accounts (companies)
+            result = await session.execute(
+                select(Account.source_id, Account.id).where(
+                    Account.organization_id == org_uuid,
+                    Account.source_system == self.source_system,
+                )
+            )
+            for row in result.all():
+                hs_company_id_to_account_id[row[0]] = row[1]
+
+        print(
+            f"[HubSpot] Activity association maps: "
+            f"{len(hs_deal_id_to_deal_id)} deals, "
+            f"{len(hs_contact_id_to_contact_id)} contacts, "
+            f"{len(hs_company_id_to_account_id)} accounts"
+        )
+
+        # -- Sync each engagement type -------------------------------------
         for engagement_type in ["calls", "emails", "meetings", "notes"]:
             properties: list[str] = ["hs_timestamp", "hs_call_title", "hs_call_body"]
             if engagement_type == "emails":
@@ -800,7 +849,9 @@ class HubSpotConnector(BaseConnector):
 
             try:
                 raw_engagements: list[dict[str, Any]] = await self._paginate_results(
-                    f"/crm/v3/objects/{engagement_type}", properties=properties
+                    f"/crm/v3/objects/{engagement_type}",
+                    properties=properties,
+                    associations=["deals", "contacts", "companies"],
                 )
 
                 if not raw_engagements:
@@ -811,7 +862,7 @@ class HubSpotConnector(BaseConnector):
                 async with get_session(organization_id=self.organization_id) as session:
                     result = await session.execute(
                         select(Activity.source_id, Activity.id).where(
-                            Activity.organization_id == uuid.UUID(self.organization_id),
+                            Activity.organization_id == org_uuid,
                             Activity.source_system == self.source_system,
                             Activity.source_id.isnot(None),
                         )
@@ -828,6 +879,34 @@ class HubSpotConnector(BaseConnector):
                         engagement_type,
                         existing_id=existing_map.get(raw_engagement.get("id", "")),
                     )
+
+                    # -- Resolve associations to internal FKs ---------------
+                    assocs: dict[str, Any] = raw_engagement.get("associations", {})
+
+                    deal_id: Optional[uuid.UUID] = None
+                    deal_results: list[dict[str, Any]] = assocs.get("deals", {}).get("results", [])
+                    for dr in deal_results:
+                        resolved: Optional[uuid.UUID] = hs_deal_id_to_deal_id.get(dr.get("id", ""))
+                        if resolved:
+                            deal_id = resolved
+                            break
+
+                    contact_id: Optional[uuid.UUID] = None
+                    contact_results: list[dict[str, Any]] = assocs.get("contacts", {}).get("results", [])
+                    for cr in contact_results:
+                        resolved = hs_contact_id_to_contact_id.get(cr.get("id", ""))
+                        if resolved:
+                            contact_id = resolved
+                            break
+
+                    account_id: Optional[uuid.UUID] = None
+                    company_results: list[dict[str, Any]] = assocs.get("companies", {}).get("results", [])
+                    for cmr in company_results:
+                        resolved = hs_company_id_to_account_id.get(cmr.get("id", ""))
+                        if resolved:
+                            account_id = resolved
+                            break
+
                     rows.append({
                         "id": activity.id,
                         "organization_id": activity.organization_id,
@@ -837,13 +916,17 @@ class HubSpotConnector(BaseConnector):
                         "subject": activity.subject,
                         "description": activity.description,
                         "activity_date": activity.activity_date,
+                        "deal_id": deal_id,
+                        "contact_id": contact_id,
+                        "account_id": account_id,
                         "synced_at": datetime.utcnow(),
                     })
 
                 # Bulk upsert in batches
                 BATCH_SIZE: int = 500
                 update_cols: list[str] = [
-                    "type", "subject", "description", "activity_date", "synced_at",
+                    "type", "subject", "description", "activity_date",
+                    "deal_id", "contact_id", "account_id", "synced_at",
                 ]
                 async with get_session(organization_id=self.organization_id) as session:
                     for i in range(0, len(rows), BATCH_SIZE):

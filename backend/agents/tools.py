@@ -1992,7 +1992,38 @@ async def _crm_write(
     
     if not validated_records:
         return {"error": "No valid records after validation"}
-    
+
+    # ── Deduplicate within the batch (prevents AI from creating the same record twice) ──
+    if operation in ("create", "upsert") and not is_engagement:
+        _DEDUP_KEY_FIELD: dict[str, str] = {
+            "contact": "email",
+            "company": "domain",
+            "deal": "dealname",
+        }
+        dedup_field: str | None = _DEDUP_KEY_FIELD.get(record_type)
+        if dedup_field:
+            seen_keys: set[str] = set()
+            unique_records: list[dict[str, Any]] = []
+            dedup_dropped: int = 0
+            for rec in validated_records:
+                key_val: str = str(rec.get(dedup_field, "")).strip().lower()
+                if key_val and key_val in seen_keys:
+                    dedup_dropped += 1
+                    logger.info(
+                        "[Tools._crm_write] Dropping intra-batch duplicate %s=%r",
+                        dedup_field, rec.get(dedup_field),
+                    )
+                    continue
+                if key_val:
+                    seen_keys.add(key_val)
+                unique_records.append(rec)
+            if dedup_dropped:
+                logger.warning(
+                    "[Tools._crm_write] Removed %d intra-batch duplicate(s) by %s",
+                    dedup_dropped, dedup_field,
+                )
+            validated_records = unique_records
+
     # Check for duplicates in HubSpot (for create/upsert operations on CRM record types)
     # Engagements don't have duplicate detection
     # Only check first 10 records to avoid API rate limits and connection pool exhaustion
@@ -2522,6 +2553,28 @@ async def _execute_hubspot_operation(
     # Determine if this is an engagement type
     _engagement_types: frozenset[str] = frozenset({"call", "email", "meeting", "note"})
     is_engagement: bool = crm_op.record_type in _engagement_types
+
+    # ── Deduplicate within the batch (safety net) ─────────────────────────
+    if crm_op.operation in ("create", "upsert") and not is_engagement:
+        _DEDUP_FIELD: dict[str, str] = {
+            "contact": "email", "company": "domain", "deal": "dealname",
+        }
+        dk: str | None = _DEDUP_FIELD.get(crm_op.record_type)
+        if dk:
+            _seen: set[str] = set()
+            _deduped: list[dict[str, Any]] = []
+            for _rec in records_to_process:
+                _kv: str = str(_rec.get(dk, "")).strip().lower()
+                if _kv and _kv in _seen:
+                    logger.info(
+                        "[Tools._execute_hubspot_operation] Dropping intra-batch dup %s=%r",
+                        dk, _rec.get(dk),
+                    )
+                    continue
+                if _kv:
+                    _seen.add(_kv)
+                _deduped.append(_rec)
+            records_to_process = _deduped
 
     # Execute based on record type and operation
     created: list[dict[str, Any]] = []
@@ -3079,6 +3132,32 @@ async def commit_change_session(
                 accounts_to_update.append((record_id, hs_props, source_data))
             elif snapshot.table_name == "deals":
                 deals_to_update.append((record_id, hs_props, source_data))
+
+    # ── 2b. Deduplicate create lists (same key → keep first occurrence) ────
+    def _dedup_creates(
+        items: list[tuple[UUID, dict[str, Any]]], key_field: str,
+    ) -> list[tuple[UUID, dict[str, Any]]]:
+        seen: set[str] = set()
+        result: list[tuple[UUID, dict[str, Any]]] = []
+        for local_id, props in items:
+            kv: str = str(props.get(key_field, "")).strip().lower()
+            if kv and kv in seen:
+                _log.info("[commit:dedup] Dropping duplicate %s=%r (id=%s)", key_field, props.get(key_field), local_id)
+                continue
+            if kv:
+                seen.add(kv)
+            result.append((local_id, props))
+        return result
+
+    pre_dedup_deals: int = len(deals_to_create)
+    contacts_to_create = _dedup_creates(contacts_to_create, "email")
+    accounts_to_create = _dedup_creates(accounts_to_create, "name")
+    deals_to_create = _dedup_creates(deals_to_create, "dealname")
+    if len(deals_to_create) < pre_dedup_deals:
+        _log.warning(
+            "[commit] Removed %d duplicate deal snapshot(s) before HubSpot push",
+            pre_dedup_deals - len(deals_to_create),
+        )
 
     total_creates: int = len(contacts_to_create) + len(accounts_to_create) + len(deals_to_create) + len(engagements_to_create)
     total_updates: int = len(contacts_to_update) + len(accounts_to_update) + len(deals_to_update)
