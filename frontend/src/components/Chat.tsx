@@ -1093,9 +1093,17 @@ function MessageWithBlocks({
             );
           }
           if (block.type === 'tool_use') {
+            // Hide tool blocks that haven't started yet (no status, no result).
+            // The orchestrator saves all tool_use blocks from Claude's response
+            // in one early save before executing them sequentially, so without
+            // this check they'd all show as "running" simultaneously.
+            const toolBlock = block as ToolUseBlock;
+            if (!toolBlock.status && !toolBlock.result) {
+              return null;
+            }
             return (
               <div key={block.id} className="my-0.5">
-                {renderToolBlock(block)}
+                {renderToolBlock(toolBlock)}
               </div>
             );
           }
