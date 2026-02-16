@@ -306,7 +306,8 @@ Use this when you need external information not available in the user's data:
 - Current events or news about companies
 - Sales methodologies or frameworks
 
-Do NOT use this for data that's in the user's database - use run_sql_query instead.""",
+Do NOT use this for data that's in the user's database - use run_sql_query instead.
+If Perplexity-style search output is sparse, this tool may include an OpenAI fallback synthesis for contact enrichment context.""",
     input_schema={
         "type": "object",
         "properties": {

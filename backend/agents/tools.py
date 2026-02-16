@@ -21,6 +21,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import httpx
+from openai import AsyncOpenAI
 from sqlalchemy import select, text
 
 from config import settings
@@ -37,6 +38,12 @@ from models.tracker_team import TrackerTeam
 from agents.registry import get_tools_for_claude, get_tool, requires_approval
 
 logger = logging.getLogger(__name__)
+
+OPENAI_WEB_RESEARCH_FALLBACK_MODELS: tuple[str, ...] = (
+    settings.OPENAI_RESEARCH_MODEL,
+    "gpt-4.1",
+    "gpt-4o-mini",
+)
 
 # =============================================================================
 # Pending Operations Store (temporary until Phase 6 PendingOperation table)
@@ -1219,19 +1226,91 @@ async def _search_activities(
         return {"error": f"Search failed: {str(e)}"}
 
 
+def _is_sparse_web_search_result(content: str, citations: list[str]) -> bool:
+    """Heuristic to detect when Perplexity did not return enough useful detail."""
+    normalized = content.strip().lower()
+    weak_markers = (
+        "i don't have",
+        "i do not have",
+        "not enough information",
+        "unable to find",
+        "couldn't find",
+        "no specific information",
+    )
+    is_weak = any(marker in normalized for marker in weak_markers)
+    return is_weak or len(content.strip()) < 350 or len(citations) < 2
+
+
+async def _openai_web_search_fallback(query: str, context_answer: str | None) -> dict[str, Any] | None:
+    """Use OpenAI as a secondary research pass when web search is sparse."""
+    if not settings.OPENAI_API_KEY:
+        logger.info("[Tools._openai_web_search_fallback] Skipping fallback: OPENAI_API_KEY not configured")
+        return None
+
+    client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+    prompt_context = context_answer or "No useful Perplexity context was available."
+
+    for model in OPENAI_WEB_RESEARCH_FALLBACK_MODELS:
+        try:
+            logger.info("[Tools._openai_web_search_fallback] Running OpenAI fallback with model=%s", model)
+            response = await client.chat.completions.create(
+                model=model,
+                temperature=0.2,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are a contact enrichment researcher. "
+                            "Given a person/company context, provide practical sales enrichment details. "
+                            "If uncertain, say so briefly and provide the best likely next verification steps."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Research query: {query}\n\n"
+                            f"Existing sparse research context:\n{prompt_context}\n\n"
+                            "Return concise enrichment findings with 4 sections: "
+                            "Role & seniority, Company context, Notable recent signals, Suggested outreach angle."
+                        ),
+                    },
+                ],
+            )
+            content = (response.choices[0].message.content or "").strip()
+            if not content:
+                logger.warning("[Tools._openai_web_search_fallback] Empty response for model=%s", model)
+                continue
+            return {
+                "answer": content,
+                "provider": "openai",
+                "model": model,
+            }
+        except Exception as exc:
+            logger.warning("[Tools._openai_web_search_fallback] Model %s failed: %s", model, str(exc))
+            continue
+
+    logger.error("[Tools._openai_web_search_fallback] All fallback models failed")
+    return None
+
+
 async def _web_search(params: dict[str, Any]) -> dict[str, Any]:
-    """Search the web using Perplexity's Sonar API."""
+    """Search the web using Perplexity and optionally OpenAI fallback for sparse results."""
     query = params.get("query", "").strip()
-    
+
     if not query:
         return {"error": "No search query provided"}
-    
+
     if not settings.PERPLEXITY_API_KEY:
+        fallback_only = await _openai_web_search_fallback(query, context_answer=None)
+        if fallback_only:
+            fallback_only["query"] = query
+            fallback_only["fallback_reason"] = "perplexity_not_configured"
+            return fallback_only
         return {
             "error": "We do not currently run external web interactions; coming soon!",
-            "suggestion": "Add PERPLEXITY_API_KEY to your environment variables to enable web search.",
+            "suggestion": "Add PERPLEXITY_API_KEY (or OPENAI_API_KEY for fallback research) to enable web search.",
         }
-    
+
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(
@@ -1254,27 +1333,34 @@ async def _web_search(params: dict[str, Any]) -> dict[str, Any]:
                     ],
                 },
             )
-            
+
             if response.status_code != 200:
                 logger.error("[Tools._web_search] API error: %s %s", response.status_code, response.text)
                 return {"error": f"Search API error: {response.status_code}"}
-            
+
             data = response.json()
             content: str = data["choices"][0]["message"]["content"]
-            
-            # Extract citations if available
+
             citations: list[str] = data.get("citations", [])
-            
+
             result: dict[str, Any] = {
                 "answer": content,
                 "query": query,
+                "provider": "perplexity",
             }
-            
+
             if citations:
                 result["sources"] = citations
-            
+
+            if _is_sparse_web_search_result(content, citations):
+                logger.info("[Tools._web_search] Sparse Perplexity result detected; trying OpenAI fallback")
+                fallback_result = await _openai_web_search_fallback(query, context_answer=content)
+                if fallback_result:
+                    result["openai_fallback"] = fallback_result
+                    result["fallback_reason"] = "sparse_perplexity_result"
+
             return result
-            
+
     except httpx.TimeoutException:
         logger.error("[Tools._web_search] Request timed out")
         return {"error": "Search request timed out. Try a simpler query."}
@@ -5403,5 +5489,4 @@ async def _monitor_operation(
             await asyncio.sleep(poll_interval)
     finally:
         await r.close()
-
 
