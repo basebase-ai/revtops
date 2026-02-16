@@ -5,6 +5,7 @@ This runs after data sync to ensure all activities have searchable embeddings.
 """
 
 import logging
+import math
 from typing import Optional
 from uuid import UUID
 
@@ -23,6 +24,24 @@ logger = logging.getLogger(__name__)
 
 # Batch size for embedding generation
 EMBEDDING_BATCH_SIZE = 50
+EMBEDDING_SEARCH_CANDIDATE_LIMIT = 1000
+
+
+def _cosine_similarity(vector_a: list[float], vector_b: list[float]) -> float:
+    """Calculate cosine similarity between two vectors."""
+    if len(vector_a) != len(vector_b):
+        raise ValueError(
+            f"Embedding length mismatch: query={len(vector_a)} candidate={len(vector_b)}"
+        )
+
+    dot_product = sum(a * b for a, b in zip(vector_a, vector_b))
+    norm_a = math.sqrt(sum(a * a for a in vector_a))
+    norm_b = math.sqrt(sum(b * b for b in vector_b))
+
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+
+    return dot_product / (norm_a * norm_b)
 
 
 async def generate_embeddings_for_organization(
@@ -141,23 +160,22 @@ async def search_activities_by_embedding(
 
     # Generate query embedding
     query_embedding = await embedding_service.generate_embedding(query_text)
-    query_bytes = embedding_service.embedding_to_bytes(query_embedding)
-
     async with get_session(organization_id=organization_id) as session:
-        # Build the similarity search query
-        # Using pgvector's <=> operator for cosine distance
+        # NOTE:
+        # Embeddings are currently stored as bytea (packed float32 values),
+        # so PostgreSQL cannot cast ``embedding`` to pgvector directly.
+        # We rank candidates in Python until a vector migration is complete.
         type_filter = ""
+        params: dict[str, object] = {
+            "org_id": organization_id,
+            "candidate_limit": max(limit * 10, EMBEDDING_SEARCH_CANDIDATE_LIMIT),
+        }
         if activity_types:
-            types_str = ", ".join(f"'{t}'" for t in activity_types)
-            type_filter = f"AND type IN ({types_str})"
+            type_filter = "AND type = ANY(:activity_types)"
+            params["activity_types"] = activity_types
 
-        # Use raw SQL for vector similarity search
-        # NOTE: We must use CAST(:param AS vector) instead of :param::vector
-        # because asyncpg's positional-parameter compilation gets confused
-        # when a named-parameter token is immediately followed by the
-        # PostgreSQL ``::`` cast operator.
         sql = text(f"""
-            SELECT 
+            SELECT
                 id,
                 meeting_id,
                 source_system,
@@ -168,25 +186,48 @@ async def search_activities_by_embedding(
                 activity_date,
                 custom_fields,
                 searchable_text,
-                1 - (embedding::vector(1536) <=> CAST(:query_embedding AS vector(1536))) as similarity
+                embedding
             FROM activities
             WHERE organization_id = :org_id
               AND embedding IS NOT NULL
               {type_filter}
-            ORDER BY embedding::vector(1536) <=> CAST(:query_embedding AS vector(1536))
-            LIMIT :limit
+            ORDER BY synced_at DESC NULLS LAST
+            LIMIT :candidate_limit
         """)
 
-        result = await session.execute(
-            sql,
-            {
-                "org_id": organization_id,
-                "query_embedding": f"[{','.join(str(x) for x in query_embedding)}]",
-                "limit": limit,
-            },
-        )
+        result = await session.execute(sql, params)
+        candidates = result.fetchall()
 
-        rows = result.fetchall()
+        if not candidates:
+            logger.info("No embedding candidates found", extra={"organization_id": organization_id})
+            return []
+
+        scored_rows: list[tuple[object, float]] = []
+        skipped_rows = 0
+        for row in candidates:
+            try:
+                candidate_embedding = embedding_service.bytes_to_embedding(row.embedding)
+                similarity = _cosine_similarity(query_embedding, candidate_embedding)
+                scored_rows.append((row, similarity))
+            except Exception as exc:
+                skipped_rows += 1
+                logger.warning(
+                    "Failed to score activity embedding",
+                    extra={
+                        "activity_id": str(row.id),
+                        "organization_id": organization_id,
+                        "error": str(exc),
+                    },
+                )
+
+        if skipped_rows:
+            logger.info(
+                "Skipped invalid embedding rows during semantic search",
+                extra={"organization_id": organization_id, "skipped_rows": skipped_rows},
+            )
+
+        scored_rows.sort(key=lambda item: item[1], reverse=True)
+        top_rows = scored_rows[:limit]
 
         return [
             {
@@ -197,7 +238,7 @@ async def search_activities_by_embedding(
                 "description": row.description[:500] if row.description else None,
                 "activity_date": f"{row.activity_date.isoformat()}Z" if row.activity_date else None,
                 "custom_fields": row.custom_fields,
-                "similarity": float(row.similarity),
+                "similarity": float(similarity),
             }
-            for row in rows
+            for row, similarity in top_rows
         ]
