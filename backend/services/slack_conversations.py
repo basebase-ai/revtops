@@ -1265,22 +1265,49 @@ async def find_or_create_conversation(
         conversation = result.scalar_one_or_none()
         
         if conversation:
-            if revtops_user_id and conversation.user_id is None:
-                conversation.user_id = UUID(revtops_user_id)
-                await session.commit()
+            changed: bool = False
+            previous_source_user_id: str | None = conversation.source_user_id
+
+            if conversation.source_user_id != slack_user_id:
+                conversation.source_user_id = slack_user_id
+                changed = True
                 logger.info(
-                    "[slack_conversations] Linked existing conversation %s to user %s",
+                    "[slack_conversations] Updated conversation %s source_user_id from %s to %s",
                     conversation.id,
-                    revtops_user_id,
+                    previous_source_user_id,
+                    slack_user_id,
                 )
+
+            if revtops_user_id:
+                resolved_user_id = UUID(revtops_user_id)
+                if conversation.user_id != resolved_user_id:
+                    conversation.user_id = resolved_user_id
+                    changed = True
+                    logger.info(
+                        "[slack_conversations] Set conversation %s current user to %s",
+                        conversation.id,
+                        revtops_user_id,
+                    )
+            elif previous_source_user_id and previous_source_user_id != slack_user_id and conversation.user_id is not None:
+                conversation.user_id = None
+                changed = True
+                logger.info(
+                    "[slack_conversations] Cleared conversation %s current RevTops user after source user changed to %s",
+                    conversation.id,
+                    slack_user_id,
+                )
+
             if slack_user_name and (not conversation.title or conversation.title == "Slack DM"):
                 conversation.title = f"Slack DM - {slack_user_name}"
-                await session.commit()
+                changed = True
                 logger.info(
                     "[slack_conversations] Updated Slack conversation %s title to %s",
                     conversation.id,
                     conversation.title,
                 )
+
+            if changed:
+                await session.commit()
 
             logger.info(
                 "[slack_conversations] Found existing conversation %s for channel %s",
@@ -1858,10 +1885,30 @@ async def process_slack_thread_reply(
     )
     slack_user_email: str | None = _extract_slack_email(slack_user)
     slack_user_tz: str | None = _extract_slack_timezone(slack_user)
-    await resolve_revtops_user_for_slack_actor(
+    linked_user = await resolve_revtops_user_for_slack_actor(
         organization_id=organization_id,
         slack_user_id=user_id,
         slack_user=slack_user,
+    )
+
+    # Keep thread "current user" aligned with the last speaker until a
+    # different person talks in the thread.
+    current_source_user_id: str = conversation.source_user_id or user_id
+    if conversation.source_user_id != user_id:
+        current_source_user_id = user_id
+
+    current_user_id: str | None = (
+        str(linked_user.id)
+        if linked_user
+        else (str(conversation.user_id) if conversation.user_id else None)
+    )
+    current_user_email: str | None = linked_user.email if linked_user else None
+
+    await find_or_create_conversation(
+        organization_id=organization_id,
+        slack_channel_id=f"{channel_id}:{thread_ts}",
+        slack_user_id=current_source_user_id,
+        revtops_user_id=current_user_id,
     )
 
     # Download any attached Slack files
@@ -1872,11 +1919,11 @@ async def process_slack_thread_reply(
     # Process message through orchestrator, posting incrementally
     local_time_iso: str | None = _compute_local_time_iso(slack_user_tz)
     orchestrator = ChatOrchestrator(
-        user_id=None,
+        user_id=current_user_id,
         organization_id=organization_id,
         conversation_id=str(conversation.id),
-        user_email=None,
-        source_user_id=user_id,
+        user_email=current_user_email,
+        source_user_id=current_source_user_id,
         source_user_email=slack_user_email,
         workflow_context={"slack_channel_id": channel_id},
         source="slack_thread",
