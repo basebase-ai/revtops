@@ -1891,7 +1891,7 @@ async def list_integrations(
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid user ID")
 
-        async with get_session() as db_session:
+        async with get_admin_session() as db_session:
             user = await db_session.get(User, current_user_uuid)
             if not user or not user.organization_id:
                 raise HTTPException(status_code=404, detail="User not found")

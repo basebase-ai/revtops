@@ -265,13 +265,17 @@ async def _collect_running_workflow_tool_updates(organization_id: str) -> list[d
 async def _stream_workflow_tool_status(websocket: WebSocket, organization_id: str) -> None:
     """Poll persisted workflow tool states and push deltas to this websocket."""
     last_sent: dict[str, str] = {}
+    consecutive_errors: int = 0
+    BASE_INTERVAL: float = 1.5
+    MAX_BACKOFF: float = 30.0
     logger.info("[WebSocket] Starting workflow tool status stream for org %s", organization_id)
     while True:
         try:
             updates = await _collect_running_workflow_tool_updates(organization_id)
+            consecutive_errors = 0
             for update in updates:
-                key = f"{update['conversation_id']}:{update['tool_id']}"
-                signature = json.dumps(update.get("result") or {}, sort_keys=True, default=str)
+                key: str = f"{update['conversation_id']}:{update['tool_id']}"
+                signature: str = json.dumps(update.get("result") or {}, sort_keys=True, default=str)
                 signature = f"{update.get('status')}::{signature}"
                 if last_sent.get(key) == signature:
                     continue
@@ -290,8 +294,18 @@ async def _stream_workflow_tool_status(websocket: WebSocket, organization_id: st
                 )
                 last_sent[key] = signature
         except Exception as exc:
-            logger.warning("[WebSocket] Workflow status stream error: %s", exc)
-        await asyncio.sleep(1.5)
+            consecutive_errors += 1
+            if consecutive_errors <= 3:
+                logger.warning("[WebSocket] Workflow status stream error: %s", exc)
+            elif consecutive_errors == 4:
+                logger.warning(
+                    "[WebSocket] Workflow status stream error (suppressing further): %s", exc
+                )
+        sleep_time: float = min(
+            BASE_INTERVAL * (2 ** consecutive_errors) if consecutive_errors > 0 else BASE_INTERVAL,
+            MAX_BACKOFF,
+        )
+        await asyncio.sleep(sleep_time)
 
 
 async def _execute_tool_approval(

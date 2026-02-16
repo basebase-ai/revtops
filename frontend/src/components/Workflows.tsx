@@ -732,11 +732,9 @@ function WorkflowModal({
   // Tools that can be auto-approved for workflows
   const availableAutoApproveTools = [
     { id: 'run_sql_query', label: 'Query Data', description: 'Run SQL queries to read from your synced data' },
-    { id: 'bulk_tool_run', label: 'Bulk Tool Run', description: 'Run a tool in parallel over many items (e.g., web search across all contacts)' },
-    { id: 'monitor_operation', label: 'Monitor Operation', description: 'Wait for a bulk operation to complete with live progress' },
+    { id: 'foreach', label: 'Foreach', description: 'Run a tool or workflow for each item in a list (sequential or parallel)' },
     { id: 'web_search', label: 'Web Search', description: 'Search the web for real-time information' },
     { id: 'run_workflow', label: 'Run Workflow', description: 'Execute another workflow and wait for results' },
-    { id: 'loop_over', label: 'Loop Over Items', description: 'Run a workflow for each item in a list' },
     { id: 'send_slack', label: 'Post to Slack', description: 'Send messages to Slack channels' },
     { id: 'send_email_from', label: 'Send Email', description: 'Send emails from your connected account' },
     { id: 'write_to_system_of_record', label: 'Write to System of Record', description: 'Create or update records in any connected system (CRM, issue trackers, code repos)' },
@@ -947,7 +945,7 @@ function WorkflowModal({
                 Child Workflows
               </label>
               <p className="text-xs text-surface-500 mb-3">
-                Select workflows this one can call using run_workflow or loop_over.
+                Select workflows this one can call using run_workflow or foreach.
                 Selected workflows will be auto-injected into the prompt with their IDs and schemas.
               </p>
               <div className="space-y-2 max-h-48 overflow-y-auto">

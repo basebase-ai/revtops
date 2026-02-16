@@ -258,7 +258,6 @@ async def execute_tool(
         "search_activities": lambda: _search_activities(tool_input, organization_id, user_id),
         "web_search": lambda: _web_search(tool_input),
         "run_workflow": lambda: _run_workflow(tool_input, organization_id, user_id, context),
-        "loop_over": lambda: _loop_over(tool_input, organization_id, user_id, context),
         "fetch_url": lambda: _fetch_url(tool_input),
         "enrich_with_apollo": lambda: _enrich_with_apollo(tool_input, organization_id),
         "crm_write": lambda: _crm_write(
@@ -288,8 +287,7 @@ async def execute_tool(
         "create_linear_issue": lambda: _create_linear_issue(tool_input, organization_id, user_id, skip_approval),
         "update_linear_issue": lambda: _update_linear_issue(tool_input, organization_id, user_id, skip_approval),
         "search_linear_issues": lambda: _search_linear_issues(tool_input, organization_id),
-        "bulk_tool_run": lambda: _bulk_tool_run(tool_input, organization_id, user_id, context),
-        "monitor_operation": lambda: _monitor_operation(tool_input, organization_id, context),
+        "foreach": lambda: _foreach(tool_input, organization_id, user_id, context),
     }
 
     handler = tool_handlers.get(normalized_tool_name)
@@ -312,11 +310,11 @@ def _log_tool_execution_result(
         logger.info("[Tools] run_sql_query returned %d rows", result.get("row_count", 0))
     elif executed_tool_name == "search_activities":
         logger.info("[Tools] search_activities returned %d results", len(result.get("results", [])))
-    elif executed_tool_name == "loop_over":
+    elif executed_tool_name == "foreach":
         logger.info(
-            "[Tools] loop_over completed: %d/%d successful",
-            result.get("succeeded", 0),
-            result.get("total", 0),
+            "[Tools] foreach completed: %d/%d successful",
+            result.get("succeeded", result.get("succeeded_items", 0)),
+            result.get("total", result.get("total_items", 0)),
         )
     elif executed_tool_name == "fetch_url":
         logger.info("[Tools] fetch_url completed: %s", result.get("url"))
@@ -4181,10 +4179,10 @@ MAX_WORKFLOW_CALL_DEPTH: int = 5
 # Maximum number of workflows a workflow execution tree may create.
 MAX_CREATED_CHILD_WORKFLOWS: int = 5
 
-# Maximum items that can be processed in loop_over
+# Maximum items for foreach workflow path
 MAX_LOOP_ITEMS: int = 500
 
-# Maximum concurrent workflow executions in loop_over
+# Maximum concurrent workflow executions for foreach workflow path
 MAX_CONCURRENT_WORKFLOWS: int = 10
 
 
@@ -4353,203 +4351,6 @@ async def _run_workflow(
     except Exception as e:
         logger.error("[Tools._run_workflow] Failed: %s", str(e))
         return {"error": f"Failed to run workflow: {str(e)}", "status": "failed"}
-
-
-async def _loop_over(
-    params: dict[str, Any],
-    organization_id: str,
-    user_id: str | None,
-    context: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """
-    Execute a workflow for each item in a list.
-    
-    This is the "map" operation for workflows - process a batch of items
-    by running a workflow for each one.
-    
-    Args:
-        params: Contains items, workflow_id, max_concurrent, max_items, continue_on_error
-        organization_id: Organization UUID
-        user_id: User UUID
-        context: Workflow context for recursion detection
-        
-    Returns:
-        Summary of results and failures
-    """
-    import asyncio
-    from models.workflow import Workflow
-    
-    items: list[dict[str, Any]] = params.get("items", [])
-    workflow_id: str = params.get("workflow_id", "").strip()
-    max_concurrent: int = min(params.get("max_concurrent", 3), MAX_CONCURRENT_WORKFLOWS)
-    max_items: int = min(params.get("max_items", 100), MAX_LOOP_ITEMS)
-    continue_on_error: bool = params.get("continue_on_error", True)
-    
-    if not workflow_id:
-        return {"error": "workflow_id is required"}
-    
-    if not items:
-        return {"error": "items array is required and cannot be empty"}
-    
-    if not isinstance(items, list):
-        return {"error": "items must be an array"}
-    
-    # Apply item limit
-    original_count: int = len(items)
-    items = items[:max_items]
-    truncated: bool = original_count > max_items
-    
-    # Verify workflow exists
-    async with get_session(organization_id=organization_id) as session:
-        result = await session.execute(
-            select(Workflow).where(
-                Workflow.id == UUID(workflow_id),
-                Workflow.organization_id == UUID(organization_id),
-            )
-        )
-        workflow = result.scalar_one_or_none()
-        
-        if not workflow:
-            return {"error": f"Workflow {workflow_id} not found"}
-        
-        if not workflow.is_enabled:
-            return {"error": f"Workflow '{workflow.name}' is disabled."}
-        
-        workflow_name: str = workflow.name
-    
-    # === Execute workflow for each item ===
-    results: list[dict[str, Any]] = []
-    failures: list[dict[str, Any]] = []
-    semaphore = asyncio.Semaphore(max_concurrent)
-    completed_count = 0
-    
-    # Centralized progress updater
-    progress = ToolProgressUpdater(context, organization_id)
-    conversation_id = progress.conversation_id  # Keep for parent context linking
-    
-    logger.info(
-        "[Tools._loop_over] Progress context: can_update=%s",
-        progress.can_update,
-    )
-    
-    async def send_progress() -> None:
-        """Send loop progress update."""
-        await progress.update({
-            "completed": completed_count,
-            "total": len(items),
-            "workflow_name": workflow_name,
-            "succeeded": len(results),
-            "failed": len(failures),
-        })
-        logger.info("[Tools._loop_over] Updating progress: %d/%d", completed_count, len(items))
-    
-    # Send initial progress update (0 completed)
-    await send_progress()
-    
-    async def process_item(index: int, item: dict[str, Any]) -> dict[str, Any]:
-        """Process a single item through the workflow."""
-        nonlocal completed_count
-        
-        async with semaphore:
-            try:
-                # Run workflow with item directly as input_data (not wrapped)
-                # The item IS the input, plus we add _loop_context for metadata
-                input_data: dict[str, Any] = {
-                    **item,  # Spread the item properties at root level
-                    "_loop_context": {
-                        "index": index,
-                        "total": len(items),
-                    },
-                }
-                
-                # Also pass parent_conversation_id so child can link back
-                if conversation_id:
-                    input_data["_parent_context"] = input_data.get("_parent_context", {})
-                    input_data["_parent_context"]["parent_conversation_id"] = conversation_id
-                
-                result = await _run_workflow(
-                    params={
-                        "workflow_id": workflow_id,
-                        "input_data": input_data,
-                        "wait_for_completion": True,
-                    },
-                    organization_id=organization_id,
-                    user_id=user_id,
-                    context=context,
-                )
-                
-                return {
-                    "index": index,
-                    "item": item,
-                    "result": result,
-                    "success": result.get("status") == "completed",
-                }
-                
-            except Exception as e:
-                logger.error(f"[Tools._loop_over] Item {index} failed: {str(e)}")
-                return {
-                    "index": index,
-                    "item": item,
-                    "result": {"error": str(e)},
-                    "success": False,
-                }
-            finally:
-                # Update progress after each item (success or failure)
-                completed_count += 1
-                await send_progress()
-    
-    # Create tasks for all items
-    tasks: list[asyncio.Task[dict[str, Any]]] = [
-        asyncio.create_task(process_item(i, item))
-        for i, item in enumerate(items)
-    ]
-    
-    # Process with or without early termination
-    if continue_on_error:
-        # Wait for all tasks
-        item_results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        for item_result in item_results:
-            if isinstance(item_result, Exception):
-                failures.append({"error": str(item_result)})
-            elif item_result.get("success"):
-                results.append(item_result)
-            else:
-                failures.append(item_result)
-    else:
-        # Stop on first error
-        for task in asyncio.as_completed(tasks):
-            item_result = await task
-            
-            if not item_result.get("success"):
-                failures.append(item_result)
-                # Cancel remaining tasks
-                for t in tasks:
-                    if not t.done():
-                        t.cancel()
-                break
-            
-            results.append(item_result)
-    
-    succeeded: int = len(results)
-    failed: int = len(failures)
-    
-    return {
-        "status": "completed" if failed == 0 else ("partial" if succeeded > 0 else "failed"),
-        "workflow_id": workflow_id,
-        "workflow_name": workflow_name,
-        "total": len(items),
-        "succeeded": succeeded,
-        "failed": failed,
-        "truncated": truncated,
-        "original_count": original_count if truncated else None,
-        "results": results,
-        "failures": failures[:10],  # Limit failure details to first 10
-        "message": (
-            f"Processed {len(items)} items: {succeeded} succeeded, {failed} failed."
-            + (f" (Truncated from {original_count} items)" if truncated else "")
-        ),
-    }
 
 
 # =============================================================================
@@ -5127,54 +4928,71 @@ async def _update_memory(
 
 
 # =============================================================================
-# Bulk Tool Run — General-purpose parallel tool execution
+# foreach — Unified batch execution for tools and workflows
 # =============================================================================
 
 
-async def _bulk_tool_run(
+async def _foreach(
     params: dict[str, Any],
     organization_id: str,
     user_id: str | None,
     context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """
-    Run any registered tool over a list of items in parallel via Celery.
+    """Run a tool or workflow for each item in a list.
 
-    The items are specified via ``items_query`` (a SQL SELECT) or ``items``
-    (an inline list).  The tool is called once per item with params built from
-    ``params_template`` by substituting ``{{field}}`` placeholders.
+    Routes to:
+    - **Tool path**: Celery distributed workers (for tool targets), with inline
+      monitoring that blocks until completion.
+    - **Workflow path**: In-process async execution (for workflow targets), with
+      context propagation and semaphore-based concurrency.
 
-    Returns immediately with an ``operation_id`` that the agent can monitor
-    via ``monitor_operation``.
+    Both paths stream live progress via WebSocket.
     """
+    tool_name: str = (params.get("tool") or "").strip()
+    workflow_id: str = (params.get("workflow_id") or "").strip()
+
+    if tool_name and workflow_id:
+        return {"error": "Provide either 'tool' or 'workflow_id', not both."}
+    if not tool_name and not workflow_id:
+        return {"error": "Either 'tool' (tool name) or 'workflow_id' (workflow UUID) is required."}
+
+    if tool_name:
+        return await _foreach_tool(params, tool_name, organization_id, user_id, context)
+    else:
+        return await _foreach_workflow(params, workflow_id, organization_id, user_id, context)
+
+
+# -- Tool path (Celery) -------------------------------------------------------
+
+
+async def _foreach_tool(
+    params: dict[str, Any],
+    tool_name: str,
+    organization_id: str,
+    user_id: str | None,
+    context: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Queue a bulk tool run via Celery and monitor it until completion."""
     from models.bulk_operation import BulkOperation
     from workers.tasks.bulk_operations import bulk_tool_run_coordinator
 
-    tool_name: str = params.get("tool", "").strip()
     items_query: str | None = params.get("items_query")
     inline_items: list[dict[str, Any]] | None = params.get("items")
     params_template: dict[str, Any] = params.get("params_template", {})
     rate_limit: int = min(max(params.get("rate_limit_per_minute", 200), 1), 2000)
-    operation_name: str = params.get("operation_name", f"Bulk {tool_name}").strip()
-
-    if not tool_name:
-        return {"error": "tool is required (the name of the tool to run per item)."}
+    operation_name: str = (params.get("operation_name") or f"foreach {tool_name}").strip()
 
     if not params_template:
-        return {"error": "params_template is required (how to build tool params from each item)."}
+        return {"error": "params_template is required when using tool mode (how to build tool params from each item)."}
 
     if not items_query and not inline_items:
-        return {
-            "error": "Either items_query (SQL SELECT) or items (inline list) is required.",
-        }
+        return {"error": "Either items_query (SQL SELECT) or items (inline list) is required."}
 
-    # Validate items_query is a SELECT
     if items_query:
         stripped: str = items_query.strip()
         if not stripped.upper().startswith("SELECT"):
             return {"error": "items_query must be a SELECT statement."}
 
-    # Extract conversation / tool_call context for progress broadcasts
     conversation_id: str | None = (context or {}).get("conversation_id")
     tool_call_id: str | None = (context or {}).get("tool_id")
 
@@ -5197,10 +5015,7 @@ async def _bulk_tool_run(
         await session.refresh(operation)
         op_id: str = str(operation.id)
 
-    # If inline items were provided, we need to store them temporarily.
-    # The coordinator will use items_query if present, otherwise it reads
-    # the items from a Redis key (for inline items that are too large for
-    # the Celery message).
+    # Store inline items in Redis for the Celery coordinator
     if inline_items and not items_query:
         import redis.asyncio as aioredis
         from config import settings
@@ -5209,32 +5024,27 @@ async def _bulk_tool_run(
             settings.REDIS_URL, decode_responses=True
         )
         try:
-            # Stringify UUIDs in inline items
             clean_items: list[dict[str, Any]] = []
             for item in inline_items:
                 clean: dict[str, Any] = {}
                 for k, v in item.items():
-                    if isinstance(v, UUID):
-                        clean[k] = str(v)
-                    else:
-                        clean[k] = v
+                    clean[k] = str(v) if isinstance(v, UUID) else v
                 clean_items.append(clean)
             await r.set(
                 f"bulk_op:{op_id}:items",
                 json.dumps(clean_items),
-                ex=3600 * 6,  # Expire after 6 hours
+                ex=3600 * 6,
             )
         finally:
             await r.close()
 
-    # Queue the coordinator task
+    # Queue the Celery coordinator
     task = bulk_tool_run_coordinator.delay(
         operation_id=op_id,
         organization_id=organization_id,
         user_id=user_id,
     )
 
-    # Update celery task ID
     async with get_session(organization_id=organization_id) as session:
         result = await session.execute(
             select(BulkOperation).where(BulkOperation.id == UUID(op_id))
@@ -5243,32 +5053,21 @@ async def _bulk_tool_run(
         op.celery_task_id = task.id
         await session.commit()
 
-    return {
-        "status": "queued",
-        "operation_id": op_id,
-        "operation_name": operation_name,
-        "tool": tool_name,
-        "rate_limit_per_minute": rate_limit,
-        "message": (
-            f"Bulk operation '{operation_name}' queued. "
-            f"Use monitor_operation(operation_id='{op_id}') to wait for completion."
-        ),
-    }
+    # Block and monitor until completion (absorbs the old monitor_operation)
+    return await _poll_bulk_operation(op_id, organization_id, context)
 
 
-async def _monitor_operation(
-    params: dict[str, Any],
+async def _poll_bulk_operation(
+    op_id: str,
     organization_id: str,
     context: dict[str, Any] | None,
 ) -> dict[str, Any]:
     """Poll a bulk operation until completion, broadcasting live progress via WebSocket.
 
     Reads real-time progress from Redis counters (updated atomically by each
-    item task) and checks the DB for terminal status (set by the last item).
+    Celery item task) and checks the DB for terminal status.
 
-    Safety features:
-    - Max polling duration (4 hours) to prevent zombie tasks
-    - Stale detection: if no progress changes for 10 minutes, bail out
+    Safety: max 4 hours, stale detection at 10 minutes with no progress.
     """
     import asyncio
     import time
@@ -5276,17 +5075,12 @@ async def _monitor_operation(
     from models.bulk_operation import BulkOperation
     from config import settings
 
-    op_id: str = params.get("operation_id", "").strip()
-    if not op_id:
-        return {"error": "operation_id is required."}
-
     progress: ToolProgressUpdater = ToolProgressUpdater(context, organization_id)
     poll_interval: float = 5.0
     terminal_statuses: frozenset[str] = frozenset({"completed", "failed", "cancelled"})
 
-    # Safety limits
-    max_poll_seconds: float = 4 * 3600  # 4 hours absolute max
-    stale_timeout_seconds: float = 600.0  # 10 minutes with no progress change
+    max_poll_seconds: float = 4 * 3600
+    stale_timeout_seconds: float = 600.0
     start_time: float = time.monotonic()
     last_progress_change_time: float = start_time
     last_completed: int = -1
@@ -5299,10 +5093,9 @@ async def _monitor_operation(
         while True:
             elapsed: float = time.monotonic() - start_time
 
-            # Absolute timeout
             if elapsed > max_poll_seconds:
                 logger.warning(
-                    "[monitor_operation] Aborting after %.0fs for operation %s",
+                    "[foreach] Aborting poll after %.0fs for operation %s",
                     elapsed, op_id[:8],
                 )
                 return {
@@ -5312,7 +5105,6 @@ async def _monitor_operation(
                     "message": "The operation may still be running. Check status with run_sql_query.",
                 }
 
-            # Read real-time counters from Redis
             total_raw: str | None = await r.get(_rkey("total"))
             completed_raw: str | None = await r.get(_rkey("completed"))
             succeeded_raw: str | None = await r.get(_rkey("succeeded"))
@@ -5323,7 +5115,6 @@ async def _monitor_operation(
             succeeded: int = int(succeeded_raw) if succeeded_raw else 0
             failed: int = int(failed_raw) if failed_raw else 0
 
-            # Check DB for status (terminal status set by last item task)
             async with get_session(organization_id=organization_id) as session:
                 result = await session.execute(
                     select(BulkOperation).where(
@@ -5337,22 +5128,20 @@ async def _monitor_operation(
                 return {"error": f"Bulk operation {op_id} not found."}
 
             status: str = operation.status
-            op_name: str = operation.operation_name or "bulk operation"
+            op_name: str = operation.operation_name or "foreach"
 
-            # Use Redis counters if available, fall back to DB
             if total == 0:
                 total = operation.total_items
                 completed = operation.completed_items
                 succeeded = operation.succeeded_items
                 failed = operation.failed_items
 
-            # Track stale progress
             if completed != last_completed:
                 last_completed = completed
                 last_progress_change_time = time.monotonic()
             elif time.monotonic() - last_progress_change_time > stale_timeout_seconds:
                 logger.warning(
-                    "[monitor_operation] No progress for %.0fs on operation %s (completed=%d/%d), aborting",
+                    "[foreach] No progress for %.0fs on operation %s (completed=%d/%d)",
                     stale_timeout_seconds, op_id[:8], completed, total,
                 )
                 return {
@@ -5369,7 +5158,6 @@ async def _monitor_operation(
                     ),
                 }
 
-            # Broadcast progress to UI
             await progress.update({
                 "operation_id": op_id,
                 "operation_name": op_name,
@@ -5403,5 +5191,181 @@ async def _monitor_operation(
             await asyncio.sleep(poll_interval)
     finally:
         await r.close()
+
+
+# -- Workflow path (in-process async) ------------------------------------------
+
+
+async def _foreach_workflow(
+    params: dict[str, Any],
+    workflow_id: str,
+    organization_id: str,
+    user_id: str | None,
+    context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Execute a workflow for each item using in-process async with semaphore concurrency."""
+    import asyncio
+    from models.workflow import Workflow
+
+    items: list[dict[str, Any]] = params.get("items", [])
+    items_query: str | None = params.get("items_query")
+    max_concurrent: int = min(params.get("max_concurrent", 5), MAX_CONCURRENT_WORKFLOWS)
+    max_items: int = min(params.get("max_items", 500), MAX_LOOP_ITEMS)
+    continue_on_error: bool = params.get("continue_on_error", True)
+    operation_name: str | None = params.get("operation_name")
+
+    # Resolve items from SQL query if provided
+    if items_query:
+        query_result: dict[str, Any] = await _run_sql_query(
+            {"query": items_query}, organization_id, user_id
+        )
+        if "error" in query_result:
+            return {"error": f"items_query failed: {query_result['error']}"}
+        items = query_result.get("rows", [])
+
+    if not items:
+        return {"error": "items array is required and cannot be empty"}
+
+    if not isinstance(items, list):
+        return {"error": "items must be an array"}
+
+    original_count: int = len(items)
+    items = items[:max_items]
+    truncated: bool = original_count > max_items
+
+    # Verify workflow exists
+    async with get_session(organization_id=organization_id) as session:
+        result = await session.execute(
+            select(Workflow).where(
+                Workflow.id == UUID(workflow_id),
+                Workflow.organization_id == UUID(organization_id),
+            )
+        )
+        workflow: Workflow | None = result.scalar_one_or_none()
+
+        if not workflow:
+            return {"error": f"Workflow {workflow_id} not found"}
+
+        if not workflow.is_enabled:
+            return {"error": f"Workflow '{workflow.name}' is disabled."}
+
+        workflow_name: str = workflow.name
+
+    display_name: str = operation_name or workflow_name
+
+    results: list[dict[str, Any]] = []
+    failures: list[dict[str, Any]] = []
+    semaphore = asyncio.Semaphore(max_concurrent)
+    completed_count: int = 0
+
+    progress_updater: ToolProgressUpdater = ToolProgressUpdater(context, organization_id)
+    conversation_id: str | None = progress_updater.conversation_id
+
+    async def send_progress() -> None:
+        await progress_updater.update({
+            "completed": completed_count,
+            "total": len(items),
+            "workflow_name": display_name,
+            "succeeded": len(results),
+            "failed": len(failures),
+        })
+
+    await send_progress()
+
+    async def process_item(index: int, item: dict[str, Any]) -> dict[str, Any]:
+        nonlocal completed_count
+
+        async with semaphore:
+            try:
+                input_data: dict[str, Any] = {
+                    **item,
+                    "_loop_context": {
+                        "index": index,
+                        "total": len(items),
+                    },
+                }
+
+                if conversation_id:
+                    input_data["_parent_context"] = input_data.get("_parent_context", {})
+                    input_data["_parent_context"]["parent_conversation_id"] = conversation_id
+
+                wf_result: dict[str, Any] = await _run_workflow(
+                    params={
+                        "workflow_id": workflow_id,
+                        "input_data": input_data,
+                        "wait_for_completion": True,
+                    },
+                    organization_id=organization_id,
+                    user_id=user_id,
+                    context=context,
+                )
+
+                completed_count += 1
+
+                if "error" in wf_result:
+                    failures.append({
+                        "index": index,
+                        "item": item,
+                        "error": wf_result["error"],
+                    })
+                    if not continue_on_error:
+                        raise RuntimeError(f"Item {index} failed: {wf_result['error']}")
+                else:
+                    results.append({
+                        "index": index,
+                        "item": item,
+                        "result": wf_result,
+                    })
+
+                await send_progress()
+                return wf_result
+
+            except Exception as e:
+                completed_count += 1
+                failures.append({
+                    "index": index,
+                    "item": item,
+                    "error": str(e),
+                })
+                await send_progress()
+
+                if not continue_on_error:
+                    raise
+                return {"error": str(e)}
+
+    tasks: list[asyncio.Task[dict[str, Any]]] = [
+        asyncio.create_task(process_item(i, item))
+        for i, item in enumerate(items)
+    ]
+
+    try:
+        await asyncio.gather(*tasks, return_exceptions=continue_on_error)
+    except Exception:
+        for t in tasks:
+            if not t.done():
+                t.cancel()
+
+    summary: dict[str, Any] = {
+        "status": "completed",
+        "total_items": len(items),
+        "succeeded": len(results),
+        "failed": len(failures),
+        "workflow_name": display_name,
+    }
+
+    if truncated:
+        summary["warning"] = (
+            f"Only processed {max_items} of {original_count} items (max_items limit)."
+        )
+
+    if failures:
+        summary["failures"] = failures[:20]
+        if len(failures) > 20:
+            summary["failures_truncated"] = True
+
+    if results:
+        summary["sample_results"] = [r["result"] for r in results[:5]]
+
+    return summary
 
 

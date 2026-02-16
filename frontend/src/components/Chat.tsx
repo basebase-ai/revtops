@@ -1356,56 +1356,15 @@ function getToolStatusText(
       }
       return `Writing ${recordCount} ${pluralType} to ${systemLabel}...`;
     }
-    case 'loop_over': {
-      const workflowName = typeof result?.workflow_name === 'string' 
-        ? result.workflow_name 
-        : (typeof input?.workflow_name === 'string' ? input.workflow_name : 'workflow');
-      const total = typeof result?.total === 'number' ? result.total : (Array.isArray(input?.items) ? input.items.length : 0);
-      const completed = typeof result?.completed === 'number' ? result.completed : 0;
-      const succeeded = typeof result?.succeeded === 'number' ? result.succeeded : 0;
-      const failed = typeof result?.failed === 'number' ? result.failed : 0;
-      
-      if (isComplete) {
-        if (failed > 0) {
-          return `Completed ${workflowName}: ${succeeded}/${total} succeeded, ${failed} failed`;
-        }
-        return `Completed ${workflowName} for ${total} item${total === 1 ? '' : 's'}`;
-      }
-      
-      // Show progress while running (including when completed=0 to show "0/40")
-      if (total > 0) {
-        const progressText = failed > 0 
-          ? `${completed}/${total} (${succeeded} ok, ${failed} failed)`
-          : `${completed}/${total}`;
-        return `Running ${workflowName}... ${progressText}`;
-      }
-      return `Running ${workflowName}...`;
-    }
-    case 'run_workflow': {
-      const workflowName = typeof result?.workflow_name === 'string'
-        ? result.workflow_name
-        : (typeof input?.workflow_name === 'string' ? input.workflow_name : 'workflow');
-      if (isComplete) {
-        return `Completed ${workflowName}`;
-      }
-      return `Running ${workflowName}...`;
-    }
-    case 'bulk_tool_run': {
-      // bulk_tool_run returns immediately after queuing — real progress comes from monitor_operation
+    case 'foreach': {
       const opName: string = typeof result?.operation_name === 'string'
         ? result.operation_name
-        : (typeof input?.operation_name === 'string' ? input.operation_name : 'bulk operation');
-      if (isComplete) {
-        return `Queued ${opName}`;
-      }
-      return `Starting ${opName}...`;
-    }
-    case 'monitor_operation': {
-      const opName: string = typeof result?.operation_name === 'string'
-        ? result.operation_name
-        : 'bulk operation';
+        : (typeof result?.workflow_name === 'string'
+          ? result.workflow_name
+          : (typeof input?.operation_name === 'string' ? input.operation_name : 'foreach'));
       const total: number = typeof result?.total === 'number' ? result.total
-        : (typeof result?.total_items === 'number' ? result.total_items : 0);
+        : (typeof result?.total_items === 'number' ? result.total_items
+          : (Array.isArray(input?.items) ? input.items.length : 0));
       const completed: number = typeof result?.completed === 'number' ? result.completed : 0;
       const succeeded: number = typeof result?.succeeded === 'number' ? result.succeeded
         : (typeof result?.succeeded_items === 'number' ? result.succeeded_items : 0);
@@ -1426,7 +1385,16 @@ function getToolStatusText(
           : `${completed}/${total} (${pct}%)`;
         return `Running ${opName}... ${progressText}`;
       }
-      return `Monitoring ${opName}...`;
+      return `Running ${opName}...`;
+    }
+    case 'run_workflow': {
+      const workflowName = typeof result?.workflow_name === 'string'
+        ? result.workflow_name
+        : (typeof input?.workflow_name === 'string' ? input.workflow_name : 'workflow');
+      if (isComplete) {
+        return `Completed ${workflowName}`;
+      }
+      return `Running ${workflowName}...`;
     }
     default:
       return isComplete ? `Completed ${toolName}` : `Running ${toolName}...`;

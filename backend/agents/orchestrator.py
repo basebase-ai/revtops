@@ -39,7 +39,7 @@ async def update_tool_result(
     """
     Update a tool call's result in an existing conversation message.
     
-    This enables long-running tools (like loop_over) to report progress
+    This enables long-running tools (like foreach) to report progress
     that the frontend can poll for and display.
     
     Args:

@@ -789,51 +789,69 @@ IMPORTANT: Avoid circular calls (A calls B calls A) - this will be detected and 
 
 
 register_tool(
-    name="loop_over",
-    description="""Execute a workflow for each item in a list.
+    name="foreach",
+    description="""Run a tool or workflow for each item in a list.
 
-Use this to process a batch of items (e.g., enrich 100 contacts, send 50 emails).
-Each item is passed to the workflow as input_data.
+Use this for any batch operation: enriching contacts, researching companies, sending emails, processing data, etc.
 
-Returns a summary with results and any failures.
+Provide EITHER tool (to call a tool per item) OR workflow_id (to run a workflow per item).
 
-Example: Query 100 contacts, then use loop_over to run "research-company" workflow for each.
+**Tool mode** — each item renders params_template ({{field}} placeholders filled from item), then the tool is called. Results stored in bulk_operation_results (queryable via run_sql_query). Uses distributed Celery workers.
+  Example: foreach(tool="web_search", items_query="SELECT id, name FROM contacts", params_template={"query": "Current role of {{name}}?"})
 
-Parameters:
-- items: List of objects to process
-- workflow_id: The workflow to run for each item
-- max_concurrent: How many to run in parallel (default 3, max 10)
-- max_items: Safety limit on total items (default 100, max 500)
-- continue_on_error: If true, continue processing even if some items fail""",
+**Workflow mode** — each item dict is passed as input_data to the workflow. Uses async in-process execution with context propagation.
+  Example: foreach(workflow_id="uuid-...", items=[{"email": "a@b.com"}, {"email": "c@d.com"}])
+
+Set max_concurrent=1 for sequential execution, higher for parallel. Blocks until all items complete, streaming live progress to the UI.""",
     input_schema={
         "type": "object",
         "properties": {
-            "items": {
-                "type": "array",
-                "items": {"type": "object"},
-                "description": "List of items to process. Each item is passed to the workflow as input_data.",
+            "tool": {
+                "type": "string",
+                "description": "Name of the tool to run per item (e.g., 'web_search', 'fetch_url', 'enrich_with_apollo'). Mutually exclusive with workflow_id.",
             },
             "workflow_id": {
                 "type": "string",
-                "description": "UUID of the workflow to execute for each item",
+                "description": "UUID of the workflow to run per item. Each item dict becomes input_data. Mutually exclusive with tool.",
+            },
+            "items_query": {
+                "type": "string",
+                "description": "SQL SELECT that returns the items to process. Column names map to {{placeholder}} names in params_template.",
+            },
+            "items": {
+                "type": "array",
+                "items": {"type": "object"},
+                "description": "Inline list of item dicts. Use items_query for large lists (>100 items).",
+            },
+            "params_template": {
+                "type": "object",
+                "description": "Template for tool params. Use {{column_name}} placeholders filled from each item. Required when using tool, ignored for workflow_id.",
             },
             "max_concurrent": {
                 "type": "integer",
-                "description": "Maximum parallel executions (default 3, max 10)",
-                "default": 3,
+                "description": "Parallel executions (1 = sequential). Default 5. Max 10 for workflows, 50 for tools.",
+                "default": 5,
+            },
+            "rate_limit_per_minute": {
+                "type": "integer",
+                "description": "Max API calls per minute (tool mode only). Default 200.",
+                "default": 200,
             },
             "max_items": {
                 "type": "integer",
-                "description": "Maximum items to process (default 100, max 500)",
-                "default": 100,
+                "description": "Safety cap on total items. Default 500 for workflows, 10000 for tools.",
             },
             "continue_on_error": {
                 "type": "boolean",
-                "description": "Continue processing if an item fails (default true)",
+                "description": "Keep processing if an item fails (default true).",
                 "default": True,
             },
+            "operation_name": {
+                "type": "string",
+                "description": "Human-readable name shown in progress updates.",
+            },
         },
-        "required": ["items", "workflow_id"],
+        "required": [],
     },
     category=ToolCategory.LOCAL_WRITE,
     default_requires_approval=False,
@@ -921,88 +939,6 @@ Each memory should be a single, self-contained statement. Do NOT save conversati
     default_requires_approval=False,
 )
 
-# -----------------------------------------------------------------------------
-# Bulk Operations — General-purpose parallel tool execution
-# -----------------------------------------------------------------------------
-
-register_tool(
-    name="bulk_tool_run",
-    description="""Run any tool over a large list of items in parallel.
-
-Use this for batch operations that would be too slow sequentially — enriching thousands of contacts, researching hundreds of companies, fetching many URLs, etc.
-
-Each item is used to render params_template (with {{field}} placeholders), then the specified tool is called once per item. Results are stored in the bulk_operation_results table and can be queried via run_sql_query.
-
-The operation runs in the background via Celery workers. Returns immediately with an operation_id. Follow with monitor_operation to wait for completion, or query bulk_operations / bulk_operation_results tables via run_sql_query.
-
-IMPORTANT:
-- items_query should be a SQL SELECT that returns the fields needed by params_template
-- params_template uses {{column_name}} placeholders that get filled from each row
-- rate_limit_per_minute controls how fast the external API is hit (default 200/min)
-
-Example: Enrich all contacts with web search
-  tool: "web_search"
-  items_query: "SELECT id, name, email, title FROM contacts"
-  params_template: {"query": "What is {{name}}'s ({{email}}) current job title and company?"}
-  rate_limit_per_minute: 200""",
-    input_schema={
-        "type": "object",
-        "properties": {
-            "tool": {
-                "type": "string",
-                "description": "Name of the tool to run for each item (e.g., 'web_search', 'fetch_url', 'enrich_with_apollo').",
-            },
-            "items_query": {
-                "type": "string",
-                "description": "SQL SELECT query that returns the items to process. Each row becomes an item dict. Column names map to {{placeholder}} names in params_template.",
-            },
-            "items": {
-                "type": "array",
-                "items": {"type": "object"},
-                "description": "Alternative to items_query: an inline list of item dicts. Use items_query for large lists (>100 items).",
-            },
-            "params_template": {
-                "type": "object",
-                "description": "Template for the tool's input params. Use {{column_name}} placeholders that will be filled from each item.",
-            },
-            "rate_limit_per_minute": {
-                "type": "integer",
-                "description": "Maximum API calls per minute (shared across all workers). Default 200. Set lower for APIs with strict rate limits.",
-                "default": 200,
-            },
-            "operation_name": {
-                "type": "string",
-                "description": "Human-readable name for this operation (shown in progress updates).",
-            },
-        },
-        "required": ["tool", "params_template"],
-    },
-    category=ToolCategory.EXTERNAL_READ,
-    default_requires_approval=False,
-)
-
-register_tool(
-    name="monitor_operation",
-    description="""Wait for a long-running bulk operation to complete, with live progress updates.
-
-Call this after bulk_tool_run to block until the operation finishes. Progress is broadcast to the UI in real time. When the operation completes, returns the final status with success/failure counts.
-
-This tool may run for minutes or hours depending on the operation size. The UI will show live progress (e.g., "Running Enrich contacts... 3,421/14,000 (24%)").
-
-To check progress without blocking, query the bulk_operations table via run_sql_query instead.""",
-    input_schema={
-        "type": "object",
-        "properties": {
-            "operation_id": {
-                "type": "string",
-                "description": "UUID of the bulk operation to monitor (returned by bulk_tool_run).",
-            },
-        },
-        "required": ["operation_id"],
-    },
-    category=ToolCategory.LOCAL_READ,
-    default_requires_approval=False,
-)
 
 
 # =============================================================================
