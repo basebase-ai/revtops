@@ -477,10 +477,14 @@ We use [Nango](https://nango.dev) to handle all OAuth complexity:
 | `REDIS_URL`         | Redis connection string             |
 | `ANTHROPIC_API_KEY` | Anthropic API key for Claude (agent reasoning) |
 | `OPENAI_API_KEY`    | OpenAI API key (embeddings for semantic search) |
+| `EXA_API_KEY`       | Exa API key (default web search: semantic search, per-result excerpts). Get it: [exa.ai](https://exa.ai/) → sign up → [dashboard.exa.ai/api-keys](https://dashboard.exa.ai/api-keys). Put the key in `.env` in the project root as `EXA_API_KEY=...`. |
+| `PERPLEXITY_API_KEY`| Optional. Perplexity API key for web search when `provider: "perplexity"` (single synthesized answer with citation URLs). [perplexity.ai/settings/api](https://www.perplexity.ai/settings/api). |
 | `SECRET_KEY`        | Application secret for sessions     |
 | `FRONTEND_URL`      | Frontend URL for CORS and redirects |
 | `SUPABASE_URL`      | Supabase project URL (from Railway) |
 | `SUPABASE_JWT_SECRET` | Supabase JWT secret (from Railway) |
+
+Web search defaults to **Exa** (semantic search with per-result excerpts). Use **Perplexity** (set `PERPLEXITY_API_KEY` and pass `provider: "perplexity"`) when you want a single synthesized answer instead of a list of results.
 
 ### Nango Configuration
 

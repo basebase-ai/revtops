@@ -2,9 +2,11 @@
 """Interactive Perplexity Sonar API tester — prints raw JSON responses.
 
 Usage:
-  python3 test_perplexity.py                         # interactive REPL
-  python3 test_perplexity.py "some query"            # one-shot with defaults
-  python3 test_perplexity.py --model sonar-pro --recency week --search-mode academic "some query"
+  python3 scripts/test_perplexity.py                         # interactive REPL
+  python3 scripts/test_perplexity.py "some query"            # one-shot with defaults
+  python3 scripts/test_perplexity.py --model sonar-pro --recency week --search-mode academic "some query"
+
+Run from backend/ or project root. Loads .env from project root.
 
 Options (all optional, usable in CLI or REPL via /set):
   --model           sonar | sonar-pro | sonar-deep-research | sonar-reasoning-pro  (default: sonar)
@@ -22,17 +24,21 @@ REPL commands:
   /unset <option>         clear an option     e.g. /unset recency
   /options                show current options
 """
+from __future__ import annotations
 
 import argparse
 import json
 import os
 import sys
+from pathlib import Path
 from typing import Any
 
 import httpx
 from dotenv import load_dotenv
 
-load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
+# .env at project root (backend/scripts -> backend -> project root)
+_env_path: Path = Path(__file__).resolve().parent.parent.parent / ".env"
+load_dotenv(_env_path)
 
 API_KEY: str | None = os.getenv("PERPLEXITY_API_KEY")
 URL: str = "https://api.perplexity.ai/chat/completions"

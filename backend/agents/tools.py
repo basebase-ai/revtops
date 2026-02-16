@@ -487,12 +487,13 @@ async def _run_sql_query(
 # Tables that can be written to via run_sql_write
 WRITABLE_TABLES: set[str] = {
     "workflows",
-    "artifacts", 
+    "artifacts",
     "contacts",
     "deals",
     "accounts",
     "org_members",
     "users",
+    "temp_data",
 }
 
 # Per-table column restrictions: only these columns may appear in SET clauses.
@@ -1217,22 +1218,26 @@ async def _search_activities(
         return {"error": f"Search failed: {str(e)}"}
 
 
-async def _web_search(params: dict[str, Any]) -> dict[str, Any]:
-    """Search the web using Perplexity's Sonar API."""
-    query = params.get("query", "").strip()
-    
-    if not query:
-        return {"error": "No search query provided"}
-    
+def _web_search_normalized_error(
+    error: str, query: str, provider: str = "perplexity"
+) -> dict[str, Any]:
+    return {"error": error, "query": query, "provider": provider}
+
+
+async def _web_search_perplexity(params: dict[str, Any]) -> dict[str, Any]:
+    """Search the web using Perplexity Sonar; returns normalized shape."""
+    query: str = params.get("query", "").strip()
     if not settings.PERPLEXITY_API_KEY:
-        return {
-            "error": "We do not currently run external web interactions; coming soon!",
+        return _web_search_normalized_error(
+            "We do not currently run external web interactions; coming soon!",
+            query,
+            "perplexity",
+        ) | {
             "suggestion": "Add PERPLEXITY_API_KEY to your environment variables to enable web search.",
         }
-    
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(
+            response: httpx.Response = await client.post(
                 "https://api.perplexity.ai/chat/completions",
                 headers={
                     "Authorization": f"Bearer {settings.PERPLEXITY_API_KEY}",
@@ -1245,40 +1250,120 @@ async def _web_search(params: dict[str, Any]) -> dict[str, Any]:
                             "role": "system",
                             "content": "You are a helpful research assistant. Provide concise, factual answers with relevant details. Focus on information useful for sales and business contexts.",
                         },
-                        {
-                            "role": "user",
-                            "content": query,
-                        },
+                        {"role": "user", "content": query},
                     ],
                 },
             )
-            
             if response.status_code != 200:
-                logger.error("[Tools._web_search] API error: %s %s", response.status_code, response.text)
-                return {"error": f"Search API error: {response.status_code}"}
-            
-            data = response.json()
+                logger.error(
+                    "[Tools._web_search_perplexity] API error: %s %s",
+                    response.status_code,
+                    response.text,
+                )
+                return _web_search_normalized_error(
+                    f"Search API error: {response.status_code}", query, "perplexity"
+                )
+            data: dict[str, Any] = response.json()
             content: str = data["choices"][0]["message"]["content"]
-            
-            # Extract citations if available
             citations: list[str] = data.get("citations", [])
-            
-            result: dict[str, Any] = {
-                "answer": content,
+            return {
                 "query": query,
+                "provider": "perplexity",
+                "answer": content,
+                "sources": citations,
+                "results": [],
             }
-            
-            if citations:
-                result["sources"] = citations
-            
-            return result
-            
     except httpx.TimeoutException:
-        logger.error("[Tools._web_search] Request timed out")
-        return {"error": "Search request timed out. Try a simpler query."}
+        logger.error("[Tools._web_search_perplexity] Request timed out")
+        return _web_search_normalized_error(
+            "Search request timed out. Try a simpler query.", query, "perplexity"
+        )
     except Exception as e:
-        logger.error("[Tools._web_search] Search failed: %s", str(e))
-        return {"error": f"Search failed: {str(e)}"}
+        logger.error("[Tools._web_search_perplexity] Search failed: %s", str(e))
+        return _web_search_normalized_error(f"Search failed: {str(e)}", query, "perplexity")
+
+
+async def _web_search_exa(params: dict[str, Any]) -> dict[str, Any]:
+    """Search the web using Exa; returns normalized shape with per-result content."""
+    query: str = params.get("query", "").strip()
+    if not settings.EXA_API_KEY:
+        return _web_search_normalized_error(
+            "Exa search is not configured.",
+            query,
+            "exa",
+        ) | {
+            "suggestion": "Add EXA_API_KEY to your environment variables to use provider='exa'.",
+        }
+    num_results: int = int(params.get("num_results") or 10)
+    num_results = max(1, min(100, num_results))
+    try:
+        body: dict[str, Any] = {
+            "query": query,
+            "numResults": num_results,
+            "type": "auto",
+            "contents": {"highlights": {"maxCharacters": 2000}},
+        }
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response: httpx.Response = await client.post(
+                "https://api.exa.ai/search",
+                headers={
+                    "x-api-key": settings.EXA_API_KEY,
+                    "Content-Type": "application/json",
+                },
+                json=body,
+            )
+        if response.status_code != 200:
+            logger.error(
+                "[Tools._web_search_exa] API error: %s %s",
+                response.status_code,
+                response.text,
+            )
+            return _web_search_normalized_error(
+                f"Exa API error: {response.status_code}", query, "exa"
+            )
+        data = response.json()
+        exa_results: list[dict[str, Any]] = data.get("results", [])
+        results: list[dict[str, Any]] = []
+        sources: list[str] = []
+        for r in exa_results:
+            url: str = r.get("url", "")
+            if url:
+                sources.append(url)
+            highlights: list[str] = r.get("highlights") or []
+            content_val: str | None = "\n\n".join(highlights).strip() or None if highlights else None
+            if content_val is None and r.get("summary"):
+                content_val = r["summary"]
+            results.append({
+                "title": r.get("title") or "",
+                "url": url,
+                "content": content_val,
+            })
+        return {
+            "query": query,
+            "provider": "exa",
+            "answer": None,
+            "sources": sources,
+            "results": results,
+        }
+    except httpx.TimeoutException:
+        logger.error("[Tools._web_search_exa] Request timed out")
+        return _web_search_normalized_error(
+            "Exa search timed out. Try a simpler query.", query, "exa"
+        )
+    except Exception as e:
+        logger.error("[Tools._web_search_exa] Search failed: %s", str(e))
+        return _web_search_normalized_error(f"Search failed: {str(e)}", query, "exa")
+
+
+async def _web_search(params: dict[str, Any]) -> dict[str, Any]:
+    """Dispatch web search to the chosen provider; returns normalized shape."""
+    query: str = (params.get("query") or "").strip()
+    if not query:
+        return _web_search_normalized_error("No search query provided", "", "exa")
+    provider: str = (params.get("provider") or "exa").strip().lower()
+    if provider == "exa":
+        return await _web_search_exa(params)
+    return await _web_search_perplexity(params)
 
 
 async def _fetch_url(params: dict[str, Any]) -> dict[str, Any]:
@@ -5446,5 +5531,4 @@ async def _foreach_workflow(
         summary["sample_results"] = [r["result"] for r in results[:5]]
 
     return summary
-
 
