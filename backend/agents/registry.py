@@ -307,7 +307,7 @@ Use this when you need external information not available in the user's data:
 - Sales methodologies or frameworks
 
 Do NOT use this for data that's in the user's database - use run_sql_query instead.
-If Perplexity-style search output is sparse, this tool may include an OpenAI fallback synthesis for contact enrichment context.""",
+For contact enrichment-style queries, this tool runs both Perplexity and OpenAI synthesis; for other queries, OpenAI synthesis is added when Perplexity output is sparse.""",
     input_schema={
         "type": "object",
         "properties": {

@@ -1241,6 +1241,29 @@ def _is_sparse_web_search_result(content: str, citations: list[str]) -> bool:
     return is_weak or len(content.strip()) < 350 or len(citations) < 2
 
 
+def _is_contact_enrichment_query(query: str) -> bool:
+    """Detect queries that are likely contact/company enrichment research."""
+    normalized = query.lower()
+    enrichment_markers = (
+        "contact",
+        "prospect",
+        "person",
+        "decision maker",
+        "decision-maker",
+        "linkedin",
+        "job title",
+        "title",
+        "seniority",
+        "email",
+        "phone",
+        "company",
+        "account",
+        "outreach",
+        "enrich",
+    )
+    return any(marker in normalized for marker in enrichment_markers)
+
+
 async def _openai_web_search_fallback(query: str, context_answer: str | None) -> dict[str, Any] | None:
     """Use OpenAI as a secondary research pass when web search is sparse."""
     if not settings.OPENAI_API_KEY:
@@ -1294,7 +1317,7 @@ async def _openai_web_search_fallback(query: str, context_answer: str | None) ->
 
 
 async def _web_search(params: dict[str, Any]) -> dict[str, Any]:
-    """Search the web using Perplexity and optionally OpenAI fallback for sparse results."""
+    """Search the web using Perplexity, with OpenAI always added for contact enrichment and as fallback for sparse results."""
     query = params.get("query", "").strip()
 
     if not query:
@@ -1352,12 +1375,18 @@ async def _web_search(params: dict[str, Any]) -> dict[str, Any]:
             if citations:
                 result["sources"] = citations
 
-            if _is_sparse_web_search_result(content, citations):
-                logger.info("[Tools._web_search] Sparse Perplexity result detected; trying OpenAI fallback")
+            should_force_dual_provider = _is_contact_enrichment_query(query)
+            should_run_openai = should_force_dual_provider or _is_sparse_web_search_result(content, citations)
+
+            if should_run_openai:
+                reason = "contact_enrichment_dual_source" if should_force_dual_provider else "sparse_perplexity_result"
+                logger.info("[Tools._web_search] Running OpenAI supplemental pass (reason=%s)", reason)
                 fallback_result = await _openai_web_search_fallback(query, context_answer=content)
                 if fallback_result:
                     result["openai_fallback"] = fallback_result
-                    result["fallback_reason"] = "sparse_perplexity_result"
+                    result["fallback_reason"] = reason
+                else:
+                    logger.warning("[Tools._web_search] OpenAI supplemental pass returned no result (reason=%s)", reason)
 
             return result
 
