@@ -124,6 +124,7 @@ export function Chat({
   const pendingMessagesRef = useRef<ChatMessage[]>([]);
   const pendingAutoSendRef = useRef<string | null>(null);
   const messagesRef = useRef<ChatMessage[]>([]); // Track current messages for polling comparison
+  const workflowDoneRef = useRef<boolean>(false); // Prevents polling restart after workflow completes
   
   // Keep ref in sync with state
   pendingMessagesRef.current = pendingMessages;
@@ -211,6 +212,8 @@ export function Chat({
       setConversationType(null);
       setIsWorkflowPolling(false);
     }
+    // Reset workflow-done flag whenever the conversation changes
+    workflowDoneRef.current = false;
     // Only clear pending messages if we're switching to an EXISTING chat
     // (i.e., when we have no pending messages to move to the new conversation)
     // If pendingMessages exist, the next effect will move them instead
@@ -343,8 +346,8 @@ export function Chat({
 
   // Poll for updates on workflow conversations (Celery workers can't send WebSocket updates)
   useEffect(() => {
-    // Only poll for workflow conversations with few messages
-    if (!chatId || conversationType !== 'workflow' || messages.length > 5) {
+    // Only poll for workflow conversations that haven't finished yet
+    if (!chatId || conversationType !== 'workflow' || workflowDoneRef.current) {
       setIsWorkflowPolling(false);
       return;
     }
@@ -390,6 +393,21 @@ export function Chat({
           if (newContent !== currentContent) {
             console.log('[Chat] Poll found updated content, updating UI');
             setConversationMessages(chatId, loadedMessages);
+
+            // If any completed tool is write_to_system_of_record, refresh
+            // the pending-changes sidebar badge (workflows don't use WS).
+            const hasPendingWrite: boolean = loadedMessages.some((m) =>
+              (m.contentBlocks || []).some(
+                (b) =>
+                  b.type === 'tool_use' &&
+                  (b as ToolUseBlock).status === 'complete' &&
+                  ((b as ToolUseBlock).name === 'write_to_system_of_record' ||
+                   (b as ToolUseBlock).name === 'run_sql_write'),
+              ),
+            );
+            if (hasPendingWrite) {
+              window.dispatchEvent(new Event('pending-changes-updated'));
+            }
           }
           
           // Stop polling when the workflow is truly finished.
@@ -407,6 +425,7 @@ export function Chat({
           const workflowDone: boolean = loadedMessages.length >= 2 && lastMsg?.role === 'assistant' && !hasRunningTools && endsWithText;
           if (workflowDone) {
             console.log('[Chat] Stopping polling - workflow complete (ends with text, no running tools)');
+            workflowDoneRef.current = true;
             setIsWorkflowPolling(false);
             clearInterval(pollInterval);
           }
@@ -421,7 +440,10 @@ export function Chat({
       setIsWorkflowPolling(false);
       clearInterval(pollInterval);
     };
-  }, [chatId, userId, conversationType, messages.length, setConversationMessages]);
+  // Note: messages.length deliberately excluded — polling is self-contained via
+  // the interval and stops via workflowDoneRef. Including it caused restarts.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chatId, userId, conversationType, setConversationMessages]);
 
   // Track whether user is near the bottom of the scroll container.
   // Only update on user-initiated scrolls (ignore programmatic ones).
