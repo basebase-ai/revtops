@@ -315,6 +315,12 @@ For contact enrichment-style queries, this tool runs both Perplexity and OpenAI 
                 "type": "string",
                 "description": "The search query - be specific and include relevant context",
             },
+            "contact_context": {
+                "description": "Optional known contact/company context (string, object, or array) to pass through to Perplexity and OpenAI enrichment prompts.",
+            },
+            "context": {
+                "description": "Alias for contact_context.",
+            },
         },
         "required": ["query"],
     },

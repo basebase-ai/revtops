@@ -1264,7 +1264,44 @@ def _is_contact_enrichment_query(query: str) -> bool:
     return any(marker in normalized for marker in enrichment_markers)
 
 
-async def _openai_web_search_fallback(query: str, context_answer: str | None) -> dict[str, Any] | None:
+def _format_contact_context_for_research(context: Any) -> str:
+    """Create a compact context block for external enrichment providers."""
+    if context is None:
+        return ""
+
+    if isinstance(context, str):
+        value = context.strip()
+        return value[:2000] if value else ""
+
+    if isinstance(context, list):
+        lines: list[str] = []
+        for idx, item in enumerate(context[:10], start=1):
+            if isinstance(item, dict):
+                detail = ", ".join(
+                    f"{k}={v}" for k, v in item.items() if v is not None and str(v).strip()
+                )
+                if detail:
+                    lines.append(f"- Contact {idx}: {detail}")
+            elif item is not None and str(item).strip():
+                lines.append(f"- Contact {idx}: {str(item).strip()}")
+        return "\n".join(lines)[:3000]
+
+    if isinstance(context, dict):
+        lines = [
+            f"- {k}: {v}"
+            for k, v in context.items()
+            if v is not None and str(v).strip()
+        ]
+        return "\n".join(lines)[:3000]
+
+    return str(context)[:2000]
+
+
+async def _openai_web_search_fallback(
+    query: str,
+    context_answer: str | None,
+    provider_context: str | None = None,
+) -> dict[str, Any] | None:
     """Use OpenAI as a secondary research pass when web search is sparse."""
     if not settings.OPENAI_API_KEY:
         logger.info("[Tools._openai_web_search_fallback] Skipping fallback: OPENAI_API_KEY not configured")
@@ -1272,6 +1309,7 @@ async def _openai_web_search_fallback(query: str, context_answer: str | None) ->
 
     client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
     prompt_context = context_answer or "No useful Perplexity context was available."
+    additional_context = (provider_context or "").strip()
 
     for model in OPENAI_WEB_RESEARCH_FALLBACK_MODELS:
         try:
@@ -1293,6 +1331,7 @@ async def _openai_web_search_fallback(query: str, context_answer: str | None) ->
                         "content": (
                             f"Research query: {query}\n\n"
                             f"Existing sparse research context:\n{prompt_context}\n\n"
+                            f"Known contact/company context:\n{additional_context or 'None provided'}\n\n"
                             "Return concise enrichment findings with 4 sections: "
                             "Role & seniority, Company context, Notable recent signals, Suggested outreach angle."
                         ),
@@ -1319,12 +1358,13 @@ async def _openai_web_search_fallback(query: str, context_answer: str | None) ->
 async def _web_search(params: dict[str, Any]) -> dict[str, Any]:
     """Search the web using Perplexity, with OpenAI always added for contact enrichment and as fallback for sparse results."""
     query = params.get("query", "").strip()
+    research_context = _format_contact_context_for_research(params.get("contact_context") or params.get("context"))
 
     if not query:
         return {"error": "No search query provided"}
 
     if not settings.PERPLEXITY_API_KEY:
-        fallback_only = await _openai_web_search_fallback(query, context_answer=None)
+        fallback_only = await _openai_web_search_fallback(query, context_answer=None, provider_context=research_context)
         if fallback_only:
             fallback_only["query"] = query
             fallback_only["fallback_reason"] = "perplexity_not_configured"
@@ -1351,7 +1391,10 @@ async def _web_search(params: dict[str, Any]) -> dict[str, Any]:
                         },
                         {
                             "role": "user",
-                            "content": query,
+                            "content": (
+                                f"Search query: {query}\n\n"
+                                f"Known contact/company context:\n{research_context or 'None provided'}"
+                            ),
                         },
                     ],
                 },
@@ -1381,7 +1424,11 @@ async def _web_search(params: dict[str, Any]) -> dict[str, Any]:
             if should_run_openai:
                 reason = "contact_enrichment_dual_source" if should_force_dual_provider else "sparse_perplexity_result"
                 logger.info("[Tools._web_search] Running OpenAI supplemental pass (reason=%s)", reason)
-                fallback_result = await _openai_web_search_fallback(query, context_answer=content)
+                fallback_result = await _openai_web_search_fallback(
+                    query,
+                    context_answer=content,
+                    provider_context=research_context,
+                )
                 if fallback_result:
                     result["openai_fallback"] = fallback_result
                     result["fallback_reason"] = reason
@@ -3752,13 +3799,47 @@ async def _enrich_contacts_with_apollo(
 
         for i, person in enumerate(contacts):
             original: dict[str, Any] = person if isinstance(person, dict) else {}
+
+            # Build best-effort Apollo identifiers from all known contact context.
+            full_name = str(original.get("name") or "").strip()
+            name_parts = [part for part in full_name.split() if part]
+            first_name = (original.get("first_name") or (name_parts[0] if name_parts else None))
+            last_name = (original.get("last_name") or (" ".join(name_parts[1:]) if len(name_parts) > 1 else None))
+            email = original.get("email")
+            domain = (
+                original.get("domain")
+                or original.get("company_domain")
+                or original.get("website_domain")
+            )
+            linkedin_url = original.get("linkedin_url") or original.get("linkedin")
+            organization_name = (
+                original.get("organization_name")
+                or original.get("company")
+                or original.get("current_company")
+                or original.get("former_company")
+            )
+
+            logger.info(
+                "[Tools._enrich_contacts_with_apollo] Contact %d/%d context: email=%s phone=%s first_name=%s last_name=%s org=%s domain=%s linkedin=%s former_company=%s",
+                i + 1,
+                len(contacts),
+                email,
+                original.get("phone") or original.get("phone_number"),
+                first_name,
+                last_name,
+                organization_name,
+                domain,
+                linkedin_url,
+                original.get("former_company"),
+            )
+
             enrichment: dict[str, Any] | None = await connector.enrich_person(
-                email=original.get("email"),
-                first_name=original.get("first_name"),
-                last_name=original.get("last_name"),
-                domain=original.get("domain"),
-                linkedin_url=original.get("linkedin_url"),
-                organization_name=original.get("organization_name"),
+                email=email,
+                first_name=first_name,
+                last_name=last_name,
+                domain=domain,
+                linkedin_url=linkedin_url,
+                organization_name=organization_name,
                 reveal_personal_emails=reveal_personal_emails,
                 reveal_phone_number=reveal_phone_numbers,
             )
