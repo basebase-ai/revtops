@@ -106,7 +106,15 @@ export function Home(): JSX.Element {
         }
 
         const dealsData = await dealsRes.json() as DealsApiResponse;
-        setDeals(dealsData.deals);
+        setDeals(
+          dealsData.deals.map(
+            (d): Deal => ({
+              ...d,
+              source_system: d.source_system ?? null,
+              source_id: d.source_id ?? null,
+            })
+          )
+        );
       } catch (err) {
         setError(err instanceof Error ? err.message : 'An error occurred');
       } finally {
