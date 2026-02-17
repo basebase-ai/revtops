@@ -540,9 +540,8 @@ User Message → WebSocket → Orchestrator → Claude API
 
 | Tool | Description |
 |---|---|
-| `run_sql_query` | Execute read-only SQL SELECT queries with automatic org scoping |
+| `run_sql_query` | Execute read-only SQL SELECT queries with automatic org scoping. Supports `semantic_embed()` for vector search. |
 | `run_sql_write` | INSERT/UPDATE/DELETE for internal tables |
-| `search_activities` | Semantic search across emails, meetings, and messages |
 | `create_artifact` | Generate reports, charts, and PDF documents |
 | `create_workflow` | Create scheduled, event-driven, or manual workflows |
 | `trigger_workflow` | Manually trigger an existing workflow |

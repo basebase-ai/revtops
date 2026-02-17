@@ -102,7 +102,7 @@ Available tables:
 - deals: Sales opportunities (name, amount, stage, close_date, owner_id, account_id)
 - accounts: Companies/customers (name, domain, industry, employee_count)
 - contacts: People at accounts (name, email, title, phone, account_id)
-- activities: Raw activity records - query by TYPE not source
+- activities: Raw activity records - query by TYPE not source. Has a vector embedding column for semantic search (see below)
 - pipelines: Sales pipelines (name, display_order, is_default)
 - pipeline_stages: Stages in pipelines (pipeline_id, name, probability)
 - goals: Revenue goals and quotas synced from CRM (name, target_amount, start_date, end_date, goal_type, owner_id, pipeline_id, source_system, source_id, custom_fields JSONB). Compare target_amount against deal totals to measure progress.
@@ -120,6 +120,10 @@ Available tables:
 - tracker_issues: Issue tracker issues/tasks (source_system, source_id, team_id, identifier e.g. "ENG-123", title, description, state_name, state_type, priority 0-4, priority_label, issue_type, assignee_name, assignee_email, creator_name, project_id, labels JSONB, estimate, url, due_date, created_date, updated_date, completed_date, cancelled_date, user_id). Filter by source_system.
 - shared_files: Synced file metadata from cloud sources like Google Drive (external_id, source, name, mime_type, folder_path, web_view_link, file_size, source_modified_at). Filter by source (e.g. 'google_drive'). Use search_cloud_files tool instead for name-based searches.
 - temp_data: Agent-generated results and computed metrics. Flexible JSONB storage linked to entities. Columns: entity_type, entity_id, namespace, key, value (JSONB), metadata (JSONB), created_by_user_id, created_at, expires_at. Example: SELECT td.value->>'score' as confidence, d.name FROM temp_data td JOIN deals d ON d.id = td.entity_id WHERE td.namespace = 'deal_confidence'
+
+SEMANTIC SEARCH on activities: Use semantic_embed('natural language query') as an inline function to generate an embedding vector. Combine with the <=> cosine distance operator to rank by similarity.
+Example: SELECT id, type, subject, description, activity_date, 1 - (embedding <=> semantic_embed('pricing negotiations')) AS similarity FROM activities WHERE embedding IS NOT NULL ORDER BY embedding <=> semantic_embed('pricing negotiations') LIMIT 10
+You can add extra WHERE clauses (e.g. type = 'email') alongside the vector search.
 
 IMPORTANT: Do NOT add organization_id to WHERE clauses. Data is automatically scoped to the user's organization via row-level security. Adding organization_id filters will cause queries to return wrong results.
 
@@ -140,40 +144,44 @@ IMPORTANT: Only SELECT queries are allowed. No INSERT, UPDATE, DELETE, DROP, etc
 
 
 register_tool(
-    name="search_activities",
-    description="""Semantic search across emails, meetings, messages, and other activities.
+    name="execute_command",
+    description="""Run a shell command in a persistent Linux sandbox.
 
-Use this when the user wants to find activities by meaning/concept rather than exact text.
-This searches the content of emails, meeting transcripts, messages, etc.
+The sandbox is a full Debian Linux environment that persists across calls within
+this conversation. You can install tools, write files, run scripts, and build up
+work iteratively — just like using a terminal.
+
+Pre-installed: python3, pip, node, common CLI tools.
+Database: A read-only PostgreSQL connection is available at $DATABASE_URL.
+A helper is pre-loaded at /home/user/db.py — use `from db import get_connection`
+to get a psycopg2 connection with the correct organization scope.
+
+Use this for:
+- Complex data analysis that goes beyond a single SQL query
+- Writing and executing scripts (Python, bash, Node.js, etc.)
+- Installing and using CLI tools or libraries
+- Multi-step computations where you iterate on results
+- Generating charts, files, or reports programmatically
 
 Examples:
-- "Find emails about pricing negotiations"
-- "Search for meeting discussions about the Q4 roadmap"
-- "Look for communications about contract renewal"
+  "pip install pandas matplotlib"
+  "python3 -c \\"import pandas as pd; from db import get_connection; df = pd.read_sql('SELECT * FROM deals', get_connection()); print(df.describe())\\""
+  "cat > analysis.py << 'EOF'\\nimport pandas as pd\\n...\\nEOF"
+  "python3 analysis.py"
 
-For exact text matching, use run_sql_query with ILIKE instead.""",
+Files saved to /home/user/output/ are returned as downloadable artifacts.""",
     input_schema={
         "type": "object",
         "properties": {
-            "query": {
+            "command": {
                 "type": "string",
-                "description": "Natural language search query",
-            },
-            "types": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "Filter by type: 'email', 'meeting', 'meeting_transcript', 'slack_message', 'call'",
-            },
-            "limit": {
-                "type": "integer",
-                "description": "Max results to return (default 10)",
-                "default": 10,
+                "description": "Shell command to execute in the sandbox",
             },
         },
-        "required": ["query"],
+        "required": ["command"],
     },
     category=ToolCategory.LOCAL_READ,
-    default_requires_approval=False,
+    default_requires_approval=True,
 )
 
 
@@ -879,6 +887,85 @@ Set max_concurrent=1 for sequential execution, higher for parallel. Blocks until
 # -----------------------------------------------------------------------------
 # Workflow Notes Tool - Save workflow-scoped notes shared across runs
 # -----------------------------------------------------------------------------
+
+register_tool(
+    name="create_app",
+    description="""Create an interactive mini-app that queries data and renders it with React.
+
+Use this when the user asks for a dashboard, interactive chart, or data view with controls
+(dropdowns, date pickers, filters, etc.) that should refresh when the user changes them.
+
+The app has two parts:
+1. **queries** (server-side): Named parameterized SQL queries. These stay on the server and are never exposed to the browser.
+2. **frontend_code** (client-side): React JSX code that renders the UI and calls the queries via the SDK.
+
+The React code runs in a sandboxed iframe with these pre-bundled packages:
+- react, react-dom (hooks: useState, useEffect, useCallback, useMemo, useRef)
+- react-plotly.js (import Plot from "react-plotly.js")
+- @revtops/app-sdk (useAppQuery, useDateRange, Spinner, ErrorBanner)
+
+**SDK API:**
+- useAppQuery(queryName, params) → { data, columns, loading, error, refetch }
+  - queryName: must match a key in the queries object
+  - params: object with values for the SQL :placeholders
+  - data: array of row objects, e.g. [{region: "West", revenue: 50000}, ...]
+- useDateRange(period) → { start, end } (ISO date strings)
+  - period: "last_7d", "last_30d", "last_90d", "last_quarter", "this_quarter", "ytd", "last_year", "this_year"
+- Spinner — loading spinner component
+- ErrorBanner({ message }) — error display component
+
+**Query params:**
+Each query declares its params with name, type, and required flag. The SDK sends
+param values to the server, where they are bound via parameterized queries (safe from injection).
+
+**Rules:**
+- All SQL must be SELECT-only. No INSERT/UPDATE/DELETE.
+- Do NOT add organization_id to WHERE clauses (RLS handles it).
+- frontend_code must export a default React component.
+- Use Tailwind-style inline CSS or the provided dark-theme base styles.
+- Keep the code concise — one file, one default export.
+
+**Example:**
+{
+  "title": "Revenue by Region",
+  "description": "Bar chart showing revenue by region with time period filter",
+  "queries": {
+    "revenue_data": {
+      "sql": "SELECT custom_fields->>'region' as region, SUM(amount) as revenue FROM deals WHERE close_date >= :start_date AND close_date <= :end_date AND stage = 'Closed Won' GROUP BY 1 ORDER BY revenue DESC",
+      "params": {
+        "start_date": { "type": "date", "required": true },
+        "end_date": { "type": "date", "required": true }
+      }
+    }
+  },
+  "frontend_code": "import { useState } from 'react';\\nimport { useAppQuery, useDateRange, Spinner, ErrorBanner } from '@revtops/app-sdk';\\nimport Plot from 'react-plotly.js';\\n\\nexport default function App() {\\n  const [period, setPeriod] = useState('last_quarter');\\n  const { start, end } = useDateRange(period);\\n  const { data, loading, error } = useAppQuery('revenue_data', { start_date: start, end_date: end });\\n\\n  return (\\n    <div style={{padding:'1rem'}}>\\n      <select value={period} onChange={e => setPeriod(e.target.value)}>\\n        <option value='last_30d'>Last 30 Days</option>\\n        <option value='last_quarter'>Last Quarter</option>\\n        <option value='ytd'>Year to Date</option>\\n      </select>\\n      {loading && <Spinner />}\\n      {error && <ErrorBanner message={error} />}\\n      {data && <Plot data={[{type:'bar', x:data.map(r=>r.region), y:data.map(r=>r.revenue)}]} layout={{title:'Revenue by Region', autosize:true, paper_bgcolor:'transparent', plot_bgcolor:'transparent', font:{color:'#a1a1aa'}}} style={{width:'100%',height:'400px'}} config={{responsive:true}} />}\\n    </div>\\n  );\\n}"
+}""",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "title": {
+                "type": "string",
+                "description": "Display title for the app",
+            },
+            "description": {
+                "type": "string",
+                "description": "Brief description of what the app shows",
+            },
+            "queries": {
+                "type": "object",
+                "description": "Named SQL queries. Each key is a query name, value is {sql, params}. SQL must be SELECT-only.",
+            },
+            "frontend_code": {
+                "type": "string",
+                "description": "React JSX code (single file). Must export default component. Uses @revtops/app-sdk hooks.",
+            },
+        },
+        "required": ["title", "queries", "frontend_code"],
+    },
+    category=ToolCategory.LOCAL_WRITE,
+    default_requires_approval=False,
+)
+
 
 register_tool(
     name="keep_notes",

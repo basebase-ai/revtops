@@ -127,6 +127,16 @@ export interface ArtifactBlock {
   };
 }
 
+export interface AppBlock {
+  type: "app";
+  app: {
+    id: string;
+    title: string;
+    description: string | null;
+    frontendCode: string;
+  };
+}
+
 export interface AttachmentBlock {
   type: "attachment";
   filename: string;
@@ -134,7 +144,7 @@ export interface AttachmentBlock {
   size: number;
 }
 
-export type ContentBlock = TextBlock | ToolUseBlock | ErrorBlock | ArtifactBlock | AttachmentBlock;
+export type ContentBlock = TextBlock | ToolUseBlock | ErrorBlock | ArtifactBlock | AppBlock | AttachmentBlock;
 
 // Legacy type for streaming compatibility
 export interface ToolCallData {
@@ -160,6 +170,8 @@ export type View =
   | "data"
   | "search"
   | "workflows"
+  | "apps"
+  | "app-view"
   | "admin"
   | "pending-changes";
 
@@ -219,6 +231,7 @@ interface AppState {
   sidebarCollapsed: boolean;
   currentView: View;
   currentChatId: string | null;
+  currentAppId: string | null;
   recentChats: ChatSummary[];
   pinnedChatIds: string[];
   pendingChatInput: string | null; // Pre-filled input for new chats
@@ -266,6 +279,7 @@ interface AppState {
   setSidebarCollapsed: (collapsed: boolean) => void;
   setCurrentView: (view: View) => void;
   setCurrentChatId: (id: string | null) => void;
+  setCurrentAppId: (id: string | null) => void;
   startNewChat: () => void;
   setPendingChatInput: (input: string | null) => void;
   setPendingChatAutoSend: (autoSend: boolean) => void;
@@ -312,6 +326,10 @@ interface AppState {
   addConversationArtifactBlock: (
     conversationId: string,
     artifact: ArtifactBlock["artifact"],
+  ) => void;
+  addConversationAppBlock: (
+    conversationId: string,
+    app: AppBlock["app"],
   ) => void;
   clearConversation: (conversationId: string) => void;
 
@@ -365,6 +383,7 @@ export const useAppStore = create<AppState>()(
       sidebarCollapsed: false,
       currentView: "home",
       currentChatId: null,
+      currentAppId: null,
       recentChats: [],
       pinnedChatIds: [],
       pendingChatInput: null,
@@ -649,6 +668,7 @@ export const useAppStore = create<AppState>()(
           ...(currentView !== "chat" ? { currentChatId: null } : {}),
         }),
       setCurrentChatId: (currentChatId) => set({ currentChatId }),
+      setCurrentAppId: (currentAppId) => set({ currentAppId }),
       startNewChat: () => set({ currentChatId: null, currentView: "chat" }),
       setPendingChatInput: (pendingChatInput) => set({ pendingChatInput }),
       setPendingChatAutoSend: (pendingChatAutoSend) =>
@@ -1217,6 +1237,34 @@ export const useAppStore = create<AppState>()(
             return {
               ...msg,
               contentBlocks: [...blocks, { type: "artifact" as const, artifact }],
+            };
+          }
+          return msg;
+        });
+
+        set({
+          conversations: {
+            ...conversations,
+            [conversationId]: { ...current, messages: updated },
+          },
+        });
+      },
+
+      addConversationAppBlock: (conversationId, app) => {
+        const { conversations } = get();
+        const current: ConversationState | undefined = conversations[conversationId];
+        if (!current) return;
+
+        const updated: ChatMessage[] = current.messages.map((msg, idx, arr) => {
+          const isLastAssistant: boolean =
+            msg.role === "assistant" &&
+            !arr.slice(idx + 1).some((m) => m.role === "assistant");
+
+          if (isLastAssistant) {
+            const blocks: ContentBlock[] = msg.contentBlocks ?? [];
+            return {
+              ...msg,
+              contentBlocks: [...blocks, { type: "app" as const, app }],
             };
           }
           return msg;

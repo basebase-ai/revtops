@@ -2,7 +2,7 @@
 Tool definitions and execution for Claude.
 
 Tools are organized by category (see registry.py):
-- LOCAL_READ: run_sql_query, search_activities
+- LOCAL_READ: run_sql_query, execute_command
 - LOCAL_WRITE: create_artifact, run_sql_write, run_workflow
 - EXTERNAL_READ: web_search, fetch_url, enrich_with_apollo, search_system_of_record
 - EXTERNAL_WRITE: write_to_system_of_record, send_email_from, send_slack, trigger_sync
@@ -11,6 +11,7 @@ All writes to external systems (CRM, issue trackers, code repos) go through
 write_to_system_of_record, which dispatches to the correct handler by target_system.
 """
 
+import asyncio
 import json
 import logging
 import re
@@ -25,6 +26,7 @@ from sqlalchemy import select, text
 
 from config import settings
 from models.account import Account
+from models.app import App
 from models.artifact import Artifact
 from models.contact import Contact
 from models.pending_operation import PendingOperation, CrmOperation  # CrmOperation is alias
@@ -255,7 +257,6 @@ async def execute_tool(
     tool_handlers: dict[str, Callable[[], Awaitable[dict[str, Any]]]] = {
         "run_sql_query": lambda: _run_sql_query(tool_input, organization_id, user_id),
         "run_sql_write": lambda: _run_sql_write(tool_input, organization_id, user_id, context),
-        "search_activities": lambda: _search_activities(tool_input, organization_id, user_id),
         "web_search": lambda: _web_search(tool_input),
         "run_workflow": lambda: _run_workflow(tool_input, organization_id, user_id, context),
         "fetch_url": lambda: _fetch_url(tool_input),
@@ -282,12 +283,14 @@ async def execute_tool(
         "search_cloud_files": lambda: _search_cloud_files(tool_input, organization_id, user_id),
         "read_cloud_file": lambda: _read_cloud_file(tool_input, organization_id, user_id),
         "create_artifact": lambda: _create_artifact(tool_input, organization_id, user_id, context),
+        "create_app": lambda: _create_app(tool_input, organization_id, user_id, context),
         "keep_notes": lambda: _keep_notes(tool_input, organization_id, user_id, context, skip_approval),
         "manage_memory": lambda: _manage_memory(tool_input, organization_id, user_id, skip_approval),
         "create_linear_issue": lambda: _create_linear_issue(tool_input, organization_id, user_id, skip_approval),
         "update_linear_issue": lambda: _update_linear_issue(tool_input, organization_id, user_id, skip_approval),
         "search_linear_issues": lambda: _search_linear_issues(tool_input, organization_id),
         "foreach": lambda: _foreach(tool_input, organization_id, user_id, context),
+        "execute_command": lambda: _execute_command(tool_input, organization_id, user_id, context=context),
     }
 
     handler = tool_handlers.get(normalized_tool_name)
@@ -308,8 +311,6 @@ def _log_tool_execution_result(
     """Centralize tool execution logging so execute_tool remains easy to scan."""
     if executed_tool_name == "run_sql_query":
         logger.info("[Tools] run_sql_query returned %d rows", result.get("row_count", 0))
-    elif executed_tool_name == "search_activities":
-        logger.info("[Tools] search_activities returned %d results", len(result.get("results", [])))
     elif executed_tool_name == "foreach":
         logger.info(
             "[Tools] foreach completed: %d/%d successful",
@@ -418,52 +419,93 @@ def _serialize_value(value: Any) -> Any:
     return str(value)
 
 
+# Regex matching semantic_embed('...') placeholders in SQL.
+# The agent writes these; we replace them with real embedding vectors before execution.
+_SEMANTIC_EMBED_RE = re.compile(
+    r"semantic_embed\(\s*'((?:[^'\\]|\\')*)'\s*\)", re.IGNORECASE
+)
+
+
+async def _resolve_semantic_embeds(query: str) -> tuple[str, str | None]:
+    """Replace ``semantic_embed('text')`` placeholders with pgvector literals.
+
+    Returns (resolved_query, error_or_none).
+    """
+    matches: list[re.Match[str]] = list(_SEMANTIC_EMBED_RE.finditer(query))
+    if not matches:
+        return query, None
+
+    try:
+        from services.embeddings import get_embedding_service
+
+        svc = get_embedding_service()
+    except ValueError:
+        return query, (
+            "semantic_embed() requires OPENAI_API_KEY to be configured. "
+            "Use ILIKE for text search instead."
+        )
+
+    texts: list[str] = [m.group(1).replace("\\'", "'") for m in matches]
+    embeddings: list[list[float]] = await svc.generate_embeddings_batch(texts)
+
+    resolved: str = query
+    for match, embedding in zip(reversed(matches), reversed(embeddings)):
+        vec_literal: str = "'[" + ",".join(str(v) for v in embedding) + "]'::vector"
+        resolved = resolved[: match.start()] + vec_literal + resolved[match.end() :]
+
+    return resolved, None
+
+
 async def _run_sql_query(
     params: dict[str, Any], organization_id: str, user_id: str | None
 ) -> dict[str, Any]:
     """
     Execute a read-only SQL query with Row-Level Security (RLS).
-    
-    RLS is enforced at the database level via policies that check 
+
+    RLS is enforced at the database level via policies that check
     `app.current_org_id` session variable. This handles all query patterns
     automatically (JOINs, subqueries, CTEs, etc.) without fragile SQL parsing.
+
+    Supports ``semantic_embed('text')`` as an inline placeholder that is
+    resolved to a real embedding vector before execution, enabling semantic
+    search directly via SQL (e.g. ORDER BY embedding <=> semantic_embed('...')).
     """
-    query = params.get("query", "").strip()
-    
+    query: str = (params.get("query") or "").strip()
+
     if not query:
         return {"error": "No query provided"}
-    
+
     logger.info("[Tools._run_sql_query] Query: %s", query)
-    
+
     # Validate query is safe (SELECT only, no dangerous keywords)
     is_valid, error = _validate_sql_query(query)
     if not is_valid:
         logger.warning("[Tools._run_sql_query] Query validation failed: %s", error)
         return {"error": error}
-    
+
     # Extract tables and validate they're in the allowed list
-    tables = _extract_tables_from_query(query)
+    tables: set[str] = _extract_tables_from_query(query)
     logger.debug("[Tools._run_sql_query] Detected tables: %s", tables)
-    
-    disallowed = tables - ALLOWED_TABLES
+
+    disallowed: set[str] = tables - ALLOWED_TABLES
     if disallowed:
         return {"error": f"Access to tables not allowed: {disallowed}"}
-    
+
+    # Resolve semantic_embed('...') placeholders into real vectors
+    final_query, embed_error = await _resolve_semantic_embeds(query)
+    if embed_error is not None:
+        return {"error": embed_error}
+
     # Add LIMIT if not present to prevent huge result sets
-    final_query = query
     if not re.search(r'\bLIMIT\b', final_query, re.IGNORECASE):
         final_query = final_query.rstrip(';') + " LIMIT 100"
-    
+
     try:
         async with get_session(organization_id=organization_id) as session:
-            # Execute the query - RLS automatically filters by organization
-            # (organization_id context is already set by get_session)
             result = await session.execute(text(final_query))
             rows = result.fetchall()
-            columns = list(result.keys())
-            
-            # Convert to list of dicts with consistent serialization
-            # All datetimes are formatted as ISO 8601 with Z suffix (UTC)
+            columns: list[str] = list(result.keys())
+
             data: list[dict[str, Any]] = []
             for row in rows:
                 row_dict: dict[str, Any] = {
@@ -471,9 +513,9 @@ async def _run_sql_query(
                     for i, col in enumerate(columns)
                 }
                 data.append(row_dict)
-            
+
             logger.info("[Tools._run_sql_query] Query returned %d rows", len(data))
-            
+
             return {
                 "columns": columns,
                 "rows": data,
@@ -1170,52 +1212,6 @@ async def _handle_crm_write_from_sql(
         "success_count": result.get("success_count", 0),
         "message": f"Added {result.get('success_count', 0)} {record_type}(s) to pending changes. Commit or discard in the bar below when ready.",
     }
-
-
-async def _search_activities(
-    params: dict[str, Any], organization_id: str, user_id: str | None
-) -> dict[str, Any]:
-    """Execute semantic search across activities."""
-    query = params.get("query", "").strip()
-    
-    if not query:
-        return {"error": "No search query provided"}
-    
-    activity_types = params.get("types")
-    limit = min(params.get("limit", 10), 50)  # Cap at 50
-    
-    try:
-        from services.embedding_sync import search_activities_by_embedding
-        
-        results = await search_activities_by_embedding(
-            organization_id=organization_id,
-            query_text=query,
-            limit=limit,
-            activity_types=activity_types,
-        )
-        
-        if not results:
-            return {
-                "results": [],
-                "message": "No matching activities found. Activities may not have embeddings yet - try syncing data first.",
-            }
-        
-        return {
-            "results": results,
-            "count": len(results),
-            "query": query,
-        }
-        
-    except ValueError as e:
-        # OpenAI API key not configured
-        logger.warning("[Tools._search_activities] Embedding service not available: %s", e)
-        return {
-            "error": "Semantic search is not configured. OPENAI_API_KEY may be missing.",
-            "suggestion": "Use run_sql_query with ILIKE for text search instead.",
-        }
-    except Exception as e:
-        logger.error("[Tools._search_activities] Search failed: %s", str(e))
-        return {"error": f"Search failed: {str(e)}"}
 
 
 def _web_search_normalized_error(
@@ -4666,6 +4662,120 @@ async def _create_artifact(
 
 
 # =============================================================================
+# Penny Apps (interactive mini-apps)
+# =============================================================================
+
+
+async def _create_app(
+    params: dict[str, Any],
+    organization_id: str,
+    user_id: str | None,
+    context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """
+    Create an interactive mini-app (React + server-side SQL).
+
+    Validates queries, test-executes them, and stores as an Artifact
+    with type='app' and config={queries, frontend_code}.
+    """
+    title: str = params.get("title", "Untitled App")
+    description: str = params.get("description", "")
+    queries: dict[str, Any] = params.get("queries", {})
+    frontend_code: str = params.get("frontend_code", "")
+
+    # Validate inputs
+    if not queries:
+        return {"error": "At least one query is required in the 'queries' object"}
+    if not frontend_code.strip():
+        return {"error": "frontend_code cannot be empty"}
+
+    # Validate each query: must be SELECT-only
+    select_re = re.compile(r"^\s*SELECT\b", re.IGNORECASE)
+    dangerous_re = re.compile(
+        r"\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE|GRANT|REVOKE)\b",
+        re.IGNORECASE,
+    )
+
+    for qname, qspec in queries.items():
+        sql: str = qspec.get("sql", "")
+        if not sql.strip():
+            return {"error": f"Query '{qname}' has empty SQL"}
+        if not select_re.match(sql):
+            return {"error": f"Query '{qname}' must be a SELECT statement"}
+        if dangerous_re.search(sql):
+            return {"error": f"Query '{qname}' contains disallowed SQL keywords"}
+
+    # Test-execute each query with empty/default params to catch syntax errors
+    errors: list[str] = []
+    async with get_session(organization_id=organization_id) as session:
+        for qname, qspec in queries.items():
+            sql = qspec.get("sql", "")
+            param_defs: dict[str, Any] = qspec.get("params", {})
+
+            # Build dummy params for test execution
+            test_params: dict[str, Any] = {}
+            for pname, pdef in param_defs.items():
+                ptype: str = pdef.get("type", "string")
+                if ptype == "date":
+                    test_params[pname] = "2020-01-01"
+                elif ptype == "integer":
+                    test_params[pname] = 0
+                elif ptype == "number":
+                    test_params[pname] = 0.0
+                else:
+                    test_params[pname] = ""
+
+            # Wrap with LIMIT 0 to avoid returning data during validation
+            test_sql: str = f"SELECT * FROM ({sql.rstrip().rstrip(';')}) AS _test LIMIT 0"
+            try:
+                await session.execute(text(test_sql), test_params)
+            except Exception as exc:
+                errors.append(f"Query '{qname}': {exc}")
+
+    if errors:
+        return {"error": "SQL validation failed:\n" + "\n".join(errors)}
+
+    # Store as App (dedicated table, separate from artifacts)
+    app_id: str = str(uuid4())
+    message_id: str | None = context.get("message_id") if context else None
+    conversation_id: str | None = (context or {}).get("conversation_id")
+
+    async with get_session(organization_id=organization_id) as session:
+        app = App(
+            id=app_id,
+            user_id=user_id,
+            organization_id=organization_id,
+            title=title,
+            description=description,
+            queries=queries,
+            frontend_code=frontend_code,
+            conversation_id=UUID(conversation_id) if conversation_id else None,
+            message_id=message_id,
+        )
+        session.add(app)
+        await session.commit()
+
+        logger.info(
+            "[Tools._create_app] Created app: id=%s, title=%s, queries=%s",
+            app_id,
+            title,
+            list(queries.keys()),
+        )
+
+    return {
+        "status": "success",
+        "app_id": app_id,
+        "app": {
+            "id": app_id,
+            "title": title,
+            "description": description,
+            "frontendCode": frontend_code,
+        },
+        "message": f"Created interactive app: {title}",
+    }
+
+
+# =============================================================================
 # Google Drive Tools
 # =============================================================================
 
@@ -5531,4 +5641,313 @@ async def _foreach_workflow(
         summary["sample_results"] = [r["result"] for r in results[:5]]
 
     return summary
+
+
+# =============================================================================
+# execute_command — Sandboxed code execution via E2B
+# =============================================================================
+
+# Sandbox timeout in seconds (30 minutes)
+_SANDBOX_TIMEOUT_SECONDS: int = 1800
+
+# Command execution timeout in seconds
+_COMMAND_TIMEOUT_SECONDS: float = 120
+
+# Maximum combined stdout+stderr length returned to the model
+_MAX_OUTPUT_LENGTH: int = 50_000
+
+# Python helper injected into every new sandbox for easy DB access
+_SANDBOX_DB_HELPER_TEMPLATE: str = """
+import os
+import psycopg2
+
+_DATABASE_URL: str = os.environ["DATABASE_URL"]
+_ORG_ID: str = os.environ["ORG_ID"]
+
+def get_connection() -> psycopg2.extensions.connection:
+    \"\"\"
+    Return a psycopg2 connection scoped to the current organization via RLS.
+
+    Usage:
+        from db import get_connection
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM deals LIMIT 10")
+        rows = cur.fetchall()
+    \"\"\"
+    conn: psycopg2.extensions.connection = psycopg2.connect(_DATABASE_URL)
+    conn.autocommit = True
+    with conn.cursor() as cur:
+        cur.execute("SET ROLE revtops_app")
+        cur.execute("SET app.current_org_id = %s", (_ORG_ID,))
+    return conn
+""".strip()
+
+
+# ---- Sandbox ID persistence (DB-backed) ------------------------------------
+
+async def _get_sandbox_id_from_db(
+    conversation_id: str,
+    organization_id: str,
+) -> str | None:
+    """Load the sandbox_id stored on the conversation row."""
+    async with get_session(organization_id=organization_id) as session:
+        row = await session.execute(
+            text("SELECT sandbox_id FROM conversations WHERE id = CAST(:cid AS uuid)").bindparams(
+                cid=conversation_id,
+            )
+        )
+        result: str | None = row.scalar_one_or_none()
+        return result
+
+
+async def _save_sandbox_id_to_db(
+    conversation_id: str,
+    organization_id: str,
+    sandbox_id: str | None,
+) -> None:
+    """Persist (or clear) the sandbox_id on the conversation row."""
+    async with get_session(organization_id=organization_id) as session:
+        from models.conversation import Conversation
+        await session.execute(
+            text(
+                "UPDATE conversations SET sandbox_id = :sid WHERE id = CAST(:cid AS uuid)"
+            ).bindparams(sid=sandbox_id, cid=conversation_id)
+        )
+        await session.commit()
+
+
+# ---- Synchronous E2B helpers (run via asyncio.to_thread) --------------------
+
+def _create_sandbox_sync(
+    organization_id: str,
+    conversation_id: str,
+) -> str:
+    """Create an E2B sandbox and inject the DB helper. Returns the sandbox_id."""
+    from e2b import Sandbox
+
+    sandbox: Sandbox = Sandbox.create(
+        timeout=_SANDBOX_TIMEOUT_SECONDS,
+        envs={
+            "DATABASE_URL": settings.sandbox_database_url,
+            "ORG_ID": organization_id,
+        },
+        metadata={
+            "conversation_id": conversation_id,
+            "organization_id": organization_id,
+        },
+        api_key=settings.E2B_API_KEY,
+    )
+
+    sandbox.files.write("/home/user/db.py", _SANDBOX_DB_HELPER_TEMPLATE)
+    sandbox.files.make_dir("/home/user/output")
+
+    sandbox_id: str = sandbox.sandbox_id
+    logger.info(
+        "[Sandbox] Created sandbox %s for conversation %s",
+        sandbox_id,
+        conversation_id[:8],
+    )
+    return sandbox_id
+
+
+def _is_sandbox_alive_sync(sandbox_id: str) -> bool:
+    """Check if a sandbox is still running. Returns False on any error."""
+    from e2b import Sandbox
+
+    try:
+        sbx: Sandbox = Sandbox.connect(sandbox_id, api_key=settings.E2B_API_KEY)
+        return sbx.is_running()
+    except Exception:
+        return False
+
+
+def _run_command_sync(
+    sandbox_id: str,
+    command: str,
+) -> dict[str, Any]:
+    """Execute a shell command in an existing E2B sandbox. Returns result dict."""
+    from e2b import Sandbox
+
+    sandbox: Sandbox = Sandbox.connect(
+        sandbox_id,
+        api_key=settings.E2B_API_KEY,
+    )
+
+    result = sandbox.commands.run(
+        command,
+        timeout=_COMMAND_TIMEOUT_SECONDS,
+        cwd="/home/user",
+    )
+
+    stdout: str = result.stdout or ""
+    stderr: str = result.stderr or ""
+    exit_code: int = result.exit_code
+
+    return {
+        "stdout": stdout,
+        "stderr": stderr,
+        "exit_code": exit_code,
+    }
+
+
+def _list_output_files_sync(sandbox_id: str) -> list[dict[str, Any]]:
+    """List files in /home/user/output/ and read their contents."""
+    from e2b import Sandbox
+
+    sandbox: Sandbox = Sandbox.connect(
+        sandbox_id,
+        api_key=settings.E2B_API_KEY,
+    )
+
+    try:
+        entries = sandbox.files.list("/home/user/output")
+    except Exception:
+        return []
+
+    output_files: list[dict[str, Any]] = []
+    for entry in entries:
+        if entry.type == "file":
+            try:
+                data: bytearray = sandbox.files.read(
+                    f"/home/user/output/{entry.name}",
+                    format="bytes",
+                )
+                output_files.append({
+                    "filename": entry.name,
+                    "content_bytes": bytes(data),
+                })
+            except Exception as exc:
+                logger.warning("[Sandbox] Failed to read output file %s: %s", entry.name, exc)
+    return output_files
+
+
+def _kill_sandbox_sync(sandbox_id: str) -> bool:
+    """Kill a sandbox by ID. Returns True if killed."""
+    from e2b import Sandbox
+
+    try:
+        return Sandbox.kill(sandbox_id, api_key=settings.E2B_API_KEY)
+    except Exception as exc:
+        logger.warning("[Sandbox] Failed to kill sandbox %s: %s", sandbox_id, exc)
+        return False
+
+
+# ---- Public cleanup helpers -------------------------------------------------
+
+async def cleanup_sandbox(conversation_id: str, organization_id: str | None = None) -> None:
+    """Kill the sandbox associated with a conversation and clear its DB record."""
+    sandbox_id: str | None = None
+    if organization_id:
+        sandbox_id = await _get_sandbox_id_from_db(conversation_id, organization_id)
+    if sandbox_id is not None:
+        logger.info("[Sandbox] Cleaning up sandbox %s for conversation %s", sandbox_id, conversation_id[:8])
+        await asyncio.to_thread(_kill_sandbox_sync, sandbox_id)
+        if organization_id:
+            await _save_sandbox_id_to_db(conversation_id, organization_id, None)
+
+
+async def cleanup_all_sandboxes() -> None:
+    """Kill all running E2B sandboxes owned by this app. Called on shutdown."""
+    try:
+        from e2b import Sandbox
+        paginator = await asyncio.to_thread(lambda: Sandbox.list(api_key=settings.E2B_API_KEY))
+        sandboxes = await asyncio.to_thread(paginator.next_items)
+        if not sandboxes:
+            return
+        logger.info("[Sandbox] Shutting down %d active sandbox(es)", len(sandboxes))
+        await asyncio.gather(
+            *(asyncio.to_thread(_kill_sandbox_sync, s.sandbox_id) for s in sandboxes),
+            return_exceptions=True,
+        )
+    except Exception as exc:
+        logger.warning("[Sandbox] Failed to list/kill sandboxes on shutdown: %s", exc)
+
+
+# ---- Main handler -----------------------------------------------------------
+
+async def _execute_command(
+    params: dict[str, Any],
+    organization_id: str,
+    user_id: str | None,
+    context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Execute a shell command in a persistent E2B sandbox."""
+
+    if not settings.E2B_API_KEY:
+        return {"error": "E2B_API_KEY is not configured. Cannot run sandboxed commands."}
+
+    command: str = params.get("command", "").strip()
+    if not command:
+        return {"error": "No command provided."}
+
+    conversation_id: str | None = (context or {}).get("conversation_id")
+    if not conversation_id:
+        return {"error": "execute_command requires a conversation context."}
+
+    # --- Get or create sandbox for this conversation ---
+    sandbox_id: str | None = await _get_sandbox_id_from_db(conversation_id, organization_id)
+
+    if sandbox_id is not None:
+        alive: bool = await asyncio.to_thread(_is_sandbox_alive_sync, sandbox_id)
+        if not alive:
+            logger.info("[Sandbox] Sandbox %s expired or dead, creating new one", sandbox_id)
+            sandbox_id = None
+
+    if sandbox_id is None:
+        try:
+            sandbox_id = await asyncio.to_thread(
+                _create_sandbox_sync, organization_id, conversation_id,
+            )
+            await _save_sandbox_id_to_db(conversation_id, organization_id, sandbox_id)
+        except Exception as exc:
+            logger.error("[Sandbox] Failed to create sandbox: %s", exc)
+            return {"error": f"Failed to create sandbox: {exc}"}
+
+    # --- Execute the command ---
+    try:
+        result: dict[str, Any] = await asyncio.to_thread(
+            _run_command_sync, sandbox_id, command,
+        )
+    except Exception as exc:
+        error_str: str = str(exc)
+        if "not found" in error_str.lower() or "not running" in error_str.lower():
+            await _save_sandbox_id_to_db(conversation_id, organization_id, None)
+        logger.error("[Sandbox] Command execution failed: %s", exc)
+        return {"error": f"Command execution failed: {error_str}"}
+
+    # Truncate very long output to avoid blowing up context
+    stdout: str = result["stdout"]
+    stderr: str = result["stderr"]
+    exit_code: int = result["exit_code"]
+
+    combined_len: int = len(stdout) + len(stderr)
+    if combined_len > _MAX_OUTPUT_LENGTH:
+        half: int = _MAX_OUTPUT_LENGTH // 2
+        if len(stdout) > half:
+            stdout = stdout[:half] + f"\n\n... [truncated, {len(result['stdout'])} chars total]"
+        if len(stderr) > half:
+            stderr = stderr[:half] + f"\n\n... [truncated, {len(result['stderr'])} chars total]"
+
+    tool_result: dict[str, Any] = {
+        "exit_code": exit_code,
+        "stdout": stdout,
+        "stderr": stderr,
+    }
+
+    # --- Check for output files (artifacts) ---
+    try:
+        output_files: list[dict[str, Any]] = await asyncio.to_thread(
+            _list_output_files_sync, sandbox_id,
+        )
+        if output_files:
+            artifact_names: list[str] = [f["filename"] for f in output_files]
+            tool_result["output_files"] = artifact_names
+            tool_result["output_files_note"] = (
+                f"Files available in /home/user/output/: {', '.join(artifact_names)}"
+            )
+    except Exception as exc:
+        logger.warning("[Sandbox] Failed to list output files: %s", exc)
+
+    return tool_result
 
