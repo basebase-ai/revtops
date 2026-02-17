@@ -317,9 +317,9 @@ Use this when you need external information not available in the user's data:
 - Sales methodologies or frameworks
 
 Do NOT use this for data that's in the user's database - use run_sql_query instead.
-This tool runs Perplexity or Exa plus an OpenAI synthesis pass for every web search request.""",
+This tool runs Perplexity or Exa plus an OpenAI synthesis pass for every web search request.
 
-Provider choice (default exa): Use exa for semantic search over the live web with per-result excerpts (title, url, content snippets) — best when you need to compare or cite specific pages. Use perplexity and OpenAI when you want a single synthesized answer in one blob with citation URLs and no per-result text.""",
+Provider choice (default exa): Use exa for semantic search over the live web with per-result excerpts (title, url, content snippets) - best when you need to compare or cite specific pages. Use perplexity and OpenAI when you want a single synthesized answer in one blob with citation URLs and no per-result text.""",
     input_schema={
         "type": "object",
         "properties": {
