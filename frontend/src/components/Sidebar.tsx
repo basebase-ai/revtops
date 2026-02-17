@@ -367,22 +367,6 @@ export function Sidebar({
           {!collapsed && <span>Workflows</span>}
         </button>
 
-
-        {/* Memory */}
-        <button
-          onClick={() => onViewChange('memory')}
-          className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${
-            currentView === 'memory'
-              ? 'bg-surface-800 text-surface-100'
-              : 'text-surface-400 hover:text-surface-200 hover:bg-surface-800/50'
-          } ${collapsed ? 'justify-center' : ''}`}
-        >
-          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 10h8m-8 4h5m-7 7h12a2 2 0 002-2V5a2 2 0 00-2-2H6a2 2 0 00-2 2v14a2 2 0 002 2z" />
-          </svg>
-          {!collapsed && <span>Memory</span>}
-        </button>
-
         {/* Apps */}
         <button
           onClick={() => onViewChange('apps')}

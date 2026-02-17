@@ -218,8 +218,8 @@ export function Memories(): JSX.Element {
               {isUserStoredExpanded && <div className="mt-4 space-y-3">
                 {data?.memories.length ? data.memories.map((memory) => (
                   <div key={memory.id} className="rounded-lg border border-surface-800 bg-surface-900 p-3">
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0 flex-1">
+                    <div className="flex flex-col gap-3">
+                      <div className="w-full">
                         <div className="text-xs text-surface-500 mb-2">
                           {memory.category ?? 'uncategorized'} • Updated {formatTime(memory.updated_at)}
                         </div>
@@ -233,7 +233,7 @@ export function Memories(): JSX.Element {
                           <p className="text-sm text-surface-200 whitespace-pre-wrap">{memory.content}</p>
                         )}
                       </div>
-                      <div className="flex gap-2">
+                      <div className="flex flex-wrap justify-end gap-2">
                         {editingMemoryId === memory.id ? (
                           <>
                             <button className="px-3 py-1.5 text-xs rounded-md bg-primary-600 hover:bg-primary-700 text-white" onClick={() => updateMemory.mutate({ memoryId: memory.id, content: memoryDraft })}>Save</button>
@@ -265,14 +265,16 @@ export function Memories(): JSX.Element {
               {isWorkflowStoredExpanded && <div className="mt-4 space-y-3">
                 {data?.workflow_notes.length ? data.workflow_notes.map((note) => (
                   <div key={note.note_id} className="rounded-lg border border-surface-800 bg-surface-900 p-3">
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0 flex-1">
+                    <div className="flex flex-col gap-3">
+                      <div className="w-full">
                         <div className="text-xs text-surface-500 mb-2">
                           {note.workflow_name ?? 'Workflow'} • Run {formatTime(note.run_started_at)}
                         </div>
                         <p className="text-sm text-surface-200 whitespace-pre-wrap">{note.content}</p>
                       </div>
-                      <button className="px-3 py-1.5 text-xs rounded-md bg-red-600/20 hover:bg-red-600/30 text-red-300" onClick={() => deleteWorkflowNote.mutate({ runId: note.run_id, noteIndex: note.note_index })}>Delete</button>
+                      <div className="flex justify-end">
+                        <button className="px-3 py-1.5 text-xs rounded-md bg-red-600/20 hover:bg-red-600/30 text-red-300" onClick={() => deleteWorkflowNote.mutate({ runId: note.run_id, noteIndex: note.note_index })}>Delete</button>
+                      </div>
                     </div>
                   </div>
                 )) : <p className="text-sm text-surface-500">No workflow notes saved yet.</p>}
