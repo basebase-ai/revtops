@@ -19,7 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from api.websockets import websocket_endpoint
-from api.routes import apps, artifacts, auth, change_sessions, chat, data, deals, drive, search, slack_events, slack_user_mappings, sync, tool_settings, twilio_events, waitlist, workflows
+from api.routes import apps, artifacts, auth, change_sessions, chat, data, deals, drive, memories, search, slack_events, slack_user_mappings, sync, tool_settings, twilio_events, waitlist, workflows
 from models.database import init_db, close_db, get_pool_status
 from config import log_missing_env_vars
 
@@ -135,6 +135,7 @@ app.include_router(sync.router, prefix="/api/sync", tags=["sync"])
 app.include_router(waitlist.router, prefix="/api/waitlist", tags=["waitlist"])
 app.include_router(search.router, prefix="/api/search", tags=["search"])
 app.include_router(workflows.router, prefix="/api/workflows", tags=["workflows"])
+app.include_router(memories.router, prefix="/api/memories", tags=["memories"])
 app.include_router(drive.router, prefix="/api/drive", tags=["drive"])
 app.include_router(data.router, prefix="/api/data", tags=["data"])
 app.include_router(tool_settings.router, prefix="/api", tags=["tools"])
