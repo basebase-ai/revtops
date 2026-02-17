@@ -18,6 +18,7 @@ from typing import Any, Optional
 import httpx
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import IntegrityError
 
 from api.websockets import broadcast_sync_progress
 from connectors.base import BaseConnector
@@ -27,6 +28,7 @@ from models.contact import Contact
 from models.database import get_session
 from models.deal import Deal
 from models.goal import Goal
+from models.org_member import OrgMember
 from models.pipeline import Pipeline, PipelineStage
 from models.slack_user_mapping import SlackUserMapping
 from models.user import User
@@ -48,6 +50,8 @@ class HubSpotConnector(BaseConnector):
         self._pipeline_cache: dict[str, uuid.UUID] = {}
         # Pre-fetched HubSpot owner ID -> email (populated by _ensure_owner_email_cache)
         self._owner_email_cache: dict[str, str] = {}
+        # HubSpot owner ID -> full owner dict (email, firstName, lastName) for proactive user creation
+        self._owner_detail_cache: dict[str, dict[str, Any]] = {}
         self._owner_email_cache_loaded: bool = False
 
     async def sync_all(self) -> dict[str, int]:
@@ -1250,10 +1254,99 @@ class HubSpotConnector(BaseConnector):
                 email: str | None = owner.get("email")
                 if oid and email:
                     self._owner_email_cache[oid] = email
+                    self._owner_detail_cache[oid] = {
+                        "email": email,
+                        "firstName": owner.get("firstName"),
+                        "lastName": owner.get("lastName"),
+                    }
             print(f"[HubSpot] Pre-fetched {len(self._owner_email_cache)} owner emails")
         except httpx.HTTPStatusError as exc:
             print(f"[HubSpot] WARNING: Could not fetch owners list ({exc}), owner mapping will be skipped")
         self._owner_email_cache_loaded = True
+
+    async def _create_or_link_user_for_hubspot_owner(
+        self,
+        session: Any,
+        *,
+        hs_owner_id: str,
+        email: str,
+        first_name: Optional[str],
+        last_name: Optional[str],
+    ) -> Optional[uuid.UUID]:
+        """Create crm_only User for HubSpot owner, or link existing user to org. Returns user_id or None."""
+        org_uuid: uuid.UUID = uuid.UUID(self.organization_id)
+        name: Optional[str] = (
+            " ".join(filter(None, [first_name, last_name])).strip() or None
+        )
+
+        # 1. Check if user exists globally by email
+        existing_result = await session.execute(select(User).where(User.email == email))
+        user: Optional[User] = existing_result.scalar_one_or_none()
+
+        if user:
+            if user.organization_id == org_uuid:
+                return user.id
+            member_result = await session.execute(
+                select(OrgMember).where(
+                    OrgMember.user_id == user.id,
+                    OrgMember.organization_id == org_uuid,
+                )
+            )
+            if not member_result.scalar_one_or_none():
+                session.add(
+                    OrgMember(
+                        user_id=user.id,
+                        organization_id=org_uuid,
+                        role="member",
+                        status="active",
+                    )
+                )
+            return user.id
+
+        # 2. Create new user
+        try:
+            new_user: User = User(
+                email=email,
+                name=name,
+                organization_id=org_uuid,
+                status="crm_only",
+                role="member",
+            )
+            session.add(new_user)
+            await session.flush()
+            session.add(
+                OrgMember(
+                    user_id=new_user.id,
+                    organization_id=org_uuid,
+                    role="member",
+                    status="active",
+                )
+            )
+            return new_user.id
+        except IntegrityError:
+            await session.rollback()
+            retry_result = await session.execute(select(User).where(User.email == email))
+            u: Optional[User] = retry_result.scalar_one_or_none()
+            if u:
+                if u.organization_id == org_uuid:
+                    return u.id
+                member_retry = await session.execute(
+                    select(OrgMember).where(
+                        OrgMember.user_id == u.id,
+                        OrgMember.organization_id == org_uuid,
+                    )
+                )
+                if not member_retry.scalar_one_or_none():
+                    session.add(
+                        OrgMember(
+                            user_id=u.id,
+                            organization_id=org_uuid,
+                            role="member",
+                            status="active",
+                        )
+                    )
+                return u.id
+            return None
 
     async def _map_hs_owner_to_user(
         self, hs_owner_id: Optional[str]
@@ -1303,7 +1396,32 @@ class HubSpotConnector(BaseConnector):
                 self._owner_cache[hs_owner_id] = user.id
                 return user.id
 
-            # No matching user — create unmapped identity row (user_id=NULL)
+            # No matching user — proactively create crm_only User (and OrgMember)
+            owner_detail: dict[str, Any] = self._owner_detail_cache.get(
+                hs_owner_id, {}
+            )
+            created_user_id: Optional[uuid.UUID] = (
+                await self._create_or_link_user_for_hubspot_owner(
+                    session,
+                    hs_owner_id=hs_owner_id,
+                    email=owner_email,
+                    first_name=owner_detail.get("firstName"),
+                    last_name=owner_detail.get("lastName"),
+                )
+            )
+            if created_user_id:
+                await self._ensure_identity_mapping(
+                    session,
+                    hs_owner_id=hs_owner_id,
+                    hs_email=owner_email,
+                    user_id=created_user_id,
+                    revtops_email=owner_email,
+                )
+                await session.commit()
+                self._owner_cache[hs_owner_id] = created_user_id
+                return created_user_id
+
+            # Fallback: create unmapped identity row (user_id=NULL), e.g. owner without email
             await self._ensure_identity_mapping(
                 session,
                 hs_owner_id=hs_owner_id,
