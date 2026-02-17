@@ -1,14 +1,11 @@
 /**
  * Data inspector component.
- * 
+ *
  * SECURITY: Uses JWT authentication via apiRequest. Organization is determined
  * from the authenticated user, not from query parameters.
- * 
- * Allows users to browse their synced data (contacts, accounts, deals, activities)
- * in a paginated table view. Helps build trust and debug sync issues.
  */
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import { apiRequest } from '../lib/api';
 import { useAppStore } from '../store';
 
@@ -46,11 +43,19 @@ interface DataSummaryResponse {
 
 type SortOrder = 'asc' | 'desc';
 
+type DataByTable = Record<string, DataResponse>;
+
 export function Data(): JSX.Element {
   const { organization } = useAppStore();
+  const setCurrentView = useAppStore((state) => state.setCurrentView);
+  const startNewChat = useAppStore((state) => state.startNewChat);
+  const setPendingChatInput = useAppStore((state) => state.setPendingChatInput);
+  const setPendingChatAutoSend = useAppStore((state) => state.setPendingChatAutoSend);
+
   const [tables, setTables] = useState<TableSummary[]>([]);
-  const [selectedTable, setSelectedTable] = useState<string>('contacts');
-  const [data, setData] = useState<DataResponse | null>(null);
+  const [selectedTables, setSelectedTables] = useState<string[]>(['contacts']);
+  const [primaryTable, setPrimaryTable] = useState<string>('contacts');
+  const [dataByTable, setDataByTable] = useState<DataByTable>({});
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [page, setPage] = useState<number>(1);
@@ -64,36 +69,48 @@ export function Data(): JSX.Element {
 
   const organizationId = organization?.id ?? '';
 
-  // Fetch table summaries
+  useEffect(() => {
+    const timeoutId = setTimeout(() => {
+      setSearch(searchInput.trim());
+    }, 300);
+    return () => clearTimeout(timeoutId);
+  }, [searchInput]);
+
   useEffect(() => {
     if (!organizationId) return;
 
     const fetchSummary = async (): Promise<void> => {
       try {
-        const { data: result, error: apiError } = await apiRequest<DataSummaryResponse>(
-          '/data/summary'
-        );
+        const { data: result, error: apiError } = await apiRequest<DataSummaryResponse>('/data/summary');
         if (apiError || !result) {
           throw new Error(apiError || 'Failed to fetch data summary');
         }
         setTables(result.tables);
+
+        const availableTables = new Set(result.tables.map((table) => table.name));
+        const validSelected = selectedTables.filter((table) => availableTables.has(table));
+        if (validSelected.length === 0 && result.tables[0]) {
+          const fallback = result.tables[0].name;
+          setSelectedTables([fallback]);
+          setPrimaryTable(fallback);
+        } else if (validSelected.length !== selectedTables.length) {
+          setSelectedTables(validSelected);
+          setPrimaryTable(validSelected[0] ?? result.tables[0]?.name ?? 'contacts');
+        }
       } catch (err) {
         console.error('Error fetching data summary:', err);
       }
     };
 
     void fetchSummary();
-  }, [organizationId]);
+  }, [organizationId, selectedTables]);
 
-  // Fetch filter options when table changes
   useEffect(() => {
-    if (!organizationId || !selectedTable) return;
+    if (!organizationId || !primaryTable) return;
 
     const fetchFilters = async (): Promise<void> => {
       try {
-        const { data: result, error: apiError } = await apiRequest<FilterOptions>(
-          `/data/${selectedTable}/filters`
-        );
+        const { data: result, error: apiError } = await apiRequest<FilterOptions>(`/data/${primaryTable}/filters`);
         if (apiError || !result) {
           throw new Error(apiError || 'Failed to fetch filters');
         }
@@ -105,41 +122,42 @@ export function Data(): JSX.Element {
     };
 
     void fetchFilters();
-  }, [organizationId, selectedTable]);
+  }, [organizationId, primaryTable]);
 
-  // Fetch table data
   useEffect(() => {
-    if (!organizationId || !selectedTable) return;
+    if (!organizationId || selectedTables.length === 0) return;
 
     const fetchData = async (): Promise<void> => {
       setLoading(true);
       setError(null);
       try {
-        const params = new URLSearchParams({
-          page: String(page),
-          page_size: '50',
-        });
-        if (search) {
-          params.set('search', search);
-        }
-        if (sortBy) {
-          params.set('sort_by', sortBy);
-          params.set('sort_order', sortOrder);
-        }
-        if (sourceSystemFilter) {
-          params.set('source_system', sourceSystemFilter);
-        }
-        if (typeFilter && selectedTable === 'activities') {
-          params.set('type_filter', typeFilter);
-        }
-        
-        const { data: result, error: apiError } = await apiRequest<DataResponse>(
-          `/data/${selectedTable}?${params.toString()}`
+        const responses = await Promise.all(
+          selectedTables.map(async (tableName) => {
+            const params = new URLSearchParams({
+              page: String(page),
+              page_size: '50',
+            });
+            if (search) params.set('search', search);
+            if (sortBy) {
+              params.set('sort_by', sortBy);
+              params.set('sort_order', sortOrder);
+            }
+            if (sourceSystemFilter) params.set('source_system', sourceSystemFilter);
+            if (typeFilter && tableName === 'activities') params.set('type_filter', typeFilter);
+
+            const { data: result, error: apiError } = await apiRequest<DataResponse>(`/data/${tableName}?${params.toString()}`);
+            if (apiError || !result) {
+              throw new Error(apiError || `Failed to fetch ${tableName}`);
+            }
+            return [tableName, result] as const;
+          })
         );
-        if (apiError || !result) {
-          throw new Error(apiError || 'Failed to fetch data');
+
+        const nextData: DataByTable = {};
+        for (const [tableName, result] of responses) {
+          nextData[tableName] = result;
         }
-        setData(result);
+        setDataByTable(nextData);
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Unknown error');
       } finally {
@@ -148,147 +166,167 @@ export function Data(): JSX.Element {
     };
 
     void fetchData();
-  }, [organizationId, selectedTable, page, search, sortBy, sortOrder, sourceSystemFilter, typeFilter]);
+  }, [organizationId, selectedTables, page, search, sortBy, sortOrder, sourceSystemFilter, typeFilter]);
 
-  // Reset page, sort, and filters when table changes
   useEffect(() => {
     setPage(1);
     setSortBy(null);
     setSortOrder('asc');
     setSourceSystemFilter('');
     setTypeFilter('');
-  }, [selectedTable]);
+  }, [primaryTable]);
 
-  // Reset page when search or filters change
   useEffect(() => {
     setPage(1);
-  }, [search, sourceSystemFilter, typeFilter]);
+  }, [search, sourceSystemFilter, typeFilter, selectedTables]);
 
-  // Handle column header click for sorting
   const handleSort = (column: string): void => {
     if (sortBy === column) {
-      // Toggle order if same column
       setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
     } else {
-      // New column, start with ascending
       setSortBy(column);
       setSortOrder('asc');
     }
     setPage(1);
   };
 
-  const handleSearch = (e: React.FormEvent): void => {
-    e.preventDefault();
-    setSearch(searchInput);
+  const toggleTable = (tableName: string): void => {
+    setSelectedTables((prev) => {
+      if (prev.includes(tableName)) {
+        if (prev.length === 1) return prev;
+        const next = prev.filter((name) => name !== tableName);
+        if (primaryTable === tableName && next[0]) {
+          setPrimaryTable(next[0]);
+        }
+        return next;
+      }
+      setPrimaryTable(tableName);
+      return [...prev, tableName];
+    });
   };
 
-  const totalPages = data ? Math.ceil(data.total / data.page_size) : 0;
+  const groupedResults = useMemo(() => {
+    return selectedTables
+      .map((tableName) => {
+        const tableMeta = tables.find((table) => table.name === tableName);
+        const result = dataByTable[tableName];
+        return {
+          tableName,
+          title: tableMeta?.display_name ?? tableName,
+          result,
+        };
+      })
+      .filter((group) => !!group.result);
+  }, [dataByTable, selectedTables, tables]);
 
-  // Format column header for display
-  const formatColumnHeader = (col: string): string => {
-    return col
-      .replace(/_/g, ' ')
-      .replace(/\b\w/g, (l) => l.toUpperCase());
-  };
+  const startChatWithData = useCallback((): void => {
+    const promptSections = groupedResults.map((group) => {
+      const result = group.result;
+      if (!result) return `${group.title}: no rows returned.`;
+      const previewRows = result.rows.slice(0, 5).map((row) => {
+        const rowData = result.columns.slice(0, 6).map((column) => `${column}: ${String(row.data[column] ?? '—')}`).join(', ');
+        return `- ${rowData}`;
+      }).join('\n');
 
-  // Format cell value for display
+      return `${group.title} (${result.total} total rows):\n${previewRows || '- no rows returned'}`;
+    }).join('\n\n');
+
+    const prompt = `Summarise this data:\n\n${promptSections}`;
+    setPendingChatInput(prompt);
+    setPendingChatAutoSend(true);
+    startNewChat();
+    setCurrentView('chat');
+  }, [groupedResults, setCurrentView, setPendingChatAutoSend, setPendingChatInput, startNewChat]);
+
+  const formatColumnHeader = (col: string): string => col.replace(/_/g, ' ').replace(/\b\w/g, (l) => l.toUpperCase());
+
   const formatCellValue = (value: string | number | boolean | null | undefined): string => {
     if (value === null || value === undefined) return '—';
     if (typeof value === 'boolean') return value ? 'Yes' : 'No';
-    if (typeof value === 'number') {
-      // Format currency-like numbers
-      if (value >= 1000) return value.toLocaleString();
-      return String(value);
-    }
-    // Truncate long strings
+    if (typeof value === 'number') return value >= 1000 ? value.toLocaleString() : String(value);
     const str = String(value);
-    if (str.length > 50) return str.substring(0, 47) + '...';
-    return str;
+    return str.length > 50 ? `${str.substring(0, 47)}...` : str;
   };
+
+  const firstSelectedTable = selectedTables[0];
+  const singleTableResult = selectedTables.length === 1 && firstSelectedTable ? dataByTable[firstSelectedTable] : null;
+  const totalPages = singleTableResult ? Math.ceil(singleTableResult.total / singleTableResult.page_size) : 0;
 
   return (
     <div className="flex-1 overflow-hidden flex flex-col">
-      {/* Header */}
       <header className="sticky top-0 bg-surface-950 border-b border-surface-800 px-4 md:px-8 py-4 md:py-6">
-        <h1 className="text-xl md:text-2xl font-bold text-surface-50">Data</h1>
-        <p className="text-surface-400 mt-1 text-sm md:text-base">
-          Browse your synced data from connected sources
-        </p>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h1 className="text-xl md:text-2xl font-bold text-surface-50">Search Data</h1>
+            <p className="text-surface-400 mt-1 text-sm md:text-base">Browse your synced data from connected sources</p>
+          </div>
+          <button
+            type="button"
+            onClick={startChatWithData}
+            disabled={groupedResults.length === 0 || loading}
+            className="px-4 py-2 rounded-lg bg-primary-600 hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-medium transition-colors"
+          >
+            Start Chat
+          </button>
+        </div>
       </header>
 
       <div className="flex-1 overflow-hidden flex flex-col px-4 md:px-8 py-4 md:py-6">
-        {/* Table selector tabs */}
         <div className="flex flex-wrap gap-2 mb-4">
-          {tables.map((table) => (
-            <button
-              key={table.name}
-              onClick={() => setSelectedTable(table.name)}
-              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                selectedTable === table.name
-                  ? 'bg-primary-500 text-white'
-                  : 'bg-surface-800 text-surface-300 hover:bg-surface-700'
-              }`}
-            >
-              {table.display_name}
-              <span className="ml-2 px-2 py-0.5 rounded-full text-xs bg-surface-900/50">
-                {table.count.toLocaleString()}
-              </span>
-            </button>
-          ))}
+          {tables.map((table) => {
+            const isSelected = selectedTables.includes(table.name);
+            return (
+              <button
+                key={table.name}
+                onClick={() => toggleTable(table.name)}
+                className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                  isSelected ? 'bg-primary-500 text-white' : 'bg-surface-800 text-surface-300 hover:bg-surface-700'
+                }`}
+              >
+                {table.display_name}
+                <span className="ml-2 px-2 py-0.5 rounded-full text-xs bg-surface-900/50">{table.count.toLocaleString()}</span>
+              </button>
+            );
+          })}
         </div>
 
-        {/* Filters and Search */}
         <div className="flex flex-wrap gap-3 mb-4">
-          {/* Source System Filter */}
           {filterOptions && filterOptions.source_systems.length > 0 && (
             <select
               value={sourceSystemFilter}
               onChange={(e) => setSourceSystemFilter(e.target.value)}
-              className="px-3 py-2 bg-surface-800 border border-surface-700 rounded-lg text-surface-100 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+              className="px-3 py-2 text-sm font-medium bg-surface-800 border border-surface-700 rounded-lg text-surface-100 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
             >
               <option value="">All Sources</option>
               {filterOptions.source_systems.map((source) => (
-                <option key={source} value={source}>
-                  {source.charAt(0).toUpperCase() + source.slice(1)}
-                </option>
+                <option key={source} value={source}>{source.charAt(0).toUpperCase() + source.slice(1)}</option>
               ))}
             </select>
           )}
 
-          {/* Activity Type Filter (only for activities table) */}
-          {selectedTable === 'activities' && filterOptions?.activity_types && filterOptions.activity_types.length > 0 && (
+          {primaryTable === 'activities' && filterOptions?.activity_types && filterOptions.activity_types.length > 0 && (
             <select
               value={typeFilter}
               onChange={(e) => setTypeFilter(e.target.value)}
-              className="px-3 py-2 bg-surface-800 border border-surface-700 rounded-lg text-surface-100 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+              className="px-3 py-2 text-sm font-medium bg-surface-800 border border-surface-700 rounded-lg text-surface-100 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
             >
               <option value="">All Types</option>
               {filterOptions.activity_types.map((type) => (
-                <option key={type} value={type}>
-                  {type.charAt(0).toUpperCase() + type.slice(1)}
-                </option>
+                <option key={type} value={type}>{type.charAt(0).toUpperCase() + type.slice(1)}</option>
               ))}
             </select>
           )}
 
-          {/* Search bar */}
-          <form onSubmit={handleSearch} className="flex-1 flex gap-2">
+          <div className="flex-1 min-w-[240px]">
             <input
               type="text"
               value={searchInput}
               onChange={(e) => setSearchInput(e.target.value)}
-              placeholder={`Search ${selectedTable}...`}
-              className="flex-1 min-w-[200px] px-4 py-2 bg-surface-800 border border-surface-700 rounded-lg text-surface-100 placeholder-surface-500 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+              placeholder={`Search ${selectedTables.join(', ')}...`}
+              className="w-full px-4 py-2 bg-surface-800 border border-surface-700 rounded-lg text-surface-100 placeholder-surface-500 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
             />
-            <button
-              type="submit"
-              className="px-4 py-2 bg-surface-700 hover:bg-surface-600 text-surface-200 rounded-lg transition-colors"
-            >
-              Search
-            </button>
-          </form>
+          </div>
 
-          {/* Clear all filters */}
           {(search || sourceSystemFilter || typeFilter) && (
             <button
               type="button"
@@ -305,96 +343,77 @@ export function Data(): JSX.Element {
           )}
         </div>
 
-        {/* Data table */}
-        <div className="flex-1 overflow-auto bg-surface-900 rounded-lg border border-surface-800">
+        <div className="flex-1 overflow-auto space-y-4">
           {loading ? (
-            <div className="flex items-center justify-center h-64">
+            <div className="flex items-center justify-center h-64 bg-surface-900 rounded-lg border border-surface-800">
               <div className="w-8 h-8 border-2 border-primary-500 border-t-transparent rounded-full animate-spin" />
             </div>
           ) : error ? (
-            <div className="flex items-center justify-center h-64 text-red-400">
-              {error}
-            </div>
-          ) : data && data.rows.length > 0 ? (
-            <table className="w-full text-sm">
-              <thead className="bg-surface-800 sticky top-0">
-                <tr>
-                  {data.columns.map((col) => (
-                    <th
-                      key={col}
-                      onClick={() => handleSort(col)}
-                      className="px-4 py-3 text-left text-surface-300 font-medium whitespace-nowrap cursor-pointer hover:bg-surface-700 transition-colors select-none"
-                    >
-                      <div className="flex items-center gap-1">
-                        {formatColumnHeader(col)}
-                        {/* Sort indicator */}
-                        <span className="text-surface-500">
-                          {sortBy === col ? (
-                            sortOrder === 'asc' ? (
-                              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
-                              </svg>
-                            ) : (
-                              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                              </svg>
-                            )
-                          ) : (
-                            <svg className="w-4 h-4 opacity-0 group-hover:opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4" />
-                            </svg>
-                          )}
-                        </span>
-                      </div>
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-surface-800">
-                {data.rows.map((row) => (
-                  <tr key={row.id} className="hover:bg-surface-800/50">
-                    {data.columns.map((col) => (
-                      <td
-                        key={col}
-                        className="px-4 py-3 text-surface-200 whitespace-nowrap"
-                      >
-                        {formatCellValue(row.data[col])}
-                      </td>
-                    ))}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <div className="flex items-center justify-center h-64 bg-surface-900 rounded-lg border border-surface-800 text-red-400">{error}</div>
+          ) : groupedResults.length > 0 ? (
+            groupedResults.map((group) => {
+              const result = group.result;
+              if (!result) return null;
+
+              return (
+                <section key={group.tableName} className="bg-surface-900 rounded-lg border border-surface-800 overflow-hidden">
+                  <div className="px-4 py-3 border-b border-surface-800 flex items-center justify-between">
+                    <h2 className="text-sm font-semibold text-surface-100">{group.title}</h2>
+                    <span className="text-xs text-surface-400">{result.total.toLocaleString()} rows</span>
+                  </div>
+                  {result.rows.length > 0 ? (
+                    <table className="w-full text-sm">
+                      <thead className="bg-surface-800 sticky top-0">
+                        <tr>
+                          {result.columns.map((col) => (
+                            <th
+                              key={`${group.tableName}-${col}`}
+                              onClick={() => handleSort(col)}
+                              className="px-4 py-3 text-left text-surface-300 font-medium whitespace-nowrap cursor-pointer hover:bg-surface-700 transition-colors select-none"
+                            >
+                              <div className="flex items-center gap-1">
+                                {formatColumnHeader(col)}
+                                <span className="text-surface-500">
+                                  {sortBy === col ? (
+                                    sortOrder === 'asc' ? '↑' : '↓'
+                                  ) : null}
+                                </span>
+                              </div>
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-surface-800">
+                        {result.rows.map((row) => (
+                          <tr key={row.id} className="hover:bg-surface-800/50">
+                            {result.columns.map((col) => (
+                              <td key={`${row.id}-${col}`} className="px-4 py-3 text-surface-200 whitespace-nowrap">
+                                {formatCellValue(row.data[col])}
+                              </td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  ) : (
+                    <div className="px-4 py-10 text-center text-surface-400">
+                      No {group.title.toLowerCase()} found
+                    </div>
+                  )}
+                </section>
+              );
+            })
           ) : (
-            <div className="flex flex-col items-center justify-center h-64 text-surface-400">
-              <svg
-                className="w-12 h-12 mb-4 text-surface-600"
-                fill="none"
-                viewBox="0 0 24 24"
-                stroke="currentColor"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={1.5}
-                  d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4"
-                />
-              </svg>
-              <p>No {selectedTable} found</p>
-              <p className="text-sm mt-1">
-                {search
-                  ? 'Try a different search term'
-                  : 'Sync your data sources to see data here'}
-              </p>
+            <div className="flex flex-col items-center justify-center h-64 text-surface-400 bg-surface-900 rounded-lg border border-surface-800">
+              <p>No data found</p>
             </div>
           )}
         </div>
 
-        {/* Pagination */}
-        {data && data.total > data.page_size && (
+        {singleTableResult && singleTableResult.total > singleTableResult.page_size && (
           <div className="flex items-center justify-between mt-4 text-sm">
             <span className="text-surface-400">
-              Showing {((page - 1) * data.page_size) + 1} - {Math.min(page * data.page_size, data.total)} of {data.total.toLocaleString()}
+              Showing {((page - 1) * singleTableResult.page_size) + 1} - {Math.min(page * singleTableResult.page_size, singleTableResult.total)} of {singleTableResult.total.toLocaleString()}
             </span>
             <div className="flex gap-2">
               <button
@@ -404,9 +423,7 @@ export function Data(): JSX.Element {
               >
                 Previous
               </button>
-              <span className="px-3 py-1.5 text-surface-400">
-                Page {page} of {totalPages}
-              </span>
+              <span className="px-3 py-1.5 text-surface-400">Page {page} of {totalPages}</span>
               <button
                 onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
                 disabled={page >= totalPages}
