@@ -47,10 +47,10 @@ export function Memories(): JSX.Element {
   const [agentGlobalCommands, setAgentGlobalCommands] = useState<string>('');
   const [commandsError, setCommandsError] = useState<string | null>(null);
   const [isUserStoredExpanded, setIsUserStoredExpanded] = useState<boolean>(() => {
-    return localStorage.getItem(USER_STORED_COLLAPSE_STATE_KEY) !== 'true';
+    return localStorage.getItem(USER_STORED_COLLAPSE_STATE_KEY) === 'false';
   });
   const [isWorkflowStoredExpanded, setIsWorkflowStoredExpanded] = useState<boolean>(() => {
-    return localStorage.getItem(WORKFLOW_STORED_COLLAPSE_STATE_KEY) !== 'true';
+    return localStorage.getItem(WORKFLOW_STORED_COLLAPSE_STATE_KEY) === 'false';
   });
 
   useEffect(() => {
@@ -206,12 +206,12 @@ export function Memories(): JSX.Element {
             <section className="rounded-xl border border-surface-800 bg-surface-900/40 p-4 md:p-6">
               <div className="flex items-center justify-between gap-4">
                 <button
-                  className="flex items-center gap-2 text-left"
+                  className="flex items-center gap-2 text-left text-primary-400 hover:text-primary-300 transition-colors"
                   onClick={() => setIsUserStoredExpanded((value) => !value)}
                   aria-expanded={isUserStoredExpanded}
                 >
-                  <span className="text-surface-400 text-xs leading-none">{isUserStoredExpanded ? '▾' : '▸'}</span>
-                  <h2 className="text-lg font-semibold text-surface-100">User stored</h2>
+                  <span className="text-xs leading-none">{isUserStoredExpanded ? '▾' : '▸'}</span>
+                  <h2 className="text-lg font-semibold">User stored</h2>
                 </button>
                 <span className="text-xs text-surface-500">Editable + deletable</span>
               </div>
@@ -253,12 +253,12 @@ export function Memories(): JSX.Element {
             <section className="rounded-xl border border-surface-800 bg-surface-900/40 p-4 md:p-6">
               <div className="flex items-center justify-between gap-4">
                 <button
-                  className="flex items-center gap-2 text-left"
+                  className="flex items-center gap-2 text-left text-primary-400 hover:text-primary-300 transition-colors"
                   onClick={() => setIsWorkflowStoredExpanded((value) => !value)}
                   aria-expanded={isWorkflowStoredExpanded}
                 >
-                  <span className="text-surface-400 text-xs leading-none">{isWorkflowStoredExpanded ? '▾' : '▸'}</span>
-                  <h2 className="text-lg font-semibold text-surface-100">Workflow stored</h2>
+                  <span className="text-xs leading-none">{isWorkflowStoredExpanded ? '▾' : '▸'}</span>
+                  <h2 className="text-lg font-semibold">Workflow stored</h2>
                 </button>
                 <span className="text-xs text-surface-500">Deletable</span>
               </div>
