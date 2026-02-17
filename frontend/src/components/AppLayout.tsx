@@ -44,6 +44,8 @@ import { Chat } from './Chat';
 import { Workflows } from './Workflows';
 import { AdminPanel } from './AdminPanel';
 import { PendingChangesPage } from './PendingChangesPage';
+import { AppsGallery } from './apps/AppsGallery';
+import { AppFullView } from './apps/AppFullView';
 import { OrganizationPanel } from './OrganizationPanel';
 import { ProfilePanel } from './ProfilePanel';
 import { useAppStore, useMasquerade, useIntegrations, type ActiveTask } from '../store';
@@ -136,6 +138,7 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
     sidebarCollapsed,
     currentView,
     currentChatId,
+    currentAppId,
     recentChats,
   } = useAppStore(
     useShallow((state) => ({
@@ -144,6 +147,7 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
       sidebarCollapsed: state.sidebarCollapsed,
       currentView: state.currentView,
       currentChatId: state.currentChatId,
+      currentAppId: state.currentAppId,
       recentChats: state.recentChats,
     }))
   );
@@ -243,6 +247,8 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
   const [urlInitialized, setUrlInitialized] = useState(false);
 
   // Parse URL and update state
+  const setCurrentAppId = useAppStore((state) => state.setCurrentAppId);
+
   const syncStateFromUrl = useCallback(() => {
     const path = window.location.pathname;
     
@@ -251,6 +257,14 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
     if (chatMatch && chatMatch[1]) {
       setCurrentChatId(chatMatch[1]);
       setCurrentView('chat');
+      return;
+    }
+
+    // Match /apps/:id (full-screen app view)
+    const appMatch = path.match(/^\/apps\/([a-f0-9-]+)$/i);
+    if (appMatch && appMatch[1]) {
+      setCurrentAppId(appMatch[1]);
+      setCurrentView('app-view');
       return;
     }
     
@@ -262,6 +276,7 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
       '/data': 'data',
       '/search': 'search',
       '/workflows': 'workflows',
+      '/apps': 'apps',
       '/admin': 'admin',
       '/changes': 'pending-changes',
     };
@@ -273,7 +288,7 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
       }
       setCurrentView(matchedView);
     }
-  }, [setCurrentChatId, setCurrentView]);
+  }, [setCurrentChatId, setCurrentAppId, setCurrentView]);
 
   // Sync URL with app state - restore state on page load (runs FIRST)
   useEffect(() => {
@@ -300,6 +315,8 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
     
     if (currentChatId) {
       newPath = `/chat/${currentChatId}`;
+    } else if (currentView === 'app-view' && currentAppId) {
+      newPath = `/apps/${currentAppId}`;
     } else {
       const viewPaths: Record<typeof currentView, string> = {
         'home': '/',
@@ -308,6 +325,8 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
         'data': '/data',
         'search': '/search',
         'workflows': '/workflows',
+        'apps': '/apps',
+        'app-view': '/apps',
         'admin': '/admin',
         'pending-changes': '/changes',
       };
@@ -317,7 +336,7 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
     if (window.location.pathname !== newPath) {
       window.history.pushState({}, '', newPath);
     }
-  }, [currentChatId, currentView, urlInitialized]);
+  }, [currentChatId, currentAppId, currentView, urlInitialized]);
   
   // Panels
   const [showOrgPanel, setShowOrgPanel] = useState(false);
@@ -547,8 +566,9 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
                 id: string;
                 title: string;
                 filename: string;
-                contentType: "text" | "markdown" | "pdf" | "chart";
+                contentType: "text" | "markdown" | "pdf" | "chart" | "app";
                 mimeType: string;
+                frontendCode?: string;
               } | undefined;
               if (artifact) {
                 addConversationArtifactBlock(conversation_id, artifact);
@@ -888,6 +908,12 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
         )}
         {currentView === 'workflows' && (
           <Workflows />
+        )}
+        {currentView === 'apps' && (
+          <AppsGallery />
+        )}
+        {currentView === 'app-view' && currentAppId && (
+          <AppFullView appId={currentAppId} />
         )}
         {currentView === 'admin' && (
           <AdminPanel />

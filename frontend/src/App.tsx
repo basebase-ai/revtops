@@ -20,6 +20,7 @@ import { CompanySetup } from './components/CompanySetup';
 import { AppLayout } from './components/AppLayout';
 import { OAuthCallback } from './components/OAuthCallback';
 import { AdminWaitlist } from './components/AdminWaitlist';
+import { AppEmbed } from './components/apps/AppEmbed';
 import type { User, AuthChangeEvent, Session } from '@supabase/supabase-js';
 import { queryClient } from './lib/queryClient';
 
@@ -474,6 +475,11 @@ function App(): JSX.Element {
   // Handle admin waitlist route
   if (path === '/admin/waitlist') {
     return <AdminWaitlist />;
+  }
+
+  // Handle embed route (standalone, no auth required – token in URL)
+  if (path.startsWith('/embed/')) {
+    return <AppEmbed />;
   }
 
   // Loading state

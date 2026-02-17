@@ -129,12 +129,28 @@ export function Chat({
   // Keep ref in sync with state
   pendingMessagesRef.current = pendingMessages;
 
-  // Combined messages and thinking state (conversation + pending for new chats)
+  // Combined messages and thinking state (conversation + pending for new chats).
+  // Always sort by timestamp to guard against race conditions where WebSocket
+  // chunks (assistant message) arrive before the pending user message is moved
+  // into the conversation state, which would otherwise cause out-of-order display.
   const messages = useMemo(() => {
     const conversationMessages = conversationState?.messages ?? [];
-    return pendingMessages.length > 0
+    const combined: ChatMessage[] = pendingMessages.length > 0
       ? [...pendingMessages, ...conversationMessages]
       : conversationMessages;
+    // Fast path: skip sort when already ordered (common case)
+    let needsSort = false;
+    for (let i = 1; i < combined.length; i++) {
+      const prev = combined[i - 1] as ChatMessage;
+      const curr = combined[i] as ChatMessage;
+      if (prev.timestamp.getTime() > curr.timestamp.getTime()) {
+        needsSort = true;
+        break;
+      }
+    }
+    return needsSort
+      ? [...combined].sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime())
+      : combined;
   }, [pendingMessages, conversationState?.messages]);
   const isThinking = pendingThinking || conversationThinking;
 
@@ -851,7 +867,15 @@ export function Chat({
                   </svg>
                 </button>
               </div>
-              <ArtifactViewer artifact={currentArtifact} />
+              <ArtifactViewer
+                artifact={currentArtifact}
+                onAppError={(errorMsg: string) => {
+                  // Send the error to Penny as a user message to trigger a fix
+                  const fixPrompt: string = `The app "${currentArtifact.title}" has a compile/runtime error. Please fix it and create an updated version.\n\nError:\n\`\`\`\n${errorMsg}\n\`\`\``;
+                  sendChatMessage(fixPrompt, 'input');
+                  setCurrentArtifact(null);
+                }}
+              />
             </div>
           </>
         )}

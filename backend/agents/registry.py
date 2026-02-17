@@ -177,6 +177,48 @@ For exact text matching, use run_sql_query with ILIKE instead.""",
 )
 
 
+register_tool(
+    name="execute_command",
+    description="""Run a shell command in a persistent Linux sandbox.
+
+The sandbox is a full Debian Linux environment that persists across calls within
+this conversation. You can install tools, write files, run scripts, and build up
+work iteratively — just like using a terminal.
+
+Pre-installed: python3, pip, node, common CLI tools.
+Database: A read-only PostgreSQL connection is available at $DATABASE_URL.
+A helper is pre-loaded at /home/user/db.py — use `from db import get_connection`
+to get a psycopg2 connection with the correct organization scope.
+
+Use this for:
+- Complex data analysis that goes beyond a single SQL query
+- Writing and executing scripts (Python, bash, Node.js, etc.)
+- Installing and using CLI tools or libraries
+- Multi-step computations where you iterate on results
+- Generating charts, files, or reports programmatically
+
+Examples:
+  "pip install pandas matplotlib"
+  "python3 -c \\"import pandas as pd; from db import get_connection; df = pd.read_sql('SELECT * FROM deals', get_connection()); print(df.describe())\\""
+  "cat > analysis.py << 'EOF'\\nimport pandas as pd\\n...\\nEOF"
+  "python3 analysis.py"
+
+Files saved to /home/user/output/ are returned as downloadable artifacts.""",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "command": {
+                "type": "string",
+                "description": "Shell command to execute in the sandbox",
+            },
+        },
+        "required": ["command"],
+    },
+    category=ToolCategory.LOCAL_READ,
+    default_requires_approval=True,
+)
+
+
 # -----------------------------------------------------------------------------
 # LOCAL_WRITE Tools - Tracked in change sessions, reversible
 # -----------------------------------------------------------------------------
@@ -879,6 +921,85 @@ Set max_concurrent=1 for sequential execution, higher for parallel. Blocks until
 # -----------------------------------------------------------------------------
 # Workflow Notes Tool - Save workflow-scoped notes shared across runs
 # -----------------------------------------------------------------------------
+
+register_tool(
+    name="create_app",
+    description="""Create an interactive mini-app that queries data and renders it with React.
+
+Use this when the user asks for a dashboard, interactive chart, or data view with controls
+(dropdowns, date pickers, filters, etc.) that should refresh when the user changes them.
+
+The app has two parts:
+1. **queries** (server-side): Named parameterized SQL queries. These stay on the server and are never exposed to the browser.
+2. **frontend_code** (client-side): React JSX code that renders the UI and calls the queries via the SDK.
+
+The React code runs in a sandboxed iframe with these pre-bundled packages:
+- react, react-dom (hooks: useState, useEffect, useCallback, useMemo, useRef)
+- react-plotly.js (import Plot from "react-plotly.js")
+- @revtops/app-sdk (useAppQuery, useDateRange, Spinner, ErrorBanner)
+
+**SDK API:**
+- useAppQuery(queryName, params) → { data, columns, loading, error, refetch }
+  - queryName: must match a key in the queries object
+  - params: object with values for the SQL :placeholders
+  - data: array of row objects, e.g. [{region: "West", revenue: 50000}, ...]
+- useDateRange(period) → { start, end } (ISO date strings)
+  - period: "last_7d", "last_30d", "last_90d", "last_quarter", "this_quarter", "ytd", "last_year", "this_year"
+- Spinner — loading spinner component
+- ErrorBanner({ message }) — error display component
+
+**Query params:**
+Each query declares its params with name, type, and required flag. The SDK sends
+param values to the server, where they are bound via parameterized queries (safe from injection).
+
+**Rules:**
+- All SQL must be SELECT-only. No INSERT/UPDATE/DELETE.
+- Do NOT add organization_id to WHERE clauses (RLS handles it).
+- frontend_code must export a default React component.
+- Use Tailwind-style inline CSS or the provided dark-theme base styles.
+- Keep the code concise — one file, one default export.
+
+**Example:**
+{
+  "title": "Revenue by Region",
+  "description": "Bar chart showing revenue by region with time period filter",
+  "queries": {
+    "revenue_data": {
+      "sql": "SELECT custom_fields->>'region' as region, SUM(amount) as revenue FROM deals WHERE close_date >= :start_date AND close_date <= :end_date AND stage = 'Closed Won' GROUP BY 1 ORDER BY revenue DESC",
+      "params": {
+        "start_date": { "type": "date", "required": true },
+        "end_date": { "type": "date", "required": true }
+      }
+    }
+  },
+  "frontend_code": "import { useState } from 'react';\\nimport { useAppQuery, useDateRange, Spinner, ErrorBanner } from '@revtops/app-sdk';\\nimport Plot from 'react-plotly.js';\\n\\nexport default function App() {\\n  const [period, setPeriod] = useState('last_quarter');\\n  const { start, end } = useDateRange(period);\\n  const { data, loading, error } = useAppQuery('revenue_data', { start_date: start, end_date: end });\\n\\n  return (\\n    <div style={{padding:'1rem'}}>\\n      <select value={period} onChange={e => setPeriod(e.target.value)}>\\n        <option value='last_30d'>Last 30 Days</option>\\n        <option value='last_quarter'>Last Quarter</option>\\n        <option value='ytd'>Year to Date</option>\\n      </select>\\n      {loading && <Spinner />}\\n      {error && <ErrorBanner message={error} />}\\n      {data && <Plot data={[{type:'bar', x:data.map(r=>r.region), y:data.map(r=>r.revenue)}]} layout={{title:'Revenue by Region', autosize:true, paper_bgcolor:'transparent', plot_bgcolor:'transparent', font:{color:'#a1a1aa'}}} style={{width:'100%',height:'400px'}} config={{responsive:true}} />}\\n    </div>\\n  );\\n}"
+}""",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "title": {
+                "type": "string",
+                "description": "Display title for the app",
+            },
+            "description": {
+                "type": "string",
+                "description": "Brief description of what the app shows",
+            },
+            "queries": {
+                "type": "object",
+                "description": "Named SQL queries. Each key is a query name, value is {sql, params}. SQL must be SELECT-only.",
+            },
+            "frontend_code": {
+                "type": "string",
+                "description": "React JSX code (single file). Must export default component. Uses @revtops/app-sdk hooks.",
+            },
+        },
+        "required": ["title", "queries", "frontend_code"],
+    },
+    category=ToolCategory.LOCAL_WRITE,
+    default_requires_approval=False,
+)
+
 
 register_tool(
     name="keep_notes",

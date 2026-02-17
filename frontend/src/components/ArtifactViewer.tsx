@@ -18,15 +18,18 @@ import remarkGfm from "remark-gfm";
 import { apiRequest, API_BASE } from "../lib/api";
 import { formatDateOnly } from "../lib/dates";
 import { supabase } from "../lib/supabase";
+import { SandpackAppRenderer } from "./apps/SandpackAppRenderer";
 
 // New file-based artifact format
 interface FileArtifact {
   id: string;
   title: string;
   filename: string;
-  contentType: "text" | "markdown" | "pdf" | "chart";
+  contentType: "text" | "markdown" | "pdf" | "chart" | "app";
   mimeType: string;
   content?: string;
+  /** For app artifacts: the React source code from config.frontend_code */
+  frontendCode?: string;
 }
 
 // Legacy data artifact format
@@ -40,6 +43,8 @@ interface DataArtifact {
 interface ArtifactViewerProps {
   artifact: FileArtifact | DataArtifact;
   onDownload?: () => void;
+  /** For app artifacts: called when the user clicks "Fix it" on a compile error */
+  onAppError?: (errorMessage: string) => void;
 }
 
 // Type guard to check if artifact is file-based
@@ -50,6 +55,7 @@ function isFileArtifact(artifact: FileArtifact | DataArtifact): artifact is File
 export function ArtifactViewer({
   artifact,
   onDownload,
+  onAppError,
 }: ArtifactViewerProps): JSX.Element {
   const [content, setContent] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(false);
@@ -139,37 +145,41 @@ export function ArtifactViewer({
   if (isFileArtifact(artifact)) {
     return (
       <div className="h-full flex flex-col">
-        {/* Header with download button */}
+        {/* Header */}
         <div className="flex items-center justify-between mb-4 pb-3 border-b border-surface-700">
           <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-surface-700 text-surface-300">
             {getContentTypeLabel(artifact.contentType)}
           </span>
-          <div className="relative">
-            <button
-              onClick={() => setShowDownloadMenu(!showDownloadMenu)}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-primary-600 hover:bg-primary-500 text-white text-sm font-medium transition-colors"
-            >
-              <DownloadIcon />
-              Download
-              <ChevronDownIcon />
-            </button>
-            {showDownloadMenu && (
-              <div className="absolute right-0 mt-1 w-36 rounded-md bg-surface-800 border border-surface-700 shadow-lg z-10">
-                <button
-                  onClick={() => handleDownload("markdown")}
-                  className="flex items-center gap-2 w-full px-3 py-2 text-sm text-surface-200 hover:bg-surface-700 transition-colors"
-                >
-                  Markdown
-                </button>
-                <button
-                  onClick={() => handleDownload("pdf")}
-                  className="flex items-center gap-2 w-full px-3 py-2 text-sm text-surface-200 hover:bg-surface-700 transition-colors"
-                >
-                  PDF
-                </button>
-              </div>
-            )}
-          </div>
+          {artifact.contentType === "app" ? (
+            <AppHeaderActions artifactId={artifact.id} />
+          ) : (
+            <div className="relative">
+              <button
+                onClick={() => setShowDownloadMenu(!showDownloadMenu)}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-primary-600 hover:bg-primary-500 text-white text-sm font-medium transition-colors"
+              >
+                <DownloadIcon />
+                Download
+                <ChevronDownIcon />
+              </button>
+              {showDownloadMenu && (
+                <div className="absolute right-0 mt-1 w-36 rounded-md bg-surface-800 border border-surface-700 shadow-lg z-10">
+                  <button
+                    onClick={() => handleDownload("markdown")}
+                    className="flex items-center gap-2 w-full px-3 py-2 text-sm text-surface-200 hover:bg-surface-700 transition-colors"
+                  >
+                    Markdown
+                  </button>
+                  <button
+                    onClick={() => handleDownload("pdf")}
+                    className="flex items-center gap-2 w-full px-3 py-2 text-sm text-surface-200 hover:bg-surface-700 transition-colors"
+                  >
+                    PDF
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Content area */}
@@ -186,7 +196,16 @@ export function ArtifactViewer({
             </div>
           )}
 
-          {!loading && !error && content && (
+          {/* App artifacts render via Sandpack – no content fetch needed */}
+          {artifact.contentType === "app" && artifact.frontendCode && (
+            <SandpackAppRenderer
+              appId={artifact.id}
+              frontendCode={artifact.frontendCode}
+              onError={onAppError}
+            />
+          )}
+
+          {!loading && !error && content && artifact.contentType !== "app" && (
             <>
               {artifact.contentType === "text" && (
                 <TextViewer content={content} onCopy={handleCopy} copied={copied} />
@@ -521,9 +540,59 @@ function getContentTypeLabel(contentType: string): string {
       return "PDF Document";
     case "chart":
       return "Interactive Chart";
+    case "app":
+      return "Interactive App";
     default:
       return "File";
   }
+}
+
+/** Share / Embed actions for app artifacts (replaces the Download button). */
+function AppHeaderActions({ artifactId }: { artifactId: string }): JSX.Element {
+  const [linkCopied, setLinkCopied] = useState<boolean>(false);
+  const [embedCopied, setEmbedCopied] = useState<boolean>(false);
+
+  const handleCopyLink = async (): Promise<void> => {
+    const url: string = `${window.location.origin}/apps/${artifactId}`;
+    await navigator.clipboard.writeText(url);
+    setLinkCopied(true);
+    setTimeout(() => setLinkCopied(false), 2000);
+  };
+
+  const handleEmbed = async (): Promise<void> => {
+    const resp = await apiRequest<{ embed_url: string }>(`/apps/${artifactId}/embed-token`, {
+      method: "POST",
+    });
+    if (resp.data) {
+      const snippet: string = `<iframe src="${resp.data.embed_url}" width="100%" height="600" frameborder="0"></iframe>`;
+      await navigator.clipboard.writeText(snippet);
+      setEmbedCopied(true);
+      setTimeout(() => setEmbedCopied(false), 2000);
+    }
+  };
+
+  return (
+    <div className="flex items-center gap-1.5">
+      <button
+        onClick={() => void handleCopyLink()}
+        className="flex items-center gap-1 px-2.5 py-1 rounded-md bg-surface-700 hover:bg-surface-600 text-surface-300 text-xs font-medium transition-colors"
+      >
+        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+        </svg>
+        {linkCopied ? "Copied!" : "Share"}
+      </button>
+      <button
+        onClick={() => void handleEmbed()}
+        className="flex items-center gap-1 px-2.5 py-1 rounded-md bg-surface-700 hover:bg-surface-600 text-surface-300 text-xs font-medium transition-colors"
+      >
+        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
+        </svg>
+        {embedCopied ? "Copied!" : "Embed"}
+      </button>
+    </div>
+  );
 }
 
 function DownloadIcon(): JSX.Element {

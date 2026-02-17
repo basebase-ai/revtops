@@ -107,6 +107,14 @@ class Settings(BaseSettings):
     # ScrapingBee (for fetch_url tool - web scraping with proxy support)
     SCRAPINGBEE_API_KEY: Optional[str] = None
 
+    # E2B (sandboxed code execution for execute_command tool)
+    E2B_API_KEY: Optional[str] = None
+
+    @property
+    def sandbox_database_url(self) -> str:
+        """Sync Postgres URL for E2B sandbox (strips SQLAlchemy asyncpg prefix)."""
+        return self.DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://")
+
     class Config:
         env_file = str(_env_file)
         env_file_encoding = "utf-8"

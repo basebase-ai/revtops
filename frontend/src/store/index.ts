@@ -122,8 +122,10 @@ export interface ArtifactBlock {
     id: string;
     title: string;
     filename: string;
-    contentType: "text" | "markdown" | "pdf" | "chart";
+    contentType: "text" | "markdown" | "pdf" | "chart" | "app";
     mimeType: string;
+    /** For app artifacts: the React source code from config.frontend_code */
+    frontendCode?: string;
   };
 }
 
@@ -160,6 +162,8 @@ export type View =
   | "data"
   | "search"
   | "workflows"
+  | "apps"
+  | "app-view"
   | "admin"
   | "pending-changes";
 
@@ -219,6 +223,7 @@ interface AppState {
   sidebarCollapsed: boolean;
   currentView: View;
   currentChatId: string | null;
+  currentAppId: string | null;
   recentChats: ChatSummary[];
   pinnedChatIds: string[];
   pendingChatInput: string | null; // Pre-filled input for new chats
@@ -266,6 +271,7 @@ interface AppState {
   setSidebarCollapsed: (collapsed: boolean) => void;
   setCurrentView: (view: View) => void;
   setCurrentChatId: (id: string | null) => void;
+  setCurrentAppId: (id: string | null) => void;
   startNewChat: () => void;
   setPendingChatInput: (input: string | null) => void;
   setPendingChatAutoSend: (autoSend: boolean) => void;
@@ -365,6 +371,7 @@ export const useAppStore = create<AppState>()(
       sidebarCollapsed: false,
       currentView: "home",
       currentChatId: null,
+      currentAppId: null,
       recentChats: [],
       pinnedChatIds: [],
       pendingChatInput: null,
@@ -649,6 +656,7 @@ export const useAppStore = create<AppState>()(
           ...(currentView !== "chat" ? { currentChatId: null } : {}),
         }),
       setCurrentChatId: (currentChatId) => set({ currentChatId }),
+      setCurrentAppId: (currentAppId) => set({ currentAppId }),
       startNewChat: () => set({ currentChatId: null, currentView: "chat" }),
       setPendingChatInput: (pendingChatInput) => set({ pendingChatInput }),
       setPendingChatAutoSend: (pendingChatAutoSend) =>
