@@ -39,7 +39,6 @@ import { Sidebar } from './Sidebar';
 import { Home } from './Home';
 import { DataSources } from './DataSources';
 import { Data } from './Data';
-import { Search } from './Search';
 import { Chat } from './Chat';
 import { Workflows } from './Workflows';
 import { Memories } from './Memories';
@@ -276,7 +275,6 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
       '/chat': 'chat',
       '/sources': 'data-sources',
       '/data': 'data',
-      '/search': 'search',
       '/workflows': 'workflows',
       '/memory': 'memory',
       '/apps': 'apps',
@@ -326,7 +324,6 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
         'chat': '/chat',
         'data-sources': '/sources',
         'data': '/data',
-        'search': '/search',
         'workflows': '/workflows',
         'apps': '/apps',
         'app-view': '/apps',
@@ -764,7 +761,7 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
     const handleNavigate = (event: Event): void => {
       const customEvent = event as CustomEvent<string>;
       if (customEvent.detail) {
-        setCurrentView(customEvent.detail as 'home' | 'chat' | 'data-sources' | 'search' | 'workflows' | 'memory' | 'admin');
+        setCurrentView(customEvent.detail as 'home' | 'chat' | 'data-sources' | 'data' | 'workflows' | 'memory' | 'admin');
       }
     };
     window.addEventListener('navigate', handleNavigate);
@@ -794,7 +791,6 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
     home: 'Home',
     chat: 'Chat',
     'data-sources': 'Data Sources',
-    search: 'Search',
     workflows: 'Workflows',
     memory: 'Memory',
     admin: 'Admin',
@@ -917,9 +913,6 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
         )}
         {currentView === 'data' && (
           <Data />
-        )}
-        {currentView === 'search' && (
-          <Search organizationId={organization.id} />
         )}
         {currentView === 'workflows' && (
           <Workflows />
