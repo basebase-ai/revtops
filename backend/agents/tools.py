@@ -2,7 +2,7 @@
 Tool definitions and execution for Claude.
 
 Tools are organized by category (see registry.py):
-- LOCAL_READ: run_sql_query, search_activities, execute_command
+- LOCAL_READ: run_sql_query, execute_command
 - LOCAL_WRITE: create_artifact, run_sql_write, run_workflow
 - EXTERNAL_READ: web_search, fetch_url, enrich_with_apollo, search_system_of_record
 - EXTERNAL_WRITE: write_to_system_of_record, send_email_from, send_slack, trigger_sync
@@ -26,6 +26,7 @@ from sqlalchemy import select, text
 
 from config import settings
 from models.account import Account
+from models.app import App
 from models.artifact import Artifact
 from models.contact import Contact
 from models.pending_operation import PendingOperation, CrmOperation  # CrmOperation is alias
@@ -256,7 +257,6 @@ async def execute_tool(
     tool_handlers: dict[str, Callable[[], Awaitable[dict[str, Any]]]] = {
         "run_sql_query": lambda: _run_sql_query(tool_input, organization_id, user_id),
         "run_sql_write": lambda: _run_sql_write(tool_input, organization_id, user_id, context),
-        "search_activities": lambda: _search_activities(tool_input, organization_id, user_id),
         "web_search": lambda: _web_search(tool_input),
         "run_workflow": lambda: _run_workflow(tool_input, organization_id, user_id, context),
         "fetch_url": lambda: _fetch_url(tool_input),
@@ -311,8 +311,6 @@ def _log_tool_execution_result(
     """Centralize tool execution logging so execute_tool remains easy to scan."""
     if executed_tool_name == "run_sql_query":
         logger.info("[Tools] run_sql_query returned %d rows", result.get("row_count", 0))
-    elif executed_tool_name == "search_activities":
-        logger.info("[Tools] search_activities returned %d results", len(result.get("results", [])))
     elif executed_tool_name == "foreach":
         logger.info(
             "[Tools] foreach completed: %d/%d successful",
@@ -421,52 +419,93 @@ def _serialize_value(value: Any) -> Any:
     return str(value)
 
 
+# Regex matching semantic_embed('...') placeholders in SQL.
+# The agent writes these; we replace them with real embedding vectors before execution.
+_SEMANTIC_EMBED_RE = re.compile(
+    r"semantic_embed\(\s*'((?:[^'\\]|\\')*)'\s*\)", re.IGNORECASE
+)
+
+
+async def _resolve_semantic_embeds(query: str) -> tuple[str, str | None]:
+    """Replace ``semantic_embed('text')`` placeholders with pgvector literals.
+
+    Returns (resolved_query, error_or_none).
+    """
+    matches: list[re.Match[str]] = list(_SEMANTIC_EMBED_RE.finditer(query))
+    if not matches:
+        return query, None
+
+    try:
+        from services.embeddings import get_embedding_service
+
+        svc = get_embedding_service()
+    except ValueError:
+        return query, (
+            "semantic_embed() requires OPENAI_API_KEY to be configured. "
+            "Use ILIKE for text search instead."
+        )
+
+    texts: list[str] = [m.group(1).replace("\\'", "'") for m in matches]
+    embeddings: list[list[float]] = await svc.generate_embeddings_batch(texts)
+
+    resolved: str = query
+    for match, embedding in zip(reversed(matches), reversed(embeddings)):
+        vec_literal: str = "'[" + ",".join(str(v) for v in embedding) + "]'::vector"
+        resolved = resolved[: match.start()] + vec_literal + resolved[match.end() :]
+
+    return resolved, None
+
+
 async def _run_sql_query(
     params: dict[str, Any], organization_id: str, user_id: str | None
 ) -> dict[str, Any]:
     """
     Execute a read-only SQL query with Row-Level Security (RLS).
-    
-    RLS is enforced at the database level via policies that check 
+
+    RLS is enforced at the database level via policies that check
     `app.current_org_id` session variable. This handles all query patterns
     automatically (JOINs, subqueries, CTEs, etc.) without fragile SQL parsing.
+
+    Supports ``semantic_embed('text')`` as an inline placeholder that is
+    resolved to a real embedding vector before execution, enabling semantic
+    search directly via SQL (e.g. ORDER BY embedding <=> semantic_embed('...')).
     """
-    query = params.get("query", "").strip()
-    
+    query: str = (params.get("query") or "").strip()
+
     if not query:
         return {"error": "No query provided"}
-    
+
     logger.info("[Tools._run_sql_query] Query: %s", query)
-    
+
     # Validate query is safe (SELECT only, no dangerous keywords)
     is_valid, error = _validate_sql_query(query)
     if not is_valid:
         logger.warning("[Tools._run_sql_query] Query validation failed: %s", error)
         return {"error": error}
-    
+
     # Extract tables and validate they're in the allowed list
-    tables = _extract_tables_from_query(query)
+    tables: set[str] = _extract_tables_from_query(query)
     logger.debug("[Tools._run_sql_query] Detected tables: %s", tables)
-    
-    disallowed = tables - ALLOWED_TABLES
+
+    disallowed: set[str] = tables - ALLOWED_TABLES
     if disallowed:
         return {"error": f"Access to tables not allowed: {disallowed}"}
-    
+
+    # Resolve semantic_embed('...') placeholders into real vectors
+    final_query, embed_error = await _resolve_semantic_embeds(query)
+    if embed_error is not None:
+        return {"error": embed_error}
+
     # Add LIMIT if not present to prevent huge result sets
-    final_query = query
     if not re.search(r'\bLIMIT\b', final_query, re.IGNORECASE):
         final_query = final_query.rstrip(';') + " LIMIT 100"
-    
+
     try:
         async with get_session(organization_id=organization_id) as session:
-            # Execute the query - RLS automatically filters by organization
-            # (organization_id context is already set by get_session)
             result = await session.execute(text(final_query))
             rows = result.fetchall()
-            columns = list(result.keys())
-            
-            # Convert to list of dicts with consistent serialization
-            # All datetimes are formatted as ISO 8601 with Z suffix (UTC)
+            columns: list[str] = list(result.keys())
+
             data: list[dict[str, Any]] = []
             for row in rows:
                 row_dict: dict[str, Any] = {
@@ -474,9 +513,9 @@ async def _run_sql_query(
                     for i, col in enumerate(columns)
                 }
                 data.append(row_dict)
-            
+
             logger.info("[Tools._run_sql_query] Query returned %d rows", len(data))
-            
+
             return {
                 "columns": columns,
                 "rows": data,
@@ -1173,52 +1212,6 @@ async def _handle_crm_write_from_sql(
         "success_count": result.get("success_count", 0),
         "message": f"Added {result.get('success_count', 0)} {record_type}(s) to pending changes. Commit or discard in the bar below when ready.",
     }
-
-
-async def _search_activities(
-    params: dict[str, Any], organization_id: str, user_id: str | None
-) -> dict[str, Any]:
-    """Execute semantic search across activities."""
-    query = params.get("query", "").strip()
-    
-    if not query:
-        return {"error": "No search query provided"}
-    
-    activity_types = params.get("types")
-    limit = min(params.get("limit", 10), 50)  # Cap at 50
-    
-    try:
-        from services.embedding_sync import search_activities_by_embedding
-        
-        results = await search_activities_by_embedding(
-            organization_id=organization_id,
-            query_text=query,
-            limit=limit,
-            activity_types=activity_types,
-        )
-        
-        if not results:
-            return {
-                "results": [],
-                "message": "No matching activities found. Activities may not have embeddings yet - try syncing data first.",
-            }
-        
-        return {
-            "results": results,
-            "count": len(results),
-            "query": query,
-        }
-        
-    except ValueError as e:
-        # OpenAI API key not configured
-        logger.warning("[Tools._search_activities] Embedding service not available: %s", e)
-        return {
-            "error": "Semantic search is not configured. OPENAI_API_KEY may be missing.",
-            "suggestion": "Use run_sql_query with ILIKE for text search instead.",
-        }
-    except Exception as e:
-        logger.error("[Tools._search_activities] Search failed: %s", str(e))
-        return {"error": f"Search failed: {str(e)}"}
 
 
 def _web_search_normalized_error(
@@ -4742,53 +4735,40 @@ async def _create_app(
     if errors:
         return {"error": "SQL validation failed:\n" + "\n".join(errors)}
 
-    # Store as Artifact
-    artifact_id: str = str(uuid4())
+    # Store as App (dedicated table, separate from artifacts)
+    app_id: str = str(uuid4())
     message_id: str | None = context.get("message_id") if context else None
     conversation_id: str | None = (context or {}).get("conversation_id")
 
-    config: dict[str, Any] = {
-        "version": 1,
-        "queries": queries,
-        "frontend_code": frontend_code,
-    }
-
     async with get_session(organization_id=organization_id) as session:
-        artifact = Artifact(
-            id=artifact_id,
+        app = App(
+            id=app_id,
             user_id=user_id,
             organization_id=organization_id,
-            type="app",
             title=title,
             description=description,
-            config=config,
-            is_live=True,
-            content_type="app",
-            mime_type="application/json",
-            filename=f"{title.lower().replace(' ', '_')}.app",
+            queries=queries,
+            frontend_code=frontend_code,
             conversation_id=UUID(conversation_id) if conversation_id else None,
             message_id=message_id,
         )
-        session.add(artifact)
+        session.add(app)
         await session.commit()
 
         logger.info(
             "[Tools._create_app] Created app: id=%s, title=%s, queries=%s",
-            artifact_id,
+            app_id,
             title,
             list(queries.keys()),
         )
 
-    filename: str = f"{title.lower().replace(' ', '_')}.app"
     return {
         "status": "success",
-        "artifact_id": artifact_id,
-        "artifact": {
-            "id": artifact_id,
+        "app_id": app_id,
+        "app": {
+            "id": app_id,
             "title": title,
-            "filename": filename,
-            "contentType": "app",
-            "mimeType": "application/json",
+            "description": description,
             "frontendCode": frontend_code,
         },
         "message": f"Created interactive app: {title}",

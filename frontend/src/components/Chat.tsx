@@ -15,12 +15,15 @@ import remarkGfm from 'remark-gfm';
 
 import { ArtifactViewer, type FileArtifact } from './ArtifactViewer';
 import { ArtifactTile } from './ArtifactTile';
+import { AppTile } from './apps/AppTile';
+import { AppViewer } from './apps/AppViewer';
 import { PendingApprovalCard, type ApprovalResult } from './PendingApprovalCard';
 import { getConversation, uploadChatFile, type UploadResponse } from '../api/client';
 import { crossTab } from '../lib/crossTab';
 import { 
   useAppStore,
   useConversationState,
+  type AppBlock,
   type ChatMessage,
   type ToolCallData,
   type ToolUseBlock,
@@ -99,6 +102,7 @@ export function Chat({
   // Local state
   const [input, setInput] = useState<string>('');
   const [currentArtifact, setCurrentArtifact] = useState<AnyArtifact | null>(null);
+  const [currentApp, setCurrentApp] = useState<AppBlock["app"] | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [selectedToolCall, setSelectedToolCall] = useState<ToolCallData | null>(null);
   const [toolApprovals, setToolApprovals] = useState<Map<string, ToolApprovalState>>(new Map());
@@ -786,7 +790,7 @@ export function Chat({
       {/* Content area with messages and optional artifact sidebar */}
       <div className="flex-1 flex overflow-hidden">
         {/* Messages */}
-        <div ref={messagesContainerRef} className={`overflow-y-auto overflow-x-hidden p-3 md:p-6 ${currentArtifact ? 'w-1/2' : 'flex-1'}`}>
+        <div ref={messagesContainerRef} className={`overflow-y-auto overflow-x-hidden p-3 md:p-6 ${currentArtifact || currentApp ? 'w-1/2' : 'flex-1'}`}>
           {messages.length === 0 && !isThinking ? (
             conversationType === 'workflow' ? (
               // Show loading state for workflow conversations waiting for agent to start
@@ -817,6 +821,7 @@ export function Chat({
                   message={msg}
                   toolApprovals={toolApprovals}
                   onArtifactClick={setCurrentArtifact}
+                  onAppClick={(app: AppBlock["app"]) => { setCurrentApp(app); setCurrentArtifact(null); }}
                   onToolApprove={handleToolApprove}
                   onToolCancel={handleToolCancel}
                   onToolClick={(block) => setSelectedToolCall({
@@ -867,13 +872,38 @@ export function Chat({
                   </svg>
                 </button>
               </div>
-              <ArtifactViewer
-                artifact={currentArtifact}
+              <ArtifactViewer artifact={currentArtifact} />
+            </div>
+          </>
+        )}
+
+        {/* App sidebar - overlay on mobile, sidebar on desktop */}
+        {currentApp && (
+          <>
+            <div
+              className="fixed inset-0 bg-black/50 z-40 md:hidden"
+              onClick={() => setCurrentApp(null)}
+            />
+            <div className="fixed inset-y-0 right-0 w-full max-w-md z-50 md:relative md:w-1/2 md:z-auto border-l border-surface-800 bg-surface-900 p-4 overflow-y-auto">
+              <div className="flex items-center justify-between mb-2">
+                <h2 className="text-lg font-semibold text-surface-100 truncate">
+                  {currentApp.title}
+                </h2>
+                <button
+                  onClick={() => setCurrentApp(null)}
+                  className="text-surface-400 hover:text-surface-200 p-1 -mr-1"
+                >
+                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+              <AppViewer
+                app={currentApp}
                 onAppError={(errorMsg: string) => {
-                  // Send the error to Penny as a user message to trigger a fix
-                  const fixPrompt: string = `The app "${currentArtifact.title}" has a compile/runtime error. Please fix it and create an updated version.\n\nError:\n\`\`\`\n${errorMsg}\n\`\`\``;
+                  const fixPrompt: string = `The app "${currentApp.title}" has a compile/runtime error. Please fix it and create an updated version.\n\nError:\n\`\`\`\n${errorMsg}\n\`\`\``;
                   sendChatMessage(fixPrompt, 'input');
-                  setCurrentArtifact(null);
+                  setCurrentApp(null);
                 }}
               />
             </div>
@@ -996,6 +1026,7 @@ function MessageWithBlocks({
   message,
   toolApprovals,
   onArtifactClick,
+  onAppClick,
   onToolApprove,
   onToolCancel,
   onToolClick,
@@ -1003,6 +1034,7 @@ function MessageWithBlocks({
   message: ChatMessage;
   toolApprovals: Map<string, { operationId: string; toolName: string; isProcessing: boolean; result: unknown }>;
   onArtifactClick: (artifact: AnyArtifact) => void;
+  onAppClick: (app: AppBlock["app"]) => void;
   onToolApprove: (operationId: string, options?: Record<string, unknown>) => void;
   onToolCancel: (operationId: string) => void;
   onToolClick: (block: ToolUseBlock) => void;
@@ -1169,6 +1201,16 @@ function MessageWithBlocks({
               </div>
             );
           }
+          if (block.type === 'app') {
+            return (
+              <div key={`app-${block.app.id}`} className="my-2">
+                <AppTile
+                  app={block.app}
+                  onClick={() => onAppClick(block.app)}
+                />
+              </div>
+            );
+          }
           return null;
         })}
         
@@ -1311,16 +1353,6 @@ function getToolStatusText(
         return `Searched the web for '${truncatedQuery}'${sourceText}`;
       }
       return `Searching the web for '${truncatedQuery}'...`;
-    }
-    case 'search_activities': {
-      const query = typeof input?.query === 'string' ? input.query : '';
-      const truncatedQuery = query.length > 40 ? query.slice(0, 40) + '...' : query;
-      if (isComplete) {
-        const count = typeof result?.count === 'number' ? result.count : 0;
-        const countText = ` (${count} result${count === 1 ? '' : 's'})`;
-        return `Searched activities for '${truncatedQuery}'${countText}`;
-      }
-      return `Searching activities for '${truncatedQuery}'...`;
     }
     case 'run_sql_query': {
       // Extract table names from the SQL query for a more descriptive message

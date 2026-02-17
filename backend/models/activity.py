@@ -7,7 +7,8 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Optional
 
-from sqlalchemy import DateTime, ForeignKey, Index, LargeBinary, String, Text, text
+from pgvector.sqlalchemy import Vector
+from sqlalchemy import DateTime, ForeignKey, Index, String, Text, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -84,7 +85,7 @@ class Activity(Base):
     
     # Semantic search fields
     searchable_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    embedding: Mapped[Optional[bytes]] = mapped_column(LargeBinary, nullable=True)
+    embedding: Mapped[Optional[list[float]]] = mapped_column(Vector(1536), nullable=True)
     
     # Change tracking columns (for local modifications)
     updated_at: Mapped[Optional[datetime]] = mapped_column(

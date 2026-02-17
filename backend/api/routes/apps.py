@@ -25,7 +25,7 @@ from sqlalchemy import select, text
 
 from api.auth_middleware import AuthContext, require_organization
 from config import settings
-from models.artifact import Artifact
+from models.app import App
 from models.database import get_session, get_admin_session
 from models.user import User
 
@@ -170,13 +170,10 @@ async def create_app_token(
     assert auth.organization_id_str is not None
     async with get_session(organization_id=auth.organization_id_str) as session:
         result = await session.execute(
-            select(Artifact).where(
-                Artifact.id == app_uuid,
-                Artifact.type == "app",
-            )
+            select(App).where(App.id == app_uuid)
         )
-        artifact: Artifact | None = result.scalar_one_or_none()
-        if artifact is None:
+        app: App | None = result.scalar_one_or_none()
+        if app is None:
             raise HTTPException(status_code=404, detail="App not found")
 
     token, expires = _mint_app_token(app_id, auth.organization_id_str)
@@ -226,17 +223,13 @@ async def execute_app_query(
 
     async with get_session(organization_id=organization_id) as session:
         result = await session.execute(
-            select(Artifact).where(
-                Artifact.id == app_uuid,
-                Artifact.type == "app",
-            )
+            select(App).where(App.id == app_uuid)
         )
-        artifact: Artifact | None = result.scalar_one_or_none()
-        if artifact is None:
+        app: App | None = result.scalar_one_or_none()
+        if app is None:
             raise HTTPException(status_code=404, detail="App not found")
 
-        config: dict[str, Any] = artifact.config or {}
-        queries: dict[str, Any] = config.get("queries", {})
+        queries: dict[str, Any] = app.queries or {}
         query_spec: dict[str, Any] | None = queries.get(query_name)
 
         if query_spec is None:
@@ -300,13 +293,11 @@ async def list_apps(
     assert auth.organization_id_str is not None
     async with get_session(organization_id=auth.organization_id_str) as session:
         result = await session.execute(
-            select(Artifact)
-            .where(Artifact.type == "app")
-            .order_by(Artifact.created_at.desc())
+            select(App).order_by(App.created_at.desc())
         )
-        artifacts: list[Artifact] = list(result.scalars().all())
+        apps: list[App] = list(result.scalars().all())
 
-        user_ids: set[UUID] = {a.user_id for a in artifacts}
+        user_ids: set[UUID] = {a.user_id for a in apps}
         users_map: dict[UUID, User] = {}
         if user_ids:
             async with get_admin_session() as admin_sess:
@@ -317,7 +308,7 @@ async def list_apps(
                     users_map[u.id] = u
 
         items: list[AppListItem] = []
-        for a in artifacts:
+        for a in apps:
             creator: User | None = users_map.get(a.user_id)
             items.append(
                 AppListItem(
@@ -348,26 +339,21 @@ async def get_app(
     assert auth.organization_id_str is not None
     async with get_session(organization_id=auth.organization_id_str) as session:
         result = await session.execute(
-            select(Artifact).where(
-                Artifact.id == app_uuid,
-                Artifact.type == "app",
-            )
+            select(App).where(App.id == app_uuid)
         )
-        artifact: Artifact | None = result.scalar_one_or_none()
-        if artifact is None:
+        app: App | None = result.scalar_one_or_none()
+        if app is None:
             raise HTTPException(status_code=404, detail="App not found")
 
-        config: dict[str, Any] = artifact.config or {}
-
         return {
-            "id": str(artifact.id),
-            "title": artifact.title,
-            "description": artifact.description,
-            "frontend_code": config.get("frontend_code", ""),
-            "query_names": list(config.get("queries", {}).keys()),
-            "conversation_id": str(artifact.conversation_id) if artifact.conversation_id else None,
-            "created_at": f"{artifact.created_at.isoformat()}Z" if artifact.created_at else None,
-            "user_id": str(artifact.user_id),
+            "id": str(app.id),
+            "title": app.title,
+            "description": app.description,
+            "frontend_code": app.frontend_code,
+            "query_names": list((app.queries or {}).keys()),
+            "conversation_id": str(app.conversation_id) if app.conversation_id else None,
+            "created_at": f"{app.created_at.isoformat()}Z" if app.created_at else None,
+            "user_id": str(app.user_id),
         }
 
 
@@ -400,20 +386,16 @@ async def get_app_embed_data(
 
     async with get_session(organization_id=organization_id) as session:
         result = await session.execute(
-            select(Artifact).where(
-                Artifact.id == app_uuid,
-                Artifact.type == "app",
-            )
+            select(App).where(App.id == app_uuid)
         )
-        artifact: Artifact | None = result.scalar_one_or_none()
-        if artifact is None:
+        app: App | None = result.scalar_one_or_none()
+        if app is None:
             raise HTTPException(status_code=404, detail="App not found")
 
-        config: dict[str, Any] = artifact.config or {}
         return {
-            "id": str(artifact.id),
-            "title": artifact.title,
-            "frontend_code": config.get("frontend_code", ""),
+            "id": str(app.id),
+            "title": app.title,
+            "frontend_code": app.frontend_code,
         }
 
 
@@ -431,13 +413,10 @@ async def create_embed_token(
     assert auth.organization_id_str is not None
     async with get_session(organization_id=auth.organization_id_str) as session:
         result = await session.execute(
-            select(Artifact).where(
-                Artifact.id == app_uuid,
-                Artifact.type == "app",
-            )
+            select(App).where(App.id == app_uuid)
         )
-        artifact: Artifact | None = result.scalar_one_or_none()
-        if artifact is None:
+        app: App | None = result.scalar_one_or_none()
+        if app is None:
             raise HTTPException(status_code=404, detail="App not found")
 
     token, expires = _mint_app_token(

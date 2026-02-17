@@ -102,7 +102,7 @@ Available tables:
 - deals: Sales opportunities (name, amount, stage, close_date, owner_id, account_id)
 - accounts: Companies/customers (name, domain, industry, employee_count)
 - contacts: People at accounts (name, email, title, phone, account_id)
-- activities: Raw activity records - query by TYPE not source
+- activities: Raw activity records - query by TYPE not source. Has a vector embedding column for semantic search (see below)
 - pipelines: Sales pipelines (name, display_order, is_default)
 - pipeline_stages: Stages in pipelines (pipeline_id, name, probability)
 - goals: Revenue goals and quotas synced from CRM (name, target_amount, start_date, end_date, goal_type, owner_id, pipeline_id, source_system, source_id, custom_fields JSONB). Compare target_amount against deal totals to measure progress.
@@ -121,6 +121,10 @@ Available tables:
 - shared_files: Synced file metadata from cloud sources like Google Drive (external_id, source, name, mime_type, folder_path, web_view_link, file_size, source_modified_at). Filter by source (e.g. 'google_drive'). Use search_cloud_files tool instead for name-based searches.
 - temp_data: Agent-generated results and computed metrics. Flexible JSONB storage linked to entities. Columns: entity_type, entity_id, namespace, key, value (JSONB), metadata (JSONB), created_by_user_id, created_at, expires_at. Example: SELECT td.value->>'score' as confidence, d.name FROM temp_data td JOIN deals d ON d.id = td.entity_id WHERE td.namespace = 'deal_confidence'
 
+SEMANTIC SEARCH on activities: Use semantic_embed('natural language query') as an inline function to generate an embedding vector. Combine with the <=> cosine distance operator to rank by similarity.
+Example: SELECT id, type, subject, description, activity_date, 1 - (embedding <=> semantic_embed('pricing negotiations')) AS similarity FROM activities WHERE embedding IS NOT NULL ORDER BY embedding <=> semantic_embed('pricing negotiations') LIMIT 10
+You can add extra WHERE clauses (e.g. type = 'email') alongside the vector search.
+
 IMPORTANT: Do NOT add organization_id to WHERE clauses. Data is automatically scoped to the user's organization via row-level security. Adding organization_id filters will cause queries to return wrong results.
 
 IMPORTANT: Only SELECT queries are allowed. No INSERT, UPDATE, DELETE, DROP, etc.""",
@@ -130,44 +134,6 @@ IMPORTANT: Only SELECT queries are allowed. No INSERT, UPDATE, DELETE, DROP, etc
             "query": {
                 "type": "string",
                 "description": "The SQL SELECT query to execute",
-            },
-        },
-        "required": ["query"],
-    },
-    category=ToolCategory.LOCAL_READ,
-    default_requires_approval=False,
-)
-
-
-register_tool(
-    name="search_activities",
-    description="""Semantic search across emails, meetings, messages, and other activities.
-
-Use this when the user wants to find activities by meaning/concept rather than exact text.
-This searches the content of emails, meeting transcripts, messages, etc.
-
-Examples:
-- "Find emails about pricing negotiations"
-- "Search for meeting discussions about the Q4 roadmap"
-- "Look for communications about contract renewal"
-
-For exact text matching, use run_sql_query with ILIKE instead.""",
-    input_schema={
-        "type": "object",
-        "properties": {
-            "query": {
-                "type": "string",
-                "description": "Natural language search query",
-            },
-            "types": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "Filter by type: 'email', 'meeting', 'meeting_transcript', 'slack_message', 'call'",
-            },
-            "limit": {
-                "type": "integer",
-                "description": "Max results to return (default 10)",
-                "default": 10,
             },
         },
         "required": ["query"],

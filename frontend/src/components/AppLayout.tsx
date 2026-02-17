@@ -231,6 +231,7 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
   const setConversationThinking = useAppStore((state) => state.setConversationThinking);
   const updateConversationToolMessage = useAppStore((state) => state.updateConversationToolMessage);
   const addConversationArtifactBlock = useAppStore((state) => state.addConversationArtifactBlock);
+  const addConversationAppBlock = useAppStore((state) => state.addConversationAppBlock);
   
   // Mobile responsive state
   const isMobile = useIsMobile();
@@ -566,12 +567,22 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
                 id: string;
                 title: string;
                 filename: string;
-                contentType: "text" | "markdown" | "pdf" | "chart" | "app";
+                contentType: "text" | "markdown" | "pdf" | "chart";
                 mimeType: string;
-                frontendCode?: string;
               } | undefined;
               if (artifact) {
                 addConversationArtifactBlock(conversation_id, artifact);
+              }
+            } else if (data.type === 'app') {
+              // App created - add app block to the message
+              const app = data.app as {
+                id: string;
+                title: string;
+                description: string | null;
+                frontendCode: string;
+              } | undefined;
+              if (app) {
+                addConversationAppBlock(conversation_id, app);
               }
             }
           }
@@ -692,7 +703,7 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
     setActiveTasks, setConversationActiveTask, setConversationThinking,
     addConversation, addConversationMessage, appendToConversationStreaming,
     startConversationStreaming, markConversationMessageComplete, updateConversationToolMessage,
-    addConversationArtifactBlock, setCurrentChatId
+    addConversationArtifactBlock, addConversationAppBlock, setCurrentChatId
   ]);
 
   // Cross-tab sync for optimistic UI and streamed updates

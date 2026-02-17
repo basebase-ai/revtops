@@ -122,10 +122,18 @@ export interface ArtifactBlock {
     id: string;
     title: string;
     filename: string;
-    contentType: "text" | "markdown" | "pdf" | "chart" | "app";
+    contentType: "text" | "markdown" | "pdf" | "chart";
     mimeType: string;
-    /** For app artifacts: the React source code from config.frontend_code */
-    frontendCode?: string;
+  };
+}
+
+export interface AppBlock {
+  type: "app";
+  app: {
+    id: string;
+    title: string;
+    description: string | null;
+    frontendCode: string;
   };
 }
 
@@ -136,7 +144,7 @@ export interface AttachmentBlock {
   size: number;
 }
 
-export type ContentBlock = TextBlock | ToolUseBlock | ErrorBlock | ArtifactBlock | AttachmentBlock;
+export type ContentBlock = TextBlock | ToolUseBlock | ErrorBlock | ArtifactBlock | AppBlock | AttachmentBlock;
 
 // Legacy type for streaming compatibility
 export interface ToolCallData {
@@ -318,6 +326,10 @@ interface AppState {
   addConversationArtifactBlock: (
     conversationId: string,
     artifact: ArtifactBlock["artifact"],
+  ) => void;
+  addConversationAppBlock: (
+    conversationId: string,
+    app: AppBlock["app"],
   ) => void;
   clearConversation: (conversationId: string) => void;
 
@@ -1225,6 +1237,34 @@ export const useAppStore = create<AppState>()(
             return {
               ...msg,
               contentBlocks: [...blocks, { type: "artifact" as const, artifact }],
+            };
+          }
+          return msg;
+        });
+
+        set({
+          conversations: {
+            ...conversations,
+            [conversationId]: { ...current, messages: updated },
+          },
+        });
+      },
+
+      addConversationAppBlock: (conversationId, app) => {
+        const { conversations } = get();
+        const current: ConversationState | undefined = conversations[conversationId];
+        if (!current) return;
+
+        const updated: ChatMessage[] = current.messages.map((msg, idx, arr) => {
+          const isLastAssistant: boolean =
+            msg.role === "assistant" &&
+            !arr.slice(idx + 1).some((m) => m.role === "assistant");
+
+          if (isLastAssistant) {
+            const blocks: ContentBlock[] = msg.contentBlocks ?? [];
+            return {
+              ...msg,
+              contentBlocks: [...blocks, { type: "app" as const, app }],
             };
           }
           return msg;
