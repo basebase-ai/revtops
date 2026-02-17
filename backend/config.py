@@ -47,8 +47,9 @@ class Settings(BaseSettings):
     # Anthropic
     ANTHROPIC_API_KEY: Optional[str] = None
     
-    # OpenAI (for embeddings)
+    # OpenAI (for embeddings + research fallback)
     OPENAI_API_KEY: Optional[str] = None
+    OPENAI_RESEARCH_MODEL: str = "gpt-5"  # Prefer GPT-5+ for web research synthesis
     
     # Perplexity (for web search)
     PERPLEXITY_API_KEY: Optional[str] = None
