@@ -66,6 +66,17 @@ class FilterOptionsResponse(BaseModel):
     activity_types: list[str] | None = None  # Only for activities table
 
 
+class TypeaheadSuggestion(BaseModel):
+    """Typeahead suggestion for data search."""
+    table: str
+    label: str
+
+
+class TypeaheadResponse(BaseModel):
+    """Typeahead suggestions grouped across selected tables."""
+    suggestions: list[TypeaheadSuggestion]
+
+
 @router.get("/summary", response_model=DataSummaryResponse)
 async def get_data_summary(
     auth: AuthContext = Depends(require_organization),
@@ -122,6 +133,55 @@ async def get_activity_types(
     return ActivityTypesResponse(types=types)
 
 
+
+
+@router.get("/typeahead", response_model=TypeaheadResponse)
+async def get_data_typeahead(
+    auth: AuthContext = Depends(require_organization),
+    query: str = Query(..., min_length=2),
+    tables: Optional[str] = None,
+    limit: int = Query(8, ge=1, le=25),
+) -> TypeaheadResponse:
+    """Return typeahead suggestions for selected tables."""
+    org_uuid = auth.organization_id
+
+    table_config: dict[str, dict[str, str | type]] = {
+        "contacts": {"model": Contact, "search_field": "name"},
+        "accounts": {"model": Account, "search_field": "name"},
+        "deals": {"model": Deal, "search_field": "name"},
+        "activities": {"model": Activity, "search_field": "subject"},
+    }
+
+    selected_tables = [t.strip() for t in (tables or "").split(",") if t.strip()]
+    if not selected_tables:
+        selected_tables = list(table_config.keys())
+
+    async with get_session(organization_id=auth.organization_id_str) as session:
+        suggestions: list[TypeaheadSuggestion] = []
+        for table in selected_tables:
+            if table not in table_config:
+                continue
+            model = table_config[table]["model"]
+            search_field_name = table_config[table]["search_field"]
+            if not isinstance(search_field_name, str) or not hasattr(model, search_field_name):
+                continue
+            search_field = getattr(model, search_field_name)
+            result = await session.execute(
+                select(search_field)
+                .where(model.organization_id == org_uuid)
+                .where(search_field.isnot(None))
+                .where(search_field.ilike(f"%{query}%"))
+                .distinct()
+                .order_by(search_field)
+                .limit(limit)
+            )
+            for row in result.fetchall():
+                label = row[0]
+                if not isinstance(label, str):
+                    continue
+                suggestions.append(TypeaheadSuggestion(table=table, label=label))
+
+    return TypeaheadResponse(suggestions=suggestions[:limit])
 @router.get("/{table}/filters", response_model=FilterOptionsResponse)
 async def get_filter_options(
     table: str,
