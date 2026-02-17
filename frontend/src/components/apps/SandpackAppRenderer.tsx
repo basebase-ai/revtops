@@ -99,10 +99,10 @@ function buildSrcdocHtml(opts: {
 <html>
 <head>
 <meta charset="UTF-8" />
-<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"><${"/"}>script>
-<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"><${"/"}>script>
-<script src="https://cdn.plot.ly/plotly-2.35.3.min.js"><${"/"}>script>
-<script src="https://unpkg.com/@babel/standalone@7/babel.min.js"><${"/"}>script>
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"><\/script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"><\/script>
+<script src="https://cdn.plot.ly/plotly-2.35.3.min.js"><\/script>
+<script src="https://unpkg.com/@babel/standalone@7/babel.min.js"><\/script>
 <style>${escapeForScript(APP_STYLES)}</style>
 </head>
 <body>
@@ -123,7 +123,7 @@ window.onerror = function(msg, url, line, col, err) {
   }
   try { window.parent.postMessage({ type:"app-error", error: String(msg) }, "*"); } catch(_){}
 };
-<${"/"}>script>
+<\/script>
 
 <script type="text/babel">
 /* ---- React destructured ---- */
@@ -149,7 +149,7 @@ try {
     '<div style="color:#fca5a5;padding:1rem;font-family:monospace;font-size:12px;white-space:pre-wrap;">' + e.message + '<' + '/div>';
   try { window.parent.postMessage({ type:"app-error", error: e.message }, "*"); } catch(_){}
 }
-<${"/"}>script>
+<\/script>
 </body>
 </html>`;
 }

@@ -35,12 +35,13 @@ def upgrade() -> None:
         sa.Column("updated_at", sa.DateTime, nullable=True),
     )
 
-    # Enable RLS
+    # Enable RLS and grant access to the app role
     op.execute("ALTER TABLE apps ENABLE ROW LEVEL SECURITY")
     op.execute("""
         CREATE POLICY apps_org_isolation ON apps
-        USING (organization_id = current_setting('app.current_organization_id')::uuid)
+        USING (organization_id = current_setting('app.current_org_id')::uuid)
     """)
+    op.execute("GRANT ALL ON apps TO revtops_app")
 
 
 def downgrade() -> None:
