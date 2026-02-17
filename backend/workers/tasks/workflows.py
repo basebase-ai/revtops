@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 WORKFLOW_NESTING_GUARDRAIL = (
     "Execution guardrail: Do NOT create or invoke child workflows (via "
-    "create_workflow, run_workflow, or loop_over) unless the user or workflow "
+    "create_workflow, run_workflow, or foreach) unless the user or workflow "
     "prompt explicitly asks you to do so. If you create child workflows, keep "
     "the total created across this execution tree at 5 or fewer. Prefer "
     "completing the task in this workflow directly."
@@ -173,7 +173,7 @@ def format_child_workflows_for_prompt(child_workflows: list[dict[str, Any]]) -> 
     
     Returns a string like:
     
-    Available child workflows (use with run_workflow or loop_over):
+    Available child workflows (use with run_workflow or foreach):
     
     1. "Enrich Single Contact" (id: 9645564e-...)
        Input: {email: string (required), first_name: string}
@@ -185,7 +185,7 @@ def format_child_workflows_for_prompt(child_workflows: list[dict[str, Any]]) -> 
     lines: list[str] = [
         (
             "Available child workflows (optional, only use run_workflow or "
-            "loop_over when explicitly requested; for small prompts or brief "
+            "foreach when explicitly requested; for small prompts or brief "
             "tasks, prefer completing the work directly in this workflow):"
         ),
         "",
@@ -1641,7 +1641,7 @@ def process_pending_events(self: Any) -> dict[str, Any]:
 @celery_app.task(
     bind=True,
     name="workers.tasks.workflows.execute_workflow",
-    soft_time_limit=6 * 3600,      # 6 hours soft – workflows with monitor_operation can run long
+    soft_time_limit=6 * 3600,      # 6 hours soft – workflows with foreach can run long
     time_limit=6 * 3600 + 300,     # 6 hours + 5 min hard kill
 )
 def execute_workflow(

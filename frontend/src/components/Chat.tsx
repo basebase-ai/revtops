@@ -15,12 +15,15 @@ import remarkGfm from 'remark-gfm';
 
 import { ArtifactViewer, type FileArtifact } from './ArtifactViewer';
 import { ArtifactTile } from './ArtifactTile';
+import { AppTile } from './apps/AppTile';
+import { AppViewer } from './apps/AppViewer';
 import { PendingApprovalCard, type ApprovalResult } from './PendingApprovalCard';
 import { getConversation, uploadChatFile, type UploadResponse } from '../api/client';
 import { crossTab } from '../lib/crossTab';
 import { 
   useAppStore,
   useConversationState,
+  type AppBlock,
   type ChatMessage,
   type ToolCallData,
   type ToolUseBlock,
@@ -99,6 +102,7 @@ export function Chat({
   // Local state
   const [input, setInput] = useState<string>('');
   const [currentArtifact, setCurrentArtifact] = useState<AnyArtifact | null>(null);
+  const [currentApp, setCurrentApp] = useState<AppBlock["app"] | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [selectedToolCall, setSelectedToolCall] = useState<ToolCallData | null>(null);
   const [toolApprovals, setToolApprovals] = useState<Map<string, ToolApprovalState>>(new Map());
@@ -129,12 +133,28 @@ export function Chat({
   // Keep ref in sync with state
   pendingMessagesRef.current = pendingMessages;
 
-  // Combined messages and thinking state (conversation + pending for new chats)
+  // Combined messages and thinking state (conversation + pending for new chats).
+  // Always sort by timestamp to guard against race conditions where WebSocket
+  // chunks (assistant message) arrive before the pending user message is moved
+  // into the conversation state, which would otherwise cause out-of-order display.
   const messages = useMemo(() => {
     const conversationMessages = conversationState?.messages ?? [];
-    return pendingMessages.length > 0
+    const combined: ChatMessage[] = pendingMessages.length > 0
       ? [...pendingMessages, ...conversationMessages]
       : conversationMessages;
+    // Fast path: skip sort when already ordered (common case)
+    let needsSort = false;
+    for (let i = 1; i < combined.length; i++) {
+      const prev = combined[i - 1] as ChatMessage;
+      const curr = combined[i] as ChatMessage;
+      if (prev.timestamp.getTime() > curr.timestamp.getTime()) {
+        needsSort = true;
+        break;
+      }
+    }
+    return needsSort
+      ? [...combined].sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime())
+      : combined;
   }, [pendingMessages, conversationState?.messages]);
   const isThinking = pendingThinking || conversationThinking;
 
@@ -442,7 +462,6 @@ export function Chat({
     };
   // Note: messages.length deliberately excluded — polling is self-contained via
   // the interval and stops via workflowDoneRef. Including it caused restarts.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatId, userId, conversationType, setConversationMessages]);
 
   // Track whether user is near the bottom of the scroll container.
@@ -771,7 +790,7 @@ export function Chat({
       {/* Content area with messages and optional artifact sidebar */}
       <div className="flex-1 flex overflow-hidden">
         {/* Messages */}
-        <div ref={messagesContainerRef} className={`overflow-y-auto overflow-x-hidden p-3 md:p-6 ${currentArtifact ? 'w-1/2' : 'flex-1'}`}>
+        <div ref={messagesContainerRef} className={`overflow-y-auto overflow-x-hidden p-3 md:p-6 ${currentArtifact || currentApp ? 'w-1/2' : 'flex-1'}`}>
           {messages.length === 0 && !isThinking ? (
             conversationType === 'workflow' ? (
               // Show loading state for workflow conversations waiting for agent to start
@@ -802,6 +821,7 @@ export function Chat({
                   message={msg}
                   toolApprovals={toolApprovals}
                   onArtifactClick={setCurrentArtifact}
+                  onAppClick={(app: AppBlock["app"]) => { setCurrentApp(app); setCurrentArtifact(null); }}
                   onToolApprove={handleToolApprove}
                   onToolCancel={handleToolCancel}
                   onToolClick={(block) => setSelectedToolCall({
@@ -853,6 +873,39 @@ export function Chat({
                 </button>
               </div>
               <ArtifactViewer artifact={currentArtifact} />
+            </div>
+          </>
+        )}
+
+        {/* App sidebar - overlay on mobile, sidebar on desktop */}
+        {currentApp && (
+          <>
+            <div
+              className="fixed inset-0 bg-black/50 z-40 md:hidden"
+              onClick={() => setCurrentApp(null)}
+            />
+            <div className="fixed inset-y-0 right-0 w-full max-w-md z-50 md:relative md:w-1/2 md:z-auto border-l border-surface-800 bg-surface-900 p-4 overflow-y-auto">
+              <div className="flex items-center justify-between mb-2">
+                <h2 className="text-lg font-semibold text-surface-100 truncate">
+                  {currentApp.title}
+                </h2>
+                <button
+                  onClick={() => setCurrentApp(null)}
+                  className="text-surface-400 hover:text-surface-200 p-1 -mr-1"
+                >
+                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+              <AppViewer
+                app={currentApp}
+                onAppError={(errorMsg: string) => {
+                  const fixPrompt: string = `The app "${currentApp.title}" has a compile/runtime error. Please fix it and create an updated version.\n\nError:\n\`\`\`\n${errorMsg}\n\`\`\``;
+                  sendChatMessage(fixPrompt, 'input');
+                  setCurrentApp(null);
+                }}
+              />
             </div>
           </>
         )}
@@ -973,6 +1026,7 @@ function MessageWithBlocks({
   message,
   toolApprovals,
   onArtifactClick,
+  onAppClick,
   onToolApprove,
   onToolCancel,
   onToolClick,
@@ -980,6 +1034,7 @@ function MessageWithBlocks({
   message: ChatMessage;
   toolApprovals: Map<string, { operationId: string; toolName: string; isProcessing: boolean; result: unknown }>;
   onArtifactClick: (artifact: AnyArtifact) => void;
+  onAppClick: (app: AppBlock["app"]) => void;
   onToolApprove: (operationId: string, options?: Record<string, unknown>) => void;
   onToolCancel: (operationId: string) => void;
   onToolClick: (block: ToolUseBlock) => void;
@@ -1146,6 +1201,16 @@ function MessageWithBlocks({
               </div>
             );
           }
+          if (block.type === 'app') {
+            return (
+              <div key={`app-${block.app.id}`} className="my-2">
+                <AppTile
+                  app={block.app}
+                  onClick={() => onAppClick(block.app)}
+                />
+              </div>
+            );
+          }
           return null;
         })}
         
@@ -1289,16 +1354,6 @@ function getToolStatusText(
       }
       return `Searching the web for '${truncatedQuery}'...`;
     }
-    case 'search_activities': {
-      const query = typeof input?.query === 'string' ? input.query : '';
-      const truncatedQuery = query.length > 40 ? query.slice(0, 40) + '...' : query;
-      if (isComplete) {
-        const count = typeof result?.count === 'number' ? result.count : 0;
-        const countText = ` (${count} result${count === 1 ? '' : 's'})`;
-        return `Searched activities for '${truncatedQuery}'${countText}`;
-      }
-      return `Searching activities for '${truncatedQuery}'...`;
-    }
     case 'run_sql_query': {
       // Extract table names from the SQL query for a more descriptive message
       const query = typeof input?.query === 'string' ? input.query.toLowerCase() : '';
@@ -1356,56 +1411,15 @@ function getToolStatusText(
       }
       return `Writing ${recordCount} ${pluralType} to ${systemLabel}...`;
     }
-    case 'loop_over': {
-      const workflowName = typeof result?.workflow_name === 'string' 
-        ? result.workflow_name 
-        : (typeof input?.workflow_name === 'string' ? input.workflow_name : 'workflow');
-      const total = typeof result?.total === 'number' ? result.total : (Array.isArray(input?.items) ? input.items.length : 0);
-      const completed = typeof result?.completed === 'number' ? result.completed : 0;
-      const succeeded = typeof result?.succeeded === 'number' ? result.succeeded : 0;
-      const failed = typeof result?.failed === 'number' ? result.failed : 0;
-      
-      if (isComplete) {
-        if (failed > 0) {
-          return `Completed ${workflowName}: ${succeeded}/${total} succeeded, ${failed} failed`;
-        }
-        return `Completed ${workflowName} for ${total} item${total === 1 ? '' : 's'}`;
-      }
-      
-      // Show progress while running (including when completed=0 to show "0/40")
-      if (total > 0) {
-        const progressText = failed > 0 
-          ? `${completed}/${total} (${succeeded} ok, ${failed} failed)`
-          : `${completed}/${total}`;
-        return `Running ${workflowName}... ${progressText}`;
-      }
-      return `Running ${workflowName}...`;
-    }
-    case 'run_workflow': {
-      const workflowName = typeof result?.workflow_name === 'string'
-        ? result.workflow_name
-        : (typeof input?.workflow_name === 'string' ? input.workflow_name : 'workflow');
-      if (isComplete) {
-        return `Completed ${workflowName}`;
-      }
-      return `Running ${workflowName}...`;
-    }
-    case 'bulk_tool_run': {
-      // bulk_tool_run returns immediately after queuing — real progress comes from monitor_operation
+    case 'foreach': {
       const opName: string = typeof result?.operation_name === 'string'
         ? result.operation_name
-        : (typeof input?.operation_name === 'string' ? input.operation_name : 'bulk operation');
-      if (isComplete) {
-        return `Queued ${opName}`;
-      }
-      return `Starting ${opName}...`;
-    }
-    case 'monitor_operation': {
-      const opName: string = typeof result?.operation_name === 'string'
-        ? result.operation_name
-        : 'bulk operation';
+        : (typeof result?.workflow_name === 'string'
+          ? result.workflow_name
+          : (typeof input?.operation_name === 'string' ? input.operation_name : 'foreach'));
       const total: number = typeof result?.total === 'number' ? result.total
-        : (typeof result?.total_items === 'number' ? result.total_items : 0);
+        : (typeof result?.total_items === 'number' ? result.total_items
+          : (Array.isArray(input?.items) ? input.items.length : 0));
       const completed: number = typeof result?.completed === 'number' ? result.completed : 0;
       const succeeded: number = typeof result?.succeeded === 'number' ? result.succeeded
         : (typeof result?.succeeded_items === 'number' ? result.succeeded_items : 0);
@@ -1426,7 +1440,16 @@ function getToolStatusText(
           : `${completed}/${total} (${pct}%)`;
         return `Running ${opName}... ${progressText}`;
       }
-      return `Monitoring ${opName}...`;
+      return `Running ${opName}...`;
+    }
+    case 'run_workflow': {
+      const workflowName = typeof result?.workflow_name === 'string'
+        ? result.workflow_name
+        : (typeof input?.workflow_name === 'string' ? input.workflow_name : 'workflow');
+      if (isComplete) {
+        return `Completed ${workflowName}`;
+      }
+      return `Running ${workflowName}...`;
     }
     default:
       return isComplete ? `Completed ${toolName}` : `Running ${toolName}...`;

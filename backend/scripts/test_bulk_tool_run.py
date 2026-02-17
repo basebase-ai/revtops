@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-Quick integration test for bulk_tool_run.
+Quick integration test for foreach (tool mode — Celery path).
 
 Usage:
     cd backend
     source venv/bin/activate
-    python3 test_bulk_tool_run.py
+    python3 scripts/test_bulk_tool_run.py
 
 Requires:
     - API server running (uvicorn)
@@ -14,35 +14,39 @@ Requires:
     - Redis running
     - .env loaded with DATABASE_URL, REDIS_URL, PERPLEXITY_API_KEY
 """
+from __future__ import annotations
 
 import asyncio
 import json
 import sys
-import time
 from pathlib import Path
 
 # Ensure backend is on path
-sys.path.insert(0, str(Path(__file__).parent))
+_backend_dir: Path = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_backend_dir))
 
 from dotenv import load_dotenv
-load_dotenv(Path(__file__).parent / ".env")
-if not (Path(__file__).parent / ".env").exists():
-    load_dotenv(Path(__file__).parent.parent / ".env")
+
+_root: Path = _backend_dir.parent
+load_dotenv(_backend_dir / ".env")
+if not (_backend_dir / ".env").exists():
+    load_dotenv(_root / ".env")
 
 
 async def test_small_batch() -> None:
     """Test with a tiny inline list (no DB query, no Perplexity — uses web_search on 3 items)."""
     from agents.tools import execute_tool
 
-    print("\n=== Test 1: Small inline batch with web_search ===\n")
+    print("\n=== Test: foreach with tool='web_search' (small inline batch) ===\n")
 
     # Use a real org_id from the running system
-    # You can find yours with: python3 dbq.py "SELECT id, name FROM organizations LIMIT 1"
-    org_id: str = "dbe0b687-6967-4874-a26d-10f6289ae350"  # from the terminal logs
-    user_id: str | None = None  # Not needed for web_search
+    # You can find yours with: python3 scripts/dbq.py "SELECT id, name FROM organizations LIMIT 1"
+    org_id: str = "dbe0b687-6967-4874-a26d-10f6289ae350"
+    user_id: str | None = None
 
+    # foreach with tool mode — blocks until completion (no separate monitor_operation needed)
     result = await execute_tool(
-        tool_name="bulk_tool_run",
+        tool_name="foreach",
         tool_input={
             "tool": "web_search",
             "items": [
@@ -53,7 +57,7 @@ async def test_small_batch() -> None:
             "params_template": {
                 "query": "What is {{name}}'s current job title at {{company}}? Reply in one sentence.",
             },
-            "rate_limit_per_minute": 30,  # Go slow for test
+            "rate_limit_per_minute": 30,
             "operation_name": "Test enrichment (3 CEOs)",
         },
         organization_id=org_id,
@@ -66,21 +70,12 @@ async def test_small_batch() -> None:
         print(f"\nERROR: {result['error']}")
         return
 
-    operation_id: str = result["operation_id"]
-    print(f"\nOperation ID: {operation_id}")
-    print("Monitoring until complete...\n")
+    operation_id: str = result.get("operation_id", "")
+    if not operation_id:
+        print("\nNo operation_id in result — foreach may have completed inline.")
+        return
 
-    # Use monitor_operation — blocks until done, broadcasts progress
-    final = await execute_tool(
-        tool_name="monitor_operation",
-        tool_input={"operation_id": operation_id},
-        organization_id=org_id,
-        user_id=user_id,
-    )
-
-    print(f"Final: {json.dumps(final, indent=2)}")
-
-    # Fetch results via SQL (no more get_bulk_results tool)
+    # Fetch results via SQL
     print("\n=== Results ===\n")
     results = await execute_tool(
         tool_name="run_sql_query",
@@ -99,9 +94,9 @@ async def test_small_batch() -> None:
 
         if success:
             answer: str = str(result_data.get("answer", ""))[:200]
-            print(f"  ✓ {item.get('name')}: {answer}")
+            print(f"  OK {item.get('name')}: {answer}")
         else:
-            print(f"  ✗ {item.get('name')}: ERROR — {error}")
+            print(f"  FAIL {item.get('name')}: ERROR — {error}")
 
     print("\nDone!")
 

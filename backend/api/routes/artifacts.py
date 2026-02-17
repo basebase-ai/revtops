@@ -39,7 +39,7 @@ class ArtifactMetadata(BaseModel):
     conversation_id: Optional[str]
     message_id: Optional[str]
     created_at: Optional[str]
-    user_id: str
+    user_id: Optional[str]
 
 
 class ArtifactContent(BaseModel):
@@ -56,7 +56,7 @@ class ArtifactContent(BaseModel):
     conversation_id: Optional[str]
     message_id: Optional[str]
     created_at: Optional[str]
-    user_id: str
+    user_id: Optional[str]
 
 
 class ArtifactListResponse(BaseModel):

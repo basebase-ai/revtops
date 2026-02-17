@@ -202,10 +202,26 @@ function formatSyncStats(stats: SyncStats | null, provider: string): string | nu
 }
 
 /**
- * Get a provider-specific label for activities count.
+ * Map CRM sync step to the noun used in the count label (e.g. "accounts", "deals").
  */
-function getActivityLabel(provider: string, count: number): string {
+function getCrmStepNoun(step: string): string {
+  if (step === 'accounts' || step === 'fetching accounts') return 'accounts';
+  if (step === 'deals' || step === 'fetching deals') return 'deals';
+  if (step === 'contacts' || step === 'fetching contacts') return 'contacts';
+  if (step === 'activities') return 'activities';
+  if (step === 'goals' || step === 'fetching goals') return 'goals';
+  return 'items';
+}
+
+/**
+ * Get a provider-specific label for activities count.
+ * For CRM providers (HubSpot/Salesforce), pass optional step so the label matches the current sync phase (e.g. "0 accounts" during account sync).
+ */
+function getActivityLabel(provider: string, count: number, step?: string): string {
   const formatted = count.toLocaleString();
+  if ((provider === 'hubspot' || provider === 'salesforce') && step !== undefined) {
+    return `${formatted} ${getCrmStepNoun(step)}`;
+  }
   switch (provider) {
     case 'gmail':
     case 'microsoft_mail':
@@ -1307,7 +1323,7 @@ export function DataSources(): JSX.Element {
                 <p className="text-xs text-surface-400 mt-1 hidden sm:block">
                   {syncProgress[integration.provider] !== undefined ? (
                     <span className="text-primary-400">
-                      Syncing{syncStep[integration.provider] ? ` ${syncStep[integration.provider]}` : ''}... {getActivityLabel(integration.provider, syncProgress[integration.provider] ?? 0)}
+                      Syncing{syncStep[integration.provider] ? ` ${syncStep[integration.provider]}` : ''}... {getActivityLabel(integration.provider, syncProgress[integration.provider] ?? 0, syncStep[integration.provider])}
                     </span>
                   ) : integration.syncStats ? (
                     formatSyncStats(integration.syncStats, integration.provider)

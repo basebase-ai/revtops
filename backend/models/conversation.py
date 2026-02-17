@@ -95,6 +95,11 @@ class Conversation(Base):
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
     )
 
+    # E2B sandbox ID for persistent sandboxed code execution
+    sandbox_id: Mapped[Optional[str]] = mapped_column(
+        String(255), nullable=True
+    )
+
     # Cached fields for fast list queries (denormalized)
     message_count: Mapped[int] = mapped_column(
         Integer, default=0, nullable=False

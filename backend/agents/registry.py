@@ -102,7 +102,7 @@ Available tables:
 - deals: Sales opportunities (name, amount, stage, close_date, owner_id, account_id)
 - accounts: Companies/customers (name, domain, industry, employee_count)
 - contacts: People at accounts (name, email, title, phone, account_id)
-- activities: Raw activity records - query by TYPE not source
+- activities: Raw activity records - query by TYPE not source. Has a vector embedding column for semantic search (see below)
 - pipelines: Sales pipelines (name, display_order, is_default)
 - pipeline_stages: Stages in pipelines (pipeline_id, name, probability)
 - goals: Revenue goals and quotas synced from CRM (name, target_amount, start_date, end_date, goal_type, owner_id, pipeline_id, source_system, source_id, custom_fields JSONB). Compare target_amount against deal totals to measure progress.
@@ -119,6 +119,11 @@ Available tables:
 - tracker_projects: Issue tracker projects (source_system, source_id, name, description, state, progress, target_date, start_date, lead_name, team_ids JSONB). Filter by source_system.
 - tracker_issues: Issue tracker issues/tasks (source_system, source_id, team_id, identifier e.g. "ENG-123", title, description, state_name, state_type, priority 0-4, priority_label, issue_type, assignee_name, assignee_email, creator_name, project_id, labels JSONB, estimate, url, due_date, created_date, updated_date, completed_date, cancelled_date, user_id). Filter by source_system.
 - shared_files: Synced file metadata from cloud sources like Google Drive (external_id, source, name, mime_type, folder_path, web_view_link, file_size, source_modified_at). Filter by source (e.g. 'google_drive'). Use search_cloud_files tool instead for name-based searches.
+- temp_data: Agent-generated results and computed metrics. Flexible JSONB storage linked to entities. Columns: entity_type, entity_id, namespace, key, value (JSONB), metadata (JSONB), created_by_user_id, created_at, expires_at. Example: SELECT td.value->>'score' as confidence, d.name FROM temp_data td JOIN deals d ON d.id = td.entity_id WHERE td.namespace = 'deal_confidence'
+
+SEMANTIC SEARCH on activities: Use semantic_embed('natural language query') as an inline function to generate an embedding vector. Combine with the <=> cosine distance operator to rank by similarity.
+Example: SELECT id, type, subject, description, activity_date, 1 - (embedding <=> semantic_embed('pricing negotiations')) AS similarity FROM activities WHERE embedding IS NOT NULL ORDER BY embedding <=> semantic_embed('pricing negotiations') LIMIT 10
+You can add extra WHERE clauses (e.g. type = 'email') alongside the vector search.
 
 IMPORTANT: Do NOT add organization_id to WHERE clauses. Data is automatically scoped to the user's organization via row-level security. Adding organization_id filters will cause queries to return wrong results.
 
@@ -139,40 +144,44 @@ IMPORTANT: Only SELECT queries are allowed. No INSERT, UPDATE, DELETE, DROP, etc
 
 
 register_tool(
-    name="search_activities",
-    description="""Semantic search across emails, meetings, messages, and other activities.
+    name="execute_command",
+    description="""Run a shell command in a persistent Linux sandbox.
 
-Use this when the user wants to find activities by meaning/concept rather than exact text.
-This searches the content of emails, meeting transcripts, messages, etc.
+The sandbox is a full Debian Linux environment that persists across calls within
+this conversation. You can install tools, write files, run scripts, and build up
+work iteratively — just like using a terminal.
+
+Pre-installed: python3, pip, node, common CLI tools.
+Database: A read-only PostgreSQL connection is available at $DATABASE_URL.
+A helper is pre-loaded at /home/user/db.py — use `from db import get_connection`
+to get a psycopg2 connection with the correct organization scope.
+
+Use this for:
+- Complex data analysis that goes beyond a single SQL query
+- Writing and executing scripts (Python, bash, Node.js, etc.)
+- Installing and using CLI tools or libraries
+- Multi-step computations where you iterate on results
+- Generating charts, files, or reports programmatically
 
 Examples:
-- "Find emails about pricing negotiations"
-- "Search for meeting discussions about the Q4 roadmap"
-- "Look for communications about contract renewal"
+  "pip install pandas matplotlib"
+  "python3 -c \\"import pandas as pd; from db import get_connection; df = pd.read_sql('SELECT * FROM deals', get_connection()); print(df.describe())\\""
+  "cat > analysis.py << 'EOF'\\nimport pandas as pd\\n...\\nEOF"
+  "python3 analysis.py"
 
-For exact text matching, use run_sql_query with ILIKE instead.""",
+Files saved to /home/user/output/ are returned as downloadable artifacts.""",
     input_schema={
         "type": "object",
         "properties": {
-            "query": {
+            "command": {
                 "type": "string",
-                "description": "Natural language search query",
-            },
-            "types": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "Filter by type: 'email', 'meeting', 'meeting_transcript', 'slack_message', 'call'",
-            },
-            "limit": {
-                "type": "integer",
-                "description": "Max results to return (default 10)",
-                "default": 10,
+                "description": "Shell command to execute in the sandbox",
             },
         },
-        "required": ["query"],
+        "required": ["command"],
     },
     category=ToolCategory.LOCAL_READ,
-    default_requires_approval=False,
+    default_requires_approval=True,
 )
 
 
@@ -201,6 +210,7 @@ Writable tables:
 - users: (phone_number) → immediate. Phone numbers MUST be E.164 format with country code, e.g. +14155551234 for US numbers. If the user gives a 10-digit number like 4159028648, prepend +1.
 - workflows: See workflow format below → immediate
 - artifacts: (type, title, description, data) → immediate
+- temp_data: (entity_type, entity_id, namespace, key, value, metadata, expires_at) → immediate. Flexible JSONB store for computed results. Use namespace to group (e.g. 'deal_confidence'). value is JSONB, any shape.
 
 **WORKFLOW FORMAT (Important!):**
 Workflows are prompts sent to the agent on a schedule. Use these columns:
@@ -307,7 +317,9 @@ Use this when you need external information not available in the user's data:
 - Sales methodologies or frameworks
 
 Do NOT use this for data that's in the user's database - use run_sql_query instead.
-This tool runs Perplexity plus an OpenAI synthesis pass for every web search request.""",
+This tool runs Perplexity or Exa plus an OpenAI synthesis pass for every web search request.""",
+
+Provider choice (default exa): Use exa for semantic search over the live web with per-result excerpts (title, url, content snippets) — best when you need to compare or cite specific pages. Use perplexity and OpenAI when you want a single synthesized answer in one blob with citation URLs and no per-result text.""",
     input_schema={
         "type": "object",
         "properties": {
@@ -320,6 +332,17 @@ This tool runs Perplexity plus an OpenAI synthesis pass for every web search req
             },
             "context": {
                 "description": "Alias for contact_context.",
+            },
+            "provider": {
+                "type": "string",
+                "enum": ["perplexity", "exa"],
+                "description": "Search provider: exa (default) = semantic search, per-result excerpts; perplexity = single synthesized answer with citation URLs. Prefer exa for comparing/citing pages; perplexity for one-shot answers.",
+                "default": "exa",
+            },
+            "num_results": {
+                "type": "integer",
+                "description": "Max number of results (Exa only; default 10). Ignored for perplexity.",
+                "default": 10,
             },
         },
         "required": ["query"],
@@ -796,51 +819,69 @@ IMPORTANT: Avoid circular calls (A calls B calls A) - this will be detected and 
 
 
 register_tool(
-    name="loop_over",
-    description="""Execute a workflow for each item in a list.
+    name="foreach",
+    description="""Run a tool or workflow for each item in a list.
 
-Use this to process a batch of items (e.g., enrich 100 contacts, send 50 emails).
-Each item is passed to the workflow as input_data.
+Use this for any batch operation: enriching contacts, researching companies, sending emails, processing data, etc.
 
-Returns a summary with results and any failures.
+Provide EITHER tool (to call a tool per item) OR workflow_id (to run a workflow per item).
 
-Example: Query 100 contacts, then use loop_over to run "research-company" workflow for each.
+**Tool mode** — each item renders params_template ({{field}} placeholders filled from item), then the tool is called. Results stored in bulk_operation_results (queryable via run_sql_query). Uses distributed Celery workers.
+  Example: foreach(tool="web_search", items_query="SELECT id, name FROM contacts", params_template={"query": "Current role of {{name}}?"})
 
-Parameters:
-- items: List of objects to process
-- workflow_id: The workflow to run for each item
-- max_concurrent: How many to run in parallel (default 3, max 10)
-- max_items: Safety limit on total items (default 100, max 500)
-- continue_on_error: If true, continue processing even if some items fail""",
+**Workflow mode** — each item dict is passed as input_data to the workflow. Uses async in-process execution with context propagation.
+  Example: foreach(workflow_id="uuid-...", items=[{"email": "a@b.com"}, {"email": "c@d.com"}])
+
+Set max_concurrent=1 for sequential execution, higher for parallel. Blocks until all items complete, streaming live progress to the UI.""",
     input_schema={
         "type": "object",
         "properties": {
-            "items": {
-                "type": "array",
-                "items": {"type": "object"},
-                "description": "List of items to process. Each item is passed to the workflow as input_data.",
+            "tool": {
+                "type": "string",
+                "description": "Name of the tool to run per item (e.g., 'web_search', 'fetch_url', 'enrich_with_apollo'). Mutually exclusive with workflow_id.",
             },
             "workflow_id": {
                 "type": "string",
-                "description": "UUID of the workflow to execute for each item",
+                "description": "UUID of the workflow to run per item. Each item dict becomes input_data. Mutually exclusive with tool.",
+            },
+            "items_query": {
+                "type": "string",
+                "description": "SQL SELECT that returns the items to process. Column names map to {{placeholder}} names in params_template.",
+            },
+            "items": {
+                "type": "array",
+                "items": {"type": "object"},
+                "description": "Inline list of item dicts. Use items_query for large lists (>100 items).",
+            },
+            "params_template": {
+                "type": "object",
+                "description": "Template for tool params. Use {{column_name}} placeholders filled from each item. Required when using tool, ignored for workflow_id.",
             },
             "max_concurrent": {
                 "type": "integer",
-                "description": "Maximum parallel executions (default 3, max 10)",
-                "default": 3,
+                "description": "Parallel executions (1 = sequential). Default 5. Max 10 for workflows, 50 for tools.",
+                "default": 5,
+            },
+            "rate_limit_per_minute": {
+                "type": "integer",
+                "description": "Max API calls per minute (tool mode only). Default 200.",
+                "default": 200,
             },
             "max_items": {
                 "type": "integer",
-                "description": "Maximum items to process (default 100, max 500)",
-                "default": 100,
+                "description": "Safety cap on total items. Default 500 for workflows, 10000 for tools.",
             },
             "continue_on_error": {
                 "type": "boolean",
-                "description": "Continue processing if an item fails (default true)",
+                "description": "Keep processing if an item fails (default true).",
                 "default": True,
             },
+            "operation_name": {
+                "type": "string",
+                "description": "Human-readable name shown in progress updates.",
+            },
         },
-        "required": ["items", "workflow_id"],
+        "required": [],
     },
     category=ToolCategory.LOCAL_WRITE,
     default_requires_approval=False,
@@ -853,6 +894,85 @@ Parameters:
 # -----------------------------------------------------------------------------
 # Workflow Notes Tool - Save workflow-scoped notes shared across runs
 # -----------------------------------------------------------------------------
+
+register_tool(
+    name="create_app",
+    description="""Create an interactive mini-app that queries data and renders it with React.
+
+Use this when the user asks for a dashboard, interactive chart, or data view with controls
+(dropdowns, date pickers, filters, etc.) that should refresh when the user changes them.
+
+The app has two parts:
+1. **queries** (server-side): Named parameterized SQL queries. These stay on the server and are never exposed to the browser.
+2. **frontend_code** (client-side): React JSX code that renders the UI and calls the queries via the SDK.
+
+The React code runs in a sandboxed iframe with these pre-bundled packages:
+- react, react-dom (hooks: useState, useEffect, useCallback, useMemo, useRef)
+- react-plotly.js (import Plot from "react-plotly.js")
+- @revtops/app-sdk (useAppQuery, useDateRange, Spinner, ErrorBanner)
+
+**SDK API:**
+- useAppQuery(queryName, params) → { data, columns, loading, error, refetch }
+  - queryName: must match a key in the queries object
+  - params: object with values for the SQL :placeholders
+  - data: array of row objects, e.g. [{region: "West", revenue: 50000}, ...]
+- useDateRange(period) → { start, end } (ISO date strings)
+  - period: "last_7d", "last_30d", "last_90d", "last_quarter", "this_quarter", "ytd", "last_year", "this_year"
+- Spinner — loading spinner component
+- ErrorBanner({ message }) — error display component
+
+**Query params:**
+Each query declares its params with name, type, and required flag. The SDK sends
+param values to the server, where they are bound via parameterized queries (safe from injection).
+
+**Rules:**
+- All SQL must be SELECT-only. No INSERT/UPDATE/DELETE.
+- Do NOT add organization_id to WHERE clauses (RLS handles it).
+- frontend_code must export a default React component.
+- Use Tailwind-style inline CSS or the provided dark-theme base styles.
+- Keep the code concise — one file, one default export.
+
+**Example:**
+{
+  "title": "Revenue by Region",
+  "description": "Bar chart showing revenue by region with time period filter",
+  "queries": {
+    "revenue_data": {
+      "sql": "SELECT custom_fields->>'region' as region, SUM(amount) as revenue FROM deals WHERE close_date >= :start_date AND close_date <= :end_date AND stage = 'Closed Won' GROUP BY 1 ORDER BY revenue DESC",
+      "params": {
+        "start_date": { "type": "date", "required": true },
+        "end_date": { "type": "date", "required": true }
+      }
+    }
+  },
+  "frontend_code": "import { useState } from 'react';\\nimport { useAppQuery, useDateRange, Spinner, ErrorBanner } from '@revtops/app-sdk';\\nimport Plot from 'react-plotly.js';\\n\\nexport default function App() {\\n  const [period, setPeriod] = useState('last_quarter');\\n  const { start, end } = useDateRange(period);\\n  const { data, loading, error } = useAppQuery('revenue_data', { start_date: start, end_date: end });\\n\\n  return (\\n    <div style={{padding:'1rem'}}>\\n      <select value={period} onChange={e => setPeriod(e.target.value)}>\\n        <option value='last_30d'>Last 30 Days</option>\\n        <option value='last_quarter'>Last Quarter</option>\\n        <option value='ytd'>Year to Date</option>\\n      </select>\\n      {loading && <Spinner />}\\n      {error && <ErrorBanner message={error} />}\\n      {data && <Plot data={[{type:'bar', x:data.map(r=>r.region), y:data.map(r=>r.revenue)}]} layout={{title:'Revenue by Region', autosize:true, paper_bgcolor:'transparent', plot_bgcolor:'transparent', font:{color:'#a1a1aa'}}} style={{width:'100%',height:'400px'}} config={{responsive:true}} />}\\n    </div>\\n  );\\n}"
+}""",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "title": {
+                "type": "string",
+                "description": "Display title for the app",
+            },
+            "description": {
+                "type": "string",
+                "description": "Brief description of what the app shows",
+            },
+            "queries": {
+                "type": "object",
+                "description": "Named SQL queries. Each key is a query name, value is {sql, params}. SQL must be SELECT-only.",
+            },
+            "frontend_code": {
+                "type": "string",
+                "description": "React JSX code (single file). Must export default component. Uses @revtops/app-sdk hooks.",
+            },
+        },
+        "required": ["title", "queries", "frontend_code"],
+    },
+    category=ToolCategory.LOCAL_WRITE,
+    default_requires_approval=False,
+)
+
 
 register_tool(
     name="keep_notes",
@@ -928,88 +1048,6 @@ Each memory should be a single, self-contained statement. Do NOT save conversati
     default_requires_approval=False,
 )
 
-# -----------------------------------------------------------------------------
-# Bulk Operations — General-purpose parallel tool execution
-# -----------------------------------------------------------------------------
-
-register_tool(
-    name="bulk_tool_run",
-    description="""Run any tool over a large list of items in parallel.
-
-Use this for batch operations that would be too slow sequentially — enriching thousands of contacts, researching hundreds of companies, fetching many URLs, etc.
-
-Each item is used to render params_template (with {{field}} placeholders), then the specified tool is called once per item. Results are stored in the bulk_operation_results table and can be queried via run_sql_query.
-
-The operation runs in the background via Celery workers. Returns immediately with an operation_id. Follow with monitor_operation to wait for completion, or query bulk_operations / bulk_operation_results tables via run_sql_query.
-
-IMPORTANT:
-- items_query should be a SQL SELECT that returns the fields needed by params_template
-- params_template uses {{column_name}} placeholders that get filled from each row
-- rate_limit_per_minute controls how fast the external API is hit (default 200/min)
-
-Example: Enrich all contacts with web search
-  tool: "web_search"
-  items_query: "SELECT id, name, email, title FROM contacts"
-  params_template: {"query": "What is {{name}}'s ({{email}}) current job title and company?"}
-  rate_limit_per_minute: 200""",
-    input_schema={
-        "type": "object",
-        "properties": {
-            "tool": {
-                "type": "string",
-                "description": "Name of the tool to run for each item (e.g., 'web_search', 'fetch_url', 'enrich_with_apollo').",
-            },
-            "items_query": {
-                "type": "string",
-                "description": "SQL SELECT query that returns the items to process. Each row becomes an item dict. Column names map to {{placeholder}} names in params_template.",
-            },
-            "items": {
-                "type": "array",
-                "items": {"type": "object"},
-                "description": "Alternative to items_query: an inline list of item dicts. Use items_query for large lists (>100 items).",
-            },
-            "params_template": {
-                "type": "object",
-                "description": "Template for the tool's input params. Use {{column_name}} placeholders that will be filled from each item.",
-            },
-            "rate_limit_per_minute": {
-                "type": "integer",
-                "description": "Maximum API calls per minute (shared across all workers). Default 200. Set lower for APIs with strict rate limits.",
-                "default": 200,
-            },
-            "operation_name": {
-                "type": "string",
-                "description": "Human-readable name for this operation (shown in progress updates).",
-            },
-        },
-        "required": ["tool", "params_template"],
-    },
-    category=ToolCategory.EXTERNAL_READ,
-    default_requires_approval=False,
-)
-
-register_tool(
-    name="monitor_operation",
-    description="""Wait for a long-running bulk operation to complete, with live progress updates.
-
-Call this after bulk_tool_run to block until the operation finishes. Progress is broadcast to the UI in real time. When the operation completes, returns the final status with success/failure counts.
-
-This tool may run for minutes or hours depending on the operation size. The UI will show live progress (e.g., "Running Enrich contacts... 3,421/14,000 (24%)").
-
-To check progress without blocking, query the bulk_operations table via run_sql_query instead.""",
-    input_schema={
-        "type": "object",
-        "properties": {
-            "operation_id": {
-                "type": "string",
-                "description": "UUID of the bulk operation to monitor (returned by bulk_tool_run).",
-            },
-        },
-        "required": ["operation_id"],
-    },
-    category=ToolCategory.LOCAL_READ,
-    default_requires_approval=False,
-)
 
 
 # =============================================================================

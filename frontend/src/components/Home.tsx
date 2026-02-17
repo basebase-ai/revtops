@@ -1,7 +1,6 @@
 /**
- * Home view - shows all pipelines with their open deals.
- * Excludes deals that are closed won or closed lost.
- * Shows a prominent banner to connect data sources if none are connected.
+ * Home view - VP Sales lens: total pipeline value first, deal details below.
+ * Open deals only (excludes closed won/lost). Deal rows link to details (chat or CRM).
  */
 
 import { useEffect, useState, useMemo, useCallback } from 'react';
@@ -14,9 +13,12 @@ interface Deal {
   name: string;
   amount: number | null;
   stage: string | null;
+  stage_probability: number | null;
   close_date: string | null;
   pipeline_id: string | null;
   pipeline_name: string | null;
+  source_system: string | null;
+  source_id: string | null;
 }
 
 interface Pipeline {
@@ -31,9 +33,12 @@ interface DealsApiResponse {
     name: string;
     amount: number | null;
     stage: string | null;
+    stage_probability: number | null;
     close_date: string | null;
     pipeline_id: string | null;
     pipeline_name: string | null;
+    source_system?: string | null;
+    source_id?: string | null;
   }>;
   total: number;
 }
@@ -47,9 +52,13 @@ interface PipelinesApiResponse {
   total: number;
 }
 
+const DEFAULT_STAGE_PROBABILITY = 50;
+
 interface PipelineWithDeals {
   pipeline: Pipeline;
   deals: Deal[];
+  totalAll: number;
+  totalProbAdjusted: number;
 }
 
 export function Home(): JSX.Element {
@@ -97,7 +106,15 @@ export function Home(): JSX.Element {
         }
 
         const dealsData = await dealsRes.json() as DealsApiResponse;
-        setDeals(dealsData.deals);
+        setDeals(
+          dealsData.deals.map(
+            (d): Deal => ({
+              ...d,
+              source_system: d.source_system ?? null,
+              source_id: d.source_id ?? null,
+            })
+          )
+        );
       } catch (err) {
         setError(err instanceof Error ? err.message : 'An error occurred');
       } finally {
@@ -108,9 +125,8 @@ export function Home(): JSX.Element {
     void fetchData();
   }, [organization?.id]);
 
-  // Group deals by pipeline, with default pipeline first
+  // Group deals by pipeline and compute value totals (all vs probability-adjusted)
   const pipelinesWithDeals = useMemo((): PipelineWithDeals[] => {
-    // Sort pipelines: default first, then alphabetically
     const sortedPipelines = [...pipelines].sort((a, b) => {
       if (a.is_default && !b.is_default) return -1;
       if (!a.is_default && b.is_default) return 1;
@@ -118,18 +134,40 @@ export function Home(): JSX.Element {
     });
 
     const pipelineIds = new Set(pipelines.map((p) => p.id));
-    
-    const result: PipelineWithDeals[] = sortedPipelines.map((pipeline) => ({
-      pipeline,
-      deals: deals.filter((deal) => deal.pipeline_id === pipeline.id),
-    }));
 
-    // Add orphaned deals (deals with no matching pipeline) to an "Unassigned" section
-    const orphanedDeals = deals.filter((deal) => !deal.pipeline_id || !pipelineIds.has(deal.pipeline_id));
+    const result: PipelineWithDeals[] = sortedPipelines.map((pipeline) => {
+      const pipelineDeals = deals.filter((deal) => deal.pipeline_id === pipeline.id);
+      const totalAll = pipelineDeals.reduce((sum, d) => sum + (d.amount ?? 0), 0);
+      const totalProbAdjusted = pipelineDeals.reduce(
+        (sum, d) =>
+          sum +
+          (d.amount ?? 0) * ((d.stage_probability ?? DEFAULT_STAGE_PROBABILITY) / 100),
+        0
+      );
+      return {
+        pipeline,
+        deals: pipelineDeals,
+        totalAll,
+        totalProbAdjusted,
+      };
+    });
+
+    const orphanedDeals = deals.filter(
+      (deal) => !deal.pipeline_id || !pipelineIds.has(deal.pipeline_id)
+    );
     if (orphanedDeals.length > 0) {
+      const totalAll = orphanedDeals.reduce((sum, d) => sum + (d.amount ?? 0), 0);
+      const totalProbAdjusted = orphanedDeals.reduce(
+        (sum, d) =>
+          sum +
+          (d.amount ?? 0) * ((d.stage_probability ?? DEFAULT_STAGE_PROBABILITY) / 100),
+        0
+      );
       result.push({
         pipeline: { id: '__unassigned__', name: 'Unassigned', is_default: false },
         deals: orphanedDeals,
+        totalAll,
+        totalProbAdjusted,
       });
     }
 
@@ -137,6 +175,14 @@ export function Home(): JSX.Element {
   }, [pipelines, deals]);
 
   const totalDeals = deals.length;
+  const grandTotalAll = useMemo(
+    () => pipelinesWithDeals.reduce((sum, p) => sum + p.totalAll, 0),
+    [pipelinesWithDeals]
+  );
+  const grandTotalProbAdjusted = useMemo(
+    () => pipelinesWithDeals.reduce((sum, p) => sum + p.totalProbAdjusted, 0),
+    [pipelinesWithDeals]
+  );
 
   const formatCurrency = (amount: number | null): string => {
     if (amount === null) return '—';
@@ -193,22 +239,10 @@ export function Home(): JSX.Element {
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
-      {/* Header - hidden on mobile since AppLayout has mobile header */}
       <header className="hidden md:flex h-14 border-b border-surface-800 items-center px-4 md:px-6">
-        <div className="flex items-center gap-3">
-          <svg className="w-5 h-5 text-surface-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" />
-          </svg>
-          <h1 className="text-lg font-semibold text-surface-100">
-            Pipelines
-          </h1>
-          <span className="px-2 py-0.5 text-xs font-medium bg-surface-800 text-surface-400 rounded-full">
-            {totalDeals} open deal{totalDeals !== 1 ? 's' : ''}
-          </span>
-        </div>
+        <h1 className="text-lg font-semibold text-surface-100">Pipelines</h1>
       </header>
 
-      {/* Content */}
       <div className="flex-1 overflow-auto p-4 md:p-6">
         {/* Connect data sources banner - only shown when no sources connected */}
         {!hasConnectedSources && (
@@ -254,89 +288,118 @@ export function Home(): JSX.Element {
             </p>
           </div>
         ) : (
-          <div className="space-y-6">
-            {pipelinesWithDeals.map(({ pipeline, deals: pipelineDeals }) => (
-              <div key={pipeline.id} className="bg-surface-900 border border-surface-800 rounded-xl overflow-hidden">
-                {/* Pipeline header */}
-                <div className="px-4 py-3 border-b border-surface-800 flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <h2 className="text-base font-semibold text-surface-100">{pipeline.name}</h2>
-                    {pipeline.is_default && (
-                      <span className="px-1.5 py-0.5 text-[10px] font-medium bg-primary-500/20 text-primary-400 rounded">
-                        Default
-                      </span>
+          <>
+            {/* VP-first: total pipeline value at top */}
+            {totalDeals > 0 && (
+              <section className="mb-6 md:mb-8">
+                <h2 className="text-sm font-medium text-surface-500 uppercase tracking-wider mb-3">Pipeline value (open deals)</h2>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
+                  <div className="bg-surface-900 border border-surface-800 rounded-xl p-5">
+                    <div className="text-xs text-surface-500 mb-1">If all close</div>
+                    <div className="text-2xl md:text-3xl font-semibold text-surface-100 tabular-nums">{formatCurrency(grandTotalAll)}</div>
+                  </div>
+                  <div className="bg-surface-900 border border-surface-800 rounded-xl p-5">
+                    <div className="text-xs text-surface-500 mb-1">Probability-adjusted</div>
+                    <div className="text-2xl md:text-3xl font-semibold text-surface-100 tabular-nums">{formatCurrency(grandTotalProbAdjusted)}</div>
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-3">
+                  {pipelinesWithDeals
+                    .filter((p) => p.deals.length > 0)
+                    .map(({ pipeline, deals: pipelineDeals, totalAll: pipeTotalAll, totalProbAdjusted: pipeProbAdjusted }) => (
+                      <div
+                        key={pipeline.id}
+                        className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-surface-800/80 border border-surface-700 text-sm"
+                      >
+                        <span className="font-medium text-surface-200">{pipeline.name}</span>
+                        <span className="text-surface-500">
+                          {pipelineDeals.length} deal{pipelineDeals.length !== 1 ? 's' : ''}
+                        </span>
+                        <span className="text-surface-400 tabular-nums">{formatCurrency(pipeTotalAll)}</span>
+                        <span className="text-surface-500">/</span>
+                        <span className="text-surface-300 tabular-nums">{formatCurrency(pipeProbAdjusted)}</span>
+                      </div>
+                    ))}
+                </div>
+              </section>
+            )}
+
+            {/* Deal list: details below, with link to view details (chat) */}
+            <section>
+              <h2 className="text-sm font-medium text-surface-500 uppercase tracking-wider mb-3">
+                Deal list — {totalDeals} open deal{totalDeals !== 1 ? 's' : ''}
+              </h2>
+              <div className="space-y-6">
+                {pipelinesWithDeals.map(({ pipeline, deals: pipelineDeals, totalAll: pipeTotalAll, totalProbAdjusted: pipeProbAdjusted }) => (
+                  <div key={pipeline.id} className="bg-surface-900 border border-surface-800 rounded-xl overflow-hidden">
+                    <div className="px-4 py-3 border-b border-surface-800 flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        <h3 className="text-base font-semibold text-surface-100">{pipeline.name}</h3>
+                        {pipeline.is_default && (
+                          <span className="px-1.5 py-0.5 text-[10px] font-medium bg-primary-500/20 text-primary-400 rounded">Default</span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-3 text-xs text-surface-400">
+                        <span>{pipelineDeals.length} deal{pipelineDeals.length !== 1 ? 's' : ''}</span>
+                        {pipelineDeals.length > 0 && (
+                          <>
+                            <span className="tabular-nums">{formatCurrency(pipeTotalAll)}</span>
+                            <span className="text-surface-500">/</span>
+                            <span className="tabular-nums">{formatCurrency(pipeProbAdjusted)}</span>
+                          </>
+                        )}
+                      </div>
+                    </div>
+
+                    {pipelineDeals.length === 0 ? (
+                      <div className="px-4 py-8 text-center text-surface-500 text-sm">No deals in this pipeline</div>
+                    ) : (
+                      <div className="overflow-x-auto">
+                        <table className="w-full min-w-[400px]">
+                          <thead>
+                            <tr className="border-b border-surface-800">
+                              <th className="text-left px-3 md:px-4 py-3 text-xs font-medium text-surface-500 uppercase tracking-wider">Deal</th>
+                              <th className="text-left px-3 md:px-4 py-3 text-xs font-medium text-surface-500 uppercase tracking-wider hidden sm:table-cell">Stage</th>
+                              <th className="text-right px-3 md:px-4 py-3 text-xs font-medium text-surface-500 uppercase tracking-wider">Amount</th>
+                              <th className="text-right px-3 md:px-4 py-3 text-xs font-medium text-surface-500 uppercase tracking-wider hidden sm:table-cell">Close</th>
+                              <th className="w-24 px-3 md:px-4 py-3 text-right text-xs font-medium text-surface-500 uppercase tracking-wider" />
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-surface-800">
+                            {pipelineDeals.map((deal) => (
+                              <tr key={deal.id} className="hover:bg-surface-800/50 transition-colors">
+                                <td className="px-3 md:px-4 py-3">
+                                  <div className="font-medium text-surface-200 truncate max-w-[200px] md:max-w-none">{deal.name}</div>
+                                </td>
+                                <td className="px-3 md:px-4 py-3 hidden sm:table-cell">
+                                  {deal.stage ? (
+                                    <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-primary-500/20 text-primary-400">{deal.stage}</span>
+                                  ) : (
+                                    <span className="text-surface-500">—</span>
+                                  )}
+                                </td>
+                                <td className="px-3 md:px-4 py-3 text-right text-surface-300 tabular-nums">{formatCurrency(deal.amount)}</td>
+                                <td className="px-3 md:px-4 py-3 text-right text-surface-400 text-sm hidden sm:table-cell">{formatDate(deal.close_date)}</td>
+                                <td className="px-3 md:px-4 py-3 text-right">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleDealClick(deal)}
+                                    className="text-xs font-medium text-primary-400 hover:text-primary-300"
+                                  >
+                                    View details
+                                  </button>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
                     )}
                   </div>
-                  <span className="text-xs text-surface-500">
-                    {pipelineDeals.length} deal{pipelineDeals.length !== 1 ? 's' : ''}
-                  </span>
-                </div>
-
-                {pipelineDeals.length === 0 ? (
-                  <div className="px-4 py-8 text-center">
-                    <p className="text-surface-500 text-sm">No deals in this pipeline</p>
-                  </div>
-                ) : (
-                  <div className="overflow-x-auto">
-                    <table className="w-full min-w-[400px]">
-                      <thead>
-                        <tr className="border-b border-surface-800">
-                          <th className="text-left px-3 md:px-4 py-3 text-xs font-medium text-surface-500 uppercase tracking-wider">
-                            Deal Name
-                          </th>
-                          <th className="text-left px-3 md:px-4 py-3 text-xs font-medium text-surface-500 uppercase tracking-wider hidden sm:table-cell">
-                            Stage
-                          </th>
-                          <th className="text-right px-3 md:px-4 py-3 text-xs font-medium text-surface-500 uppercase tracking-wider">
-                            Amount
-                          </th>
-                          <th className="text-right px-3 md:px-4 py-3 text-xs font-medium text-surface-500 uppercase tracking-wider hidden sm:table-cell">
-                            Close Date
-                          </th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-surface-800">
-                        {pipelineDeals.map((deal) => (
-                          <tr
-                            key={deal.id}
-                            className="hover:bg-surface-800/50 transition-colors cursor-pointer"
-                            onClick={() => handleDealClick(deal)}
-                            onKeyDown={(event) => {
-                              if (event.key === 'Enter' || event.key === ' ') {
-                                event.preventDefault();
-                                handleDealClick(deal);
-                              }
-                            }}
-                            role="button"
-                            tabIndex={0}
-                          >
-                            <td className="px-3 md:px-4 py-3">
-                              <div className="font-medium text-surface-200 truncate max-w-[200px] md:max-w-none">{deal.name}</div>
-                            </td>
-                            <td className="px-3 md:px-4 py-3 hidden sm:table-cell">
-                              {deal.stage ? (
-                                <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-primary-500/20 text-primary-400">
-                                  {deal.stage}
-                                </span>
-                              ) : (
-                                <span className="text-surface-500">—</span>
-                              )}
-                            </td>
-                            <td className="px-3 md:px-4 py-3 text-right text-surface-300 tabular-nums">
-                              {formatCurrency(deal.amount)}
-                            </td>
-                            <td className="px-3 md:px-4 py-3 text-right text-surface-400 text-sm hidden sm:table-cell">
-                              {formatDate(deal.close_date)}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
+                ))}
               </div>
-            ))}
-          </div>
+            </section>
+          </>
         )}
       </div>
     </div>

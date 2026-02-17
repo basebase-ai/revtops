@@ -37,7 +37,7 @@ class BulkOperation(Base):
     Tracks a batch tool execution (e.g., run web_search over 14K contacts).
 
     The coordinator Celery task creates this record, fans out per-item tasks,
-    and updates progress.  The agent monitors via ``monitor_operation``.
+    and updates progress.  The ``foreach`` tool polls until completion.
     """
 
     __tablename__ = "bulk_operations"

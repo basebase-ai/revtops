@@ -3,9 +3,11 @@
 Quick SQL query tool against DATABASE_URL.
 
 Usage:
-    python dbq.py "SELECT * FROM conversations LIMIT 5"
-    python dbq.py "SELECT id, role, created_at FROM chat_messages WHERE conversation_id = '...'"
-    echo "SELECT 1" | python dbq.py
+    python scripts/dbq.py "SELECT * FROM conversations LIMIT 5"
+    python backend/scripts/dbq.py "SELECT id, role, created_at FROM chat_messages WHERE conversation_id = '...'"
+    echo "SELECT 1" | python scripts/dbq.py
+
+Run from backend/ or project root. Reads .env from project root.
 """
 from __future__ import annotations
 
@@ -21,8 +23,8 @@ import psycopg2
 import psycopg2.extras
 from dotenv import load_dotenv
 
-# Load .env from project root (one level up from backend/)
-_env_path: Path = Path(__file__).resolve().parent.parent / ".env"
+# .env at project root (backend/scripts -> backend -> project root)
+_env_path: Path = Path(__file__).resolve().parent.parent.parent / ".env"
 load_dotenv(_env_path)
 
 _raw_url: str = os.environ.get("DATABASE_URL", "")
@@ -75,8 +77,9 @@ def run_query(sql: str) -> None:
 
 
 if __name__ == "__main__":
+    query: str
     if len(sys.argv) > 1:
-        query: str = " ".join(sys.argv[1:])
+        query = " ".join(sys.argv[1:])
     elif not sys.stdin.isatty():
         query = sys.stdin.read().strip()
     else:

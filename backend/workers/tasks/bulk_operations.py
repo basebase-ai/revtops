@@ -1,20 +1,20 @@
 """
-Celery tasks for general-purpose parallel tool execution.
+Celery tasks for the ``foreach`` tool's distributed tool-execution path.
 
 Architecture
 ------------
 ``bulk_tool_run_coordinator``
     Reads the item list (from inline data or a SQL query), fans out one
-    ``bulk_tool_run_item`` task per item via ``celery.group()``, then polls
-    Redis progress counters and broadcasts WebSocket updates until all items
-    are processed.
+    ``bulk_tool_run_item`` task per item via ``celery.group()``, then updates
+    the BulkOperation record when all items are processed.
 
 ``bulk_tool_run_item``
     Acquires a rate-limit token, calls ``execute_tool`` with the rendered
     params, writes a ``BulkOperationResult`` row, and increments Redis
     counters.
 
-Both tasks run on the ``enrichment`` queue.
+Both tasks run on the ``enrichment`` queue.  Progress polling is handled
+inline by ``_poll_bulk_operation`` in ``agents/tools.py``.
 """
 
 from __future__ import annotations
@@ -64,7 +64,7 @@ def run_async(coro: Any) -> Any:
 
 
 async def _mark_operation_failed(operation_id: str, organization_id: str, error: str) -> None:
-    """Mark a bulk operation as failed in the DB so monitor_operation can detect it."""
+    """Mark a bulk operation as failed in the DB so the foreach poller can detect it."""
     from models.database import get_session
     from models.bulk_operation import BulkOperation
 
@@ -320,7 +320,7 @@ def bulk_tool_run_coordinator(
             )
         )
     except Exception as exc:
-        # Mark the operation as failed so monitor_operation doesn't hang
+        # Mark the operation as failed so the foreach poller doesn't hang
         logger.error("[BulkOp] Coordinator failed for %s: %s", operation_id[:8], exc)
         try:
             run_async(_mark_operation_failed(operation_id, organization_id, str(exc)))
@@ -384,7 +384,7 @@ async def _bulk_tool_run_coordinator_async(
                     elif isinstance(v, datetime):
                         item[k] = v.isoformat()
     else:
-        # Read inline items from Redis (stored by _bulk_tool_run tool)
+        # Read inline items from Redis (stored by _foreach_tool)
         r_items: aioredis.Redis = aioredis.from_url(redis_url, decode_responses=True)
         try:
             raw_items: Optional[str] = await r_items.get(f"bulk_op:{operation_id}:items")
@@ -500,11 +500,10 @@ async def _bulk_tool_run_coordinator_async(
         )
 
     # Coordinator returns immediately after dispatch.
-    # Progress polling + DB updates are handled by monitor_operation (called
-    # by the agent) and by each bulk_tool_run_item updating Redis counters.
-    # Finalisation (marking the operation "completed") is handled by each
-    # item task: the last item to finish checks if completed == total and
-    # flips the status.
+    # Progress polling is handled by _poll_bulk_operation in agents/tools.py
+    # (called inline by the foreach tool).  Each bulk_tool_run_item updates
+    # Redis counters; the last item to finish checks if completed == total
+    # and flips the DB status to "completed".
     logger.info(
         "[BulkOp] Coordinator done for operation %s — dispatched %d items, returning",
         operation_id[:8], remaining_count,

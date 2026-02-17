@@ -6,10 +6,10 @@ alwaysApply: false
 
 # Database Debugging
 
-A lightweight SQL query tool exists at `backend/dbq.py`. Use it for ad-hoc database inspection:
+A lightweight SQL query tool exists at `backend/scripts/dbq.py`. Use it for ad-hoc database inspection:
 
 ```bash
-python3 backend/dbq.py "SELECT id, role, created_at FROM chat_messages WHERE conversation_id = '...' ORDER BY created_at"
+python3 backend/scripts/dbq.py "SELECT id, role, created_at FROM chat_messages WHERE conversation_id = '...' ORDER BY created_at"
 ```
 
 - Reads `DATABASE_URL` from the project root `.env`
