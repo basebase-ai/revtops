@@ -5692,10 +5692,9 @@ async def _get_sandbox_id_from_db(
 ) -> str | None:
     """Load the sandbox_id stored on the conversation row."""
     async with get_session(organization_id=organization_id) as session:
-        from models.conversation import Conversation
         row = await session.execute(
-            select(Conversation.sandbox_id).where(
-                Conversation.id == conversation_id,
+            text("SELECT sandbox_id FROM conversations WHERE id = CAST(:cid AS uuid)").bindparams(
+                cid=conversation_id,
             )
         )
         result: str | None = row.scalar_one_or_none()
@@ -5712,7 +5711,7 @@ async def _save_sandbox_id_to_db(
         from models.conversation import Conversation
         await session.execute(
             text(
-                "UPDATE conversations SET sandbox_id = :sid WHERE id = :cid"
+                "UPDATE conversations SET sandbox_id = :sid WHERE id = CAST(:cid AS uuid)"
             ).bindparams(sid=sandbox_id, cid=conversation_id)
         )
         await session.commit()
