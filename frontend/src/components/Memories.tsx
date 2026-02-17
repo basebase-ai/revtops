@@ -47,10 +47,12 @@ export function Memories(): JSX.Element {
   const [agentGlobalCommands, setAgentGlobalCommands] = useState<string>('');
   const [commandsError, setCommandsError] = useState<string | null>(null);
   const [isUserStoredExpanded, setIsUserStoredExpanded] = useState<boolean>(() => {
-    return localStorage.getItem(USER_STORED_COLLAPSE_STATE_KEY) !== 'true';
+    const isUserStoredCollapsed = localStorage.getItem(USER_STORED_COLLAPSE_STATE_KEY);
+    return isUserStoredCollapsed === 'false';
   });
   const [isWorkflowStoredExpanded, setIsWorkflowStoredExpanded] = useState<boolean>(() => {
-    return localStorage.getItem(WORKFLOW_STORED_COLLAPSE_STATE_KEY) !== 'true';
+    const isWorkflowStoredCollapsed = localStorage.getItem(WORKFLOW_STORED_COLLAPSE_STATE_KEY);
+    return isWorkflowStoredCollapsed === 'false';
   });
 
   useEffect(() => {
@@ -210,8 +212,8 @@ export function Memories(): JSX.Element {
                   onClick={() => setIsUserStoredExpanded((value) => !value)}
                   aria-expanded={isUserStoredExpanded}
                 >
-                  <span className="text-surface-400 text-xs leading-none">{isUserStoredExpanded ? '▾' : '▸'}</span>
-                  <h2 className="text-lg font-semibold text-surface-100">User stored</h2>
+                  <span className="text-primary-400 text-xs leading-none">{isUserStoredExpanded ? '▾' : '▸'}</span>
+                  <h2 className="text-lg font-semibold text-primary-400">User stored</h2>
                 </button>
                 <span className="text-xs text-surface-500">Editable + deletable</span>
               </div>
@@ -257,8 +259,8 @@ export function Memories(): JSX.Element {
                   onClick={() => setIsWorkflowStoredExpanded((value) => !value)}
                   aria-expanded={isWorkflowStoredExpanded}
                 >
-                  <span className="text-surface-400 text-xs leading-none">{isWorkflowStoredExpanded ? '▾' : '▸'}</span>
-                  <h2 className="text-lg font-semibold text-surface-100">Workflow stored</h2>
+                  <span className="text-primary-400 text-xs leading-none">{isWorkflowStoredExpanded ? '▾' : '▸'}</span>
+                  <h2 className="text-lg font-semibold text-primary-400">Workflow stored</h2>
                 </button>
                 <span className="text-xs text-surface-500">Deletable</span>
               </div>
