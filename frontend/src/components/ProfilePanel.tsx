@@ -11,8 +11,6 @@ import { useState } from 'react';
 import type { UserProfile } from './AppLayout';
 import { API_BASE } from '../lib/api';
 
-const AGENT_GLOBAL_COMMANDS_MAX_LENGTH = 500;
-
 interface ProfilePanelProps {
   user: UserProfile;
   onClose: () => void;
@@ -24,7 +22,6 @@ export function ProfilePanel({ user, onClose, onLogout, onUpdateUser }: ProfileP
   const [name, setName] = useState(user.name ?? '');
   const [jobTitle, setJobTitle] = useState(user.jobTitle ?? '');
   const [phoneNumber, setPhoneNumber] = useState(user.phoneNumber ?? '');
-  const [agentGlobalCommands, setAgentGlobalCommands] = useState(user.agentGlobalCommands ?? '');
   const [isSaving, setIsSaving] = useState(false);
   // Only use local state for a NEW avatar selection, otherwise use the user prop directly
   const [newAvatarFile, setNewAvatarFile] = useState<string | null>(null);
@@ -34,12 +31,6 @@ export function ProfilePanel({ user, onClose, onLogout, onUpdateUser }: ProfileP
   const avatarPreview = newAvatarFile ?? user.avatarUrl;
 
   const handleSave = async (): Promise<void> => {
-    const trimmedAgentGlobalCommands = agentGlobalCommands.trim();
-    if (trimmedAgentGlobalCommands.length > AGENT_GLOBAL_COMMANDS_MAX_LENGTH) {
-      setError(`Agent global commands must be ${AGENT_GLOBAL_COMMANDS_MAX_LENGTH} characters or less.`);
-      return;
-    }
-
     setIsSaving(true);
     setError(null);
     try {
@@ -49,7 +40,7 @@ export function ProfilePanel({ user, onClose, onLogout, onUpdateUser }: ProfileP
         body: JSON.stringify({
           name: name || null,
           avatar_url: avatarPreview,
-          agent_global_commands: trimmedAgentGlobalCommands || null,
+          agent_global_commands: user.agentGlobalCommands,
           phone_number: phoneNumber.trim() || null,
           job_title: jobTitle.trim() || null,
         }),
@@ -210,22 +201,6 @@ export function ProfilePanel({ user, onClose, onLogout, onUpdateUser }: ProfileP
               />
               <p className="text-xs text-surface-500 mt-1">
                 Used for urgent SMS alerts from workflows
-              </p>
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium text-surface-200 mb-2">
-                Agent global commands
-              </label>
-              <textarea
-                value={agentGlobalCommands}
-                onChange={(e) => setAgentGlobalCommands(e.target.value)}
-                placeholder="Persistent instructions that should be included whenever prompts are sent to the agent"
-                className="input-field min-h-28"
-                maxLength={AGENT_GLOBAL_COMMANDS_MAX_LENGTH}
-              />
-              <p className="mt-1 text-xs text-surface-500">
-                {agentGlobalCommands.length}/{AGENT_GLOBAL_COMMANDS_MAX_LENGTH}
               </p>
             </div>
 

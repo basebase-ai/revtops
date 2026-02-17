@@ -1,7 +1,9 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiRequest } from '../lib/api';
 import { useAppStore } from '../store';
+
+const AGENT_GLOBAL_COMMANDS_MAX_LENGTH = 500;
 
 interface StoredMemory {
   id: string;
@@ -36,10 +38,18 @@ function formatTime(value: string | null): string {
 }
 
 export function Memories(): JSX.Element {
-  const { organization, user } = useAppStore();
+  const { organization, user, setUser } = useAppStore();
   const queryClient = useQueryClient();
   const [editingMemoryId, setEditingMemoryId] = useState<string | null>(null);
   const [memoryDraft, setMemoryDraft] = useState<string>('');
+  const [agentGlobalCommands, setAgentGlobalCommands] = useState<string>('');
+  const [commandsError, setCommandsError] = useState<string | null>(null);
+  const [isUserStoredExpanded, setIsUserStoredExpanded] = useState<boolean>(true);
+  const [isWorkflowStoredExpanded, setIsWorkflowStoredExpanded] = useState<boolean>(true);
+
+  useEffect(() => {
+    setAgentGlobalCommands(user?.agentGlobalCommands ?? '');
+  }, [user?.agentGlobalCommands]);
 
   const orgId = organization?.id;
   const userId = user?.id;
@@ -95,6 +105,52 @@ export function Memories(): JSX.Element {
     },
   });
 
+  const saveGlobalCommands = useMutation({
+    mutationFn: async () => {
+      if (!user) throw new Error('User is required');
+
+      const trimmedCommands = agentGlobalCommands.trim();
+      if (trimmedCommands.length > AGENT_GLOBAL_COMMANDS_MAX_LENGTH) {
+        throw new Error(`Agent global commands must be ${AGENT_GLOBAL_COMMANDS_MAX_LENGTH} characters or less.`);
+      }
+
+      const { data, error } = await apiRequest<{
+        name: string | null;
+        avatar_url: string | null;
+        agent_global_commands: string | null;
+        phone_number: string | null;
+        job_title: string | null;
+      }>(`/auth/me?user_id=${user.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          name: user.name,
+          avatar_url: user.avatarUrl,
+          agent_global_commands: trimmedCommands || null,
+          phone_number: user.phoneNumber,
+          job_title: user.jobTitle,
+        }),
+      });
+
+      if (error || !data) throw new Error(error ?? 'Failed to update global commands');
+      return data;
+    },
+    onSuccess: (updatedUser) => {
+      if (!user) return;
+      setCommandsError(null);
+      setUser({
+        ...user,
+        name: updatedUser.name,
+        avatarUrl: updatedUser.avatar_url,
+        agentGlobalCommands: updatedUser.agent_global_commands,
+        phoneNumber: updatedUser.phone_number,
+        jobTitle: updatedUser.job_title,
+      });
+    },
+    onError: (err) => {
+      setCommandsError(err instanceof Error ? err.message : 'Failed to update global commands');
+    },
+  });
+
   return (
     <div className="flex-1 overflow-hidden flex flex-col">
       <header className="sticky top-0 bg-surface-950 border-b border-surface-800 px-4 md:px-8 py-4 md:py-6">
@@ -110,10 +166,37 @@ export function Memories(): JSX.Element {
           <>
             <section className="rounded-xl border border-surface-800 bg-surface-900/40 p-4 md:p-6">
               <div className="flex items-center justify-between gap-4">
-                <h2 className="text-lg font-semibold text-surface-100">User stored memories</h2>
+                <h2 className="text-lg font-semibold text-surface-100">Global commands</h2>
+                <button
+                  className="px-3 py-1.5 text-xs rounded-md bg-primary-600 hover:bg-primary-700 text-white disabled:opacity-60"
+                  disabled={saveGlobalCommands.isPending}
+                  onClick={() => saveGlobalCommands.mutate()}
+                >
+                  {saveGlobalCommands.isPending ? 'Saving...' : 'Save'}
+                </button>
+              </div>
+              <p className="text-xs text-surface-500 mt-2">Persistent instructions included with every agent prompt.</p>
+              <textarea
+                value={agentGlobalCommands}
+                onChange={(e) => setAgentGlobalCommands(e.target.value)}
+                placeholder="Add global command guidance for the agent"
+                className="input-field min-h-28 mt-3"
+                maxLength={AGENT_GLOBAL_COMMANDS_MAX_LENGTH}
+              />
+              <div className="flex items-center justify-between mt-1">
+                <p className="text-xs text-surface-500">{agentGlobalCommands.length}/{AGENT_GLOBAL_COMMANDS_MAX_LENGTH}</p>
+                {commandsError && <p className="text-xs text-red-400">{commandsError}</p>}
+              </div>
+            </section>
+
+            <section className="rounded-xl border border-surface-800 bg-surface-900/40 p-4 md:p-6">
+              <div className="flex items-center justify-between gap-4">
+                <button className="text-left" onClick={() => setIsUserStoredExpanded((value) => !value)}>
+                  <h2 className="text-lg font-semibold text-surface-100">User stored</h2>
+                </button>
                 <span className="text-xs text-surface-500">Editable + deletable</span>
               </div>
-              <div className="mt-4 space-y-3">
+              {isUserStoredExpanded && <div className="mt-4 space-y-3">
                 {data?.memories.length ? data.memories.map((memory) => (
                   <div key={memory.id} className="rounded-lg border border-surface-800 bg-surface-900 p-3">
                     <div className="flex items-start justify-between gap-3">
@@ -145,15 +228,17 @@ export function Memories(): JSX.Element {
                     </div>
                   </div>
                 )) : <p className="text-sm text-surface-500">No user memories found yet.</p>}
-              </div>
+              </div>}
             </section>
 
             <section className="rounded-xl border border-surface-800 bg-surface-900/40 p-4 md:p-6">
               <div className="flex items-center justify-between gap-4">
-                <h2 className="text-lg font-semibold text-surface-100">Workflow notes</h2>
+                <button className="text-left" onClick={() => setIsWorkflowStoredExpanded((value) => !value)}>
+                  <h2 className="text-lg font-semibold text-surface-100">Workflow stored</h2>
+                </button>
                 <span className="text-xs text-surface-500">Deletable</span>
               </div>
-              <div className="mt-4 space-y-3">
+              {isWorkflowStoredExpanded && <div className="mt-4 space-y-3">
                 {data?.workflow_notes.length ? data.workflow_notes.map((note) => (
                   <div key={note.note_id} className="rounded-lg border border-surface-800 bg-surface-900 p-3">
                     <div className="flex items-start justify-between gap-3">
@@ -167,7 +252,7 @@ export function Memories(): JSX.Element {
                     </div>
                   </div>
                 )) : <p className="text-sm text-surface-500">No workflow notes saved yet.</p>}
-              </div>
+              </div>}
             </section>
           </>
         )}
