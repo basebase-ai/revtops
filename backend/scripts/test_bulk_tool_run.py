@@ -5,7 +5,7 @@ Quick integration test for foreach (tool mode — Celery path).
 Usage:
     cd backend
     source venv/bin/activate
-    python3 test_bulk_tool_run.py
+    python3 scripts/test_bulk_tool_run.py
 
 Requires:
     - API server running (uvicorn)
@@ -14,6 +14,7 @@ Requires:
     - Redis running
     - .env loaded with DATABASE_URL, REDIS_URL, PERPLEXITY_API_KEY
 """
+from __future__ import annotations
 
 import asyncio
 import json
@@ -21,12 +22,15 @@ import sys
 from pathlib import Path
 
 # Ensure backend is on path
-sys.path.insert(0, str(Path(__file__).parent))
+_backend_dir: Path = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_backend_dir))
 
 from dotenv import load_dotenv
-load_dotenv(Path(__file__).parent / ".env")
-if not (Path(__file__).parent / ".env").exists():
-    load_dotenv(Path(__file__).parent.parent / ".env")
+
+_root: Path = _backend_dir.parent
+load_dotenv(_backend_dir / ".env")
+if not (_backend_dir / ".env").exists():
+    load_dotenv(_root / ".env")
 
 
 async def test_small_batch() -> None:
@@ -36,7 +40,7 @@ async def test_small_batch() -> None:
     print("\n=== Test: foreach with tool='web_search' (small inline batch) ===\n")
 
     # Use a real org_id from the running system
-    # You can find yours with: python3 dbq.py "SELECT id, name FROM organizations LIMIT 1"
+    # You can find yours with: python3 scripts/dbq.py "SELECT id, name FROM organizations LIMIT 1"
     org_id: str = "dbe0b687-6967-4874-a26d-10f6289ae350"
     user_id: str | None = None
 

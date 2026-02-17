@@ -487,12 +487,13 @@ async def _run_sql_query(
 # Tables that can be written to via run_sql_write
 WRITABLE_TABLES: set[str] = {
     "workflows",
-    "artifacts", 
+    "artifacts",
     "contacts",
     "deals",
     "accounts",
     "org_members",
     "users",
+    "temp_data",
 }
 
 # Per-table column restrictions: only these columns may appear in SET clauses.
@@ -1217,22 +1218,26 @@ async def _search_activities(
         return {"error": f"Search failed: {str(e)}"}
 
 
-async def _web_search(params: dict[str, Any]) -> dict[str, Any]:
-    """Search the web using Perplexity's Sonar API."""
-    query = params.get("query", "").strip()
-    
-    if not query:
-        return {"error": "No search query provided"}
-    
+def _web_search_normalized_error(
+    error: str, query: str, provider: str = "perplexity"
+) -> dict[str, Any]:
+    return {"error": error, "query": query, "provider": provider}
+
+
+async def _web_search_perplexity(params: dict[str, Any]) -> dict[str, Any]:
+    """Search the web using Perplexity Sonar; returns normalized shape."""
+    query: str = params.get("query", "").strip()
     if not settings.PERPLEXITY_API_KEY:
-        return {
-            "error": "We do not currently run external web interactions; coming soon!",
+        return _web_search_normalized_error(
+            "We do not currently run external web interactions; coming soon!",
+            query,
+            "perplexity",
+        ) | {
             "suggestion": "Add PERPLEXITY_API_KEY to your environment variables to enable web search.",
         }
-    
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(
+            response: httpx.Response = await client.post(
                 "https://api.perplexity.ai/chat/completions",
                 headers={
                     "Authorization": f"Bearer {settings.PERPLEXITY_API_KEY}",
@@ -1245,40 +1250,120 @@ async def _web_search(params: dict[str, Any]) -> dict[str, Any]:
                             "role": "system",
                             "content": "You are a helpful research assistant. Provide concise, factual answers with relevant details. Focus on information useful for sales and business contexts.",
                         },
-                        {
-                            "role": "user",
-                            "content": query,
-                        },
+                        {"role": "user", "content": query},
                     ],
                 },
             )
-            
             if response.status_code != 200:
-                logger.error("[Tools._web_search] API error: %s %s", response.status_code, response.text)
-                return {"error": f"Search API error: {response.status_code}"}
-            
-            data = response.json()
+                logger.error(
+                    "[Tools._web_search_perplexity] API error: %s %s",
+                    response.status_code,
+                    response.text,
+                )
+                return _web_search_normalized_error(
+                    f"Search API error: {response.status_code}", query, "perplexity"
+                )
+            data: dict[str, Any] = response.json()
             content: str = data["choices"][0]["message"]["content"]
-            
-            # Extract citations if available
             citations: list[str] = data.get("citations", [])
-            
-            result: dict[str, Any] = {
-                "answer": content,
+            return {
                 "query": query,
+                "provider": "perplexity",
+                "answer": content,
+                "sources": citations,
+                "results": [],
             }
-            
-            if citations:
-                result["sources"] = citations
-            
-            return result
-            
     except httpx.TimeoutException:
-        logger.error("[Tools._web_search] Request timed out")
-        return {"error": "Search request timed out. Try a simpler query."}
+        logger.error("[Tools._web_search_perplexity] Request timed out")
+        return _web_search_normalized_error(
+            "Search request timed out. Try a simpler query.", query, "perplexity"
+        )
     except Exception as e:
-        logger.error("[Tools._web_search] Search failed: %s", str(e))
-        return {"error": f"Search failed: {str(e)}"}
+        logger.error("[Tools._web_search_perplexity] Search failed: %s", str(e))
+        return _web_search_normalized_error(f"Search failed: {str(e)}", query, "perplexity")
+
+
+async def _web_search_exa(params: dict[str, Any]) -> dict[str, Any]:
+    """Search the web using Exa; returns normalized shape with per-result content."""
+    query: str = params.get("query", "").strip()
+    if not settings.EXA_API_KEY:
+        return _web_search_normalized_error(
+            "Exa search is not configured.",
+            query,
+            "exa",
+        ) | {
+            "suggestion": "Add EXA_API_KEY to your environment variables to use provider='exa'.",
+        }
+    num_results: int = int(params.get("num_results") or 10)
+    num_results = max(1, min(100, num_results))
+    try:
+        body: dict[str, Any] = {
+            "query": query,
+            "numResults": num_results,
+            "type": "auto",
+            "contents": {"highlights": {"maxCharacters": 2000}},
+        }
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response: httpx.Response = await client.post(
+                "https://api.exa.ai/search",
+                headers={
+                    "x-api-key": settings.EXA_API_KEY,
+                    "Content-Type": "application/json",
+                },
+                json=body,
+            )
+        if response.status_code != 200:
+            logger.error(
+                "[Tools._web_search_exa] API error: %s %s",
+                response.status_code,
+                response.text,
+            )
+            return _web_search_normalized_error(
+                f"Exa API error: {response.status_code}", query, "exa"
+            )
+        data = response.json()
+        exa_results: list[dict[str, Any]] = data.get("results", [])
+        results: list[dict[str, Any]] = []
+        sources: list[str] = []
+        for r in exa_results:
+            url: str = r.get("url", "")
+            if url:
+                sources.append(url)
+            highlights: list[str] = r.get("highlights") or []
+            content_val: str | None = "\n\n".join(highlights).strip() or None if highlights else None
+            if content_val is None and r.get("summary"):
+                content_val = r["summary"]
+            results.append({
+                "title": r.get("title") or "",
+                "url": url,
+                "content": content_val,
+            })
+        return {
+            "query": query,
+            "provider": "exa",
+            "answer": None,
+            "sources": sources,
+            "results": results,
+        }
+    except httpx.TimeoutException:
+        logger.error("[Tools._web_search_exa] Request timed out")
+        return _web_search_normalized_error(
+            "Exa search timed out. Try a simpler query.", query, "exa"
+        )
+    except Exception as e:
+        logger.error("[Tools._web_search_exa] Search failed: %s", str(e))
+        return _web_search_normalized_error(f"Search failed: {str(e)}", query, "exa")
+
+
+async def _web_search(params: dict[str, Any]) -> dict[str, Any]:
+    """Dispatch web search to the chosen provider; returns normalized shape."""
+    query: str = (params.get("query") or "").strip()
+    if not query:
+        return _web_search_normalized_error("No search query provided", "", "exa")
+    provider: str = (params.get("provider") or "exa").strip().lower()
+    if provider == "exa":
+        return await _web_search_exa(params)
+    return await _web_search_perplexity(params)
 
 
 async def _fetch_url(params: dict[str, Any]) -> dict[str, Any]:
@@ -1992,7 +2077,38 @@ async def _crm_write(
     
     if not validated_records:
         return {"error": "No valid records after validation"}
-    
+
+    # ── Deduplicate within the batch (prevents AI from creating the same record twice) ──
+    if operation in ("create", "upsert") and not is_engagement:
+        _DEDUP_KEY_FIELD: dict[str, str] = {
+            "contact": "email",
+            "company": "domain",
+            "deal": "dealname",
+        }
+        dedup_field: str | None = _DEDUP_KEY_FIELD.get(record_type)
+        if dedup_field:
+            seen_keys: set[str] = set()
+            unique_records: list[dict[str, Any]] = []
+            dedup_dropped: int = 0
+            for rec in validated_records:
+                key_val: str = str(rec.get(dedup_field, "")).strip().lower()
+                if key_val and key_val in seen_keys:
+                    dedup_dropped += 1
+                    logger.info(
+                        "[Tools._crm_write] Dropping intra-batch duplicate %s=%r",
+                        dedup_field, rec.get(dedup_field),
+                    )
+                    continue
+                if key_val:
+                    seen_keys.add(key_val)
+                unique_records.append(rec)
+            if dedup_dropped:
+                logger.warning(
+                    "[Tools._crm_write] Removed %d intra-batch duplicate(s) by %s",
+                    dedup_dropped, dedup_field,
+                )
+            validated_records = unique_records
+
     # Check for duplicates in HubSpot (for create/upsert operations on CRM record types)
     # Engagements don't have duplicate detection
     # Only check first 10 records to avoid API rate limits and connection pool exhaustion
@@ -2522,6 +2638,28 @@ async def _execute_hubspot_operation(
     # Determine if this is an engagement type
     _engagement_types: frozenset[str] = frozenset({"call", "email", "meeting", "note"})
     is_engagement: bool = crm_op.record_type in _engagement_types
+
+    # ── Deduplicate within the batch (safety net) ─────────────────────────
+    if crm_op.operation in ("create", "upsert") and not is_engagement:
+        _DEDUP_FIELD: dict[str, str] = {
+            "contact": "email", "company": "domain", "deal": "dealname",
+        }
+        dk: str | None = _DEDUP_FIELD.get(crm_op.record_type)
+        if dk:
+            _seen: set[str] = set()
+            _deduped: list[dict[str, Any]] = []
+            for _rec in records_to_process:
+                _kv: str = str(_rec.get(dk, "")).strip().lower()
+                if _kv and _kv in _seen:
+                    logger.info(
+                        "[Tools._execute_hubspot_operation] Dropping intra-batch dup %s=%r",
+                        dk, _rec.get(dk),
+                    )
+                    continue
+                if _kv:
+                    _seen.add(_kv)
+                _deduped.append(_rec)
+            records_to_process = _deduped
 
     # Execute based on record type and operation
     created: list[dict[str, Any]] = []
@@ -3079,6 +3217,32 @@ async def commit_change_session(
                 accounts_to_update.append((record_id, hs_props, source_data))
             elif snapshot.table_name == "deals":
                 deals_to_update.append((record_id, hs_props, source_data))
+
+    # ── 2b. Deduplicate create lists (same key → keep first occurrence) ────
+    def _dedup_creates(
+        items: list[tuple[UUID, dict[str, Any]]], key_field: str,
+    ) -> list[tuple[UUID, dict[str, Any]]]:
+        seen: set[str] = set()
+        result: list[tuple[UUID, dict[str, Any]]] = []
+        for local_id, props in items:
+            kv: str = str(props.get(key_field, "")).strip().lower()
+            if kv and kv in seen:
+                _log.info("[commit:dedup] Dropping duplicate %s=%r (id=%s)", key_field, props.get(key_field), local_id)
+                continue
+            if kv:
+                seen.add(kv)
+            result.append((local_id, props))
+        return result
+
+    pre_dedup_deals: int = len(deals_to_create)
+    contacts_to_create = _dedup_creates(contacts_to_create, "email")
+    accounts_to_create = _dedup_creates(accounts_to_create, "name")
+    deals_to_create = _dedup_creates(deals_to_create, "dealname")
+    if len(deals_to_create) < pre_dedup_deals:
+        _log.warning(
+            "[commit] Removed %d duplicate deal snapshot(s) before HubSpot push",
+            pre_dedup_deals - len(deals_to_create),
+        )
 
     total_creates: int = len(contacts_to_create) + len(accounts_to_create) + len(deals_to_create) + len(engagements_to_create)
     total_updates: int = len(contacts_to_update) + len(accounts_to_update) + len(deals_to_update)
@@ -5367,5 +5531,4 @@ async def _foreach_workflow(
         summary["sample_results"] = [r["result"] for r in results[:5]]
 
     return summary
-
 

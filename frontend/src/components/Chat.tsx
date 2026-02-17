@@ -442,7 +442,6 @@ export function Chat({
     };
   // Note: messages.length deliberately excluded — polling is self-contained via
   // the interval and stops via workflowDoneRef. Including it caused restarts.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatId, userId, conversationType, setConversationMessages]);
 
   // Track whether user is near the bottom of the scroll container.

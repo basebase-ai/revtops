@@ -119,6 +119,7 @@ Available tables:
 - tracker_projects: Issue tracker projects (source_system, source_id, name, description, state, progress, target_date, start_date, lead_name, team_ids JSONB). Filter by source_system.
 - tracker_issues: Issue tracker issues/tasks (source_system, source_id, team_id, identifier e.g. "ENG-123", title, description, state_name, state_type, priority 0-4, priority_label, issue_type, assignee_name, assignee_email, creator_name, project_id, labels JSONB, estimate, url, due_date, created_date, updated_date, completed_date, cancelled_date, user_id). Filter by source_system.
 - shared_files: Synced file metadata from cloud sources like Google Drive (external_id, source, name, mime_type, folder_path, web_view_link, file_size, source_modified_at). Filter by source (e.g. 'google_drive'). Use search_cloud_files tool instead for name-based searches.
+- temp_data: Agent-generated results and computed metrics. Flexible JSONB storage linked to entities. Columns: entity_type, entity_id, namespace, key, value (JSONB), metadata (JSONB), created_by_user_id, created_at, expires_at. Example: SELECT td.value->>'score' as confidence, d.name FROM temp_data td JOIN deals d ON d.id = td.entity_id WHERE td.namespace = 'deal_confidence'
 
 IMPORTANT: Do NOT add organization_id to WHERE clauses. Data is automatically scoped to the user's organization via row-level security. Adding organization_id filters will cause queries to return wrong results.
 
@@ -201,6 +202,7 @@ Writable tables:
 - users: (phone_number) → immediate. Phone numbers MUST be E.164 format with country code, e.g. +14155551234 for US numbers. If the user gives a 10-digit number like 4159028648, prepend +1.
 - workflows: See workflow format below → immediate
 - artifacts: (type, title, description, data) → immediate
+- temp_data: (entity_type, entity_id, namespace, key, value, metadata, expires_at) → immediate. Flexible JSONB store for computed results. Use namespace to group (e.g. 'deal_confidence'). value is JSONB, any shape.
 
 **WORKFLOW FORMAT (Important!):**
 Workflows are prompts sent to the agent on a schedule. Use these columns:
@@ -306,13 +308,26 @@ Use this when you need external information not available in the user's data:
 - Current events or news about companies
 - Sales methodologies or frameworks
 
-Do NOT use this for data that's in the user's database - use run_sql_query instead.""",
+Do NOT use this for data that's in the user's database - use run_sql_query instead.
+
+Provider choice (default exa): Use exa for semantic search over the live web with per-result excerpts (title, url, content snippets) — best when you need to compare or cite specific pages. Use perplexity when you want a single synthesized answer in one blob with citation URLs and no per-result text.""",
     input_schema={
         "type": "object",
         "properties": {
             "query": {
                 "type": "string",
                 "description": "The search query - be specific and include relevant context",
+            },
+            "provider": {
+                "type": "string",
+                "enum": ["perplexity", "exa"],
+                "description": "Search provider: exa (default) = semantic search, per-result excerpts; perplexity = single synthesized answer with citation URLs. Prefer exa for comparing/citing pages; perplexity for one-shot answers.",
+                "default": "exa",
+            },
+            "num_results": {
+                "type": "integer",
+                "description": "Max number of results (Exa only; default 10). Ignored for perplexity.",
+                "default": 10,
             },
         },
         "required": ["query"],

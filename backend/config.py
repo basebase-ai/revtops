@@ -53,6 +53,9 @@ class Settings(BaseSettings):
     # Perplexity (for web search)
     PERPLEXITY_API_KEY: Optional[str] = None
 
+    # Exa (for web search tool, provider="exa")
+    EXA_API_KEY: Optional[str] = None
+
     # Nango - OAuth & credential management for all integrations
     NANGO_SECRET_KEY: Optional[str] = None
     NANGO_PUBLIC_KEY: Optional[str] = None  # For frontend connect UI

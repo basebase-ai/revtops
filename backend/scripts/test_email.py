@@ -1,5 +1,15 @@
 """Quick script to test Resend email sending."""
+from __future__ import annotations
+
 import asyncio
+import sys
+from pathlib import Path
+
+# Ensure backend is on path when run as script
+_backend_dir: Path = Path(__file__).resolve().parent.parent
+if str(_backend_dir) not in sys.path:
+    sys.path.insert(0, str(_backend_dir))
+
 import httpx
 from config import settings
 
@@ -32,12 +42,10 @@ async def send_test_email(to_email: str) -> None:
 
 
 if __name__ == "__main__":
-    import sys
-    
     if len(sys.argv) < 2:
-        print("Usage: python test_email.py <your-email@example.com>")
+        print("Usage: python scripts/test_email.py <your-email@example.com>")
         sys.exit(1)
-    
-    to_email = sys.argv[1]
+
+    to_email: str = sys.argv[1]
     print(f"Sending test email to {to_email}...")
     asyncio.run(send_test_email(to_email))
