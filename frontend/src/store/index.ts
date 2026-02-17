@@ -170,6 +170,7 @@ export type View =
   | "data"
   | "search"
   | "workflows"
+  | "memory"
   | "apps"
   | "app-view"
   | "admin"
