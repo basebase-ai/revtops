@@ -262,39 +262,6 @@ export async function getSyncStatus(
 }
 
 // =============================================================================
-// Search Types
-// =============================================================================
-
-export interface DealSearchResult {
-  type: "deal";
-  id: string;
-  name: string;
-  amount: number | null;
-  stage: string | null;
-  close_date: string | null;
-  account_name: string | null;
-  owner_name: string | null;
-}
-
-export interface AccountSearchResult {
-  type: "account";
-  id: string;
-  name: string;
-  domain: string | null;
-  industry: string | null;
-  annual_revenue: number | null;
-  deal_count: number;
-}
-
-export interface SearchResponse {
-  query: string;
-  deals: DealSearchResult[];
-  accounts: AccountSearchResult[];
-  total_deals: number;
-  total_accounts: number;
-}
-
-// =============================================================================
 // File Upload
 // =============================================================================
 
@@ -349,22 +316,3 @@ export async function uploadChatFile(
   }
 }
 
-// =============================================================================
-// Search API
-// =============================================================================
-
-/**
- * Search deals and accounts
- */
-export async function searchData(
-  query: string,
-  organizationId: string,
-  limit = 10,
-): Promise<ApiResponse<SearchResponse>> {
-  const params = new URLSearchParams({
-    q: query,
-    organization_id: organizationId,
-    limit: limit.toString(),
-  });
-  return apiRequest<SearchResponse>(`/search?${params.toString()}`);
-}

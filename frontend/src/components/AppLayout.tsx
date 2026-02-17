@@ -39,7 +39,6 @@ import { Sidebar } from './Sidebar';
 import { Home } from './Home';
 import { DataSources } from './DataSources';
 import { Data } from './Data';
-import { Search } from './Search';
 import { Chat } from './Chat';
 import { Workflows } from './Workflows';
 import { AdminPanel } from './AdminPanel';
@@ -275,7 +274,6 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
       '/chat': 'chat',
       '/sources': 'data-sources',
       '/data': 'data',
-      '/search': 'search',
       '/workflows': 'workflows',
       '/apps': 'apps',
       '/admin': 'admin',
@@ -324,7 +322,6 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
         'chat': '/chat',
         'data-sources': '/sources',
         'data': '/data',
-        'search': '/search',
         'workflows': '/workflows',
         'apps': '/apps',
         'app-view': '/apps',
@@ -761,7 +758,7 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
     const handleNavigate = (event: Event): void => {
       const customEvent = event as CustomEvent<string>;
       if (customEvent.detail) {
-        setCurrentView(customEvent.detail as 'home' | 'chat' | 'data-sources' | 'search' | 'workflows' | 'admin');
+        setCurrentView(customEvent.detail as 'home' | 'chat' | 'data-sources' | 'data' | 'workflows' | 'admin');
       }
     };
     window.addEventListener('navigate', handleNavigate);
@@ -791,7 +788,7 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
     home: 'Home',
     chat: 'Chat',
     'data-sources': 'Data Sources',
-    search: 'Search',
+    data: 'Search Data',
     workflows: 'Workflows',
     admin: 'Admin',
     'pending-changes': 'Pending Changes',
@@ -913,9 +910,6 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
         )}
         {currentView === 'data' && (
           <Data />
-        )}
-        {currentView === 'search' && (
-          <Search organizationId={organization.id} />
         )}
         {currentView === 'workflows' && (
           <Workflows />

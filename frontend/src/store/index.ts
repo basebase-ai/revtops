@@ -168,7 +168,6 @@ export type View =
   | "chat"
   | "data-sources"
   | "data"
-  | "search"
   | "workflows"
   | "apps"
   | "app-view"
