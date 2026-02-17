@@ -4,6 +4,8 @@ import { apiRequest } from '../lib/api';
 import { useAppStore } from '../store';
 
 const AGENT_GLOBAL_COMMANDS_MAX_LENGTH = 500;
+const USER_STORED_COLLAPSE_STATE_KEY = 'memory_user_stored_collapsed';
+const WORKFLOW_STORED_COLLAPSE_STATE_KEY = 'memory_workflow_stored_collapsed';
 
 interface StoredMemory {
   id: string;
@@ -44,12 +46,24 @@ export function Memories(): JSX.Element {
   const [memoryDraft, setMemoryDraft] = useState<string>('');
   const [agentGlobalCommands, setAgentGlobalCommands] = useState<string>('');
   const [commandsError, setCommandsError] = useState<string | null>(null);
-  const [isUserStoredExpanded, setIsUserStoredExpanded] = useState<boolean>(true);
-  const [isWorkflowStoredExpanded, setIsWorkflowStoredExpanded] = useState<boolean>(true);
+  const [isUserStoredExpanded, setIsUserStoredExpanded] = useState<boolean>(() => {
+    return localStorage.getItem(USER_STORED_COLLAPSE_STATE_KEY) !== 'true';
+  });
+  const [isWorkflowStoredExpanded, setIsWorkflowStoredExpanded] = useState<boolean>(() => {
+    return localStorage.getItem(WORKFLOW_STORED_COLLAPSE_STATE_KEY) !== 'true';
+  });
 
   useEffect(() => {
     setAgentGlobalCommands(user?.agentGlobalCommands ?? '');
   }, [user?.agentGlobalCommands]);
+
+  useEffect(() => {
+    localStorage.setItem(USER_STORED_COLLAPSE_STATE_KEY, String(!isUserStoredExpanded));
+  }, [isUserStoredExpanded]);
+
+  useEffect(() => {
+    localStorage.setItem(WORKFLOW_STORED_COLLAPSE_STATE_KEY, String(!isWorkflowStoredExpanded));
+  }, [isWorkflowStoredExpanded]);
 
   const orgId = organization?.id;
   const userId = user?.id;
@@ -191,7 +205,12 @@ export function Memories(): JSX.Element {
 
             <section className="rounded-xl border border-surface-800 bg-surface-900/40 p-4 md:p-6">
               <div className="flex items-center justify-between gap-4">
-                <button className="text-left" onClick={() => setIsUserStoredExpanded((value) => !value)}>
+                <button
+                  className="flex items-center gap-2 text-left"
+                  onClick={() => setIsUserStoredExpanded((value) => !value)}
+                  aria-expanded={isUserStoredExpanded}
+                >
+                  <span className="text-surface-400 text-xs leading-none">{isUserStoredExpanded ? '▾' : '▸'}</span>
                   <h2 className="text-lg font-semibold text-surface-100">User stored</h2>
                 </button>
                 <span className="text-xs text-surface-500">Editable + deletable</span>
@@ -233,7 +252,12 @@ export function Memories(): JSX.Element {
 
             <section className="rounded-xl border border-surface-800 bg-surface-900/40 p-4 md:p-6">
               <div className="flex items-center justify-between gap-4">
-                <button className="text-left" onClick={() => setIsWorkflowStoredExpanded((value) => !value)}>
+                <button
+                  className="flex items-center gap-2 text-left"
+                  onClick={() => setIsWorkflowStoredExpanded((value) => !value)}
+                  aria-expanded={isWorkflowStoredExpanded}
+                >
+                  <span className="text-surface-400 text-xs leading-none">{isWorkflowStoredExpanded ? '▾' : '▸'}</span>
                   <h2 className="text-lg font-semibold text-surface-100">Workflow stored</h2>
                 </button>
                 <span className="text-xs text-surface-500">Deletable</span>
