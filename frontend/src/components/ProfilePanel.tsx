@@ -10,6 +10,7 @@
 import { useState } from 'react';
 import type { UserProfile } from './AppLayout';
 import { API_BASE } from '../lib/api';
+import { Memories } from './Memories';
 
 interface ProfilePanelProps {
   user: UserProfile;
@@ -19,6 +20,7 @@ interface ProfilePanelProps {
 }
 
 export function ProfilePanel({ user, onClose, onLogout, onUpdateUser }: ProfilePanelProps): JSX.Element {
+  const [activeTab, setActiveTab] = useState<'profile' | 'memories'>('profile');
   const [name, setName] = useState(user.name ?? '');
   const [jobTitle, setJobTitle] = useState(user.jobTitle ?? '');
   const [phoneNumber, setPhoneNumber] = useState(user.phoneNumber ?? '');
@@ -122,8 +124,35 @@ export function ProfilePanel({ user, onClose, onLogout, onUpdateUser }: ProfileP
           </button>
         </header>
 
+        <div className="px-6 pt-4 border-b border-surface-800">
+          <div className="flex gap-2">
+            <button
+              onClick={() => setActiveTab('profile')}
+              className={`px-3 py-2 text-sm rounded-t-lg transition-colors ${
+                activeTab === 'profile'
+                  ? 'bg-surface-800 text-surface-100'
+                  : 'text-surface-400 hover:text-surface-200 hover:bg-surface-800/60'
+              }`}
+            >
+              Profile
+            </button>
+            <button
+              onClick={() => setActiveTab('memories')}
+              className={`px-3 py-2 text-sm rounded-t-lg transition-colors ${
+                activeTab === 'memories'
+                  ? 'bg-surface-800 text-surface-100'
+                  : 'text-surface-400 hover:text-surface-200 hover:bg-surface-800/60'
+              }`}
+            >
+              Memories
+            </button>
+          </div>
+        </div>
+
         {/* Content */}
         <div className="flex-1 overflow-y-auto p-6 space-y-6">
+          {activeTab === 'profile' && (
+            <>
           {/* Avatar Section */}
           <div className="flex flex-col items-center">
             <div className="relative">
@@ -247,6 +276,14 @@ export function ProfilePanel({ user, onClose, onLogout, onUpdateUser }: ProfileP
               </div>
             </div>
           </div>
+            </>
+          )}
+
+          {activeTab === 'memories' && (
+            <div className="-m-6 h-full">
+              <Memories />
+            </div>
+          )}
         </div>
 
         {/* Footer - always visible */}
@@ -254,13 +291,15 @@ export function ProfilePanel({ user, onClose, onLogout, onUpdateUser }: ProfileP
           {error && (
             <p className="text-sm text-red-400 text-center">{error}</p>
           )}
-          <button
-            onClick={() => void handleSave()}
-            disabled={isSaving}
-            className="w-full btn-primary disabled:opacity-50"
-          >
-            {isSaving ? 'Saving...' : 'Save changes'}
-          </button>
+          {activeTab === 'profile' && (
+            <button
+              onClick={() => void handleSave()}
+              disabled={isSaving}
+              className="w-full btn-primary disabled:opacity-50"
+            >
+              {isSaving ? 'Saving...' : 'Save changes'}
+            </button>
+          )}
           <button
             onClick={handleLogout}
             className="w-full flex items-center justify-center gap-2 px-4 py-3 text-red-400 hover:text-red-300 hover:bg-red-500/10 rounded-lg transition-colors font-medium"
