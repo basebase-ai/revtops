@@ -42,6 +42,7 @@ import { Data } from './Data';
 import { Search } from './Search';
 import { Chat } from './Chat';
 import { Workflows } from './Workflows';
+import { Memories } from './Memories';
 import { AdminPanel } from './AdminPanel';
 import { PendingChangesPage } from './PendingChangesPage';
 import { AppsGallery } from './apps/AppsGallery';
@@ -277,6 +278,7 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
       '/data': 'data',
       '/search': 'search',
       '/workflows': 'workflows',
+      '/memories': 'memories',
       '/apps': 'apps',
       '/admin': 'admin',
       '/changes': 'pending-changes',
@@ -326,6 +328,7 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
         'data': '/data',
         'search': '/search',
         'workflows': '/workflows',
+        'memories': '/memories',
         'apps': '/apps',
         'app-view': '/apps',
         'admin': '/admin',
@@ -761,7 +764,7 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
     const handleNavigate = (event: Event): void => {
       const customEvent = event as CustomEvent<string>;
       if (customEvent.detail) {
-        setCurrentView(customEvent.detail as 'home' | 'chat' | 'data-sources' | 'search' | 'workflows' | 'admin');
+        setCurrentView(customEvent.detail as 'home' | 'chat' | 'data-sources' | 'search' | 'workflows' | 'memories' | 'admin');
       }
     };
     window.addEventListener('navigate', handleNavigate);
@@ -793,6 +796,7 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
     'data-sources': 'Data Sources',
     search: 'Search',
     workflows: 'Workflows',
+    memories: 'Memories',
     admin: 'Admin',
     'pending-changes': 'Pending Changes',
   };
@@ -919,6 +923,9 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
         )}
         {currentView === 'workflows' && (
           <Workflows />
+        )}
+        {currentView === 'memories' && (
+          <Memories user={user} organization={organization} onUpdateUser={(updates) => setUser({ ...user, ...updates })} />
         )}
         {currentView === 'apps' && (
           <AppsGallery />
