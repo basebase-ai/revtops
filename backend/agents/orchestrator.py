@@ -31,6 +31,48 @@ logger = logging.getLogger(__name__)
 _AGENT_GLOBAL_COMMANDS_CATEGORY = "global_commands"
 
 
+def _format_slack_scope_context(slack_channel_id: str | None, slack_thread_ts: str | None) -> str:
+    """Build prompt guidance for Slack channel/thread query scoping."""
+    if not slack_channel_id:
+        return ""
+
+    thread_line: str = (
+        f"This conversation is in Slack thread timestamp: {slack_thread_ts}\n"
+        if slack_thread_ts
+        else ""
+    )
+    thread_filter: str = (
+        f"AND custom_fields->>'thread_ts' = '{slack_thread_ts}'"
+        if slack_thread_ts
+        else "AND custom_fields->>'thread_ts' = '<thread_ts>'"
+    )
+
+    return f"""
+
+## Slack Channel Context
+This conversation is happening in Slack channel ID: {slack_channel_id}
+{thread_line}
+When users refer to Slack scope, distinguish **thread/chat** vs **channel**:
+- "this chat", "this thread", "this conversation" → scope to the current thread when `thread_ts` is available.
+- "this channel" or "in #channel" → scope to the whole channel.
+
+If the user asks a Slack activity question but says "this" without indicating chat/thread vs channel, ask a brief clarification question before querying.
+
+Channel-level filter:
+```sql
+WHERE source_system = 'slack' AND custom_fields->>'channel_id' = '{slack_channel_id}'
+```
+
+Thread-level filter (when thread_ts is available):
+```sql
+WHERE source_system = 'slack'
+  AND custom_fields->>'channel_id' = '{slack_channel_id}'
+  {thread_filter}
+```
+
+The activities table contains synced Slack messages with these relevant custom_fields keys: channel_id, channel_name, user_id, thread_ts."""
+
+
 async def update_tool_result(
     conversation_id: str,
     tool_id: str,
@@ -945,19 +987,13 @@ class ChatOrchestrator:
             system_prompt += "\n\n## User Global Commands\nThe user configured these standing instructions for every prompt. Follow them unless they conflict with higher-priority system/developer constraints:\n"
             system_prompt += self.agent_global_commands.strip()
 
-        # Add Slack channel context so the agent can scope queries to the right channel
+        # Add Slack channel/thread context so the agent can scope queries correctly
         slack_channel_id: str | None = (self.workflow_context or {}).get("slack_channel_id")
-        if slack_channel_id:
-            system_prompt += f"""
-
-## Slack Channel Context
-This conversation is happening in Slack channel ID: {slack_channel_id}
-
-When the user asks about activity in "this channel", query the activities table filtered by:
-```sql
-WHERE source_system = 'slack' AND custom_fields->>'channel_id' = '{slack_channel_id}'
-```
-The activities table contains synced Slack messages with these relevant custom_fields keys: channel_id, channel_name, user_id, thread_ts."""
+        slack_thread_ts: str | None = (self.workflow_context or {}).get("slack_thread_ts")
+        system_prompt += _format_slack_scope_context(
+            slack_channel_id=slack_channel_id,
+            slack_thread_ts=slack_thread_ts,
+        )
 
         # Always inject time context — use server UTC as fallback when client
         # does not provide local_time / timezone (e.g. Slack and workflow invocations).
