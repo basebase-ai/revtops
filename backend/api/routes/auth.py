@@ -875,35 +875,16 @@ async def get_organization_members(
                 )
             )
 
-        # Collect unmapped identity rows (user_id is NULL)
+        # Collect all unmapped identity rows (user_id is NULL).
+        # Keep these unfiltered so manually unlinked identities always remain
+        # visible in the linking panel until they are explicitly re-linked.
         unmapped_mappings: list[SlackUserMapping] = mappings_by_user.get(None, [])
-
-        # Avoid showing stale "unmapped" rows when the same external account
-        # is already linked to a team user via the same source + external identity.
-        linked_identity_keys: set[tuple[str, str]] = set()
-        for mapping in all_mappings:
-            if mapping.user_id is None:
-                continue
-            identity_value = mapping.external_email or mapping.external_userid
-            if identity_value:
-                linked_identity_keys.add((mapping.source, identity_value.lower()))
-
-        filtered_unmapped_mappings: list[SlackUserMapping] = []
-        for mapping in unmapped_mappings:
-            identity_value = mapping.external_email or mapping.external_userid
-            if not identity_value:
-                filtered_unmapped_mappings.append(mapping)
-                continue
-            if (mapping.source, identity_value.lower()) in linked_identity_keys:
-                logger.info(
-                    "Skipping unmapped identity id=%s org=%s source=%s identity=%s because it is already linked",
-                    mapping.id,
-                    org_id,
-                    mapping.source,
-                    identity_value,
-                )
-                continue
-            filtered_unmapped_mappings.append(mapping)
+        logger.info(
+            "Returning unmapped identities for org=%s count=%s total_mappings=%s",
+            org_id,
+            len(unmapped_mappings),
+            len(all_mappings),
+        )
 
         unmapped_identities: list[IdentityMappingResponse] = [
             IdentityMappingResponse(
@@ -914,7 +895,7 @@ async def get_organization_members(
                 match_source=m.match_source,
                 updated_at=m.updated_at.isoformat() if m.updated_at else None,
             )
-            for m in filtered_unmapped_mappings
+            for m in unmapped_mappings
         ]
 
         return TeamMembersListResponse(
