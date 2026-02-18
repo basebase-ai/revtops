@@ -739,6 +739,7 @@ class ChatOrchestrator:
             "user_memories": [],
             "org_memories": [],
             "job_memories": [],
+            "participant_profiles": [],
             "membership_title": None,
             "reports_to_name": None,
             "phone_number": getattr(self, "_phone_number", None),
@@ -760,16 +761,68 @@ class ChatOrchestrator:
                 user_uuid: UUID | None = UUID(self.user_id) if self.user_id else None
                 org_uuid: UUID = UUID(self.organization_id)  # type: ignore[arg-type]
 
+                participant_user_ids: set[UUID] = set()
+                if user_uuid:
+                    participant_user_ids.add(user_uuid)
+
+                if self.conversation_id:
+                    participant_result = await session.execute(
+                        select(ChatMessage.user_id)
+                        .where(ChatMessage.conversation_id == UUID(self.conversation_id))
+                        .where(ChatMessage.role == "user")
+                        .where(ChatMessage.user_id.is_not(None))
+                        .order_by(ChatMessage.created_at.desc())
+                    )
+                    participant_rows: list[UUID | None] = participant_result.scalars().all()
+                    for participant_id in participant_rows:
+                        if participant_id:
+                            participant_user_ids.add(participant_id)
+                    if participant_rows:
+                        most_recent_user_id: UUID | None = next(
+                            (participant_id for participant_id in participant_rows if participant_id),
+                            None,
+                        )
+                        if most_recent_user_id and most_recent_user_id != user_uuid:
+                            logger.info(
+                                "[Orchestrator] Using most recent conversation user for global commands",
+                                extra={
+                                    "conversation_id": self.conversation_id,
+                                    "current_user_id": self.user_id,
+                                    "most_recent_user_id": str(most_recent_user_id),
+                                },
+                            )
+                            recent_cmd_result = await session.execute(
+                                select(Memory.content)
+                                .where(
+                                    Memory.organization_id == org_uuid,
+                                    Memory.entity_type == "user",
+                                    Memory.entity_id == most_recent_user_id,
+                                    Memory.category == _AGENT_GLOBAL_COMMANDS_CATEGORY,
+                                )
+                                .order_by(Memory.updated_at.desc().nullslast(), Memory.created_at.desc().nullslast())
+                                .limit(1)
+                            )
+                            recent_global_commands = recent_cmd_result.scalar_one_or_none()
+                            if recent_global_commands:
+                                self.agent_global_commands = recent_global_commands
+
+                memberships: list[OrgMember] = []
+                if participant_user_ids:
+                    participant_membership_result = await session.execute(
+                        select(OrgMember).where(
+                            OrgMember.organization_id == org_uuid,
+                            OrgMember.user_id.in_(list(participant_user_ids)),
+                        )
+                    )
+                    memberships = list(participant_membership_result.scalars().all())
+                membership_by_user_id: dict[UUID, OrgMember] = {
+                    membership.user_id: membership for membership in memberships
+                }
+
                 # Look up the user's org membership for structured fields
                 membership_id: UUID | None = None
                 if user_uuid:
-                    mem_result = await session.execute(
-                        select(OrgMember).where(
-                            OrgMember.user_id == user_uuid,
-                            OrgMember.organization_id == org_uuid,
-                        )
-                    )
-                    membership: OrgMember | None = mem_result.scalar_one_or_none()
+                    membership: OrgMember | None = membership_by_user_id.get(user_uuid)
                     if membership:
                         membership_id = membership.id
                         profile["membership_title"] = membership.title
@@ -795,6 +848,17 @@ class ChatOrchestrator:
                                 )
 
                 # Split memories by entity_type
+                participant_ids_by_membership_id: dict[UUID, UUID] = {
+                    membership.id: membership.user_id for membership in memberships
+                }
+                participant_profiles: dict[UUID, dict[str, Any]] = {
+                    participant_id: {
+                        "user_id": str(participant_id),
+                        "user_memories": [],
+                        "job_memories": [],
+                    }
+                    for participant_id in participant_user_ids
+                }
                 for mem in all_memories:
                     entry: dict[str, str] = {"id": str(mem.id), "content": mem.content}
                     if mem.entity_type == "user" and user_uuid and mem.entity_id == user_uuid:
@@ -802,6 +866,12 @@ class ChatOrchestrator:
                             self.agent_global_commands = mem.content
                             continue
                         profile["user_memories"].append(entry)
+                    if mem.entity_type == "user":
+                        participant_profile = participant_profiles.get(mem.entity_id)
+                        if participant_profile:
+                            if mem.category == _AGENT_GLOBAL_COMMANDS_CATEGORY and mem.entity_id == user_uuid:
+                                continue
+                            participant_profile["user_memories"].append(entry)
                     elif mem.entity_type == "organization" and mem.entity_id == org_uuid:
                         profile["org_memories"].append(entry)
                     elif (
@@ -810,6 +880,29 @@ class ChatOrchestrator:
                         and mem.entity_id == membership_id
                     ):
                         profile["job_memories"].append(entry)
+                    elif mem.entity_type == "organization_member":
+                        participant_user_id: UUID | None = participant_ids_by_membership_id.get(mem.entity_id)
+                        if participant_user_id:
+                            participant_profiles[participant_user_id]["job_memories"].append(entry)
+
+                if participant_user_ids:
+                    from models.user import User
+
+                    user_rows = await session.execute(
+                        select(User.id, User.name).where(User.id.in_(list(participant_user_ids)))
+                    )
+                    names_by_id: dict[UUID, str | None] = {
+                        row[0]: row[1] for row in user_rows.all()
+                    }
+
+                    for participant_id, participant_profile in participant_profiles.items():
+                        participant_profile["name"] = names_by_id.get(participant_id)
+                        participant_membership = membership_by_user_id.get(participant_id)
+                        participant_profile["membership_title"] = (
+                            participant_membership.title if participant_membership else None
+                        )
+
+                    profile["participant_profiles"] = list(participant_profiles.values())
 
         except Exception:
             logger.warning("Failed to load context profile", exc_info=True)
@@ -1007,9 +1100,10 @@ WHERE scheduled_start >= '2026-01-27'::date AND scheduled_start < '2026-01-28'::
             membership_title: str | None = profile["membership_title"]
             reports_to_name: str | None = profile["reports_to_name"]
             phone_number: str | None = profile["phone_number"]
+            participant_profiles: list[dict[str, Any]] = profile.get("participant_profiles", [])
 
             has_any_context: bool = bool(
-                user_memories or org_memories or job_memories
+                user_memories or org_memories or job_memories or participant_profiles
                 or membership_title or reports_to_name or phone_number
             )
 
@@ -1045,6 +1139,32 @@ WHERE scheduled_start >= '2026-01-27'::date AND scheduled_start < '2026-01-28'::
                     system_prompt += f"- Reports to: {reports_to_name}\n"
                 for mem in job_memories:
                     system_prompt += f"- [{mem['id']}] {mem['content']}\n"
+
+            # -- Other participants --
+            other_participants: list[dict[str, Any]] = [
+                participant
+                for participant in participant_profiles
+                if participant.get("user_id") != self.user_id
+                and (
+                    participant.get("name")
+                    or participant.get("membership_title")
+                    or participant.get("user_memories")
+                    or participant.get("job_memories")
+                )
+            ]
+            if other_participants:
+                system_prompt += "\n## Other Conversation Participants\n"
+                system_prompt += "Use this context when the user asks about teammates in this conversation.\n"
+                for participant in other_participants:
+                    label: str = participant.get("name") or participant.get("user_id", "Unknown")
+                    system_prompt += f"- {label}"
+                    if participant.get("membership_title"):
+                        system_prompt += f" ({participant['membership_title']})"
+                    system_prompt += "\n"
+                    for mem in participant.get("user_memories", []):
+                        system_prompt += f"  - User memory [{mem['id']}] {mem['content']}\n"
+                    for mem in participant.get("job_memories", []):
+                        system_prompt += f"  - Role memory [{mem['id']}] {mem['content']}\n"
 
             # -- Profile completeness signal (guides context-gathering behaviour) --
             is_private: bool = self.source in ("slack_dm", "web", "sms")
