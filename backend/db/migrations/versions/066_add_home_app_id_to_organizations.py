@@ -6,8 +6,6 @@ Create Date: 2026-02-17
 """
 
 from alembic import op
-import sqlalchemy as sa
-from sqlalchemy.dialects.postgresql import UUID
 
 revision = "066_add_home_app_id"
 down_revision = "065_create_apps_table"
@@ -16,16 +14,37 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "organizations",
-        sa.Column(
-            "home_app_id",
-            UUID(as_uuid=True),
-            sa.ForeignKey("apps.id", ondelete="SET NULL"),
-            nullable=True,
-        ),
+    # This migration may be replayed in environments where the column was
+    # already created; keep it idempotent.
+    op.execute(
+        """
+        ALTER TABLE organizations
+        ADD COLUMN IF NOT EXISTS home_app_id UUID
+        """
+    )
+
+    # Ensure FK exists even when the column was created outside this migration.
+    op.execute(
+        """
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1
+                FROM pg_constraint
+                WHERE conname = 'organizations_home_app_id_fkey'
+                  AND conrelid = 'organizations'::regclass
+            ) THEN
+                ALTER TABLE organizations
+                ADD CONSTRAINT organizations_home_app_id_fkey
+                FOREIGN KEY (home_app_id)
+                REFERENCES apps(id)
+                ON DELETE SET NULL;
+            END IF;
+        END $$;
+        """
     )
 
 
 def downgrade() -> None:
-    op.drop_column("organizations", "home_app_id")
+    op.execute("ALTER TABLE organizations DROP CONSTRAINT IF EXISTS organizations_home_app_id_fkey")
+    op.execute("ALTER TABLE organizations DROP COLUMN IF EXISTS home_app_id")
