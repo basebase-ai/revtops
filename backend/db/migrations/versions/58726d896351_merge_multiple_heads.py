@@ -1,7 +1,7 @@
 """Merge multiple heads
 
 Revision ID: 58726d896351
-Revises: 066_add_home_app_id, 067_add_home_app_id, 070_drop_user_cmd_col
+Revises: 066_add_home_app_id, 067_add_home_app_id, 070_drop_user_cmd_col, 070_merge_drop_agent_global_cmd
 Create Date: 2026-02-18 15:53:41.261288
 
 """
@@ -13,7 +13,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision: str = '58726d896351'
-down_revision: Union[str, None] = ('066_add_home_app_id', '067_add_home_app_id', '070_drop_user_cmd_col')
+down_revision: Union[str, None] = ('066_add_home_app_id', '067_add_home_app_id', '070_drop_user_cmd_col', '070_merge_drop_agent_global_cmd')
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
