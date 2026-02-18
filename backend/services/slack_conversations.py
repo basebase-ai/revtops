@@ -1236,14 +1236,14 @@ def _merge_participating_user_ids(
     existing_ids: list[UUID] | None,
     candidate_user_id: str | None,
 ) -> list[UUID]:
-    """Return a de-duplicated participant UUID list including candidate_user_id."""
+    """Return participant UUIDs with candidate moved to the end as most recent."""
     merged_ids: list[UUID] = list(existing_ids or [])
     if not candidate_user_id:
         return merged_ids
 
     candidate_uuid: UUID = UUID(candidate_user_id)
-    if candidate_uuid not in merged_ids:
-        merged_ids.append(candidate_uuid)
+    merged_ids = [participant for participant in merged_ids if participant != candidate_uuid]
+    merged_ids.append(candidate_uuid)
     return merged_ids
 
 
@@ -1255,15 +1255,12 @@ def _resolve_current_revtops_user_id(
     if linked_user:
         return str(linked_user.id)
 
-    participant_ids: list[UUID] = list(conversation.participating_user_ids or [])
-    if conversation.user_id and conversation.user_id in participant_ids:
-        return str(conversation.user_id)
-
-    if participant_ids:
-        return str(participant_ids[-1])
-
     if conversation.user_id:
         return str(conversation.user_id)
+
+    participant_ids: list[UUID] = list(conversation.participating_user_ids or [])
+    if participant_ids:
+        return str(participant_ids[-1])
 
     return None
 
