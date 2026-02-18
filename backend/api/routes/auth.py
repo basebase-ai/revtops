@@ -69,14 +69,28 @@ async def _set_user_global_commands(
         return None
 
     result = await session.execute(
-        select(Memory).where(
+        select(Memory)
+        .where(
             Memory.organization_id == user.organization_id,
             Memory.entity_type == "user",
             Memory.entity_id == user.id,
             Memory.category == _AGENT_GLOBAL_COMMANDS_CATEGORY,
         )
+        .order_by(Memory.updated_at.desc().nullslast(), Memory.created_at.desc().nullslast())
     )
-    memory: Optional[Memory] = result.scalar_one_or_none()
+    memories: list[Memory] = list(result.scalars().all())
+    memory: Optional[Memory] = memories[0] if memories else None
+    duplicate_memories = memories[1:]
+
+    if duplicate_memories:
+        logger.warning(
+            "Deduplicating %d extra global command memories for user_id=%s organization_id=%s",
+            len(duplicate_memories),
+            user.id,
+            user.organization_id,
+        )
+        for duplicate in duplicate_memories:
+            await session.delete(duplicate)
 
     normalized = (commands or "").strip()
     if not normalized:
