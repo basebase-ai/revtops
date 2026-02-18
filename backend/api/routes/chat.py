@@ -459,6 +459,7 @@ async def send_message(
             conversation = Conversation(
                 user_id=auth.user_id,
                 organization_id=auth.organization_id,
+                participating_user_ids=[auth.user_id],
                 title=None,  # Will be set after first message
             )
             session.add(conversation)

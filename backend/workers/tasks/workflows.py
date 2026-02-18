@@ -754,6 +754,7 @@ async def _execute_workflow_via_agent(
             conversation = Conversation(
                 user_id=workflow.created_by_user_id,
                 organization_id=workflow.organization_id,
+                participating_user_ids=[workflow.created_by_user_id] if workflow.created_by_user_id else [],
                 type="workflow",
                 workflow_id=workflow.id,
                 title=f"Workflow: {workflow.name}",
@@ -766,6 +767,7 @@ async def _execute_workflow_via_agent(
         conversation = Conversation(
             user_id=workflow.created_by_user_id,
             organization_id=workflow.organization_id,
+            participating_user_ids=[workflow.created_by_user_id] if workflow.created_by_user_id else [],
             type="workflow",
             workflow_id=workflow.id,
             title=f"Workflow: {workflow.name}",

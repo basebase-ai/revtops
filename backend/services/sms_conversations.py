@@ -216,6 +216,7 @@ async def find_or_create_sms_conversation(
         conversation = Conversation(
             organization_id=UUID(organization_id),
             user_id=UUID(user_id),
+            participating_user_ids=[UUID(user_id)],
             source="sms",
             source_channel_id=phone_number,
             source_user_id=phone_number,

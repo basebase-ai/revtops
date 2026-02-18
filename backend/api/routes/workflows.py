@@ -433,6 +433,7 @@ async def trigger_workflow(
             conversation = Conversation(
                 user_id=workflow.created_by_user_id,
                 organization_id=workflow.organization_id,
+                participating_user_ids=[workflow.created_by_user_id] if workflow.created_by_user_id else [],
                 type="workflow",
                 workflow_id=workflow.id,
                 title=f"Workflow: {workflow.name}",

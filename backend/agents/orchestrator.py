@@ -31,6 +31,33 @@ logger = logging.getLogger(__name__)
 _AGENT_GLOBAL_COMMANDS_CATEGORY = "global_commands"
 
 
+def _merge_participating_user_ids(
+    conversation_user_id: UUID | None,
+    participating_user_ids: list[UUID] | None,
+    fallback_user_id: str | None,
+) -> list[UUID]:
+    """Return unique participant IDs preserving recency (last item = most recent)."""
+    merged_ids: list[UUID] = []
+    seen_ids: set[UUID] = set()
+
+    for candidate in list(participating_user_ids or []):
+        if candidate not in seen_ids:
+            merged_ids.append(candidate)
+            seen_ids.add(candidate)
+
+    if conversation_user_id and conversation_user_id not in seen_ids:
+        merged_ids.append(conversation_user_id)
+        seen_ids.add(conversation_user_id)
+
+    if fallback_user_id:
+        fallback_uuid: UUID = UUID(fallback_user_id)
+        if fallback_uuid in seen_ids:
+            merged_ids = [participant for participant in merged_ids if participant != fallback_uuid]
+        merged_ids.append(fallback_uuid)
+
+    return merged_ids
+
+
 async def update_tool_result(
     conversation_id: str,
     tool_id: str,
@@ -606,6 +633,8 @@ class ChatOrchestrator:
         self.client = AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
         # Track if we've saved the assistant message (for early save during tool execution)
         self._assistant_message_saved: bool = False
+        self._conversation_participant_ids: list[UUID] = []
+        self._context_user_id: str | None = user_id
         # Deterministic UUID for the current turn's assistant message.
         # Generated before the early save so both early and final saves target
         # the same row — no "find latest assistant message" guessing.
@@ -614,12 +643,40 @@ class ChatOrchestrator:
     async def _resolve_user_context(self) -> None:
         """Fetch user context fields (name, email, phone, commands) from DB if not already set."""
         from models.memory import Memory
+        from models.conversation import Conversation
         from models.user import User
         from models.organization import Organization
 
         try:
             async with get_session(organization_id=self.organization_id) as session:
-                if self.user_id and (
+                # Use conversation participants to establish multi-user context and
+                # select the most recent user as the active global command source.
+                if self.conversation_id:
+                    conv_result = await session.execute(
+                        select(
+                            Conversation.user_id,
+                            Conversation.participating_user_ids,
+                        ).where(Conversation.id == UUID(self.conversation_id))
+                    )
+                    conv_row = conv_result.one_or_none()
+                    if conv_row:
+                        participant_ids = _merge_participating_user_ids(
+                            conversation_user_id=conv_row[0],
+                            participating_user_ids=conv_row[1],
+                            fallback_user_id=self.user_id,
+                        )
+                        if participant_ids != list(conv_row[1] or []):
+                            logger.info(
+                                "[Orchestrator] Normalized participant order for conversation %s participants=%s",
+                                self.conversation_id,
+                                [str(participant) for participant in participant_ids],
+                            )
+                        self._conversation_participant_ids = participant_ids
+                        if participant_ids:
+                            self._context_user_id = str(participant_ids[-1])
+
+                user_context_id: str | None = self._context_user_id or self.user_id
+                if user_context_id and (
                     not self.user_name
                     or not self.user_email
                     or self.agent_global_commands is None
@@ -629,7 +686,7 @@ class ChatOrchestrator:
                             User.name,
                             User.email,
                             User.phone_number,
-                        ).where(User.id == UUID(self.user_id))
+                        ).where(User.id == UUID(user_context_id))
                     )
                     row = result.one_or_none()
                     if row:
@@ -646,13 +703,18 @@ class ChatOrchestrator:
                                 .where(
                                     Memory.organization_id == UUID(self.organization_id),  # type: ignore[arg-type]
                                     Memory.entity_type == "user",
-                                    Memory.entity_id == UUID(self.user_id),
+                                    Memory.entity_id == UUID(user_context_id),
                                     Memory.category == _AGENT_GLOBAL_COMMANDS_CATEGORY,
                                 )
                                 .order_by(Memory.updated_at.desc().nullslast(), Memory.created_at.desc().nullslast())
                                 .limit(1)
                             )
                             self.agent_global_commands = cmd_result.scalar_one_or_none()
+                        logger.info(
+                            "[Orchestrator] Loaded active user context from %s (conversation=%s)",
+                            user_context_id,
+                            self.conversation_id,
+                        )
                         self._phone_number = fetched_phone
                     else:
                         self._phone_number = None
@@ -757,28 +819,42 @@ class ChatOrchestrator:
                 )
                 all_memories: list[Memory] = list(result.scalars().all())
 
-                user_uuid: UUID | None = UUID(self.user_id) if self.user_id else None
+                participant_ids: list[UUID] = list(self._conversation_participant_ids)
+                if not participant_ids:
+                    fallback_ids = _merge_participating_user_ids(
+                        conversation_user_id=None,
+                        participating_user_ids=[],
+                        fallback_user_id=self._context_user_id or self.user_id,
+                    )
+                    participant_ids = fallback_ids
+
+                user_uuid: UUID | None = participant_ids[-1] if participant_ids else None
                 org_uuid: UUID = UUID(self.organization_id)  # type: ignore[arg-type]
+                participant_id_set: set[UUID] = set(participant_ids)
 
                 # Look up the user's org membership for structured fields
-                membership_id: UUID | None = None
-                if user_uuid:
+                membership_id_by_user_id: dict[UUID, UUID] = {}
+                if participant_ids:
                     mem_result = await session.execute(
-                        select(OrgMember).where(
-                            OrgMember.user_id == user_uuid,
-                            OrgMember.organization_id == org_uuid,
-                        )
+                        select(OrgMember).where(OrgMember.organization_id == org_uuid)
+                        .where(OrgMember.user_id.in_(participant_ids))
                     )
-                    membership: OrgMember | None = mem_result.scalar_one_or_none()
-                    if membership:
-                        membership_id = membership.id
-                        profile["membership_title"] = membership.title
+                    memberships: list[OrgMember] = list(mem_result.scalars().all())
+                    for membership in memberships:
+                        membership_id_by_user_id[membership.user_id] = membership.id
 
-                        # Resolve reports_to name
-                        if membership.reports_to_membership_id:
+                    current_membership = next(
+                        (membership for membership in memberships if membership.user_id == user_uuid),
+                        None,
+                    )
+                    if current_membership:
+                        profile["membership_title"] = current_membership.title
+
+                        # Resolve reports_to name for the active user only
+                        if current_membership.reports_to_membership_id:
                             mgr_result = await session.execute(
                                 select(OrgMember).where(
-                                    OrgMember.id == membership.reports_to_membership_id
+                                    OrgMember.id == current_membership.reports_to_membership_id
                                 )
                             )
                             mgr: OrgMember | None = mgr_result.scalar_one_or_none()
@@ -797,19 +873,25 @@ class ChatOrchestrator:
                 # Split memories by entity_type
                 for mem in all_memories:
                     entry: dict[str, str] = {"id": str(mem.id), "content": mem.content}
-                    if mem.entity_type == "user" and user_uuid and mem.entity_id == user_uuid:
+                    if mem.entity_type == "user" and mem.entity_id in participant_id_set:
                         if mem.category == _AGENT_GLOBAL_COMMANDS_CATEGORY:
-                            self.agent_global_commands = mem.content
+                            if user_uuid and mem.entity_id == user_uuid:
+                                self.agent_global_commands = mem.content
                             continue
                         profile["user_memories"].append(entry)
                     elif mem.entity_type == "organization" and mem.entity_id == org_uuid:
                         profile["org_memories"].append(entry)
                     elif (
                         mem.entity_type == "organization_member"
-                        and membership_id
-                        and mem.entity_id == membership_id
+                        and mem.entity_id in set(membership_id_by_user_id.values())
                     ):
                         profile["job_memories"].append(entry)
+
+                logger.info(
+                    "[Orchestrator] Loaded context profile for %d participants (active_user=%s)",
+                    len(participant_ids),
+                    str(user_uuid) if user_uuid else None,
+                )
 
         except Exception:
             logger.warning("Failed to load context profile", exc_info=True)
@@ -1525,6 +1607,7 @@ WHERE scheduled_start >= '2026-01-27'::date AND scheduled_start < '2026-01-28'::
             conversation = Conversation(
                 user_id=user_uuid,
                 organization_id=UUID(self.organization_id) if self.organization_id else None,
+                participating_user_ids=[user_uuid] if user_uuid else [],
                 title=None,
             )
             session.add(conversation)

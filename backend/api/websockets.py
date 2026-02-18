@@ -517,6 +517,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                             id=conv_uuid,
                             user_id=UUID(user_id_str), 
                             organization_id=UUID(organization_id) if organization_id else None,
+                            participating_user_ids=[UUID(user_id_str)],
                             title=title,
                         )
                         session.add(conversation)
