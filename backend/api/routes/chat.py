@@ -58,7 +58,10 @@ def _build_conversation_access_filter(
     auth: AuthContext,
     slack_user_ids: set[str],
 ):
-    base_filter = Conversation.user_id == auth.user_id
+    base_filter = or_(
+        Conversation.user_id == auth.user_id,
+        Conversation.participating_user_ids.any(auth.user_id),
+    )
     if not slack_user_ids:
         return base_filter
     slack_filter = and_(
@@ -232,6 +235,7 @@ async def create_conversation(
         conversation = Conversation(
             user_id=auth.user_id,
             organization_id=auth.organization_id,
+            participating_user_ids=[auth.user_id],
             title=request.title,
         )
         session.add(conversation)
