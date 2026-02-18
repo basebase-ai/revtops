@@ -35,6 +35,26 @@ logger = logging.getLogger(__name__)
 EMAIL_PATTERN = re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.IGNORECASE)
 
 
+def _merge_participating_user_ids(
+    existing_user_ids: list[str] | None,
+    slack_user_id: str,
+) -> list[str]:
+    """Merge a Slack user ID into the conversation participant identity list."""
+    merged: list[str] = []
+    seen: set[str] = set()
+
+    for user_id in existing_user_ids or []:
+        if not user_id or user_id in seen:
+            continue
+        merged.append(user_id)
+        seen.add(user_id)
+
+    if slack_user_id and slack_user_id not in seen:
+        merged.append(slack_user_id)
+
+    return merged
+
+
 def _cannot_action_message() -> str:
     return (
         "I'm sorry, I can't help with that right now. "
@@ -1268,6 +1288,19 @@ async def find_or_create_conversation(
             changed: bool = False
             previous_source_user_id: str | None = conversation.source_user_id
 
+            merged_participants = _merge_participating_user_ids(
+                conversation.participating_user_ids,
+                slack_user_id,
+            )
+            if merged_participants != (conversation.participating_user_ids or []):
+                conversation.participating_user_ids = merged_participants
+                changed = True
+                logger.info(
+                    "[slack_conversations] Updated conversation %s participants to %s",
+                    conversation.id,
+                    merged_participants,
+                )
+
             if conversation.source_user_id != slack_user_id:
                 conversation.source_user_id = slack_user_id
                 changed = True
@@ -1323,6 +1356,7 @@ async def find_or_create_conversation(
             source="slack",
             source_channel_id=slack_channel_id,
             source_user_id=slack_user_id,
+            participating_user_ids=[slack_user_id],
             type="agent",
             title=f"Slack DM - {slack_user_name}" if slack_user_name else "Slack DM",
         )
@@ -1900,7 +1934,7 @@ async def process_slack_thread_reply(
     current_user_id: str | None = (
         str(linked_user.id)
         if linked_user
-        else (str(conversation.user_id) if conversation.user_id else None)
+        else None
     )
     current_user_email: str | None = linked_user.email if linked_user else None
 

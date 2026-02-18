@@ -63,7 +63,10 @@ def _build_conversation_access_filter(
         return base_filter
     slack_filter = and_(
         Conversation.source == "slack",
-        Conversation.source_user_id.in_(slack_user_ids),
+        or_(
+            Conversation.source_user_id.in_(slack_user_ids),
+            Conversation.participating_user_ids.overlap(list(slack_user_ids)),
+        ),
     )
     if auth.organization_id:
         slack_filter = and_(slack_filter, Conversation.organization_id == auth.organization_id)
