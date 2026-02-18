@@ -880,6 +880,7 @@ async def get_organization_members(
 
         # Avoid showing stale "unmapped" rows when the same external account
         # is already linked to a team user via the same source + external identity.
+        # Keep manually unlinked identities visible so admins can relink them.
         linked_identity_keys: set[tuple[str, str]] = set()
         for mapping in all_mappings:
             if mapping.user_id is None:
@@ -892,6 +893,16 @@ async def get_organization_members(
         for mapping in unmapped_mappings:
             identity_value = mapping.external_email or mapping.external_userid
             if not identity_value:
+                filtered_unmapped_mappings.append(mapping)
+                continue
+            if mapping.match_source == "manual_unlink":
+                logger.info(
+                    "Keeping manually unlinked identity id=%s org=%s source=%s identity=%s visible for relinking",
+                    mapping.id,
+                    org_id,
+                    mapping.source,
+                    identity_value,
+                )
                 filtered_unmapped_mappings.append(mapping)
                 continue
             if (mapping.source, identity_value.lower()) in linked_identity_keys:
