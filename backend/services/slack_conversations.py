@@ -1232,6 +1232,42 @@ async def resolve_revtops_user_for_slack_actor(
     return None
 
 
+def _merge_participating_user_ids(
+    existing_ids: list[UUID] | None,
+    candidate_user_id: str | None,
+) -> list[UUID]:
+    """Return a de-duplicated participant UUID list including candidate_user_id."""
+    merged_ids: list[UUID] = list(existing_ids or [])
+    if not candidate_user_id:
+        return merged_ids
+
+    candidate_uuid: UUID = UUID(candidate_user_id)
+    if candidate_uuid not in merged_ids:
+        merged_ids.append(candidate_uuid)
+    return merged_ids
+
+
+def _resolve_current_revtops_user_id(
+    linked_user: User | None,
+    conversation: Conversation,
+) -> str | None:
+    """Pick the current user context using most recent speaker first, then fallback participants."""
+    if linked_user:
+        return str(linked_user.id)
+
+    participant_ids: list[UUID] = list(conversation.participating_user_ids or [])
+    if conversation.user_id and conversation.user_id in participant_ids:
+        return str(conversation.user_id)
+
+    if participant_ids:
+        return str(participant_ids[-1])
+
+    if conversation.user_id:
+        return str(conversation.user_id)
+
+    return None
+
+
 async def find_or_create_conversation(
     organization_id: str,
     slack_channel_id: str,
@@ -1278,6 +1314,19 @@ async def find_or_create_conversation(
                     slack_user_id,
                 )
 
+            merged_participants = _merge_participating_user_ids(
+                conversation.participating_user_ids,
+                revtops_user_id,
+            )
+            if merged_participants != (conversation.participating_user_ids or []):
+                conversation.participating_user_ids = merged_participants
+                changed = True
+                logger.info(
+                    "[slack_conversations] Added participant to conversation %s participants=%s",
+                    conversation.id,
+                    [str(participant) for participant in merged_participants],
+                )
+
             if revtops_user_id:
                 resolved_user_id = UUID(revtops_user_id)
                 if conversation.user_id != resolved_user_id:
@@ -1288,14 +1337,6 @@ async def find_or_create_conversation(
                         conversation.id,
                         revtops_user_id,
                     )
-            elif previous_source_user_id and previous_source_user_id != slack_user_id and conversation.user_id is not None:
-                conversation.user_id = None
-                changed = True
-                logger.info(
-                    "[slack_conversations] Cleared conversation %s current RevTops user after source user changed to %s",
-                    conversation.id,
-                    slack_user_id,
-                )
 
             if slack_user_name and (not conversation.title or conversation.title == "Slack DM"):
                 conversation.title = f"Slack DM - {slack_user_name}"
@@ -1323,6 +1364,7 @@ async def find_or_create_conversation(
             source="slack",
             source_channel_id=slack_channel_id,
             source_user_id=slack_user_id,
+            participating_user_ids=_merge_participating_user_ids([], revtops_user_id),
             type="agent",
             title=f"Slack DM - {slack_user_name}" if slack_user_name else "Slack DM",
         )
@@ -1897,10 +1939,9 @@ async def process_slack_thread_reply(
     if conversation.source_user_id != user_id:
         current_source_user_id = user_id
 
-    current_user_id: str | None = (
-        str(linked_user.id)
-        if linked_user
-        else (str(conversation.user_id) if conversation.user_id else None)
+    current_user_id: str | None = _resolve_current_revtops_user_id(
+        linked_user=linked_user,
+        conversation=conversation,
     )
     current_user_email: str | None = linked_user.email if linked_user else None
 

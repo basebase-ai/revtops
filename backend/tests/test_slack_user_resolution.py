@@ -167,3 +167,48 @@ def test_resolve_revtops_user_uses_existing_mapping(monkeypatch):
 
     assert resolved is not None
     assert resolved.id == jane_id
+
+
+def test_merge_participating_user_ids_adds_unique_uuid():
+    existing = [UUID("11111111-1111-1111-1111-111111111111")]
+
+    merged = slack_conversations._merge_participating_user_ids(
+        existing,
+        "22222222-2222-2222-2222-222222222222",
+    )
+
+    assert merged == [
+        UUID("11111111-1111-1111-1111-111111111111"),
+        UUID("22222222-2222-2222-2222-222222222222"),
+    ]
+
+
+def test_merge_participating_user_ids_skips_duplicate_uuid():
+    existing = [UUID("11111111-1111-1111-1111-111111111111")]
+
+    merged = slack_conversations._merge_participating_user_ids(
+        existing,
+        "11111111-1111-1111-1111-111111111111",
+    )
+
+    assert merged == existing
+
+
+def test_resolve_current_revtops_user_id_prefers_linked_user_then_last_participant():
+    linked_user = SimpleNamespace(id=UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"))
+    conversation = SimpleNamespace(
+        user_id=UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
+        participating_user_ids=[UUID("cccccccc-cccc-cccc-cccc-cccccccccccc")],
+    )
+
+    resolved_with_link = slack_conversations._resolve_current_revtops_user_id(
+        linked_user=linked_user,
+        conversation=conversation,
+    )
+    assert resolved_with_link == "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+
+    resolved_without_link = slack_conversations._resolve_current_revtops_user_id(
+        linked_user=None,
+        conversation=conversation,
+    )
+    assert resolved_without_link == "cccccccc-cccc-cccc-cccc-cccccccccccc"
