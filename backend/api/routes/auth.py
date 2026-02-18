@@ -29,6 +29,7 @@ from sqlalchemy import select, text
 from config import settings, get_nango_integration_id, get_provider_scope
 from models.database import get_admin_session, get_session
 from models.integration import Integration
+from models.memory import Memory
 from models.user import User
 from models.organization import Organization
 from services.nango import extract_connection_metadata, get_nango_client
@@ -36,6 +37,69 @@ from services.slack_conversations import upsert_slack_user_mappings_from_metadat
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+_AGENT_GLOBAL_COMMANDS_CATEGORY = "global_commands"
+
+
+async def _get_user_global_commands(session: Any, user: User) -> Optional[str]:
+    if not user.organization_id:
+        return None
+
+    result = await session.execute(
+        select(Memory.content)
+        .where(
+            Memory.organization_id == user.organization_id,
+            Memory.entity_type == "user",
+            Memory.entity_id == user.id,
+            Memory.category == _AGENT_GLOBAL_COMMANDS_CATEGORY,
+        )
+        .order_by(Memory.updated_at.desc().nullslast(), Memory.created_at.desc().nullslast())
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
+
+
+async def _set_user_global_commands(
+    session: Any,
+    user: User,
+    commands: Optional[str],
+) -> Optional[str]:
+    if not user.organization_id:
+        return None
+
+    result = await session.execute(
+        select(Memory).where(
+            Memory.organization_id == user.organization_id,
+            Memory.entity_type == "user",
+            Memory.entity_id == user.id,
+            Memory.category == _AGENT_GLOBAL_COMMANDS_CATEGORY,
+        )
+    )
+    memory: Optional[Memory] = result.scalar_one_or_none()
+
+    normalized = (commands or "").strip()
+    if not normalized:
+        if memory:
+            await session.delete(memory)
+        return None
+
+    if memory:
+        memory.content = normalized
+        memory.created_by_user_id = user.id
+        return normalized
+
+    session.add(
+        Memory(
+            entity_type="user",
+            entity_id=user.id,
+            organization_id=user.organization_id,
+            category=_AGENT_GLOBAL_COMMANDS_CATEGORY,
+            content=normalized,
+            created_by_user_id=user.id,
+        )
+    )
+    return normalized
 
 _NANGO_SENSITIVE_KEYS = {"credentials", "access_token", "refresh_token", "api_key", "apiKey", "token"}
 _NANGO_HIGHLIGHT_KEYS = {"end_user", "errors", "id", "last_fetched_at", "metadata"}
@@ -195,13 +259,15 @@ async def get_current_user(user_id: Optional[str] = None) -> UserResponse:
             )
             job_title = membership_result.scalar_one_or_none()
 
+        agent_global_commands = await _get_user_global_commands(session, user)
+
         return UserResponse(
             id=str(user.id),
             email=user.email,
             name=user.name,
             role=user.role,
             avatar_url=user.avatar_url,
-            agent_global_commands=user.agent_global_commands,
+            agent_global_commands=agent_global_commands,
             phone_number=user.phone_number,
             job_title=job_title,
             organization_id=str(user.organization_id) if user.organization_id else None,
@@ -244,8 +310,11 @@ async def update_profile(
             user.name = request.name
         if request.avatar_url is not None:
             user.avatar_url = request.avatar_url
+        agent_global_commands: Optional[str] = None
         if request.agent_global_commands is not None:
-            user.agent_global_commands = request.agent_global_commands
+            agent_global_commands = await _set_user_global_commands(session, user, request.agent_global_commands)
+        else:
+            agent_global_commands = await _get_user_global_commands(session, user)
         if request.phone_number is not None:
             user.phone_number = request.phone_number or None
 
@@ -267,13 +336,15 @@ async def update_profile(
         await session.commit()
         await session.refresh(user)
 
+        agent_global_commands = await _get_user_global_commands(session, user)
+
         return UserResponse(
             id=str(user.id),
             email=user.email,
             name=user.name,
             role=user.role,
             avatar_url=user.avatar_url,
-            agent_global_commands=user.agent_global_commands,
+            agent_global_commands=agent_global_commands,
             phone_number=user.phone_number,
             job_title=job_title,
             organization_id=str(user.organization_id) if user.organization_id else None,
@@ -492,7 +563,7 @@ async def sync_user(request: SyncUserRequest) -> SyncUserResponse:
                 email=existing.email,
                 name=existing.name,
                 avatar_url=existing.avatar_url,
-                agent_global_commands=existing.agent_global_commands,
+                agent_global_commands=await _get_user_global_commands(session, existing),
                 phone_number=existing.phone_number,
                 job_title=sync_job_title,
                 organization_id=str(existing.organization_id) if existing.organization_id else None,
@@ -540,7 +611,6 @@ async def sync_user(request: SyncUserRequest) -> SyncUserResponse:
                     email=request.email,
                     name=request.name,
                     avatar_url=request.avatar_url,
-                    agent_global_commands=request.agent_global_commands,
                     organization_id=existing_org.id,
                     status="active",
                     role="member",
@@ -558,22 +628,23 @@ async def sync_user(request: SyncUserRequest) -> SyncUserResponse:
                     joined_at=datetime.utcnow(),
                 )
                 session.add(new_membership)
+                global_commands = await _set_user_global_commands(session, new_user, request.agent_global_commands)
                 await session.commit()
                 await session.refresh(new_user)
-                
+
                 # Include organization data for new user
                 org_data = SyncOrganizationData(
                     id=str(existing_org.id),
                     name=existing_org.name,
                     logo_url=existing_org.logo_url,
                 )
-                
+
                 return SyncUserResponse(
                     id=str(new_user.id),
                     email=new_user.email,
                     name=new_user.name,
                     avatar_url=new_user.avatar_url,
-                    agent_global_commands=new_user.agent_global_commands,
+                    agent_global_commands=global_commands,
                     phone_number=new_user.phone_number,
                     job_title=None,
                     organization_id=str(new_user.organization_id),
@@ -1219,12 +1290,14 @@ async def switch_active_organization(
                 logo_url=org.logo_url,
             )
 
+        agent_global_commands = await _get_user_global_commands(session, user)
+
         return SyncUserResponse(
             id=str(user.id),
             email=user.email,
             name=user.name,
             avatar_url=user.avatar_url,
-            agent_global_commands=user.agent_global_commands,
+            agent_global_commands=agent_global_commands,
             phone_number=user.phone_number,
             job_title=membership.title if membership else None,
             organization_id=str(user.organization_id) if user.organization_id else None,

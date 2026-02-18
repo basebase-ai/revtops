@@ -79,6 +79,12 @@ export function Memories(): JSX.Element {
     },
   });
 
+
+  const userStoredMemories = useMemo(
+    () => (data?.memories ?? []).filter((memory) => memory.category !== 'global_commands'),
+    [data?.memories],
+  );
+
   const updateMemory = useMutation({
     mutationFn: async ({ memoryId, content }: { memoryId: string; content: string }) => {
       const { error } = await apiRequest(`/memories/${orgId}/user/${memoryId}?user_id=${userId}`, {
@@ -216,7 +222,7 @@ export function Memories(): JSX.Element {
                 <span className="text-xs text-surface-500">Editable + deletable</span>
               </div>
               {isUserStoredExpanded && <div className="mt-4 space-y-3">
-                {data?.memories.length ? data.memories.map((memory) => (
+                {userStoredMemories.length ? userStoredMemories.map((memory) => (
                   <div key={memory.id} className="rounded-lg border border-surface-800 bg-surface-900 p-3">
                     <div className="flex flex-col gap-3">
                       <div className="w-full">

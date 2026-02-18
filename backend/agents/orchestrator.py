@@ -28,6 +28,8 @@ from models.database import get_session
 
 logger = logging.getLogger(__name__)
 
+_AGENT_GLOBAL_COMMANDS_CATEGORY = "global_commands"
+
 
 async def update_tool_result(
     conversation_id: str,
@@ -611,6 +613,7 @@ class ChatOrchestrator:
 
     async def _resolve_user_context(self) -> None:
         """Fetch user context fields (name, email, phone, commands) from DB if not already set."""
+        from models.memory import Memory
         from models.user import User
         from models.organization import Organization
 
@@ -625,7 +628,6 @@ class ChatOrchestrator:
                         select(
                             User.name,
                             User.email,
-                            User.agent_global_commands,
                             User.phone_number,
                         ).where(User.id == UUID(self.user_id))
                     )
@@ -633,14 +635,24 @@ class ChatOrchestrator:
                     if row:
                         fetched_name: str | None = row[0]
                         fetched_email: str | None = row[1]
-                        fetched_agent_global_commands: str | None = row[2]
-                        fetched_phone: str | None = row[3]
+                        fetched_phone: str | None = row[2]
                         if not self.user_name and fetched_name:
                             self.user_name = fetched_name
                         if not self.user_email and fetched_email:
                             self.user_email = fetched_email
-                        if fetched_agent_global_commands:
-                            self.agent_global_commands = fetched_agent_global_commands
+                        if self.organization_id:
+                            cmd_result = await session.execute(
+                                select(Memory.content)
+                                .where(
+                                    Memory.organization_id == UUID(self.organization_id),  # type: ignore[arg-type]
+                                    Memory.entity_type == "user",
+                                    Memory.entity_id == UUID(self.user_id),
+                                    Memory.category == _AGENT_GLOBAL_COMMANDS_CATEGORY,
+                                )
+                                .order_by(Memory.updated_at.desc().nullslast(), Memory.created_at.desc().nullslast())
+                                .limit(1)
+                            )
+                            self.agent_global_commands = cmd_result.scalar_one_or_none()
                         self._phone_number = fetched_phone
                     else:
                         self._phone_number = None
@@ -786,6 +798,9 @@ class ChatOrchestrator:
                 for mem in all_memories:
                     entry: dict[str, str] = {"id": str(mem.id), "content": mem.content}
                     if mem.entity_type == "user" and user_uuid and mem.entity_id == user_uuid:
+                        if mem.category == _AGENT_GLOBAL_COMMANDS_CATEGORY:
+                            self.agent_global_commands = mem.content
+                            continue
                         profile["user_memories"].append(entry)
                     elif mem.entity_type == "organization" and mem.entity_id == org_uuid:
                         profile["org_memories"].append(entry)
