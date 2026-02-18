@@ -655,12 +655,27 @@ class ChatOrchestrator:
 
     async def _resolve_user_context(self) -> None:
         """Fetch user context fields (name, email, phone, commands) from DB if not already set."""
+        from models.conversation import Conversation
         from models.memory import Memory
-        from models.user import User
         from models.organization import Organization
+        from models.user import User
 
         try:
             async with get_session(organization_id=self.organization_id) as session:
+                context_user_uuid: UUID | None = UUID(self.user_id) if self.user_id else None
+                if self.conversation_id and self.organization_id:
+                    conversation_result = await session.execute(
+                        select(Conversation.participating_user_ids)
+                        .where(
+                            Conversation.id == UUID(self.conversation_id),
+                            Conversation.organization_id == UUID(self.organization_id),
+                        )
+                        .limit(1)
+                    )
+                    participant_user_ids: list[UUID] = list(conversation_result.scalar_one_or_none() or [])
+                    if participant_user_ids:
+                        context_user_uuid = participant_user_ids[-1]
+
                 if self.user_id and (
                     not self.user_name
                     or not self.user_email
@@ -688,7 +703,7 @@ class ChatOrchestrator:
                                 .where(
                                     Memory.organization_id == UUID(self.organization_id),  # type: ignore[arg-type]
                                     Memory.entity_type == "user",
-                                    Memory.entity_id == UUID(self.user_id),
+                                    Memory.entity_id == (context_user_uuid or UUID(self.user_id)),
                                     Memory.category == _AGENT_GLOBAL_COMMANDS_CATEGORY,
                                 )
                                 .order_by(Memory.updated_at.desc().nullslast(), Memory.created_at.desc().nullslast())
@@ -700,6 +715,20 @@ class ChatOrchestrator:
                         self._phone_number = None
                 else:
                     self._phone_number = None
+
+                if self.organization_id and self.agent_global_commands is None and context_user_uuid:
+                    cmd_result = await session.execute(
+                        select(Memory.content)
+                        .where(
+                            Memory.organization_id == UUID(self.organization_id),  # type: ignore[arg-type]
+                            Memory.entity_type == "user",
+                            Memory.entity_id == context_user_uuid,
+                            Memory.category == _AGENT_GLOBAL_COMMANDS_CATEGORY,
+                        )
+                        .order_by(Memory.updated_at.desc().nullslast(), Memory.created_at.desc().nullslast())
+                        .limit(1)
+                    )
+                    self.agent_global_commands = cmd_result.scalar_one_or_none()
 
                 if not self.organization_name and self.organization_id:
                     result = await session.execute(
@@ -784,6 +813,7 @@ class ChatOrchestrator:
             "membership_title": None,
             "reports_to_name": None,
             "phone_number": getattr(self, "_phone_number", None),
+            "participant_job_memories": [],
         }
 
         try:
@@ -799,7 +829,22 @@ class ChatOrchestrator:
                 )
                 all_memories: list[Memory] = list(result.scalars().all())
 
-                user_uuid: UUID | None = UUID(self.user_id) if self.user_id else None
+                participant_user_ids: list[UUID] = []
+                if self.conversation_id:
+                    from models.conversation import Conversation
+
+                    conversation_result = await session.execute(
+                        select(Conversation.participating_user_ids)
+                        .where(Conversation.id == UUID(self.conversation_id))
+                        .limit(1)
+                    )
+                    participant_user_ids = list(conversation_result.scalar_one_or_none() or [])
+
+                user_uuid: UUID | None = (
+                    participant_user_ids[-1]
+                    if participant_user_ids
+                    else (UUID(self.user_id) if self.user_id else None)
+                )
                 org_uuid: UUID = UUID(self.organization_id)  # type: ignore[arg-type]
 
                 # Look up the user's org membership for structured fields
@@ -852,6 +897,62 @@ class ChatOrchestrator:
                         and mem.entity_id == membership_id
                     ):
                         profile["job_memories"].append(entry)
+
+                # Include role memories from org_members for all participants in this conversation.
+                if participant_user_ids:
+                    from models.user import User
+
+                    members_result = await session.execute(
+                        select(OrgMember.id, OrgMember.user_id, OrgMember.title, User.name)
+                        .join(User, User.id == OrgMember.user_id)
+                        .where(
+                            OrgMember.organization_id == org_uuid,
+                            OrgMember.user_id.in_(participant_user_ids),
+                        )
+                    )
+                    member_rows = members_result.all()
+                    membership_by_user_id: dict[UUID, tuple[UUID, str | None, str | None]] = {
+                        row[1]: (row[0], row[2], row[3]) for row in member_rows
+                    }
+
+                    for participant_user_id in participant_user_ids:
+                        membership = membership_by_user_id.get(participant_user_id)
+                        if not membership:
+                            continue
+
+                        participant_membership_id, participant_title, participant_name = membership
+                        participant_role_memories = [
+                            {"id": str(mem.id), "content": mem.content}
+                            for mem in all_memories
+                            if (
+                                mem.entity_type == "organization_member"
+                                and mem.entity_id == participant_membership_id
+                            )
+                        ]
+
+                        profile["participant_job_memories"].append(
+                            {
+                                "user_id": str(participant_user_id),
+                                "membership_id": str(participant_membership_id),
+                                "name": participant_name,
+                                "title": participant_title,
+                                "is_most_recent": participant_user_id == user_uuid,
+                                "memories": participant_role_memories,
+                            }
+                        )
+
+                    missing_members = [
+                        str(participant_user_id)
+                        for participant_user_id in participant_user_ids
+                        if participant_user_id not in membership_by_user_id
+                    ]
+                    if missing_members:
+                        logger.info(
+                            "Missing org_members rows for participants org=%s conversation=%s participants=%s",
+                            self.organization_id,
+                            self.conversation_id,
+                            missing_members,
+                        )
 
         except Exception:
             logger.warning("Failed to load context profile", exc_info=True)
@@ -1034,12 +1135,13 @@ WHERE scheduled_start >= '2026-01-27'::date AND scheduled_start < '2026-01-28'::
                 system_prompt += integrations_summary
 
         # Load and inject three-tier context profile (user, org, job memories + structured fields)
-        if self.user_id and self.organization_id:
+        if self.organization_id and (self.user_id or self.conversation_id):
             profile: dict[str, Any] = await self._load_context_profile()
 
             user_memories: list[dict[str, str]] = profile["user_memories"]
             org_memories: list[dict[str, str]] = profile["org_memories"]
             job_memories: list[dict[str, str]] = profile["job_memories"]
+            participant_job_memories: list[dict[str, Any]] = profile.get("participant_job_memories", [])
             membership_title: str | None = profile["membership_title"]
             reports_to_name: str | None = profile["reports_to_name"]
             phone_number: str | None = profile["phone_number"]
@@ -1081,6 +1183,21 @@ WHERE scheduled_start >= '2026-01-27'::date AND scheduled_start < '2026-01-28'::
                     system_prompt += f"- Reports to: {reports_to_name}\n"
                 for mem in job_memories:
                     system_prompt += f"- [{mem['id']}] {mem['content']}\n"
+
+
+            if participant_job_memories:
+                system_prompt += "\n## Team Role Context (Conversation Participants)\n"
+                system_prompt += "Role memories from org_members for all users participating in this conversation:\n"
+                for participant in participant_job_memories:
+                    participant_name: str = participant.get("name") or "Unknown member"
+                    participant_title: str | None = participant.get("title")
+                    most_recent_suffix: str = " (most recent user)" if participant.get("is_most_recent") else ""
+                    system_prompt += f"- {participant_name}{most_recent_suffix}"
+                    if participant_title:
+                        system_prompt += f" — {participant_title}"
+                    system_prompt += "\n"
+                    for mem in participant.get("memories", []):
+                        system_prompt += f"  - [{mem['id']}] {mem['content']}\n"
 
             # -- Profile completeness signal (guides context-gathering behaviour) --
             is_private: bool = self.source in ("slack_dm", "web", "sms")
