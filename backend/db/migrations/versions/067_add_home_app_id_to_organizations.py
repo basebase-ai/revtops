@@ -1,13 +1,11 @@
 """Add home_app_id to organizations for customizable Home tab.
 
-Revision ID: 066_add_home_app_id
-Revises: 065_create_apps_table
+Revision ID: 067_add_home_app_id
+Revises: 066_embeddings_to_pgvector
 Create Date: 2026-02-17
 """
 
 from alembic import op
-import sqlalchemy as sa
-from sqlalchemy.dialects.postgresql import UUID
 
 revision = "067_add_home_app_id"
 down_revision = "066_embeddings_to_pgvector"
@@ -16,16 +14,15 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "organizations",
-        sa.Column(
-            "home_app_id",
-            UUID(as_uuid=True),
-            sa.ForeignKey("apps.id", ondelete="SET NULL"),
-            nullable=True,
-        ),
+    # Compatibility-safe for environments that already applied
+    # 066_add_home_app_id_to_organizations.
+    op.execute(
+        """
+        ALTER TABLE organizations
+        ADD COLUMN IF NOT EXISTS home_app_id UUID REFERENCES apps(id) ON DELETE SET NULL
+        """
     )
 
 
 def downgrade() -> None:
-    op.drop_column("organizations", "home_app_id")
+    op.execute("ALTER TABLE organizations DROP COLUMN IF EXISTS home_app_id")
