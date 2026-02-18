@@ -78,9 +78,12 @@ function transformAppCode(code: string): { transformed: string; appName: string 
   return { transformed, appName };
 }
 
+/** Closing tag as a constant so the bundler/linter never sees a raw close-script. */
+const CS = "<" + "/script>";
+
 /** Escape a string for safe embedding inside an HTML <script> block. */
 function escapeForScript(s: string): string {
-  return s.replace(/<\/script>/gi, "<\\/script>");
+  return s.replace(new RegExp(CS, "gi"), "<\\/script>");
 }
 
 // ---- build the srcdoc HTML ------------------------------------------------
@@ -99,10 +102,10 @@ function buildSrcdocHtml(opts: {
 <html>
 <head>
 <meta charset="UTF-8" />
-<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"><\/script>
-<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"><\/script>
-<script src="https://cdn.plot.ly/plotly-2.35.3.min.js"><\/script>
-<script src="https://unpkg.com/@babel/standalone@7/babel.min.js"><\/script>
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js">${CS}
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js">${CS}
+<script src="https://cdn.plot.ly/plotly-2.35.3.min.js">${CS}
+<script src="https://unpkg.com/@babel/standalone@7/babel.min.js">${CS}
 <style>${escapeForScript(APP_STYLES)}</style>
 </head>
 <body>
@@ -123,7 +126,7 @@ window.onerror = function(msg, url, line, col, err) {
   }
   try { window.parent.postMessage({ type:"app-error", error: String(msg) }, "*"); } catch(_){}
 };
-<\/script>
+${CS}
 
 <script type="text/babel">
 /* ---- React destructured ---- */
@@ -149,7 +152,7 @@ try {
     '<div style="color:#fca5a5;padding:1rem;font-family:monospace;font-size:12px;white-space:pre-wrap;">' + e.message + '<' + '/div>';
   try { window.parent.postMessage({ type:"app-error", error: e.message }, "*"); } catch(_){}
 }
-<\/script>
+${CS}
 </body>
 </html>`;
 }

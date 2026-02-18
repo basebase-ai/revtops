@@ -53,6 +53,11 @@ class Organization(Base):
     )
     last_sync_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
+    # Home app: the app shown on the Home tab for this organization
+    home_app_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("apps.id", ondelete="SET NULL"), nullable=True
+    )
+
     # Relationships
     users: Mapped[list["User"]] = relationship(
         "User", back_populates="organization", foreign_keys="User.organization_id"

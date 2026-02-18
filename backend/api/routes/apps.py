@@ -21,12 +21,13 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Header, Request
 from pydantic import BaseModel
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 
 from api.auth_middleware import AuthContext, require_organization
 from config import settings
 from models.app import App
 from models.database import get_session, get_admin_session
+from models.organization import Organization
 from models.user import User
 
 logger = logging.getLogger(__name__)
@@ -243,7 +244,7 @@ async def execute_app_query(
 
         # Validate params against declared schema
         param_defs: dict[str, Any] = query_spec.get("params", {})
-        bound_params: dict[str, Any] = {}
+        bound_params: dict[str, Any] = {"org_id": organization_id}
         for pname, pdef in param_defs.items():
             value: Any = params.get(pname)
             if value is None and pdef.get("required", False):
@@ -323,6 +324,104 @@ async def list_apps(
             )
 
         return AppListResponse(apps=items, total=len(items))
+
+
+# ---------------------------------------------------------------------------
+# Home App (must be before /{app_id} to avoid path collision)
+# ---------------------------------------------------------------------------
+
+
+class SetHomeAppRequest(BaseModel):
+    app_id: str | None = None
+
+
+@router.get("/home")
+async def get_home_app(
+    auth: AuthContext = Depends(require_organization),
+) -> dict[str, Any]:
+    """Get the organization's home app (or null) plus app_count for the org."""
+    assert auth.organization_id_str is not None
+    logger.info("[home] org=%s user=%s", auth.organization_id_str, auth.user_id_str)
+
+    async with get_admin_session() as session:
+        result = await session.execute(
+            select(Organization).where(
+                Organization.id == UUID(auth.organization_id_str)
+            )
+        )
+        org: Organization | None = result.scalar_one_or_none()
+        home_app_id = org.home_app_id if org else None
+
+    async with get_session(organization_id=auth.organization_id_str) as session:
+        count_result = await session.execute(select(func.count()).select_from(App))
+        app_count: int = count_result.scalar_one()
+
+        logger.info("[home] org=%s home_app_id=%s app_count=%d", auth.organization_id_str, home_app_id, app_count)
+
+        if home_app_id is None:
+            return {"app": None, "app_count": app_count}
+
+        result = await session.execute(
+            select(App).where(App.id == home_app_id)
+        )
+        app: App | None = result.scalar_one_or_none()
+        if app is None:
+            return {"app": None, "app_count": app_count}
+
+        return {
+            "app": {
+                "id": str(app.id),
+                "title": app.title,
+                "description": app.description,
+                "frontendCode": app.frontend_code,
+            },
+            "app_count": app_count,
+        }
+
+
+@router.patch("/home")
+async def set_home_app(
+    body: SetHomeAppRequest,
+    auth: AuthContext = Depends(require_organization),
+) -> dict[str, Any]:
+    """Set or clear the organization's home app."""
+    assert auth.organization_id_str is not None
+
+    # If setting an app, validate it belongs to this org
+    if body.app_id is not None:
+        try:
+            app_uuid = UUID(body.app_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid app ID")
+
+        async with get_session(organization_id=auth.organization_id_str) as session:
+            result = await session.execute(
+                select(App).where(App.id == app_uuid)
+            )
+            app: App | None = result.scalar_one_or_none()
+            if app is None:
+                raise HTTPException(status_code=404, detail="App not found")
+
+    # Update the organization
+    async with get_admin_session() as session:
+        result = await session.execute(
+            select(Organization).where(
+                Organization.id == UUID(auth.organization_id_str)
+            )
+        )
+        org: Organization | None = result.scalar_one_or_none()
+        if org is None:
+            raise HTTPException(status_code=404, detail="Organization not found")
+
+        org.home_app_id = UUID(body.app_id) if body.app_id else None
+        await session.commit()
+
+    return {"status": "success", "home_app_id": body.app_id}
+
+
+# ---------------------------------------------------------------------------
+# Get Single App
+# ---------------------------------------------------------------------------
 
 
 @router.get("/{app_id}")

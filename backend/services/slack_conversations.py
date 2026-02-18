@@ -1271,6 +1271,7 @@ async def find_or_create_conversation(
     slack_user_id: str,
     revtops_user_id: str | None,
     slack_user_name: str | None = None,
+    slack_source: str = "dm",
 ) -> Conversation:
     """
     Find an existing Slack conversation or create a new one.
@@ -1279,9 +1280,10 @@ async def find_or_create_conversation(
     
     Args:
         organization_id: The organization this conversation belongs to
-        slack_channel_id: Slack DM channel ID
+        slack_channel_id: Slack channel ID (plain for DMs, channel:thread_ts for mentions/threads)
         slack_user_id: Slack user ID who initiated the conversation
         revtops_user_id: Linked RevTops user UUID string if available
+        slack_source: Origin type — "dm", "mention", or "thread"
         
     Returns:
         Existing or new Conversation instance
@@ -1335,8 +1337,10 @@ async def find_or_create_conversation(
                         revtops_user_id,
                     )
 
-            if slack_user_name and (not conversation.title or conversation.title == "Slack DM"):
-                conversation.title = f"Slack DM - {slack_user_name}"
+            source_label: str = {"dm": "Slack DM", "mention": "Slack @mention", "thread": "Slack Thread"}.get(slack_source, "Slack")
+            default_titles: set[str] = {"Slack DM", "Slack @mention", "Slack Thread", "Slack"}
+            if slack_user_name and (not conversation.title or conversation.title in default_titles):
+                conversation.title = f"{source_label} - {slack_user_name}"
                 changed = True
                 logger.info(
                     "[slack_conversations] Updated Slack conversation %s title to %s",
@@ -1354,7 +1358,8 @@ async def find_or_create_conversation(
             )
             return conversation
         
-        # Create new conversation for this Slack DM
+        # Create new conversation for this Slack channel/thread
+        source_label = {"dm": "Slack DM", "mention": "Slack @mention", "thread": "Slack Thread"}.get(slack_source, "Slack")
         conversation = Conversation(
             organization_id=UUID(organization_id),
             user_id=UUID(revtops_user_id) if revtops_user_id else None,
@@ -1363,7 +1368,7 @@ async def find_or_create_conversation(
             source_user_id=slack_user_id,
             participating_user_ids=_merge_participating_user_ids([], revtops_user_id),
             type="agent",
-            title=f"Slack DM - {slack_user_name}" if slack_user_name else "Slack DM",
+            title=f"{source_label} - {slack_user_name}" if slack_user_name else source_label,
         )
         session.add(conversation)
         await session.commit()
@@ -1811,6 +1816,7 @@ async def process_slack_mention(
         slack_user_id=user_id,
         revtops_user_id=str(linked_user.id) if linked_user else None,
         slack_user_name=slack_user_name,
+        slack_source="mention",
     )
 
     # Download any attached Slack files
@@ -1947,6 +1953,7 @@ async def process_slack_thread_reply(
         slack_channel_id=f"{channel_id}:{thread_ts}",
         slack_user_id=current_source_user_id,
         revtops_user_id=current_user_id,
+        slack_source="thread",
     )
 
     # Download any attached Slack files
