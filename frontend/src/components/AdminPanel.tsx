@@ -39,6 +39,7 @@ interface AdminUser {
   created_at: string | null;
   organization_id: string | null;
   organization_name: string | null;
+  organizations: string[];
 }
 
 interface AdminOrganization {
@@ -444,11 +445,13 @@ export function AdminPanel(): JSX.Element {
     const firstName = (u.first_name ?? '').toLowerCase();
     const lastName = (u.last_name ?? '').toLowerCase();
     const orgName = (u.organization_name ?? '').toLowerCase();
+    const orgNames = (u.organizations ?? []).map((name) => name.toLowerCase()).join(' ');
     const email = u.email.toLowerCase();
     return (
       firstName.includes(searchLower) ||
       lastName.includes(searchLower) ||
       orgName.includes(searchLower) ||
+      orgNames.includes(searchLower) ||
       email.includes(searchLower)
     );
   });
@@ -758,7 +761,20 @@ export function AdminPanel(): JSX.Element {
                           </div>
                         </td>
                         <td className="px-4 py-3">
-                          <div className="text-surface-200">{u.organization_name ?? '—'}</div>
+                          {(u.organizations ?? []).length > 0 ? (
+                            <div className="flex flex-wrap gap-1.5">
+                              {(u.organizations ?? []).map((organizationName) => (
+                                <span
+                                  key={`${u.id}-${organizationName}`}
+                                  className="px-2 py-0.5 rounded-full text-xs border border-primary-500/30 bg-primary-500/10 text-primary-300"
+                                >
+                                  {organizationName}
+                                </span>
+                              ))}
+                            </div>
+                          ) : (
+                            <div className="text-surface-200">{u.organization_name ?? '—'}</div>
+                          )}
                         </td>
                         <td className="px-4 py-3">{getStatusBadge(u.status)}</td>
                         <td className="px-4 py-3 text-sm text-surface-400">

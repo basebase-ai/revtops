@@ -14,7 +14,7 @@ from typing import Any, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import select
 
 from api.auth_middleware import AuthContext, require_global_admin
@@ -357,6 +357,7 @@ class AdminUserResponse(BaseModel):
     created_at: Optional[str]
     organization_id: Optional[str]
     organization_name: Optional[str]
+    organizations: list[str] = Field(default_factory=list)
 
 
 class AdminUsersListResponse(BaseModel):
@@ -378,6 +379,8 @@ async def list_admin_users(
     """
     logger.info("Admin users list requested by user_id=%s", auth.user_id)
 
+    from models.org_member import OrgMember
+    from models.organization import Organization
     from sqlalchemy.orm import selectinload
 
     async with get_session() as session:
@@ -391,6 +394,22 @@ async def list_admin_users(
         
         result = await session.execute(query)
         users = result.scalars().all()
+
+        user_ids = [u.id for u in users]
+        memberships_by_user: dict[UUID, list[str]] = {}
+
+        if user_ids:
+            memberships_result = await session.execute(
+                select(OrgMember.user_id, Organization.name)
+                .join(Organization, OrgMember.organization_id == Organization.id)
+                .where(
+                    OrgMember.user_id.in_(user_ids),
+                    OrgMember.status == "active",
+                )
+                .order_by(Organization.name.asc())
+            )
+            for user_id, organization_name in memberships_result.all():
+                memberships_by_user.setdefault(user_id, []).append(organization_name)
 
         def split_name(full_name: Optional[str]) -> tuple[Optional[str], Optional[str]]:
             """Split a full name into first and last name."""
@@ -408,6 +427,7 @@ async def list_admin_users(
             if u.organization:
                 org_name = u.organization.name
             
+            organizations = memberships_by_user.get(u.id, [])
             user_responses.append(
                 AdminUserResponse(
                     id=str(u.id),
@@ -419,6 +439,7 @@ async def list_admin_users(
                     created_at=f"{u.created_at.isoformat()}Z" if u.created_at else None,
                     organization_id=str(u.organization_id) if u.organization_id else None,
                     organization_name=org_name,
+                    organizations=organizations,
                 )
             )
 
