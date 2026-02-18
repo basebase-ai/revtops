@@ -40,7 +40,6 @@ class User(Base):
         JSONB, nullable=False, default=list
     )  # Global roles like ['global_admin']
     avatar_url: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
-    agent_global_commands: Mapped[Optional[str]] = mapped_column(String(4000), nullable=True)
     phone_number: Mapped[Optional[str]] = mapped_column(
         String(30), nullable=True, unique=True
     )  # E.164 format, e.g. "+14155551234"
@@ -84,7 +83,6 @@ class User(Base):
             "roles": self.roles,
             "status": self.status,
             "avatar_url": self.avatar_url,
-            "agent_global_commands": self.agent_global_commands,
             "phone_number": self.phone_number,
             "organization_id": str(self.organization_id) if self.organization_id else None,
         }
