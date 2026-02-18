@@ -653,6 +653,26 @@ class ChatOrchestrator:
         # the same row — no "find latest assistant message" guessing.
         self._current_message_id: UUID | None = None
 
+    async def _fetch_global_commands_from_memory(self, session: Any) -> str | None:
+        """Load latest per-user global commands from memory records only."""
+        from models.memory import Memory
+
+        if not self.organization_id or not self.user_id:
+            return None
+
+        result = await session.execute(
+            select(Memory.content)
+            .where(
+                Memory.organization_id == UUID(self.organization_id),  # type: ignore[arg-type]
+                Memory.entity_type == "user",
+                Memory.entity_id == UUID(self.user_id),
+                Memory.category == _AGENT_GLOBAL_COMMANDS_CATEGORY,
+            )
+            .order_by(Memory.updated_at.desc().nullslast(), Memory.created_at.desc().nullslast())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
     async def _resolve_user_context(self) -> None:
         """Fetch user context fields (name, email, phone, commands) from DB if not already set."""
         from models.conversation import Conversation
@@ -698,37 +718,12 @@ class ChatOrchestrator:
                         if not self.user_email and fetched_email:
                             self.user_email = fetched_email
                         if self.organization_id:
-                            cmd_result = await session.execute(
-                                select(Memory.content)
-                                .where(
-                                    Memory.organization_id == UUID(self.organization_id),  # type: ignore[arg-type]
-                                    Memory.entity_type == "user",
-                                    Memory.entity_id == (context_user_uuid or UUID(self.user_id)),
-                                    Memory.category == _AGENT_GLOBAL_COMMANDS_CATEGORY,
-                                )
-                                .order_by(Memory.updated_at.desc().nullslast(), Memory.created_at.desc().nullslast())
-                                .limit(1)
-                            )
-                            self.agent_global_commands = cmd_result.scalar_one_or_none()
+                            self.agent_global_commands = await self._fetch_global_commands_from_memory(session)
                         self._phone_number = fetched_phone
                     else:
                         self._phone_number = None
                 else:
                     self._phone_number = None
-
-                if self.organization_id and self.agent_global_commands is None and context_user_uuid:
-                    cmd_result = await session.execute(
-                        select(Memory.content)
-                        .where(
-                            Memory.organization_id == UUID(self.organization_id),  # type: ignore[arg-type]
-                            Memory.entity_type == "user",
-                            Memory.entity_id == context_user_uuid,
-                            Memory.category == _AGENT_GLOBAL_COMMANDS_CATEGORY,
-                        )
-                        .order_by(Memory.updated_at.desc().nullslast(), Memory.created_at.desc().nullslast())
-                        .limit(1)
-                    )
-                    self.agent_global_commands = cmd_result.scalar_one_or_none()
 
                 if not self.organization_name and self.organization_id:
                     result = await session.execute(
@@ -886,7 +881,6 @@ class ChatOrchestrator:
                     entry: dict[str, str] = {"id": str(mem.id), "content": mem.content}
                     if mem.entity_type == "user" and user_uuid and mem.entity_id == user_uuid:
                         if mem.category == _AGENT_GLOBAL_COMMANDS_CATEGORY:
-                            self.agent_global_commands = mem.content
                             continue
                         profile["user_memories"].append(entry)
                     elif mem.entity_type == "organization" and mem.entity_id == org_uuid:
@@ -899,6 +893,18 @@ class ChatOrchestrator:
                         profile["job_memories"].append(entry)
 
                 # Include role memories from org_members for all participants in this conversation.
+                participant_user_ids: list[UUID] = []
+                if self.conversation_id:
+                    conversation_result = await session.execute(
+                        select(Conversation.participating_user_ids).where(
+                            Conversation.id == UUID(self.conversation_id)
+                        )
+                    )
+                    participant_user_ids = list(conversation_result.scalar_one_or_none() or [])
+
+                if not participant_user_ids and user_uuid:
+                    participant_user_ids = [user_uuid]
+
                 if participant_user_ids:
                     from models.user import User
 
@@ -953,6 +959,8 @@ class ChatOrchestrator:
                             self.conversation_id,
                             missing_members,
                         )
+
+                self.agent_global_commands = await self._fetch_global_commands_from_memory(session)
 
         except Exception:
             logger.warning("Failed to load context profile", exc_info=True)
