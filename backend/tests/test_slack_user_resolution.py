@@ -200,7 +200,7 @@ def test_merge_participating_user_ids_moves_duplicate_to_end_for_recency():
     ]
 
 
-def test_resolve_current_revtops_user_id_prefers_linked_user_then_primary_current_user():
+def test_resolve_current_revtops_user_id_prefers_linked_user_then_latest_participant():
     linked_user = SimpleNamespace(id=UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"))
     conversation = SimpleNamespace(
         user_id=UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
@@ -217,7 +217,7 @@ def test_resolve_current_revtops_user_id_prefers_linked_user_then_primary_curren
         linked_user=None,
         conversation=conversation,
     )
-    assert resolved_without_link == "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+    assert resolved_without_link == "cccccccc-cccc-cccc-cccc-cccccccccccc"
 
 
 def test_resolve_current_revtops_user_id_uses_last_participant_when_primary_missing():
@@ -234,3 +234,16 @@ def test_resolve_current_revtops_user_id_uses_last_participant_when_primary_miss
         conversation=conversation,
     )
     assert resolved_fallback == "dddddddd-dddd-dddd-dddd-dddddddddddd"
+
+
+def test_resolve_current_revtops_user_id_falls_back_to_primary_when_no_participants():
+    conversation = SimpleNamespace(
+        user_id=UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
+        participating_user_ids=[],
+    )
+
+    resolved_fallback = slack_conversations._resolve_current_revtops_user_id(
+        linked_user=None,
+        conversation=conversation,
+    )
+    assert resolved_fallback == "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"

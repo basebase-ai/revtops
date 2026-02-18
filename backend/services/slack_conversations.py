@@ -1251,16 +1251,16 @@ def _resolve_current_revtops_user_id(
     linked_user: User | None,
     conversation: Conversation,
 ) -> str | None:
-    """Pick the current user context using most recent speaker first, then fallback participants."""
+    """Pick the current user context using most recent speaker first, then historical fallback."""
     if linked_user:
         return str(linked_user.id)
-
-    if conversation.user_id:
-        return str(conversation.user_id)
 
     participant_ids: list[UUID] = list(conversation.participating_user_ids or [])
     if participant_ids:
         return str(participant_ids[-1])
+
+    if conversation.user_id:
+        return str(conversation.user_id)
 
     return None
 
