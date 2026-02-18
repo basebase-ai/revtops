@@ -1,6 +1,6 @@
 """Add home_app_id to organizations for customizable Home tab.
 
-Revision ID: 066_add_home_app_id
+Revision ID: 067_add_home_app_id
 Revises: 065_create_apps_table
 Create Date: 2026-02-17
 """

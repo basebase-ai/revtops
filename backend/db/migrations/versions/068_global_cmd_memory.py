@@ -78,7 +78,7 @@ def upgrade() -> None:
         )
     )
 
-    op.drop_column("users", "agent_global_commands")
+    op.execute("ALTER TABLE users DROP COLUMN IF EXISTS agent_global_commands")
 
 
 def downgrade() -> None:
