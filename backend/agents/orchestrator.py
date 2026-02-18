@@ -31,6 +31,48 @@ logger = logging.getLogger(__name__)
 _AGENT_GLOBAL_COMMANDS_CATEGORY = "global_commands"
 
 
+def _format_slack_scope_context(slack_channel_id: str | None, slack_thread_ts: str | None) -> str:
+    """Build prompt guidance for Slack channel/thread query scoping."""
+    if not slack_channel_id:
+        return ""
+
+    thread_line: str = (
+        f"This conversation is in Slack thread timestamp: {slack_thread_ts}\n"
+        if slack_thread_ts
+        else ""
+    )
+    thread_filter: str = (
+        f"AND custom_fields->>'thread_ts' = '{slack_thread_ts}'"
+        if slack_thread_ts
+        else "AND custom_fields->>'thread_ts' = '<thread_ts>'"
+    )
+
+    return f"""
+
+## Slack Channel Context
+This conversation is happening in Slack channel ID: {slack_channel_id}
+{thread_line}
+When users refer to Slack scope, distinguish **thread/chat** vs **channel**:
+- "this chat", "this thread", "this conversation" → scope to the current thread when `thread_ts` is available.
+- "this channel" or "in #channel" → scope to the whole channel.
+
+If the user asks a Slack activity question but says "this" without indicating chat/thread vs channel, ask a brief clarification question before querying.
+
+Channel-level filter:
+```sql
+WHERE source_system = 'slack' AND custom_fields->>'channel_id' = '{slack_channel_id}'
+```
+
+Thread-level filter (when thread_ts is available):
+```sql
+WHERE source_system = 'slack'
+  AND custom_fields->>'channel_id' = '{slack_channel_id}'
+  {thread_filter}
+```
+
+The activities table contains synced Slack messages with these relevant custom_fields keys: channel_id, channel_name, user_id, thread_ts."""
+
+
 async def update_tool_result(
     conversation_id: str,
     tool_id: str,
@@ -633,11 +675,27 @@ class ChatOrchestrator:
 
     async def _resolve_user_context(self) -> None:
         """Fetch user context fields (name, email, phone, commands) from DB if not already set."""
-        from models.user import User
+        from models.conversation import Conversation
+        from models.memory import Memory
         from models.organization import Organization
+        from models.user import User
 
         try:
             async with get_session(organization_id=self.organization_id) as session:
+                context_user_uuid: UUID | None = UUID(self.user_id) if self.user_id else None
+                if self.conversation_id and self.organization_id:
+                    conversation_result = await session.execute(
+                        select(Conversation.participating_user_ids)
+                        .where(
+                            Conversation.id == UUID(self.conversation_id),
+                            Conversation.organization_id == UUID(self.organization_id),
+                        )
+                        .limit(1)
+                    )
+                    participant_user_ids: list[UUID] = list(conversation_result.scalar_one_or_none() or [])
+                    if participant_user_ids:
+                        context_user_uuid = participant_user_ids[-1]
+
                 if self.user_id and (
                     not self.user_name
                     or not self.user_email
@@ -659,7 +717,8 @@ class ChatOrchestrator:
                             self.user_name = fetched_name
                         if not self.user_email and fetched_email:
                             self.user_email = fetched_email
-                        self.agent_global_commands = await self._fetch_global_commands_from_memory(session)
+                        if self.organization_id:
+                            self.agent_global_commands = await self._fetch_global_commands_from_memory(session)
                         self._phone_number = fetched_phone
                     else:
                         self._phone_number = None
@@ -749,6 +808,7 @@ class ChatOrchestrator:
             "membership_title": None,
             "reports_to_name": None,
             "phone_number": getattr(self, "_phone_number", None),
+            "participant_job_memories": [],
         }
 
         try:
@@ -764,7 +824,22 @@ class ChatOrchestrator:
                 )
                 all_memories: list[Memory] = list(result.scalars().all())
 
-                user_uuid: UUID | None = UUID(self.user_id) if self.user_id else None
+                participant_user_ids: list[UUID] = []
+                if self.conversation_id:
+                    from models.conversation import Conversation
+
+                    conversation_result = await session.execute(
+                        select(Conversation.participating_user_ids)
+                        .where(Conversation.id == UUID(self.conversation_id))
+                        .limit(1)
+                    )
+                    participant_user_ids = list(conversation_result.scalar_one_or_none() or [])
+
+                user_uuid: UUID | None = (
+                    participant_user_ids[-1]
+                    if participant_user_ids
+                    else (UUID(self.user_id) if self.user_id else None)
+                )
                 org_uuid: UUID = UUID(self.organization_id)  # type: ignore[arg-type]
 
                 # Look up the user's org membership for structured fields
@@ -816,6 +891,74 @@ class ChatOrchestrator:
                         and mem.entity_id == membership_id
                     ):
                         profile["job_memories"].append(entry)
+
+                # Include role memories from org_members for all participants in this conversation.
+                participant_user_ids: list[UUID] = []
+                if self.conversation_id:
+                    conversation_result = await session.execute(
+                        select(Conversation.participating_user_ids).where(
+                            Conversation.id == UUID(self.conversation_id)
+                        )
+                    )
+                    participant_user_ids = list(conversation_result.scalar_one_or_none() or [])
+
+                if not participant_user_ids and user_uuid:
+                    participant_user_ids = [user_uuid]
+
+                if participant_user_ids:
+                    from models.user import User
+
+                    members_result = await session.execute(
+                        select(OrgMember.id, OrgMember.user_id, OrgMember.title, User.name)
+                        .join(User, User.id == OrgMember.user_id)
+                        .where(
+                            OrgMember.organization_id == org_uuid,
+                            OrgMember.user_id.in_(participant_user_ids),
+                        )
+                    )
+                    member_rows = members_result.all()
+                    membership_by_user_id: dict[UUID, tuple[UUID, str | None, str | None]] = {
+                        row[1]: (row[0], row[2], row[3]) for row in member_rows
+                    }
+
+                    for participant_user_id in participant_user_ids:
+                        membership = membership_by_user_id.get(participant_user_id)
+                        if not membership:
+                            continue
+
+                        participant_membership_id, participant_title, participant_name = membership
+                        participant_role_memories = [
+                            {"id": str(mem.id), "content": mem.content}
+                            for mem in all_memories
+                            if (
+                                mem.entity_type == "organization_member"
+                                and mem.entity_id == participant_membership_id
+                            )
+                        ]
+
+                        profile["participant_job_memories"].append(
+                            {
+                                "user_id": str(participant_user_id),
+                                "membership_id": str(participant_membership_id),
+                                "name": participant_name,
+                                "title": participant_title,
+                                "is_most_recent": participant_user_id == user_uuid,
+                                "memories": participant_role_memories,
+                            }
+                        )
+
+                    missing_members = [
+                        str(participant_user_id)
+                        for participant_user_id in participant_user_ids
+                        if participant_user_id not in membership_by_user_id
+                    ]
+                    if missing_members:
+                        logger.info(
+                            "Missing org_members rows for participants org=%s conversation=%s participants=%s",
+                            self.organization_id,
+                            self.conversation_id,
+                            missing_members,
+                        )
 
                 self.agent_global_commands = await self._fetch_global_commands_from_memory(session)
 
@@ -953,19 +1096,13 @@ class ChatOrchestrator:
             system_prompt += "\n\n## User Global Commands\nThe user configured these standing instructions for every prompt. Follow them unless they conflict with higher-priority system/developer constraints:\n"
             system_prompt += self.agent_global_commands.strip()
 
-        # Add Slack channel context so the agent can scope queries to the right channel
+        # Add Slack channel/thread context so the agent can scope queries correctly
         slack_channel_id: str | None = (self.workflow_context or {}).get("slack_channel_id")
-        if slack_channel_id:
-            system_prompt += f"""
-
-## Slack Channel Context
-This conversation is happening in Slack channel ID: {slack_channel_id}
-
-When the user asks about activity in "this channel", query the activities table filtered by:
-```sql
-WHERE source_system = 'slack' AND custom_fields->>'channel_id' = '{slack_channel_id}'
-```
-The activities table contains synced Slack messages with these relevant custom_fields keys: channel_id, channel_name, user_id, thread_ts."""
+        slack_thread_ts: str | None = (self.workflow_context or {}).get("slack_thread_ts")
+        system_prompt += _format_slack_scope_context(
+            slack_channel_id=slack_channel_id,
+            slack_thread_ts=slack_thread_ts,
+        )
 
         # Always inject time context — use server UTC as fallback when client
         # does not provide local_time / timezone (e.g. Slack and workflow invocations).
@@ -1006,12 +1143,13 @@ WHERE scheduled_start >= '2026-01-27'::date AND scheduled_start < '2026-01-28'::
                 system_prompt += integrations_summary
 
         # Load and inject three-tier context profile (user, org, job memories + structured fields)
-        if self.user_id and self.organization_id:
+        if self.organization_id and (self.user_id or self.conversation_id):
             profile: dict[str, Any] = await self._load_context_profile()
 
             user_memories: list[dict[str, str]] = profile["user_memories"]
             org_memories: list[dict[str, str]] = profile["org_memories"]
             job_memories: list[dict[str, str]] = profile["job_memories"]
+            participant_job_memories: list[dict[str, Any]] = profile.get("participant_job_memories", [])
             membership_title: str | None = profile["membership_title"]
             reports_to_name: str | None = profile["reports_to_name"]
             phone_number: str | None = profile["phone_number"]
@@ -1053,6 +1191,21 @@ WHERE scheduled_start >= '2026-01-27'::date AND scheduled_start < '2026-01-28'::
                     system_prompt += f"- Reports to: {reports_to_name}\n"
                 for mem in job_memories:
                     system_prompt += f"- [{mem['id']}] {mem['content']}\n"
+
+
+            if participant_job_memories:
+                system_prompt += "\n## Team Role Context (Conversation Participants)\n"
+                system_prompt += "Role memories from org_members for all users participating in this conversation:\n"
+                for participant in participant_job_memories:
+                    participant_name: str = participant.get("name") or "Unknown member"
+                    participant_title: str | None = participant.get("title")
+                    most_recent_suffix: str = " (most recent user)" if participant.get("is_most_recent") else ""
+                    system_prompt += f"- {participant_name}{most_recent_suffix}"
+                    if participant_title:
+                        system_prompt += f" — {participant_title}"
+                    system_prompt += "\n"
+                    for mem in participant.get("memories", []):
+                        system_prompt += f"  - [{mem['id']}] {mem['content']}\n"
 
             # -- Profile completeness signal (guides context-gathering behaviour) --
             is_private: bool = self.source in ("slack_dm", "web", "sms")
