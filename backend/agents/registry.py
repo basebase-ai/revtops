@@ -776,6 +776,56 @@ Content is truncated at ~100K characters for very large files.""",
 )
 
 
+register_tool(
+    name="create_cloud_file",
+    description="""Create a new Google Doc, Sheet, or Slides presentation in the user's Google Drive.
+
+Use this when the user asks you to create a document, spreadsheet, or presentation
+in their Google Drive. The file is created natively in Google Workspace and opens
+directly in the Google Docs/Sheets/Slides editor.
+
+**File types and content formats:**
+
+1. **document** — Google Doc. Provide content as a plain text string.
+   Example: {"file_type": "document", "title": "Meeting Notes", "content": "# Q4 Planning\\n\\nAttendees: ..."}
+
+2. **spreadsheet** — Google Sheet. Provide content as a JSON object with a "sheets" array.
+   Each sheet has a "title" and "data" (2D array of cell values, first row = headers).
+   Example: {"file_type": "spreadsheet", "title": "Revenue Tracker", "content": {"sheets": [{"title": "Q4", "data": [["Region", "Revenue"], ["West", 50000], ["East", 80000]]}]}}
+   Shorthand: {"file_type": "spreadsheet", "title": "Data", "content": {"data": [["A", "B"], [1, 2]]}} (auto-creates "Sheet1")
+
+3. **presentation** — Google Slides. Provide content as a JSON object with a "slides" array.
+   Each slide has a "title" and optional "body" (bullet points or text).
+   Example: {"file_type": "presentation", "title": "Q4 Review", "content": {"slides": [{"title": "Q4 Revenue", "body": "Total: $1.2M\\n- West: $500K\\n- East: $700K"}, {"title": "Next Steps", "body": "1. Expand West\\n2. Hire 3 reps"}]}}
+
+Returns the file's Google Drive link (web_view_link) so you can share it with the user.""",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "file_type": {
+                "type": "string",
+                "enum": ["document", "spreadsheet", "presentation"],
+                "description": "Type of Google Workspace file to create.",
+            },
+            "title": {
+                "type": "string",
+                "description": "Display name for the new file.",
+            },
+            "content": {
+                "description": "Content to populate the file with. String for documents, JSON object for sheets/slides. See tool description for format details.",
+            },
+            "folder_id": {
+                "type": "string",
+                "description": "Optional Google Drive folder ID to place the file in. Omit to create in the user's root Drive.",
+            },
+        },
+        "required": ["file_type", "title", "content"],
+    },
+    category=ToolCategory.EXTERNAL_WRITE,
+    default_requires_approval=False,
+)
+
+
 # -----------------------------------------------------------------------------
 # Workflow Management Tools
 # -----------------------------------------------------------------------------

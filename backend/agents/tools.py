@@ -308,6 +308,7 @@ async def execute_tool(
         "trigger_sync": lambda: _trigger_sync(tool_input, organization_id),
         "search_cloud_files": lambda: _search_cloud_files(tool_input, organization_id, user_id),
         "read_cloud_file": lambda: _read_cloud_file(tool_input, organization_id, user_id),
+        "create_cloud_file": lambda: _create_cloud_file(tool_input, organization_id, user_id, skip_approval),
         "create_artifact": lambda: _create_artifact(tool_input, organization_id, user_id, context),
         "create_app": lambda: _create_app(tool_input, organization_id, user_id, context),
         "keep_notes": lambda: _keep_notes(tool_input, organization_id, user_id, context, skip_approval),
@@ -5112,6 +5113,83 @@ async def _read_cloud_file(
     except Exception as e:
         logger.error("[Tools._read_cloud_file] Failed: %s", e)
         return {"error": f"Failed to read cloud file: {str(e)}"}
+
+
+async def _create_cloud_file(
+    params: dict[str, Any],
+    organization_id: str,
+    user_id: str | None,
+    skip_approval: bool = False,
+) -> dict[str, Any]:
+    """
+    Create a new Google Workspace file (Doc, Sheet, or Slides) in the user's Drive.
+
+    Routes to GoogleDriveConnector.create_file() for the actual API calls.
+    """
+    file_type: str = params.get("file_type", "").strip()
+    title: str = params.get("title", "").strip()
+    content: Any = params.get("content")
+    folder_id: str | None = params.get("folder_id")
+
+    if not file_type:
+        return {"error": "file_type is required (document, spreadsheet, or presentation)."}
+    if not title:
+        return {"error": "title is required."}
+    if not user_id:
+        return {"error": "Google Drive file creation requires an authenticated user."}
+
+    if not skip_approval:
+        operation_id: str = str(uuid4())
+        store_pending_operation(
+            operation_id=operation_id,
+            tool_name="create_cloud_file",
+            params=params,
+            organization_id=organization_id,
+            user_id=user_id,
+        )
+        return {
+            "type": "pending_approval",
+            "status": "pending_approval",
+            "operation_id": operation_id,
+            "tool_name": "create_cloud_file",
+            "preview": {
+                "file_type": file_type,
+                "title": title,
+                "folder_id": folder_id,
+            },
+            "message": f"Ready to create a Google {file_type} titled \"{title}\". Please approve to proceed.",
+        }
+
+    return await execute_create_cloud_file(params, organization_id, user_id)
+
+
+async def execute_create_cloud_file(
+    params: dict[str, Any],
+    organization_id: str,
+    user_id: str,
+) -> dict[str, Any]:
+    """Execute the actual Google Drive file creation (called after approval)."""
+    file_type: str = params.get("file_type", "").strip()
+    title: str = params.get("title", "").strip()
+    content: Any = params.get("content")
+    folder_id: str | None = params.get("folder_id")
+
+    try:
+        from connectors.google_drive import GoogleDriveConnector
+
+        connector = GoogleDriveConnector(organization_id, user_id)
+        result: dict[str, Any] = await connector.create_file(
+            file_type=file_type,
+            title=title,
+            content=content,
+            folder_id=folder_id,
+        )
+        return result
+    except ValueError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        logger.error("[Tools._create_cloud_file] Failed: %s", e)
+        return {"error": f"Failed to create cloud file: {str(e)}"}
 
 
 # =============================================================================
