@@ -1946,10 +1946,32 @@ async def process_slack_thread_reply(
         )
         return {"status": "ignored", "reason": "bot not participating in thread"}
 
+    speaker_changed: bool = conversation.source_user_id != user_id
+    previous_source_user_id: str | None = conversation.source_user_id
+    current_source_user_id: str = user_id if speaker_changed else (conversation.source_user_id or user_id)
+
     connector = SlackConnector(organization_id=organization_id)
 
-    # Show a reaction on the user's reply so they know the bot is working
+    # Show a reaction on the user's reply immediately so they know the bot is working
     await connector.add_reaction(channel=channel_id, timestamp=event_ts)
+
+    if speaker_changed:
+        logger.info(
+            "[slack_conversations] Thread %s:%s speaker handoff detected from %s to %s; applying source speaker handoff before additional processing",
+            channel_id,
+            thread_ts,
+            previous_source_user_id,
+            user_id,
+        )
+        conversation = await find_or_create_conversation(
+            organization_id=organization_id,
+            slack_channel_id=f"{channel_id}:{thread_ts}",
+            slack_user_id=current_source_user_id,
+            revtops_user_id=None,
+            slack_source="thread",
+            clear_current_user_on_unresolved=True,
+        )
+
     slack_user = await _fetch_slack_user_info(
         organization_id=organization_id,
         slack_user_id=user_id,
@@ -1962,8 +1984,6 @@ async def process_slack_thread_reply(
         slack_user=slack_user,
     )
 
-    speaker_changed: bool = conversation.source_user_id != user_id
-    current_source_user_id: str = user_id if speaker_changed else (conversation.source_user_id or user_id)
     current_user_id: str | None = _resolve_thread_active_user_id(
         linked_user=linked_user,
         conversation=conversation,
@@ -1971,7 +1991,17 @@ async def process_slack_thread_reply(
     )
     current_user_email: str | None = linked_user.email if linked_user else None
 
-    await find_or_create_conversation(
+    if speaker_changed:
+        logger.info(
+            "[slack_conversations] Thread %s:%s global context handoff to active user=%s completed for speaker=%s",
+            channel_id,
+            thread_ts,
+            current_user_id,
+            user_id,
+        )
+
+    # Ensure speaker and active user context are persisted before any further processing.
+    conversation = await find_or_create_conversation(
         organization_id=organization_id,
         slack_channel_id=f"{channel_id}:{thread_ts}",
         slack_user_id=current_source_user_id,
