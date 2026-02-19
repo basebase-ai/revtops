@@ -278,3 +278,78 @@ def test_resolve_thread_active_user_id_clears_active_user_on_unresolved_handoff(
     )
 
     assert resolved is None
+
+
+def test_process_slack_thread_reply_applies_speaker_and_global_handoff_before_other_processing(monkeypatch):
+    events: list[str] = []
+    conversation = SimpleNamespace(
+        id=UUID("99999999-9999-9999-9999-999999999999"),
+        source_user_id="U_OLD",
+        user_id=UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
+        participating_user_ids=[UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")],
+    )
+
+    class _FakeSlackConnectorForThread:
+        def __init__(self, organization_id: str):
+            self.organization_id = organization_id
+
+        async def add_reaction(self, channel: str, timestamp: str):
+            events.append("add_reaction")
+
+        async def remove_reaction(self, channel: str, timestamp: str):
+            events.append("remove_reaction")
+
+    async def _fake_find_org(_team_id: str):
+        return "11111111-1111-1111-1111-111111111111"
+
+    async def _fake_find_thread_conversation(**_kwargs):
+        return conversation
+
+    async def _fake_find_or_create_conversation(**kwargs):
+        events.append(f"find_or_create:{kwargs['slack_user_id']}:{kwargs['revtops_user_id']}")
+        if kwargs["slack_user_id"] == "U_NEW" and kwargs["revtops_user_id"] is None:
+            conversation.source_user_id = "U_NEW"
+            conversation.user_id = None
+        if kwargs["revtops_user_id"]:
+            conversation.user_id = UUID(kwargs["revtops_user_id"])
+        return conversation
+
+    async def _fake_fetch_slack_user_info(**_kwargs):
+        events.append("fetch_slack_user")
+        return {}
+
+    async def _fake_resolve_user(**_kwargs):
+        events.append("resolve_user")
+        return SimpleNamespace(
+            id=UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+            email="new.user@acme.com",
+        )
+
+    async def _fake_stream_and_post_responses(**_kwargs):
+        events.append("stream")
+        return 3
+
+    monkeypatch.setattr(slack_conversations, "find_organization_by_slack_team", _fake_find_org)
+    monkeypatch.setattr(slack_conversations, "find_thread_conversation", _fake_find_thread_conversation)
+    monkeypatch.setattr(slack_conversations, "find_or_create_conversation", _fake_find_or_create_conversation)
+    monkeypatch.setattr(slack_conversations, "_fetch_slack_user_info", _fake_fetch_slack_user_info)
+    monkeypatch.setattr(slack_conversations, "resolve_revtops_user_for_slack_actor", _fake_resolve_user)
+    monkeypatch.setattr(slack_conversations, "_stream_and_post_responses", _fake_stream_and_post_responses)
+    monkeypatch.setattr(slack_conversations, "SlackConnector", _FakeSlackConnectorForThread)
+
+    result = asyncio.run(
+        slack_conversations.process_slack_thread_reply(
+            team_id="T123",
+            channel_id="C123",
+            user_id="U_NEW",
+            message_text="hello",
+            thread_ts="111.222",
+            event_ts="111.333",
+            files=None,
+        )
+    )
+
+    assert result["status"] == "success"
+    assert events.index("add_reaction") < events.index("fetch_slack_user")
+    assert events.index("find_or_create:U_NEW:None") < events.index("fetch_slack_user")
+    assert events.index("add_reaction") < events.index("find_or_create:U_NEW:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
