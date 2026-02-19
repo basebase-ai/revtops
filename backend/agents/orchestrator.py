@@ -25,6 +25,7 @@ from config import settings
 from models.chat_message import ChatMessage
 from models.conversation import Conversation
 from models.database import get_session
+from models.memory import Memory
 
 logger = logging.getLogger(__name__)
 
