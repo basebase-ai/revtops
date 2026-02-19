@@ -99,6 +99,18 @@ export function AdminPanel(): JSX.Element {
   const [orgsError, setOrgsError] = useState<string | null>(null);
   const [orgSearch, setOrgSearch] = useState<string>('');
 
+  // Create organization modal state
+  const [showCreateOrgModal, setShowCreateOrgModal] = useState<boolean>(false);
+  const [createOrgStep, setCreateOrgStep] = useState<1 | 2>(1);
+  const [createOrgName, setCreateOrgName] = useState<string>('');
+  const [createOrgDomain, setCreateOrgDomain] = useState<string>('');
+  const [createOrgLogoUrl, setCreateOrgLogoUrl] = useState<string>('');
+  const [createdOrgId, setCreatedOrgId] = useState<string | null>(null);
+  const [createOrgInvitees, setCreateOrgInvitees] = useState<Array<{ email: string; name: string }>>([{ email: '', name: '' }]);
+  const [createOrgSubmitting, setCreateOrgSubmitting] = useState<boolean>(false);
+  const [createOrgError, setCreateOrgError] = useState<string | null>(null);
+  const [inviteModalOrg, setInviteModalOrg] = useState<{ id: string; name: string } | null>(null);
+
   // Sources tab state
   const [adminIntegrations, setAdminIntegrations] = useState<AdminIntegration[]>([]);
   const [integrationsLoading, setIntegrationsLoading] = useState<boolean>(true);
@@ -314,6 +326,61 @@ export function AdminPanel(): JSX.Element {
     } finally {
       setInviting(null);
     }
+  };
+
+  const handleCreateOrgSubmit = async (): Promise<void> => {
+    const name: string = createOrgName.trim();
+    const domain: string = createOrgDomain.trim().toLowerCase();
+    if (!name || !domain || domain.includes('@')) {
+      setCreateOrgError('Name and a valid email domain (e.g. acme.com) are required.');
+      return;
+    }
+    setCreateOrgSubmitting(true);
+    setCreateOrgError(null);
+    try {
+      const { data, error: reqError } = await apiRequest<AdminOrganization>(
+        '/waitlist/admin/organizations',
+        { method: 'POST', body: JSON.stringify({ name, email_domain: domain, logo_url: createOrgLogoUrl.trim() || undefined }) }
+      );
+      if (reqError || !data) {
+        setCreateOrgError(reqError ?? 'Failed to create organization');
+        return;
+      }
+      setCreatedOrgId(data.id);
+      setCreateOrgStep(2);
+      void fetchOrganizations();
+    } finally {
+      setCreateOrgSubmitting(false);
+    }
+  };
+
+  const handleCreateOrgInviteSubmit = async (): Promise<void> => {
+    const orgId: string | null = createdOrgId ?? inviteModalOrg?.id ?? null;
+    if (!user || !orgId) return;
+    const rows: Array<{ email: string; name: string }> = createOrgInvitees.filter((r) => r.email.trim() !== '');
+    if (rows.length === 0) {
+      setCreateOrgError('Add at least one invitee with an email.');
+      return;
+    }
+    setCreateOrgSubmitting(true);
+    setCreateOrgError(null);
+    const errors: string[] = [];
+    for (const row of rows) {
+      const email: string = row.email.trim().toLowerCase();
+      const { error: reqError } = await apiRequest<unknown>(
+        `/auth/organizations/${orgId}/invitations?user_id=${user.id}`,
+        { method: 'POST', body: JSON.stringify({ email, role: 'member', name: row.name.trim() || undefined }) }
+      );
+      if (reqError) errors.push(`${email}: ${reqError}`);
+    }
+    setCreateOrgSubmitting(false);
+    if (errors.length > 0) {
+      setCreateOrgError(errors.join('; '));
+      return;
+    }
+    setShowCreateOrgModal(false);
+    setInviteModalOrg(null);
+    void fetchOrganizations();
   };
 
   const handleMasquerade = async (targetUserId: string): Promise<void> => {
@@ -829,16 +896,37 @@ export function AdminPanel(): JSX.Element {
                   className="w-full pl-10 pr-4 py-2 rounded-lg bg-surface-800 border border-surface-700 text-surface-100 placeholder-surface-500 focus:outline-none focus:border-primary-500"
                 />
               </div>
-              <button
-                onClick={() => void fetchOrganizations()}
-                disabled={orgsLoading}
-                className="px-4 py-2 rounded-lg bg-surface-800 border border-surface-700 text-surface-300 hover:bg-surface-700 transition-colors disabled:opacity-50 flex items-center gap-2"
-              >
-                <svg className={`w-4 h-4 ${orgsLoading ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                </svg>
-                Refresh
-              </button>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => {
+                    setInviteModalOrg(null);
+                    setShowCreateOrgModal(true);
+                    setCreateOrgStep(1);
+                    setCreateOrgName('');
+                    setCreateOrgDomain('');
+                    setCreateOrgLogoUrl('');
+                    setCreatedOrgId(null);
+                    setCreateOrgInvitees([{ email: '', name: '' }]);
+                    setCreateOrgError(null);
+                  }}
+                  className="px-4 py-2 rounded-lg bg-primary-500/20 border border-primary-500/30 text-primary-400 hover:bg-primary-500/30 transition-colors flex items-center gap-2"
+                >
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                  </svg>
+                  Create organization
+                </button>
+                <button
+                  onClick={() => void fetchOrganizations()}
+                  disabled={orgsLoading}
+                  className="px-4 py-2 rounded-lg bg-surface-800 border border-surface-700 text-surface-300 hover:bg-surface-700 transition-colors disabled:opacity-50 flex items-center gap-2"
+                >
+                  <svg className={`w-4 h-4 ${orgsLoading ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                  </svg>
+                  Refresh
+                </button>
+              </div>
             </div>
 
             {/* Error */}
@@ -881,6 +969,7 @@ export function AdminPanel(): JSX.Element {
                       <th className="px-4 py-3 text-sm font-medium text-surface-400">Users</th>
                       <th className="px-4 py-3 text-sm font-medium text-surface-400">Last Sync</th>
                       <th className="px-4 py-3 text-sm font-medium text-surface-400">Created</th>
+                      <th className="px-4 py-3 text-sm font-medium text-surface-400">Action</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-surface-800">
@@ -903,6 +992,21 @@ export function AdminPanel(): JSX.Element {
                         <td className="px-4 py-3 text-sm text-surface-400">
                           {formatDate(o.created_at)}
                         </td>
+                        <td className="px-4 py-3">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setInviteModalOrg({ id: o.id, name: o.name });
+                              setCreateOrgStep(2);
+                              setCreateOrgInvitees([{ email: '', name: '' }]);
+                              setCreateOrgError(null);
+                              setShowCreateOrgModal(true);
+                            }}
+                            className="px-3 py-1.5 rounded-lg bg-primary-500/20 border border-primary-500/30 text-primary-400 hover:bg-primary-500/30 text-sm font-medium transition-colors"
+                          >
+                            Invite
+                          </button>
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -915,6 +1019,158 @@ export function AdminPanel(): JSX.Element {
               <div className="text-sm text-surface-500 text-center">
                 Showing {filteredOrgs.length} of {adminOrgs.length} organizations
                 {orgSearch && ` matching "${orgSearch}"`}
+              </div>
+            )}
+
+            {/* Create organization modal */}
+            {showCreateOrgModal && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={() => { if (!createOrgSubmitting) { setShowCreateOrgModal(false); setInviteModalOrg(null); } }}>
+                <div className="bg-surface-900 border border-surface-700 rounded-xl shadow-xl max-w-lg w-full max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+                  <div className="p-6">
+                    <h3 className="text-lg font-semibold text-surface-100 mb-4">
+                      {createOrgStep === 1
+                        ? 'Create organization'
+                        : inviteModalOrg
+                          ? `Invite users to ${inviteModalOrg.name}`
+                          : 'Invite users'}
+                    </h3>
+                    {createOrgError && (
+                      <div className="mb-4 p-3 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400 text-sm">
+                        {createOrgError}
+                      </div>
+                    )}
+                    {createOrgStep === 1 ? (
+                      <>
+                        <div className="space-y-4">
+                          <div>
+                            <label className="block text-sm font-medium text-surface-400 mb-1">Organization name</label>
+                            <input
+                              type="text"
+                              value={createOrgName}
+                              onChange={(e) => setCreateOrgName(e.target.value)}
+                              placeholder="Acme Inc"
+                              className="w-full px-3 py-2 rounded-lg bg-surface-800 border border-surface-700 text-surface-100 placeholder-surface-500 focus:outline-none focus:border-primary-500"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-sm font-medium text-surface-400 mb-1">Email domain</label>
+                            <input
+                              type="text"
+                              value={createOrgDomain}
+                              onChange={(e) => setCreateOrgDomain(e.target.value)}
+                              placeholder="acme.com"
+                              className="w-full px-3 py-2 rounded-lg bg-surface-800 border border-surface-700 text-surface-100 placeholder-surface-500 focus:outline-none focus:border-primary-500"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-sm font-medium text-surface-400 mb-1">Logo URL (optional)</label>
+                            <input
+                              type="url"
+                              value={createOrgLogoUrl}
+                              onChange={(e) => setCreateOrgLogoUrl(e.target.value)}
+                              placeholder="https://..."
+                              className="w-full px-3 py-2 rounded-lg bg-surface-800 border border-surface-700 text-surface-100 placeholder-surface-500 focus:outline-none focus:border-primary-500"
+                            />
+                          </div>
+                        </div>
+                        <div className="mt-6 flex justify-end gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setShowCreateOrgModal(false)}
+                            disabled={createOrgSubmitting}
+                            className="px-4 py-2 rounded-lg bg-surface-800 text-surface-300 hover:bg-surface-700 disabled:opacity-50"
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void handleCreateOrgSubmit()}
+                            disabled={createOrgSubmitting}
+                            className="px-4 py-2 rounded-lg bg-primary-500 text-surface-900 font-medium hover:bg-primary-400 disabled:opacity-50 flex items-center gap-2"
+                          >
+                            {createOrgSubmitting ? 'Creating...' : 'Create & invite users'}
+                          </button>
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <p className="text-sm text-surface-400 mb-4">Add one or more invitees. They will receive an email invitation.</p>
+                        <div className="space-y-3 max-h-48 overflow-y-auto">
+                          {createOrgInvitees.map((row, idx) => (
+                            <div key={idx} className="flex gap-2 items-center">
+                              <input
+                                type="email"
+                                value={row.email}
+                                onChange={(e) => {
+                                  const next = [...createOrgInvitees];
+                                  const rowItem = next[idx];
+                                  if (rowItem) next[idx] = { email: e.target.value, name: rowItem.name };
+                                  setCreateOrgInvitees(next);
+                                }}
+                                placeholder="email@example.com"
+                                className="flex-1 px-3 py-2 rounded-lg bg-surface-800 border border-surface-700 text-surface-100 placeholder-surface-500 focus:outline-none focus:border-primary-500 text-sm"
+                              />
+                              <input
+                                type="text"
+                                value={row.name}
+                                onChange={(e) => {
+                                  const next = [...createOrgInvitees];
+                                  const rowItem = next[idx];
+                                  if (rowItem) next[idx] = { email: rowItem.email, name: e.target.value };
+                                  setCreateOrgInvitees(next);
+                                }}
+                                placeholder="Name (optional)"
+                                className="w-32 px-3 py-2 rounded-lg bg-surface-800 border border-surface-700 text-surface-100 placeholder-surface-500 focus:outline-none focus:border-primary-500 text-sm"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => setCreateOrgInvitees((prev) => prev.filter((_, i) => i !== idx))}
+                                disabled={createOrgInvitees.length <= 1}
+                                className="p-2 rounded-lg text-surface-400 hover:bg-surface-800 hover:text-surface-200 disabled:opacity-40 disabled:cursor-not-allowed"
+                                title="Remove row"
+                              >
+                                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setCreateOrgInvitees((prev) => [...prev, { email: '', name: '' }])}
+                          className="mt-2 text-sm text-primary-400 hover:text-primary-300"
+                        >
+                          + Add another
+                        </button>
+                        <div className="mt-6 flex justify-end gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setShowCreateOrgModal(false)}
+                            disabled={createOrgSubmitting}
+                            className="px-4 py-2 rounded-lg bg-surface-800 text-surface-300 hover:bg-surface-700 disabled:opacity-50"
+                          >
+                            Close
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => { setCreateOrgStep(1); setCreateOrgError(null); }}
+                            disabled={createOrgSubmitting}
+                            className="px-4 py-2 rounded-lg bg-surface-800 text-surface-300 hover:bg-surface-700 disabled:opacity-50"
+                          >
+                            Back
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void handleCreateOrgInviteSubmit()}
+                            disabled={createOrgSubmitting}
+                            className="px-4 py-2 rounded-lg bg-primary-500 text-surface-900 font-medium hover:bg-primary-400 disabled:opacity-50 flex items-center gap-2"
+                          >
+                            {createOrgSubmitting ? 'Sending...' : 'Send invitations'}
+                          </button>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                </div>
               </div>
             )}
           </div>
