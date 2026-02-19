@@ -236,6 +236,25 @@ def test_resolve_current_revtops_user_id_uses_last_participant_when_primary_miss
     assert resolved_fallback == "dddddddd-dddd-dddd-dddd-dddddddddddd"
 
 
+
+
+def test_resolve_current_revtops_user_id_returns_none_for_new_unmapped_speaker():
+    conversation = SimpleNamespace(
+        user_id=UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
+        participating_user_ids=[
+            UUID("cccccccc-cccc-cccc-cccc-cccccccccccc"),
+            UUID("dddddddd-dddd-dddd-dddd-dddddddddddd"),
+        ],
+    )
+
+    resolved = slack_conversations._resolve_current_revtops_user_id(
+        linked_user=None,
+        conversation=conversation,
+        speaker_changed=True,
+    )
+
+    assert resolved is None
+
 def test_resolve_current_revtops_user_id_falls_back_to_primary_when_no_participants():
     conversation = SimpleNamespace(
         user_id=UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),

@@ -1250,10 +1250,14 @@ def _merge_participating_user_ids(
 def _resolve_current_revtops_user_id(
     linked_user: User | None,
     conversation: Conversation,
+    speaker_changed: bool = False,
 ) -> str | None:
     """Pick the current user context using most recent speaker first, then historical fallback."""
     if linked_user:
         return str(linked_user.id)
+
+    if speaker_changed:
+        return None
 
     participant_ids: list[UUID] = list(conversation.participating_user_ids or [])
     if participant_ids:
@@ -1336,6 +1340,15 @@ async def find_or_create_conversation(
                         conversation.id,
                         revtops_user_id,
                     )
+            elif previous_source_user_id != slack_user_id and conversation.user_id is not None:
+                conversation.user_id = None
+                changed = True
+                logger.info(
+                    "[slack_conversations] Cleared conversation %s current user after speaker change from %s to %s",
+                    conversation.id,
+                    previous_source_user_id,
+                    slack_user_id,
+                )
 
             source_label: str = {"dm": "Slack DM", "mention": "Slack @mention", "thread": "Slack Thread"}.get(slack_source, "Slack")
             default_titles: set[str] = {"Slack DM", "Slack @mention", "Slack Thread", "Slack"}
@@ -1941,10 +1954,12 @@ async def process_slack_thread_reply(
     current_source_user_id: str = conversation.source_user_id or user_id
     if conversation.source_user_id != user_id:
         current_source_user_id = user_id
+    speaker_changed: bool = conversation.source_user_id != user_id
 
     current_user_id: str | None = _resolve_current_revtops_user_id(
         linked_user=linked_user,
         conversation=conversation,
+        speaker_changed=speaker_changed,
     )
     current_user_email: str | None = linked_user.email if linked_user else None
 
