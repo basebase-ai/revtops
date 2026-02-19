@@ -1891,25 +1891,21 @@ async def process_slack_thread_reply(
         slack_user=slack_user,
     )
 
-    # Keep thread "current user" aligned with the last speaker until a
-    # different person talks in the thread.
-    current_source_user_id: str = conversation.source_user_id or user_id
-    if conversation.source_user_id != user_id:
-        current_source_user_id = user_id
+    # Keep thread "current user" aligned with the latest speaker. Re-load the
+    # thread conversation row after upsert so the orchestrator uses updated
+    # identity fields for this turn.
+    current_source_user_id: str = user_id
+    requested_user_id: str | None = str(linked_user.id) if linked_user else None
 
-    current_user_id: str | None = (
-        str(linked_user.id)
-        if linked_user
-        else (str(conversation.user_id) if conversation.user_id else None)
-    )
-    current_user_email: str | None = linked_user.email if linked_user else None
-
-    await find_or_create_conversation(
+    conversation = await find_or_create_conversation(
         organization_id=organization_id,
         slack_channel_id=f"{channel_id}:{thread_ts}",
         slack_user_id=current_source_user_id,
-        revtops_user_id=current_user_id,
+        revtops_user_id=requested_user_id,
     )
+
+    current_user_id: str | None = str(conversation.user_id) if conversation.user_id else None
+    current_user_email: str | None = linked_user.email if linked_user else None
 
     # Download any attached Slack files
     attachment_ids: list[str] = []
