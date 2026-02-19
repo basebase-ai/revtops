@@ -653,9 +653,32 @@ class ChatOrchestrator:
         # the same row — no "find latest assistant message" guessing.
         self._current_message_id: UUID | None = None
 
+    def _resolve_current_user_uuid(self) -> UUID | None:
+        """Return the current turn's RevTops user UUID.
+
+        The current speaker/user context must always be driven by this turn's
+        resolved `self.user_id` (it is derived from the latest source identity
+        such as Slack `source_user_id`). We intentionally avoid falling back to
+        historical conversation participants to prevent stale identity carryover
+        when speakers change.
+        """
+        if not self.user_id:
+            return None
+
+        try:
+            return UUID(self.user_id)
+        except (TypeError, ValueError):
+            logger.warning(
+                "Invalid current user_id supplied to orchestrator; ignoring user context user_id=%s conversation_id=%s source=%s source_user_id=%s",
+                self.user_id,
+                self.conversation_id,
+                self.source,
+                self.source_user_id,
+            )
+            return None
+
     async def _fetch_global_commands_from_memory(self, session: Any) -> str | None:
         """Load latest per-user global commands from memory records only."""
-        from models.memory import Memory
 
         if not self.organization_id or not self.user_id:
             return None
@@ -675,27 +698,11 @@ class ChatOrchestrator:
 
     async def _resolve_user_context(self) -> None:
         """Fetch user context fields (name, email, phone, commands) from DB if not already set."""
-        from models.conversation import Conversation
-        from models.memory import Memory
         from models.organization import Organization
         from models.user import User
 
         try:
             async with get_session(organization_id=self.organization_id) as session:
-                context_user_uuid: UUID | None = UUID(self.user_id) if self.user_id else None
-                if self.conversation_id and self.organization_id:
-                    conversation_result = await session.execute(
-                        select(Conversation.participating_user_ids)
-                        .where(
-                            Conversation.id == UUID(self.conversation_id),
-                            Conversation.organization_id == UUID(self.organization_id),
-                        )
-                        .limit(1)
-                    )
-                    participant_user_ids: list[UUID] = list(conversation_result.scalar_one_or_none() or [])
-                    if participant_user_ids:
-                        context_user_uuid = participant_user_ids[-1]
-
                 if self.user_id and (
                     not self.user_name
                     or not self.user_email
@@ -798,7 +805,6 @@ class ChatOrchestrator:
             reports_to_name: str | None
             phone_number: str | None
         """
-        from models.memory import Memory
         from models.org_member import OrgMember
 
         profile: dict[str, Any] = {
@@ -826,8 +832,7 @@ class ChatOrchestrator:
 
                 participant_user_ids: list[UUID] = []
                 if self.conversation_id:
-                    from models.conversation import Conversation
-
+            
                     conversation_result = await session.execute(
                         select(Conversation.participating_user_ids)
                         .where(Conversation.id == UUID(self.conversation_id))
@@ -835,11 +840,7 @@ class ChatOrchestrator:
                     )
                     participant_user_ids = list(conversation_result.scalar_one_or_none() or [])
 
-                user_uuid: UUID | None = (
-                    participant_user_ids[-1]
-                    if participant_user_ids
-                    else (UUID(self.user_id) if self.user_id else None)
-                )
+                user_uuid: UUID | None = self._resolve_current_user_uuid()
                 org_uuid: UUID = UUID(self.organization_id)  # type: ignore[arg-type]
 
                 # Look up the user's org membership for structured fields
@@ -1075,6 +1076,12 @@ class ChatOrchestrator:
             "sms": "SMS text message",
         }.get(self.source, self.source)
         system_prompt += f"\n\n## Message Source\nThis conversation is from: **{source_label}**."
+        if self.source_user_id:
+            system_prompt += (
+                "\n- Source User ID: "
+                f"{self.source_user_id}"
+                "\nTreat this Source User ID as the source-of-truth speaker identity for this turn."
+            )
 
         # Add user context so the agent knows who "me" is
         if self.user_email and self.user_id:
