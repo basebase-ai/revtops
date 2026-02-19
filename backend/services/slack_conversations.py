@@ -1827,6 +1827,38 @@ async def process_slack_mention(
         slack_user_id=user_id,
         slack_user=slack_user,
     )
+    existing_conversation: Conversation | None = await find_thread_conversation(
+        organization_id=organization_id,
+        channel_id=channel_id,
+        thread_ts=thread_ts,
+    )
+    speaker_changed: bool = bool(
+        existing_conversation and existing_conversation.source_user_id != user_id
+    )
+    previous_source_user_id: str | None = (
+        existing_conversation.source_user_id if existing_conversation else None
+    )
+
+    current_user_id: str | None
+    if existing_conversation:
+        current_user_id = _resolve_thread_active_user_id(
+            linked_user=linked_user,
+            conversation=existing_conversation,
+            speaker_changed=speaker_changed,
+        )
+    else:
+        current_user_id = str(linked_user.id) if linked_user else None
+
+    if speaker_changed:
+        logger.info(
+            "[slack_conversations] Mention thread %s:%s speaker handoff detected from %s to %s; switching active user to %s",
+            channel_id,
+            thread_ts,
+            previous_source_user_id,
+            user_id,
+            current_user_id,
+        )
+
     slack_user_name: str | None = _extract_slack_display_name(slack_user)
     slack_user_email: str | None = _extract_slack_email(slack_user)
     slack_user_tz: str | None = _extract_slack_timezone(slack_user)
@@ -1840,10 +1872,13 @@ async def process_slack_mention(
         organization_id=organization_id,
         slack_channel_id=source_channel_id,
         slack_user_id=user_id,
-        revtops_user_id=str(linked_user.id) if linked_user else None,
+        revtops_user_id=current_user_id,
         slack_user_name=slack_user_name,
         slack_source="mention",
+        clear_current_user_on_unresolved=speaker_changed,
     )
+
+    active_user_id: str | None = str(conversation.user_id) if conversation.user_id else None
 
     # Download any attached Slack files
     attachment_ids: list[str] = []
@@ -1853,10 +1888,10 @@ async def process_slack_mention(
     # Process message through orchestrator
     local_time_iso: str | None = _compute_local_time_iso(slack_user_tz)
     orchestrator = ChatOrchestrator(
-        user_id=str(linked_user.id) if linked_user else None,
+        user_id=active_user_id,
         organization_id=organization_id,
         conversation_id=str(conversation.id),
-        user_email=linked_user.email if linked_user else None,
+        user_email=linked_user.email if linked_user and active_user_id == str(linked_user.id) else None,
         source_user_id=user_id,
         source_user_email=slack_user_email,
         workflow_context={"slack_channel_id": channel_id, "slack_thread_ts": thread_ts},
