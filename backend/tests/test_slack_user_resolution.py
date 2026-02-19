@@ -247,3 +247,34 @@ def test_resolve_current_revtops_user_id_falls_back_to_primary_when_no_participa
         conversation=conversation,
     )
     assert resolved_fallback == "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+
+
+def test_resolve_thread_active_user_id_uses_new_linked_speaker_on_handoff():
+    linked_user = SimpleNamespace(id=UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"))
+    conversation = SimpleNamespace(
+        user_id=UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
+        participating_user_ids=[UUID("cccccccc-cccc-cccc-cccc-cccccccccccc")],
+    )
+
+    resolved = slack_conversations._resolve_thread_active_user_id(
+        linked_user=linked_user,
+        conversation=conversation,
+        speaker_changed=True,
+    )
+
+    assert resolved == "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+
+
+def test_resolve_thread_active_user_id_clears_active_user_on_unresolved_handoff():
+    conversation = SimpleNamespace(
+        user_id=UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
+        participating_user_ids=[UUID("cccccccc-cccc-cccc-cccc-cccccccccccc")],
+    )
+
+    resolved = slack_conversations._resolve_thread_active_user_id(
+        linked_user=None,
+        conversation=conversation,
+        speaker_changed=True,
+    )
+
+    assert resolved is None

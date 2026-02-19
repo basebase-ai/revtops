@@ -1265,6 +1265,21 @@ def _resolve_current_revtops_user_id(
     return None
 
 
+def _resolve_thread_active_user_id(
+    linked_user: User | None,
+    conversation: Conversation,
+    speaker_changed: bool,
+) -> str | None:
+    """Resolve thread active user, forcing handoff to the newest speaker."""
+    if speaker_changed:
+        return str(linked_user.id) if linked_user else None
+
+    return _resolve_current_revtops_user_id(
+        linked_user=linked_user,
+        conversation=conversation,
+    )
+
+
 async def find_or_create_conversation(
     organization_id: str,
     slack_channel_id: str,
@@ -1272,6 +1287,7 @@ async def find_or_create_conversation(
     revtops_user_id: str | None,
     slack_user_name: str | None = None,
     slack_source: str = "dm",
+    clear_current_user_on_unresolved: bool = False,
 ) -> Conversation:
     """
     Find an existing Slack conversation or create a new one.
@@ -1336,6 +1352,16 @@ async def find_or_create_conversation(
                         conversation.id,
                         revtops_user_id,
                     )
+            elif clear_current_user_on_unresolved and conversation.user_id is not None:
+                previous_user_id: str = str(conversation.user_id)
+                conversation.user_id = None
+                changed = True
+                logger.info(
+                    "[slack_conversations] Cleared conversation %s current user (was %s) after unresolved Slack speaker %s",
+                    conversation.id,
+                    previous_user_id,
+                    slack_user_id,
+                )
 
             source_label: str = {"dm": "Slack DM", "mention": "Slack @mention", "thread": "Slack Thread"}.get(slack_source, "Slack")
             default_titles: set[str] = {"Slack DM", "Slack @mention", "Slack Thread", "Slack"}
@@ -1936,15 +1962,12 @@ async def process_slack_thread_reply(
         slack_user=slack_user,
     )
 
-    # Keep thread "current user" aligned with the last speaker until a
-    # different person talks in the thread.
-    current_source_user_id: str = conversation.source_user_id or user_id
-    if conversation.source_user_id != user_id:
-        current_source_user_id = user_id
-
-    current_user_id: str | None = _resolve_current_revtops_user_id(
+    speaker_changed: bool = conversation.source_user_id != user_id
+    current_source_user_id: str = user_id if speaker_changed else (conversation.source_user_id or user_id)
+    current_user_id: str | None = _resolve_thread_active_user_id(
         linked_user=linked_user,
         conversation=conversation,
+        speaker_changed=speaker_changed,
     )
     current_user_email: str | None = linked_user.email if linked_user else None
 
@@ -1954,6 +1977,7 @@ async def process_slack_thread_reply(
         slack_user_id=current_source_user_id,
         revtops_user_id=current_user_id,
         slack_source="thread",
+        clear_current_user_on_unresolved=speaker_changed,
     )
 
     # Download any attached Slack files
