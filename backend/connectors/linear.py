@@ -20,6 +20,9 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from connectors.base import BaseConnector
+from connectors.registry import (
+    AuthType, Capability, ConnectorMeta, ConnectorScope, WriteOperation,
+)
 from models.database import get_session
 from models.tracker_issue import TrackerIssue
 from models.tracker_project import TrackerProject
@@ -43,6 +46,43 @@ class LinearConnector(BaseConnector):
     """Connector for Linear – teams, projects, and issues."""
 
     source_system: str = "linear"
+    meta = ConnectorMeta(
+        name="Linear",
+        slug="linear",
+        auth_type=AuthType.OAUTH2,
+        scope=ConnectorScope.ORGANIZATION,
+        entity_types=["teams", "projects", "issues"],
+        capabilities=[Capability.SYNC, Capability.WRITE],
+        write_operations=[
+            WriteOperation(
+                name="create_issue", entity_type="issue",
+                description="Create a Linear issue",
+                parameters=[
+                    {"name": "team_key", "type": "string", "required": True, "description": "Team key (e.g. 'ENG')"},
+                    {"name": "title", "type": "string", "required": True, "description": "Issue title"},
+                    {"name": "description", "type": "string", "required": False, "description": "Issue description (markdown)"},
+                    {"name": "priority", "type": "integer", "required": False, "description": "Priority 0-4 (0=none, 1=urgent, 4=low)"},
+                    {"name": "assignee_name", "type": "string", "required": False, "description": "Assignee display name"},
+                    {"name": "project_name", "type": "string", "required": False, "description": "Project name"},
+                    {"name": "labels", "type": "array", "required": False, "description": "Label names to add"},
+                ],
+            ),
+            WriteOperation(
+                name="update_issue", entity_type="issue",
+                description="Update an existing Linear issue",
+                parameters=[
+                    {"name": "issue_identifier", "type": "string", "required": True, "description": "Issue identifier (e.g. 'ENG-123')"},
+                    {"name": "title", "type": "string", "required": False, "description": "New title"},
+                    {"name": "description", "type": "string", "required": False, "description": "New description"},
+                    {"name": "state_name", "type": "string", "required": False, "description": "New state name"},
+                    {"name": "priority", "type": "integer", "required": False, "description": "Priority 0-4"},
+                    {"name": "assignee_name", "type": "string", "required": False, "description": "Assignee display name"},
+                ],
+            ),
+        ],
+        nango_integration_id="linear",
+        description="Linear – teams, projects, and issue tracking",
+    )
 
     def __init__(
         self, organization_id: str, user_id: Optional[str] = None
@@ -433,6 +473,16 @@ class LinearConnector(BaseConnector):
 
         logger.info("Synced %d Linear issues for org %s", count, self.organization_id)
         return count
+
+    # ── Write: Dispatch ─────────────────────────────────────────────────
+
+    async def write(self, operation: str, data: dict[str, Any]) -> dict[str, Any]:
+        """Dispatch a record-level write operation."""
+        if operation == "create_issue":
+            return await self.create_issue(**data)
+        if operation == "update_issue":
+            return await self.update_issue(**data)
+        raise ValueError(f"Unknown write operation: {operation}")
 
     # ── Write: Create Issue ──────────────────────────────────────────────
 

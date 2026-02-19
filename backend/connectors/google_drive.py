@@ -24,6 +24,10 @@ from sqlalchemy import select, and_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from config import settings, get_nango_integration_id
+from connectors.base import BaseConnector
+from connectors.registry import (
+    AuthType, Capability, ConnectorAction, ConnectorMeta, ConnectorScope,
+)
 from models.database import get_session
 from models.shared_file import SharedFile
 from models.integration import Integration
@@ -50,6 +54,21 @@ FILE_TYPE_TO_MIME: dict[str, str] = {
     "presentation": GOOGLE_SLIDES_MIME,
 }
 
+# Keywords for type-based search (query "search:spreadsheet" or "type:spreadsheet")
+TYPE_SEARCH_ALIASES: dict[str, str] = {
+    "spreadsheet": GOOGLE_SHEET_MIME,
+    "spreadsheets": GOOGLE_SHEET_MIME,
+    "sheet": GOOGLE_SHEET_MIME,
+    "sheets": GOOGLE_SHEET_MIME,
+    "document": GOOGLE_DOC_MIME,
+    "documents": GOOGLE_DOC_MIME,
+    "doc": GOOGLE_DOC_MIME,
+    "docs": GOOGLE_DOC_MIME,
+    "presentation": GOOGLE_SLIDES_MIME,
+    "presentations": GOOGLE_SLIDES_MIME,
+    "slides": GOOGLE_SLIDES_MIME,
+}
+
 # Export MIME mappings for Google Workspace files → text content
 EXPORT_MIME_MAP: dict[str, str] = {
     GOOGLE_DOC_MIME: "text/plain",
@@ -65,7 +84,7 @@ LIST_FIELDS: str = f"nextPageToken,files({FILE_FIELDS})"
 MAX_CONTENT_LENGTH: int = 100_000
 
 
-class GoogleDriveConnector:
+class GoogleDriveConnector(BaseConnector):
     """
     Connector for syncing Google Drive file metadata and reading file content.
 
@@ -74,20 +93,48 @@ class GoogleDriveConnector:
     agent can search without hitting the Google API on every query.
     """
 
+    source_system = "google_drive"
+
+    meta = ConnectorMeta(
+        name="Google Drive",
+        slug="google_drive",
+        auth_type=AuthType.OAUTH2,
+        scope=ConnectorScope.USER,
+        entity_types=["files"],
+        capabilities=[Capability.SYNC, Capability.QUERY, Capability.ACTION],
+        query_description=(
+            "Search or read Google Drive files. "
+            "Prefix with 'search:' to search by file name (e.g. 'search:quarterly report') or by type: use 'search:spreadsheet', 'search:document', or 'search:presentation' to list files of that type. "
+            "Prefix with 'type:' to list by type only (e.g. 'type:spreadsheet', 'type:document'). "
+            "Prefix with 'file:' to read file content by external_id (e.g. 'file:abc123')."
+        ),
+        actions=[
+            ConnectorAction(
+                name="create_file",
+                description="Create a new Google Doc, Sheet, or Slides presentation.",
+                parameters=[
+                    {"name": "file_type", "type": "string", "required": True, "description": "One of: document, spreadsheet, presentation"},
+                    {"name": "title", "type": "string", "required": True, "description": "Display name for the new file"},
+                    {"name": "content", "type": "string", "required": True, "description": "Content to populate (text for docs, JSON for sheets/slides)"},
+                    {"name": "folder_id", "type": "string", "required": False, "description": "Google Drive folder ID to place the file in"},
+                ],
+            ),
+        ],
+        nango_integration_id="google-drive",
+        description="Google Drive – file metadata sync, search, read, and create",
+    )
+
     def __init__(self, organization_id: str, user_id: str) -> None:
-        self.organization_id: str = organization_id
-        self.user_id: str = user_id
-        self._token: Optional[str] = None
-        self._integration: Optional[Integration] = None
+        super().__init__(organization_id, user_id=user_id)
 
     # -------------------------------------------------------------------------
-    # OAuth
+    # OAuth – overrides BaseConnector to handle legacy connection-id format
     # -------------------------------------------------------------------------
 
-    async def get_oauth_token(self) -> str:
+    async def get_oauth_token(self) -> tuple[str, str]:
         """Get OAuth token from Nango for the user's Google Drive connection."""
         if self._token:
-            return self._token
+            return self._token, ""
 
         async with get_session(organization_id=self.organization_id) as session:
             connection_id: str = f"{self.organization_id}:user:{self.user_id}"
@@ -112,7 +159,7 @@ class GoogleDriveConnector:
             nango_integration_id,
             self._integration.nango_connection_id or connection_id,
         )
-        return self._token
+        return self._token, ""
 
     def _get_headers(self) -> dict[str, str]:
         """Build request headers with OAuth token."""
@@ -854,3 +901,72 @@ class GoogleDriveConnector:
             )
             await session.execute(stmt)
             await session.commit()
+
+    # -------------------------------------------------------------------------
+    # BaseConnector abstract method stubs
+    # -------------------------------------------------------------------------
+
+    async def sync_deals(self) -> int:
+        return 0
+
+    async def sync_accounts(self) -> int:
+        return 0
+
+    async def sync_contacts(self) -> int:
+        return 0
+
+    async def sync_activities(self) -> int:
+        return 0
+
+    async def fetch_deal(self, deal_id: str) -> dict[str, Any]:
+        return {}
+
+    async def sync_all(self) -> dict[str, int]:
+        """Sync file metadata instead of CRM entities."""
+        counts: dict[str, int] = await self.sync_file_metadata()
+        total: int = sum(counts.values())
+        return {"files": total}
+
+    async def query(self, request: str) -> dict[str, Any]:
+        """Search files or read file content (QUERY capability).
+
+        Prefix with 'search:' to search by file name; use 'search:spreadsheet' (or sheet/doc/slides) to list by type.
+        Prefix with 'type:' to list by type only (e.g. type:spreadsheet, type:document).
+        Prefix with 'file:' to read content by external_id. Bare strings default to file read.
+        """
+        stripped: str = request.strip()
+        lower: str = stripped.lower()
+
+        if lower.startswith("type:"):
+            type_key: str = stripped[len("type:"):].strip().lower()
+            mime: str | None = TYPE_SEARCH_ALIASES.get(type_key)
+            if mime:
+                results = await self.search_files("", mime_types=[mime])
+                return {"files": results, "count": len(results)}
+            return {"files": [], "count": 0, "error": f"Unknown type '{type_key}'. Use: spreadsheet, document, presentation."}
+
+        if lower.startswith("search:"):
+            term: str = stripped[len("search:"):].strip()
+            # If the term is a type keyword, filter by MIME type (so "search:spreadsheet" works)
+            mime = TYPE_SEARCH_ALIASES.get(term.lower()) if term else None
+            if mime:
+                results = await self.search_files("", mime_types=[mime])
+            else:
+                results = await self.search_files(term)
+            return {"files": results, "count": len(results)}
+
+        if lower.startswith("file:"):
+            external_id = stripped[len("file:"):].strip()
+            return await self.get_file_content(external_id)
+        return await self.get_file_content(stripped)
+
+    async def execute_action(self, action: str, params: dict[str, Any]) -> dict[str, Any]:
+        """Dispatch actions (ACTION capability)."""
+        if action == "create_file":
+            return await self.create_file(
+                file_type=params.get("file_type", ""),
+                title=params.get("title", ""),
+                content=params.get("content", ""),
+                folder_id=params.get("folder_id"),
+            )
+        raise ValueError(f"Unknown action: {action}")

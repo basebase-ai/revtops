@@ -1,9 +1,9 @@
 /**
- * Data Sources management screen.
+ * Connectors management screen.
  * 
  * Features:
- * - View all connected data sources
- * - View available data sources to connect
+ * - View all connected connectors
+ * - View available connectors to connect
  * - Sync status and manual sync trigger
  * - Disconnect integrations
  * 
@@ -77,6 +77,9 @@ const ICON_MAP: Record<string, IconType> = {
   apollo: ApolloIcon,
   github: SiGithub,
   linear: SiLinear,
+  globe: HiGlobeAlt,
+  terminal: HiLightningBolt,
+  sms: HiDeviceMobile,
 };
 
 // User-scoped providers (each user connects individually vs org-wide connection)
@@ -105,9 +108,16 @@ const INTEGRATION_CONFIG: Record<string, { name: string; description: string; ic
   apollo: { name: 'Apollo.io', description: 'Data enrichment - Contact titles, companies, emails', icon: 'apollo', color: 'from-yellow-400 to-yellow-500' },
   github: { name: 'GitHub', description: 'Track repos, commits, and pull requests by team', icon: 'github', color: 'from-gray-600 to-gray-700' },
   linear: { name: 'Linear', description: 'Issue tracking - sync and manage teams, projects, and issues', icon: 'linear', color: 'from-indigo-500 to-violet-600' },
+  // Built-in connectors (no OAuth — connect with one click)
+  web_search: { name: 'Web Search', description: 'Web search and URL fetching — enable for the agent to search the web or fetch pages', icon: 'globe', color: 'from-emerald-500 to-teal-600' },
+  code_sandbox: { name: 'Code Sandbox', description: 'Run shell commands and scripts in a secure sandbox (Python, Node, bash)', icon: 'terminal', color: 'from-amber-500 to-orange-600' },
+  twilio: { name: 'Twilio', description: 'Send SMS messages to phone numbers', icon: 'sms', color: 'from-red-500 to-pink-600' },
 };
 
 const SUPPORTED_PROVIDERS = new Set(Object.keys(INTEGRATION_CONFIG));
+
+/** Built-in connectors that connect with one click (no OAuth popup). */
+const BUILTIN_CONNECTORS = new Set(['web_search', 'code_sandbox', 'twilio']);
 
 // Common integrations to show as tiles when org has zero connected (display order)
 const COMMON_INTEGRATION_KEYS: ReadonlyArray<{ provider: string; scope: 'organization' | 'user' }> = [
@@ -536,12 +546,31 @@ export function DataSources(): JSX.Element {
     if (connectingProvider || !organizationId) return;
     // User-scoped integrations require user_id
     if (scope === 'user' && !userId) return;
-    
+
     setConnectingProvider(provider);
 
     try {
-      // Get session token from backend
-      // For user-scoped integrations, include user_id
+      // Built-in connectors (Open Web, Code Sandbox, Twilio) — one-click, no OAuth
+      if (BUILTIN_CONNECTORS.has(provider)) {
+        const res = await fetch(`${API_BASE}/auth/integrations/connect-builtin`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            organization_id: organizationId,
+            provider,
+            user_id: userId ?? undefined,
+          }),
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({ detail: res.statusText }));
+          throw new Error((err as { detail?: string }).detail ?? 'Failed to connect');
+        }
+        void fetchIntegrations();
+        setConnectingProvider(null);
+        return;
+      }
+
+      // Get session token from backend for OAuth connectors
       const params = new URLSearchParams({ organization_id: organizationId });
       if (scope === 'user' && userId) {
         params.set('user_id', userId);
@@ -1421,7 +1450,7 @@ export function DataSources(): JSX.Element {
       <header className="hidden md:block sticky top-0 z-20 bg-surface-950 border-b border-surface-800 px-4 md:px-8 py-4 md:py-6">
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-xl md:text-2xl font-bold text-surface-50">Data Sources</h1>
+            <h1 className="text-xl md:text-2xl font-bold text-surface-50">Connectors</h1>
             <p className="text-surface-400 mt-1 text-sm md:text-base">
               Connect your sales tools to unlock AI-powered insights
             </p>
@@ -1545,7 +1574,7 @@ export function DataSources(): JSX.Element {
             <div>
               <h3 className="font-medium text-surface-100">Connect from your computer</h3>
               <p className="text-sm text-surface-400 mt-1">
-                For the best experience connecting data sources, please visit this page from a desktop or laptop computer. 
+                For the best experience connecting connectors, please visit this page from a desktop or laptop computer. 
                 OAuth sign-in works more reliably on larger screens.
               </p>
             </div>
@@ -1579,7 +1608,7 @@ export function DataSources(): JSX.Element {
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
                   </svg>
                 </div>
-                <h3 className="text-surface-200 font-medium mb-2">No data sources connected</h3>
+                <h3 className="text-surface-200 font-medium mb-2">No connectors connected</h3>
                 <p className="text-surface-400 text-sm">
                   Connect your first data source to get started
                 </p>

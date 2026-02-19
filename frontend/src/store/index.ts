@@ -1179,8 +1179,14 @@ export const useAppStore = create<AppState>()(
               const newResult = updates.result 
                 ? { ...currentResult, ...updates.result }
                 : currentResult;
+              // If payload includes input and block has none, fill it (e.g. from tool_result so modal shows params)
+              const newInput =
+                updates.input != null && Object.keys(updates.input).length > 0 && Object.keys(block.input ?? {}).length === 0
+                  ? updates.input
+                  : block.input ?? {};
               return {
                 ...block,
+                input: newInput,
                 result: newResult,
                 status:
                   (updates.status as

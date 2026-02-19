@@ -1451,6 +1451,50 @@ function getToolStatusText(
       }
       return `Running ${workflowName}...`;
     }
+    case 'query_system': {
+      const systemSlug = typeof input?.system === 'string' ? input.system : '';
+      const systemLabel = systemSlug
+        ? systemSlug.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
+        : 'connected system';
+      if (isComplete) {
+        if (result?.error) return `Query to ${systemLabel} failed`;
+        const count = typeof result?.count === 'number' ? result.count : (Array.isArray(result?.files) ? result.files.length : undefined);
+        const isSingleFileRead = systemSlug === 'google_drive' && result?.file_name != null && result?.content != null;
+        if (count !== undefined && systemSlug === 'google_drive') {
+          return count === 1 ? `Read 1 file from ${systemLabel}` : `Read ${count} files from ${systemLabel}`;
+        }
+        if (isSingleFileRead) return `Read 1 file from ${systemLabel}`;
+        return `Queried ${systemLabel}`;
+      }
+      return `Querying ${systemLabel}...`;
+    }
+    case 'write_to_system': {
+      const writeSystem = typeof input?.system === 'string' ? input.system : '';
+      const writeOp = typeof input?.operation === 'string' ? input.operation : 'write';
+      const systemLabel = writeSystem ? writeSystem.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()) : 'system';
+      const opLabel = writeOp.replace(/_/g, ' ');
+      if (isComplete) {
+        return result?.error ? `Write to ${systemLabel} failed` : `Wrote to ${systemLabel} (${opLabel})`;
+      }
+      return `Writing to ${systemLabel} (${opLabel})...`;
+    }
+    case 'run_action': {
+      const actionSystem: string = typeof input?.system === 'string' ? input.system : '';
+      const actionName: string = typeof input?.action === 'string' ? input.action : '';
+      const systemLabel: string = actionSystem ? actionSystem.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()) : '';
+      const actionLabel: string = actionName ? actionName.replace(/_/g, ' ') : '';
+      if (systemLabel && actionLabel) {
+        if (isComplete) {
+          return result?.error ? `Action on ${systemLabel} failed` : `Ran ${actionLabel} on ${systemLabel}`;
+        }
+        return `Running ${actionLabel} on ${systemLabel}...`;
+      }
+      // No system/action yet (e.g. still streaming) — show tool name so it's clear what's running
+      if (isComplete) {
+        return result?.error ? 'Connector action failed' : 'Completed connector action';
+      }
+      return 'Running action (details when available)...';
+    }
     default:
       return isComplete ? `Completed ${toolName}` : `Running ${toolName}...`;
   }
@@ -1516,9 +1560,15 @@ function ToolCallModal({
           {/* Input */}
           <div>
             <h4 className="text-sm font-medium text-surface-300 mb-2">Input</h4>
-            <pre className="bg-surface-800 rounded-lg p-3 text-sm text-surface-200 overflow-x-auto">
-              {JSON.stringify(toolCall.input, null, 2)}
-            </pre>
+            {toolCall.input && Object.keys(toolCall.input).length > 0 ? (
+              <pre className="bg-surface-800 rounded-lg p-3 text-sm text-surface-200 overflow-x-auto">
+                {JSON.stringify(toolCall.input, null, 2)}
+              </pre>
+            ) : (
+              <p className="text-surface-500 text-sm italic">
+                Parameters not yet available. They will appear when the request is fully received or after it completes.
+              </p>
+            )}
           </div>
 
           {/* Result */}

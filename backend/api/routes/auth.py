@@ -1838,6 +1838,75 @@ async def confirm_integration(
     return {"status": "confirmed", "provider": request.provider}
 
 
+_BUILTIN_CONNECTORS: frozenset[str] = frozenset({"web_search", "code_sandbox", "twilio"})
+
+
+class ConnectBuiltinRequest(BaseModel):
+    """Request to connect a built-in connector (no OAuth)."""
+
+    organization_id: str
+    provider: str  # web_search | code_sandbox | twilio
+    user_id: Optional[str] = None  # current user (for connected_by_user_id)
+
+
+@router.post("/integrations/connect-builtin")
+async def connect_builtin(request: ConnectBuiltinRequest) -> dict[str, Any]:
+    """
+    Create an Integration row for a built-in connector (Web Search, Code Sandbox, Twilio).
+
+    These connectors use platform credentials and do not go through Nango.
+    The user must explicitly "connect" them in the Connectors tab before the agent can use them.
+    """
+    if request.provider not in _BUILTIN_CONNECTORS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Provider '{request.provider}' is not a built-in connector. Use the regular connect flow for OAuth integrations.",
+        )
+    try:
+        org_uuid = UUID(request.organization_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid organization ID")
+
+    connected_by_uuid: Optional[UUID] = None
+    if request.user_id:
+        try:
+            connected_by_uuid = UUID(request.user_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid user ID")
+
+    async with get_session(organization_id=request.organization_id) as session:
+        await session.execute(
+            text("SELECT set_config('app.current_org_id', :org_id, true)"),
+            {"org_id": request.organization_id},
+        )
+        result = await session.execute(
+            select(Integration).where(
+                Integration.organization_id == org_uuid,
+                Integration.provider == request.provider,
+                Integration.user_id.is_(None),
+            )
+        )
+        existing = result.scalar_one_or_none()
+        if existing:
+            existing.is_active = True
+            existing.nango_connection_id = "builtin"
+            existing.updated_at = datetime.utcnow()
+        else:
+            new_integration = Integration(
+                organization_id=org_uuid,
+                provider=request.provider,
+                scope="organization",
+                user_id=None,
+                nango_connection_id="builtin",
+                connected_by_user_id=connected_by_uuid,
+                is_active=True,
+            )
+            session.add(new_integration)
+        await session.commit()
+
+    return {"status": "connected", "provider": request.provider}
+
+
 @router.get("/connect/{provider}/redirect")
 async def connect_redirect(
     provider: str,

@@ -22,6 +22,9 @@ from sqlalchemy.exc import IntegrityError
 
 from api.websockets import broadcast_sync_progress
 from connectors.base import BaseConnector
+from connectors.registry import (
+    AuthType, Capability, ConnectorMeta, ConnectorScope, WriteOperation,
+)
 from models.account import Account
 from models.activity import Activity
 from models.contact import Contact
@@ -40,6 +43,85 @@ class HubSpotConnector(BaseConnector):
     """Connector for HubSpot CRM."""
 
     source_system = "hubspot"
+    meta = ConnectorMeta(
+        name="HubSpot",
+        slug="hubspot",
+        auth_type=AuthType.OAUTH2,
+        scope=ConnectorScope.ORGANIZATION,
+        entity_types=["deals", "accounts", "contacts", "activities", "pipelines", "goals"],
+        capabilities=[Capability.SYNC, Capability.QUERY, Capability.WRITE],
+        write_operations=[
+            WriteOperation(
+                name="create_deal", entity_type="deal",
+                description="Create a new deal in HubSpot",
+                parameters=[
+                    {"name": "dealname", "type": "string", "required": True, "description": "Deal name"},
+                    {"name": "amount", "type": "number", "required": False, "description": "Deal amount"},
+                    {"name": "dealstage", "type": "string", "required": False, "description": "Pipeline stage ID"},
+                    {"name": "closedate", "type": "string", "required": False, "description": "Expected close date (ISO 8601)"},
+                    {"name": "pipeline", "type": "string", "required": False, "description": "Pipeline ID"},
+                ],
+            ),
+            WriteOperation(
+                name="update_deal", entity_type="deal",
+                description="Update an existing deal in HubSpot",
+                parameters=[
+                    {"name": "id", "type": "string", "required": True, "description": "HubSpot deal ID (source_id from deals table)"},
+                    {"name": "hubspot_owner_id", "type": "string", "required": False, "description": "HubSpot numeric owner ID (from user_mappings_for_identity.external_userid where source='hubspot')"},
+                    {"name": "dealname", "type": "string", "required": False, "description": "Deal name"},
+                    {"name": "amount", "type": "number", "required": False, "description": "Deal amount"},
+                    {"name": "dealstage", "type": "string", "required": False, "description": "Pipeline stage ID"},
+                    {"name": "closedate", "type": "string", "required": False, "description": "Expected close date (ISO 8601)"},
+                ],
+            ),
+            WriteOperation(
+                name="create_contact", entity_type="contact",
+                description="Create a new contact in HubSpot",
+                parameters=[
+                    {"name": "email", "type": "string", "required": True, "description": "Email address"},
+                    {"name": "firstname", "type": "string", "required": False, "description": "First name"},
+                    {"name": "lastname", "type": "string", "required": False, "description": "Last name"},
+                    {"name": "company", "type": "string", "required": False, "description": "Company name"},
+                    {"name": "jobtitle", "type": "string", "required": False, "description": "Job title"},
+                    {"name": "phone", "type": "string", "required": False, "description": "Phone number"},
+                ],
+            ),
+            WriteOperation(
+                name="update_contact", entity_type="contact",
+                description="Update an existing contact in HubSpot",
+                parameters=[
+                    {"name": "id", "type": "string", "required": True, "description": "HubSpot contact ID"},
+                    {"name": "email", "type": "string", "required": False, "description": "Email address"},
+                    {"name": "firstname", "type": "string", "required": False, "description": "First name"},
+                    {"name": "lastname", "type": "string", "required": False, "description": "Last name"},
+                    {"name": "company", "type": "string", "required": False, "description": "Company name"},
+                    {"name": "jobtitle", "type": "string", "required": False, "description": "Job title"},
+                ],
+            ),
+            WriteOperation(
+                name="create_company", entity_type="company",
+                description="Create a new company in HubSpot",
+                parameters=[
+                    {"name": "name", "type": "string", "required": True, "description": "Company name"},
+                    {"name": "domain", "type": "string", "required": False, "description": "Company domain"},
+                    {"name": "industry", "type": "string", "required": False, "description": "Industry"},
+                    {"name": "numberofemployees", "type": "integer", "required": False, "description": "Number of employees"},
+                ],
+            ),
+            WriteOperation(
+                name="update_company", entity_type="company",
+                description="Update an existing company in HubSpot",
+                parameters=[
+                    {"name": "id", "type": "string", "required": True, "description": "HubSpot company ID"},
+                    {"name": "name", "type": "string", "required": False, "description": "Company name"},
+                    {"name": "domain", "type": "string", "required": False, "description": "Company domain"},
+                    {"name": "industry", "type": "string", "required": False, "description": "Industry"},
+                ],
+            ),
+        ],
+        nango_integration_id="hubspot",
+        description="HubSpot CRM – deals, contacts, companies, and activities",
+    )
 
     def __init__(self, organization_id: str, user_id: Optional[str] = None) -> None:
         """Initialize connector with owner and pipeline caches."""
@@ -1606,6 +1688,25 @@ class HubSpotConnector(BaseConnector):
     # =========================================================================
     # Write Operations
     # =========================================================================
+
+    async def write(self, operation: str, data: dict[str, Any]) -> dict[str, Any]:
+        """Dispatch a record-level write operation."""
+        if operation == "create_deal":
+            return await self.create_deal(data)
+        if operation == "update_deal":
+            deal_id: str = data.pop("deal_id", None) or data.pop("id")
+            return await self.update_deal(deal_id, data)
+        if operation == "create_contact":
+            return await self.create_contact(data)
+        if operation == "update_contact":
+            contact_id: str = data.pop("contact_id", None) or data.pop("id")
+            return await self.update_contact(contact_id, data)
+        if operation == "create_company":
+            return await self.create_company(data)
+        if operation == "update_company":
+            company_id: str = data.pop("company_id", None) or data.pop("id")
+            return await self.update_company(company_id, data)
+        raise ValueError(f"Unknown write operation: {operation}")
 
     async def create_contact(self, properties: dict[str, Any]) -> dict[str, Any]:
         """

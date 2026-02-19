@@ -61,34 +61,12 @@ async def _sync_integration(
 
     Returns sync results including counts and any errors.
     """
-    from connectors.fireflies import FirefliesConnector
-    from connectors.github import GitHubConnector
-    from connectors.gmail import GmailConnector
-    from connectors.linear import LinearConnector
-    from connectors.asana import AsanaConnector
-    from connectors.google_calendar import GoogleCalendarConnector
-    from connectors.hubspot import HubSpotConnector
-    from connectors.microsoft_calendar import MicrosoftCalendarConnector
-    from connectors.microsoft_mail import MicrosoftMailConnector
-    from connectors.salesforce import SalesforceConnector
     from connectors.base import SyncCancelledError
-    from connectors.slack import SlackConnector
+    from connectors.registry import discover_connectors
     from services.embedding_sync import generate_embeddings_for_organization
     from workers.events import emit_event
 
-    connectors: dict[str, type] = {
-        "salesforce": SalesforceConnector,
-        "hubspot": HubSpotConnector,
-        "slack": SlackConnector,
-        "fireflies": FirefliesConnector,
-        "google_calendar": GoogleCalendarConnector,
-        "gmail": GmailConnector,
-        "microsoft_calendar": MicrosoftCalendarConnector,
-        "microsoft_mail": MicrosoftMailConnector,
-        "github": GitHubConnector,
-        "linear": LinearConnector,
-        "asana": AsanaConnector,
-    }
+    connectors = discover_connectors()
 
     connector_class = connectors.get(provider)
     if not connector_class:

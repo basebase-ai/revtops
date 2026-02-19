@@ -19,18 +19,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 
 from connectors.base import SyncCancelledError
-from connectors.fireflies import FirefliesConnector
-from connectors.github import GitHubConnector
-from connectors.gmail import GmailConnector
-from connectors.google_calendar import GoogleCalendarConnector
-from connectors.hubspot import HubSpotConnector
-from connectors.microsoft_calendar import MicrosoftCalendarConnector
-from connectors.microsoft_mail import MicrosoftMailConnector
-from connectors.salesforce import SalesforceConnector
-from connectors.slack import SlackConnector
-from connectors.zoom import ZoomConnector
-from connectors.linear import LinearConnector
-from connectors.asana import AsanaConnector
+from connectors.registry import discover_connectors
 from models.database import get_session
 from models.integration import Integration
 from models.organization import Organization
@@ -41,21 +30,8 @@ from models.workflow import Workflow, WorkflowRun
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-# Connector registry
-CONNECTORS = {
-    "salesforce": SalesforceConnector,
-    "hubspot": HubSpotConnector,
-    "slack": SlackConnector,
-    "fireflies": FirefliesConnector,
-    "google_calendar": GoogleCalendarConnector,
-    "gmail": GmailConnector,
-    "microsoft_calendar": MicrosoftCalendarConnector,
-    "microsoft_mail": MicrosoftMailConnector,
-    "zoom": ZoomConnector,
-    "github": GitHubConnector,
-    "linear": LinearConnector,
-    "asana": AsanaConnector,
-}
+# Connector registry – auto-discovered from backend/connectors/ + entry_points
+CONNECTORS = discover_connectors()
 
 # Simple in-memory sync status tracking (use Redis in production)
 _sync_status: dict[str, dict[str, str | datetime | None | dict[str, int]]] = {}

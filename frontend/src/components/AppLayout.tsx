@@ -5,7 +5,7 @@
  * - Collapsible left sidebar (icons when collapsed)
  * - Slide-out drawer on mobile
  * - New Chat button
- * - Data Sources tab with badge
+ * - Connectors tab with badge
  * - Chats tab with recent conversations
  * - Organization & Profile sections at bottom
  * 
@@ -520,11 +520,15 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
                 }
               }
             } else if (data.type === 'tool_result') {
-              // Tool result received
-              updateConversationToolMessage(conversation_id, data.tool_id as string, {
+              // Tool result received (include input so block has params if it was empty, e.g. modal)
+              const updates: { result: Record<string, unknown>; status: string; input?: Record<string, unknown> } = {
                 result: data.result as Record<string, unknown>,
                 status: 'complete',
-              });
+              };
+              if (data.tool_input != null && typeof data.tool_input === 'object') {
+                updates.input = data.tool_input as Record<string, unknown>;
+              }
+              updateConversationToolMessage(conversation_id, data.tool_id as string, updates);
               
               // If workflows table was modified, notify the Workflows component to refresh
               const result = data.result as Record<string, unknown> | undefined;
@@ -790,7 +794,7 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
   const viewTitles: Record<string, string> = {
     home: 'Home',
     chat: 'Chat',
-    'data-sources': 'Data Sources',
+    'data-sources': 'Connectors',
     workflows: 'Workflows',
     memory: 'Memory',
     admin: 'Admin',

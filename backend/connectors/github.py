@@ -20,6 +20,9 @@ from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from connectors.base import BaseConnector
+from connectors.registry import (
+    AuthType, Capability, ConnectorMeta, ConnectorScope, WriteOperation,
+)
 from models.database import get_session
 from models.github_commit import GitHubCommit
 from models.github_pull_request import GitHubPullRequest
@@ -36,6 +39,29 @@ class GitHubConnector(BaseConnector):
     """Connector for GitHub – repos, commits, and pull requests."""
 
     source_system: str = "github"
+    meta = ConnectorMeta(
+        name="GitHub",
+        slug="github",
+        auth_type=AuthType.OAUTH2,
+        scope=ConnectorScope.ORGANIZATION,
+        entity_types=["repositories", "commits", "pull_requests"],
+        capabilities=[Capability.SYNC, Capability.WRITE],
+        write_operations=[
+            WriteOperation(
+                name="create_issue", entity_type="issue",
+                description="Create a GitHub issue",
+                parameters=[
+                    {"name": "repo_full_name", "type": "string", "required": True, "description": "Repository (owner/repo)"},
+                    {"name": "title", "type": "string", "required": True, "description": "Issue title"},
+                    {"name": "body", "type": "string", "required": False, "description": "Issue body (markdown)"},
+                    {"name": "labels", "type": "array", "required": False, "description": "Labels to add"},
+                    {"name": "assignees", "type": "array", "required": False, "description": "GitHub usernames to assign"},
+                ],
+            ),
+        ],
+        nango_integration_id="github",
+        description="GitHub – repositories, commits, pull requests, and issues",
+    )
 
     def __init__(
         self, organization_id: str, user_id: Optional[str] = None
@@ -410,6 +436,12 @@ class GitHubConnector(BaseConnector):
             for r in raw_repos
         ]
         return repos
+
+    async def write(self, operation: str, data: dict[str, Any]) -> dict[str, Any]:
+        """Dispatch a record-level write operation."""
+        if operation == "create_issue":
+            return await self.create_issue(**data)
+        raise ValueError(f"Unknown write operation: {operation}")
 
     async def create_issue(
         self,
