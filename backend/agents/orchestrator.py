@@ -1086,12 +1086,16 @@ class ChatOrchestrator:
         # Add user context so the agent knows who "me" is
         if self.user_email and self.user_id:
             user_context = "\n\n## Current User\n"
+            if self.source_user_id:
+                user_context += f"- Source User ID: {self.source_user_id}\n"
             if self.user_name:
                 user_context += f"- Name: {self.user_name}\n"
             user_context += f"- Email: {self.user_email}\n"
             user_context += f"- User ID: {self.user_id}\n"
             if self.organization_name:
                 user_context += f"- Organization: {self.organization_name}\n"
+            if self.source_user_id:
+                user_context += "\nIf both Source User ID and Current User details are present, prioritize Source User ID as the authoritative identity for this turn.\n"
             user_context += "\nWhen the user asks about 'my' data, use this email to filter queries. "
             user_context += "For example, to find the user's company, join the users table (filter by email) to the organizations table."
             system_prompt += user_context
