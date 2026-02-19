@@ -24,6 +24,7 @@ import json
 import logging
 import re
 import time
+from contextlib import asynccontextmanager
 from typing import Any
 
 import redis.asyncio as redis
@@ -44,6 +45,60 @@ router = APIRouter()
 
 # Redis client for event deduplication
 _redis_client: redis.Redis | None = None
+
+
+class SlackThreadLockManager:
+    """In-process async lock manager keyed by Slack thread identity."""
+
+    def __init__(self) -> None:
+        self._locks: dict[str, asyncio.Lock] = {}
+        self._lock_refs: dict[str, int] = {}
+        self._manager_lock = asyncio.Lock()
+
+    @staticmethod
+    def build_lock_key(team_id: str, channel_id: str, thread_ts: str) -> str:
+        return f"{team_id}:{channel_id}:{thread_ts}"
+
+    @asynccontextmanager
+    async def thread_lock(self, lock_key: str):
+        """Acquire/release the per-thread lock, cleaning up idle keys."""
+        async with self._manager_lock:
+            lock = self._locks.get(lock_key)
+            if lock is None:
+                lock = asyncio.Lock()
+                self._locks[lock_key] = lock
+                self._lock_refs[lock_key] = 0
+                logger.debug("[slack_events] Created thread lock key=%s", lock_key)
+            self._lock_refs[lock_key] = self._lock_refs.get(lock_key, 0) + 1
+            queued_count = self._lock_refs[lock_key]
+
+        logger.info(
+            "[slack_events] Waiting for thread lock key=%s queued=%d",
+            lock_key,
+            queued_count,
+        )
+        await lock.acquire()
+        logger.info("[slack_events] Acquired thread lock key=%s", lock_key)
+
+        try:
+            yield
+        finally:
+            lock.release()
+            logger.info("[slack_events] Released thread lock key=%s", lock_key)
+            async with self._manager_lock:
+                remaining = max(self._lock_refs.get(lock_key, 1) - 1, 0)
+                if remaining == 0:
+                    self._lock_refs.pop(lock_key, None)
+                    self._locks.pop(lock_key, None)
+                    logger.debug(
+                        "[slack_events] Removed idle thread lock key=%s",
+                        lock_key,
+                    )
+                else:
+                    self._lock_refs[lock_key] = remaining
+
+
+_thread_lock_manager = SlackThreadLockManager()
 
 
 async def get_redis() -> redis.Redis:
@@ -305,15 +360,17 @@ async def _process_event_callback_impl(payload: dict[str, Any]) -> None:
                 "[slack_events] Processing thread reply from %s in %s (thread %s): %s (files=%d)",
                 user_id, channel_id, thread_ts, text[:50], len(files),
             )
-            await process_slack_thread_reply(
-                team_id=team_id,
-                channel_id=channel_id,
-                user_id=user_id,
-                message_text=text,
-                thread_ts=thread_ts,
-                event_ts=message_ts,
-                files=files,
-            )
+            lock_key = SlackThreadLockManager.build_lock_key(team_id, channel_id, thread_ts)
+            async with _thread_lock_manager.thread_lock(lock_key):
+                await process_slack_thread_reply(
+                    team_id=team_id,
+                    channel_id=channel_id,
+                    user_id=user_id,
+                    message_text=text,
+                    thread_ts=thread_ts,
+                    event_ts=message_ts,
+                    files=files,
+                )
             return
 
     if inner_type == "app_mention":
@@ -338,14 +395,17 @@ async def _process_event_callback_impl(payload: dict[str, Any]) -> None:
             return
 
         logger.info("[slack_events] Processing @mention from %s in %s: %s (files=%d)", user_id, channel_id, text[:50], len(files))
-        await process_slack_mention(
-            team_id=team_id,
-            channel_id=channel_id,
-            user_id=user_id,
-            message_text=text,
-            thread_ts=thread_ts or event_ts,
-            files=files,
-        )
+        lock_thread_ts = thread_ts or event_ts
+        lock_key = SlackThreadLockManager.build_lock_key(team_id, channel_id, lock_thread_ts)
+        async with _thread_lock_manager.thread_lock(lock_key):
+            await process_slack_mention(
+                team_id=team_id,
+                channel_id=channel_id,
+                user_id=user_id,
+                message_text=text,
+                thread_ts=lock_thread_ts,
+                files=files,
+            )
 
 
 @router.post("/events", response_model=None)
