@@ -1040,6 +1040,7 @@ class InviteToOrgRequest(BaseModel):
 
     email: str
     role: str = "member"
+    name: Optional[str] = None
 
 
 class InviteToOrgResponse(BaseModel):
@@ -1080,27 +1081,30 @@ async def invite_to_organization(
         raise HTTPException(status_code=400, detail="Invalid email address")
 
     async with get_admin_session() as session:
-        # Verify inviter belongs to this org
+        # Verify inviter and load org
         inviter: Optional[User] = await session.get(User, inviter_uuid)
         if not inviter:
             raise HTTPException(status_code=403, detail="Not authorized")
 
-        # Check inviter has an active membership in this org
-        result = await session.execute(
-            select(OrgMember).where(
-                OrgMember.user_id == inviter_uuid,
-                OrgMember.organization_id == org_uuid,
-                OrgMember.status == "active",
-            )
-        )
-        inviter_membership: Optional[OrgMember] = result.scalar_one_or_none()
-        if not inviter_membership:
-            raise HTTPException(status_code=403, detail="Not a member of this organization")
-
-        # Load the org for the email
         org: Optional[Organization] = await session.get(Organization, org_uuid)
         if not org:
             raise HTTPException(status_code=404, detail="Organization not found")
+
+        # Require inviter to be an active member, or be a global admin (e.g. Admin Panel inviting to any org)
+        is_global_admin: bool = (
+            inviter.role == "global_admin" or bool(inviter.roles and "global_admin" in inviter.roles)
+        )
+        if not is_global_admin:
+            result = await session.execute(
+                select(OrgMember).where(
+                    OrgMember.user_id == inviter_uuid,
+                    OrgMember.organization_id == org_uuid,
+                    OrgMember.status == "active",
+                )
+            )
+            inviter_membership: Optional[OrgMember] = result.scalar_one_or_none()
+            if not inviter_membership:
+                raise HTTPException(status_code=403, detail="Not a member of this organization")
 
         # Find or create the target user
         result = await session.execute(
@@ -1110,8 +1114,10 @@ async def invite_to_organization(
 
         if not target_user:
             # Create stub user
+            invite_name: Optional[str] = (request.name or "").strip() or None
             target_user = User(
                 email=invite_email,
+                name=invite_name,
                 status="invited",
                 role="member",
                 invited_at=datetime.utcnow(),

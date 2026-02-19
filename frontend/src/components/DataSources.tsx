@@ -109,6 +109,17 @@ const INTEGRATION_CONFIG: Record<string, { name: string; description: string; ic
 
 const SUPPORTED_PROVIDERS = new Set(Object.keys(INTEGRATION_CONFIG));
 
+// Common integrations to show as tiles when org has zero connected (display order)
+const COMMON_INTEGRATION_KEYS: ReadonlyArray<{ provider: string; scope: 'organization' | 'user' }> = [
+  { provider: 'hubspot', scope: 'organization' },
+  { provider: 'salesforce', scope: 'organization' },
+  { provider: 'slack', scope: 'organization' },
+  { provider: 'gmail', scope: 'user' },
+  { provider: 'google_calendar', scope: 'user' },
+  { provider: 'zoom', scope: 'user' },
+  { provider: 'apollo', scope: 'organization' },
+];
+
 // Extended integration type with display info
 interface DisplayIntegration extends Integration {
   name: string;
@@ -1561,16 +1572,65 @@ export function DataSources(): JSX.Element {
           </h2>
 
           {connectedIntegrations.length === 0 ? (
-            <div className="card text-center py-12">
-              <div className="w-16 h-16 rounded-full bg-surface-800 flex items-center justify-center mx-auto mb-4">
-                <svg className="w-8 h-8 text-surface-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-                </svg>
+            <div className="card p-6 md:p-8">
+              <div className="text-center mb-6">
+                <div className="w-16 h-16 rounded-full bg-surface-800 flex items-center justify-center mx-auto mb-4">
+                  <svg className="w-8 h-8 text-surface-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                  </svg>
+                </div>
+                <h3 className="text-surface-200 font-medium mb-2">No data sources connected</h3>
+                <p className="text-surface-400 text-sm">
+                  Connect your first data source to get started
+                </p>
               </div>
-              <h3 className="text-surface-200 font-medium mb-2">No data sources connected</h3>
-              <p className="text-surface-400 text-sm">
-                Connect your first data source to get started
-              </p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 md:gap-4">
+                {COMMON_INTEGRATION_KEYS.filter(
+                  ({ provider }) =>
+                    INTEGRATION_CONFIG[provider] != null &&
+                    availableIntegrations.some((i) => i.provider === provider),
+                ).map(({ provider, scope }) => {
+                  const config = INTEGRATION_CONFIG[provider]!;
+                  const isConnecting = connectingProvider === provider;
+                  return (
+                    <button
+                      key={provider}
+                      type="button"
+                      onClick={() => {
+                        if (!isMobile) void handleConnect(provider, scope);
+                        else {
+                          setConnectSearch(config.name);
+                          setShowConnectModal(true);
+                        }
+                      }}
+                      disabled={isConnecting}
+                      className="card p-4 text-left hover:border-surface-600 hover:bg-surface-800/50 transition-colors disabled:opacity-50 flex items-start gap-3 group"
+                    >
+                      <div className={`${getColorClass(config.color)} p-2 rounded-lg text-white flex-shrink-0 opacity-90 group-hover:opacity-100 transition-opacity`}>
+                        {renderIcon(config.icon)}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="font-medium text-surface-100 group-hover:text-white transition-colors">
+                          {config.name}
+                        </div>
+                        <div className="text-xs text-surface-500 mt-0.5 line-clamp-2">
+                          {config.description}
+                        </div>
+                      </div>
+                      {isConnecting ? (
+                        <svg className="w-5 h-5 animate-spin text-primary-400 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                        </svg>
+                      ) : (
+                        <svg className="w-5 h-5 text-surface-500 group-hover:text-surface-400 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                        </svg>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
           ) : (
             <div className="grid gap-4">

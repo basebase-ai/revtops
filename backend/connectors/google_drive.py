@@ -1,16 +1,19 @@
 """
-Google Drive connector for syncing file metadata and reading file contents.
+Google Drive connector for syncing file metadata, reading, and creating files.
 
 1. Syncs all file metadata (folders, docs, sheets, slides) from a user's Drive
 2. Supports searching files by name
 3. Exports text representations of Docs, Sheets, and Slides on demand
+4. Creates new Google Docs, Sheets, and Slides with content
 
 Flow:
 1. User connects Google account via OAuth (Nango)
 2. Sync crawls Drive and stores file metadata in shared_files table (source='google_drive')
 3. Agent can search files by name and read their text content
+4. Agent can create new files in the user's Drive and populate them with content
 """
 
+import json
 import logging
 from datetime import datetime
 from typing import Any, Optional
@@ -30,12 +33,22 @@ logger = logging.getLogger(__name__)
 
 # Google API endpoints
 DRIVE_API_BASE: str = "https://www.googleapis.com/drive/v3"
+DOCS_API_BASE: str = "https://docs.googleapis.com/v1"
+SHEETS_API_BASE: str = "https://sheets.googleapis.com/v4"
+SLIDES_API_BASE: str = "https://slides.googleapis.com/v1"
 
 # Mime types we care about for text extraction
 GOOGLE_DOC_MIME: str = "application/vnd.google-apps.document"
 GOOGLE_SHEET_MIME: str = "application/vnd.google-apps.spreadsheet"
 GOOGLE_SLIDES_MIME: str = "application/vnd.google-apps.presentation"
 GOOGLE_FOLDER_MIME: str = "application/vnd.google-apps.folder"
+
+# File type string → native MIME type mapping for creation
+FILE_TYPE_TO_MIME: dict[str, str] = {
+    "document": GOOGLE_DOC_MIME,
+    "spreadsheet": GOOGLE_SHEET_MIME,
+    "presentation": GOOGLE_SLIDES_MIME,
+}
 
 # Export MIME mappings for Google Workspace files → text content
 EXPORT_MIME_MAP: dict[str, str] = {
@@ -525,3 +538,319 @@ class GoogleDriveConnector:
             return response.text
         except Exception:
             return None
+
+    # -------------------------------------------------------------------------
+    # File Creation
+    # -------------------------------------------------------------------------
+
+    async def create_file(
+        self,
+        file_type: str,
+        title: str,
+        content: Any,
+        folder_id: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """
+        Create a new Google Workspace file and populate it with content.
+
+        Args:
+            file_type: One of "document", "spreadsheet", "presentation".
+            title: Display name for the new file.
+            content: Content to populate the file with. Format depends on file_type:
+                - document: plain text string
+                - spreadsheet: {"sheets": [{"title": "Sheet1", "data": [[...]]}]}
+                - presentation: {"slides": [{"title": "...", "body": "..."}]}
+            folder_id: Optional Google Drive folder ID to place the file in.
+
+        Returns:
+            Dict with created file metadata (external_id, web_view_link, etc.).
+        """
+        mime_type: Optional[str] = FILE_TYPE_TO_MIME.get(file_type)
+        if not mime_type:
+            return {"error": f"Unsupported file_type '{file_type}'. Use: document, spreadsheet, presentation."}
+
+        await self.get_oauth_token()
+
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            # Step 1: Create the empty file via Drive API
+            create_body: dict[str, Any] = {
+                "name": title,
+                "mimeType": mime_type,
+            }
+            if folder_id:
+                create_body["parents"] = [folder_id]
+
+            create_resp = await client.post(
+                f"{DRIVE_API_BASE}/files",
+                headers={**self._get_headers(), "Content-Type": "application/json"},
+                params={"fields": FILE_FIELDS},
+                json=create_body,
+            )
+            if create_resp.status_code not in (200, 201):
+                logger.error("[GoogleDrive] Create file failed: %s %s", create_resp.status_code, create_resp.text)
+                return {"error": f"Failed to create file: {create_resp.status_code} — {create_resp.text}"}
+
+            file_meta: dict[str, Any] = create_resp.json()
+            file_id: str = file_meta["id"]
+
+            # Step 2: Populate with content via the native Workspace API
+            populate_error: Optional[str] = None
+            if file_type == "document":
+                populate_error = await self._populate_document(client, file_id, content)
+            elif file_type == "spreadsheet":
+                populate_error = await self._populate_spreadsheet(client, file_id, content)
+            elif file_type == "presentation":
+                populate_error = await self._populate_presentation(client, file_id, content)
+
+            if populate_error:
+                logger.warning("[GoogleDrive] Populate failed for %s (%s): %s", file_id, file_type, populate_error)
+
+        # Step 3: Upsert into shared_files so it's immediately searchable
+        await self._upsert_created_file(file_meta)
+
+        web_link: str = file_meta.get("webViewLink", f"https://docs.google.com/open?id={file_id}")
+
+        result: dict[str, Any] = {
+            "status": "created",
+            "external_id": file_id,
+            "name": title,
+            "file_type": file_type,
+            "mime_type": mime_type,
+            "web_view_link": web_link,
+        }
+        if populate_error:
+            result["populate_warning"] = populate_error
+        return result
+
+    async def _populate_document(
+        self, client: httpx.AsyncClient, doc_id: str, content: Any
+    ) -> Optional[str]:
+        """Insert text content into a Google Doc via the Docs API."""
+        text_content: str = str(content) if content else ""
+        if not text_content:
+            return None
+
+        requests: list[dict[str, Any]] = [
+            {
+                "insertText": {
+                    "location": {"index": 1},
+                    "text": text_content,
+                }
+            }
+        ]
+        resp = await client.post(
+            f"{DOCS_API_BASE}/documents/{doc_id}:batchUpdate",
+            headers={**self._get_headers(), "Content-Type": "application/json"},
+            json={"requests": requests},
+        )
+        if resp.status_code != 200:
+            return f"Docs batchUpdate failed: {resp.status_code} — {resp.text[:200]}"
+        return None
+
+    async def _populate_spreadsheet(
+        self, client: httpx.AsyncClient, spreadsheet_id: str, content: Any
+    ) -> Optional[str]:
+        """Populate a Google Sheet with tabular data via the Sheets API."""
+        if isinstance(content, str):
+            try:
+                content = json.loads(content)
+            except (json.JSONDecodeError, TypeError):
+                content = {"sheets": [{"title": "Sheet1", "data": [[content]]}]}
+
+        if not isinstance(content, dict):
+            return "Spreadsheet content must be a JSON object with a 'sheets' key."
+
+        sheets: list[dict[str, Any]] = content.get("sheets", [])
+        if not sheets:
+            # Allow flat "data" key as shorthand for a single sheet
+            flat_data: Any = content.get("data")
+            if flat_data and isinstance(flat_data, list):
+                sheets = [{"title": "Sheet1", "data": flat_data}]
+
+        errors: list[str] = []
+        for sheet in sheets:
+            sheet_title: str = sheet.get("title", "Sheet1")
+            rows: Any = sheet.get("data", [])
+            if not isinstance(rows, list) or not rows:
+                continue
+
+            range_notation: str = f"'{sheet_title}'!A1"
+            resp = await client.put(
+                f"{SHEETS_API_BASE}/spreadsheets/{spreadsheet_id}/values/{range_notation}",
+                headers={**self._get_headers(), "Content-Type": "application/json"},
+                params={"valueInputOption": "USER_ENTERED"},
+                json={"range": range_notation, "majorDimension": "ROWS", "values": rows},
+            )
+            if resp.status_code != 200:
+                errors.append(f"Sheet '{sheet_title}': {resp.status_code} — {resp.text[:200]}")
+
+        return "; ".join(errors) if errors else None
+
+    async def _populate_presentation(
+        self, client: httpx.AsyncClient, presentation_id: str, content: Any
+    ) -> Optional[str]:
+        """Create slides in a Google Slides presentation via the Slides API."""
+        if isinstance(content, str):
+            try:
+                content = json.loads(content)
+            except (json.JSONDecodeError, TypeError):
+                content = {"slides": [{"title": content}]}
+
+        if not isinstance(content, dict):
+            return "Presentation content must be a JSON object with a 'slides' key."
+
+        slides: list[dict[str, Any]] = content.get("slides", [])
+        if not slides:
+            return None
+
+        # First, get the presentation to find the default slide (new presentations have one blank slide)
+        get_resp = await client.get(
+            f"{SLIDES_API_BASE}/presentations/{presentation_id}",
+            headers=self._get_headers(),
+            params={"fields": "slides.objectId"},
+        )
+        existing_slide_ids: list[str] = []
+        if get_resp.status_code == 200:
+            for s in get_resp.json().get("slides", []):
+                existing_slide_ids.append(s["objectId"])
+
+        requests: list[dict[str, Any]] = []
+        slide_object_ids: list[str] = []
+
+        for idx, slide_def in enumerate(slides):
+            slide_obj_id: str = f"slide_{idx}"
+            slide_object_ids.append(slide_obj_id)
+            requests.append({
+                "createSlide": {
+                    "objectId": slide_obj_id,
+                    "insertionIndex": idx + len(existing_slide_ids),
+                    "slideLayoutReference": {"predefinedLayout": "TITLE_AND_BODY"},
+                }
+            })
+
+        if not requests:
+            return None
+
+        # Create all slides in one batch
+        batch_resp = await client.post(
+            f"{SLIDES_API_BASE}/presentations/{presentation_id}:batchUpdate",
+            headers={**self._get_headers(), "Content-Type": "application/json"},
+            json={"requests": requests},
+        )
+        if batch_resp.status_code != 200:
+            return f"Slides create failed: {batch_resp.status_code} — {batch_resp.text[:200]}"
+
+        # Now populate each slide's title and body placeholders
+        text_requests: list[dict[str, Any]] = []
+        # Re-fetch the full presentation to get placeholder object IDs
+        full_resp = await client.get(
+            f"{SLIDES_API_BASE}/presentations/{presentation_id}",
+            headers=self._get_headers(),
+        )
+        if full_resp.status_code != 200:
+            return f"Could not fetch presentation after creating slides: {full_resp.status_code}"
+
+        full_pres: dict[str, Any] = full_resp.json()
+        all_slides: list[dict[str, Any]] = full_pres.get("slides", [])
+
+        # Build a map of our created slide objectIds → their placeholder elements
+        for slide_data in all_slides:
+            obj_id: str = slide_data.get("objectId", "")
+            if obj_id not in slide_object_ids:
+                continue
+            idx = slide_object_ids.index(obj_id)
+            slide_def = slides[idx]
+
+            for element in slide_data.get("pageElements", []):
+                shape: Optional[dict[str, Any]] = element.get("shape")
+                if not shape:
+                    continue
+                placeholder: Optional[dict[str, Any]] = shape.get("placeholder")
+                if not placeholder:
+                    continue
+
+                ph_type: str = placeholder.get("type", "")
+                element_id: str = element.get("objectId", "")
+
+                if ph_type in ("TITLE", "CENTERED_TITLE") and slide_def.get("title"):
+                    text_requests.append({
+                        "insertText": {
+                            "objectId": element_id,
+                            "text": slide_def["title"],
+                            "insertionIndex": 0,
+                        }
+                    })
+                elif ph_type == "BODY" and slide_def.get("body"):
+                    text_requests.append({
+                        "insertText": {
+                            "objectId": element_id,
+                            "text": slide_def["body"],
+                            "insertionIndex": 0,
+                        }
+                    })
+
+        if text_requests:
+            text_resp = await client.post(
+                f"{SLIDES_API_BASE}/presentations/{presentation_id}:batchUpdate",
+                headers={**self._get_headers(), "Content-Type": "application/json"},
+                json={"requests": text_requests},
+            )
+            if text_resp.status_code != 200:
+                return f"Slides text insert failed: {text_resp.status_code} — {text_resp.text[:200]}"
+
+        # Delete the original blank slide if we created new ones
+        if existing_slide_ids and slide_object_ids:
+            delete_requests: list[dict[str, Any]] = [
+                {"deleteObject": {"objectId": sid}} for sid in existing_slide_ids
+            ]
+            await client.post(
+                f"{SLIDES_API_BASE}/presentations/{presentation_id}:batchUpdate",
+                headers={**self._get_headers(), "Content-Type": "application/json"},
+                json={"requests": delete_requests},
+            )
+
+        return None
+
+    async def _upsert_created_file(self, file_meta: dict[str, Any]) -> None:
+        """Insert/upsert a newly created file into the shared_files table."""
+        org_uuid: UUID = UUID(self.organization_id)
+        user_uuid: UUID = UUID(self.user_id)
+        file_id: str = file_meta["id"]
+        mime_type: str = file_meta.get("mimeType", "")
+
+        modified_time: Optional[datetime] = None
+        raw_modified: Optional[str] = file_meta.get("modifiedTime")
+        if raw_modified:
+            try:
+                dt = datetime.fromisoformat(raw_modified.replace("Z", "+00:00"))
+                modified_time = dt.replace(tzinfo=None)
+            except ValueError:
+                pass
+
+        async with get_session(organization_id=self.organization_id) as session:
+            stmt = pg_insert(SharedFile).values(
+                id=uuid4(),
+                organization_id=org_uuid,
+                user_id=user_uuid,
+                source="google_drive",
+                external_id=file_id,
+                name=file_meta.get("name", ""),
+                mime_type=mime_type,
+                parent_external_id=(file_meta.get("parents") or [None])[0],
+                folder_path="/",
+                web_view_link=file_meta.get("webViewLink"),
+                file_size=None,
+                source_modified_at=modified_time,
+                synced_at=datetime.utcnow(),
+            ).on_conflict_do_update(
+                index_elements=["organization_id", "user_id", "source", "external_id"],
+                set_={
+                    "name": file_meta.get("name", ""),
+                    "mime_type": mime_type,
+                    "web_view_link": file_meta.get("webViewLink"),
+                    "source_modified_at": modified_time,
+                    "synced_at": datetime.utcnow(),
+                },
+            )
+            await session.execute(stmt)
+            await session.commit()
