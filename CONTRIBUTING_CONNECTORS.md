@@ -312,7 +312,7 @@ via `self.credentials` at runtime.
 Some connectors (e.g. `web_search`, `code_sandbox`, `twilio`) use platform
 credentials and appear as “Connect” in the Connectors tab with no OAuth or
 custom form. They are listed in the backend as built-in and use
-`POST /integrations/connect-builtin`. The agent only sees them in the
+`POST /api/auth/integrations/connect-builtin`. The agent only sees them in the
 manifest when they are enabled for the org.
 
 ---

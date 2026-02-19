@@ -15,8 +15,10 @@ Flow:
 
 import json
 import logging
+import re
 from datetime import datetime
 from typing import Any, Optional
+
 from uuid import UUID, uuid4
 
 import httpx
@@ -84,6 +86,146 @@ LIST_FIELDS: str = f"nextPageToken,files({FILE_FIELDS})"
 MAX_CONTENT_LENGTH: int = 100_000
 
 
+def _utf16_len(s: str) -> int:
+    """Return length in UTF-16 code units (Google Docs API uses this for indices)."""
+    return sum(2 if ord(c) > 0xFFFF else 1 for c in s)
+
+
+def _parse_inline_markdown(line: str) -> tuple[str, list[tuple[int, int, str]]]:
+    """Parse inline markdown (**bold**, *italic*, `code`) from a line. Returns (plain_text, [(start, end, style), ...])."""
+    display_parts: list[str] = []
+    runs: list[tuple[int, int, str]] = []
+    pos: int = 0
+    i: int = 0
+    while i < len(line):
+        if i + 2 <= len(line) and line[i : i + 2] == "**":
+            j = line.find("**", i + 2)
+            if j == -1:
+                display_parts.append(line[i:])
+                break
+            content = line[i + 2 : j]
+            runs.append((pos, pos + _utf16_len(content), "bold"))
+            display_parts.append(content)
+            pos += _utf16_len(content)
+            i = j + 2
+        elif line[i] == "*" and (i == 0 or line[i - 1] != "*"):
+            j = line.find("*", i + 1)
+            if j == -1:
+                display_parts.append(line[i:])
+                break
+            content = line[i + 1 : j]
+            runs.append((pos, pos + _utf16_len(content), "italic"))
+            display_parts.append(content)
+            pos += _utf16_len(content)
+            i = j + 1
+        elif line[i] == "`":
+            j = line.find("`", i + 1)
+            if j == -1:
+                display_parts.append(line[i:])
+                break
+            content = line[i + 1 : j]
+            runs.append((pos, pos + _utf16_len(content), "code"))
+            display_parts.append(content)
+            pos += _utf16_len(content)
+            i = j + 1
+        else:
+            display_parts.append(line[i])
+            pos += _utf16_len(line[i])
+            i += 1
+    return "".join(display_parts), runs
+
+
+def _markdown_to_docs_requests(content: str) -> list[dict[str, Any]]:
+    """Convert markdown text to Google Docs API batchUpdate requests (headings, bullets, bold, italic, code)."""
+    requests: list[dict[str, Any]] = []
+    # Docs API uses 1-based index in UTF-16 code units.
+    idx: int = 1
+    lines: list[str] = content.split("\n")
+    for line in lines:
+        if not line.strip():
+            # Blank line: insert newline only
+            requests.append({"insertText": {"location": {"index": idx}, "text": "\n"}})
+            idx += 1
+            continue
+        # Heading: # ## ###
+        heading_level: int = 0
+        stripped = line.lstrip()
+        if stripped.startswith("#"):
+            for c in stripped:
+                if c == "#":
+                    heading_level += 1
+                else:
+                    break
+            if heading_level > 0 and heading_level <= 4:
+                line = stripped[heading_level:].lstrip()
+        # Bullet: - or * at start (after optional spaces)
+        is_bullet: bool = False
+        if re.match(r"^[\s]*[-*]\s+", line):
+            is_bullet = True
+            line = re.sub(r"^[\s]*[-*]\s+", "", line, count=1)
+        # Numbered: 1. 2. etc.
+        is_numbered: bool = bool(re.match(r"^[\s]*\d+\.\s+", line))
+        if is_numbered:
+            line = re.sub(r"^[\s]*\d+\.\s+", "", line, count=1)
+        display_text, inline_runs = _parse_inline_markdown(line)
+        text_to_insert: str = display_text + "\n"
+        insert_len: int = _utf16_len(text_to_insert)
+        para_end: int = idx + insert_len
+        requests.append({"insertText": {"location": {"index": idx}, "text": text_to_insert}})
+        if heading_level >= 1 and heading_level <= 4:
+            named_style: str = f"HEADING_{min(heading_level, 4)}"
+            requests.append({
+                "updateParagraphStyle": {
+                    "range": {"startIndex": idx, "endIndex": para_end},
+                    "paragraphStyle": {"namedStyleType": named_style},
+                    "fields": "namedStyleType",
+                }
+            })
+        elif is_bullet:
+            requests.append({
+                "createParagraphBullets": {
+                    "range": {"startIndex": idx, "endIndex": para_end},
+                    "bulletPreset": "BULLET_DISC_CIRCLE_SQUARE",
+                }
+            })
+        elif is_numbered:
+            requests.append({
+                "createParagraphBullets": {
+                    "range": {"startIndex": idx, "endIndex": para_end},
+                    "bulletPreset": "NUMBERED_DECIMAL_ALPHA_ROMAN",
+                }
+            })
+        for start_off, end_off, style in inline_runs:
+            start_idx: int = idx + start_off
+            end_idx: int = idx + end_off
+            if style == "bold":
+                requests.append({
+                    "updateTextStyle": {
+                        "range": {"startIndex": start_idx, "endIndex": end_idx},
+                        "textStyle": {"bold": True},
+                        "fields": "bold",
+                    }
+                })
+            elif style == "italic":
+                requests.append({
+                    "updateTextStyle": {
+                        "range": {"startIndex": start_idx, "endIndex": end_idx},
+                        "textStyle": {"italic": True},
+                        "fields": "italic",
+                    }
+                })
+            elif style == "code":
+                requests.append({
+                    "updateTextStyle": {
+                        "range": {"startIndex": start_idx, "endIndex": end_idx},
+                        "textStyle": {"weightedFontFamily": {"fontFamily": "Consolas"}},
+                        "fields": "weightedFontFamily",
+                    }
+                })
+        idx = para_end
+    return requests
+
+
 class GoogleDriveConnector(BaseConnector):
     """
     Connector for syncing Google Drive file metadata and reading file content.
@@ -115,7 +257,7 @@ class GoogleDriveConnector(BaseConnector):
                 parameters=[
                     {"name": "file_type", "type": "string", "required": True, "description": "One of: document, spreadsheet, presentation"},
                     {"name": "title", "type": "string", "required": True, "description": "Display name for the new file"},
-                    {"name": "content", "type": "string", "required": True, "description": "Content to populate (text for docs, JSON for sheets/slides)"},
+                    {"name": "content", "type": "string", "required": True, "description": "For documents: Markdown (headings # ## ###, **bold**, *italic*, `code`, -, 1. lists). For sheets/slides: JSON."},
                     {"name": "folder_id", "type": "string", "required": False, "description": "Google Drive folder ID to place the file in"},
                 ],
             ),
@@ -604,7 +746,7 @@ class GoogleDriveConnector(BaseConnector):
             file_type: One of "document", "spreadsheet", "presentation".
             title: Display name for the new file.
             content: Content to populate the file with. Format depends on file_type:
-                - document: plain text string
+                - document: Markdown (headings, **bold**, *italic*, `code`, bullet/numbered lists)
                 - spreadsheet: {"sheets": [{"title": "Sheet1", "data": [[...]]}]}
                 - presentation: {"slides": [{"title": "...", "body": "..."}]}
             folder_id: Optional Google Drive folder ID to place the file in.
@@ -672,19 +814,14 @@ class GoogleDriveConnector(BaseConnector):
     async def _populate_document(
         self, client: httpx.AsyncClient, doc_id: str, content: Any
     ) -> Optional[str]:
-        """Insert text content into a Google Doc via the Docs API."""
+        """Insert text into a Google Doc via the Docs API. Markdown is converted to headings, bullets, bold, italic, and code."""
         text_content: str = str(content) if content else ""
         if not text_content:
             return None
 
-        requests: list[dict[str, Any]] = [
-            {
-                "insertText": {
-                    "location": {"index": 1},
-                    "text": text_content,
-                }
-            }
-        ]
+        requests: list[dict[str, Any]] = _markdown_to_docs_requests(text_content)
+        if not requests:
+            return None
         resp = await client.post(
             f"{DOCS_API_BASE}/documents/{doc_id}:batchUpdate",
             headers={**self._get_headers(), "Content-Type": "application/json"},

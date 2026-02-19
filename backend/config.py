@@ -72,7 +72,7 @@ class Settings(BaseSettings):
     NANGO_MICROSOFT_MAIL_INTEGRATION_ID: str = "microsoft"
     NANGO_FIREFLIES_INTEGRATION_ID: str = "fireflies"
     NANGO_ZOOM_INTEGRATION_ID: str = "zoom"
-    NANGO_GOOGLE_DRIVE_INTEGRATION_ID: str = "google-sheet"
+    NANGO_GOOGLE_DRIVE_INTEGRATION_ID: str = "google-drive"
     NANGO_APOLLO_INTEGRATION_ID: str = "apollo"
     NANGO_GITHUB_INTEGRATION_ID: str = "github"
     NANGO_LINEAR_INTEGRATION_ID: str = "linear"
