@@ -4,6 +4,10 @@ Revtops is an **agentic intelligence framework** that connects to the siloed too
 
 Instead of switching between a dozen tabs, employees ask **Penny** (our AI agent) questions in natural language — via the **web app** or **Slack** — and get instant, data-backed answers, reports, and actions across every connected system.
 
+## Architecture
+
+![Revtops System Architecture](docs/architecture.png)
+
 ### What Can Revtops Do?
 
 - **Answer questions across all your data** — "What deals closed this quarter?", "Show me all emails with Acme Corp", "What's on my calendar tomorrow?"
@@ -16,17 +20,17 @@ Instead of switching between a dozen tabs, employees ask **Penny** (our AI agent
 
 ### Integrated Data Sources
 
-| Category | Sources |
-|---|---|
-| **CRM** | HubSpot, Salesforce |
-| **Email** | Gmail, Microsoft Outlook |
-| **Calendar** | Google Calendar, Microsoft Calendar |
-| **Messaging** | Slack (messages, DMs, channels) |
-| **Meeting Transcripts** | Fireflies, Zoom |
-| **Issue Tracking** | Linear, Asana |
-| **Code & Repos** | GitHub (repos, commits, PRs) |
-| **File Storage** | Google Drive (Docs, Sheets, Slides) |
-| **Data Enrichment** | Apollo.io (contacts & companies) |
+| Category                | Sources                             |
+| ----------------------- | ----------------------------------- |
+| **CRM**                 | HubSpot, Salesforce                 |
+| **Email**               | Gmail, Microsoft Outlook            |
+| **Calendar**            | Google Calendar, Microsoft Calendar |
+| **Messaging**           | Slack (messages, DMs, channels)     |
+| **Meeting Transcripts** | Fireflies, Zoom                     |
+| **Issue Tracking**      | Linear, Asana                       |
+| **Code & Repos**        | GitHub (repos, commits, PRs)        |
+| **File Storage**        | Google Drive (Docs, Sheets, Slides) |
+| **Data Enrichment**     | Apollo.io (contacts & companies)    |
 
 All integrations connect via OAuth through [Nango](https://nango.dev) — tokens are securely stored and auto-refreshed without any custom credential management.
 
@@ -169,7 +173,7 @@ cd backend                        # Navigate into the backend directory
 python3 -m venv venv              # Create an isolated Python environment called "venv"
 source venv/bin/activate          # Activate the virtual environment (use `venv\Scripts\activate` on Windows)
 pip install -r requirements.txt   # Install all required Python packages listed in requirements.txt
-brew install redis                # Optional - you may need redis running locally                       
+brew install redis                # Optional - you may need redis running locally
 brew services start redis         # More redis.
 uvicorn api.main:app --reload     # Start the FastAPI server with auto-reload on code changes
 ```
@@ -224,19 +228,16 @@ This monorepo deploys to Railway as **6 services** from a single GitHub repo:
 ### Setup Steps
 
 1. **Create Redis service:**
-
    - New → Database → Redis
    - Railway auto-creates `REDIS_URL`
 
 2. **Create each app service:**
-
    - New → GitHub Repo → select this repo
    - Set **Root Directory** in Settings → Source
    - Set **Custom Start Command** in Settings → Deploy (for beat/worker only)
    - Remove healthcheck for beat/worker (they don't serve HTTP)
 
 3. **Share environment variables:**
-
    - Backend, Beat, Worker all need: `DATABASE_URL`, `REDIS_URL`, `ANTHROPIC_API_KEY`, `NANGO_SECRET_KEY`, etc.
    - Use Railway's variable references to share `REDIS_URL` from the Redis service
 
@@ -471,18 +472,18 @@ We use [Nango](https://nango.dev) to handle all OAuth complexity:
 
 ### Backend
 
-| Variable            | Description                         |
-| ------------------- | ----------------------------------- |
-| `DATABASE_URL`      | PostgreSQL connection string        |
-| `REDIS_URL`         | Redis connection string             |
-| `ANTHROPIC_API_KEY` | Anthropic API key for Claude (agent reasoning) |
-| `OPENAI_API_KEY`    | OpenAI API key (embeddings for semantic search) |
-| `EXA_API_KEY`       | Exa API key (default web search: semantic search, per-result excerpts). Get it: [exa.ai](https://exa.ai/) → sign up → [dashboard.exa.ai/api-keys](https://dashboard.exa.ai/api-keys). Put the key in `.env` in the project root as `EXA_API_KEY=...`. |
-| `PERPLEXITY_API_KEY`| Optional. Perplexity API key for web search when `provider: "perplexity"` (single synthesized answer with citation URLs). [perplexity.ai/settings/api](https://www.perplexity.ai/settings/api). |
-| `SECRET_KEY`        | Application secret for sessions     |
-| `FRONTEND_URL`      | Frontend URL for CORS and redirects |
-| `SUPABASE_URL`      | Supabase project URL (from Railway) |
-| `SUPABASE_JWT_SECRET` | Supabase JWT secret (from Railway) |
+| Variable              | Description                                                                                                                                                                                                                                           |
+| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `DATABASE_URL`        | PostgreSQL connection string                                                                                                                                                                                                                          |
+| `REDIS_URL`           | Redis connection string                                                                                                                                                                                                                               |
+| `ANTHROPIC_API_KEY`   | Anthropic API key for Claude (agent reasoning)                                                                                                                                                                                                        |
+| `OPENAI_API_KEY`      | OpenAI API key (embeddings for semantic search)                                                                                                                                                                                                       |
+| `EXA_API_KEY`         | Exa API key (default web search: semantic search, per-result excerpts). Get it: [exa.ai](https://exa.ai/) → sign up → [dashboard.exa.ai/api-keys](https://dashboard.exa.ai/api-keys). Put the key in `.env` in the project root as `EXA_API_KEY=...`. |
+| `PERPLEXITY_API_KEY`  | Optional. Perplexity API key for web search when `provider: "perplexity"` (single synthesized answer with citation URLs). [perplexity.ai/settings/api](https://www.perplexity.ai/settings/api).                                                       |
+| `SECRET_KEY`          | Application secret for sessions                                                                                                                                                                                                                       |
+| `FRONTEND_URL`        | Frontend URL for CORS and redirects                                                                                                                                                                                                                   |
+| `SUPABASE_URL`        | Supabase project URL (from Railway)                                                                                                                                                                                                                   |
+| `SUPABASE_JWT_SECRET` | Supabase JWT secret (from Railway)                                                                                                                                                                                                                    |
 
 Web search defaults to **Exa** (semantic search with per-result excerpts). Use **Perplexity** (set `PERPLEXITY_API_KEY` and pass `provider: "perplexity"`) when you want a single synthesized answer instead of a list of results.
 
@@ -538,24 +539,24 @@ User Message → WebSocket → Orchestrator → Claude API
 
 ### Available Tools
 
-| Tool | Description |
-|---|---|
-| `run_sql_query` | Execute read-only SQL SELECT queries with automatic org scoping. Supports `semantic_embed()` for vector search. |
-| `run_sql_write` | INSERT/UPDATE/DELETE for internal tables |
-| `create_artifact` | Generate reports, charts, and PDF documents |
-| `create_workflow` | Create scheduled, event-driven, or manual workflows |
-| `trigger_workflow` | Manually trigger an existing workflow |
-| `write_to_system_of_record` | Universal write tool for CRMs, issue trackers, code repos |
-| `send_email_from` | Send email from the user's connected Gmail or Outlook |
-| `send_slack` | Post messages to Slack channels |
-| `web_search` | Search the web for real-time information |
-| `fetch_url` | Fetch and parse web page content |
-| `enrich_contacts_with_apollo` | Enrich contacts via Apollo.io |
-| `enrich_company_with_apollo` | Enrich company data via Apollo.io |
-| `trigger_sync` | Trigger a data sync for any connected integration |
-| `save_memory` | Persist information across conversations |
-| `delete_memory` | Remove a saved memory |
-| `keep_notes` | Workflow-scoped scratchpad for multi-step reasoning |
+| Tool                          | Description                                                                                                     |
+| ----------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `run_sql_query`               | Execute read-only SQL SELECT queries with automatic org scoping. Supports `semantic_embed()` for vector search. |
+| `run_sql_write`               | INSERT/UPDATE/DELETE for internal tables                                                                        |
+| `create_artifact`             | Generate reports, charts, and PDF documents                                                                     |
+| `create_workflow`             | Create scheduled, event-driven, or manual workflows                                                             |
+| `trigger_workflow`            | Manually trigger an existing workflow                                                                           |
+| `write_to_system_of_record`   | Universal write tool for CRMs, issue trackers, code repos                                                       |
+| `send_email_from`             | Send email from the user's connected Gmail or Outlook                                                           |
+| `send_slack`                  | Post messages to Slack channels                                                                                 |
+| `web_search`                  | Search the web for real-time information                                                                        |
+| `fetch_url`                   | Fetch and parse web page content                                                                                |
+| `enrich_contacts_with_apollo` | Enrich contacts via Apollo.io                                                                                   |
+| `enrich_company_with_apollo`  | Enrich company data via Apollo.io                                                                               |
+| `trigger_sync`                | Trigger a data sync for any connected integration                                                               |
+| `save_memory`                 | Persist information across conversations                                                                        |
+| `delete_memory`               | Remove a saved memory                                                                                           |
+| `keep_notes`                  | Workflow-scoped scratchpad for multi-step reasoning                                                             |
 
 ### Tool Execution Flow
 
@@ -616,23 +617,23 @@ value = _serialize_value(datetime_from_db)  # Returns "2026-02-04T18:00:00Z"
 
 ### Common Pitfalls to Avoid
 
-| Don't | Do Instead |
-|-------|------------|
-| `datetime.utcnow()` (deprecated) | `datetime.now(timezone.utc)` |
+| Don't                                        | Do Instead                                         |
+| -------------------------------------------- | -------------------------------------------------- |
+| `datetime.utcnow()` (deprecated)             | `datetime.now(timezone.utc)`                       |
 | `dt.replace(tzinfo=None)` without converting | `dt.astimezone(timezone.utc).replace(tzinfo=None)` |
-| Compare naive and aware datetimes | Convert both to UTC-aware first |
-| `f"{dt.isoformat()}"` (inconsistent) | `f"{dt.strftime('%Y-%m-%dT%H:%M:%SZ')}"` |
+| Compare naive and aware datetimes            | Convert both to UTC-aware first                    |
+| `f"{dt.isoformat()}"` (inconsistent)         | `f"{dt.strftime('%Y-%m-%dT%H:%M:%SZ')}"`           |
 
 ## Agent Tool Categories
 
 The agent's tools are organized by risk level with an approval system for safety:
 
-| Category | Approval | Examples |
-|---|---|---|
-| **Local Read** | None | SQL queries, semantic search across activities |
-| **Local Write** | Tracked | Create artifacts/reports, create workflows, write to internal tables |
-| **External Read** | None | Web search, fetch URLs, enrich contacts/companies via Apollo |
-| **External Write** | User approval required | Update CRM records, send emails, post to Slack, trigger syncs |
+| Category           | Approval               | Examples                                                             |
+| ------------------ | ---------------------- | -------------------------------------------------------------------- |
+| **Local Read**     | None                   | SQL queries, semantic search across activities                       |
+| **Local Write**    | Tracked                | Create artifacts/reports, create workflows, write to internal tables |
+| **External Read**  | None                   | Web search, fetch URLs, enrich contacts/companies via Apollo         |
+| **External Write** | User approval required | Update CRM records, send emails, post to Slack, trigger syncs        |
 
 Users review and approve external writes in the **Pending Changes** panel before they execute.
 
