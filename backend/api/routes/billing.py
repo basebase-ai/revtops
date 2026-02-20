@@ -30,11 +30,13 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # Tier config: name, price_cents, credits_included
+# "partner" tier is hidden from UI and assigned manually for dev partners
 PLANS: dict[str, dict[str, Any]] = {
     "starter": {"name": "Starter", "price_cents": 2000, "credits_included": 100},
     "pro": {"name": "Pro", "price_cents": 10000, "credits_included": 500},
     "business": {"name": "Business", "price_cents": 25000, "credits_included": 2500},
     "scale": {"name": "Scale", "price_cents": 60000, "credits_included": 8000},
+    "partner": {"name": "Partner", "price_cents": 0, "credits_included": 2000, "hidden": True},
 }
 
 # Rollover cap multiplier per tier (e.g. Pro: unused credits up to 2x included)
@@ -43,6 +45,7 @@ ROLLOVER_CAP: dict[str, int] = {
     "pro": 2,
     "business": 2,
     "scale": 3,
+    "partner": 3,
 }
 
 # Stripe Price IDs (Dashboard → Products → [your product] → Pricing → copy "Price ID", e.g. price_1ABC...)
@@ -511,7 +514,7 @@ async def get_credit_details(
 
 @router.get("/plans", response_model=PlansResponse)
 async def list_plans() -> PlansResponse:
-    """Return available plans for the plan selector."""
+    """Return available plans for the plan selector (excludes hidden tiers like 'partner')."""
     plans_list = [
         PlanItem(
             tier=tier,
@@ -521,6 +524,7 @@ async def list_plans() -> PlansResponse:
             stripe_product_id=_stripe_price_id_for_tier(tier),
         )
         for tier, info in PLANS.items()
+        if not info.get("hidden")
     ]
     return PlansResponse(plans=plans_list)
 
