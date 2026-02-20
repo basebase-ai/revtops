@@ -34,7 +34,7 @@ PLANS: dict[str, dict[str, Any]] = {
     "starter": {"name": "Starter", "price_cents": 2000, "credits_included": 100},
     "pro": {"name": "Pro", "price_cents": 10000, "credits_included": 500},
     "business": {"name": "Business", "price_cents": 25000, "credits_included": 2500},
-    "scale": {"name": "Scale", "price_cents": 59900, "credits_included": 8000},
+    "scale": {"name": "Scale", "price_cents": 60000, "credits_included": 8000},
 }
 
 # Rollover cap multiplier per tier (e.g. Pro: unused credits up to 2x included)
@@ -97,6 +97,29 @@ class PlanItem(BaseModel):
 
 class PlansResponse(BaseModel):
     plans: list[PlanItem]
+
+
+class CreditTransactionItem(BaseModel):
+    timestamp: str
+    amount: int
+    balance_after: int
+    reason: str
+    user_email: Optional[str] = None
+
+
+class UserUsageItem(BaseModel):
+    user_id: str
+    user_email: str
+    user_name: Optional[str] = None
+    total_credits_used: int
+
+
+class CreditDetailsResponse(BaseModel):
+    transactions: list[CreditTransactionItem]
+    usage_by_user: list[UserUsageItem]
+    period_start: Optional[str] = None
+    period_end: Optional[str] = None
+    starting_balance: int = 0
 
 
 # --- Endpoints ---
@@ -244,7 +267,7 @@ async def subscribe(
             customer_id,
             invoice_settings={"default_payment_method": body.payment_method_id},
         )
-        # Create subscription; webhook will set tier, period, credits
+        # Create subscription
         sub = stripe.Subscription.create(
             customer=customer_id,
             items=[{"price": price_id}],
@@ -254,19 +277,39 @@ async def subscribe(
         )
         org.stripe_subscription_id = sub.id
         org.subscription_tier = body.tier
-        org.subscription_status = sub.status or "active"
         plan = PLANS.get(body.tier, {})
         org.credits_included = plan.get("credits_included", 100)
+
+        # If subscription is incomplete, try to pay the first invoice immediately
+        # so the user gets credits right away instead of waiting for webhook
+        if sub.status == "incomplete" and sub.latest_invoice:
+            invoice_id = (
+                sub.latest_invoice.id
+                if hasattr(sub.latest_invoice, "id")
+                else sub.latest_invoice
+            )
+            try:
+                paid_invoice = stripe.Invoice.pay(invoice_id)
+                if paid_invoice.status == "paid":
+                    # Re-fetch subscription to get updated status
+                    sub = stripe.Subscription.retrieve(sub.id)
+            except stripe.error.CardError as e:
+                # Payment failed — let the user know
+                raise HTTPException(
+                    status_code=402,
+                    detail=f"Payment failed: {e.user_message or 'Card declined'}",
+                )
+
+        org.subscription_status = sub.status or "active"
         if sub.status == "active":
             org.credits_balance = org.credits_included
-            li = sub.latest_invoice
-            if li and getattr(li, "current_period_end", None):
+            if sub.current_period_end:
                 org.current_period_end = datetime.fromtimestamp(
-                    li.current_period_end, tz=timezone.utc
+                    sub.current_period_end, tz=timezone.utc
                 )
-            if li and getattr(li, "current_period_start", None):
+            if sub.current_period_start:
                 org.current_period_start = datetime.fromtimestamp(
-                    li.current_period_start, tz=timezone.utc
+                    sub.current_period_start, tz=timezone.utc
                 )
         await session.commit()
         return {"status": "ok", "subscription_id": sub.id}
@@ -354,6 +397,98 @@ async def cancel_subscription(
     stripe.api_key = settings.STRIPE_SECRET_KEY
     stripe.Subscription.modify(sub_id, cancel_at_period_end=True)
     return {"status": "ok"}
+
+
+@router.get("/credit-details", response_model=CreditDetailsResponse)
+async def get_credit_details(
+    auth: AuthContext = Depends(require_organization),
+) -> CreditDetailsResponse:
+    """Return credit transactions and usage breakdown for the current billing period."""
+    org_id = auth.organization_id
+    if not org_id:
+        raise HTTPException(status_code=403, detail="Organization required")
+    
+    async with get_admin_session() as session:
+        from sqlalchemy import select, func
+        from models.credit_transaction import CreditTransaction
+        from models.user import User
+        
+        # Get org with period info
+        result = await session.execute(
+            select(Organization).where(Organization.id == org_id)
+        )
+        org: Organization | None = result.scalar_one_or_none()
+        if not org:
+            raise HTTPException(status_code=404, detail="Organization not found")
+        
+        period_start = org.current_period_start
+        period_end = org.current_period_end
+        
+        # Build query for transactions in current period
+        tx_query = (
+            select(CreditTransaction, User.email, User.name)
+            .outerjoin(User, CreditTransaction.user_id == User.id)
+            .where(CreditTransaction.organization_id == org_id)
+            .order_by(CreditTransaction.created_at.asc())
+        )
+        if period_start:
+            tx_query = tx_query.where(CreditTransaction.created_at >= period_start)
+        
+        tx_result = await session.execute(tx_query)
+        rows = tx_result.all()
+        
+        transactions: list[CreditTransactionItem] = []
+        for tx, user_email, user_name in rows:
+            transactions.append(CreditTransactionItem(
+                timestamp=tx.created_at.isoformat().replace("+00:00", "Z"),
+                amount=tx.amount,
+                balance_after=tx.balance_after,
+                reason=tx.reason,
+                user_email=user_email,
+            ))
+        
+        # Calculate starting balance (balance before first transaction, or credits_included if no transactions)
+        starting_balance = org.credits_included
+        if transactions:
+            first_tx = transactions[0]
+            starting_balance = first_tx.balance_after - first_tx.amount
+        
+        # Aggregate usage by user (only deductions, amount < 0)
+        usage_query = (
+            select(
+                CreditTransaction.user_id,
+                User.email,
+                User.name,
+                func.sum(func.abs(CreditTransaction.amount)).label("total_used"),
+            )
+            .outerjoin(User, CreditTransaction.user_id == User.id)
+            .where(CreditTransaction.organization_id == org_id)
+            .where(CreditTransaction.amount < 0)
+            .group_by(CreditTransaction.user_id, User.email, User.name)
+            .order_by(func.sum(func.abs(CreditTransaction.amount)).desc())
+        )
+        if period_start:
+            usage_query = usage_query.where(CreditTransaction.created_at >= period_start)
+        
+        usage_result = await session.execute(usage_query)
+        usage_rows = usage_result.all()
+        
+        usage_by_user: list[UserUsageItem] = []
+        for user_id, email, name, total_used in usage_rows:
+            usage_by_user.append(UserUsageItem(
+                user_id=str(user_id) if user_id else "unknown",
+                user_email=email or "Unknown user",
+                user_name=name,
+                total_credits_used=int(total_used) if total_used else 0,
+            ))
+        
+        return CreditDetailsResponse(
+            transactions=transactions,
+            usage_by_user=usage_by_user,
+            period_start=period_start.isoformat().replace("+00:00", "Z") if period_start else None,
+            period_end=period_end.isoformat().replace("+00:00", "Z") if period_end else None,
+            starting_balance=starting_balance,
+        )
 
 
 @router.get("/plans", response_model=PlansResponse)

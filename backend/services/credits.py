@@ -49,11 +49,14 @@ async def has_active_subscription(organization_id: str) -> bool:
         return status in ACTIVE_SUBSCRIPTION_STATUSES
 
 
+MIN_CREDITS_TO_START: int = 5
+
+
 async def can_use_credits(organization_id: str) -> bool:
-    """Return True if the org has an active subscription and at least one credit."""
+    """Return True if the org has an active subscription and enough credits to start a task."""
     if not await has_active_subscription(organization_id):
         return False
-    return await get_balance(organization_id) > 0
+    return await get_balance(organization_id) >= MIN_CREDITS_TO_START
 
 
 async def check_sufficient(organization_id: str, amount: int) -> bool:
@@ -114,6 +117,10 @@ async def deduct(
             reference_id=reference_id,
         )
         sess.add(tx)
+        logger.info(
+            "[Credits] deduct: org %s deducted %d, new balance %d",
+            organization_id, amount, new_balance,
+        )
         return True
 
     if session is not None:

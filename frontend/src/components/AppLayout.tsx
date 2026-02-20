@@ -14,7 +14,7 @@
  */
 
 import { useState, useEffect, useCallback } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { API_BASE } from '../lib/api';
 import { crossTab, subscribeCrossTab } from '../lib/crossTab';
 
@@ -137,6 +137,8 @@ interface AppLayoutProps {
 }
 
 export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
+  const queryClient = useQueryClient();
+  
   // Get state from Zustand store using shallow comparison to prevent unnecessary re-renders
   const {
     user,
@@ -548,8 +550,18 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
               }
               updateConversationToolMessage(conversation_id, data.tool_id as string, updates);
               
-              // If workflows table was modified, notify the Workflows component to refresh
+              // Check if tool failed due to insufficient credits
               const result = data.result as Record<string, unknown> | undefined;
+              if (result?.error && typeof result.error === 'string' && 
+                  result.error.toLowerCase().includes('insufficient credits')) {
+                setInsufficientCreditsBanner(true);
+                setShowOrgPanel(true);
+                setOrgPanelTab('billing');
+                // Refresh billing status to show updated credits
+                queryClient.invalidateQueries({ queryKey: ['billing'] });
+              }
+              
+              // If workflows table was modified, notify the Workflows component to refresh
               if (result?.table === 'workflows' && result?.success) {
                 window.dispatchEvent(new Event('workflows-updated'));
               }
@@ -660,6 +672,8 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
               });
             }
           }
+          // Refresh billing status since credits may have been consumed
+          queryClient.invalidateQueries({ queryKey: ['billing'] });
           break;
         }
         
@@ -687,9 +701,22 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
         case 'error': {
           const err = parsed as WsError;
           if (err.code === 'insufficient_credits') {
+            // Add a message to the current conversation explaining the issue
+            const chatId = useAppStore.getState().currentChatId;
+            if (chatId) {
+              const errorMessage = {
+                id: `credits-error-${Date.now()}`,
+                role: 'assistant' as const,
+                contentBlocks: [{
+                  type: 'text' as const,
+                  text: "I wasn't able to complete your request because your organization has run out of credits for this billing period. You can view your usage and upgrade your plan in the **Billing** tab under Organization Settings.",
+                }],
+                timestamp: new Date(),
+              };
+              addConversationMessage(chatId, errorMessage);
+              setConversationThinking(chatId, false);
+            }
             setInsufficientCreditsBanner(true);
-            setShowOrgPanel(true);
-            setOrgPanelTab('billing');
           }
           break;
         }
@@ -735,7 +762,8 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
     setActiveTasks, setConversationActiveTask, setConversationThinking,
     addConversation, addConversationMessage, appendToConversationStreaming,
     startConversationStreaming, markConversationMessageComplete, updateConversationToolMessage,
-    addConversationArtifactBlock, addConversationAppBlock, setCurrentChatId
+    addConversationArtifactBlock, addConversationAppBlock, setCurrentChatId,
+    queryClient
   ]);
 
   // Cross-tab sync for optimistic UI and streamed updates

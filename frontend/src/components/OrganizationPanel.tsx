@@ -10,7 +10,7 @@
  * Uses React Query for server state (team members, org updates).
  */
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useMemo } from 'react';
 import type { OrganizationInfo, UserProfile } from './AppLayout';
 import { supabase } from '../lib/supabase';
 import { useAppStore } from '../store';
@@ -35,6 +35,29 @@ interface PlanItem {
   name: string;
   price_cents: number;
   credits_included: number;
+}
+
+interface CreditTransaction {
+  timestamp: string;
+  amount: number;
+  balance_after: number;
+  reason: string;
+  user_email: string | null;
+}
+
+interface UserUsage {
+  user_id: string;
+  user_email: string;
+  user_name: string | null;
+  total_credits_used: number;
+}
+
+interface CreditDetails {
+  transactions: CreditTransaction[];
+  usage_by_user: UserUsage[];
+  period_start: string | null;
+  period_end: string | null;
+  starting_balance: number;
 }
 
 interface OrganizationPanelProps {
@@ -78,6 +101,24 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
   }, [showChangePlan]);
 
   const [showSubscriptionSetup, setShowSubscriptionSetup] = useState(false);
+  const [showCreditDetails, setShowCreditDetails] = useState(false);
+  const [creditDetails, setCreditDetails] = useState<CreditDetails | null>(null);
+  const [creditDetailsLoading, setCreditDetailsLoading] = useState(false);
+
+  useEffect(() => {
+    if (!showCreditDetails) return;
+    let cancelled = false;
+    setCreditDetailsLoading(true);
+    (async () => {
+      const { data } = await apiRequest<CreditDetails>('/billing/credit-details');
+      if (!cancelled) {
+        setCreditDetails(data);
+        setCreditDetailsLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [showCreditDetails]);
+
   const [inviteEmail, setInviteEmail] = useState('');
   const [isInviting, setIsInviting] = useState(false);
   const [orgName, setOrgName] = useState(organization.name);
@@ -680,7 +721,15 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
 
                   {/* Credits usage */}
                   <div>
-                    <h3 className="text-sm font-medium text-surface-200 mb-3">Credits this period</h3>
+                    <div className="flex items-center justify-between mb-3">
+                      <h3 className="text-sm font-medium text-surface-200">Credits this period</h3>
+                      <button
+                        onClick={() => setShowCreditDetails(true)}
+                        className="text-xs text-primary-400 hover:text-primary-300 transition-colors"
+                      >
+                        More information
+                      </button>
+                    </div>
                     <div className="card p-4 space-y-3">
                       <div>
                         <div className="flex justify-between text-sm mb-1">
@@ -701,6 +750,22 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                           />
                         </div>
                       </div>
+                      {billing?.current_period_end && (
+                        <div className="flex justify-between text-sm pt-2 border-t border-surface-700">
+                          <span className="text-surface-400">Resets</span>
+                          <span className="text-surface-300">
+                            {(() => {
+                              const resetDate = new Date(billing.current_period_end);
+                              const now = new Date();
+                              const daysRemaining = Math.ceil((resetDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+                              if (daysRemaining <= 0) return 'Today';
+                              if (daysRemaining === 1) return 'Tomorrow';
+                              if (daysRemaining <= 7) return `in ${daysRemaining} days`;
+                              return resetDate.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+                            })()}
+                          </span>
+                        </div>
+                      )}
                     </div>
                   </div>
                 </>
@@ -811,6 +876,202 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
           )}
         </div>
       </div>
+
+      {/* Credit Details Modal */}
+      {showCreditDetails && (
+        <CreditDetailsModal
+          details={creditDetails}
+          loading={creditDetailsLoading}
+          onClose={() => setShowCreditDetails(false)}
+        />
+      )}
     </>
+  );
+}
+
+
+interface CreditDetailsModalProps {
+  details: CreditDetails | null;
+  loading: boolean;
+  onClose: () => void;
+}
+
+function CreditDetailsModal({ details, loading, onClose }: CreditDetailsModalProps): JSX.Element {
+  const [PlotComponent, setPlotComponent] = useState<typeof import('react-plotly.js').default | null>(null);
+
+  useEffect(() => {
+    import('react-plotly.js')
+      .then((mod) => setPlotComponent(() => mod.default))
+      .catch(() => console.error('Failed to load chart library'));
+  }, []);
+
+  const burndownData = useMemo(() => {
+    if (!details?.transactions.length) return null;
+    
+    const timestamps: string[] = [];
+    const balances: number[] = [];
+    
+    // Start with the starting balance at period start
+    if (details.period_start) {
+      timestamps.push(details.period_start);
+      balances.push(details.starting_balance);
+    }
+    
+    // Add each transaction point
+    for (const tx of details.transactions) {
+      timestamps.push(tx.timestamp);
+      balances.push(tx.balance_after);
+    }
+    
+    return { timestamps, balances };
+  }, [details]);
+
+  const userUsageData = useMemo(() => {
+    if (!details?.usage_by_user.length) return null;
+    
+    const labels = details.usage_by_user.map(u => u.user_name || u.user_email.split('@')[0]);
+    const values = details.usage_by_user.map(u => u.total_credits_used);
+    const emails = details.usage_by_user.map(u => u.user_email);
+    
+    return { labels, values, emails };
+  }, [details]);
+
+  return (
+    <div 
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4"
+      onClick={onClose}
+    >
+      <div 
+        className="bg-surface-900 border border-surface-700 rounded-xl shadow-2xl w-full max-w-4xl max-h-[85vh] overflow-hidden flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="px-6 py-4 border-b border-surface-800 flex items-center justify-between shrink-0">
+          <h2 className="text-lg font-semibold text-surface-100">Credit Usage Details</h2>
+          <button
+            onClick={onClose}
+            className="p-1 rounded hover:bg-surface-800 text-surface-400 hover:text-surface-200 transition-colors"
+          >
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        {/* Content */}
+        <div className="flex-1 overflow-y-auto p-6 space-y-8">
+          {loading ? (
+            <div className="flex items-center justify-center py-12">
+              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-500" />
+            </div>
+          ) : !details ? (
+            <div className="text-center py-12 text-surface-400">
+              Failed to load credit details
+            </div>
+          ) : (
+            <>
+              {/* Burndown Chart */}
+              <div>
+                <h3 className="text-sm font-medium text-surface-200 mb-4">Credit Balance Over Time</h3>
+                {burndownData && PlotComponent ? (
+                  <div className="bg-surface-800/50 rounded-lg p-4">
+                    <PlotComponent
+                      data={[
+                        {
+                          x: burndownData.timestamps,
+                          y: burndownData.balances,
+                          type: 'scatter',
+                          mode: 'lines+markers',
+                          fill: 'tozeroy',
+                          fillcolor: 'rgba(99, 102, 241, 0.1)',
+                          line: { color: '#6366f1', width: 2 },
+                          marker: { color: '#6366f1', size: 6 },
+                          hovertemplate: '%{y} credits<br>%{x|%b %d, %H:%M}<extra></extra>',
+                        },
+                      ]}
+                      layout={{
+                        autosize: true,
+                        height: 280,
+                        margin: { l: 50, r: 20, t: 20, b: 50 },
+                        paper_bgcolor: 'transparent',
+                        plot_bgcolor: 'transparent',
+                        font: { color: '#a1a1aa' },
+                        xaxis: {
+                          gridcolor: 'rgba(255,255,255,0.05)',
+                          tickformat: '%b %d',
+                        },
+                        yaxis: {
+                          gridcolor: 'rgba(255,255,255,0.05)',
+                          title: { text: 'Credits', standoff: 10 },
+                          rangemode: 'tozero',
+                        },
+                        hovermode: 'x unified',
+                      }}
+                      config={{ displayModeBar: false, responsive: true }}
+                      style={{ width: '100%' }}
+                    />
+                  </div>
+                ) : burndownData ? (
+                  <div className="bg-surface-800/50 rounded-lg p-8 text-center text-surface-400">
+                    Loading chart...
+                  </div>
+                ) : (
+                  <div className="bg-surface-800/50 rounded-lg p-8 text-center text-surface-400">
+                    No usage data for this period yet
+                  </div>
+                )}
+              </div>
+
+              {/* Usage by User */}
+              <div>
+                <h3 className="text-sm font-medium text-surface-200 mb-4">Usage by Team Member</h3>
+                {userUsageData && userUsageData.values.length > 0 ? (
+                  <div className="space-y-4">
+                    {/* Bar visualization */}
+                    <div className="space-y-3">
+                      {details.usage_by_user.map((user, idx) => {
+                        const maxUsage = Math.max(...details.usage_by_user.map(u => u.total_credits_used));
+                        const percentage = maxUsage > 0 ? (user.total_credits_used / maxUsage) * 100 : 0;
+                        return (
+                          <div key={user.user_id} className="group">
+                            <div className="flex items-center justify-between text-sm mb-1">
+                              <span className="text-surface-300 truncate max-w-[200px]" title={user.user_email}>
+                                {user.user_name || user.user_email.split('@')[0]}
+                              </span>
+                              <span className="text-surface-200 font-medium">{user.total_credits_used} credits</span>
+                            </div>
+                            <div className="h-2 bg-surface-700 rounded-full overflow-hidden">
+                              <div
+                                className="h-full rounded-full transition-all duration-300"
+                                style={{
+                                  width: `${percentage}%`,
+                                  backgroundColor: `hsl(${240 - idx * 30}, 70%, 60%)`,
+                                }}
+                              />
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    
+                    {/* Total */}
+                    <div className="pt-3 border-t border-surface-700 flex justify-between text-sm">
+                      <span className="text-surface-400">Total used this period</span>
+                      <span className="text-surface-200 font-medium">
+                        {details.usage_by_user.reduce((sum, u) => sum + u.total_credits_used, 0)} credits
+                      </span>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="bg-surface-800/50 rounded-lg p-8 text-center text-surface-400">
+                    No usage data for this period yet
+                  </div>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }
