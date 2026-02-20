@@ -10,7 +10,10 @@ Linear API docs: https://developers.linear.app/docs
 """
 from __future__ import annotations
 
+import hashlib
+import hmac
 import logging
+import time
 from datetime import date, datetime
 from typing import Any, Optional
 from uuid import UUID
@@ -32,6 +35,9 @@ logger = logging.getLogger(__name__)
 
 LINEAR_API_URL: str = "https://api.linear.app/graphql"
 
+# Event type emitted when an issue is moved to Done (used by webhook route and handle_event)
+LINEAR_ISSUE_DONE_EVENT: str = "linear.issue.done"
+
 # ── Priority mapping (Linear uses 0-4) ──────────────────────────────────
 PRIORITY_LABELS: dict[int, str] = {
     0: "No priority",
@@ -52,7 +58,7 @@ class LinearConnector(BaseConnector):
         auth_type=AuthType.OAUTH2,
         scope=ConnectorScope.ORGANIZATION,
         entity_types=["teams", "projects", "issues"],
-        capabilities=[Capability.SYNC, Capability.WRITE],
+        capabilities=[Capability.SYNC, Capability.WRITE, Capability.LISTEN],
         write_operations=[
             WriteOperation(
                 name="create_issue", entity_type="issue",
@@ -82,6 +88,7 @@ class LinearConnector(BaseConnector):
         ],
         nango_integration_id="linear",
         description="Linear – teams, projects, and issue tracking",
+        webhook_secret_extra_data_key="linear_webhook_secret",
     )
 
     def __init__(
@@ -842,6 +849,72 @@ class LinearConnector(BaseConnector):
             if user["name"].lower() == name_lower:
                 return user
         return None
+
+    # ── LISTEN: Inbound webhooks (issue done → workflow triggers) ───────
+
+    @staticmethod
+    def verify_webhook(raw_body: bytes, headers: dict[str, str], secret: str) -> bool:
+        """Verify Linear webhook HMAC-SHA256 signature (Linear-Signature header)."""
+        signature_header: str | None = headers.get("linear-signature") or headers.get("Linear-Signature")
+        if not signature_header or not secret:
+            return False
+        try:
+            expected: bytes = hmac.new(
+                secret.encode("utf-8"), raw_body, hashlib.sha256
+            ).digest()
+            received: bytes = bytes.fromhex(signature_header)
+            return hmac.compare_digest(expected, received)
+        except (ValueError, TypeError):
+            return False
+
+    @staticmethod
+    def process_webhook_payload(payload: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+        """
+        Parse Linear webhook JSON; return [(event_type, data), ...] for workflow events.
+        Rejects payloads with webhookTimestamp outside 60s window. Emits linear.issue.done
+        when an issue is in a completed (Done) state.
+        """
+        events: list[tuple[str, dict[str, Any]]] = []
+        ts_ms: Any = payload.get("webhookTimestamp")
+        if ts_ms is not None:
+            try:
+                now_ms: int = int(time.time() * 1000)
+                if abs(now_ms - int(ts_ms)) > 60 * 1000:
+                    return events
+            except (TypeError, ValueError):
+                return events
+        if payload.get("type") != "Issue":
+            return events
+        data: dict[str, Any] | None = payload.get("data")
+        state: dict[str, Any] | None = (data or {}).get("state")
+        if not state or state.get("type") != "completed":
+            return events
+        events.append(
+            (
+                LINEAR_ISSUE_DONE_EVENT,
+                {
+                    "action": payload.get("action"),
+                    "type": payload.get("type"),
+                    "createdAt": payload.get("createdAt"),
+                    "url": payload.get("url"),
+                    "data": data,
+                    "updatedFrom": payload.get("updatedFrom"),
+                },
+            )
+        )
+        return events
+
+    async def handle_event(self, event_type: str, payload: dict[str, Any]) -> None:
+        """
+        Handle an inbound Linear webhook event (LISTEN capability).
+        Workflow triggers are driven by the generic connector webhook route.
+        """
+        if event_type == LINEAR_ISSUE_DONE_EVENT:
+            logger.info(
+                "[linear] Received issue.done for org %s: %s",
+                self.organization_id,
+                (payload.get("data") or {}).get("identifier"),
+            )
 
     # ── CRM no-ops (BaseConnector requires these) ────────────────────────
 

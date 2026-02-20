@@ -64,6 +64,8 @@ Declare which capabilities your connector supports in `ConnectorMeta.capabilitie
 | `ACTION`   | Side-effects (not idempotent)             | `execute_action(action, params)`     |
 | `LISTEN`   | Receive inbound webhooks/events           | `handle_event(event_type, payload)`  |
 
+**Workflow event (Linear):** When a Linear issue is moved to Done, the connector emits `linear.issue.done`. Create a workflow with `trigger_type: "event"` and `trigger_config: { "event": "linear.issue.done" }`. Use the generic webhook URL `https://<your-api>/api/connectors/webhook/linear/<organization_id>` in Linear (Settings > API) and set `meta.webhook_secret_extra_data_key` (e.g. `"linear_webhook_secret"`) so the signing secret is read from `integration.extra_data`.
+
 You only implement the methods for capabilities you declare. Everything else
 raises `NotImplementedError` by default.
 

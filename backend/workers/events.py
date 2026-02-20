@@ -7,6 +7,7 @@ This allows workflows to be triggered by events like:
 - sync.failed
 - deal.created
 - call.recorded
+- linear.issue.done (Linear issue moved to Done)
 """
 from __future__ import annotations
 
