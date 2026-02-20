@@ -14,7 +14,7 @@
  */
 
 import { useState, useEffect, useCallback } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { API_BASE } from '../lib/api';
 import { crossTab, subscribeCrossTab } from '../lib/crossTab';
 
@@ -123,7 +123,13 @@ interface WsToolProgress {
   status: string;
 }
 
-type WsMessage = WsActiveTasks | WsTaskStarted | WsTaskChunk | WsTaskComplete | WsConversationCreated | WsCatchup | WsCrmApprovalResult | WsToolApprovalResult | WsToolProgress;
+interface WsError {
+  type: 'error';
+  error: string;
+  code?: string;
+}
+
+type WsMessage = WsActiveTasks | WsTaskStarted | WsTaskChunk | WsTaskComplete | WsConversationCreated | WsCatchup | WsCrmApprovalResult | WsToolApprovalResult | WsToolProgress | WsError;
 
 // Props
 interface AppLayoutProps {
@@ -131,6 +137,8 @@ interface AppLayoutProps {
 }
 
 export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
+  const queryClient = useQueryClient();
+  
   // Get state from Zustand store using shallow comparison to prevent unnecessary re-renders
   const {
     user,
@@ -177,6 +185,16 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
     enabled: !!organization?.id,
   });
   const workflowCount = workflows.length;
+
+  // Billing status for credits display in sidebar
+  const { data: billingStatus } = useQuery({
+    queryKey: ['billing', organization?.id],
+    queryFn: async () => {
+      const { data } = await apiRequest<{ credits_balance: number; credits_included: number }>('/billing/status');
+      return data;
+    },
+    enabled: !!organization?.id,
+  });
 
   // Pending changes count (for sidebar badge)
   const [pendingChangesCount, setPendingChangesCount] = useState<number>(0);
@@ -342,6 +360,7 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
   // Panels
   const [showOrgPanel, setShowOrgPanel] = useState(false);
   const [showProfilePanel, setShowProfilePanel] = useState(false);
+  const [orgPanelTab, setOrgPanelTab] = useState<'team' | 'billing' | 'settings'>('team');
 
   // CRM approval results (shared across chats) - use state to trigger re-renders
   const [crmApprovalResults, setCrmApprovalResults] = useState<Map<string, unknown>>(() => new Map());
@@ -530,8 +549,17 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
               }
               updateConversationToolMessage(conversation_id, data.tool_id as string, updates);
               
-              // If workflows table was modified, notify the Workflows component to refresh
+              // Check if tool failed due to insufficient credits
               const result = data.result as Record<string, unknown> | undefined;
+              if (result?.error && typeof result.error === 'string' && 
+                  result.error.toLowerCase().includes('insufficient credits')) {
+                setShowOrgPanel(true);
+                setOrgPanelTab('billing');
+                // Refresh billing status to show updated credits
+                queryClient.invalidateQueries({ queryKey: ['billing'] });
+              }
+              
+              // If workflows table was modified, notify the Workflows component to refresh
               if (result?.table === 'workflows' && result?.success) {
                 window.dispatchEvent(new Event('workflows-updated'));
               }
@@ -642,6 +670,8 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
               });
             }
           }
+          // Refresh billing status since credits may have been consumed
+          queryClient.invalidateQueries({ queryKey: ['billing'] });
           break;
         }
         
@@ -662,6 +692,28 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
           // For now, just mark task as complete if it's done
           if (parsed.task_status !== 'running') {
             // Task is complete, no need to process chunks
+          }
+          break;
+        }
+
+        case 'error': {
+          const err = parsed as WsError;
+          if (err.code === 'insufficient_credits') {
+            // Add a message to the current conversation explaining the issue
+            const chatId = useAppStore.getState().currentChatId;
+            if (chatId) {
+              const errorMessage = {
+                id: `credits-error-${Date.now()}`,
+                role: 'assistant' as const,
+                contentBlocks: [{
+                  type: 'text' as const,
+                  text: "I wasn't able to complete your request because your organization has run out of credits for this billing period. You can view your usage and upgrade your plan in the **Billing** tab under Organization Settings.",
+                }],
+                timestamp: new Date(),
+              };
+              addConversationMessage(chatId, errorMessage);
+              setConversationThinking(chatId, false);
+            }
           }
           break;
         }
@@ -707,7 +759,8 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
     setActiveTasks, setConversationActiveTask, setConversationThinking,
     addConversation, addConversationMessage, appendToConversationStreaming,
     startConversationStreaming, markConversationMessageComplete, updateConversationToolMessage,
-    addConversationArtifactBlock, addConversationAppBlock, setCurrentChatId
+    addConversationArtifactBlock, addConversationAppBlock, setCurrentChatId,
+    queryClient
   ]);
 
   // Cross-tab sync for optimistic UI and streamed updates
@@ -780,6 +833,10 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
   const handleDeleteChat = useCallback((chatId: string): void => {
     void deleteConversation(chatId);
   }, [deleteConversation]);
+
+  const handleConversationNotFound = useCallback((): void => {
+    setCurrentChatId(null);
+  }, [setCurrentChatId]);
 
   // Guard against missing user/org (shouldn't happen, but be safe)
   if (!user || !organization) {
@@ -889,7 +946,8 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
           onNewChat={startNewChat}
           organization={organization}
           memberCount={teamData?.members.length ?? 0}
-          onOpenOrgPanel={() => setShowOrgPanel(true)}
+          creditsDisplay={billingStatus ? { balance: billingStatus.credits_balance, included: billingStatus.credits_included } : null}
+          onOpenOrgPanel={() => { setOrgPanelTab('team'); setShowOrgPanel(true); }}
           onOpenProfilePanel={() => setShowProfilePanel(true)}
           isMobile={isMobile}
           onCloseMobile={() => setMobileSidebarOpen(false)}
@@ -910,6 +968,7 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
             isConnected={isConnected}
             connectionState={connectionState}
             crmApprovalResults={crmApprovalResults}
+            onConversationNotFound={handleConversationNotFound}
           />
         )}
         {currentView === 'data-sources' && (
@@ -943,6 +1002,7 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
         <OrganizationPanel
           organization={organization}
           currentUser={user}
+          initialTab={orgPanelTab}
           onClose={() => setShowOrgPanel(false)}
         />
       )}

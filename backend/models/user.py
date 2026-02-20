@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from models.deal import Deal
     from models.user_tool_setting import UserToolSetting
     from models.change_session import ChangeSession
+    from models.credit_transaction import CreditTransaction
 
 
 class User(Base):
@@ -71,6 +72,9 @@ class User(Base):
     )
     change_sessions: Mapped[list["ChangeSession"]] = relationship(
         "ChangeSession", back_populates="user", foreign_keys="ChangeSession.user_id"
+    )
+    credit_transactions: Mapped[list["CreditTransaction"]] = relationship(
+        "CreditTransaction", back_populates="user", foreign_keys="CreditTransaction.user_id"
     )
 
     def to_dict(self) -> dict[str, Any]:

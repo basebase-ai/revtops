@@ -19,6 +19,7 @@ from models.activity import Activity
 from models.artifact import Artifact
 from models.chat_message import ChatMessage
 from models.integration import Integration
+from models.credit_transaction import CreditTransaction
 
 config = context.config
 

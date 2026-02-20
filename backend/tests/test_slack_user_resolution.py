@@ -329,6 +329,9 @@ def test_process_slack_thread_reply_applies_speaker_and_global_handoff_before_ot
         events.append("stream")
         return 3
 
+    async def _fake_can_use_credits(_org_id: str) -> bool:
+        return True
+
     monkeypatch.setattr(slack_conversations, "find_organization_by_slack_team", _fake_find_org)
     monkeypatch.setattr(slack_conversations, "find_thread_conversation", _fake_find_thread_conversation)
     monkeypatch.setattr(slack_conversations, "find_or_create_conversation", _fake_find_or_create_conversation)
@@ -336,6 +339,7 @@ def test_process_slack_thread_reply_applies_speaker_and_global_handoff_before_ot
     monkeypatch.setattr(slack_conversations, "resolve_revtops_user_for_slack_actor", _fake_resolve_user)
     monkeypatch.setattr(slack_conversations, "_stream_and_post_responses", _fake_stream_and_post_responses)
     monkeypatch.setattr(slack_conversations, "SlackConnector", _FakeSlackConnectorForThread)
+    monkeypatch.setattr(slack_conversations, "can_use_credits", _fake_can_use_credits)
 
     result = asyncio.run(
         slack_conversations.process_slack_thread_reply(
@@ -402,6 +406,9 @@ def test_process_slack_mention_clears_active_user_on_unresolved_speaker_handoff(
         events.append(f"stream_user_id:{kwargs['orchestrator'].user_id}")
         return 2
 
+    async def _fake_can_use_credits(_org_id: str) -> bool:
+        return True
+
     monkeypatch.setattr(slack_conversations, "find_organization_by_slack_team", _fake_find_org)
     monkeypatch.setattr(slack_conversations, "_fetch_slack_user_info", _fake_fetch_slack_user_info)
     monkeypatch.setattr(slack_conversations, "resolve_revtops_user_for_slack_actor", _fake_resolve_user)
@@ -409,6 +416,7 @@ def test_process_slack_mention_clears_active_user_on_unresolved_speaker_handoff(
     monkeypatch.setattr(slack_conversations, "find_or_create_conversation", _fake_find_or_create_conversation)
     monkeypatch.setattr(slack_conversations, "_stream_and_post_responses", _fake_stream_and_post_responses)
     monkeypatch.setattr(slack_conversations, "SlackConnector", _FakeSlackConnectorForMention)
+    monkeypatch.setattr(slack_conversations, "can_use_credits", _fake_can_use_credits)
 
     result = asyncio.run(
         slack_conversations.process_slack_mention(

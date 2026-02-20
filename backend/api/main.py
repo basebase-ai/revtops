@@ -19,9 +19,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from api.websockets import websocket_endpoint
-from api.routes import apps, artifacts, auth, change_sessions, chat, connectors, data, deals, drive, memories, search, slack_events, slack_user_mappings, sync, tool_settings, twilio_events, waitlist, workflows
+from api.routes import apps, artifacts, auth, billing, change_sessions, chat, connectors, data, deals, drive, memories, search, slack_events, slack_user_mappings, sync, tool_settings, twilio_events, waitlist, workflows
 from models.database import init_db, close_db, get_pool_status
-from config import log_missing_env_vars
+from config import log_missing_env_vars, settings
 
 # Configure logging
 logging.basicConfig(
@@ -118,9 +118,15 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
     origin = request.headers.get("origin")
     cors_headers = get_cors_headers(origin)
     logging.error(f"Unhandled exception: {exc}", exc_info=True)
+    detail: str = "Internal server error"
+    try:
+        if settings.FRONTEND_URL and "localhost" in settings.FRONTEND_URL:
+            detail = f"{type(exc).__name__}: {exc}"
+    except Exception:
+        pass
     return JSONResponse(
         status_code=500,
-        content={"detail": "Internal server error"},
+        content={"detail": detail},
         headers=cors_headers,
     )
 
@@ -130,6 +136,7 @@ app.include_router(apps.router, prefix="/api/apps", tags=["apps"])
 app.include_router(connectors.router, prefix="/api/connectors", tags=["connectors"])
 app.include_router(artifacts.router, prefix="/api/artifacts", tags=["artifacts"])
 app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
+app.include_router(billing.router, prefix="/api/billing", tags=["billing"])
 app.include_router(chat.router, prefix="/api/chat", tags=["chat"])
 app.include_router(deals.router, prefix="/api/deals", tags=["deals"])
 app.include_router(sync.router, prefix="/api/sync", tags=["sync"])

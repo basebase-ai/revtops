@@ -10,22 +10,115 @@
  * Uses React Query for server state (team members, org updates).
  */
 
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect, useMemo } from 'react';
 import type { OrganizationInfo, UserProfile } from './AppLayout';
 import { supabase } from '../lib/supabase';
 import { useAppStore } from '../store';
 import { useTeamMembers, useUpdateOrganization, useLinkIdentity, useUnlinkIdentity } from '../hooks';
 import type { TeamMember, IdentityMapping } from '../hooks';
+import { apiRequest } from '../lib/api';
+import { SubscriptionSetup } from './SubscriptionSetup';
+
+interface BillingStatus {
+  subscription_tier: string | null;
+  subscription_status: string | null;
+  credits_balance: number;
+  credits_included: number;
+  current_period_end: string | null;
+  cancel_at_period_end: string | null;
+  cancel_scheduled: boolean;
+  subscription_required: boolean;
+}
+
+interface PlanItem {
+  tier: string;
+  name: string;
+  price_cents: number;
+  credits_included: number;
+}
+
+interface CreditTransaction {
+  timestamp: string;
+  amount: number;
+  balance_after: number;
+  reason: string;
+  user_email: string | null;
+}
+
+interface UserUsage {
+  user_id: string;
+  user_email: string;
+  user_name: string | null;
+  total_credits_used: number;
+}
+
+interface CreditDetails {
+  transactions: CreditTransaction[];
+  usage_by_user: UserUsage[];
+  period_start: string | null;
+  period_end: string | null;
+  starting_balance: number;
+}
 
 interface OrganizationPanelProps {
   organization: OrganizationInfo;
   currentUser: UserProfile;
+  initialTab?: 'team' | 'billing' | 'settings';
   onClose: () => void;
 }
 
-export function OrganizationPanel({ organization, currentUser, onClose }: OrganizationPanelProps): JSX.Element {
+export function OrganizationPanel({ organization, currentUser, initialTab = 'team', onClose }: OrganizationPanelProps): JSX.Element {
   const setOrganization = useAppStore((state) => state.setOrganization);
-  const [activeTab, setActiveTab] = useState<'team' | 'billing' | 'settings'>('team');
+  const [activeTab, setActiveTab] = useState<'team' | 'billing' | 'settings'>(initialTab);
+
+  useEffect(() => {
+    setActiveTab(initialTab);
+  }, [initialTab]);
+
+  const [billing, setBilling] = useState<BillingStatus | null>(null);
+  const [billingRefresh, setBillingRefresh] = useState(0);
+  const [showChangePlan, setShowChangePlan] = useState(false);
+  const [changePlanLoading, setChangePlanLoading] = useState<string | null>(null);
+  const [cancelLoading, setCancelLoading] = useState(false);
+  const [plans, setPlans] = useState<PlanItem[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const { data } = await apiRequest<BillingStatus>('/billing/status');
+      if (!cancelled && data) setBilling(data);
+    })();
+    return () => { cancelled = true; };
+  }, [organization.id, activeTab, billingRefresh]);
+
+  useEffect(() => {
+    if (!showChangePlan) return;
+    let cancelled = false;
+    (async () => {
+      const { data } = await apiRequest<{ plans: PlanItem[] }>('/billing/plans');
+      if (!cancelled && data?.plans?.length) setPlans(data.plans);
+    })();
+    return () => { cancelled = true; };
+  }, [showChangePlan]);
+
+  const [showSubscriptionSetup, setShowSubscriptionSetup] = useState(false);
+  const [showCreditDetails, setShowCreditDetails] = useState(false);
+  const [creditDetails, setCreditDetails] = useState<CreditDetails | null>(null);
+  const [creditDetailsLoading, setCreditDetailsLoading] = useState(false);
+
+  useEffect(() => {
+    if (!showCreditDetails) return;
+    let cancelled = false;
+    setCreditDetailsLoading(true);
+    (async () => {
+      const { data } = await apiRequest<CreditDetails>('/billing/credit-details');
+      if (!cancelled) {
+        setCreditDetails(data);
+        setCreditDetailsLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [showCreditDetails]);
+
   const [inviteEmail, setInviteEmail] = useState('');
   const [isInviting, setIsInviting] = useState(false);
   const [orgName, setOrgName] = useState(organization.name);
@@ -478,64 +571,205 @@ export function OrganizationPanel({ organization, currentUser, onClose }: Organi
 
           {activeTab === 'billing' && (
             <div className="space-y-6">
-              {/* Current Plan */}
-              <div className="p-4 rounded-xl bg-gradient-to-r from-primary-600/20 to-primary-500/10 border border-primary-500/30">
-                <div className="flex items-center justify-between mb-2">
-                  <h3 className="font-medium text-surface-100">Current Plan</h3>
-                  <span className="px-2 py-1 text-xs font-medium bg-primary-500 text-white rounded-full">
-                    Pro Trial
-                  </span>
-                </div>
-                <p className="text-sm text-surface-400 mb-4">
-                  Your trial expires in 14 days
-                </p>
-                <button className="w-full btn-primary">
-                  Upgrade to Pro
-                </button>
-              </div>
+              {showSubscriptionSetup ? (
+                <SubscriptionSetup
+                  onComplete={() => {
+                    setShowSubscriptionSetup(false);
+                    setBillingRefresh((k) => k + 1);
+                  }}
+                  onBack={() => setShowSubscriptionSetup(false)}
+                />
+              ) : (
+                <>
+                  {/* Current Plan & Credits */}
+                  <div className="p-4 rounded-xl bg-gradient-to-r from-primary-600/20 to-primary-500/10 border border-primary-500/30">
+                    <div className="flex items-center justify-between mb-2">
+                      <h3 className="font-medium text-surface-100">Current Plan</h3>
+                      <span className="px-2 py-1 text-xs font-medium bg-primary-500 text-white rounded-full capitalize">
+                        {billing?.subscription_tier ?? 'None'}
+                      </span>
+                    </div>
+                    {billing?.subscription_required && !billing?.subscription_tier && (
+                      <>
+                        <p className="text-sm text-surface-400 mb-3">
+                          Add a payment method to use credits.
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => setShowSubscriptionSetup(true)}
+                          className="px-4 py-2 text-sm font-medium text-white bg-primary-500 hover:bg-primary-600 rounded-lg transition-colors"
+                        >
+                          Select plan
+                        </button>
+                      </>
+                    )}
+                    {billing?.subscription_required && billing?.subscription_tier && (
+                      <p className="text-sm text-surface-400">
+                        Payment pending. Credits will be available once your first payment is confirmed.
+                      </p>
+                    )}
+                    {!billing?.subscription_required && billing?.current_period_end && !billing?.cancel_at_period_end && !billing?.cancel_scheduled && (
+                      <p className="text-sm text-surface-400 mb-2">
+                        Period ends {new Date(billing.current_period_end).toLocaleDateString()}
+                      </p>
+                    )}
+                    {(billing?.cancel_at_period_end || billing?.cancel_scheduled) && (
+                      <p className="text-sm text-amber-400/90 mb-2">
+                        Your subscription will not renew.
+                        {billing?.cancel_at_period_end
+                          ? ` Access until ${new Date(billing.cancel_at_period_end).toLocaleDateString()}.`
+                          : ''}
+                      </p>
+                    )}
+                    {billing?.subscription_tier && !showChangePlan && (
+                      <div className="flex flex-wrap gap-2 mt-3">
+                        <button
+                          type="button"
+                          onClick={() => setShowChangePlan(true)}
+                          className="px-3 py-1.5 text-sm font-medium text-surface-200 bg-surface-600 hover:bg-surface-500 rounded-lg transition-colors"
+                        >
+                          Change plan
+                        </button>
+                        {!billing?.cancel_at_period_end && !billing?.cancel_scheduled && (
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              if (!window.confirm('Your subscription will end at the end of the current period. You\'ll keep access until then. Continue?')) return;
+                              setCancelLoading(true);
+                              try {
+                                const { error } = await apiRequest('/billing/cancel', { method: 'POST' });
+                                if (!error) {
+                                  setBillingRefresh((k) => k + 1);
+                                }
+                              } finally {
+                                setCancelLoading(false);
+                              }
+                            }}
+                            disabled={cancelLoading}
+                            className="px-3 py-1.5 text-sm font-medium text-red-300 hover:text-red-200 bg-surface-600 hover:bg-surface-500 rounded-lg transition-colors disabled:opacity-50"
+                          >
+                            {cancelLoading ? 'Cancelling…' : 'Cancel subscription'}
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
 
-              {/* Billing Details */}
-              <div>
-                <h3 className="text-sm font-medium text-surface-200 mb-3">Billing details</h3>
-                <div className="card p-4 space-y-3">
-                  <div className="flex justify-between text-sm">
-                    <span className="text-surface-400">Payment method</span>
-                    <span className="text-surface-200">Not set</span>
-                  </div>
-                  <div className="flex justify-between text-sm">
-                    <span className="text-surface-400">Billing email</span>
-                    <span className="text-surface-200">{currentUser.email}</span>
-                  </div>
-                  <button className="w-full mt-2 px-4 py-2 text-sm font-medium text-primary-400 border border-primary-500/30 hover:bg-primary-500/10 rounded-lg transition-colors">
-                    Add payment method
-                  </button>
-                </div>
-              </div>
+                  {showChangePlan && billing?.subscription_tier && (
+                    <div className="card p-4 space-y-3">
+                      <div className="flex items-center justify-between">
+                        <h3 className="text-sm font-medium text-surface-200">Change plan</h3>
+                        <button
+                          type="button"
+                          onClick={() => setShowChangePlan(false)}
+                          className="text-sm text-surface-400 hover:text-surface-200"
+                        >
+                          Close
+                        </button>
+                      </div>
+                      <div className="space-y-2">
+                        {plans.map((plan) => {
+                          const isCurrent = plan.tier === billing?.subscription_tier;
+                          return (
+                            <div
+                              key={plan.tier}
+                              className="flex items-center justify-between py-2 px-3 rounded-lg bg-surface-700/50"
+                            >
+                              <span className="text-sm text-surface-200">
+                                {plan.name} — ${(plan.price_cents / 100).toFixed(2)}/mo, {plan.credits_included} credits
+                              </span>
+                              <button
+                                type="button"
+                                onClick={async () => {
+                                  if (isCurrent) return;
+                                  setChangePlanLoading(plan.tier);
+                                  try {
+                                    const { error } = await apiRequest('/billing/subscription', {
+                                      method: 'PATCH',
+                                      body: JSON.stringify({ tier: plan.tier }),
+                                    });
+                                    if (!error) {
+                                      setBillingRefresh((k) => k + 1);
+                                      setShowChangePlan(false);
+                                    }
+                                  } finally {
+                                    setChangePlanLoading(null);
+                                  }
+                                }}
+                                disabled={isCurrent || changePlanLoading !== null}
+                                className="text-sm font-medium text-primary-400 hover:text-primary-300 disabled:opacity-50 disabled:cursor-default"
+                              >
+                                {isCurrent ? 'Current' : changePlanLoading === plan.tier ? 'Updating…' : `Switch to ${plan.name}`}
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
 
-              {/* Usage */}
-              <div>
-                <h3 className="text-sm font-medium text-surface-200 mb-3">Usage this month</h3>
-                <div className="card p-4 space-y-3">
+                  {/* Billing Details */}
                   <div>
-                    <div className="flex justify-between text-sm mb-1">
-                      <span className="text-surface-400">AI Queries</span>
-                      <span className="text-surface-200">47 / 500</span>
-                    </div>
-                    <div className="h-2 bg-surface-700 rounded-full overflow-hidden">
-                      <div className="h-full bg-primary-500 rounded-full" style={{ width: '9.4%' }} />
+                    <h3 className="text-sm font-medium text-surface-200 mb-3">Billing details</h3>
+                    <div className="card p-4 space-y-3">
+                      <div className="flex justify-between text-sm">
+                        <span className="text-surface-400">Billing email</span>
+                        <span className="text-surface-200">{currentUser.email}</span>
+                      </div>
                     </div>
                   </div>
+
+                  {/* Credits usage */}
                   <div>
-                    <div className="flex justify-between text-sm mb-1">
-                      <span className="text-surface-400">Connectors</span>
-                      <span className="text-surface-200">2 / 5</span>
+                    <div className="flex items-center justify-between mb-3">
+                      <h3 className="text-sm font-medium text-surface-200">Credits this period</h3>
+                      <button
+                        onClick={() => setShowCreditDetails(true)}
+                        className="text-xs text-primary-400 hover:text-primary-300 transition-colors"
+                      >
+                        More information
+                      </button>
                     </div>
-                    <div className="h-2 bg-surface-700 rounded-full overflow-hidden">
-                      <div className="h-full bg-primary-500 rounded-full" style={{ width: '40%' }} />
+                    <div className="card p-4 space-y-3">
+                      <div>
+                        <div className="flex justify-between text-sm mb-1">
+                          <span className="text-surface-400">Remaining</span>
+                          <span className="text-surface-200">
+                            {billing != null ? `${billing.credits_balance} / ${billing.credits_included}` : '—'}
+                          </span>
+                        </div>
+                        <div className="h-2 bg-surface-700 rounded-full overflow-hidden">
+                          <div
+                            className="h-full bg-primary-500 rounded-full"
+                            style={{
+                              width:
+                                billing && billing.credits_included > 0
+                                  ? `${Math.min(100, (billing.credits_balance / billing.credits_included) * 100)}%`
+                                  : '0%',
+                            }}
+                          />
+                        </div>
+                      </div>
+                      {billing?.current_period_end && (
+                        <div className="flex justify-between text-sm pt-2 border-t border-surface-700">
+                          <span className="text-surface-400">Resets</span>
+                          <span className="text-surface-300">
+                            {(() => {
+                              const resetDate = new Date(billing.current_period_end);
+                              const now = new Date();
+                              const daysRemaining = Math.ceil((resetDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+                              if (daysRemaining <= 0) return 'Today';
+                              if (daysRemaining === 1) return 'Tomorrow';
+                              if (daysRemaining <= 7) return `in ${daysRemaining} days`;
+                              return resetDate.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+                            })()}
+                          </span>
+                        </div>
+                      )}
                     </div>
                   </div>
-                </div>
-              </div>
+                </>
+              )}
             </div>
           )}
 
@@ -642,6 +876,202 @@ export function OrganizationPanel({ organization, currentUser, onClose }: Organi
           )}
         </div>
       </div>
+
+      {/* Credit Details Modal */}
+      {showCreditDetails && (
+        <CreditDetailsModal
+          details={creditDetails}
+          loading={creditDetailsLoading}
+          onClose={() => setShowCreditDetails(false)}
+        />
+      )}
     </>
+  );
+}
+
+
+interface CreditDetailsModalProps {
+  details: CreditDetails | null;
+  loading: boolean;
+  onClose: () => void;
+}
+
+function CreditDetailsModal({ details, loading, onClose }: CreditDetailsModalProps): JSX.Element {
+  const [PlotComponent, setPlotComponent] = useState<typeof import('react-plotly.js').default | null>(null);
+
+  useEffect(() => {
+    import('react-plotly.js')
+      .then((mod) => setPlotComponent(() => mod.default))
+      .catch(() => console.error('Failed to load chart library'));
+  }, []);
+
+  const burndownData = useMemo(() => {
+    if (!details?.transactions.length) return null;
+    
+    const timestamps: string[] = [];
+    const balances: number[] = [];
+    
+    // Start with the starting balance at period start
+    if (details.period_start) {
+      timestamps.push(details.period_start);
+      balances.push(details.starting_balance);
+    }
+    
+    // Add each transaction point
+    for (const tx of details.transactions) {
+      timestamps.push(tx.timestamp);
+      balances.push(tx.balance_after);
+    }
+    
+    return { timestamps, balances };
+  }, [details]);
+
+  const userUsageData = useMemo(() => {
+    if (!details?.usage_by_user.length) return null;
+    
+    const labels = details.usage_by_user.map(u => u.user_name || u.user_email.split('@')[0]);
+    const values = details.usage_by_user.map(u => u.total_credits_used);
+    const emails = details.usage_by_user.map(u => u.user_email);
+    
+    return { labels, values, emails };
+  }, [details]);
+
+  return (
+    <div 
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4"
+      onClick={onClose}
+    >
+      <div 
+        className="bg-surface-900 border border-surface-700 rounded-xl shadow-2xl w-full max-w-4xl max-h-[85vh] overflow-hidden flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="px-6 py-4 border-b border-surface-800 flex items-center justify-between shrink-0">
+          <h2 className="text-lg font-semibold text-surface-100">Credit Usage Details</h2>
+          <button
+            onClick={onClose}
+            className="p-1 rounded hover:bg-surface-800 text-surface-400 hover:text-surface-200 transition-colors"
+          >
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        {/* Content */}
+        <div className="flex-1 overflow-y-auto p-6 space-y-8">
+          {loading ? (
+            <div className="flex items-center justify-center py-12">
+              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-500" />
+            </div>
+          ) : !details ? (
+            <div className="text-center py-12 text-surface-400">
+              Failed to load credit details
+            </div>
+          ) : (
+            <>
+              {/* Burndown Chart */}
+              <div>
+                <h3 className="text-sm font-medium text-surface-200 mb-4">Credit Balance Over Time</h3>
+                {burndownData && PlotComponent ? (
+                  <div className="bg-surface-800/50 rounded-lg p-4">
+                    <PlotComponent
+                      data={[
+                        {
+                          x: burndownData.timestamps,
+                          y: burndownData.balances,
+                          type: 'scatter',
+                          mode: 'lines+markers',
+                          fill: 'tozeroy',
+                          fillcolor: 'rgba(99, 102, 241, 0.1)',
+                          line: { color: '#6366f1', width: 2 },
+                          marker: { color: '#6366f1', size: 6 },
+                          hovertemplate: '%{y} credits<br>%{x|%b %d, %H:%M}<extra></extra>',
+                        },
+                      ]}
+                      layout={{
+                        autosize: true,
+                        height: 280,
+                        margin: { l: 50, r: 20, t: 20, b: 50 },
+                        paper_bgcolor: 'transparent',
+                        plot_bgcolor: 'transparent',
+                        font: { color: '#a1a1aa' },
+                        xaxis: {
+                          gridcolor: 'rgba(255,255,255,0.05)',
+                          tickformat: '%b %d',
+                        },
+                        yaxis: {
+                          gridcolor: 'rgba(255,255,255,0.05)',
+                          title: { text: 'Credits', standoff: 10 },
+                          rangemode: 'tozero',
+                        },
+                        hovermode: 'x unified',
+                      }}
+                      config={{ displayModeBar: false, responsive: true }}
+                      style={{ width: '100%' }}
+                    />
+                  </div>
+                ) : burndownData ? (
+                  <div className="bg-surface-800/50 rounded-lg p-8 text-center text-surface-400">
+                    Loading chart...
+                  </div>
+                ) : (
+                  <div className="bg-surface-800/50 rounded-lg p-8 text-center text-surface-400">
+                    No usage data for this period yet
+                  </div>
+                )}
+              </div>
+
+              {/* Usage by User */}
+              <div>
+                <h3 className="text-sm font-medium text-surface-200 mb-4">Usage by Team Member</h3>
+                {userUsageData && userUsageData.values.length > 0 ? (
+                  <div className="space-y-4">
+                    {/* Bar visualization */}
+                    <div className="space-y-3">
+                      {details.usage_by_user.map((user, idx) => {
+                        const maxUsage = Math.max(...details.usage_by_user.map(u => u.total_credits_used));
+                        const percentage = maxUsage > 0 ? (user.total_credits_used / maxUsage) * 100 : 0;
+                        return (
+                          <div key={user.user_id} className="group">
+                            <div className="flex items-center justify-between text-sm mb-1">
+                              <span className="text-surface-300 truncate max-w-[200px]" title={user.user_email}>
+                                {user.user_name || user.user_email.split('@')[0]}
+                              </span>
+                              <span className="text-surface-200 font-medium">{user.total_credits_used} credits</span>
+                            </div>
+                            <div className="h-2 bg-surface-700 rounded-full overflow-hidden">
+                              <div
+                                className="h-full rounded-full transition-all duration-300"
+                                style={{
+                                  width: `${percentage}%`,
+                                  backgroundColor: `hsl(${240 - idx * 30}, 70%, 60%)`,
+                                }}
+                              />
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    
+                    {/* Total */}
+                    <div className="pt-3 border-t border-surface-700 flex justify-between text-sm">
+                      <span className="text-surface-400">Total used this period</span>
+                      <span className="text-surface-200 font-medium">
+                        {details.usage_by_user.reduce((sum, u) => sum + u.total_credits_used, 0)} credits
+                      </span>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="bg-surface-800/50 rounded-lg p-8 text-center text-surface-400">
+                    No usage data for this period yet
+                  </div>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }

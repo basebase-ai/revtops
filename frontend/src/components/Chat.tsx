@@ -50,6 +50,8 @@ interface ChatProps {
   isConnected: boolean;
   connectionState: 'connecting' | 'connected' | 'disconnected' | 'error';
   crmApprovalResults: Map<string, unknown>;
+  /** Called when the current conversation ID returns 404 (e.g. deleted or wrong org). Clears selection. */
+  onConversationNotFound?: () => void;
 }
 
 // Tool approval result type (received via parent component)
@@ -73,14 +75,15 @@ interface ToolApprovalState {
   result: WsToolApprovalResult | null;
 }
 
-export function Chat({ 
-  userId, 
+export function Chat({
+  userId,
   organizationId: _organizationId,
-  chatId, 
+  chatId,
   sendMessage,
   isConnected,
   connectionState,
   crmApprovalResults,
+  onConversationNotFound,
 }: ChatProps): JSX.Element {
   void _organizationId; // kept for API compatibility
   // Get per-conversation state from Zustand
@@ -129,7 +132,8 @@ export function Chat({
   const pendingAutoSendRef = useRef<string | null>(null);
   const messagesRef = useRef<ChatMessage[]>([]); // Track current messages for polling comparison
   const workflowDoneRef = useRef<boolean>(false); // Prevents polling restart after workflow completes
-  
+  const loadInFlightChatIdRef = useRef<string | null>(null); // Dedupe load requests for same chatId
+
   // Keep ref in sync with state
   pendingMessagesRef.current = pendingMessages;
 
@@ -309,6 +313,12 @@ export function Chat({
       return;
     }
 
+    // Avoid duplicate in-flight requests (e.g. React Strict Mode or unstable callback deps)
+    if (loadInFlightChatIdRef.current === chatId) {
+      return;
+    }
+    loadInFlightChatIdRef.current = chatId;
+
     let cancelled = false;
 
     const loadConversation = async (): Promise<void> => {
@@ -317,7 +327,7 @@ export function Chat({
 
       try {
         const { data, error } = await getConversation(chatId);
-        
+
         if (cancelled) {
           console.log('[Chat] Load cancelled - chatId changed');
           return;
@@ -331,25 +341,35 @@ export function Chat({
             contentBlocks: msg.content_blocks,
             timestamp: new Date(msg.created_at),
           }));
-          
+
           // Set conversation state
           setConversationMessages(chatId, loadedMessages);
           setConversationTitle(chatId, data.title ?? 'New Chat');
           setConversationType(data.type ?? null);
           console.log('[Chat] Loaded', loadedMessages.length, 'messages, type:', data.type);
-          
+
           // Scroll to bottom immediately after loading
           setTimeout(() => {
             messagesEndRef.current?.scrollIntoView({ behavior: 'instant' });
           }, 50);
         } else {
-          console.error('[Chat] Failed to load conversation:', error);
+          const is404 =
+            error != null &&
+            (String(error).includes('404') || String(error).toLowerCase().includes('not found'));
+          if (is404 && onConversationNotFound) {
+            onConversationNotFound();
+          } else {
+            console.error('[Chat] Failed to load conversation:', error);
+          }
         }
       } catch (err) {
         console.error('[Chat] Exception loading conversation:', err);
       } finally {
         if (!cancelled) {
           setIsLoading(false);
+        }
+        if (loadInFlightChatIdRef.current === chatId) {
+          loadInFlightChatIdRef.current = null;
         }
       }
     };
@@ -358,8 +378,11 @@ export function Chat({
 
     return () => {
       cancelled = true;
+      // Always clear loading state on cleanup to prevent infinite loading spinner
+      // when the effect is cancelled (e.g., chatId changes mid-load)
+      setIsLoading(false);
     };
-  }, [chatId, userId, setConversationMessages, setConversationTitle]);
+  }, [chatId, userId, setConversationMessages, setConversationTitle, onConversationNotFound]);
 
   // Keep messagesRef in sync for polling comparison (avoids stale closure)
   useEffect(() => {

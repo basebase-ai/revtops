@@ -445,6 +445,7 @@ async def send_message(
     For streaming responses, use the WebSocket endpoint.
     """
     from agents.orchestrator import ChatOrchestrator
+    from services.credits import can_use_credits
 
     try:
         conv_uuid = UUID(request.conversation_id) if request.conversation_id else None
@@ -452,6 +453,11 @@ async def send_message(
         raise HTTPException(status_code=400, detail="Invalid conversation ID format")
 
     org_id = auth.organization_id_str
+    if org_id and not await can_use_credits(org_id):
+        raise HTTPException(
+            status_code=402,
+            detail="Insufficient credits or no active subscription. Please upgrade your plan or add a payment method.",
+        )
 
     async with get_session(organization_id=org_id) as session:
         # Create conversation if not provided

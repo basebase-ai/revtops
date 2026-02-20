@@ -172,6 +172,7 @@ from models.user import User
 from models.chat_message import ChatMessage
 from models.workflow import WorkflowRun
 from sqlalchemy import and_, select
+from services.credits import can_use_credits
 from services.task_manager import task_manager
 
 
@@ -537,6 +538,14 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     await websocket.send_text(json.dumps({
                         "type": "error",
                         "error": "No organization found. Please complete onboarding.",
+                    }))
+                    continue
+
+                if not await can_use_credits(organization_id):
+                    await websocket.send_text(json.dumps({
+                        "type": "error",
+                        "error": "Insufficient credits or no active subscription. Please upgrade your plan or add a payment method.",
+                        "code": "insufficient_credits",
                     }))
                     continue
 

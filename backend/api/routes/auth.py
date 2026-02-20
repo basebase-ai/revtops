@@ -393,6 +393,7 @@ class SyncOrganizationData(BaseModel):
     id: str
     name: str
     logo_url: Optional[str] = None
+    subscription_required: bool = True
 
 
 class SyncUserResponse(BaseModel):
@@ -547,10 +548,12 @@ async def sync_user(request: SyncUserRequest) -> SyncUserResponse:
             if existing.organization_id:
                 org = await session.get(Organization, existing.organization_id)
                 if org:
+                    _sub_ok = (org.subscription_status or "") in ("active", "trialing")
                     org_data = SyncOrganizationData(
                         id=str(org.id),
                         name=org.name,
                         logo_url=org.logo_url,
+                        subscription_required=not _sub_ok,
                     )
                 title_result = await session.execute(
                     select(OrgMember.title).where(
@@ -635,10 +638,12 @@ async def sync_user(request: SyncUserRequest) -> SyncUserResponse:
                 await session.refresh(new_user)
 
                 # Include organization data for new user
+                _sub_ok = (existing_org.subscription_status or "") in ("active", "trialing")
                 org_data = SyncOrganizationData(
                     id=str(existing_org.id),
                     name=existing_org.name,
                     logo_url=existing_org.logo_url,
+                    subscription_required=not _sub_ok,
                 )
 
                 return SyncUserResponse(
@@ -1292,10 +1297,12 @@ async def switch_active_organization(
         org: Optional[Organization] = await session.get(Organization, target_org_uuid)
         org_data: Optional[SyncOrganizationData] = None
         if org:
+            _sub_ok = (org.subscription_status or "") in ("active", "trialing")
             org_data = SyncOrganizationData(
                 id=str(org.id),
                 name=org.name,
                 logo_url=org.logo_url,
+                subscription_required=not _sub_ok,
             )
 
         agent_global_commands = await _get_user_global_commands(session, user)
@@ -1481,10 +1488,12 @@ async def get_masquerade_user(
         if target_user.organization_id:
             org = await session.get(Organization, target_user.organization_id)
             if org:
+                _sub_ok = (org.subscription_status or "") in ("active", "trialing")
                 org_data = SyncOrganizationData(
                     id=str(org.id),
                     name=org.name,
                     logo_url=org.logo_url,
+                    subscription_required=not _sub_ok,
                 )
         
         return MasqueradeUserResponse(

@@ -9,11 +9,16 @@ Connection Pool Strategy:
 - Sessions are lightweight wrappers that checkout connections from the pool
 - When a session closes, the connection returns to the pool for reuse
 - RLS context (role + org_id) is set on checkout and cleaned up on return
+
+PgBouncer/Supavisor: With transaction pooling, prepared statement names can collide when
+the pooler assigns a different backend to the same logical connection. We use a custom
+Connection that gives each prepared statement a unique name (UUID) so collisions don't occur.
 """
 
 import logging
+import uuid
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator, Optional
+from typing import Any, AsyncGenerator, Optional
 from urllib.parse import urlparse
 
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, AsyncEngine, async_sessionmaker
@@ -43,18 +48,32 @@ _engine: Optional[AsyncEngine] = None
 _session_factory: Optional[async_sessionmaker[AsyncSession]] = None
 
 
+def _make_pgbouncer_safe_connect_args() -> dict[str, Any]:
+    """Connect args that avoid DuplicatePreparedStatementError with pgbouncer/Supavisor."""
+    try:
+        from asyncpg import Connection
+    except ImportError:
+        return {"statement_cache_size": 0}
+
+    class UniquePreparedStatementConnection(Connection):
+        """Use a unique name per prepared statement so pgbouncer transaction pooling doesn't collide."""
+
+        def _get_unique_id(self, prefix: str) -> str:
+            return f"__asyncpg_{prefix}_{uuid.uuid4()}__"
+
+    return {
+        "statement_cache_size": 0,
+        "connection_class": UniquePreparedStatementConnection,
+    }
+
+
 def get_engine() -> AsyncEngine:
     """Get the database engine (singleton - created once, reused)."""
     global _engine
     if _engine is None:
-        is_production: bool = settings.ENVIRONMENT == "production"
-        
-        # Disable prepared statement cache for Supabase/pgbouncer compatibility
-        connect_args: dict[str, int] = {
-            "statement_cache_size": 0,
-            "prepared_statement_cache_size": 0,
-        }
-        
+        # Pgbouncer/Supavisor transaction pooling: unique prepared statement names + no cache
+        connect_args: dict[str, Any] = _make_pgbouncer_safe_connect_args()
+
         if _use_null_pool:
             # Transaction mode (port 6543): external pooler manages connections
             _engine = create_async_engine(
