@@ -1,6 +1,7 @@
 import asyncio
 
 from agents import tools
+from services import credits
 
 
 def test_write_to_system_routes_to_dispatcher(monkeypatch) -> None:
@@ -36,7 +37,7 @@ def test_write_to_system_routes_to_dispatcher(monkeypatch) -> None:
 
     monkeypatch.setattr(tools, "_should_skip_approval", _fake_should_skip_approval)
     monkeypatch.setattr(tools, "_write_to_system", _fake_write_to_system)
-    monkeypatch.setattr(tools, "deduct_credits", _fake_deduct_credits)
+    monkeypatch.setattr(credits, "deduct", _fake_deduct_credits)
 
     result = asyncio.run(
         tools.execute_tool(
