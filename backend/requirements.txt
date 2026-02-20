@@ -41,7 +41,7 @@ structlog==24.1.0
 jsonschema==4.21.1
 
 # PDF Generation
-weasyprint==62.3
+weasyprint==68.0
 markdown==3.6
 
 # Excel parsing (for chat file attachments)
