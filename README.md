@@ -47,8 +47,6 @@ Revtops supports multiple execution modes:
 - **Asynchronous (background)** — Workflows run on a Celery task queue. Scheduled (cron), event-driven (e.g. "after every data sync"), or manually triggered.
 - **Agent Swarms** — Complex tasks can be decomposed into prompt-based workflows that spawn child agents, each tackling a sub-problem. Workflows can trigger other workflows, enabling multi-agent coordination to solve problems no single agent pass could handle.
 
-> **Note:** This repository contains the authenticated app experience only. The public-facing website (landing page, blog, waitlist) is served from a separate repository at [www.revtops.com](https://www.revtops.com).
-
 ## Tech Stack
 
 - **Frontend**: React 18 + TypeScript + Tailwind CSS + Vite + Zustand (primary state) + React Query (mutations) + Plotly.js (charts)
@@ -66,119 +64,65 @@ Revtops supports multiple execution modes:
 
 ### Prerequisites
 
-- Docker and Docker Compose
+- Python 3.10+
+- Node.js 18+
+- PostgreSQL 15+ (or Docker)
+- Redis (or Docker)
 - [Supabase project](https://supabase.com) with Google OAuth configured
 - [Nango account](https://app.nango.dev) with integrations configured
 - Anthropic API key (Claude — agent reasoning)
 - OpenAI API key (embeddings for semantic search)
-- Python 3.10+ (brew or venv; op-ed: use pyenv to force this globally)
-- Dependencies - python -m pip install -r requirements.txt (from the backend directory; again, be env mindful)
 
-#### Native dependencies for WeasyPrint (PDF generation)
-
-WeasyPrint requires system libraries in addition to the Python package. Install these before running `pip install -r requirements.txt`.
-
-**macOS (Homebrew):**
+### 1. Clone and configure environment
 
 ```bash
-brew install cairo pango gdk-pixbuf libffi
+git clone https://github.com/basebase-ai/revtops.git
+cd revtops
+cp env.example .env
+```
+
+Edit `.env` with your credentials (Supabase, Nango, Anthropic, OpenAI keys).
+
+### 2. Install system dependencies
+
+WeasyPrint (PDF generation) requires native libraries:
+
+**macOS:**
+
+```bash
+brew install cairo pango gdk-pixbuf libffi redis
+brew services start redis
 ```
 
 **Ubuntu/Debian:**
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y \
-  build-essential \
-  python3-dev \
-  libcairo2 \
-  libpango-1.0-0 \
-  libpangocairo-1.0-0 \
-  libgdk-pixbuf-2.0-0 \
-  libffi-dev \
-  shared-mime-info
+sudo apt-get install -y build-essential python3-dev libcairo2 libpango-1.0-0 \
+  libpangocairo-1.0-0 libgdk-pixbuf-2.0-0 libffi-dev shared-mime-info redis-server
+sudo systemctl start redis
 ```
 
-#### Plotly installation
-
-Plotly powers chart rendering in the frontend artifact viewer. It is installed via the frontend dependency set:
-
-```bash
-cd frontend
-npm install
-```
-
-If you need to install/refresh Plotly packages explicitly:
-
-```bash
-npm install plotly.js react-plotly.js @types/plotly.js @types/react-plotly.js --save
-```
-
-### Setup
-
-1. **Clone and configure environment:**
-
-```bash
-cp env.example .env
-# Edit .env with your credentials
-# Should all be in the .env or in Slack
-# Supabase values (SUPABASE_URL, SUPABASE_JWT_SECRET, VITE_SUPABASE_ANON_KEY)
-# should be copied from your Railway project variables.
-```
-
-2. **Configure Nango integrations:**
-
-In your Nango dashboard, configure the integrations you need:
-
-- `hubspot` - HubSpot CRM
-- `salesforce` - Salesforce CRM
-- `slack` - Slack workspace
-- `google-calendar` - Google Calendar
-- `microsoft-calendar` - Microsoft Outlook Calendar
-- `gmail` - Gmail
-- `microsoft-mail` - Microsoft Outlook Mail
-- `fireflies` - Fireflies meeting transcripts
-- `zoom` - Zoom meetings
-- `linear` - Linear issue tracking
-- `asana` - Asana project management
-- `github` - GitHub repos & PRs
-- `apollo` - Apollo.io data enrichment
-- `google-drive` - Google Drive files
-
-3. **Start all services:**
-
-```bash
-docker-compose up -d
-```
-
-4. **Run database migrations:**
+### 3. Start the backend
 
 ```bash
 cd backend
+python3 -m venv venv
+source venv/bin/activate    # Windows: venv\Scripts\activate
+pip install -r requirements.txt
+
+# Run database migrations
 alembic upgrade head
+
+# Start the API server
+uvicorn api.main:app --reload
 ```
 
-5. **Access the application:**
+The API will be available at http://localhost:8000 (docs at http://localhost:8000/docs).
 
-- Frontend: http://localhost:5173
-- API: http://localhost:8000
-- API Docs: http://localhost:8000/docs
+### 4. Start the frontend
 
-### Development Setup (without Docker - Most common)
-
-**Backend:**
-
-```bash
-cd backend                        # Navigate into the backend directory
-python3 -m venv venv              # Create an isolated Python environment called "venv"
-source venv/bin/activate          # Activate the virtual environment (use `venv\Scripts\activate` on Windows)
-pip install -r requirements.txt   # Install all required Python packages listed in requirements.txt
-brew install redis                # Optional - you may need redis running locally
-brew services start redis         # More redis.
-uvicorn api.main:app --reload     # Start the FastAPI server with auto-reload on code changes
-```
-
-**Frontend:**
+In a new terminal:
 
 ```bash
 cd frontend
@@ -186,7 +130,33 @@ npm install
 npm run dev
 ```
 
-`npm install` will install Plotly dependencies defined in `frontend/package.json`.
+The app will be available at http://localhost:5173.
+
+### 5. Configure integrations (optional)
+
+In your [Nango dashboard](https://app.nango.dev), configure the integrations you need:
+
+- **CRM**: `hubspot`, `salesforce`
+- **Email**: `gmail`, `microsoft-mail`
+- **Calendar**: `google-calendar`, `microsoft-calendar`
+- **Messaging**: `slack`
+- **Meetings**: `fireflies`, `zoom`
+- **Issue tracking**: `linear`, `asana`
+- **Code**: `github`
+- **Files**: `google-drive`
+- **Enrichment**: `apollo`
+
+### Alternative: Docker Compose
+
+To run everything in containers:
+
+```bash
+docker-compose up -d
+cd backend && alembic upgrade head
+```
+
+- Frontend: http://localhost:5173
+- API: http://localhost:8000
 
 ## Railway Deployment
 
@@ -196,10 +166,10 @@ This monorepo deploys to Railway as **6 services** from a single GitHub repo:
 ┌─────────────────────────────────────────────────────────────────────────┐
 │  Railway Project                                                         │
 │                                                                          │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐                  │
-│  │ revtops-www  │  │ Revtops APP  │  │   Backend    │                  │
-│  │ (website)    │  │ (frontend)   │  │   (API)      │                  │
-│  └──────────────┘  └──────────────┘  └──────┬───────┘                  │
+│  ┌──────────────┐  ┌──────────────┐                                    │
+│  │   Frontend   │  │   Backend    │                                    │
+│  │    (APP)     │  │    (API)     │                                    │
+│  └──────────────┘  └──────┬───────┘                                    │
 │                                              │                          │
 │  ┌──────────────┐  ┌──────────────┐         │                          │
 │  │    Beat      │  │    Worker    │         │                          │
@@ -218,8 +188,7 @@ This monorepo deploys to Railway as **6 services** from a single GitHub repo:
 
 | Service           | Root Directory | Start Command                                                                             | Healthcheck |
 | ----------------- | -------------- | ----------------------------------------------------------------------------------------- | ----------- |
-| **revtops-www**   | `frontend`     | (default)                                                                                 | None        |
-| **Revtops APP**   | `frontend`     | (default)                                                                                 | None        |
+| **Frontend**      | `frontend`     | (default)                                                                                 | None        |
 | **Backend (API)** | `backend`      | (default - uses Dockerfile CMD)                                                           | `/health`   |
 | **Beat**          | `backend`      | `python -m celery -A workers.celery_app beat --loglevel=info`                             | None        |
 | **Worker**        | `backend`      | `python -m celery -A workers.celery_app worker --loglevel=info -Q default,sync,workflows` | None        |
@@ -268,147 +237,35 @@ Beat only needs `REDIS_URL` to schedule tasks. Workers need full access to execu
 ```
 revtops/
 ├── backend/
-│   ├── api/               # FastAPI routes and WebSocket handlers
-│   ├── agents/            # Claude orchestration and tools
-│   ├── connectors/        # HubSpot, Salesforce, Slack, Gmail, Outlook, Google Calendar, Microsoft Calendar, Fireflies, Zoom, Linear, Asana, GitHub, Apollo, Google Drive
-│   ├── workers/           # Celery tasks (sync, workflows, async agent runs)
+│   ├── access_control/    # Permission checks and data protection
+│   ├── agents/            # Claude orchestration and tool definitions
+│   ├── api/
+│   │   └── routes/        # FastAPI route handlers
+│   ├── connectors/        # Integration connectors (HubSpot, Slack, Gmail, etc.)
+│   ├── db/                # Database migrations (Alembic)
 │   ├── models/            # SQLAlchemy models
-│   ├── services/          # Nango client and other services
-│   └── db/                # Database migrations and queries
+│   ├── scripts/           # Utility scripts (seeding, testing, migrations)
+│   ├── services/          # Nango client, email, SMS, embeddings
+│   ├── tests/             # Test suite
+│   └── workers/
+│       └── tasks/         # Celery tasks (sync, workflows, async agent runs)
 ├── frontend/
 │   └── src/
-│       ├── components/    # React components (app views, auth, onboarding)
-│       ├── hooks/         # WebSocket hook + React Query (for isolated components)
 │       ├── api/           # API client utilities
+│       ├── components/    # React components (Chat, DataSources, Workflows, etc.)
+│       ├── hooks/         # Custom hooks (WebSocket, React Query)
 │       ├── lib/           # Supabase client, utilities
-│       └── store/         # Zustand store (primary state management)
+│       ├── store/         # Zustand store (primary state management)
+│       └── types/         # TypeScript type definitions
+├── docs/                  # Documentation and architecture diagrams
 └── docker-compose.yml
 ```
 
 ## State Management
 
-We use **Zustand as the primary state management** for this application. All shared application state lives in the Zustand store (`src/store/index.ts`).
+The frontend uses **Zustand** (`frontend/src/store/index.ts`) as the primary state store. The app is WebSocket-first — most data updates come from real-time server events, which update the store directly.
 
-### Architecture Principle: Event-Driven Updates
-
-This app is **WebSocket-first** - most data updates come from real-time server events, not polling. This makes Zustand ideal because:
-
-1. WebSocket handlers update the store directly
-2. All subscribing components re-render automatically
-3. No cache invalidation complexity
-
-### What Belongs in Zustand (`src/store/`)
-
-```typescript
-// Auth state (persisted)
-const user = useUser();
-const organization = useOrganization();
-
-// UI state
-const sidebarCollapsed = useSidebarCollapsed();
-const currentView = useCurrentView();
-
-// Server data (fetched and cached in store)
-const integrations = useIntegrations(); // Data sources
-const messages = useConversationMessages(chatId); // Chat messages
-
-// Store actions
-const fetchIntegrations = useAppStore((s) => s.fetchIntegrations);
-```
-
-### Adding New Server Data
-
-When you need to fetch/store new data from the backend:
-
-1. **Add types to the store:**
-
-```typescript
-// src/store/index.ts
-export interface MyData {
-  id: string;
-  name: string;
-}
-```
-
-2. **Add state and actions:**
-
-```typescript
-interface AppState {
-  myData: MyData[];
-  myDataLoading: boolean;
-  fetchMyData: () => Promise<void>;
-}
-```
-
-3. **Implement the fetch action:**
-
-```typescript
-fetchMyData: async () => {
-  const { organization } = get();
-  if (!organization) return;
-
-  set({ myDataLoading: true });
-  const response = await fetch(`${API_BASE}/my-data/${organization.id}`);
-  const data = await response.json();
-  set({ myData: data, myDataLoading: false });
-},
-```
-
-4. **Add selector hooks:**
-
-```typescript
-export const useMyData = () => useAppStore((state) => state.myData);
-```
-
-### Triggering Updates
-
-**From WebSocket events** (in `AppLayout.tsx`):
-
-```typescript
-// Handle WebSocket message
-if (data.type === "my_data_updated") {
-  window.dispatchEvent(new Event("my-data-updated"));
-}
-
-// In component - listen for event
-useEffect(() => {
-  const handleUpdate = () => void fetchMyData();
-  window.addEventListener("my-data-updated", handleUpdate);
-  return () => window.removeEventListener("my-data-updated", handleUpdate);
-}, [fetchMyData]);
-```
-
-**From user actions** (in components):
-
-```typescript
-const handleConnect = async () => {
-  await connectIntegration(provider);
-  await fetchIntegrations(); // Store updates, all components see new data
-};
-```
-
-### When to Use React Query
-
-React Query is still useful for:
-
-- **Workflows** (`useQuery` in `Workflows.tsx`) - Complex CRUD with mutations
-- **Team members** (`useTeamMembers`) - Infrequently changing data with refetch-on-focus
-- **One-off fetches** - Data only needed in one component
-
-General rule: If multiple components need the same data, or it's updated via WebSocket, use Zustand. If it's isolated to one component with standard CRUD, React Query works fine.
-
-### Available Zustand Selectors
-
-| Selector                      | Purpose                          |
-| ----------------------------- | -------------------------------- |
-| `useUser()`                   | Current user profile             |
-| `useOrganization()`           | Current organization             |
-| `useIntegrations()`           | All connected data sources       |
-| `useConnectedIntegrations()`  | Only active integrations         |
-| `useIntegration(provider)`    | Single integration by provider   |
-| `useConversationMessages(id)` | Chat messages for a conversation |
-| `useSidebarCollapsed()`       | Sidebar UI state                 |
-| `useCurrentView()`            | Current navigation view          |
+**React Query** is used sparingly for isolated CRUD operations (e.g., workflows, team members).
 
 ## Nango Integration
 
@@ -502,7 +359,6 @@ Web search defaults to **Exa** (semantic search with per-result excerpts). Use *
 | `VITE_SUPABASE_URL`      | Supabase project URL                                                  |
 | `VITE_SUPABASE_ANON_KEY` | Supabase anonymous key                                                |
 | `VITE_NANGO_PUBLIC_KEY`  | Nango public key for frontend SDK                                     |
-| `VITE_WWW_URL`           | Public website URL for redirects (default: `https://www.revtops.com`) |
 
 ### Integration IDs (Optional - defaults provided)
 
@@ -539,24 +395,35 @@ User Message → WebSocket → Orchestrator → Claude API
 
 ### Available Tools
 
-| Tool                          | Description                                                                                                     |
-| ----------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| `run_sql_query`               | Execute read-only SQL SELECT queries with automatic org scoping. Supports `semantic_embed()` for vector search. |
-| `run_sql_write`               | INSERT/UPDATE/DELETE for internal tables                                                                        |
-| `create_artifact`             | Generate reports, charts, and PDF documents                                                                     |
-| `create_workflow`             | Create scheduled, event-driven, or manual workflows                                                             |
-| `trigger_workflow`            | Manually trigger an existing workflow                                                                           |
-| `write_to_system_of_record`   | Universal write tool for CRMs, issue trackers, code repos                                                       |
-| `send_email_from`             | Send email from the user's connected Gmail or Outlook                                                           |
-| `send_slack`                  | Post messages to Slack channels                                                                                 |
-| `web_search`                  | Search the web for real-time information                                                                        |
-| `fetch_url`                   | Fetch and parse web page content                                                                                |
-| `enrich_contacts_with_apollo` | Enrich contacts via Apollo.io                                                                                   |
-| `enrich_company_with_apollo`  | Enrich company data via Apollo.io                                                                               |
-| `trigger_sync`                | Trigger a data sync for any connected integration                                                               |
-| `save_memory`                 | Persist information across conversations                                                                        |
-| `delete_memory`               | Remove a saved memory                                                                                           |
-| `keep_notes`                  | Workflow-scoped scratchpad for multi-step reasoning                                                             |
+Tools are organized by category based on their risk profile:
+
+**Local Read** (always safe, no approval):
+
+| Tool                    | Description                                                              |
+| ----------------------- | ------------------------------------------------------------------------ |
+| `run_sql_query`         | Execute read-only SQL SELECT with org scoping and `semantic_embed()` for vector search |
+| `list_connected_systems`| Get capabilities manifest for all connected integrations                 |
+| `query_system`          | Query any connected system (web search, Apollo enrichment, Google Drive) |
+
+**Local Write** (tracked, reversible):
+
+| Tool              | Description                                                        |
+| ----------------- | ------------------------------------------------------------------ |
+| `run_sql_write`   | INSERT/UPDATE/DELETE for internal tables (CRM changes go through review) |
+| `create_artifact` | Generate text, markdown, PDF, or interactive chart files           |
+| `create_app`      | Create interactive mini-apps with React + SQL queries              |
+| `run_workflow`    | Execute a workflow (manual trigger or workflow composition)        |
+| `foreach`         | Batch operations — run a tool or workflow for each item in a list  |
+| `manage_memory`   | Save, update, or delete persistent memories across conversations   |
+| `keep_notes`      | Workflow-scoped notes shared across runs (workflow-only)           |
+
+**External Write** (permanent external actions):
+
+| Tool             | Description                                                         |
+| ---------------- | ------------------------------------------------------------------- |
+| `write_to_system`| Create/update records in CRMs, issue trackers, code repos           |
+| `run_action`     | Execute actions: send Slack/email/SMS, fetch URLs, run sandbox code |
+| `trigger_sync`   | Trigger a data sync for any connected integration                   |
 
 ### Tool Execution Flow
 
@@ -572,57 +439,6 @@ User Message → WebSocket → Orchestrator → Claude API
 ### Frontend Display
 
 The frontend (`Chat.tsx`) has no tool logic—it just detects the `*Querying...*` markdown pattern and displays a loading indicator. All tool definitions and execution happen server-side.
-
-## Datetime Handling Conventions
-
-All datetime handling follows a consistent pattern to avoid timezone bugs. **Please follow these conventions strictly.**
-
-### Storage (Database)
-
-- All timestamps are stored in **UTC**
-- Use `DateTime(timezone=True)` for new SQLAlchemy columns when possible
-- When parsing external API responses, **always convert to UTC** before storing:
-
-```python
-# CORRECT - convert to UTC before stripping timezone
-if dt.tzinfo is not None:
-    dt_utc = dt.astimezone(timezone.utc)
-else:
-    dt_utc = dt.replace(tzinfo=timezone.utc)
-
-# WRONG - never strip timezone without converting first
-dt_naive = dt.replace(tzinfo=None)  # DON'T DO THIS
-```
-
-### Serialization (API Responses & Agent Tools)
-
-- All datetimes returned to the frontend or agent use **ISO 8601 format with 'Z' suffix**
-- Format: `"2026-02-04T18:00:00Z"` (the 'Z' indicates UTC)
-- Use the `_serialize_value()` helper in `agents/tools.py` for SQL query results:
-
-```python
-# This helper handles all datetime serialization consistently
-from agents.tools import _serialize_value
-
-value = _serialize_value(datetime_from_db)  # Returns "2026-02-04T18:00:00Z"
-```
-
-### User Timezone Context
-
-- Frontend sends `local_time` and `timezone` with each chat message
-- The agent uses this to:
-  1. Convert user queries like "today" or "this morning" to correct UTC ranges
-  2. Display results in the user's local timezone
-- Always pass these through WebSocket and REST endpoints to `ChatOrchestrator`
-
-### Common Pitfalls to Avoid
-
-| Don't                                        | Do Instead                                         |
-| -------------------------------------------- | -------------------------------------------------- |
-| `datetime.utcnow()` (deprecated)             | `datetime.now(timezone.utc)`                       |
-| `dt.replace(tzinfo=None)` without converting | `dt.astimezone(timezone.utc).replace(tzinfo=None)` |
-| Compare naive and aware datetimes            | Convert both to UTC-aware first                    |
-| `f"{dt.isoformat()}"` (inconsistent)         | `f"{dt.strftime('%Y-%m-%dT%H:%M:%SZ')}"`           |
 
 ## Agent Tool Categories
 

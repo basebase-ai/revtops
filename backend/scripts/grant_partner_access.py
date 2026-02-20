@@ -19,21 +19,22 @@ from uuid import UUID
 # Add parent directory to path for imports
 sys.path.insert(0, str(__file__).rsplit("/scripts", 1)[0])
 
-from sqlalchemy import select, text
+from sqlalchemy import text
 from models.database import get_admin_session
-from models.organization import Organization
-from models.user import User
-from models.organization_member import OrganizationMember
 
 
 async def find_org_by_email(email: str) -> UUID | None:
     """Find organization ID by user email (returns first org the user belongs to)."""
     async with get_admin_session() as session:
         result = await session.execute(
-            select(OrganizationMember.organization_id)
-            .join(User, User.id == OrganizationMember.user_id)
-            .where(User.email == email)
-            .limit(1)
+            text("""
+                SELECT om.organization_id
+                FROM org_members om
+                JOIN users u ON u.id = om.user_id
+                WHERE u.email = :email
+                LIMIT 1
+            """),
+            {"email": email},
         )
         row = result.scalar_one_or_none()
         return row
@@ -55,31 +56,45 @@ async def grant_partner_access(
             return False
         print(f"Found organization {org_uuid} for email {org_id}")
 
+    now = datetime.now(timezone.utc)
+    period_end = now + timedelta(days=30 * months)
+
     async with get_admin_session() as session:
+        # First check if org exists and get its name
         result = await session.execute(
-            select(Organization).where(Organization.id == org_uuid)
+            text("SELECT name FROM organizations WHERE id = :org_id"),
+            {"org_id": str(org_uuid)},
         )
-        org = result.scalar_one_or_none()
-        if not org:
+        row = result.fetchone()
+        if not row:
             print(f"Error: Organization {org_uuid} not found")
             return False
+        org_name: str = row[0]
 
-        now = datetime.now(timezone.utc)
-        period_end = now + timedelta(days=30 * months)
-
-        org.subscription_tier = "partner"
-        org.subscription_status = "active"
-        org.credits_balance = credits
-        org.credits_included = credits
-        org.current_period_start = now
-        org.current_period_end = period_end
-        # Clear Stripe IDs since this is a free tier
-        org.stripe_customer_id = None
-        org.stripe_subscription_id = None
-
+        # Update the organization
+        await session.execute(
+            text("""
+                UPDATE organizations
+                SET subscription_tier = 'partner',
+                    subscription_status = 'active',
+                    credits_balance = :credits,
+                    credits_included = :credits,
+                    current_period_start = :period_start,
+                    current_period_end = :period_end,
+                    stripe_customer_id = NULL,
+                    stripe_subscription_id = NULL
+                WHERE id = :org_id
+            """),
+            {
+                "org_id": str(org_uuid),
+                "credits": credits,
+                "period_start": now,
+                "period_end": period_end,
+            },
+        )
         await session.commit()
 
-        print(f"✓ Granted partner access to: {org.name}")
+        print(f"✓ Granted partner access to: {org_name}")
         print(f"  Tier: partner")
         print(f"  Credits: {credits}")
         print(f"  Valid until: {period_end.strftime('%Y-%m-%d')}")
