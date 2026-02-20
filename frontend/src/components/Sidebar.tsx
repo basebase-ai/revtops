@@ -103,9 +103,9 @@ function OrgSwitcherSection({
             <div className="text-sm font-medium text-surface-200 truncate">
               {organization.name}
             </div>
-            <div className="text-xs text-surface-500">
-              {memberCount} member{memberCount !== 1 ? 's' : ''}
-              {creditsDisplay != null && ` · ${creditsDisplay.balance} / ${creditsDisplay.included} credits`}
+            <div className="text-[11px] text-surface-500">
+              {memberCount} {memberCount !== 1 ? 'members' : 'member'}
+              {creditsDisplay != null && ` · ${creditsDisplay.balance}/${creditsDisplay.included}`}
             </div>
           </div>
         )}

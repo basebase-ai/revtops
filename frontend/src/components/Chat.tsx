@@ -378,6 +378,9 @@ export function Chat({
 
     return () => {
       cancelled = true;
+      // Always clear loading state on cleanup to prevent infinite loading spinner
+      // when the effect is cancelled (e.g., chatId changes mid-load)
+      setIsLoading(false);
     };
   }, [chatId, userId, setConversationMessages, setConversationTitle, onConversationNotFound]);
 
