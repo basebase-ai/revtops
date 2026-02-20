@@ -23,6 +23,7 @@ from fastapi import APIRouter, Depends, HTTPException, Header, Request
 from pydantic import BaseModel
 from sqlalchemy import func, select, text
 
+from access_control import RightsContext, check_sql
 from api.auth_middleware import AuthContext, require_organization
 from config import settings
 from models.app import App
@@ -260,8 +261,27 @@ async def execute_app_query(
         if "LIMIT" not in sql_upper:
             sql = f"{sql.rstrip().rstrip(';')} LIMIT 5000"
 
+        rights_ctx = RightsContext(
+            organization_id=organization_id,
+            user_id=None,
+            conversation_id=None,
+            is_workflow=False,
+        )
+        rights_result = await check_sql(rights_ctx, sql, bound_params)
+        if not rights_result.allowed:
+            raise HTTPException(
+                status_code=403,
+                detail=rights_result.deny_reason or "Query not allowed",
+            )
+        query_to_run: str = (
+            rights_result.transformed_query if rights_result.transformed_query is not None else sql
+        )
+        params_to_use: dict[str, Any] = (
+            rights_result.transformed_params if rights_result.transformed_params is not None else bound_params
+        )
+
         try:
-            raw_result = await session.execute(text(sql), bound_params)
+            raw_result = await session.execute(text(query_to_run), params_to_use)
             rows = raw_result.mappings().all()
             columns: list[str] = list(raw_result.keys()) if rows else []
 

@@ -115,6 +115,8 @@ class ConnectorMeta:
     nango_integration_id: str | None = None
     description: str = ""
     icon: str = ""
+    # For LISTEN: key in integration.extra_data holding the webhook signing secret (e.g. "linear_webhook_secret")
+    webhook_secret_extra_data_key: str | None = None
 
 
 # ---------------------------------------------------------------------------

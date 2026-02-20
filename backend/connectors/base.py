@@ -349,3 +349,20 @@ class BaseConnector(ABC):
     async def handle_event(self, event_type: str, payload: dict[str, Any]) -> None:
         """Handle an inbound webhook/event (LISTEN capability)."""
         raise NotImplementedError(f"{self.source_system} does not support handle_event()")
+
+    # ------------------------------------------------------------------
+    # Webhook HTTP handling (for LISTEN connectors that receive HTTP webhooks)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def verify_webhook(raw_body: bytes, headers: dict[str, str], secret: str) -> bool:
+        """Verify webhook signature. Override in connectors that support LISTEN with webhooks."""
+        raise NotImplementedError("Webhook verification not implemented")
+
+    @staticmethod
+    def process_webhook_payload(payload: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+        """
+        Parse webhook JSON and return events to emit: [(event_type, data), ...].
+        Override in connectors that support LISTEN with webhooks.
+        """
+        return []

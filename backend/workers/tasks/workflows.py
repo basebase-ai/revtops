@@ -1125,17 +1125,18 @@ async def _action_run_query(
     - Query timeout enforced
     """
     from sqlalchemy import text
+    from access_control import RightsContext, check_sql
     from models.database import get_session
-    
+
     sql = params.get("sql", "")
     org_id = context.get("organization_id")
-    
+
     if not sql.strip():
         return {
             "status": "failed",
             "error": "No SQL query provided",
         }
-    
+
     # Security: Only allow SELECT statements
     sql_upper = sql.strip().upper()
     if not sql_upper.startswith("SELECT"):
@@ -1143,7 +1144,7 @@ async def _action_run_query(
             "status": "failed",
             "error": "Only SELECT queries are allowed",
         }
-    
+
     # Block dangerous keywords even in SELECT
     dangerous_keywords = ["INSERT", "UPDATE", "DELETE", "DROP", "TRUNCATE", "ALTER", "CREATE", "GRANT", "REVOKE"]
     for keyword in dangerous_keywords:
@@ -1152,13 +1153,32 @@ async def _action_run_query(
                 "status": "failed",
                 "error": f"Query contains disallowed keyword: {keyword}",
             }
-    
+
+    rights_ctx = RightsContext(
+        organization_id=org_id or "",
+        user_id=context.get("user_id"),
+        conversation_id=None,
+        is_workflow=True,
+    )
+    rights_result = await check_sql(rights_ctx, sql, {"org_id": org_id})
+    if not rights_result.allowed:
+        return {
+            "status": "failed",
+            "error": rights_result.deny_reason or "SQL not allowed",
+        }
+    query_to_run: str = (
+        rights_result.transformed_query if rights_result.transformed_query is not None else sql
+    )
+    params_to_use: dict[str, Any] = (
+        rights_result.transformed_params if rights_result.transformed_params is not None else {"org_id": org_id}
+    )
+
     try:
         async with get_session(organization_id=org_id) as session:
             # Execute with org_id parameter always available
             result = await session.execute(
-                text(sql),
-                {"org_id": org_id}
+                text(query_to_run),
+                params_to_use,
             )
             
             # Convert rows to list of dicts
@@ -1199,21 +1219,39 @@ async def _action_llm(
 ) -> dict[str, Any]:
     """Call an LLM for processing."""
     import anthropic
+    from access_control import RightsContext, check_external_api
     from config import settings
-    
+
     prompt = params.get("prompt", "")
     model = params.get("model", "claude-sonnet-4-20250514")
-    
+
     # Substitute context variables in prompt
     for key, value in context.items():
         prompt = prompt.replace(f"{{{key}}}", str(value))
-    
+
     if not settings.ANTHROPIC_API_KEY:
         return {
             "status": "failed",
             "error": "ANTHROPIC_API_KEY not configured",
         }
-    
+
+    rights_ctx = RightsContext(
+        organization_id=context.get("organization_id") or "",
+        user_id=context.get("user_id"),
+        conversation_id=None,
+        is_workflow=True,
+    )
+    rights_result = await check_external_api(
+        rights_ctx,
+        "anthropic",
+        {"model": model, "prompt_length": len(prompt)},
+    )
+    if not rights_result.allowed:
+        return {
+            "status": "failed",
+            "error": rights_result.deny_reason or "External API call not allowed",
+        }
+
     client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
     response = client.messages.create(
         model=model,
