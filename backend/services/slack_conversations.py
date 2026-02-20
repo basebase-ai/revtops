@@ -21,6 +21,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from agents.orchestrator import ChatOrchestrator
 from connectors.slack import SlackConnector
+from services.credits import can_use_credits
 from models.activity import Activity
 from models.conversation import Conversation
 from models.database import get_admin_session, get_session
@@ -1733,6 +1734,14 @@ async def process_slack_dm(
     if files:
         attachment_ids = await _download_and_store_slack_files(connector, files)
 
+    if not await can_use_credits(organization_id):
+        await connector.post_message(
+            channel=channel_id,
+            text="You're out of credits or don't have an active subscription. Please add a payment method in Revtops to continue.",
+        )
+        await connector.remove_reaction(channel=channel_id, timestamp=event_ts)
+        return {"status": "error", "error": "insufficient_credits"}
+
     # Process message through orchestrator
     local_time_iso: str | None = _compute_local_time_iso(slack_user_tz)
     orchestrator = ChatOrchestrator(
@@ -1884,6 +1893,15 @@ async def process_slack_mention(
     attachment_ids: list[str] = []
     if files:
         attachment_ids = await _download_and_store_slack_files(connector, files)
+
+    if not await can_use_credits(organization_id):
+        await connector.post_message(
+            channel=channel_id,
+            text="You're out of credits or don't have an active subscription. Please add a payment method in Revtops to continue.",
+            thread_ts=thread_ts,
+        )
+        await connector.remove_reaction(channel=channel_id, timestamp=thread_ts)
+        return {"status": "error", "error": "insufficient_credits"}
 
     # Process message through orchestrator
     local_time_iso: str | None = _compute_local_time_iso(slack_user_tz)
@@ -2049,6 +2067,15 @@ async def process_slack_thread_reply(
     attachment_ids: list[str] = []
     if files:
         attachment_ids = await _download_and_store_slack_files(connector, files)
+
+    if not await can_use_credits(organization_id):
+        await connector.post_message(
+            channel=channel_id,
+            text="You're out of credits or don't have an active subscription. Please add a payment method in Revtops to continue.",
+            thread_ts=thread_ts,
+        )
+        await connector.remove_reaction(channel=channel_id, timestamp=event_ts)
+        return {"status": "error", "error": "insufficient_credits"}
 
     # Process message through orchestrator, posting incrementally
     local_time_iso: str | None = _compute_local_time_iso(slack_user_tz)

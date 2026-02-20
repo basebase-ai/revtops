@@ -26,6 +26,7 @@ from sqlalchemy import select
 
 from agents.orchestrator import ChatOrchestrator
 from config import settings
+from services.credits import can_use_credits
 from models.conversation import Conversation
 from models.database import get_admin_session, get_session
 from models.org_member import OrgMember
@@ -400,6 +401,13 @@ async def process_inbound_sms(
         # The message was an org-selection number, not a real message.
         # Confirmation already sent via SMS — nothing more to do.
         return {"status": "org_selected", "organization": organization_name}
+
+    if not await can_use_credits(organization_id):
+        await _send_sms_reply(
+            to=phone,
+            text="You're out of credits or don't have an active subscription. Please add a payment method in Revtops to continue.",
+        )
+        return {"status": "error", "error": "insufficient_credits"}
 
     # ── 4. Run through orchestrator ──────────────────────────────────────
     orchestrator = ChatOrchestrator(

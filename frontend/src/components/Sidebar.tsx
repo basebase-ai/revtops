@@ -43,11 +43,13 @@ function OrgSwitcherSection({
   collapsed,
   organization,
   memberCount,
+  creditsDisplay,
   onOpenOrgPanel,
 }: {
   collapsed: boolean;
   organization: OrganizationInfo;
   memberCount: number;
+  creditsDisplay: { balance: number; included: number } | null;
   onOpenOrgPanel: () => void;
 }): JSX.Element {
   const organizations: UserOrganization[] = useAppStore((state) => state.organizations);
@@ -103,6 +105,7 @@ function OrgSwitcherSection({
             </div>
             <div className="text-xs text-surface-500">
               {memberCount} member{memberCount !== 1 ? 's' : ''}
+              {creditsDisplay != null && ` · ${creditsDisplay.balance} / ${creditsDisplay.included} credits`}
             </div>
           </div>
         )}
@@ -177,6 +180,7 @@ interface SidebarProps {
   onNewChat: () => void;
   organization: OrganizationInfo;
   memberCount: number;
+  creditsDisplay: { balance: number; included: number } | null;
   onOpenOrgPanel: () => void;
   onOpenProfilePanel: () => void;
   isMobile?: boolean;
@@ -198,6 +202,7 @@ export function Sidebar({
   onNewChat,
   organization,
   memberCount,
+  creditsDisplay,
   onOpenOrgPanel,
   onOpenProfilePanel,
   isMobile = false,
@@ -517,6 +522,7 @@ export function Sidebar({
           collapsed={collapsed}
           organization={organization}
           memberCount={memberCount}
+          creditsDisplay={creditsDisplay}
           onOpenOrgPanel={onOpenOrgPanel}
         />
 

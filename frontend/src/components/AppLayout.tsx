@@ -123,7 +123,13 @@ interface WsToolProgress {
   status: string;
 }
 
-type WsMessage = WsActiveTasks | WsTaskStarted | WsTaskChunk | WsTaskComplete | WsConversationCreated | WsCatchup | WsCrmApprovalResult | WsToolApprovalResult | WsToolProgress;
+interface WsError {
+  type: 'error';
+  error: string;
+  code?: string;
+}
+
+type WsMessage = WsActiveTasks | WsTaskStarted | WsTaskChunk | WsTaskComplete | WsConversationCreated | WsCatchup | WsCrmApprovalResult | WsToolApprovalResult | WsToolProgress | WsError;
 
 // Props
 interface AppLayoutProps {
@@ -177,6 +183,16 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
     enabled: !!organization?.id,
   });
   const workflowCount = workflows.length;
+
+  // Billing status for credits display in sidebar
+  const { data: billingStatus } = useQuery({
+    queryKey: ['billing', organization?.id],
+    queryFn: async () => {
+      const { data } = await apiRequest<{ credits_balance: number; credits_included: number }>('/billing/status');
+      return data;
+    },
+    enabled: !!organization?.id,
+  });
 
   // Pending changes count (for sidebar badge)
   const [pendingChangesCount, setPendingChangesCount] = useState<number>(0);
@@ -342,6 +358,8 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
   // Panels
   const [showOrgPanel, setShowOrgPanel] = useState(false);
   const [showProfilePanel, setShowProfilePanel] = useState(false);
+  const [orgPanelTab, setOrgPanelTab] = useState<'team' | 'billing' | 'settings'>('team');
+  const [insufficientCreditsBanner, setInsufficientCreditsBanner] = useState(false);
 
   // CRM approval results (shared across chats) - use state to trigger re-renders
   const [crmApprovalResults, setCrmApprovalResults] = useState<Map<string, unknown>>(() => new Map());
@@ -665,6 +683,16 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
           }
           break;
         }
+
+        case 'error': {
+          const err = parsed as WsError;
+          if (err.code === 'insufficient_credits') {
+            setInsufficientCreditsBanner(true);
+            setShowOrgPanel(true);
+            setOrgPanelTab('billing');
+          }
+          break;
+        }
         
         case 'crm_approval_result':
         case 'tool_approval_result': {
@@ -889,7 +917,8 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
           onNewChat={startNewChat}
           organization={organization}
           memberCount={teamData?.members.length ?? 0}
-          onOpenOrgPanel={() => setShowOrgPanel(true)}
+          creditsDisplay={billingStatus ? { balance: billingStatus.credits_balance, included: billingStatus.credits_included } : null}
+          onOpenOrgPanel={() => { setOrgPanelTab('team'); setShowOrgPanel(true); }}
           onOpenProfilePanel={() => setShowProfilePanel(true)}
           isMobile={isMobile}
           onCloseMobile={() => setMobileSidebarOpen(false)}
@@ -943,7 +972,11 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
         <OrganizationPanel
           organization={organization}
           currentUser={user}
-          onClose={() => setShowOrgPanel(false)}
+          initialTab={orgPanelTab}
+          onClose={() => {
+            setShowOrgPanel(false);
+            setInsufficientCreditsBanner(false);
+          }}
         />
       )}
 

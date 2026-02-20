@@ -273,17 +273,34 @@ async def execute_tool(
     if organization_id is None:
         logger.warning("[Tools] No organization_id - returning error")
         return {"error": "No organization associated with user. Please complete onboarding."}
-    
+
+    conversation_id: str | None = (context or {}).get("conversation_id")
+    # Deduct credits before running the tool (fail fast if insufficient); import here to avoid circular import
+    from services.credits import credits_for_tool, deduct as deduct_credits
+    cost: int = credits_for_tool(tool_name, tool_input or {}, context)
+    if cost > 0:
+        ok = await deduct_credits(
+            organization_id,
+            cost,
+            "tool",
+            reference_type="conversation",
+            reference_id=conversation_id,
+            user_id=user_id,
+        )
+        if not ok:
+            return {
+                "error": "Insufficient credits. Please upgrade your plan or wait for your next billing period."
+            }
+
     # Check if this tool should bypass approval (for auto-approved workflows)
     skip_approval = await _should_skip_approval(tool_name, user_id, context)
 
     if tool_name == "manage_memory" and context and context.get("is_workflow"):
-        action: str = tool_input.get("action", "save")
+        action: str = (tool_input or {}).get("action", "save")
         if action in ("save", "update"):
             logger.info("[Tools] Blocking manage_memory(%s) during workflow execution", action)
             return {"error": "manage_memory save/update is not available in workflows. Use keep_notes for workflow-scoped notes."}
 
-    conversation_id: str | None = (context or {}).get("conversation_id")
     tool_handlers: dict[str, Callable[[], Awaitable[dict[str, Any]]]] = {
         "run_sql_query": lambda: _run_sql_query(tool_input, organization_id, user_id),
         "run_sql_write": lambda: _run_sql_write(tool_input, organization_id, user_id, context),

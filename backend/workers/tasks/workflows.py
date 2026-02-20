@@ -682,6 +682,19 @@ async def _execute_workflow(
         
         # Check if this workflow uses the new prompt-based execution
         if workflow.prompt and workflow.prompt.strip():
+            from services.credits import can_use_credits
+            org_id_str = str(workflow.organization_id)
+            if not await can_use_credits(org_id_str):
+                run.status = "failed"
+                run.error_message = "Insufficient credits or no active subscription. Please add a payment method in Revtops."
+                run.completed_at = datetime.utcnow()
+                await session.commit()
+                return {
+                    "status": "failed",
+                    "workflow_id": workflow_id,
+                    "run_id": str(run_id),
+                    "error": "Insufficient credits or no active subscription.",
+                }
             # NEW: Execute via agent conversation
             try:
                 result = await _execute_workflow_via_agent(

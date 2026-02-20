@@ -10,22 +10,47 @@
  * Uses React Query for server state (team members, org updates).
  */
 
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import type { OrganizationInfo, UserProfile } from './AppLayout';
 import { supabase } from '../lib/supabase';
 import { useAppStore } from '../store';
 import { useTeamMembers, useUpdateOrganization, useLinkIdentity, useUnlinkIdentity } from '../hooks';
 import type { TeamMember, IdentityMapping } from '../hooks';
+import { apiRequest } from '../lib/api';
+
+interface BillingStatus {
+  subscription_tier: string | null;
+  subscription_status: string | null;
+  credits_balance: number;
+  credits_included: number;
+  current_period_end: string | null;
+  subscription_required: boolean;
+}
 
 interface OrganizationPanelProps {
   organization: OrganizationInfo;
   currentUser: UserProfile;
+  initialTab?: 'team' | 'billing' | 'settings';
   onClose: () => void;
 }
 
-export function OrganizationPanel({ organization, currentUser, onClose }: OrganizationPanelProps): JSX.Element {
+export function OrganizationPanel({ organization, currentUser, initialTab = 'team', onClose }: OrganizationPanelProps): JSX.Element {
   const setOrganization = useAppStore((state) => state.setOrganization);
-  const [activeTab, setActiveTab] = useState<'team' | 'billing' | 'settings'>('team');
+  const [activeTab, setActiveTab] = useState<'team' | 'billing' | 'settings'>(initialTab);
+
+  useEffect(() => {
+    setActiveTab(initialTab);
+  }, [initialTab]);
+
+  const [billing, setBilling] = useState<BillingStatus | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const { data } = await apiRequest<BillingStatus>('/billing/status');
+      if (!cancelled && data) setBilling(data);
+    })();
+    return () => { cancelled = true; };
+  }, [organization.id, activeTab]);
   const [inviteEmail, setInviteEmail] = useState('');
   const [isInviting, setIsInviting] = useState(false);
   const [orgName, setOrgName] = useState(organization.name);
@@ -478,20 +503,24 @@ export function OrganizationPanel({ organization, currentUser, onClose }: Organi
 
           {activeTab === 'billing' && (
             <div className="space-y-6">
-              {/* Current Plan */}
+              {/* Current Plan & Credits */}
               <div className="p-4 rounded-xl bg-gradient-to-r from-primary-600/20 to-primary-500/10 border border-primary-500/30">
                 <div className="flex items-center justify-between mb-2">
                   <h3 className="font-medium text-surface-100">Current Plan</h3>
-                  <span className="px-2 py-1 text-xs font-medium bg-primary-500 text-white rounded-full">
-                    Pro Trial
+                  <span className="px-2 py-1 text-xs font-medium bg-primary-500 text-white rounded-full capitalize">
+                    {billing?.subscription_tier ?? 'None'}
                   </span>
                 </div>
-                <p className="text-sm text-surface-400 mb-4">
-                  Your trial expires in 14 days
-                </p>
-                <button className="w-full btn-primary">
-                  Upgrade to Pro
-                </button>
+                {billing?.subscription_required && (
+                  <p className="text-sm text-surface-400 mb-2">
+                    Add a payment method to use credits.
+                  </p>
+                )}
+                {billing?.current_period_end && (
+                  <p className="text-sm text-surface-400 mb-2">
+                    Period ends {new Date(billing.current_period_end).toLocaleDateString()}
+                  </p>
+                )}
               </div>
 
               {/* Billing Details */}
@@ -499,39 +528,33 @@ export function OrganizationPanel({ organization, currentUser, onClose }: Organi
                 <h3 className="text-sm font-medium text-surface-200 mb-3">Billing details</h3>
                 <div className="card p-4 space-y-3">
                   <div className="flex justify-between text-sm">
-                    <span className="text-surface-400">Payment method</span>
-                    <span className="text-surface-200">Not set</span>
-                  </div>
-                  <div className="flex justify-between text-sm">
                     <span className="text-surface-400">Billing email</span>
                     <span className="text-surface-200">{currentUser.email}</span>
                   </div>
-                  <button className="w-full mt-2 px-4 py-2 text-sm font-medium text-primary-400 border border-primary-500/30 hover:bg-primary-500/10 rounded-lg transition-colors">
-                    Add payment method
-                  </button>
                 </div>
               </div>
 
-              {/* Usage */}
+              {/* Credits usage */}
               <div>
-                <h3 className="text-sm font-medium text-surface-200 mb-3">Usage this month</h3>
+                <h3 className="text-sm font-medium text-surface-200 mb-3">Credits this period</h3>
                 <div className="card p-4 space-y-3">
                   <div>
                     <div className="flex justify-between text-sm mb-1">
-                      <span className="text-surface-400">AI Queries</span>
-                      <span className="text-surface-200">47 / 500</span>
+                      <span className="text-surface-400">Remaining</span>
+                      <span className="text-surface-200">
+                        {billing != null ? `${billing.credits_balance} / ${billing.credits_included}` : '—'}
+                      </span>
                     </div>
                     <div className="h-2 bg-surface-700 rounded-full overflow-hidden">
-                      <div className="h-full bg-primary-500 rounded-full" style={{ width: '9.4%' }} />
-                    </div>
-                  </div>
-                  <div>
-                    <div className="flex justify-between text-sm mb-1">
-                      <span className="text-surface-400">Connectors</span>
-                      <span className="text-surface-200">2 / 5</span>
-                    </div>
-                    <div className="h-2 bg-surface-700 rounded-full overflow-hidden">
-                      <div className="h-full bg-primary-500 rounded-full" style={{ width: '40%' }} />
+                      <div
+                        className="h-full bg-primary-500 rounded-full"
+                        style={{
+                          width:
+                            billing && billing.credits_included > 0
+                              ? `${Math.min(100, (billing.credits_balance / billing.credits_included) * 100)}%`
+                              : '0%',
+                        }}
+                      />
                     </div>
                   </div>
                 </div>

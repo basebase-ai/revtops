@@ -111,6 +111,11 @@ class Settings(BaseSettings):
     # E2B (sandboxed code execution for execute_command tool)
     E2B_API_KEY: Optional[str] = None
 
+    # Stripe (subscription billing)
+    STRIPE_SECRET_KEY: Optional[str] = None
+    STRIPE_WEBHOOK_SECRET: Optional[str] = None
+    STRIPE_PUBLISHABLE_KEY: Optional[str] = None
+
     @property
     def sandbox_database_url(self) -> str:
         """Sync Postgres URL for E2B sandbox (strips SQLAlchemy asyncpg prefix)."""

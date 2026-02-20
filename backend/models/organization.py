@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import DateTime, ForeignKey, String, Text
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -16,6 +16,7 @@ from models.database import Base
 if TYPE_CHECKING:
     from models.user import User
     from models.change_session import ChangeSession
+    from models.credit_transaction import CreditTransaction
 
 
 class Organization(Base):
@@ -58,6 +59,22 @@ class Organization(Base):
         UUID(as_uuid=True), ForeignKey("apps.id", ondelete="SET NULL"), nullable=True
     )
 
+    # Billing and credits
+    stripe_customer_id: Mapped[Optional[str]] = mapped_column(
+        String(255), unique=True, nullable=True, index=True
+    )
+    stripe_subscription_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    subscription_tier: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    subscription_status: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    current_period_start: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    current_period_end: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    credits_balance: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    credits_included: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
     # Relationships
     users: Mapped[list["User"]] = relationship(
         "User", back_populates="organization", foreign_keys="User.organization_id"
@@ -67,6 +84,9 @@ class Organization(Base):
     )
     change_sessions: Mapped[list["ChangeSession"]] = relationship(
         "ChangeSession", back_populates="organization", cascade="all, delete-orphan"
+    )
+    credit_transactions: Mapped[list["CreditTransaction"]] = relationship(
+        "CreditTransaction", back_populates="organization", cascade="all, delete-orphan"
     )
 
     def to_dict(self) -> dict[str, Optional[str]]:
