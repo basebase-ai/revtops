@@ -70,6 +70,7 @@ class BillingStatusResponse(BaseModel):
     credits_included: int = 0
     current_period_end: Optional[str] = None
     cancel_at_period_end: Optional[str] = None  # ISO date when access ends, if cancel scheduled
+    cancel_scheduled: bool = False  # True when Stripe has cancel_at_period_end (even if no date yet)
     subscription_required: bool = True
 
 
@@ -119,15 +120,22 @@ async def get_billing_status(
             raise HTTPException(status_code=404, detail="Organization not found")
         status_ok = org.subscription_status in ACTIVE_SUBSCRIPTION_STATUSES
         cancel_at_period_end: Optional[str] = None
+        cancel_scheduled = False
         if org.stripe_subscription_id and settings.STRIPE_SECRET_KEY:
             import stripe
             stripe.api_key = settings.STRIPE_SECRET_KEY
             try:
                 sub = stripe.Subscription.retrieve(org.stripe_subscription_id)
-                if sub.cancel_at_period_end and sub.current_period_end:
-                    cancel_at_period_end = datetime.fromtimestamp(
-                        sub.current_period_end, tz=timezone.utc
-                    ).isoformat().replace("+00:00", "Z")
+                if sub.cancel_at_period_end:
+                    cancel_scheduled = True
+                    if sub.current_period_end:
+                        cancel_at_period_end = datetime.fromtimestamp(
+                            sub.current_period_end, tz=timezone.utc
+                        ).isoformat().replace("+00:00", "Z")
+                    elif org.current_period_end:
+                        cancel_at_period_end = org.current_period_end.isoformat().replace(
+                            "+00:00", "Z"
+                        )
             except Exception:
                 pass
         return BillingStatusResponse(
@@ -140,6 +148,7 @@ async def get_billing_status(
                 if org.current_period_end else None
             ),
             cancel_at_period_end=cancel_at_period_end,
+            cancel_scheduled=cancel_scheduled,
             subscription_required=not status_ok,
         )
 

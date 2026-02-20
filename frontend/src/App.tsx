@@ -293,7 +293,7 @@ function App(): JSX.Element {
         // If status is 'invited', it gets upgraded to 'active' by the backend
 
         // If sync returned an organization (e.g. invited user who auto-activated),
-        // set it then show app or payment-setup
+        // set it then show app or payment-setup (only when no plan chosen yet)
         if (userData.organization) {
           const org = userData.organization as { id: string; name: string; logo_url: string | null; subscription_required?: boolean };
           setOrganization({
@@ -302,7 +302,25 @@ function App(): JSX.Element {
             logoUrl: org.logo_url ?? null,
           });
           await fetchUserOrganizations();
-          setScreen(org.subscription_required === false ? 'app' : 'payment-setup');
+          try {
+            const token = (await supabase.auth.getSession()).data.session?.access_token ?? null;
+            const res = await fetch(`${API_BASE}/billing/status`, {
+              headers: token ? { Authorization: `Bearer ${token}` } : {},
+            });
+            if (res.ok) {
+              const statusData = (await res.json()) as { subscription_required?: boolean; subscription_tier?: string | null };
+              if (statusData.subscription_required && !statusData.subscription_tier) {
+                setScreen('payment-setup');
+                return;
+              }
+            }
+          } catch (_e) {
+            if (org.subscription_required) {
+              setScreen('payment-setup');
+              return;
+            }
+          }
+          setScreen('app');
           return;
         }
       }
@@ -373,15 +391,15 @@ function App(): JSX.Element {
     // Fetch the user's org list (for multi-org switcher)
     await fetchUserOrganizations();
 
-    // Check billing: if subscription required, show payment-setup
+    // Check billing: only show full-screen payment-setup when no plan chosen yet
     try {
       const token = (await supabase.auth.getSession()).data.session?.access_token ?? null;
       const res = await fetch(`${API_BASE}/billing/status`, {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
       if (res.ok) {
-        const statusData = (await res.json()) as { subscription_required?: boolean };
-        if (statusData.subscription_required) {
+        const statusData = (await res.json()) as { subscription_required?: boolean; subscription_tier?: string | null };
+        if (statusData.subscription_required && !statusData.subscription_tier) {
           setScreen('payment-setup');
           return;
         }
@@ -430,15 +448,15 @@ function App(): JSX.Element {
     // Fetch the user's org list (for multi-org switcher)
     await fetchUserOrganizations();
 
-    // Check billing: if subscription required, show payment-setup
+    // Check billing: only show full-screen payment-setup when no plan chosen yet
     try {
       const token = (await supabase.auth.getSession()).data.session?.access_token ?? null;
       const res = await fetch(`${API_BASE}/billing/status`, {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
       if (res.ok) {
-        const statusData = (await res.json()) as { subscription_required?: boolean };
-        if (statusData.subscription_required) {
+        const statusData = (await res.json()) as { subscription_required?: boolean; subscription_tier?: string | null };
+        if (statusData.subscription_required && !statusData.subscription_tier) {
           setScreen('payment-setup');
           return;
         }

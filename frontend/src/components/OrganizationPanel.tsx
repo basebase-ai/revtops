@@ -26,6 +26,7 @@ interface BillingStatus {
   credits_included: number;
   current_period_end: string | null;
   cancel_at_period_end: string | null;
+  cancel_scheduled: boolean;
   subscription_required: boolean;
 }
 
@@ -566,14 +567,17 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                         Payment pending. Credits will be available once your first payment is confirmed.
                       </p>
                     )}
-                    {!billing?.subscription_required && billing?.current_period_end && !billing?.cancel_at_period_end && (
+                    {!billing?.subscription_required && billing?.current_period_end && !billing?.cancel_at_period_end && !billing?.cancel_scheduled && (
                       <p className="text-sm text-surface-400 mb-2">
                         Period ends {new Date(billing.current_period_end).toLocaleDateString()}
                       </p>
                     )}
-                    {billing?.cancel_at_period_end && (
+                    {(billing?.cancel_at_period_end || billing?.cancel_scheduled) && (
                       <p className="text-sm text-amber-400/90 mb-2">
-                        Your subscription will not renew. Access until {new Date(billing.cancel_at_period_end).toLocaleDateString()}.
+                        Your subscription will not renew.
+                        {billing?.cancel_at_period_end
+                          ? ` Access until ${new Date(billing.cancel_at_period_end).toLocaleDateString()}.`
+                          : ''}
                       </p>
                     )}
                     {billing?.subscription_tier && !showChangePlan && (
@@ -585,7 +589,7 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                         >
                           Change plan
                         </button>
-                        {!billing?.cancel_at_period_end && (
+                        {!billing?.cancel_at_period_end && !billing?.cancel_scheduled && (
                           <button
                             type="button"
                             onClick={async () => {
