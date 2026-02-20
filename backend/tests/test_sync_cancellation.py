@@ -22,9 +22,11 @@ class CancelledConnector:
 
 
 def test_celery_sync_returns_cancelled_when_connector_disconnects(monkeypatch) -> None:
-    from connectors import hubspot
-
-    monkeypatch.setattr(hubspot, "HubSpotConnector", CancelledConnector)
+    """Patch discover_connectors so _sync_integration uses CancelledConnector for hubspot."""
+    monkeypatch.setattr(
+        "connectors.registry.discover_connectors",
+        lambda: {"hubspot": CancelledConnector},
+    )
 
     result = asyncio.run(sync_tasks._sync_integration("11111111-1111-1111-1111-111111111111", "hubspot"))
 

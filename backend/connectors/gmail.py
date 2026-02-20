@@ -17,6 +17,9 @@ import httpx
 
 from api.websockets import broadcast_sync_progress
 from connectors.base import BaseConnector
+from connectors.registry import (
+    AuthType, Capability, ConnectorAction, ConnectorMeta, ConnectorScope,
+)
 from models.activity import Activity
 from models.database import get_session
 
@@ -27,6 +30,29 @@ class GmailConnector(BaseConnector):
     """Connector for Gmail data."""
 
     source_system = "gmail"
+    meta = ConnectorMeta(
+        name="Gmail",
+        slug="gmail",
+        auth_type=AuthType.OAUTH2,
+        scope=ConnectorScope.USER,
+        entity_types=["activities"],
+        capabilities=[Capability.SYNC, Capability.QUERY, Capability.ACTION],
+        actions=[
+            ConnectorAction(
+                name="send_email",
+                description="Send an email via the user's connected Gmail account.",
+                parameters=[
+                    {"name": "to", "type": "string", "required": True, "description": "Recipient email address"},
+                    {"name": "subject", "type": "string", "required": True, "description": "Email subject line"},
+                    {"name": "body", "type": "string", "required": True, "description": "Email body (plain text)"},
+                    {"name": "cc", "type": "array", "required": False, "description": "CC recipients"},
+                    {"name": "bcc", "type": "array", "required": False, "description": "BCC recipients"},
+                ],
+            ),
+        ],
+        nango_integration_id="gmail",
+        description="Gmail – email sync and send",
+    )
 
     async def _get_headers(self) -> dict[str, str]:
         """Get authorization headers for Gmail API."""
@@ -368,6 +394,20 @@ class GmailConnector(BaseConnector):
     async def fetch_deal(self, deal_id: str) -> dict[str, Any]:
         """Gmail doesn't have deals."""
         return {"error": "Gmail does not support deals"}
+
+    async def execute_action(self, action: str, params: dict[str, Any]) -> dict[str, Any]:
+        """Execute a side-effect action."""
+        if action == "send_email":
+            return await self.send_email(
+                to=params["to"],
+                subject=params["subject"],
+                body=params["body"],
+                cc=params.get("cc"),
+                bcc=params.get("bcc"),
+                reply_to=params.get("reply_to"),
+                thread_id=params.get("thread_id"),
+            )
+        raise ValueError(f"Unknown action: {action}")
 
     async def send_email(
         self,

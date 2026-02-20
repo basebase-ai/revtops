@@ -20,6 +20,9 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from connectors.base import BaseConnector
+from connectors.registry import (
+    AuthType, Capability, ConnectorMeta, ConnectorScope, WriteOperation,
+)
 from models.database import get_session
 from models.tracker_issue import TrackerIssue
 from models.tracker_project import TrackerProject
@@ -43,6 +46,42 @@ class AsanaConnector(BaseConnector):
     """Connector for Asana – teams, projects, and tasks."""
 
     source_system: str = "asana"
+    meta = ConnectorMeta(
+        name="Asana",
+        slug="asana",
+        auth_type=AuthType.OAUTH2,
+        scope=ConnectorScope.ORGANIZATION,
+        entity_types=["teams", "projects", "issues"],
+        capabilities=[Capability.SYNC, Capability.WRITE],
+        write_operations=[
+            WriteOperation(
+                name="create_issue", entity_type="issue",
+                description="Create an Asana task",
+                parameters=[
+                    {"name": "team_key", "type": "string", "required": True, "description": "Workspace/team GID"},
+                    {"name": "title", "type": "string", "required": True, "description": "Task name"},
+                    {"name": "description", "type": "string", "required": False, "description": "Task description"},
+                    {"name": "project_name", "type": "string", "required": False, "description": "Project name to add task to"},
+                    {"name": "assignee_name", "type": "string", "required": False, "description": "Assignee display name"},
+                    {"name": "due_date", "type": "string", "required": False, "description": "Due date (YYYY-MM-DD)"},
+                ],
+            ),
+            WriteOperation(
+                name="update_issue", entity_type="issue",
+                description="Update an existing Asana task",
+                parameters=[
+                    {"name": "issue_identifier", "type": "string", "required": True, "description": "Asana task GID"},
+                    {"name": "title", "type": "string", "required": False, "description": "New name"},
+                    {"name": "description", "type": "string", "required": False, "description": "New description"},
+                    {"name": "state_name", "type": "string", "required": False, "description": "New state (completed / not completed)"},
+                    {"name": "assignee_name", "type": "string", "required": False, "description": "New assignee"},
+                    {"name": "due_date", "type": "string", "required": False, "description": "New due date (YYYY-MM-DD)"},
+                ],
+            ),
+        ],
+        nango_integration_id="asana",
+        description="Asana – teams, projects, and task management",
+    )
 
     def __init__(
         self, organization_id: str, user_id: Optional[str] = None
@@ -522,6 +561,16 @@ class AsanaConnector(BaseConnector):
             "Synced %d Asana tasks for org %s", count, self.organization_id
         )
         return count
+
+    # ── Write: Dispatch ─────────────────────────────────────────────────
+
+    async def write(self, operation: str, data: dict[str, Any]) -> dict[str, Any]:
+        """Dispatch a record-level write operation."""
+        if operation == "create_issue":
+            return await self.create_issue(**data)
+        if operation == "update_issue":
+            return await self.update_issue(**data)
+        raise ValueError(f"Unknown write operation: {operation}")
 
     # ── Write: Create Task ───────────────────────────────────────────────
 

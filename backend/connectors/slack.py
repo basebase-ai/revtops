@@ -60,6 +60,9 @@ def markdown_to_mrkdwn(text: str) -> str:
 
 from api.websockets import broadcast_sync_progress
 from connectors.base import BaseConnector
+from connectors.registry import (
+    AuthType, Capability, ConnectorAction, ConnectorMeta, ConnectorScope,
+)
 from models.activity import Activity
 from models.database import get_session
 from models.user import User
@@ -72,6 +75,27 @@ class SlackConnector(BaseConnector):
     """Connector for Slack workspace data."""
 
     source_system = "slack"
+    meta = ConnectorMeta(
+        name="Slack",
+        slug="slack",
+        auth_type=AuthType.OAUTH2,
+        scope=ConnectorScope.ORGANIZATION,
+        entity_types=["activities"],
+        capabilities=[Capability.SYNC, Capability.ACTION, Capability.LISTEN],
+        actions=[
+            ConnectorAction(
+                name="send_message",
+                description="Send a message to a Slack channel or user. Uses Slack mrkdwn: *bold*, _italic_, ~strike~.",
+                parameters=[
+                    {"name": "channel", "type": "string", "required": True, "description": "Channel name (e.g. '#sales-alerts') or channel ID"},
+                    {"name": "message", "type": "string", "required": True, "description": "Message text in Slack mrkdwn format"},
+                    {"name": "thread_ts", "type": "string", "required": False, "description": "Thread timestamp to reply in thread"},
+                ],
+            ),
+        ],
+        nango_integration_id="slack",
+        description="Slack workspace – messages, channels, and real-time events",
+    )
 
     async def _get_headers(self) -> dict[str, str]:
         """Get authorization headers for Slack API."""
@@ -727,6 +751,20 @@ class SlackConnector(BaseConnector):
         except Exception:
             # Silently ignore if reaction was already removed or doesn't exist
             pass
+
+    async def execute_action(self, action: str, params: dict[str, Any]) -> dict[str, Any]:
+        """Execute a side-effect action."""
+        if action == "send_message":
+            channel: str | None = params.get("channel")
+            user_id: str | None = params.get("user_id")
+            text: str = params.get("text", "")
+            thread_ts: str | None = params.get("thread_ts")
+            if user_id and not channel:
+                return await self.send_direct_message(user_id, text)
+            if channel:
+                return await self.post_message(channel, text, thread_ts=thread_ts)
+            raise ValueError("send_message requires 'channel' or 'user_id'")
+        raise ValueError(f"Unknown action: {action}")
 
     async def post_message(
         self,

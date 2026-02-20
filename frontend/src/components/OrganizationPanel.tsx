@@ -527,7 +527,7 @@ export function OrganizationPanel({ organization, currentUser, onClose }: Organi
                   </div>
                   <div>
                     <div className="flex justify-between text-sm mb-1">
-                      <span className="text-surface-400">Data Sources</span>
+                      <span className="text-surface-400">Connectors</span>
                       <span className="text-surface-200">2 / 5</span>
                     </div>
                     <div className="h-2 bg-surface-700 rounded-full overflow-hidden">

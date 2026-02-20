@@ -19,7 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from api.websockets import websocket_endpoint
-from api.routes import apps, artifacts, auth, change_sessions, chat, data, deals, drive, memories, search, slack_events, slack_user_mappings, sync, tool_settings, twilio_events, waitlist, workflows
+from api.routes import apps, artifacts, auth, change_sessions, chat, connectors, data, deals, drive, memories, search, slack_events, slack_user_mappings, sync, tool_settings, twilio_events, waitlist, workflows
 from models.database import init_db, close_db, get_pool_status
 from config import log_missing_env_vars
 
@@ -127,6 +127,7 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
 
 # Routes
 app.include_router(apps.router, prefix="/api/apps", tags=["apps"])
+app.include_router(connectors.router, prefix="/api/connectors", tags=["connectors"])
 app.include_router(artifacts.router, prefix="/api/artifacts", tags=["artifacts"])
 app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
 app.include_router(chat.router, prefix="/api/chat", tags=["chat"])
@@ -161,7 +162,7 @@ async def startup() -> None:
 async def shutdown() -> None:
     """Clean up database connections and sandboxes on shutdown."""
     logging.info("Shutting down, closing database connections...")
-    from agents.tools import cleanup_all_sandboxes
+    from connectors.code_sandbox import cleanup_all_sandboxes
     await cleanup_all_sandboxes()
     await close_db()
     logging.info("Database connections closed")

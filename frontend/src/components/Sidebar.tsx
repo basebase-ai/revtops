@@ -4,7 +4,7 @@
  * Features:
  * - Expand/collapse toggle
  * - New Chat button
- * - Data Sources tab with badge
+ * - Connectors tab with badge
  * - Chats tab
  * - Recent chats list
  * - Organization section
@@ -308,7 +308,7 @@ export function Sidebar({
           {!collapsed && <span>Home</span>}
         </button>
 
-        {/* Data Sources */}
+        {/* Connectors */}
         <button
           onClick={() => onViewChange('data-sources')}
           className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${
@@ -327,7 +327,7 @@ export function Sidebar({
               </span>
             )}
           </div>
-          {!collapsed && <span>Sources</span>}
+          {!collapsed && <span>Connectors</span>}
         </button>
 
         {/* Search Data */}

@@ -5,7 +5,7 @@
  * - Collapsible left sidebar (icons when collapsed)
  * - Slide-out drawer on mobile
  * - New Chat button
- * - Data Sources tab with badge
+ * - Connectors tab with badge
  * - Chats tab with recent conversations
  * - Organization & Profile sections at bottom
  * 
@@ -48,7 +48,7 @@ import { AppsGallery } from './apps/AppsGallery';
 import { AppFullView } from './apps/AppFullView';
 import { OrganizationPanel } from './OrganizationPanel';
 import { ProfilePanel } from './ProfilePanel';
-import { useAppStore, useMasquerade, useIntegrations, type ActiveTask } from '../store';
+import { useAppStore, useMasquerade, useIntegrations, type ActiveTask, type ToolCallData } from '../store';
 import { useTeamMembers, useWebSocket } from '../hooks';
 import { apiRequest } from '../lib/api';
 
@@ -520,11 +520,15 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
                 }
               }
             } else if (data.type === 'tool_result') {
-              // Tool result received
-              updateConversationToolMessage(conversation_id, data.tool_id as string, {
+              // Tool result received (include input so block has params if it was empty, e.g. modal)
+              const updates: Partial<ToolCallData> = {
                 result: data.result as Record<string, unknown>,
                 status: 'complete',
-              });
+              };
+              if (data.tool_input != null && typeof data.tool_input === 'object') {
+                updates.input = data.tool_input as Record<string, unknown>;
+              }
+              updateConversationToolMessage(conversation_id, data.tool_id as string, updates);
               
               // If workflows table was modified, notify the Workflows component to refresh
               const result = data.result as Record<string, unknown> | undefined;
@@ -790,7 +794,7 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
   const viewTitles: Record<string, string> = {
     home: 'Home',
     chat: 'Chat',
-    'data-sources': 'Data Sources',
+    'data-sources': 'Connectors',
     workflows: 'Workflows',
     memory: 'Memory',
     admin: 'Admin',

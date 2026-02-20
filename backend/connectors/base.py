@@ -13,6 +13,7 @@ from uuid import UUID
 from sqlalchemy import select
 
 from config import get_nango_integration_id
+from connectors.registry import ConnectorMeta  # noqa: F401 – re-export for convenience
 from models.database import get_session
 from models.integration import Integration
 from services.nango import get_nango_client
@@ -26,10 +27,19 @@ class SyncCancelledError(RuntimeError):
 
 
 class BaseConnector(ABC):
-    """Abstract base class for data source connectors."""
+    """Abstract base class for data source connectors.
+
+    Subclasses should set a class-level ``meta`` attribute
+    (:class:`ConnectorMeta`) that describes the connector's identity,
+    capabilities, auth requirements, and available operations.
+    """
 
     # Override in subclasses - must match our provider names
     source_system: str = "unknown"
+
+    # Subclasses should set this to a ConnectorMeta instance.
+    # Not required yet (backward compat) but needed for auto-discovery.
+    meta: ConnectorMeta
 
     def __init__(self, organization_id: str, user_id: Optional[str] = None) -> None:
         """
@@ -135,42 +145,47 @@ class BaseConnector(ABC):
         return 0
 
     async def sync_all(self) -> dict[str, int]:
-        """
-        Run all sync operations.
+        """Run all sync operations.
 
-        Returns:
-            Dictionary with counts of synced records by type
+        Returns a dict of entity-type → count-synced.  Supports both old-style
+        connectors (``sync_*`` does its own DB upserts, returns ``int``) and
+        new-style connectors (``sync_*`` returns a ``list`` of Pydantic record
+        objects and the engine handles persistence).
         """
         await self.ensure_sync_active("sync_all:start")
 
-        # Sync pipelines first so deals can reference them
-        pipelines_count = await self.sync_pipelines()
-        await self.ensure_sync_active("sync_all:after_pipelines")
-        accounts_count = await self.sync_accounts()
-        await self.ensure_sync_active("sync_all:after_accounts")
-        deals_count = await self.sync_deals()
-        await self.ensure_sync_active("sync_all:after_deals")
-        contacts_count = await self.sync_contacts()
-        await self.ensure_sync_active("sync_all:after_contacts")
-        activities_count = await self.sync_activities()
-        await self.ensure_sync_active("sync_all:after_activities")
-        goals_count = await self.sync_goals()
-        await self.ensure_sync_active("sync_all:after_goals")
+        entity_order: list[str] = [
+            "pipelines", "accounts", "deals", "contacts", "activities", "goals",
+        ]
 
-        result: dict[str, int] = {
-            "accounts": accounts_count,
-            "deals": deals_count,
-            "contacts": contacts_count,
-            "activities": activities_count,
-        }
+        result: dict[str, int] = {}
+        for entity in entity_order:
+            method = getattr(self, f"sync_{entity}", None)
+            if method is None:
+                continue
 
-        # Only include pipelines if synced (not all connectors have them)
-        if pipelines_count > 0:
-            result["pipelines"] = pipelines_count
-        if goals_count > 0:
-            result["goals"] = goals_count
+            raw = await method()
+            count = await self._handle_sync_result(entity, raw)
+            await self.ensure_sync_active(f"sync_all:after_{entity}")
+
+            if count > 0 or entity in ("accounts", "deals", "contacts", "activities"):
+                result[entity] = count
 
         return result
+
+    async def _handle_sync_result(self, entity: str, raw: int | list[Any]) -> int:
+        """Route old-style (int) vs new-style (list) sync results."""
+        if isinstance(raw, int):
+            return raw
+
+        if isinstance(raw, list):
+            from connectors.persistence import persist_records
+
+            return await persist_records(
+                self.organization_id, entity, raw, self.source_system,
+            )
+
+        return 0
 
     async def get_oauth_token(self) -> tuple[str, str]:
         """
@@ -310,3 +325,27 @@ class BaseConnector(ABC):
             if integration:
                 integration.last_error = error[:500]  # Truncate long errors
                 await session.commit()
+
+    # ------------------------------------------------------------------
+    # Capability methods – override in subclasses as needed
+    # ------------------------------------------------------------------
+
+    async def get_schema(self) -> list[dict[str, Any]]:
+        """Return schema/entity metadata (QUERY capability)."""
+        return []
+
+    async def query(self, request: str) -> dict[str, Any]:
+        """Execute an on-demand query (QUERY capability)."""
+        raise NotImplementedError(f"{self.source_system} does not support query()")
+
+    async def write(self, operation: str, data: dict[str, Any]) -> dict[str, Any]:
+        """Dispatch a record-level write operation (WRITE capability)."""
+        raise NotImplementedError(f"{self.source_system} does not support write()")
+
+    async def execute_action(self, action: str, params: dict[str, Any]) -> dict[str, Any]:
+        """Execute a side-effect action (ACTION capability)."""
+        raise NotImplementedError(f"{self.source_system} does not support execute_action()")
+
+    async def handle_event(self, event_type: str, payload: dict[str, Any]) -> None:
+        """Handle an inbound webhook/event (LISTEN capability)."""
+        raise NotImplementedError(f"{self.source_system} does not support handle_event()")

@@ -15,6 +15,9 @@ from typing import Any, Optional
 import httpx
 
 from connectors.base import BaseConnector
+from connectors.registry import (
+    AuthType, Capability, ConnectorAction, ConnectorMeta, ConnectorScope,
+)
 from models.activity import Activity
 from models.database import get_session
 
@@ -25,6 +28,29 @@ class MicrosoftMailConnector(BaseConnector):
     """Connector for Microsoft Outlook Mail data via Microsoft Graph."""
 
     source_system = "microsoft_mail"
+    meta = ConnectorMeta(
+        name="Microsoft Mail",
+        slug="microsoft_mail",
+        auth_type=AuthType.OAUTH2,
+        scope=ConnectorScope.USER,
+        entity_types=["activities"],
+        capabilities=[Capability.SYNC, Capability.ACTION],
+        actions=[
+            ConnectorAction(
+                name="send_email",
+                description="Send an email via the user's connected Microsoft Outlook account.",
+                parameters=[
+                    {"name": "to", "type": "string", "required": True, "description": "Recipient email address"},
+                    {"name": "subject", "type": "string", "required": True, "description": "Email subject line"},
+                    {"name": "body", "type": "string", "required": True, "description": "Email body (plain text)"},
+                    {"name": "cc", "type": "array", "required": False, "description": "CC recipients"},
+                    {"name": "bcc", "type": "array", "required": False, "description": "BCC recipients"},
+                ],
+            ),
+        ],
+        nango_integration_id="microsoft-mail",
+        description="Microsoft Outlook Mail – email sync and send",
+    )
 
     async def _get_headers(self) -> dict[str, str]:
         """Get authorization headers for Microsoft Graph API."""
@@ -251,6 +277,20 @@ class MicrosoftMailConnector(BaseConnector):
     async def fetch_deal(self, deal_id: str) -> dict[str, Any]:
         """Microsoft Mail doesn't have deals."""
         return {"error": "Microsoft Mail does not support deals"}
+
+    async def execute_action(self, action: str, params: dict[str, Any]) -> dict[str, Any]:
+        """Execute a side-effect action."""
+        if action == "send_email":
+            return await self.send_email(
+                to=params["to"],
+                subject=params["subject"],
+                body=params["body"],
+                cc=params.get("cc"),
+                bcc=params.get("bcc"),
+                reply_to=params.get("reply_to"),
+                save_to_sent=params.get("save_to_sent", True),
+            )
+        raise ValueError(f"Unknown action: {action}")
 
     async def send_email(
         self,

@@ -2,14 +2,16 @@
 Tool definitions and execution for Claude.
 
 Tools are organized by category (see registry.py):
-- LOCAL_READ: run_sql_query, execute_command
-- LOCAL_WRITE: create_artifact, run_sql_write, run_workflow
-- EXTERNAL_READ: web_search, fetch_url, enrich_with_apollo, search_system_of_record
-- EXTERNAL_WRITE: write_to_system_of_record, send_email_from, send_slack, trigger_sync
+- LOCAL_READ: run_sql_query
+- LOCAL_WRITE: create_artifact, run_sql_write, run_workflow, create_app, keep_notes, manage_memory
+- EXTERNAL_READ: query_system, list_connected_systems
+- EXTERNAL_WRITE: write_to_system, run_action, trigger_sync
 
-All writes to external systems (CRM, issue trackers, code repos) go through
-write_to_system_of_record, which dispatches to the correct handler by target_system.
+All external interactions go through generic connector tools (query_system,
+write_to_system, run_action) which dispatch to the appropriate connector.
 """
+
+from __future__ import annotations
 
 import asyncio
 import json
@@ -18,8 +20,11 @@ import re
 from collections.abc import Awaitable, Callable
 from datetime import date, datetime, timezone
 from decimal import Decimal
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
+
+if TYPE_CHECKING:
+    from connectors.base import BaseConnector
 
 import httpx
 from openai import AsyncOpenAI
@@ -262,18 +267,10 @@ async def execute_tool(
         logger.warning("[Tools] No organization_id - returning error")
         return {"error": "No organization associated with user. Please complete onboarding."}
     
-    normalized_tool_name = tool_name
-    if tool_name == "create_github_issue":
-        logger.warning("[Tools] create_github_issue is deprecated, remapping to github_issues_access")
-        normalized_tool_name = "github_issues_access"
-    elif tool_name == "write_to_system_of_record":
-        logger.info("[Tools] Routing write_to_system_of_record to unified system-of-record dispatcher")
-        normalized_tool_name = "write_to_system_of_record"
-
     # Check if this tool should bypass approval (for auto-approved workflows)
     skip_approval = await _should_skip_approval(tool_name, user_id, context)
 
-    if normalized_tool_name == "manage_memory" and context and context.get("is_workflow"):
+    if tool_name == "manage_memory" and context and context.get("is_workflow"):
         action: str = tool_input.get("action", "save")
         if action in ("save", "update"):
             logger.info("[Tools] Blocking manage_memory(%s) during workflow execution", action)
@@ -283,50 +280,27 @@ async def execute_tool(
     tool_handlers: dict[str, Callable[[], Awaitable[dict[str, Any]]]] = {
         "run_sql_query": lambda: _run_sql_query(tool_input, organization_id, user_id),
         "run_sql_write": lambda: _run_sql_write(tool_input, organization_id, user_id, context),
-        "web_search": lambda: _web_search(tool_input),
         "run_workflow": lambda: _run_workflow(tool_input, organization_id, user_id, context),
-        "fetch_url": lambda: _fetch_url(tool_input),
-        "enrich_with_apollo": lambda: _enrich_with_apollo(tool_input, organization_id),
-        "crm_write": lambda: _crm_write(
-            tool_input,
-            organization_id,
-            user_id,
-            skip_approval,
-            conversation_id=conversation_id,
-        ),
-        "write_to_system_of_record": lambda: _write_to_system_of_record(
-            tool_input,
-            organization_id,
-            user_id,
-            skip_approval,
-            conversation_id=conversation_id,
-        ),
-        "send_email_from": lambda: _send_email_from(tool_input, organization_id, user_id, skip_approval),
-        "send_slack": lambda: _send_slack(tool_input, organization_id, user_id, skip_approval),
-        "send_sms": lambda: _send_sms(tool_input, organization_id, user_id),
-        "github_issues_access": lambda: _github_issues_access(tool_input, organization_id, user_id, skip_approval),
-        "trigger_sync": lambda: _trigger_sync(tool_input, organization_id),
-        "search_cloud_files": lambda: _search_cloud_files(tool_input, organization_id, user_id),
-        "read_cloud_file": lambda: _read_cloud_file(tool_input, organization_id, user_id),
-        "create_cloud_file": lambda: _create_cloud_file(tool_input, organization_id, user_id, skip_approval),
         "create_artifact": lambda: _create_artifact(tool_input, organization_id, user_id, context),
         "create_app": lambda: _create_app(tool_input, organization_id, user_id, context),
         "keep_notes": lambda: _keep_notes(tool_input, organization_id, user_id, context, skip_approval),
         "manage_memory": lambda: _manage_memory(tool_input, organization_id, user_id, skip_approval),
-        "create_linear_issue": lambda: _create_linear_issue(tool_input, organization_id, user_id, skip_approval),
-        "update_linear_issue": lambda: _update_linear_issue(tool_input, organization_id, user_id, skip_approval),
-        "search_linear_issues": lambda: _search_linear_issues(tool_input, organization_id),
         "foreach": lambda: _foreach(tool_input, organization_id, user_id, context),
-        "execute_command": lambda: _execute_command(tool_input, organization_id, user_id, context=context),
+        "trigger_sync": lambda: _trigger_sync(tool_input, organization_id),
+        # Connector-driven generic tools
+        "list_connected_systems": lambda: _list_connected_systems(organization_id),
+        "query_system": lambda: _query_system(tool_input, organization_id, user_id),
+        "write_to_system": lambda: _write_to_system(tool_input, organization_id, user_id, skip_approval, conversation_id),
+        "run_action": lambda: _run_action(tool_input, organization_id, user_id, skip_approval, context),
     }
 
-    handler = tool_handlers.get(normalized_tool_name)
+    handler = tool_handlers.get(tool_name)
     if handler is None:
         logger.error("[Tools] Unknown tool: %s", tool_name)
         return {"error": f"Unknown tool: {tool_name}"}
 
     result = await handler()
-    _log_tool_execution_result(tool_name, normalized_tool_name, result)
+    _log_tool_execution_result(tool_name, tool_name, result)
     return result
 
 
@@ -344,18 +318,12 @@ def _log_tool_execution_result(
             result.get("succeeded", result.get("succeeded_items", 0)),
             result.get("total", result.get("total_items", 0)),
         )
-    elif executed_tool_name == "fetch_url":
-        logger.info("[Tools] fetch_url completed: %s", result.get("url"))
-    elif executed_tool_name == "enrich_with_apollo":
-        logger.info("[Tools] enrich_with_apollo completed: %s", result.get("status", "done"))
-    elif executed_tool_name in {"crm_write", "write_to_system_of_record"}:
-        logger.info("[Tools] write_to_system_of_record completed: %s", result.get("status", result.get("error", "unknown")))
-    elif executed_tool_name == "send_email_from":
-        logger.info("[Tools] send_email_from completed: %s", result.get("status"))
-    elif executed_tool_name == "send_slack":
-        logger.info("[Tools] send_slack completed: %s", result.get("status"))
     elif executed_tool_name == "trigger_sync":
         logger.info("[Tools] trigger_sync completed: %s", result.get("status"))
+    elif executed_tool_name in ("query_system", "write_to_system", "run_action"):
+        logger.info("[Tools] %s completed: %s", executed_tool_name, result.get("status", result.get("error", "ok")))
+    elif executed_tool_name == "list_connected_systems":
+        logger.info("[Tools] list_connected_systems returned manifest")
     elif executed_tool_name == "search_cloud_files":
         logger.info("[Tools] search_cloud_files returned %d results", len(result.get("files", [])))
     elif executed_tool_name == "read_cloud_file":
@@ -481,6 +449,192 @@ async def _resolve_semantic_embeds(query: str) -> tuple[str, str | None]:
         resolved = resolved[: match.start()] + vec_literal + resolved[match.end() :]
 
     return resolved, None
+
+
+# =============================================================================
+# Connector-driven generic tool handlers
+# =============================================================================
+
+async def _get_connector_instance(
+    slug: str,
+    organization_id: str,
+    user_id: str | None,
+    required_capability: str | None = None,
+) -> tuple["BaseConnector | None", str | None]:
+    """Resolve a connector by slug, verify active Integration, and instantiate.
+
+    Returns (connector_instance, None) on success or (None, error_message) on failure.
+    """
+    from connectors.base import BaseConnector
+    from connectors.registry import Capability, ConnectorMeta, discover_connectors
+    from models.integration import Integration
+
+    registry = discover_connectors()
+    connector_cls: type[BaseConnector] | None = registry.get(slug)
+    if connector_cls is None:
+        return None, f"Unknown system '{slug}'. Use list_connected_systems to see available systems."
+
+    meta: ConnectorMeta = connector_cls.meta  # type: ignore[attr-defined]
+
+    if required_capability:
+        cap = Capability(required_capability)
+        if cap not in meta.capabilities:
+            return None, f"System '{slug}' does not support {required_capability}. Capabilities: {[c.value for c in meta.capabilities]}"
+
+    async with get_session(organization_id=organization_id) as session:
+        conditions = [
+            Integration.organization_id == UUID(organization_id),
+            Integration.provider == slug,
+            Integration.is_active == True,  # noqa: E712
+        ]
+        if meta.scope.value == "user" and user_id:
+            conditions.append(Integration.user_id == UUID(user_id))
+        result = await session.execute(select(Integration).where(*conditions))
+        integration: Integration | None = result.scalar_one_or_none()
+        if integration is None:
+            return None, f"System '{slug}' is not connected. Ask the user to connect it in the Connectors page."
+
+    if meta.scope.value == "user":
+        instance: BaseConnector = connector_cls(organization_id, user_id=user_id)
+    else:
+        instance = connector_cls(organization_id)
+
+    return instance, None
+
+
+async def _list_connected_systems(organization_id: str) -> dict[str, Any]:
+    """Return the systems manifest for all connected connectors."""
+    from connectors.registry import Capability, ConnectorMeta, discover_connectors
+    from models.integration import Integration
+
+    async with get_session(organization_id=organization_id) as session:
+        result = await session.execute(
+            select(Integration.provider).where(
+                Integration.organization_id == UUID(organization_id),
+                Integration.is_active == True,  # noqa: E712
+            )
+        )
+        active_providers: set[str] = {row[0] for row in result.all()}
+
+    registry = discover_connectors()
+
+    systems: list[dict[str, Any]] = []
+    for slug, connector_cls in sorted(registry.items()):
+        if slug not in active_providers:
+            continue
+        meta: ConnectorMeta = connector_cls.meta  # type: ignore[attr-defined]
+        entry: dict[str, Any] = {
+            "slug": meta.slug,
+            "name": meta.name,
+            "capabilities": [c.value for c in meta.capabilities],
+        }
+        if meta.query_description:
+            entry["query_description"] = meta.query_description
+        if meta.write_operations:
+            entry["write_operations"] = [
+                {"name": op.name, "entity_type": op.entity_type, "description": op.description, "parameters": op.parameters}
+                for op in meta.write_operations
+            ]
+        if meta.actions:
+            entry["actions"] = [
+                {"name": act.name, "description": act.description, "parameters": act.parameters}
+                for act in meta.actions
+            ]
+        systems.append(entry)
+
+    return {"systems": systems, "count": len(systems)}
+
+
+async def _query_system(
+    params: dict[str, Any], organization_id: str, user_id: str | None
+) -> dict[str, Any]:
+    """Dispatch a query to a QUERY-capable connector."""
+    system: str = (params.get("system") or "").strip()
+    query: str = (params.get("query") or "").strip()
+    if not system:
+        return {"error": "system is required"}
+    if not query:
+        return {"error": "query is required"}
+
+    instance, error = await _get_connector_instance(system, organization_id, user_id, required_capability="query")
+    if error:
+        return {"error": error}
+    assert instance is not None
+
+    try:
+        return await instance.query(query)
+    except Exception as exc:
+        logger.error("[Tools] query_system(%s) failed: %s", system, exc, exc_info=True)
+        return {"error": f"Query to {system} failed: {exc}"}
+
+
+async def _write_to_system(
+    params: dict[str, Any],
+    organization_id: str,
+    user_id: str | None,
+    skip_approval: bool,
+    conversation_id: str | None,
+) -> dict[str, Any]:
+    """Dispatch a write to a WRITE-capable connector."""
+    system: str = (params.get("system") or "").strip()
+    operation: str = (params.get("operation") or "").strip()
+    data: dict[str, Any] = params.get("data") or {}
+
+    if not system:
+        return {"error": "system is required"}
+    if not operation:
+        return {"error": "operation is required"}
+
+    instance, error = await _get_connector_instance(system, organization_id, user_id, required_capability="write")
+    if error:
+        return {"error": error}
+    assert instance is not None
+
+    try:
+        return await instance.write(operation, data)
+    except Exception as exc:
+        logger.error("[Tools] write_to_system(%s, %s) failed: %s", system, operation, exc, exc_info=True)
+        return {"error": f"Write to {system}.{operation} failed: {exc}"}
+
+
+async def _run_action(
+    params: dict[str, Any],
+    organization_id: str,
+    user_id: str | None,
+    skip_approval: bool,
+    context: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Dispatch an action to an ACTION-capable connector."""
+    system: str = (params.get("system") or "").strip()
+    action: str = (params.get("action") or "").strip()
+    action_params: dict[str, Any] = params.get("params") or {}
+
+    if not system:
+        return {"error": "system is required"}
+    if not action:
+        return {"error": "action is required"}
+
+    # Inject conversation_id for code_sandbox execute_command
+    if system == "code_sandbox" and action == "execute_command":
+        conversation_id: str | None = (context or {}).get("conversation_id")
+        if conversation_id:
+            action_params["conversation_id"] = conversation_id
+
+    instance, error = await _get_connector_instance(system, organization_id, user_id, required_capability="action")
+    if error:
+        return {"error": error}
+    assert instance is not None
+
+    try:
+        return await instance.execute_action(action, action_params)
+    except Exception as exc:
+        logger.error("[Tools] run_action(%s, %s) failed: %s", system, action, exc, exc_info=True)
+        return {"error": f"Action {system}.{action} failed: {exc}"}
+
+
+# =============================================================================
+# SQL Tools
+# =============================================================================
 
 
 async def _run_sql_query(

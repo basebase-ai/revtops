@@ -72,7 +72,7 @@ class Settings(BaseSettings):
     NANGO_MICROSOFT_MAIL_INTEGRATION_ID: str = "microsoft"
     NANGO_FIREFLIES_INTEGRATION_ID: str = "fireflies"
     NANGO_ZOOM_INTEGRATION_ID: str = "zoom"
-    NANGO_GOOGLE_DRIVE_INTEGRATION_ID: str = "google-sheet"
+    NANGO_GOOGLE_DRIVE_INTEGRATION_ID: str = "google-drive"
     NANGO_APOLLO_INTEGRATION_ID: str = "apollo"
     NANGO_GITHUB_INTEGRATION_ID: str = "github"
     NANGO_LINEAR_INTEGRATION_ID: str = "linear"
@@ -205,17 +205,52 @@ PROVIDER_SCOPES: dict[str, str] = {
     "github": "organization",
     "linear": "organization",
     "asana": "organization",
+    "web_search": "organization",
+    "code_sandbox": "organization",
+    "twilio": "organization",
 }
 
 
 def get_nango_integration_id(provider: str) -> str:
-    """Get the Nango integration ID for a provider."""
+    """Get the Nango integration ID for a provider.
+
+    Falls back to ConnectorMeta.nango_integration_id for connectors that
+    aren't in the hardcoded dict (e.g. community connectors).
+    """
     integration_id = NANGO_INTEGRATION_IDS.get(provider)
-    if not integration_id:
-        raise ValueError(f"Unknown provider: {provider}")
-    return integration_id
+    if integration_id:
+        return integration_id
+
+    try:
+        from connectors.registry import discover_connectors
+
+        registry = discover_connectors()
+        connector_cls = registry.get(provider)
+        if connector_cls and hasattr(connector_cls, "meta") and connector_cls.meta.nango_integration_id:
+            return connector_cls.meta.nango_integration_id
+    except Exception:
+        pass
+
+    raise ValueError(f"Unknown provider: {provider}")
 
 
 def get_provider_scope(provider: str) -> str:
-    """Get the scope for a provider ('organization' or 'user')."""
-    return PROVIDER_SCOPES.get(provider, "organization")
+    """Get the scope for a provider ('organization' or 'user').
+
+    Falls back to ConnectorMeta.scope for community connectors.
+    """
+    scope = PROVIDER_SCOPES.get(provider)
+    if scope:
+        return scope
+
+    try:
+        from connectors.registry import discover_connectors
+
+        registry = discover_connectors()
+        connector_cls = registry.get(provider)
+        if connector_cls and hasattr(connector_cls, "meta"):
+            return connector_cls.meta.scope.value
+    except Exception:
+        pass
+
+    return "organization"

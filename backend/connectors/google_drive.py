@@ -15,8 +15,10 @@ Flow:
 
 import json
 import logging
+import re
 from datetime import datetime
 from typing import Any, Optional
+
 from uuid import UUID, uuid4
 
 import httpx
@@ -24,6 +26,10 @@ from sqlalchemy import select, and_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from config import settings, get_nango_integration_id
+from connectors.base import BaseConnector
+from connectors.registry import (
+    AuthType, Capability, ConnectorAction, ConnectorMeta, ConnectorScope,
+)
 from models.database import get_session
 from models.shared_file import SharedFile
 from models.integration import Integration
@@ -50,6 +56,21 @@ FILE_TYPE_TO_MIME: dict[str, str] = {
     "presentation": GOOGLE_SLIDES_MIME,
 }
 
+# Keywords for type-based search (query "search:spreadsheet" or "type:spreadsheet")
+TYPE_SEARCH_ALIASES: dict[str, str] = {
+    "spreadsheet": GOOGLE_SHEET_MIME,
+    "spreadsheets": GOOGLE_SHEET_MIME,
+    "sheet": GOOGLE_SHEET_MIME,
+    "sheets": GOOGLE_SHEET_MIME,
+    "document": GOOGLE_DOC_MIME,
+    "documents": GOOGLE_DOC_MIME,
+    "doc": GOOGLE_DOC_MIME,
+    "docs": GOOGLE_DOC_MIME,
+    "presentation": GOOGLE_SLIDES_MIME,
+    "presentations": GOOGLE_SLIDES_MIME,
+    "slides": GOOGLE_SLIDES_MIME,
+}
+
 # Export MIME mappings for Google Workspace files → text content
 EXPORT_MIME_MAP: dict[str, str] = {
     GOOGLE_DOC_MIME: "text/plain",
@@ -65,7 +86,147 @@ LIST_FIELDS: str = f"nextPageToken,files({FILE_FIELDS})"
 MAX_CONTENT_LENGTH: int = 100_000
 
 
-class GoogleDriveConnector:
+def _utf16_len(s: str) -> int:
+    """Return length in UTF-16 code units (Google Docs API uses this for indices)."""
+    return sum(2 if ord(c) > 0xFFFF else 1 for c in s)
+
+
+def _parse_inline_markdown(line: str) -> tuple[str, list[tuple[int, int, str]]]:
+    """Parse inline markdown (**bold**, *italic*, `code`) from a line. Returns (plain_text, [(start, end, style), ...])."""
+    display_parts: list[str] = []
+    runs: list[tuple[int, int, str]] = []
+    pos: int = 0
+    i: int = 0
+    while i < len(line):
+        if i + 2 <= len(line) and line[i : i + 2] == "**":
+            j = line.find("**", i + 2)
+            if j == -1:
+                display_parts.append(line[i:])
+                break
+            content = line[i + 2 : j]
+            runs.append((pos, pos + _utf16_len(content), "bold"))
+            display_parts.append(content)
+            pos += _utf16_len(content)
+            i = j + 2
+        elif line[i] == "*" and (i == 0 or line[i - 1] != "*"):
+            j = line.find("*", i + 1)
+            if j == -1:
+                display_parts.append(line[i:])
+                break
+            content = line[i + 1 : j]
+            runs.append((pos, pos + _utf16_len(content), "italic"))
+            display_parts.append(content)
+            pos += _utf16_len(content)
+            i = j + 1
+        elif line[i] == "`":
+            j = line.find("`", i + 1)
+            if j == -1:
+                display_parts.append(line[i:])
+                break
+            content = line[i + 1 : j]
+            runs.append((pos, pos + _utf16_len(content), "code"))
+            display_parts.append(content)
+            pos += _utf16_len(content)
+            i = j + 1
+        else:
+            display_parts.append(line[i])
+            pos += _utf16_len(line[i])
+            i += 1
+    return "".join(display_parts), runs
+
+
+def _markdown_to_docs_requests(content: str) -> list[dict[str, Any]]:
+    """Convert markdown text to Google Docs API batchUpdate requests (headings, bullets, bold, italic, code)."""
+    requests: list[dict[str, Any]] = []
+    # Docs API uses 1-based index in UTF-16 code units.
+    idx: int = 1
+    lines: list[str] = content.split("\n")
+    for line in lines:
+        if not line.strip():
+            # Blank line: insert newline only
+            requests.append({"insertText": {"location": {"index": idx}, "text": "\n"}})
+            idx += 1
+            continue
+        # Heading: # ## ###
+        heading_level: int = 0
+        stripped = line.lstrip()
+        if stripped.startswith("#"):
+            for c in stripped:
+                if c == "#":
+                    heading_level += 1
+                else:
+                    break
+            if heading_level > 0 and heading_level <= 4:
+                line = stripped[heading_level:].lstrip()
+        # Bullet: - or * at start (after optional spaces)
+        is_bullet: bool = False
+        if re.match(r"^[\s]*[-*]\s+", line):
+            is_bullet = True
+            line = re.sub(r"^[\s]*[-*]\s+", "", line, count=1)
+        # Numbered: 1. 2. etc.
+        is_numbered: bool = bool(re.match(r"^[\s]*\d+\.\s+", line))
+        if is_numbered:
+            line = re.sub(r"^[\s]*\d+\.\s+", "", line, count=1)
+        display_text, inline_runs = _parse_inline_markdown(line)
+        text_to_insert: str = display_text + "\n"
+        insert_len: int = _utf16_len(text_to_insert)
+        para_end: int = idx + insert_len
+        requests.append({"insertText": {"location": {"index": idx}, "text": text_to_insert}})
+        if heading_level >= 1 and heading_level <= 4:
+            named_style: str = f"HEADING_{min(heading_level, 4)}"
+            requests.append({
+                "updateParagraphStyle": {
+                    "range": {"startIndex": idx, "endIndex": para_end},
+                    "paragraphStyle": {"namedStyleType": named_style},
+                    "fields": "namedStyleType",
+                }
+            })
+        elif is_bullet:
+            requests.append({
+                "createParagraphBullets": {
+                    "range": {"startIndex": idx, "endIndex": para_end},
+                    "bulletPreset": "BULLET_DISC_CIRCLE_SQUARE",
+                }
+            })
+        elif is_numbered:
+            requests.append({
+                "createParagraphBullets": {
+                    "range": {"startIndex": idx, "endIndex": para_end},
+                    "bulletPreset": "NUMBERED_DECIMAL_ALPHA_ROMAN",
+                }
+            })
+        for start_off, end_off, style in inline_runs:
+            start_idx: int = idx + start_off
+            end_idx: int = idx + end_off
+            if style == "bold":
+                requests.append({
+                    "updateTextStyle": {
+                        "range": {"startIndex": start_idx, "endIndex": end_idx},
+                        "textStyle": {"bold": True},
+                        "fields": "bold",
+                    }
+                })
+            elif style == "italic":
+                requests.append({
+                    "updateTextStyle": {
+                        "range": {"startIndex": start_idx, "endIndex": end_idx},
+                        "textStyle": {"italic": True},
+                        "fields": "italic",
+                    }
+                })
+            elif style == "code":
+                requests.append({
+                    "updateTextStyle": {
+                        "range": {"startIndex": start_idx, "endIndex": end_idx},
+                        "textStyle": {"weightedFontFamily": {"fontFamily": "Consolas"}},
+                        "fields": "weightedFontFamily",
+                    }
+                })
+        idx = para_end
+    return requests
+
+
+class GoogleDriveConnector(BaseConnector):
     """
     Connector for syncing Google Drive file metadata and reading file content.
 
@@ -74,20 +235,48 @@ class GoogleDriveConnector:
     agent can search without hitting the Google API on every query.
     """
 
+    source_system = "google_drive"
+
+    meta = ConnectorMeta(
+        name="Google Drive",
+        slug="google_drive",
+        auth_type=AuthType.OAUTH2,
+        scope=ConnectorScope.USER,
+        entity_types=["files"],
+        capabilities=[Capability.SYNC, Capability.QUERY, Capability.ACTION],
+        query_description=(
+            "Search or read Google Drive files. "
+            "Prefix with 'search:' to search by file name (e.g. 'search:quarterly report') or by type: use 'search:spreadsheet', 'search:document', or 'search:presentation' to list files of that type. "
+            "Prefix with 'type:' to list by type only (e.g. 'type:spreadsheet', 'type:document'). "
+            "Prefix with 'file:' to read file content by external_id (e.g. 'file:abc123')."
+        ),
+        actions=[
+            ConnectorAction(
+                name="create_file",
+                description="Create a new Google Doc, Sheet, or Slides presentation.",
+                parameters=[
+                    {"name": "file_type", "type": "string", "required": True, "description": "One of: document, spreadsheet, presentation"},
+                    {"name": "title", "type": "string", "required": True, "description": "Display name for the new file"},
+                    {"name": "content", "type": "string", "required": True, "description": "For documents: Markdown (headings # ## ###, **bold**, *italic*, `code`, -, 1. lists). For sheets/slides: JSON."},
+                    {"name": "folder_id", "type": "string", "required": False, "description": "Google Drive folder ID to place the file in"},
+                ],
+            ),
+        ],
+        nango_integration_id="google-drive",
+        description="Google Drive – file metadata sync, search, read, and create",
+    )
+
     def __init__(self, organization_id: str, user_id: str) -> None:
-        self.organization_id: str = organization_id
-        self.user_id: str = user_id
-        self._token: Optional[str] = None
-        self._integration: Optional[Integration] = None
+        super().__init__(organization_id, user_id=user_id)
 
     # -------------------------------------------------------------------------
-    # OAuth
+    # OAuth – overrides BaseConnector to handle legacy connection-id format
     # -------------------------------------------------------------------------
 
-    async def get_oauth_token(self) -> str:
+    async def get_oauth_token(self) -> tuple[str, str]:
         """Get OAuth token from Nango for the user's Google Drive connection."""
         if self._token:
-            return self._token
+            return self._token, ""
 
         async with get_session(organization_id=self.organization_id) as session:
             connection_id: str = f"{self.organization_id}:user:{self.user_id}"
@@ -112,7 +301,7 @@ class GoogleDriveConnector:
             nango_integration_id,
             self._integration.nango_connection_id or connection_id,
         )
-        return self._token
+        return self._token, ""
 
     def _get_headers(self) -> dict[str, str]:
         """Build request headers with OAuth token."""
@@ -557,7 +746,7 @@ class GoogleDriveConnector:
             file_type: One of "document", "spreadsheet", "presentation".
             title: Display name for the new file.
             content: Content to populate the file with. Format depends on file_type:
-                - document: plain text string
+                - document: Markdown (headings, **bold**, *italic*, `code`, bullet/numbered lists)
                 - spreadsheet: {"sheets": [{"title": "Sheet1", "data": [[...]]}]}
                 - presentation: {"slides": [{"title": "...", "body": "..."}]}
             folder_id: Optional Google Drive folder ID to place the file in.
@@ -625,19 +814,14 @@ class GoogleDriveConnector:
     async def _populate_document(
         self, client: httpx.AsyncClient, doc_id: str, content: Any
     ) -> Optional[str]:
-        """Insert text content into a Google Doc via the Docs API."""
+        """Insert text into a Google Doc via the Docs API. Markdown is converted to headings, bullets, bold, italic, and code."""
         text_content: str = str(content) if content else ""
         if not text_content:
             return None
 
-        requests: list[dict[str, Any]] = [
-            {
-                "insertText": {
-                    "location": {"index": 1},
-                    "text": text_content,
-                }
-            }
-        ]
+        requests: list[dict[str, Any]] = _markdown_to_docs_requests(text_content)
+        if not requests:
+            return None
         resp = await client.post(
             f"{DOCS_API_BASE}/documents/{doc_id}:batchUpdate",
             headers={**self._get_headers(), "Content-Type": "application/json"},
@@ -854,3 +1038,72 @@ class GoogleDriveConnector:
             )
             await session.execute(stmt)
             await session.commit()
+
+    # -------------------------------------------------------------------------
+    # BaseConnector abstract method stubs
+    # -------------------------------------------------------------------------
+
+    async def sync_deals(self) -> int:
+        return 0
+
+    async def sync_accounts(self) -> int:
+        return 0
+
+    async def sync_contacts(self) -> int:
+        return 0
+
+    async def sync_activities(self) -> int:
+        return 0
+
+    async def fetch_deal(self, deal_id: str) -> dict[str, Any]:
+        return {}
+
+    async def sync_all(self) -> dict[str, int]:
+        """Sync file metadata instead of CRM entities."""
+        counts: dict[str, int] = await self.sync_file_metadata()
+        total: int = sum(counts.values())
+        return {"files": total}
+
+    async def query(self, request: str) -> dict[str, Any]:
+        """Search files or read file content (QUERY capability).
+
+        Prefix with 'search:' to search by file name; use 'search:spreadsheet' (or sheet/doc/slides) to list by type.
+        Prefix with 'type:' to list by type only (e.g. type:spreadsheet, type:document).
+        Prefix with 'file:' to read content by external_id. Bare strings default to file read.
+        """
+        stripped: str = request.strip()
+        lower: str = stripped.lower()
+
+        if lower.startswith("type:"):
+            type_key: str = stripped[len("type:"):].strip().lower()
+            mime: str | None = TYPE_SEARCH_ALIASES.get(type_key)
+            if mime:
+                results = await self.search_files("", mime_types=[mime])
+                return {"files": results, "count": len(results)}
+            return {"files": [], "count": 0, "error": f"Unknown type '{type_key}'. Use: spreadsheet, document, presentation."}
+
+        if lower.startswith("search:"):
+            term: str = stripped[len("search:"):].strip()
+            # If the term is a type keyword, filter by MIME type (so "search:spreadsheet" works)
+            mime = TYPE_SEARCH_ALIASES.get(term.lower()) if term else None
+            if mime:
+                results = await self.search_files("", mime_types=[mime])
+            else:
+                results = await self.search_files(term)
+            return {"files": results, "count": len(results)}
+
+        if lower.startswith("file:"):
+            external_id = stripped[len("file:"):].strip()
+            return await self.get_file_content(external_id)
+        return await self.get_file_content(stripped)
+
+    async def execute_action(self, action: str, params: dict[str, Any]) -> dict[str, Any]:
+        """Dispatch actions (ACTION capability)."""
+        if action == "create_file":
+            return await self.create_file(
+                file_type=params.get("file_type", ""),
+                title=params.get("title", ""),
+                content=params.get("content", ""),
+                folder_id=params.get("folder_id"),
+            )
+        raise ValueError(f"Unknown action: {action}")
