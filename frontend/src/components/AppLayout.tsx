@@ -361,7 +361,7 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
   const [showOrgPanel, setShowOrgPanel] = useState(false);
   const [showProfilePanel, setShowProfilePanel] = useState(false);
   const [orgPanelTab, setOrgPanelTab] = useState<'team' | 'billing' | 'settings'>('team');
-  const [insufficientCreditsBanner, setInsufficientCreditsBanner] = useState(false);
+  const [_insufficientCreditsBanner, setInsufficientCreditsBanner] = useState(false);
 
   // CRM approval results (shared across chats) - use state to trigger re-renders
   const [crmApprovalResults, setCrmApprovalResults] = useState<Map<string, unknown>>(() => new Map());

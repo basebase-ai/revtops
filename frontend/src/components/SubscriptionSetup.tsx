@@ -11,7 +11,7 @@ import {
   useElements,
   CardElement,
 } from '@stripe/react-stripe-js';
-import { API_BASE, apiRequest } from '../lib/api';
+import { apiRequest } from '../lib/api';
 
 const stripePublishableKey: string | undefined =
   import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY;
