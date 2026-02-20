@@ -43,17 +43,17 @@ ROLLOVER_CAP: dict[str, int] = {
     "scale": 3,
 }
 
-# Stripe Price IDs (from Stripe Dashboard → Products → each Price)
-STRIPE_PRICE_IDS: dict[str, str] = {
-    "starter": "price_starter",
-    "pro": "price_pro",
-    "business": "price_business",
-    "scale": "price_scale",
+# Stripe Product IDs (from Stripe Dashboard → Product catalog → each product's Price ID)
+STRIPE_PRODUCT_IDS: dict[str, str] = {
+    "starter": "prod_U11Irk16ALcqtF",
+    "pro": "prod_U11I2fPTr3Qx8Z",
+    "business": "prod_U11JAyomJy7mNb",
+    "scale": "prod_U11JojyWceolRS",
 }
 
 
-def _stripe_price_id_for_tier(tier: str) -> Optional[str]:
-    return STRIPE_PRICE_IDS.get(tier)
+def _stripe_product_id_for_tier(tier: str) -> Optional[str]:
+    return STRIPE_PRODUCT_IDS.get(tier)
 
 
 # --- Response/request models ---
@@ -82,7 +82,7 @@ class PlanItem(BaseModel):
     name: str
     price_cents: int
     credits_included: int
-    stripe_price_id: Optional[str] = None
+    stripe_product_id: Optional[str] = None
 
 
 class PlansResponse(BaseModel):
@@ -134,30 +134,38 @@ async def create_setup_intent(
         raise HTTPException(status_code=403, detail="Organization required")
     import stripe
     stripe.api_key = settings.STRIPE_SECRET_KEY
-    async with get_admin_session() as session:
-        from sqlalchemy import select
-        result = await session.execute(
-            select(Organization).where(Organization.id == org_id)
-        )
-        org = result.scalar_one_or_none()
-        if not org:
-            raise HTTPException(status_code=404, detail="Organization not found")
-        customer_id: Optional[str] = org.stripe_customer_id
-        if not customer_id:
-            cust = stripe.Customer.create(
-                email=auth.email,
-                name=org.name,
+    try:
+        async with get_admin_session() as session:
+            from sqlalchemy import select
+            result = await session.execute(
+                select(Organization).where(Organization.id == org_id)
+            )
+            org = result.scalar_one_or_none()
+            if not org:
+                raise HTTPException(status_code=404, detail="Organization not found")
+            customer_id: Optional[str] = org.stripe_customer_id
+            if not customer_id:
+                cust = stripe.Customer.create(
+                    email=auth.email,
+                    name=org.name,
+                    metadata={"organization_id": str(org_id)},
+                )
+                customer_id = cust.id
+                org.stripe_customer_id = customer_id
+                await session.commit()
+            intent = stripe.SetupIntent.create(
+                customer=customer_id,
+                usage="off_session",
                 metadata={"organization_id": str(org_id)},
             )
-            customer_id = cust.id
-            org.stripe_customer_id = customer_id
-            await session.commit()
-        intent = stripe.SetupIntent.create(
-            customer=customer_id,
-            usage="off_session",
-            metadata={"organization_id": str(org_id)},
-        )
-        return SetupIntentResponse(client_secret=intent.client_secret or "")
+            return SetupIntentResponse(client_secret=intent.client_secret or "")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=503,
+            detail="Billing is temporarily unavailable. Please try again or contact support.",
+        ) from e
 
 
 @router.post("/subscribe")
@@ -168,8 +176,8 @@ async def subscribe(
     """Create or update subscription with the given payment method and tier."""
     if not settings.STRIPE_SECRET_KEY:
         raise HTTPException(status_code=503, detail="Billing is not configured")
-    price_id = _stripe_price_id_for_tier(body.tier)
-    if not price_id:
+    product_id = _stripe_product_id_for_tier(body.tier)
+    if not product_id:
         raise HTTPException(
             status_code=400,
             detail=f"Stripe price not configured for tier {body.tier}",
@@ -208,7 +216,7 @@ async def subscribe(
         # Create subscription; webhook will set tier, period, credits
         sub = stripe.Subscription.create(
             customer=customer_id,
-            items=[{"price": price_id}],
+            items=[{"price": product_id}],
             payment_behavior="default_incomplete",
             expand=["latest_invoice"],
             metadata={"organization_id": str(org_id), "tier": body.tier},
@@ -242,7 +250,7 @@ async def list_plans() -> PlansResponse:
             name=info["name"],
             price_cents=info["price_cents"],
             credits_included=info["credits_included"],
-            stripe_price_id=_stripe_price_id_for_tier(tier),
+            stripe_product_id=_stripe_product_id_for_tier(tier),
         )
         for tier, info in PLANS.items()
     ]
@@ -321,8 +329,8 @@ def _tier_from_price(invoice: Any) -> Optional[str]:
     """Infer tier from invoice line items price id."""
     for line in invoice.get("lines", {}).get("data", []):
         pid = line.get("price", {}).get("id")
-        for tier, price_id in STRIPE_PRICE_IDS.items():
-            if pid == price_id:
+        for tier, product_id in STRIPE_PRODUCT_IDS.items():
+            if pid == product_id:
                 return tier
     return None
 
@@ -360,9 +368,9 @@ def _tier_from_subscription(sub: Any) -> Optional[str]:
     items = sub.get("items", {}).get("data", [])
     if not items:
         return None
-    price_id = items[0].get("price", {}).get("id")
-    for tier, pid in STRIPE_PRICE_IDS.items():
-        if price_id == pid:
+    product_id = items[0].get("price", {}).get("id")
+    for tier, pid in STRIPE_PRODUCT_IDS.items():
+        if product_id == pid:
             return tier
     return None
 

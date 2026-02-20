@@ -50,6 +50,8 @@ interface ChatProps {
   isConnected: boolean;
   connectionState: 'connecting' | 'connected' | 'disconnected' | 'error';
   crmApprovalResults: Map<string, unknown>;
+  /** Called when the current conversation ID returns 404 (e.g. deleted or wrong org). Clears selection. */
+  onConversationNotFound?: () => void;
 }
 
 // Tool approval result type (received via parent component)
@@ -73,14 +75,15 @@ interface ToolApprovalState {
   result: WsToolApprovalResult | null;
 }
 
-export function Chat({ 
-  userId, 
+export function Chat({
+  userId,
   organizationId: _organizationId,
-  chatId, 
+  chatId,
   sendMessage,
   isConnected,
   connectionState,
   crmApprovalResults,
+  onConversationNotFound,
 }: ChatProps): JSX.Element {
   void _organizationId; // kept for API compatibility
   // Get per-conversation state from Zustand
@@ -331,19 +334,26 @@ export function Chat({
             contentBlocks: msg.content_blocks,
             timestamp: new Date(msg.created_at),
           }));
-          
+
           // Set conversation state
           setConversationMessages(chatId, loadedMessages);
           setConversationTitle(chatId, data.title ?? 'New Chat');
           setConversationType(data.type ?? null);
           console.log('[Chat] Loaded', loadedMessages.length, 'messages, type:', data.type);
-          
+
           // Scroll to bottom immediately after loading
           setTimeout(() => {
             messagesEndRef.current?.scrollIntoView({ behavior: 'instant' });
           }, 50);
         } else {
-          console.error('[Chat] Failed to load conversation:', error);
+          const is404 =
+            error != null &&
+            (String(error).includes('404') || String(error).toLowerCase().includes('not found'));
+          if (is404 && onConversationNotFound) {
+            onConversationNotFound();
+          } else {
+            console.error('[Chat] Failed to load conversation:', error);
+          }
         }
       } catch (err) {
         console.error('[Chat] Exception loading conversation:', err);
@@ -359,7 +369,7 @@ export function Chat({
     return () => {
       cancelled = true;
     };
-  }, [chatId, userId, setConversationMessages, setConversationTitle]);
+  }, [chatId, userId, setConversationMessages, setConversationTitle, onConversationNotFound]);
 
   // Keep messagesRef in sync for polling comparison (avoids stale closure)
   useEffect(() => {

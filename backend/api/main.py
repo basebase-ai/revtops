@@ -21,7 +21,7 @@ from fastapi.responses import JSONResponse
 from api.websockets import websocket_endpoint
 from api.routes import apps, artifacts, auth, billing, change_sessions, chat, connectors, data, deals, drive, memories, search, slack_events, slack_user_mappings, sync, tool_settings, twilio_events, waitlist, workflows
 from models.database import init_db, close_db, get_pool_status
-from config import log_missing_env_vars
+from config import log_missing_env_vars, settings
 
 # Configure logging
 logging.basicConfig(
@@ -118,9 +118,15 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
     origin = request.headers.get("origin")
     cors_headers = get_cors_headers(origin)
     logging.error(f"Unhandled exception: {exc}", exc_info=True)
+    detail: str = "Internal server error"
+    try:
+        if settings.FRONTEND_URL and "localhost" in settings.FRONTEND_URL:
+            detail = f"{type(exc).__name__}: {exc}"
+    except Exception:
+        pass
     return JSONResponse(
         status_code=500,
-        content={"detail": "Internal server error"},
+        content={"detail": detail},
         headers=cors_headers,
     )
 

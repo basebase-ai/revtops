@@ -16,12 +16,23 @@ import { API_BASE, apiRequest } from '../lib/api';
 const stripePublishableKey: string | undefined =
   import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY;
 
+// Single Stripe promise per key so we don't create multiple Stripe() instances
+const stripePromiseByKey: Map<string, Promise<import('@stripe/stripe-js').Stripe | null>> = new Map();
+function getStripePromise(publishableKey: string): Promise<import('@stripe/stripe-js').Stripe | null> {
+  let p = stripePromiseByKey.get(publishableKey);
+  if (!p) {
+    p = loadStripe(publishableKey);
+    stripePromiseByKey.set(publishableKey, p);
+  }
+  return p;
+}
+
 interface Plan {
   tier: string;
   name: string;
   price_cents: number;
   credits_included: number;
-  stripe_price_id: string | null;
+  stripe_product_id: string | null;
 }
 
 interface SubscriptionSetupProps {
@@ -226,7 +237,7 @@ export function SubscriptionSetup({ onComplete, onBack }: SubscriptionSetupProps
     );
   }
 
-  const stripePromise = loadStripe(stripePublishableKey);
+  const stripePromise = getStripePromise(stripePublishableKey);
 
   return (
     <div className="min-h-screen flex items-center justify-center p-4">

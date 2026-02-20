@@ -939,6 +939,7 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
             isConnected={isConnected}
             connectionState={connectionState}
             crmApprovalResults={crmApprovalResults}
+            onConversationNotFound={() => setCurrentChatId(null)}
           />
         )}
         {currentView === 'data-sources' && (
