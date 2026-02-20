@@ -132,7 +132,8 @@ export function Chat({
   const pendingAutoSendRef = useRef<string | null>(null);
   const messagesRef = useRef<ChatMessage[]>([]); // Track current messages for polling comparison
   const workflowDoneRef = useRef<boolean>(false); // Prevents polling restart after workflow completes
-  
+  const loadInFlightChatIdRef = useRef<string | null>(null); // Dedupe load requests for same chatId
+
   // Keep ref in sync with state
   pendingMessagesRef.current = pendingMessages;
 
@@ -312,6 +313,12 @@ export function Chat({
       return;
     }
 
+    // Avoid duplicate in-flight requests (e.g. React Strict Mode or unstable callback deps)
+    if (loadInFlightChatIdRef.current === chatId) {
+      return;
+    }
+    loadInFlightChatIdRef.current = chatId;
+
     let cancelled = false;
 
     const loadConversation = async (): Promise<void> => {
@@ -320,7 +327,7 @@ export function Chat({
 
       try {
         const { data, error } = await getConversation(chatId);
-        
+
         if (cancelled) {
           console.log('[Chat] Load cancelled - chatId changed');
           return;
@@ -360,6 +367,9 @@ export function Chat({
       } finally {
         if (!cancelled) {
           setIsLoading(false);
+        }
+        if (loadInFlightChatIdRef.current === chatId) {
+          loadInFlightChatIdRef.current = null;
         }
       }
     };

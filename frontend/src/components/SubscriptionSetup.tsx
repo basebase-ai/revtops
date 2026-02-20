@@ -183,12 +183,39 @@ function SubscribeForm({
   );
 }
 
+function LoadingSpinner(): JSX.Element {
+  return (
+    <svg
+      className="animate-spin h-6 w-6 text-primary-400 mx-auto"
+      xmlns="http://www.w3.org/2000/svg"
+      fill="none"
+      viewBox="0 0 24 24"
+      aria-hidden
+    >
+      <circle
+        className="opacity-25"
+        cx="12"
+        cy="12"
+        r="10"
+        stroke="currentColor"
+        strokeWidth="4"
+      />
+      <path
+        className="opacity-75"
+        fill="currentColor"
+        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+      />
+    </svg>
+  );
+}
+
 export function SubscriptionSetup({ onComplete, onBack }: SubscriptionSetupProps): JSX.Element {
   const [plans, setPlans] = useState<Plan[]>([]);
   const [clientSecret, setClientSecret] = useState<string | null>(null);
   const [selectedTier, setSelectedTier] = useState<string>('starter');
   const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loadingPlans, setLoadingPlans] = useState(true);
+  const [formLoadFailed, setFormLoadFailed] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -196,7 +223,7 @@ export function SubscriptionSetup({ onComplete, onBack }: SubscriptionSetupProps
       const { data: plansData } = await apiRequest<{ plans: Plan[] }>('/billing/plans');
       if (cancelled || !plansData?.plans?.length) {
         if (!cancelled) setPlans([]);
-        setLoading(false);
+        setLoadingPlans(false);
         return;
       }
       setPlans(plansData.plans);
@@ -206,10 +233,13 @@ export function SubscriptionSetup({ onComplete, onBack }: SubscriptionSetupProps
         '/billing/setup-intent',
         { method: 'POST' }
       );
-      if (!cancelled && setupData?.client_secret) {
+      if (cancelled) return;
+      if (setupData?.client_secret) {
         setClientSecret(setupData.client_secret);
+      } else {
+        setFormLoadFailed(true);
       }
-      setLoading(false);
+      setLoadingPlans(false);
     })();
     return () => {
       cancelled = true;
@@ -229,15 +259,10 @@ export function SubscriptionSetup({ onComplete, onBack }: SubscriptionSetupProps
     );
   }
 
-  if (loading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center p-4">
-        <p className="text-surface-400">Loading…</p>
-      </div>
-    );
-  }
-
   const stripePromise = getStripePromise(stripePublishableKey);
+
+  const showForm = Boolean(clientSecret);
+  const showFormLoading = !showForm && !formLoadFailed && plans.length > 0;
 
   return (
     <div className="min-h-screen flex items-center justify-center p-4">
@@ -266,33 +291,45 @@ export function SubscriptionSetup({ onComplete, onBack }: SubscriptionSetupProps
           </p>
         </div>
         <div className="bg-surface-900/80 backdrop-blur-sm border border-surface-800 rounded-2xl p-8">
-          {error && (
-            <div className="mb-4 p-3 rounded-lg bg-red-500/10 border border-red-500/30 text-red-400 text-sm">
-              {error}
+          {loadingPlans && plans.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-8 gap-3">
+              <LoadingSpinner />
+              <p className="text-surface-400 text-sm">Loading plans…</p>
             </div>
-          )}
-          {clientSecret ? (
-            <Elements
-              stripe={stripePromise}
-              options={{
-                clientSecret,
-                appearance: { theme: 'night' as const },
-              }}
-            >
-              <SubscribeForm
-                clientSecret={clientSecret}
-                plans={plans}
-                selectedTier={selectedTier}
-                onTierChange={setSelectedTier}
-                onSuccess={onComplete}
-                onError={setError}
-              />
-            </Elements>
-          ) : (
+          ) : showFormLoading ? (
+            <div className="flex flex-col items-center justify-center py-8 gap-3">
+              <LoadingSpinner />
+              <p className="text-surface-400 text-sm">Loading payment form…</p>
+            </div>
+          ) : formLoadFailed ? (
             <p className="text-surface-400 text-sm">
               Unable to load payment form. Please try again or contact support.
             </p>
-          )}
+          ) : showForm ? (
+            <>
+              {error && (
+                <div className="mb-4 p-3 rounded-lg bg-red-500/10 border border-red-500/30 text-red-400 text-sm">
+                  {error}
+                </div>
+              )}
+              <Elements
+                stripe={stripePromise}
+                options={{
+                  clientSecret: clientSecret!,
+                  appearance: { theme: 'night' as const },
+                }}
+              >
+                <SubscribeForm
+                  clientSecret={clientSecret!}
+                  plans={plans}
+                  selectedTier={selectedTier}
+                  onTierChange={setSelectedTier}
+                  onSuccess={onComplete}
+                  onError={setError}
+                />
+              </Elements>
+            </>
+          ) : null}
         </div>
       </div>
     </div>

@@ -17,6 +17,7 @@ import { useAppStore } from '../store';
 import { useTeamMembers, useUpdateOrganization, useLinkIdentity, useUnlinkIdentity } from '../hooks';
 import type { TeamMember, IdentityMapping } from '../hooks';
 import { apiRequest } from '../lib/api';
+import { SubscriptionSetup } from './SubscriptionSetup';
 
 interface BillingStatus {
   subscription_tier: string | null;
@@ -24,7 +25,15 @@ interface BillingStatus {
   credits_balance: number;
   credits_included: number;
   current_period_end: string | null;
+  cancel_at_period_end: string | null;
   subscription_required: boolean;
+}
+
+interface PlanItem {
+  tier: string;
+  name: string;
+  price_cents: number;
+  credits_included: number;
 }
 
 interface OrganizationPanelProps {
@@ -43,6 +52,11 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
   }, [initialTab]);
 
   const [billing, setBilling] = useState<BillingStatus | null>(null);
+  const [billingRefresh, setBillingRefresh] = useState(0);
+  const [showChangePlan, setShowChangePlan] = useState(false);
+  const [changePlanLoading, setChangePlanLoading] = useState<string | null>(null);
+  const [cancelLoading, setCancelLoading] = useState(false);
+  const [plans, setPlans] = useState<PlanItem[]>([]);
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -50,7 +64,19 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
       if (!cancelled && data) setBilling(data);
     })();
     return () => { cancelled = true; };
-  }, [organization.id, activeTab]);
+  }, [organization.id, activeTab, billingRefresh]);
+
+  useEffect(() => {
+    if (!showChangePlan) return;
+    let cancelled = false;
+    (async () => {
+      const { data } = await apiRequest<{ plans: PlanItem[] }>('/billing/plans');
+      if (!cancelled && data?.plans?.length) setPlans(data.plans);
+    })();
+    return () => { cancelled = true; };
+  }, [showChangePlan]);
+
+  const [showSubscriptionSetup, setShowSubscriptionSetup] = useState(false);
   const [inviteEmail, setInviteEmail] = useState('');
   const [isInviting, setIsInviting] = useState(false);
   const [orgName, setOrgName] = useState(organization.name);
@@ -503,62 +529,178 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
 
           {activeTab === 'billing' && (
             <div className="space-y-6">
-              {/* Current Plan & Credits */}
-              <div className="p-4 rounded-xl bg-gradient-to-r from-primary-600/20 to-primary-500/10 border border-primary-500/30">
-                <div className="flex items-center justify-between mb-2">
-                  <h3 className="font-medium text-surface-100">Current Plan</h3>
-                  <span className="px-2 py-1 text-xs font-medium bg-primary-500 text-white rounded-full capitalize">
-                    {billing?.subscription_tier ?? 'None'}
-                  </span>
-                </div>
-                {billing?.subscription_required && (
-                  <p className="text-sm text-surface-400 mb-2">
-                    Add a payment method to use credits.
-                  </p>
-                )}
-                {billing?.current_period_end && (
-                  <p className="text-sm text-surface-400 mb-2">
-                    Period ends {new Date(billing.current_period_end).toLocaleDateString()}
-                  </p>
-                )}
-              </div>
-
-              {/* Billing Details */}
-              <div>
-                <h3 className="text-sm font-medium text-surface-200 mb-3">Billing details</h3>
-                <div className="card p-4 space-y-3">
-                  <div className="flex justify-between text-sm">
-                    <span className="text-surface-400">Billing email</span>
-                    <span className="text-surface-200">{currentUser.email}</span>
-                  </div>
-                </div>
-              </div>
-
-              {/* Credits usage */}
-              <div>
-                <h3 className="text-sm font-medium text-surface-200 mb-3">Credits this period</h3>
-                <div className="card p-4 space-y-3">
-                  <div>
-                    <div className="flex justify-between text-sm mb-1">
-                      <span className="text-surface-400">Remaining</span>
-                      <span className="text-surface-200">
-                        {billing != null ? `${billing.credits_balance} / ${billing.credits_included}` : '—'}
+              {showSubscriptionSetup ? (
+                <SubscriptionSetup
+                  onComplete={() => {
+                    setShowSubscriptionSetup(false);
+                    setBillingRefresh((k) => k + 1);
+                  }}
+                  onBack={() => setShowSubscriptionSetup(false)}
+                />
+              ) : (
+                <>
+                  {/* Current Plan & Credits */}
+                  <div className="p-4 rounded-xl bg-gradient-to-r from-primary-600/20 to-primary-500/10 border border-primary-500/30">
+                    <div className="flex items-center justify-between mb-2">
+                      <h3 className="font-medium text-surface-100">Current Plan</h3>
+                      <span className="px-2 py-1 text-xs font-medium bg-primary-500 text-white rounded-full capitalize">
+                        {billing?.subscription_tier ?? 'None'}
                       </span>
                     </div>
-                    <div className="h-2 bg-surface-700 rounded-full overflow-hidden">
-                      <div
-                        className="h-full bg-primary-500 rounded-full"
-                        style={{
-                          width:
-                            billing && billing.credits_included > 0
-                              ? `${Math.min(100, (billing.credits_balance / billing.credits_included) * 100)}%`
-                              : '0%',
-                        }}
-                      />
+                    {billing?.subscription_required && !billing?.subscription_tier && (
+                      <>
+                        <p className="text-sm text-surface-400 mb-3">
+                          Add a payment method to use credits.
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => setShowSubscriptionSetup(true)}
+                          className="px-4 py-2 text-sm font-medium text-white bg-primary-500 hover:bg-primary-600 rounded-lg transition-colors"
+                        >
+                          Select plan
+                        </button>
+                      </>
+                    )}
+                    {billing?.subscription_required && billing?.subscription_tier && (
+                      <p className="text-sm text-surface-400">
+                        Payment pending. Credits will be available once your first payment is confirmed.
+                      </p>
+                    )}
+                    {!billing?.subscription_required && billing?.current_period_end && !billing?.cancel_at_period_end && (
+                      <p className="text-sm text-surface-400 mb-2">
+                        Period ends {new Date(billing.current_period_end).toLocaleDateString()}
+                      </p>
+                    )}
+                    {billing?.cancel_at_period_end && (
+                      <p className="text-sm text-amber-400/90 mb-2">
+                        Your subscription will not renew. Access until {new Date(billing.cancel_at_period_end).toLocaleDateString()}.
+                      </p>
+                    )}
+                    {billing?.subscription_tier && !showChangePlan && (
+                      <div className="flex flex-wrap gap-2 mt-3">
+                        <button
+                          type="button"
+                          onClick={() => setShowChangePlan(true)}
+                          className="px-3 py-1.5 text-sm font-medium text-surface-200 bg-surface-600 hover:bg-surface-500 rounded-lg transition-colors"
+                        >
+                          Change plan
+                        </button>
+                        {!billing?.cancel_at_period_end && (
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              if (!window.confirm('Your subscription will end at the end of the current period. You\'ll keep access until then. Continue?')) return;
+                              setCancelLoading(true);
+                              try {
+                                const { error } = await apiRequest('/billing/cancel', { method: 'POST' });
+                                if (!error) {
+                                  setBillingRefresh((k) => k + 1);
+                                }
+                              } finally {
+                                setCancelLoading(false);
+                              }
+                            }}
+                            disabled={cancelLoading}
+                            className="px-3 py-1.5 text-sm font-medium text-red-300 hover:text-red-200 bg-surface-600 hover:bg-surface-500 rounded-lg transition-colors disabled:opacity-50"
+                          >
+                            {cancelLoading ? 'Cancelling…' : 'Cancel subscription'}
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  {showChangePlan && billing?.subscription_tier && (
+                    <div className="card p-4 space-y-3">
+                      <div className="flex items-center justify-between">
+                        <h3 className="text-sm font-medium text-surface-200">Change plan</h3>
+                        <button
+                          type="button"
+                          onClick={() => setShowChangePlan(false)}
+                          className="text-sm text-surface-400 hover:text-surface-200"
+                        >
+                          Close
+                        </button>
+                      </div>
+                      <div className="space-y-2">
+                        {plans.map((plan) => {
+                          const isCurrent = plan.tier === billing?.subscription_tier;
+                          return (
+                            <div
+                              key={plan.tier}
+                              className="flex items-center justify-between py-2 px-3 rounded-lg bg-surface-700/50"
+                            >
+                              <span className="text-sm text-surface-200">
+                                {plan.name} — ${(plan.price_cents / 100).toFixed(2)}/mo, {plan.credits_included} credits
+                              </span>
+                              <button
+                                type="button"
+                                onClick={async () => {
+                                  if (isCurrent) return;
+                                  setChangePlanLoading(plan.tier);
+                                  try {
+                                    const { error } = await apiRequest('/billing/subscription', {
+                                      method: 'PATCH',
+                                      body: JSON.stringify({ tier: plan.tier }),
+                                    });
+                                    if (!error) {
+                                      setBillingRefresh((k) => k + 1);
+                                      setShowChangePlan(false);
+                                    }
+                                  } finally {
+                                    setChangePlanLoading(null);
+                                  }
+                                }}
+                                disabled={isCurrent || changePlanLoading !== null}
+                                className="text-sm font-medium text-primary-400 hover:text-primary-300 disabled:opacity-50 disabled:cursor-default"
+                              >
+                                {isCurrent ? 'Current' : changePlanLoading === plan.tier ? 'Updating…' : `Switch to ${plan.name}`}
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Billing Details */}
+                  <div>
+                    <h3 className="text-sm font-medium text-surface-200 mb-3">Billing details</h3>
+                    <div className="card p-4 space-y-3">
+                      <div className="flex justify-between text-sm">
+                        <span className="text-surface-400">Billing email</span>
+                        <span className="text-surface-200">{currentUser.email}</span>
+                      </div>
                     </div>
                   </div>
-                </div>
-              </div>
+
+                  {/* Credits usage */}
+                  <div>
+                    <h3 className="text-sm font-medium text-surface-200 mb-3">Credits this period</h3>
+                    <div className="card p-4 space-y-3">
+                      <div>
+                        <div className="flex justify-between text-sm mb-1">
+                          <span className="text-surface-400">Remaining</span>
+                          <span className="text-surface-200">
+                            {billing != null ? `${billing.credits_balance} / ${billing.credits_included}` : '—'}
+                          </span>
+                        </div>
+                        <div className="h-2 bg-surface-700 rounded-full overflow-hidden">
+                          <div
+                            className="h-full bg-primary-500 rounded-full"
+                            style={{
+                              width:
+                                billing && billing.credits_included > 0
+                                  ? `${Math.min(100, (billing.credits_balance / billing.credits_included) * 100)}%`
+                                  : '0%',
+                            }}
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </>
+              )}
             </div>
           )}
 

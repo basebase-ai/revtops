@@ -1,9 +1,11 @@
 """
 Billing and subscription API (Stripe).
 
-- GET /status — current org subscription and credits
+- GET /status — current org subscription and credits (incl. cancel_at_period_end)
 - POST /setup-intent — create SetupIntent for card collection
 - POST /subscribe — create subscription with payment_method_id and tier
+- PATCH /subscription — change plan (tier)
+- POST /cancel — schedule cancel at period end
 - GET /plans — list plans (tier, name, price, credits)
 - POST /webhook — Stripe webhook (raw body, signature verification)
 """
@@ -43,17 +45,19 @@ ROLLOVER_CAP: dict[str, int] = {
     "scale": 3,
 }
 
-# Stripe Product IDs (from Stripe Dashboard → Product catalog → each product's Price ID)
-STRIPE_PRODUCT_IDS: dict[str, str] = {
-    "starter": "prod_U11Irk16ALcqtF",
-    "pro": "prod_U11I2fPTr3Qx8Z",
-    "business": "prod_U11JAyomJy7mNb",
-    "scale": "prod_U11JojyWceolRS",
+# Stripe Price IDs (Dashboard → Products → [your product] → Pricing → copy "Price ID", e.g. price_1ABC...)
+# Subscription.create requires price IDs, not product IDs (prod_xxx).
+STRIPE_PRICE_IDS: dict[str, str] = {
+    "starter": "price_1T2zFwBB0TvgbMzReazNnwin",   # paste price_xxx for Starter
+    "pro": "price_1T2zG6BB0TvgbMzRkCwxwTKm",
+    "business": "price_1T2zGkBB0TvgbMzRYy2b7Y0r",
+    "scale": "price_1T2zH1BB0TvgbMzRmJF4RglP",
 }
 
 
-def _stripe_product_id_for_tier(tier: str) -> Optional[str]:
-    return STRIPE_PRODUCT_IDS.get(tier)
+def _stripe_price_id_for_tier(tier: str) -> Optional[str]:
+    pid = STRIPE_PRICE_IDS.get(tier)
+    return pid if pid and pid.strip() else None
 
 
 # --- Response/request models ---
@@ -65,6 +69,7 @@ class BillingStatusResponse(BaseModel):
     credits_balance: int = 0
     credits_included: int = 0
     current_period_end: Optional[str] = None
+    cancel_at_period_end: Optional[str] = None  # ISO date when access ends, if cancel scheduled
     subscription_required: bool = True
 
 
@@ -74,6 +79,10 @@ class SetupIntentResponse(BaseModel):
 
 class SubscribeRequest(BaseModel):
     payment_method_id: str = Field(..., min_length=1)
+    tier: str = Field(..., pattern="^(starter|pro|business|scale)$")
+
+
+class ChangePlanRequest(BaseModel):
     tier: str = Field(..., pattern="^(starter|pro|business|scale)$")
 
 
@@ -109,6 +118,18 @@ async def get_billing_status(
         if not org:
             raise HTTPException(status_code=404, detail="Organization not found")
         status_ok = org.subscription_status in ACTIVE_SUBSCRIPTION_STATUSES
+        cancel_at_period_end: Optional[str] = None
+        if org.stripe_subscription_id and settings.STRIPE_SECRET_KEY:
+            import stripe
+            stripe.api_key = settings.STRIPE_SECRET_KEY
+            try:
+                sub = stripe.Subscription.retrieve(org.stripe_subscription_id)
+                if sub.cancel_at_period_end and sub.current_period_end:
+                    cancel_at_period_end = datetime.fromtimestamp(
+                        sub.current_period_end, tz=timezone.utc
+                    ).isoformat().replace("+00:00", "Z")
+            except Exception:
+                pass
         return BillingStatusResponse(
             subscription_tier=org.subscription_tier,
             subscription_status=org.subscription_status,
@@ -118,6 +139,7 @@ async def get_billing_status(
                 org.current_period_end.isoformat().replace("+00:00", "Z")
                 if org.current_period_end else None
             ),
+            cancel_at_period_end=cancel_at_period_end,
             subscription_required=not status_ok,
         )
 
@@ -176,8 +198,8 @@ async def subscribe(
     """Create or update subscription with the given payment method and tier."""
     if not settings.STRIPE_SECRET_KEY:
         raise HTTPException(status_code=503, detail="Billing is not configured")
-    product_id = _stripe_product_id_for_tier(body.tier)
-    if not product_id:
+    price_id = _stripe_price_id_for_tier(body.tier)
+    if not price_id:
         raise HTTPException(
             status_code=400,
             detail=f"Stripe price not configured for tier {body.tier}",
@@ -216,7 +238,7 @@ async def subscribe(
         # Create subscription; webhook will set tier, period, credits
         sub = stripe.Subscription.create(
             customer=customer_id,
-            items=[{"price": product_id}],
+            items=[{"price": price_id}],
             payment_behavior="default_incomplete",
             expand=["latest_invoice"],
             metadata={"organization_id": str(org_id), "tier": body.tier},
@@ -241,6 +263,90 @@ async def subscribe(
         return {"status": "ok", "subscription_id": sub.id}
 
 
+@router.patch("/subscription")
+async def change_plan(
+    body: ChangePlanRequest,
+    auth: AuthContext = Depends(require_organization),
+) -> dict[str, str]:
+    """Change subscription to a different tier (upgrade/downgrade)."""
+    if not settings.STRIPE_SECRET_KEY:
+        raise HTTPException(status_code=503, detail="Billing is not configured")
+    price_id = _stripe_price_id_for_tier(body.tier)
+    if not price_id:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Stripe price not configured for tier {body.tier}",
+        )
+    org_id = auth.organization_id
+    if not org_id:
+        raise HTTPException(status_code=403, detail="Organization required")
+    import stripe
+    stripe.api_key = settings.STRIPE_SECRET_KEY
+    async with get_admin_session() as session:
+        from sqlalchemy import select
+        result = await session.execute(
+            select(Organization).where(Organization.id == org_id)
+        )
+        org: Organization | None = result.scalar_one_or_none()
+        if not org:
+            raise HTTPException(status_code=404, detail="Organization not found")
+        sub_id: Optional[str] = org.stripe_subscription_id
+        if not sub_id:
+            raise HTTPException(
+                status_code=400,
+                detail="No active subscription to change",
+            )
+        sub = stripe.Subscription.retrieve(sub_id, expand=["items.data.price"])
+        items = list(sub.get("items", {}).get("data", []) or [])
+        if not items:
+            raise HTTPException(
+                status_code=400,
+                detail="Subscription has no items",
+            )
+        item_id: str = items[0]["id"]
+        stripe.Subscription.modify(
+            sub_id,
+            items=[{"id": item_id, "price": price_id}],
+            metadata={"organization_id": str(org_id), "tier": body.tier},
+            proration_behavior="create_prorations",
+        )
+        plan = PLANS.get(body.tier, {})
+        org.subscription_tier = body.tier
+        org.credits_included = plan.get("credits_included", org.credits_included)
+        await session.commit()
+        return {"status": "ok"}
+
+
+@router.post("/cancel")
+async def cancel_subscription(
+    auth: AuthContext = Depends(require_organization),
+) -> dict[str, str]:
+    """Schedule subscription to cancel at period end (keeps access until then)."""
+    if not settings.STRIPE_SECRET_KEY:
+        raise HTTPException(status_code=503, detail="Billing is not configured")
+    org_id = auth.organization_id
+    if not org_id:
+        raise HTTPException(status_code=403, detail="Organization required")
+    async with get_admin_session() as session:
+        from sqlalchemy import select
+        result = await session.execute(
+            select(Organization).where(Organization.id == org_id)
+        )
+        org: Organization | None = result.scalar_one_or_none()
+        if not org:
+            raise HTTPException(status_code=404, detail="Organization not found")
+        sub_id: Optional[str] = org.stripe_subscription_id
+        if not sub_id:
+            raise HTTPException(
+                status_code=400,
+                detail="No active subscription to cancel",
+            )
+    import stripe
+    stripe.api_key = settings.STRIPE_SECRET_KEY
+    stripe.Subscription.modify(sub_id, cancel_at_period_end=True)
+    return {"status": "ok"}
+
+
 @router.get("/plans", response_model=PlansResponse)
 async def list_plans() -> PlansResponse:
     """Return available plans for the plan selector."""
@@ -250,7 +356,7 @@ async def list_plans() -> PlansResponse:
             name=info["name"],
             price_cents=info["price_cents"],
             credits_included=info["credits_included"],
-            stripe_product_id=_stripe_product_id_for_tier(tier),
+            stripe_product_id=_stripe_price_id_for_tier(tier),
         )
         for tier, info in PLANS.items()
     ]
@@ -329,8 +435,8 @@ def _tier_from_price(invoice: Any) -> Optional[str]:
     """Infer tier from invoice line items price id."""
     for line in invoice.get("lines", {}).get("data", []):
         pid = line.get("price", {}).get("id")
-        for tier, product_id in STRIPE_PRODUCT_IDS.items():
-            if pid == product_id:
+        for tier, price_id in STRIPE_PRICE_IDS.items():
+            if price_id and pid == price_id:
                 return tier
     return None
 
@@ -368,9 +474,9 @@ def _tier_from_subscription(sub: Any) -> Optional[str]:
     items = sub.get("items", {}).get("data", [])
     if not items:
         return None
-    product_id = items[0].get("price", {}).get("id")
-    for tier, pid in STRIPE_PRODUCT_IDS.items():
-        if product_id == pid:
+    price_id = items[0].get("price", {}).get("id")
+    for tier, pid in STRIPE_PRICE_IDS.items():
+        if pid and price_id == pid:
             return tier
     return None
 

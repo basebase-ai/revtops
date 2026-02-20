@@ -809,6 +809,10 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
     void deleteConversation(chatId);
   }, [deleteConversation]);
 
+  const handleConversationNotFound = useCallback((): void => {
+    setCurrentChatId(null);
+  }, [setCurrentChatId]);
+
   // Guard against missing user/org (shouldn't happen, but be safe)
   if (!user || !organization) {
     return (
@@ -939,7 +943,7 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
             isConnected={isConnected}
             connectionState={connectionState}
             crmApprovalResults={crmApprovalResults}
-            onConversationNotFound={() => setCurrentChatId(null)}
+            onConversationNotFound={handleConversationNotFound}
           />
         )}
         {currentView === 'data-sources' && (
