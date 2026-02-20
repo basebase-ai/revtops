@@ -1,4 +1,4 @@
-# Revtops: Agentic Intelligence for Revenue Teams
+# Revtops: Agentic Intelligence for Companies
 
 Revtops is an **agentic intelligence framework** that connects to the siloed tools and data sources your company already uses — CRM, email, calendars, Slack, issue trackers, code repos, meeting transcripts, and more — and exposes a unified AI agent that helps employees work faster, smarter, and with full context.
 
