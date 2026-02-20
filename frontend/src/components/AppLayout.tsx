@@ -48,7 +48,7 @@ import { AppsGallery } from './apps/AppsGallery';
 import { AppFullView } from './apps/AppFullView';
 import { OrganizationPanel } from './OrganizationPanel';
 import { ProfilePanel } from './ProfilePanel';
-import { useAppStore, useMasquerade, useIntegrations, type ActiveTask } from '../store';
+import { useAppStore, useMasquerade, useIntegrations, type ActiveTask, type ToolCallData } from '../store';
 import { useTeamMembers, useWebSocket } from '../hooks';
 import { apiRequest } from '../lib/api';
 
@@ -521,7 +521,7 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
               }
             } else if (data.type === 'tool_result') {
               // Tool result received (include input so block has params if it was empty, e.g. modal)
-              const updates: { result: Record<string, unknown>; status: string; input?: Record<string, unknown> } = {
+              const updates: Partial<ToolCallData> = {
                 result: data.result as Record<string, unknown>,
                 status: 'complete',
               };
