@@ -43,6 +43,12 @@ from models.tracker_team import TrackerTeam
 
 # Import the unified tool registry
 from agents.registry import get_tools_for_claude, get_tool, requires_approval
+from access_control import (
+    ConnectorContext,
+    RightsContext,
+    check_connector_call,
+    check_sql,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -556,6 +562,16 @@ async def _query_system(
     if not query:
         return {"error": "query is required"}
 
+    dp_ctx = ConnectorContext(
+        organization_id=organization_id,
+        user_id=user_id,
+        provider=system,
+        operation="query",
+    )
+    dp_result = await check_connector_call(dp_ctx, {"system": system, "query": query})
+    if not dp_result.allowed:
+        return {"error": dp_result.deny_reason or "Connector query not allowed"}
+
     instance, error = await _get_connector_instance(system, organization_id, user_id, required_capability="query")
     if error:
         return {"error": error}
@@ -584,6 +600,16 @@ async def _write_to_system(
         return {"error": "system is required"}
     if not operation:
         return {"error": "operation is required"}
+
+    dp_ctx = ConnectorContext(
+        organization_id=organization_id,
+        user_id=user_id,
+        provider=system,
+        operation="write",
+    )
+    dp_result = await check_connector_call(dp_ctx, {"system": system, "operation": operation, "data": data})
+    if not dp_result.allowed:
+        return {"error": dp_result.deny_reason or "Connector write not allowed"}
 
     instance, error = await _get_connector_instance(system, organization_id, user_id, required_capability="write")
     if error:
@@ -619,6 +645,16 @@ async def _run_action(
         conversation_id: str | None = (context or {}).get("conversation_id")
         if conversation_id:
             action_params["conversation_id"] = conversation_id
+
+    dp_ctx = ConnectorContext(
+        organization_id=organization_id,
+        user_id=user_id,
+        provider=system,
+        operation="action",
+    )
+    dp_result = await check_connector_call(dp_ctx, {"system": system, "action": action, "params": action_params})
+    if not dp_result.allowed:
+        return {"error": dp_result.deny_reason or "Connector action not allowed"}
 
     instance, error = await _get_connector_instance(system, organization_id, user_id, required_capability="action")
     if error:
@@ -681,9 +717,22 @@ async def _run_sql_query(
     if not re.search(r'\bLIMIT\b', final_query, re.IGNORECASE):
         final_query = final_query.rstrip(';') + " LIMIT 100"
 
+    rights_ctx = RightsContext(
+        organization_id=organization_id,
+        user_id=user_id,
+        conversation_id=None,
+        is_workflow=False,
+    )
+    rights_result = await check_sql(rights_ctx, final_query, None)
+    if not rights_result.allowed:
+        return {"error": rights_result.deny_reason or "SQL not allowed"}
+    query_to_run: str = (
+        rights_result.transformed_query if rights_result.transformed_query is not None else final_query
+    )
+
     try:
         async with get_session(organization_id=organization_id) as session:
-            result = await session.execute(text(final_query))
+            result = await session.execute(text(query_to_run))
             rows = result.fetchall()
             columns: list[str] = list(result.keys())
 
@@ -1186,13 +1235,26 @@ async def _run_sql_write(
                     )
                 }
     
+    rights_ctx = RightsContext(
+        organization_id=organization_id,
+        user_id=user_id,
+        conversation_id=(context or {}).get("conversation_id"),
+        is_workflow=(context or {}).get("is_workflow", False),
+    )
+    rights_result = await check_sql(rights_ctx, query, None)
+    if not rights_result.allowed:
+        return {"error": rights_result.deny_reason or "SQL write not allowed"}
+    query_to_use: str = (
+        rights_result.transformed_query if rights_result.transformed_query is not None else query
+    )
+
     # ==========================================================================
     # CRM Tables: Route through PendingOperation for review/commit workflow
     # ==========================================================================
     if table in CRM_TABLES:
         conversation_id: str | None = (context or {}).get("conversation_id")
         return await _handle_crm_write_from_sql(
-            query=query,
+            query=query_to_use,
             table=table,
             operation=operation,
             organization_id=organization_id,
@@ -1207,11 +1269,11 @@ async def _run_sql_write(
         async with get_session(organization_id=organization_id) as session:
             
             # For INSERT, inject required columns
-            final_query = query
+            final_query = query_to_use
             if operation == "INSERT":
                 # Parse INSERT INTO table (cols) VALUES (vals)
                 # Need to handle nested parens, quotes, and functions properly
-                parsed = _parse_insert_for_injection(query)
+                parsed = _parse_insert_for_injection(query_to_use)
                 if parsed is None:
                     return {"error": "INSERT query format not recognized. Use: INSERT INTO table (columns) VALUES (values)"}
                 
@@ -1257,7 +1319,7 @@ async def _run_sql_write(
                     new_vals = f"{values}, {', '.join(extra_vals)}"
                     final_query = f"INSERT INTO {table_part} ({new_cols}) VALUES ({new_vals})"
                 else:
-                    final_query = query
+                    final_query = query_to_use
             
             # Execute the query
             result = await session.execute(text(final_query))
@@ -4674,6 +4736,16 @@ async def _trigger_sync(
                 "suggestion": f"Go to Data Sources and connect {provider}.",
             }
     
+    dp_ctx = ConnectorContext(
+        organization_id=organization_id,
+        user_id=None,
+        provider=provider,
+        operation="sync",
+    )
+    dp_result = await check_connector_call(dp_ctx, {"provider": provider})
+    if not dp_result.allowed:
+        return {"error": dp_result.deny_reason or "Connector sync not allowed"}
+
     try:
         # Queue sync via Celery
         from workers.tasks.sync import sync_integration

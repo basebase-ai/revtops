@@ -81,6 +81,24 @@ async def _sync_integration(
         user_label: str = f" user={user_id}" if user_id else ""
         logger.info(f"Starting sync for {provider} in org {organization_id}{user_label}")
         connector = connector_class(organization_id, user_id=user_id)
+
+        from access_control import ConnectorContext, check_connector_call
+
+        dp_ctx = ConnectorContext(
+            organization_id=organization_id,
+            user_id=user_id,
+            provider=provider,
+            operation="sync",
+        )
+        dp_result = await check_connector_call(dp_ctx, None)
+        if not dp_result.allowed:
+            return {
+                "status": "failed",
+                "organization_id": organization_id,
+                "provider": provider,
+                "error": dp_result.deny_reason or "Connector sync not allowed",
+            }
+
         counts = await connector.sync_all()
         await connector.update_last_sync(counts)
 
