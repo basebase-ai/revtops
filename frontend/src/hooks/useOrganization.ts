@@ -6,7 +6,7 @@
  */
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { API_BASE } from '../lib/api';
+import { apiRequest } from '../lib/api';
 
 // Types
 export interface Organization {
@@ -85,17 +85,15 @@ export const organizationKeys = {
   members: (orgId: string) => ['organization', orgId, 'members'] as const,
 };
 
-// Fetch team members
+// Fetch team members (uses apiRequest so JWT is sent; backend may require it)
 async function fetchTeamMembers(orgId: string, userId: string): Promise<TeamMembersResult> {
-  const response = await fetch(
-    `${API_BASE}/auth/organizations/${orgId}/members?user_id=${userId}`
+  const { data, error } = await apiRequest<TeamMembersApiResponse>(
+    `/auth/organizations/${encodeURIComponent(orgId)}/members?user_id=${encodeURIComponent(userId)}`
   );
-  
-  if (!response.ok) {
-    throw new Error(`Failed to fetch team members: ${response.status}`);
+
+  if (error || !data) {
+    throw new Error(error ?? 'Failed to fetch team members');
   }
-  
-  const data = (await response.json()) as TeamMembersApiResponse;
 
   const mapIdentity = (i: IdentityMappingApiResponse): IdentityMapping => ({
     id: i.id,
@@ -126,23 +124,16 @@ async function updateOrganization(params: UpdateOrganizationParams): Promise<Org
   const body: Record<string, string> = {};
   if (params.name !== undefined) body.name = params.name;
   if (params.logoUrl !== undefined) body.logo_url = params.logoUrl;
-  
-  const response = await fetch(
-    `${API_BASE}/auth/organizations/${params.orgId}?user_id=${params.userId}`,
-    {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    }
+
+  const { data, error } = await apiRequest<OrganizationApiResponse>(
+    `/auth/organizations/${encodeURIComponent(params.orgId)}?user_id=${encodeURIComponent(params.userId)}`,
+    { method: 'PATCH', body: JSON.stringify(body) }
   );
-  
-  if (!response.ok) {
-    const errorData = await response.json().catch(() => ({})) as { detail?: string };
-    throw new Error(errorData.detail ?? `Failed to update organization: ${response.status}`);
+
+  if (error || !data) {
+    throw new Error(error ?? 'Failed to update organization');
   }
-  
-  const data = (await response.json()) as OrganizationApiResponse;
-  
+
   return {
     id: data.id,
     name: data.name,
@@ -174,22 +165,18 @@ export function useLinkIdentity() {
 
   return useMutation({
     mutationFn: async (params: { orgId: string; userId: string; targetUserId: string; mappingId: string }) => {
-      const response = await fetch(
-        `${API_BASE}/auth/organizations/${params.orgId}/members/link-identity?user_id=${params.userId}`,
+      const { data, error } = await apiRequest<{ status: string }>(
+        `/auth/organizations/${encodeURIComponent(params.orgId)}/members/link-identity?user_id=${encodeURIComponent(params.userId)}`,
         {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             target_user_id: params.targetUserId,
             mapping_id: params.mappingId,
           }),
         }
       );
-      if (!response.ok) {
-        const err = await response.json().catch(() => ({})) as { detail?: string };
-        throw new Error(err.detail ?? `Failed to link identity: ${response.status}`);
-      }
-      return (await response.json()) as { status: string };
+      if (error || !data) throw new Error(error ?? 'Failed to link identity');
+      return data;
     },
     onSuccess: (_data, variables) => {
       void queryClient.invalidateQueries({
@@ -207,21 +194,15 @@ export function useUnlinkIdentity() {
 
   return useMutation({
     mutationFn: async (params: { orgId: string; userId: string; mappingId: string }) => {
-      const response = await fetch(
-        `${API_BASE}/auth/organizations/${params.orgId}/members/unlink-identity?user_id=${params.userId}`,
+      const { data, error } = await apiRequest<{ status: string }>(
+        `/auth/organizations/${encodeURIComponent(params.orgId)}/members/unlink-identity?user_id=${encodeURIComponent(params.userId)}`,
         {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            mapping_id: params.mappingId,
-          }),
+          body: JSON.stringify({ mapping_id: params.mappingId }),
         }
       );
-      if (!response.ok) {
-        const err = await response.json().catch(() => ({})) as { detail?: string };
-        throw new Error(err.detail ?? `Failed to unlink identity: ${response.status}`);
-      }
-      return (await response.json()) as { status: string };
+      if (error || !data) throw new Error(error ?? 'Failed to unlink identity');
+      return data;
     },
     onSuccess: (_data, variables) => {
       void queryClient.invalidateQueries({

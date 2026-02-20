@@ -43,7 +43,7 @@ interface LegacyArtifact {
 type AnyArtifact = LegacyArtifact | FileArtifact;
 
 interface ChatProps {
-  userId: string;
+  userId?: string | null;
   organizationId: string;
   chatId?: string | null;
   sendMessage: (data: Record<string, unknown>) => void;
@@ -227,6 +227,8 @@ export function Chat({
   // Reset local state when chatId changes
   useEffect(() => {
     setLocalConversationId(chatId ?? null);
+    setCurrentArtifact(null);
+    setCurrentApp(null);
     // Reset conversation type when starting a new chat
     if (!chatId) {
       setConversationType(null);
@@ -791,6 +793,11 @@ export function Chat({
       <div className="flex-1 flex overflow-hidden">
         {/* Messages */}
         <div ref={messagesContainerRef} className={`overflow-y-auto overflow-x-hidden p-3 md:p-6 ${currentArtifact || currentApp ? 'w-1/2' : 'flex-1'}`}>
+          {!userId && (
+            <div className="mb-3 rounded-lg border border-amber-600/50 bg-amber-900/20 px-3 py-2 text-sm text-amber-200">
+              User context is missing — artifacts and apps may not save correctly. Please refresh or re-sign in.
+            </div>
+          )}
           {messages.length === 0 && !isThinking ? (
             conversationType === 'workflow' ? (
               // Show loading state for workflow conversations waiting for agent to start

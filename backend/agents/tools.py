@@ -34,6 +34,7 @@ from config import settings
 from models.account import Account
 from models.app import App
 from models.artifact import Artifact
+from models.conversation import Conversation
 from models.contact import Contact
 from models.pending_operation import PendingOperation, CrmOperation  # CrmOperation is alias
 from models.database import get_session
@@ -5043,12 +5044,14 @@ async def _create_artifact(
     })
     
     # Create artifact in database
-    artifact_id: str = str(uuid4())
-    
+    artifact_uuid: UUID = uuid4()
+    artifact_id_str: str = str(artifact_uuid)
+    user_uuid: UUID | None = UUID(user_id) if user_id else None
+
     async with get_session(organization_id=organization_id) as session:
         artifact = Artifact(
-            id=artifact_id,
-            user_id=user_id,
+            id=artifact_uuid,
+            user_id=user_uuid,
             organization_id=organization_id,
             type="file",  # Use 'file' type to distinguish from dashboards/reports
             title=title,
@@ -5064,7 +5067,7 @@ async def _create_artifact(
         
         logger.info(
             "[Tools._create_artifact] Created artifact: id=%s, type=%s, title=%s",
-            artifact_id,
+            artifact_id_str,
             content_type,
             title,
         )
@@ -5083,9 +5086,9 @@ async def _create_artifact(
     # Use camelCase for frontend compatibility
     return {
         "status": "success",
-        "artifact_id": artifact_id,
+        "artifact_id": artifact_id_str,
         "artifact": {
-            "id": artifact_id,
+            "id": artifact_id_str,
             "title": title,
             "filename": filename,
             "contentType": content_type,  # camelCase for frontend
@@ -5169,16 +5172,35 @@ async def _create_app(
     if errors:
         return {"error": "SQL validation failed:\n" + "\n".join(errors)}
 
-    # Store as App (dedicated table, separate from artifacts)
-    app_id: str = str(uuid4())
     message_id: str | None = context.get("message_id") if context else None
     conversation_id: str | None = (context or {}).get("conversation_id")
 
+    # Resolve user_id: required for apps table (NOT NULL). Use context or conversation owner.
+    user_uuid: UUID | None = UUID(user_id) if user_id else None
+    if not user_uuid and conversation_id:
+        async with get_session(organization_id=organization_id) as session:
+            row = await session.execute(
+                select(Conversation.user_id).where(
+                    Conversation.id == UUID(conversation_id),
+                )
+            )
+            conv_user_id: UUID | None = row.scalar_one_or_none()
+            if conv_user_id is not None:
+                user_uuid = conv_user_id
+    if not user_uuid:
+        return {
+            "error": "App creation requires a user context. This can happen in some automated flows; try creating the app from a normal chat message.",
+        }
+
+    app_uuid: UUID = uuid4()
+    app_id_str: str = str(app_uuid)
+    org_uuid: UUID = UUID(organization_id) if isinstance(organization_id, str) else organization_id
+
     async with get_session(organization_id=organization_id) as session:
         app = App(
-            id=app_id,
-            user_id=user_id,
-            organization_id=organization_id,
+            id=app_uuid,
+            user_id=user_uuid,
+            organization_id=org_uuid,
             title=title,
             description=description,
             queries=queries,
@@ -5191,16 +5213,16 @@ async def _create_app(
 
         logger.info(
             "[Tools._create_app] Created app: id=%s, title=%s, queries=%s",
-            app_id,
+            app_id_str,
             title,
             list(queries.keys()),
         )
 
     return {
         "status": "success",
-        "app_id": app_id,
+        "app_id": app_id_str,
         "app": {
-            "id": app_id,
+            "id": app_id_str,
             "title": title,
             "description": description,
             "frontendCode": frontend_code,

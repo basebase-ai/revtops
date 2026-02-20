@@ -86,13 +86,9 @@ async def get_artifact(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid artifact ID format")
 
+    # RLS (org_isolation) already restricts to auth.organization_id; allow any org member to view
     async with get_session(organization_id=auth.organization_id_str) as session:
-        result = await session.execute(
-            select(Artifact).where(
-                Artifact.id == artifact_uuid,
-                Artifact.user_id == auth.user_id,
-            )
-        )
+        result = await session.execute(select(Artifact).where(Artifact.id == artifact_uuid))
         artifact: Artifact | None = result.scalar_one_or_none()
 
         if not artifact:
@@ -136,13 +132,9 @@ async def download_artifact(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid artifact ID format")
 
+    # RLS (org_isolation) already restricts to auth.organization_id; allow any org member to download
     async with get_session(organization_id=auth.organization_id_str) as session:
-        result = await session.execute(
-            select(Artifact).where(
-                Artifact.id == artifact_uuid,
-                Artifact.user_id == auth.user_id,
-            )
-        )
+        result = await session.execute(select(Artifact).where(Artifact.id == artifact_uuid))
         artifact: Artifact | None = result.scalar_one_or_none()
 
         if not artifact:
@@ -224,7 +216,7 @@ async def list_conversation_artifacts(
             select(Artifact)
             .where(
                 Artifact.conversation_id == conv_uuid,
-                Artifact.user_id == auth.user_id,
+                (Artifact.user_id == auth.user_id) | (Artifact.user_id.is_(None)),
             )
             .order_by(Artifact.created_at.desc())
         )

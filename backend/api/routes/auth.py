@@ -21,8 +21,10 @@ import logging
 from typing import Any, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
+
+from api.auth_middleware import AuthContext, get_current_auth
 from pydantic import BaseModel, Field
 from sqlalchemy import select, text
 
@@ -783,24 +785,22 @@ class UnlinkIdentityRequest(BaseModel):
 @router.get("/organizations/{org_id}/members", response_model=TeamMembersListResponse)
 async def get_organization_members(
     org_id: str,
-    user_id: Optional[str] = None,
+    auth: AuthContext = Depends(get_current_auth),
 ) -> TeamMembersListResponse:
     """Get all team members for an organization, including identity mappings.
 
     Only accessible by members of that organization.
-    Uses org_members table for membership lookups.
+    Uses JWT to identify the requester.
     """
     from models.slack_user_mapping import SlackUserMapping
     from models.org_member import OrgMember
 
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-
     try:
         org_uuid = UUID(org_id)
-        user_uuid = UUID(user_id)
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid ID format")
+        raise HTTPException(status_code=400, detail="Invalid organization ID format")
+
+    user_uuid = auth.user_id
 
     # Use admin session so we can join across users + memberships without RLS issues
     async with get_admin_session() as session:
@@ -1200,18 +1200,12 @@ class UserOrganizationsListResponse(BaseModel):
 
 @router.get("/users/me/organizations", response_model=UserOrganizationsListResponse)
 async def list_user_organizations(
-    user_id: Optional[str] = None,
+    auth: AuthContext = Depends(get_current_auth),
 ) -> UserOrganizationsListResponse:
-    """List all organizations the authenticated user belongs to."""
+    """List all organizations the authenticated user belongs to (from JWT)."""
     from models.org_member import OrgMember
 
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-
-    try:
-        user_uuid = UUID(user_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid user ID")
+    user_uuid = auth.user_id
 
     # Cross-org query — must bypass RLS
     async with get_admin_session() as session:
@@ -1252,23 +1246,20 @@ class SwitchActiveOrgRequest(BaseModel):
 @router.patch("/users/me/active-organization", response_model=SyncUserResponse)
 async def switch_active_organization(
     request: SwitchActiveOrgRequest,
-    user_id: Optional[str] = None,
+    auth: AuthContext = Depends(get_current_auth),
 ) -> SyncUserResponse:
     """Switch the user's active organization.
 
-    Validates that the user has an active membership in the target org,
+    Validates that the user (from JWT) has an active membership in the target org,
     then updates User.organization_id.
     """
     from models.org_member import OrgMember
 
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-
     try:
-        user_uuid = UUID(user_id)
+        user_uuid = auth.user_id
         target_org_uuid = UUID(request.organization_id)
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid ID format")
+        raise HTTPException(status_code=400, detail="Invalid organization ID format")
 
     async with get_admin_session() as session:
         user: Optional[User] = await session.get(User, user_uuid)
