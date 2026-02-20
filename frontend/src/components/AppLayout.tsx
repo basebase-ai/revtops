@@ -361,7 +361,6 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
   const [showOrgPanel, setShowOrgPanel] = useState(false);
   const [showProfilePanel, setShowProfilePanel] = useState(false);
   const [orgPanelTab, setOrgPanelTab] = useState<'team' | 'billing' | 'settings'>('team');
-  const [_insufficientCreditsBanner, setInsufficientCreditsBanner] = useState(false);
 
   // CRM approval results (shared across chats) - use state to trigger re-renders
   const [crmApprovalResults, setCrmApprovalResults] = useState<Map<string, unknown>>(() => new Map());
@@ -554,7 +553,6 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
               const result = data.result as Record<string, unknown> | undefined;
               if (result?.error && typeof result.error === 'string' && 
                   result.error.toLowerCase().includes('insufficient credits')) {
-                setInsufficientCreditsBanner(true);
                 setShowOrgPanel(true);
                 setOrgPanelTab('billing');
                 // Refresh billing status to show updated credits
@@ -716,7 +714,6 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
               addConversationMessage(chatId, errorMessage);
               setConversationThinking(chatId, false);
             }
-            setInsufficientCreditsBanner(true);
           }
           break;
         }
@@ -1006,10 +1003,7 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
           organization={organization}
           currentUser={user}
           initialTab={orgPanelTab}
-          onClose={() => {
-            setShowOrgPanel(false);
-            setInsufficientCreditsBanner(false);
-          }}
+          onClose={() => setShowOrgPanel(false)}
         />
       )}
 
