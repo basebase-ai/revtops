@@ -319,13 +319,15 @@ async def subscribe(
         org.subscription_status = sub.status or "active"
         if sub.status == "active":
             org.credits_balance = org.credits_included
-            if sub.current_period_end:
+            period_end = getattr(sub, "current_period_end", None)
+            period_start = getattr(sub, "current_period_start", None)
+            if period_end:
                 org.current_period_end = datetime.fromtimestamp(
-                    sub.current_period_end, tz=timezone.utc
+                    period_end, tz=timezone.utc
                 )
-            if sub.current_period_start:
+            if period_start:
                 org.current_period_start = datetime.fromtimestamp(
-                    sub.current_period_start, tz=timezone.utc
+                    period_start, tz=timezone.utc
                 )
         await session.commit()
         return {"status": "ok", "subscription_id": sub.id}
