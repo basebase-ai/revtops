@@ -47,16 +47,32 @@ ROLLOVER_CAP: dict[str, int] = {
 
 # Stripe Price IDs (Dashboard → Products → [your product] → Pricing → copy "Price ID", e.g. price_1ABC...)
 # Subscription.create requires price IDs, not product IDs (prod_xxx).
-STRIPE_PRICE_IDS: dict[str, str] = {
-    "starter": "price_1T2zFwBB0TvgbMzReazNnwin",   # paste price_xxx for Starter
+# These are selected based on STRIPE_SECRET_KEY prefix (sk_live_ vs sk_test_)
+STRIPE_PRICE_IDS_TEST: dict[str, str] = {
+    "starter": "price_1T2zFwBB0TvgbMzReazNnwin",
     "pro": "price_1T2zG6BB0TvgbMzRkCwxwTKm",
     "business": "price_1T2zGkBB0TvgbMzRYy2b7Y0r",
     "scale": "price_1T2zH1BB0TvgbMzRmJF4RglP",
 }
+STRIPE_PRICE_IDS_LIVE: dict[str, str] = {
+    "starter": "price_1T31ohP5SO7X9dBUREhHctUJ",
+    "pro": "price_1T31ohP5SO7X9dBUQ1noH603",
+    "business": "price_1T31oiP5SO7X9dBUeVPJdaiW",
+    "scale": "price_1T31oiP5SO7X9dBUkbZiwevH",
+}
+
+
+def _get_stripe_price_ids() -> dict[str, str]:
+    """Return the appropriate price IDs based on whether we're in live or test mode."""
+    key = settings.STRIPE_SECRET_KEY or ""
+    if key.startswith("sk_live_"):
+        return STRIPE_PRICE_IDS_LIVE
+    return STRIPE_PRICE_IDS_TEST
 
 
 def _stripe_price_id_for_tier(tier: str) -> Optional[str]:
-    pid = STRIPE_PRICE_IDS.get(tier)
+    price_ids = _get_stripe_price_ids()
+    pid = price_ids.get(tier)
     return pid if pid and pid.strip() else None
 
 
