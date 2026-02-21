@@ -42,6 +42,19 @@ def _cannot_action_message() -> str:
     )
 
 
+def _slack_mapping_source_clause() -> Any:
+    """Return source filter for Slack identity mappings, including legacy rows."""
+    return or_(
+        SlackUserMapping.source == "slack",
+        SlackUserMapping.source == "revtops_unknown",
+    )
+
+
+def _normalize_slack_user_id(slack_user_id: str | None) -> str:
+    """Normalize a Slack user ID for consistent mapping lookups."""
+    return (slack_user_id or "").strip().upper()
+
+
 async def _post_cannot_action_response(
     connector: SlackConnector,
     channel: str,
@@ -670,7 +683,7 @@ async def get_slack_user_ids_for_revtops_user(
         mappings_query = (
             select(SlackUserMapping)
             .where(SlackUserMapping.organization_id == UUID(organization_id))
-            .where(SlackUserMapping.source == "slack")
+            .where(_slack_mapping_source_clause())
             .where(SlackUserMapping.user_id == user_uuid)
         )
         mappings_result = await session.execute(mappings_query)
@@ -715,7 +728,8 @@ async def _upsert_slack_user_mapping(
     revtops_email: str | None = None,
 ) -> None:
     now = datetime.utcnow()
-    if not slack_user_id:
+    normalized_slack_user_id: str = _normalize_slack_user_id(slack_user_id)
+    if not normalized_slack_user_id:
         logger.warning(
             "[slack_conversations] Skipping Slack user mapping upsert org=%s user=%s due to missing slack_user_id",
             organization_id,
@@ -727,7 +741,7 @@ async def _upsert_slack_user_mapping(
             "[slack_conversations] Attempting Slack user mapping upsert org=%s user=%s slack_user=%s email=%s source=%s",
             organization_id,
             user_id,
-            slack_user_id,
+            normalized_slack_user_id,
             slack_email,
             match_source,
         )
@@ -745,8 +759,8 @@ async def _upsert_slack_user_mapping(
                 existing_result = await session.execute(
                     select(SlackUserMapping)
                     .where(SlackUserMapping.organization_id == UUID(organization_id))
-                    .where(SlackUserMapping.source == "slack")
-                    .where(SlackUserMapping.external_userid == slack_user_id)
+                    .where(_slack_mapping_source_clause())
+                    .where(SlackUserMapping.external_userid == normalized_slack_user_id)
                     .where(SlackUserMapping.user_id.is_(None))
                     .limit(1)
                 )
@@ -773,7 +787,7 @@ async def _upsert_slack_user_mapping(
                     organization_id=UUID(organization_id),
                     user_id=user_id,
                     revtops_email=resolved_revtops_email,
-                    external_userid=slack_user_id,
+                    external_userid=normalized_slack_user_id,
                     external_email=slack_email,
                     source="slack",
                     match_source=match_source,
@@ -795,7 +809,7 @@ async def _upsert_slack_user_mapping(
                     "[slack_conversations] Upserted Slack user mapping org=%s user=%s slack_user=%s source=%s",
                     organization_id,
                     user_id,
-                    slack_user_id,
+                    normalized_slack_user_id,
                     match_source,
                 )
                 return
@@ -804,8 +818,8 @@ async def _upsert_slack_user_mapping(
             any_existing_result = await session.execute(
                 select(SlackUserMapping)
                 .where(SlackUserMapping.organization_id == UUID(organization_id))
-                .where(SlackUserMapping.source == "slack")
-                .where(SlackUserMapping.external_userid == slack_user_id)
+                .where(_slack_mapping_source_clause())
+                .where(SlackUserMapping.external_userid == normalized_slack_user_id)
                 .limit(1)
             )
             any_existing: SlackUserMapping | None = any_existing_result.scalar_one_or_none()
@@ -820,7 +834,7 @@ async def _upsert_slack_user_mapping(
                     logger.info(
                         "[slack_conversations] Updated unmapped Slack user mapping org=%s slack_user=%s source=%s",
                         organization_id,
-                        slack_user_id,
+                        normalized_slack_user_id,
                         match_source,
                     )
                 else:
@@ -828,7 +842,7 @@ async def _upsert_slack_user_mapping(
                     logger.info(
                         "[slack_conversations] Skipping unmapped upsert — Slack user already mapped org=%s slack_user=%s user=%s",
                         organization_id,
-                        slack_user_id,
+                        normalized_slack_user_id,
                         any_existing.user_id,
                     )
                 return
@@ -838,7 +852,7 @@ async def _upsert_slack_user_mapping(
                 organization_id=UUID(organization_id),
                 user_id=None,
                 revtops_email=resolved_revtops_email,
-                external_userid=slack_user_id,
+                external_userid=normalized_slack_user_id,
                 external_email=slack_email,
                 source="slack",
                 match_source=match_source,
@@ -850,7 +864,7 @@ async def _upsert_slack_user_mapping(
             logger.info(
                 "[slack_conversations] Created unmapped Slack user mapping org=%s slack_user=%s source=%s",
                 organization_id,
-                slack_user_id,
+                normalized_slack_user_id,
                 match_source,
             )
     except Exception as exc:
@@ -1019,6 +1033,13 @@ async def resolve_revtops_user_for_slack_actor(
     slack_user: dict[str, Any] | None = None,
 ) -> User | None:
     """Resolve the RevTops user linked to a Slack actor in this organization."""
+    normalized_slack_user_id: str = _normalize_slack_user_id(slack_user_id)
+    if not normalized_slack_user_id:
+        logger.info(
+            "[slack_conversations] Cannot resolve Slack actor with empty user id org=%s",
+            organization_id,
+        )
+        return None
 
     async with get_admin_session() as session:
         # Find users who belong to this org — either via their active org
@@ -1053,8 +1074,8 @@ async def resolve_revtops_user_for_slack_actor(
         mappings_query = (
             select(SlackUserMapping)
             .where(SlackUserMapping.organization_id == UUID(organization_id))
-            .where(SlackUserMapping.source == "slack")
-            .where(SlackUserMapping.external_userid == slack_user_id)
+            .where(_slack_mapping_source_clause())
+            .where(SlackUserMapping.external_userid == normalized_slack_user_id)
         )
         mappings_result = await session.execute(mappings_query)
         existing_mappings = mappings_result.scalars().all()
@@ -1067,7 +1088,7 @@ async def resolve_revtops_user_for_slack_actor(
         if len(existing_mappings) > 1:
             logger.info(
                 "[slack_conversations] Multiple Slack mappings found for user=%s (count=%d); using latest user=%s",
-                slack_user_id,
+                normalized_slack_user_id,
                 len(existing_mappings),
                 latest_mapping.user_id,
             )
@@ -1075,25 +1096,25 @@ async def resolve_revtops_user_for_slack_actor(
             if user.id == latest_mapping.user_id:
                 logger.info(
                     "[slack_conversations] Resolved Slack user=%s via stored mapping to RevTops user=%s",
-                    slack_user_id,
+                    normalized_slack_user_id,
                     user.id,
                 )
                 return user
         logger.info(
             "[slack_conversations] Stored mapping for Slack user=%s references missing user=%s",
-            slack_user_id,
+            normalized_slack_user_id,
             latest_mapping.user_id,
         )
 
     for integration in slack_integrations:
         extra_data = integration.extra_data or {}
         slack_user_ids = _extract_slack_user_ids(extra_data)
-        if slack_user_id in slack_user_ids:
+        if normalized_slack_user_id in slack_user_ids:
             target_user_id = integration.user_id or integration.connected_by_user_id
             if not target_user_id:
                 logger.info(
                     "[slack_conversations] Slack metadata matched user=%s but no linked user_id on integration %s",
-                    slack_user_id,
+                    normalized_slack_user_id,
                     integration.id,
                 )
                 continue
@@ -1102,13 +1123,13 @@ async def resolve_revtops_user_for_slack_actor(
                 if user.id == target_user_id:
                     logger.info(
                         "[slack_conversations] Matched Slack user=%s via integration metadata to RevTops user=%s",
-                        slack_user_id,
+                        normalized_slack_user_id,
                         user.id,
                     )
                     await _upsert_slack_user_mapping(
                         organization_id=organization_id,
                         user_id=user.id,
-                        slack_user_id=slack_user_id,
+                        slack_user_id=normalized_slack_user_id,
                         slack_email=None,
                         match_source="slack_integration",
                     )
@@ -1116,7 +1137,7 @@ async def resolve_revtops_user_for_slack_actor(
 
             logger.info(
                 "[slack_conversations] Slack metadata matched user=%s but no org user found for %s",
-                slack_user_id,
+                normalized_slack_user_id,
                 target_user_id,
             )
 
@@ -1135,7 +1156,7 @@ async def resolve_revtops_user_for_slack_actor(
         logger.info(
             "[slack_conversations] No users found for org=%s when resolving Slack user=%s",
             organization_id,
-            slack_user_id,
+            normalized_slack_user_id,
         )
         return None
 
@@ -1160,7 +1181,7 @@ async def resolve_revtops_user_for_slack_actor(
 
         logger.info(
             "[slack_conversations] Slack user resolution lookup user=%s has_email=%s candidate_names=%s users_with_connected_slack=%d",
-            slack_user_id,
+            normalized_slack_user_id,
             bool(slack_email),
             sorted(slack_names),
             len(users_with_connected_slack),
@@ -1168,7 +1189,7 @@ async def resolve_revtops_user_for_slack_actor(
     except Exception as exc:
         logger.warning(
             "[slack_conversations] Failed Slack user resolution for user=%s org=%s: %s",
-            slack_user_id,
+            normalized_slack_user_id,
             organization_id,
             exc,
             exc_info=True,
@@ -1181,14 +1202,14 @@ async def resolve_revtops_user_for_slack_actor(
             if user.email and user.email.strip().lower() == slack_email:
                 logger.info(
                     "[slack_conversations] Matched Slack user=%s email=%s to RevTops user=%s",
-                    slack_user_id,
+                    normalized_slack_user_id,
                     slack_email,
                     user.id,
                 )
                 await _upsert_slack_user_mapping(
                     organization_id=organization_id,
                     user_id=user.id,
-                    slack_user_id=slack_user_id,
+                    slack_user_id=normalized_slack_user_id,
                     slack_email=slack_email,
                     match_source="email",
                 )
@@ -1211,7 +1232,7 @@ async def resolve_revtops_user_for_slack_actor(
             if user_name and user_name in slack_names:
                 logger.info(
                     "[slack_conversations] Matched Slack user=%s by name=%s to connected RevTops user=%s",
-                    slack_user_id,
+                    normalized_slack_user_id,
                     user_name,
                     user.id,
                 )
@@ -1219,14 +1240,14 @@ async def resolve_revtops_user_for_slack_actor(
 
         logger.info(
             "[slack_conversations] No connected Slack-name match for Slack user=%s org=%s candidate_names=%s",
-            slack_user_id,
+            normalized_slack_user_id,
             organization_id,
             sorted(slack_names),
         )
 
     logger.info(
         "[slack_conversations] Failed to resolve RevTops user for Slack actor user=%s org=%s",
-        slack_user_id,
+        normalized_slack_user_id,
         organization_id,
     )
     return None

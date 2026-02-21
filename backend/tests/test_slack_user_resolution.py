@@ -134,6 +134,48 @@ def test_resolve_revtops_user_matches_slack_metadata(monkeypatch):
     assert resolved.id == jane_id
 
 
+
+
+def test_resolve_revtops_user_uses_legacy_mapping_source_and_normalizes_id(monkeypatch):
+    org_id = "11111111-1111-1111-1111-111111111111"
+    jane_id = UUID("22222222-2222-2222-2222-222222222222")
+
+    users = [
+        SimpleNamespace(id=jane_id, email="jane@acme.com", name="Jane Doe"),
+    ]
+    integrations = []
+    mappings = [
+        SimpleNamespace(
+            user_id=jane_id,
+            external_userid="U888",
+            source="revtops_unknown",
+            updated_at=None,
+        ),
+    ]
+
+    monkeypatch.setattr(
+        slack_conversations,
+        "get_admin_session",
+        lambda: _FakeAdminSessionContext([users, integrations, mappings]),
+    )
+
+    class _NoSlackConnector:
+        def __init__(self, organization_id: str):
+            raise AssertionError("SlackConnector should not be called when legacy mapping exists")
+
+    monkeypatch.setattr(slack_conversations, "SlackConnector", _NoSlackConnector)
+
+    resolved = asyncio.run(
+        slack_conversations.resolve_revtops_user_for_slack_actor(
+            organization_id=org_id,
+            slack_user_id=" u888 ",
+        )
+    )
+
+    assert resolved is not None
+    assert resolved.id == jane_id
+
+
 def test_resolve_revtops_user_uses_existing_mapping(monkeypatch):
     org_id = "11111111-1111-1111-1111-111111111111"
     jane_id = UUID("22222222-2222-2222-2222-222222222222")
