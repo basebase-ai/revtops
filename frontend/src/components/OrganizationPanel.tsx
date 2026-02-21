@@ -589,6 +589,23 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                         {billing?.subscription_tier ?? 'None'}
                       </span>
                     </div>
+                    {/* Free tier - show upgrade CTA */}
+                    {billing?.subscription_tier === 'free' && (
+                      <>
+                        <p className="text-sm text-surface-400 mb-3">
+                          You're on the free plan with {billing?.credits_included ?? 100} credits/month.
+                          Upgrade to unlock more credits.
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => setShowSubscriptionSetup(true)}
+                          className="px-4 py-2 text-sm font-medium text-white bg-primary-500 hover:bg-primary-600 rounded-lg transition-colors"
+                        >
+                          Upgrade plan
+                        </button>
+                      </>
+                    )}
+                    {/* No subscription at all (legacy) */}
                     {billing?.subscription_required && !billing?.subscription_tier && (
                       <>
                         <p className="text-sm text-surface-400 mb-3">
@@ -603,7 +620,8 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                         </button>
                       </>
                     )}
-                    {billing?.subscription_required && billing?.subscription_tier && (
+                    {/* Payment pending for paid tier */}
+                    {billing?.subscription_required && billing?.subscription_tier && billing?.subscription_tier !== 'free' && (
                       <p className="text-sm text-surface-400">
                         Payment pending. Credits will be available once your first payment is confirmed.
                       </p>
@@ -621,7 +639,8 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                           : ''}
                       </p>
                     )}
-                    {billing?.subscription_tier && !showChangePlan && (
+                    {/* Change/Cancel buttons only for paid tiers (not free) */}
+                    {billing?.subscription_tier && billing?.subscription_tier !== 'free' && !showChangePlan && (
                       <div className="flex flex-wrap gap-2 mt-3">
                         <button
                           type="button"

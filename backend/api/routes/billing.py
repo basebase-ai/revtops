@@ -12,7 +12,7 @@ Billing and subscription API (Stripe).
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 from uuid import UUID
 
@@ -30,9 +30,9 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # Tier config: name, price_cents, credits_included
-# "partner" tier is hidden from UI and assigned manually for dev partners
+# "free" tier requires no credit card; "partner" tier is hidden and assigned manually
 PLANS: dict[str, dict[str, Any]] = {
-    "starter": {"name": "Starter", "price_cents": 2000, "credits_included": 100},
+    "free": {"name": "Free", "price_cents": 0, "credits_included": 100},
     "pro": {"name": "Pro", "price_cents": 10000, "credits_included": 500},
     "business": {"name": "Business", "price_cents": 25000, "credits_included": 2500},
     "scale": {"name": "Scale", "price_cents": 60000, "credits_included": 8000},
@@ -41,7 +41,7 @@ PLANS: dict[str, dict[str, Any]] = {
 
 # Rollover cap multiplier per tier (e.g. Pro: unused credits up to 2x included)
 ROLLOVER_CAP: dict[str, int] = {
-    "starter": 0,
+    "free": 0,
     "pro": 2,
     "business": 2,
     "scale": 3,
@@ -51,14 +51,13 @@ ROLLOVER_CAP: dict[str, int] = {
 # Stripe Price IDs (Dashboard → Products → [your product] → Pricing → copy "Price ID", e.g. price_1ABC...)
 # Subscription.create requires price IDs, not product IDs (prod_xxx).
 # These are selected based on STRIPE_SECRET_KEY prefix (sk_live_ vs sk_test_)
+# Note: "free" tier doesn't use Stripe, so no price ID needed
 STRIPE_PRICE_IDS_TEST: dict[str, str] = {
-    "starter": "price_1T2zFwBB0TvgbMzReazNnwin",
     "pro": "price_1T2zG6BB0TvgbMzRkCwxwTKm",
     "business": "price_1T2zGkBB0TvgbMzRYy2b7Y0r",
     "scale": "price_1T2zH1BB0TvgbMzRmJF4RglP",
 }
 STRIPE_PRICE_IDS_LIVE: dict[str, str] = {
-    "starter": "price_1T31ohP5SO7X9dBUREhHctUJ",
     "pro": "price_1T31ohP5SO7X9dBUQ1noH603",
     "business": "price_1T31oiP5SO7X9dBUeVPJdaiW",
     "scale": "price_1T31oiP5SO7X9dBUkbZiwevH",
@@ -98,12 +97,12 @@ class SetupIntentResponse(BaseModel):
 
 
 class SubscribeRequest(BaseModel):
-    payment_method_id: str = Field(..., min_length=1)
-    tier: str = Field(..., pattern="^(starter|pro|business|scale)$")
+    payment_method_id: Optional[str] = Field(None, min_length=1)
+    tier: str = Field(..., pattern="^(free|pro|business|scale)$")
 
 
 class ChangePlanRequest(BaseModel):
-    tier: str = Field(..., pattern="^(starter|pro|business|scale)$")
+    tier: str = Field(..., pattern="^(free|pro|business|scale)$")
 
 
 class PlanItem(BaseModel):
@@ -247,6 +246,43 @@ async def subscribe(
     auth: AuthContext = Depends(require_organization),
 ) -> dict[str, str]:
     """Create or update subscription with the given payment method and tier."""
+    org_id = auth.organization_id
+    if not org_id:
+        raise HTTPException(status_code=403, detail="Organization required")
+
+    plan = PLANS.get(body.tier)
+    if not plan:
+        raise HTTPException(status_code=400, detail=f"Unknown tier: {body.tier}")
+
+    # Free tier: no Stripe interaction needed
+    is_free_tier = plan.get("price_cents", 0) == 0
+
+    if is_free_tier:
+        async with get_admin_session() as session:
+            from sqlalchemy import select
+            result = await session.execute(
+                select(Organization).where(Organization.id == org_id)
+            )
+            org = result.scalar_one_or_none()
+            if not org:
+                raise HTTPException(status_code=404, detail="Organization not found")
+
+            now = datetime.now(timezone.utc)
+            org.subscription_tier = body.tier
+            org.subscription_status = "active"
+            org.credits_included = plan.get("credits_included", 100)
+            org.credits_balance = org.credits_included
+            org.current_period_start = now
+            org.current_period_end = now + timedelta(days=30)
+            await session.commit()
+            return {"status": "ok", "subscription_id": "free"}
+
+    # Paid tier: require payment method and Stripe
+    if not body.payment_method_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Payment method required for paid plans",
+        )
     if not settings.STRIPE_SECRET_KEY:
         raise HTTPException(status_code=503, detail="Billing is not configured")
     price_id = _stripe_price_id_for_tier(body.tier)
@@ -255,9 +291,7 @@ async def subscribe(
             status_code=400,
             detail=f"Stripe price not configured for tier {body.tier}",
         )
-    org_id = auth.organization_id
-    if not org_id:
-        raise HTTPException(status_code=403, detail="Organization required")
+
     import stripe
     stripe.api_key = settings.STRIPE_SECRET_KEY
     async with get_admin_session() as session:
@@ -296,7 +330,6 @@ async def subscribe(
         )
         org.stripe_subscription_id = sub.id
         org.subscription_tier = body.tier
-        plan = PLANS.get(body.tier, {})
         org.credits_included = plan.get("credits_included", 100)
 
         # If subscription is incomplete, try to pay the first invoice immediately

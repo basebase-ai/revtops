@@ -1,6 +1,7 @@
 /**
- * Subscription setup: select plan and add payment method (Stripe).
- * Shown during onboarding when the org has no active subscription.
+ * Subscription upgrade: select paid plan and add payment method (Stripe).
+ * Shown when user clicks "Upgrade" from billing panel.
+ * Free tier users are auto-enrolled, so this only shows paid plans.
  */
 
 import { useCallback, useEffect, useState } from 'react';
@@ -177,7 +178,7 @@ function SubscribeForm({
         disabled={!stripe || loading}
         className="w-full btn-primary disabled:opacity-50"
       >
-        {loading ? 'Setting up…' : 'Subscribe and continue'}
+        {loading ? 'Upgrading…' : 'Upgrade plan'}
       </button>
     </form>
   );
@@ -212,7 +213,7 @@ function LoadingSpinner(): JSX.Element {
 export function SubscriptionSetup({ onComplete, onBack }: SubscriptionSetupProps): JSX.Element {
   const [plans, setPlans] = useState<Plan[]>([]);
   const [clientSecret, setClientSecret] = useState<string | null>(null);
-  const [selectedTier, setSelectedTier] = useState<string>('starter');
+  const [selectedTier, setSelectedTier] = useState<string>('pro');
   const [error, setError] = useState<string | null>(null);
   const [loadingPlans, setLoadingPlans] = useState(true);
   const [formLoadFailed, setFormLoadFailed] = useState(false);
@@ -226,8 +227,10 @@ export function SubscriptionSetup({ onComplete, onBack }: SubscriptionSetupProps
         setLoadingPlans(false);
         return;
       }
-      setPlans(plansData.plans);
-      const defaultTier = plansData.plans.find((p) => p.tier === 'starter')?.tier ?? plansData.plans[0]?.tier ?? 'starter';
+      // Filter out free tier - users already have it, this is for upgrades only
+      const paidPlans = plansData.plans.filter((p) => p.price_cents > 0);
+      setPlans(paidPlans);
+      const defaultTier = paidPlans.find((p) => p.tier === 'pro')?.tier ?? paidPlans[0]?.tier ?? 'pro';
       setSelectedTier(defaultTier);
       const { data: setupData } = await apiRequest<{ client_secret: string }>(
         '/billing/setup-intent',
@@ -285,9 +288,9 @@ export function SubscriptionSetup({ onComplete, onBack }: SubscriptionSetupProps
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z" />
             </svg>
           </div>
-          <h1 className="text-2xl font-bold text-surface-50">Choose your plan</h1>
+          <h1 className="text-2xl font-bold text-surface-50">Upgrade your plan</h1>
           <p className="text-surface-400 mt-2">
-            Add a payment method to start using Revtops.
+            Add a payment method to unlock more credits.
           </p>
         </div>
         <div className="bg-surface-900/80 backdrop-blur-sm border border-surface-800 rounded-2xl p-8">

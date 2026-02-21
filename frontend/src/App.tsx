@@ -249,14 +249,14 @@ function App(): JSX.Element {
       });
 
       if (syncResponse.status === 403) {
-        // User not registered — block personal emails only if not in the system
+        // User not registered — block personal emails only
         if (isPersonalEmail(email)) {
           setScreen('blocked-email');
           return;
         }
-        // Work email but not registered - needs to join waitlist
-        setScreen('not-registered');
-        return;
+        // Work email - this shouldn't happen anymore since waitlist is disabled
+        // but handle gracefully by proceeding to company setup
+        console.warn('Unexpected 403 for work email, proceeding to company setup');
       }
 
       if (syncResponse.ok) {
@@ -286,40 +286,19 @@ function App(): JSX.Element {
           roles: userData.roles ?? [],
         });
         
-        if (userData.status === 'waitlist') {
-          setScreen('waitlist');
-          return;
-        }
         // If status is 'invited', it gets upgraded to 'active' by the backend
+        // Waitlist status is no longer used - all users are auto-activated
 
         // If sync returned an organization (e.g. invited user who auto-activated),
-        // set it then show app or payment-setup (only when no plan chosen yet)
+        // set it and go directly to app (orgs are auto-enrolled in free tier)
         if (userData.organization) {
-          const org = userData.organization as { id: string; name: string; logo_url: string | null; subscription_required?: boolean };
+          const org = userData.organization as { id: string; name: string; logo_url: string | null };
           setOrganization({
             id: org.id,
             name: org.name,
             logoUrl: org.logo_url ?? null,
           });
           await fetchUserOrganizations();
-          try {
-            const token = (await supabase.auth.getSession()).data.session?.access_token ?? null;
-            const res = await fetch(`${API_BASE}/billing/status`, {
-              headers: token ? { Authorization: `Bearer ${token}` } : {},
-            });
-            if (res.ok) {
-              const statusData = (await res.json()) as { subscription_required?: boolean; subscription_tier?: string | null };
-              if (statusData.subscription_required && !statusData.subscription_tier) {
-                setScreen('payment-setup');
-                return;
-              }
-            }
-          } catch (_e) {
-            if (org.subscription_required) {
-              setScreen('payment-setup');
-              return;
-            }
-          }
           setScreen('app');
           return;
         }
@@ -391,22 +370,7 @@ function App(): JSX.Element {
     // Fetch the user's org list (for multi-org switcher)
     await fetchUserOrganizations();
 
-    // Check billing: only show full-screen payment-setup when no plan chosen yet
-    try {
-      const token = (await supabase.auth.getSession()).data.session?.access_token ?? null;
-      const res = await fetch(`${API_BASE}/billing/status`, {
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-      });
-      if (res.ok) {
-        const statusData = (await res.json()) as { subscription_required?: boolean; subscription_tier?: string | null };
-        if (statusData.subscription_required && !statusData.subscription_tier) {
-          setScreen('payment-setup');
-          return;
-        }
-      }
-    } catch (_e) {
-      // Proceed to app if billing check fails (e.g. not configured)
-    }
+    // Go directly to app - orgs are auto-enrolled in free tier
     setScreen('app');
   };
 
@@ -448,22 +412,7 @@ function App(): JSX.Element {
     // Fetch the user's org list (for multi-org switcher)
     await fetchUserOrganizations();
 
-    // Check billing: only show full-screen payment-setup when no plan chosen yet
-    try {
-      const token = (await supabase.auth.getSession()).data.session?.access_token ?? null;
-      const res = await fetch(`${API_BASE}/billing/status`, {
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-      });
-      if (res.ok) {
-        const statusData = (await res.json()) as { subscription_required?: boolean; subscription_tier?: string | null };
-        if (statusData.subscription_required && !statusData.subscription_tier) {
-          setScreen('payment-setup');
-          return;
-        }
-      }
-    } catch (_e) {
-      // Proceed to app if billing check fails
-    }
+    // Go directly to app - new orgs are auto-enrolled in free tier
     setScreen('app');
   };
 

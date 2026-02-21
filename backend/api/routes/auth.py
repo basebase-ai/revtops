@@ -15,7 +15,7 @@ Endpoints:
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import json
 import logging
 from typing import Any, Optional
@@ -660,10 +660,35 @@ async def sync_user(request: SyncUserRequest) -> SyncUserResponse:
                     roles=new_user.roles or [],
                 )
         
-        # No approved org for their domain - they need to join the waitlist
-        raise HTTPException(
-            status_code=403,
-            detail="Please join the waitlist first. Visit the homepage to sign up.",
+        # No existing org for their domain - create new user (they'll create org in company setup)
+        # Waitlist is disabled - anyone can sign up directly
+        new_user = User(
+            id=user_uuid,
+            email=request.email,
+            name=request.name,
+            avatar_url=request.avatar_url,
+            organization_id=None,
+            status="active",
+            role="member",
+            last_login=datetime.utcnow(),
+        )
+        session.add(new_user)
+        global_commands = await _set_user_global_commands(session, new_user, request.agent_global_commands)
+        await session.commit()
+        await session.refresh(new_user)
+
+        return SyncUserResponse(
+            id=str(new_user.id),
+            email=new_user.email,
+            name=new_user.name,
+            avatar_url=new_user.avatar_url,
+            agent_global_commands=global_commands,
+            phone_number=new_user.phone_number,
+            job_title=None,
+            organization_id=None,
+            organization=None,
+            status=new_user.status,
+            roles=new_user.roles or [],
         )
 
 
@@ -725,11 +750,18 @@ async def create_organization(request: CreateOrganizationRequest) -> Organizatio
                 logo_url=existing_by_domain.logo_url,
             )
 
-        # Create new organization
+        # Create new organization with free tier auto-enrolled
+        now = datetime.now(timezone.utc)
         new_org = Organization(
             id=org_uuid,
             name=request.name,
             email_domain=request.email_domain,
+            subscription_tier="free",
+            subscription_status="active",
+            credits_balance=100,
+            credits_included=100,
+            current_period_start=now,
+            current_period_end=now + timedelta(days=30),
         )
         session.add(new_org)
         await session.commit()
