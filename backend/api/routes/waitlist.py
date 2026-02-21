@@ -9,16 +9,17 @@ Endpoints:
 from __future__ import annotations
 
 import logging
+import uuid
 from datetime import datetime
 from typing import Any, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import select
 
 from api.auth_middleware import AuthContext, require_global_admin
-from models.database import get_session
+from models.database import get_admin_session, get_session
 from models.user import User
 from services.email import send_invitation_email, send_waitlist_confirmation, send_waitlist_notification
 
@@ -161,8 +162,8 @@ async def submit_waitlist(request: WaitlistSubmitRequest) -> WaitlistSubmitRespo
 
 
 async def _fetch_waitlist_entries(status: Optional[str]) -> WaitlistListResponse:
-    """Fetch waitlist entries with optional status filter."""
-    async with get_session() as session:
+    """Fetch waitlist entries with optional status filter. Uses admin session for global admin list."""
+    async with get_admin_session() as session:
         query = select(User).where(User.waitlisted_at.isnot(None))
 
         if status and status != "all":
@@ -222,7 +223,7 @@ async def invite_user(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid user ID")
 
-    async with get_session() as session:
+    async with get_admin_session() as session:
         user = await session.get(User, user_uuid)
         
         if not user:
@@ -298,7 +299,7 @@ async def invite_user_role_auth(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid target user ID")
 
-    async with get_session() as session:
+    async with get_admin_session() as session:
         user = await session.get(User, target_uuid)
         
         if not user:
@@ -357,6 +358,7 @@ class AdminUserResponse(BaseModel):
     created_at: Optional[str]
     organization_id: Optional[str]
     organization_name: Optional[str]
+    organizations: list[str] = Field(default_factory=list)
 
 
 class AdminUsersListResponse(BaseModel):
@@ -378,9 +380,11 @@ async def list_admin_users(
     """
     logger.info("Admin users list requested by user_id=%s", auth.user_id)
 
+    from models.org_member import OrgMember
+    from models.organization import Organization
     from sqlalchemy.orm import selectinload
 
-    async with get_session() as session:
+    async with get_admin_session() as session:
         # Get all users who are not on the waitlist (active or invited)
         query = (
             select(User)
@@ -391,6 +395,22 @@ async def list_admin_users(
         
         result = await session.execute(query)
         users = result.scalars().all()
+
+        user_ids = [u.id for u in users]
+        memberships_by_user: dict[UUID, list[str]] = {}
+
+        if user_ids:
+            memberships_result = await session.execute(
+                select(OrgMember.user_id, Organization.name)
+                .join(Organization, OrgMember.organization_id == Organization.id)
+                .where(
+                    OrgMember.user_id.in_(user_ids),
+                    OrgMember.status.in_(["active", "invited"]),
+                )
+                .order_by(Organization.name.asc())
+            )
+            for user_id, organization_name in memberships_result.all():
+                memberships_by_user.setdefault(user_id, []).append(organization_name)
 
         def split_name(full_name: Optional[str]) -> tuple[Optional[str], Optional[str]]:
             """Split a full name into first and last name."""
@@ -408,6 +428,7 @@ async def list_admin_users(
             if u.organization:
                 org_name = u.organization.name
             
+            organizations = memberships_by_user.get(u.id, [])
             user_responses.append(
                 AdminUserResponse(
                     id=str(u.id),
@@ -419,6 +440,7 @@ async def list_admin_users(
                     created_at=f"{u.created_at.isoformat()}Z" if u.created_at else None,
                     organization_id=str(u.organization_id) if u.organization_id else None,
                     organization_name=org_name,
+                    organizations=organizations,
                 )
             )
 
@@ -448,6 +470,76 @@ class AdminOrganizationsListResponse(BaseModel):
     total: int
 
 
+class AdminCreateOrganizationRequest(BaseModel):
+    """Request model for admin creating an organization."""
+
+    name: str
+    email_domain: str
+    logo_url: Optional[str] = None
+
+
+@router.post("/admin/organizations", response_model=AdminOrganizationResponse)
+async def create_admin_organization(
+    request: AdminCreateOrganizationRequest,
+    auth: AuthContext = Depends(require_global_admin),
+) -> AdminOrganizationResponse:
+    """
+    Create a new organization and add the current user as admin member.
+
+    Requires global_admin role. Duplicate email_domain returns 409.
+    """
+    from models.organization import Organization
+    from models.org_member import OrgMember
+
+    logger.info("Admin create organization requested by user_id=%s", auth.user_id)
+
+    name_trimmed: str = (request.name or "").strip()
+    domain_trimmed: str = (request.email_domain or "").strip().lower()
+    if not name_trimmed:
+        raise HTTPException(status_code=400, detail="Organization name is required")
+    if not domain_trimmed or "@" in domain_trimmed:
+        raise HTTPException(status_code=400, detail="Valid email domain is required (e.g. acme.com)")
+
+    async with get_admin_session() as session:
+        existing = await session.execute(
+            select(Organization).where(Organization.email_domain == domain_trimmed)
+        )
+        if existing.scalar_one_or_none() is not None:
+            raise HTTPException(
+                status_code=409,
+                detail="An organization with this email domain already exists",
+            )
+
+        new_org = Organization(
+            id=uuid.uuid4(),
+            name=name_trimmed,
+            email_domain=domain_trimmed,
+            logo_url=(request.logo_url or "").strip() or None,
+        )
+        session.add(new_org)
+        await session.flush()
+
+        membership = OrgMember(
+            user_id=auth.user_id,
+            organization_id=new_org.id,
+            role="admin",
+            status="active",
+            joined_at=datetime.utcnow(),
+        )
+        session.add(membership)
+        await session.commit()
+        await session.refresh(new_org)
+
+        return AdminOrganizationResponse(
+            id=str(new_org.id),
+            name=new_org.name,
+            email_domain=new_org.email_domain,
+            user_count=1,
+            created_at=f"{new_org.created_at.isoformat()}Z" if new_org.created_at else None,
+            last_sync_at=f"{new_org.last_sync_at.isoformat()}Z" if new_org.last_sync_at else None,
+        )
+
+
 @router.get("/admin/organizations", response_model=AdminOrganizationsListResponse)
 async def list_admin_organizations(
     auth: AuthContext = Depends(require_global_admin),
@@ -461,10 +553,9 @@ async def list_admin_organizations(
     logger.info("Admin organizations list requested by user_id=%s", auth.user_id)
 
     from models.organization import Organization
-    from sqlalchemy import func
     from sqlalchemy.orm import selectinload
 
-    async with get_session() as session:
+    async with get_admin_session() as session:
         # Get all organizations with their users loaded
         query = (
             select(Organization)

@@ -14,6 +14,8 @@ import { supabase } from "./supabase";
 
 // Backend URL for production
 const PRODUCTION_BACKEND = "https://api.revtops.com";
+// In dev, hit backend directly so /api isn't dependent on Vite proxy
+const DEV_API_BASE = "http://localhost:8000/api";
 
 // Determine if we're in production (Railway)
 export const isProduction: boolean =
@@ -24,7 +26,7 @@ export const isProduction: boolean =
 // API base URL
 export const API_BASE: string = isProduction
   ? `${PRODUCTION_BACKEND}/api`
-  : "/api";
+  : DEV_API_BASE;
 
 // WebSocket base URL - in dev, connect directly to backend (Vite doesn't proxy WebSocket)
 export const WS_BASE: string = isProduction

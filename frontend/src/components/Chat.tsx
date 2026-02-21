@@ -15,12 +15,15 @@ import remarkGfm from 'remark-gfm';
 
 import { ArtifactViewer, type FileArtifact } from './ArtifactViewer';
 import { ArtifactTile } from './ArtifactTile';
+import { AppTile } from './apps/AppTile';
+import { AppViewer } from './apps/AppViewer';
 import { PendingApprovalCard, type ApprovalResult } from './PendingApprovalCard';
 import { getConversation, uploadChatFile, type UploadResponse } from '../api/client';
 import { crossTab } from '../lib/crossTab';
 import { 
   useAppStore,
   useConversationState,
+  type AppBlock,
   type ChatMessage,
   type ToolCallData,
   type ToolUseBlock,
@@ -40,13 +43,15 @@ interface LegacyArtifact {
 type AnyArtifact = LegacyArtifact | FileArtifact;
 
 interface ChatProps {
-  userId: string;
+  userId?: string | null;
   organizationId: string;
   chatId?: string | null;
   sendMessage: (data: Record<string, unknown>) => void;
   isConnected: boolean;
   connectionState: 'connecting' | 'connected' | 'disconnected' | 'error';
   crmApprovalResults: Map<string, unknown>;
+  /** Called when the current conversation ID returns 404 (e.g. deleted or wrong org). Clears selection. */
+  onConversationNotFound?: () => void;
 }
 
 // Tool approval result type (received via parent component)
@@ -70,14 +75,15 @@ interface ToolApprovalState {
   result: WsToolApprovalResult | null;
 }
 
-export function Chat({ 
-  userId, 
+export function Chat({
+  userId,
   organizationId: _organizationId,
-  chatId, 
+  chatId,
   sendMessage,
   isConnected,
   connectionState,
   crmApprovalResults,
+  onConversationNotFound,
 }: ChatProps): JSX.Element {
   void _organizationId; // kept for API compatibility
   // Get per-conversation state from Zustand
@@ -99,6 +105,7 @@ export function Chat({
   // Local state
   const [input, setInput] = useState<string>('');
   const [currentArtifact, setCurrentArtifact] = useState<AnyArtifact | null>(null);
+  const [currentApp, setCurrentApp] = useState<AppBlock["app"] | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [selectedToolCall, setSelectedToolCall] = useState<ToolCallData | null>(null);
   const [toolApprovals, setToolApprovals] = useState<Map<string, ToolApprovalState>>(new Map());
@@ -117,22 +124,41 @@ export function Chat({
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const isUserNearBottomRef = useRef<boolean>(true);
+  const isProgrammaticScrollRef = useRef<boolean>(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pendingTitleRef = useRef<string | null>(null);
   const pendingMessagesRef = useRef<ChatMessage[]>([]);
   const pendingAutoSendRef = useRef<string | null>(null);
   const messagesRef = useRef<ChatMessage[]>([]); // Track current messages for polling comparison
-  
+  const workflowDoneRef = useRef<boolean>(false); // Prevents polling restart after workflow completes
+  const loadInFlightChatIdRef = useRef<string | null>(null); // Dedupe load requests for same chatId
+
   // Keep ref in sync with state
   pendingMessagesRef.current = pendingMessages;
 
-  // Combined messages and thinking state (conversation + pending for new chats)
+  // Combined messages and thinking state (conversation + pending for new chats).
+  // Always sort by timestamp to guard against race conditions where WebSocket
+  // chunks (assistant message) arrive before the pending user message is moved
+  // into the conversation state, which would otherwise cause out-of-order display.
   const messages = useMemo(() => {
     const conversationMessages = conversationState?.messages ?? [];
-    return pendingMessages.length > 0
+    const combined: ChatMessage[] = pendingMessages.length > 0
       ? [...pendingMessages, ...conversationMessages]
       : conversationMessages;
+    // Fast path: skip sort when already ordered (common case)
+    let needsSort = false;
+    for (let i = 1; i < combined.length; i++) {
+      const prev = combined[i - 1] as ChatMessage;
+      const curr = combined[i] as ChatMessage;
+      if (prev.timestamp.getTime() > curr.timestamp.getTime()) {
+        needsSort = true;
+        break;
+      }
+    }
+    return needsSort
+      ? [...combined].sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime())
+      : combined;
   }, [pendingMessages, conversationState?.messages]);
   const isThinking = pendingThinking || conversationThinking;
 
@@ -205,11 +231,15 @@ export function Chat({
   // Reset local state when chatId changes
   useEffect(() => {
     setLocalConversationId(chatId ?? null);
+    setCurrentArtifact(null);
+    setCurrentApp(null);
     // Reset conversation type when starting a new chat
     if (!chatId) {
       setConversationType(null);
       setIsWorkflowPolling(false);
     }
+    // Reset workflow-done flag whenever the conversation changes
+    workflowDoneRef.current = false;
     // Only clear pending messages if we're switching to an EXISTING chat
     // (i.e., when we have no pending messages to move to the new conversation)
     // If pendingMessages exist, the next effect will move them instead
@@ -283,6 +313,12 @@ export function Chat({
       return;
     }
 
+    // Avoid duplicate in-flight requests (e.g. React Strict Mode or unstable callback deps)
+    if (loadInFlightChatIdRef.current === chatId) {
+      return;
+    }
+    loadInFlightChatIdRef.current = chatId;
+
     let cancelled = false;
 
     const loadConversation = async (): Promise<void> => {
@@ -291,7 +327,7 @@ export function Chat({
 
       try {
         const { data, error } = await getConversation(chatId);
-        
+
         if (cancelled) {
           console.log('[Chat] Load cancelled - chatId changed');
           return;
@@ -305,25 +341,35 @@ export function Chat({
             contentBlocks: msg.content_blocks,
             timestamp: new Date(msg.created_at),
           }));
-          
+
           // Set conversation state
           setConversationMessages(chatId, loadedMessages);
           setConversationTitle(chatId, data.title ?? 'New Chat');
           setConversationType(data.type ?? null);
           console.log('[Chat] Loaded', loadedMessages.length, 'messages, type:', data.type);
-          
+
           // Scroll to bottom immediately after loading
           setTimeout(() => {
             messagesEndRef.current?.scrollIntoView({ behavior: 'instant' });
           }, 50);
         } else {
-          console.error('[Chat] Failed to load conversation:', error);
+          const is404 =
+            error != null &&
+            (String(error).includes('404') || String(error).toLowerCase().includes('not found'));
+          if (is404 && onConversationNotFound) {
+            onConversationNotFound();
+          } else {
+            console.error('[Chat] Failed to load conversation:', error);
+          }
         }
       } catch (err) {
         console.error('[Chat] Exception loading conversation:', err);
       } finally {
         if (!cancelled) {
           setIsLoading(false);
+        }
+        if (loadInFlightChatIdRef.current === chatId) {
+          loadInFlightChatIdRef.current = null;
         }
       }
     };
@@ -332,8 +378,11 @@ export function Chat({
 
     return () => {
       cancelled = true;
+      // Always clear loading state on cleanup to prevent infinite loading spinner
+      // when the effect is cancelled (e.g., chatId changes mid-load)
+      setIsLoading(false);
     };
-  }, [chatId, userId, setConversationMessages, setConversationTitle]);
+  }, [chatId, userId, setConversationMessages, setConversationTitle, onConversationNotFound]);
 
   // Keep messagesRef in sync for polling comparison (avoids stale closure)
   useEffect(() => {
@@ -342,8 +391,8 @@ export function Chat({
 
   // Poll for updates on workflow conversations (Celery workers can't send WebSocket updates)
   useEffect(() => {
-    // Only poll for workflow conversations with few messages
-    if (!chatId || conversationType !== 'workflow' || messages.length > 5) {
+    // Only poll for workflow conversations that haven't finished yet
+    if (!chatId || conversationType !== 'workflow' || workflowDoneRef.current) {
       setIsWorkflowPolling(false);
       return;
     }
@@ -389,11 +438,39 @@ export function Chat({
           if (newContent !== currentContent) {
             console.log('[Chat] Poll found updated content, updating UI');
             setConversationMessages(chatId, loadedMessages);
+
+            // If any completed tool is write_to_system_of_record, refresh
+            // the pending-changes sidebar badge (workflows don't use WS).
+            const hasPendingWrite: boolean = loadedMessages.some((m) =>
+              (m.contentBlocks || []).some(
+                (b) =>
+                  b.type === 'tool_use' &&
+                  (b as ToolUseBlock).status === 'complete' &&
+                  ((b as ToolUseBlock).name === 'write_to_system_of_record' ||
+                   (b as ToolUseBlock).name === 'run_sql_write'),
+              ),
+            );
+            if (hasPendingWrite) {
+              window.dispatchEvent(new Event('pending-changes-updated'));
+            }
           }
           
-          // If we have substantial messages, stop polling
-          if (loadedMessages.length > 5) {
-            console.log('[Chat] Stopping polling - have enough messages');
+          // Stop polling when the workflow is truly finished.
+          // The agent always ends with a text summary after all tool calls,
+          // so we check that (a) there are no running tools AND (b) the last
+          // content block is a text block (not a tool_use that might be
+          // followed by more tool calls in the next orchestrator turn).
+          const lastMsg = loadedMessages[loadedMessages.length - 1];
+          const blocks = lastMsg?.contentBlocks || [];
+          const lastBlock = blocks[blocks.length - 1];
+          const hasRunningTools: boolean = lastMsg?.role === 'assistant' && blocks.some(
+            (b) => b.type === 'tool_use' && (b as ToolUseBlock).status !== 'complete'
+          );
+          const endsWithText: boolean = lastBlock?.type === 'text' && typeof lastBlock.text === 'string' && lastBlock.text.length > 0;
+          const workflowDone: boolean = loadedMessages.length >= 2 && lastMsg?.role === 'assistant' && !hasRunningTools && endsWithText;
+          if (workflowDone) {
+            console.log('[Chat] Stopping polling - workflow complete (ends with text, no running tools)');
+            workflowDoneRef.current = true;
             setIsWorkflowPolling(false);
             clearInterval(pollInterval);
           }
@@ -408,16 +485,20 @@ export function Chat({
       setIsWorkflowPolling(false);
       clearInterval(pollInterval);
     };
-  }, [chatId, userId, conversationType, messages.length, setConversationMessages]);
+  // Note: messages.length deliberately excluded — polling is self-contained via
+  // the interval and stops via workflowDoneRef. Including it caused restarts.
+  }, [chatId, userId, conversationType, setConversationMessages]);
 
-  // Track whether user is near the bottom of the scroll container
+  // Track whether user is near the bottom of the scroll container.
+  // Only update on user-initiated scrolls (ignore programmatic ones).
   useEffect(() => {
     const container = messagesContainerRef.current;
     if (!container) return;
 
     const handleScroll = (): void => {
+      if (isProgrammaticScrollRef.current) return;
       const threshold = 100; // px from bottom
-      const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+      const distanceFromBottom: number = container.scrollHeight - container.scrollTop - container.clientHeight;
       isUserNearBottomRef.current = distanceFromBottom <= threshold;
     };
 
@@ -425,10 +506,19 @@ export function Chat({
     return () => container.removeEventListener('scroll', handleScroll);
   }, []);
 
-  // Auto-scroll to bottom only if user hasn't scrolled up
+  // Auto-scroll to bottom only if user hasn't scrolled up.
+  // Use instant scroll during streaming to avoid smooth-scroll animations
+  // that fire intermediate scroll events and defeat the user's scroll-up.
   useEffect(() => {
     if (isUserNearBottomRef.current) {
-      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+      const container = messagesContainerRef.current;
+      if (container) {
+        isProgrammaticScrollRef.current = true;
+        container.scrollTop = container.scrollHeight;
+        requestAnimationFrame(() => {
+          isProgrammaticScrollRef.current = false;
+        });
+      }
     }
   }, [messages, isThinking]);
 
@@ -490,11 +580,14 @@ export function Chat({
     // Send message with conversation context, timezone info, and attachment IDs
     const attachmentIds: string[] = pendingAttachments.map((a) => a.upload_id);
     const now = new Date();
+    // Build a local ISO-style string (no "Z" suffix) so the backend sees the
+    // user's wall-clock time rather than UTC.
+    const localIso: string = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}T${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
     sendMessage({
       type: 'send_message',
       message,
       conversation_id: currentConvId,
-      local_time: now.toISOString(),
+      local_time: localIso,
       timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
       ...(attachmentIds.length > 0 ? { attachment_ids: attachmentIds } : {}),
     });
@@ -722,7 +815,12 @@ export function Chat({
       {/* Content area with messages and optional artifact sidebar */}
       <div className="flex-1 flex overflow-hidden">
         {/* Messages */}
-        <div ref={messagesContainerRef} className={`overflow-y-auto overflow-x-hidden p-3 md:p-6 ${currentArtifact ? 'w-1/2' : 'flex-1'}`}>
+        <div ref={messagesContainerRef} className={`overflow-y-auto overflow-x-hidden p-3 md:p-6 ${currentArtifact || currentApp ? 'w-1/2' : 'flex-1'}`}>
+          {!userId && (
+            <div className="mb-3 rounded-lg border border-amber-600/50 bg-amber-900/20 px-3 py-2 text-sm text-amber-200">
+              User context is missing — artifacts and apps may not save correctly. Please refresh or re-sign in.
+            </div>
+          )}
           {messages.length === 0 && !isThinking ? (
             conversationType === 'workflow' ? (
               // Show loading state for workflow conversations waiting for agent to start
@@ -753,6 +851,7 @@ export function Chat({
                   message={msg}
                   toolApprovals={toolApprovals}
                   onArtifactClick={setCurrentArtifact}
+                  onAppClick={(app: AppBlock["app"]) => { setCurrentApp(app); setCurrentArtifact(null); }}
                   onToolApprove={handleToolApprove}
                   onToolCancel={handleToolCancel}
                   onToolClick={(block) => setSelectedToolCall({
@@ -804,6 +903,39 @@ export function Chat({
                 </button>
               </div>
               <ArtifactViewer artifact={currentArtifact} />
+            </div>
+          </>
+        )}
+
+        {/* App sidebar - overlay on mobile, sidebar on desktop */}
+        {currentApp && (
+          <>
+            <div
+              className="fixed inset-0 bg-black/50 z-40 md:hidden"
+              onClick={() => setCurrentApp(null)}
+            />
+            <div className="fixed inset-y-0 right-0 w-full max-w-md z-50 md:relative md:w-1/2 md:z-auto border-l border-surface-800 bg-surface-900 p-4 overflow-y-auto">
+              <div className="flex items-center justify-between mb-2">
+                <h2 className="text-lg font-semibold text-surface-100 truncate">
+                  {currentApp.title}
+                </h2>
+                <button
+                  onClick={() => setCurrentApp(null)}
+                  className="text-surface-400 hover:text-surface-200 p-1 -mr-1"
+                >
+                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+              <AppViewer
+                app={currentApp}
+                onAppError={(errorMsg: string) => {
+                  const fixPrompt: string = `The app "${currentApp.title}" has a compile/runtime error. Please fix it and create an updated version.\n\nError:\n\`\`\`\n${errorMsg}\n\`\`\``;
+                  sendChatMessage(fixPrompt, 'input');
+                  setCurrentApp(null);
+                }}
+              />
             </div>
           </>
         )}
@@ -924,6 +1056,7 @@ function MessageWithBlocks({
   message,
   toolApprovals,
   onArtifactClick,
+  onAppClick,
   onToolApprove,
   onToolCancel,
   onToolClick,
@@ -931,6 +1064,7 @@ function MessageWithBlocks({
   message: ChatMessage;
   toolApprovals: Map<string, { operationId: string; toolName: string; isProcessing: boolean; result: unknown }>;
   onArtifactClick: (artifact: AnyArtifact) => void;
+  onAppClick: (app: AppBlock["app"]) => void;
   onToolApprove: (operationId: string, options?: Record<string, unknown>) => void;
   onToolCancel: (operationId: string) => void;
   onToolClick: (block: ToolUseBlock) => void;
@@ -1066,9 +1200,17 @@ function MessageWithBlocks({
             );
           }
           if (block.type === 'tool_use') {
+            // Hide tool blocks that haven't started yet (no status, no result).
+            // The orchestrator saves all tool_use blocks from Claude's response
+            // in one early save before executing them sequentially, so without
+            // this check they'd all show as "running" simultaneously.
+            const toolBlock = block as ToolUseBlock;
+            if (!toolBlock.status && !toolBlock.result) {
+              return null;
+            }
             return (
               <div key={block.id} className="my-0.5">
-                {renderToolBlock(block)}
+                {renderToolBlock(toolBlock)}
               </div>
             );
           }
@@ -1085,6 +1227,16 @@ function MessageWithBlocks({
                 <ArtifactTile
                   artifact={block.artifact}
                   onClick={() => onArtifactClick(block.artifact)}
+                />
+              </div>
+            );
+          }
+          if (block.type === 'app') {
+            return (
+              <div key={`app-${block.app.id}`} className="my-2">
+                <AppTile
+                  app={block.app}
+                  onClick={() => onAppClick(block.app)}
                 />
               </div>
             );
@@ -1232,16 +1384,6 @@ function getToolStatusText(
       }
       return `Searching the web for '${truncatedQuery}'...`;
     }
-    case 'search_activities': {
-      const query = typeof input?.query === 'string' ? input.query : '';
-      const truncatedQuery = query.length > 40 ? query.slice(0, 40) + '...' : query;
-      if (isComplete) {
-        const count = typeof result?.count === 'number' ? result.count : 0;
-        const countText = ` (${count} result${count === 1 ? '' : 's'})`;
-        return `Searched activities for '${truncatedQuery}'${countText}`;
-      }
-      return `Searching activities for '${truncatedQuery}'...`;
-    }
     case 'run_sql_query': {
       // Extract table names from the SQL query for a more descriptive message
       const query = typeof input?.query === 'string' ? input.query.toLowerCase() : '';
@@ -1281,43 +1423,54 @@ function getToolStatusText(
       }
       return progressMsg || `Creating ${artifactType}...`;
     }
-    case 'crm_write': {
+    case 'write_to_system_of_record': {
+      const targetSystem = typeof input?.target_system === 'string' ? input.target_system : '';
       const recordType = typeof input?.record_type === 'string' ? input.record_type : 'record';
       const recordCount = Array.isArray(input?.records) ? input.records.length : 0;
+      const systemLabel = targetSystem || 'system';
       if (recordCount === 0) {
-        // Input still streaming — we don't know the count yet
-        return `Preparing ${recordType}s for CRM...`;
+        return `Preparing ${recordType}s for ${systemLabel}...`;
       }
       const pluralType = recordCount === 1 ? recordType : `${recordType}s`;
+      const DIRECT_WRITE_THRESHOLD = 5;
       if (isComplete) {
-        return `Prepared ${recordCount} ${pluralType} for review`;
+        const verb = typeof input?.operation === 'string' && input.operation === 'update' ? 'Updated' : 'Created';
+        return recordCount > DIRECT_WRITE_THRESHOLD
+          ? `Prepared ${recordCount} ${pluralType} for review`
+          : `${verb} ${recordCount} ${pluralType} in ${systemLabel}`;
       }
-      return `Preparing ${recordCount} ${pluralType} for CRM...`;
+      return `Writing ${recordCount} ${pluralType} to ${systemLabel}...`;
     }
-    case 'loop_over': {
-      const workflowName = typeof result?.workflow_name === 'string' 
-        ? result.workflow_name 
-        : (typeof input?.workflow_name === 'string' ? input.workflow_name : 'workflow');
-      const total = typeof result?.total === 'number' ? result.total : (Array.isArray(input?.items) ? input.items.length : 0);
-      const completed = typeof result?.completed === 'number' ? result.completed : 0;
-      const succeeded = typeof result?.succeeded === 'number' ? result.succeeded : 0;
-      const failed = typeof result?.failed === 'number' ? result.failed : 0;
-      
+    case 'foreach': {
+      const opName: string = typeof result?.operation_name === 'string'
+        ? result.operation_name
+        : (typeof result?.workflow_name === 'string'
+          ? result.workflow_name
+          : (typeof input?.operation_name === 'string' ? input.operation_name : 'foreach'));
+      const total: number = typeof result?.total === 'number' ? result.total
+        : (typeof result?.total_items === 'number' ? result.total_items
+          : (Array.isArray(input?.items) ? input.items.length : 0));
+      const completed: number = typeof result?.completed === 'number' ? result.completed : 0;
+      const succeeded: number = typeof result?.succeeded === 'number' ? result.succeeded
+        : (typeof result?.succeeded_items === 'number' ? result.succeeded_items : 0);
+      const failed: number = typeof result?.failed === 'number' ? result.failed
+        : (typeof result?.failed_items === 'number' ? result.failed_items : 0);
+
       if (isComplete) {
         if (failed > 0) {
-          return `Completed ${workflowName}: ${succeeded}/${total} succeeded, ${failed} failed`;
+          return `Completed ${opName}: ${succeeded}/${total} succeeded, ${failed} failed`;
         }
-        return `Completed ${workflowName} for ${total} item${total === 1 ? '' : 's'}`;
+        return `Completed ${opName}: ${total} item${total === 1 ? '' : 's'} processed`;
       }
-      
-      // Show progress while running (including when completed=0 to show "0/40")
+
       if (total > 0) {
-        const progressText = failed > 0 
-          ? `${completed}/${total} (${succeeded} ok, ${failed} failed)`
-          : `${completed}/${total}`;
-        return `Running ${workflowName}... ${progressText}`;
+        const pct: number = Math.round((completed / total) * 100);
+        const progressText: string = failed > 0
+          ? `${completed}/${total} (${pct}%) — ${succeeded} ok, ${failed} failed`
+          : `${completed}/${total} (${pct}%)`;
+        return `Running ${opName}... ${progressText}`;
       }
-      return `Running ${workflowName}...`;
+      return `Running ${opName}...`;
     }
     case 'run_workflow': {
       const workflowName = typeof result?.workflow_name === 'string'
@@ -1327,6 +1480,50 @@ function getToolStatusText(
         return `Completed ${workflowName}`;
       }
       return `Running ${workflowName}...`;
+    }
+    case 'query_system': {
+      const systemSlug = typeof input?.system === 'string' ? input.system : '';
+      const systemLabel = systemSlug
+        ? systemSlug.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
+        : 'connected system';
+      if (isComplete) {
+        if (result?.error) return `Query to ${systemLabel} failed`;
+        const count = typeof result?.count === 'number' ? result.count : (Array.isArray(result?.files) ? result.files.length : undefined);
+        const isSingleFileRead = systemSlug === 'google_drive' && result?.file_name != null && result?.content != null;
+        if (count !== undefined && systemSlug === 'google_drive') {
+          return count === 1 ? `Read 1 file from ${systemLabel}` : `Read ${count} files from ${systemLabel}`;
+        }
+        if (isSingleFileRead) return `Read 1 file from ${systemLabel}`;
+        return `Queried ${systemLabel}`;
+      }
+      return `Querying ${systemLabel}...`;
+    }
+    case 'write_to_system': {
+      const writeSystem = typeof input?.system === 'string' ? input.system : '';
+      const writeOp = typeof input?.operation === 'string' ? input.operation : 'write';
+      const systemLabel = writeSystem ? writeSystem.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()) : 'system';
+      const opLabel = writeOp.replace(/_/g, ' ');
+      if (isComplete) {
+        return result?.error ? `Write to ${systemLabel} failed` : `Wrote to ${systemLabel} (${opLabel})`;
+      }
+      return `Writing to ${systemLabel} (${opLabel})...`;
+    }
+    case 'run_action': {
+      const actionSystem: string = typeof input?.system === 'string' ? input.system : '';
+      const actionName: string = typeof input?.action === 'string' ? input.action : '';
+      const systemLabel: string = actionSystem ? actionSystem.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()) : '';
+      const actionLabel: string = actionName ? actionName.replace(/_/g, ' ') : '';
+      if (systemLabel && actionLabel) {
+        if (isComplete) {
+          return result?.error ? `Action on ${systemLabel} failed` : `Ran ${actionLabel} on ${systemLabel}`;
+        }
+        return `Running ${actionLabel} on ${systemLabel}...`;
+      }
+      // No system/action yet (e.g. still streaming) — show tool name so it's clear what's running
+      if (isComplete) {
+        return result?.error ? 'Connector action failed' : 'Completed connector action';
+      }
+      return 'Running action (details when available)...';
     }
     default:
       return isComplete ? `Completed ${toolName}` : `Running ${toolName}...`;
@@ -1393,9 +1590,15 @@ function ToolCallModal({
           {/* Input */}
           <div>
             <h4 className="text-sm font-medium text-surface-300 mb-2">Input</h4>
-            <pre className="bg-surface-800 rounded-lg p-3 text-sm text-surface-200 overflow-x-auto">
-              {JSON.stringify(toolCall.input, null, 2)}
-            </pre>
+            {toolCall.input && Object.keys(toolCall.input).length > 0 ? (
+              <pre className="bg-surface-800 rounded-lg p-3 text-sm text-surface-200 overflow-x-auto">
+                {JSON.stringify(toolCall.input, null, 2)}
+              </pre>
+            ) : (
+              <p className="text-surface-500 text-sm italic">
+                Parameters not yet available. They will appear when the request is fully received or after it completes.
+              </p>
+            )}
           </div>
 
           {/* Result */}

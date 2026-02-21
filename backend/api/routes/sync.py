@@ -19,38 +19,19 @@ from pydantic import BaseModel
 from sqlalchemy import select
 
 from connectors.base import SyncCancelledError
-from connectors.fireflies import FirefliesConnector
-from connectors.github import GitHubConnector
-from connectors.gmail import GmailConnector
-from connectors.google_calendar import GoogleCalendarConnector
-from connectors.hubspot import HubSpotConnector
-from connectors.microsoft_calendar import MicrosoftCalendarConnector
-from connectors.microsoft_mail import MicrosoftMailConnector
-from connectors.salesforce import SalesforceConnector
-from connectors.slack import SlackConnector
-from connectors.zoom import ZoomConnector
+from connectors.registry import discover_connectors
 from models.database import get_session
 from models.integration import Integration
 from models.organization import Organization
 from models.agent_task import AgentTask
 from models.conversation import Conversation
+from models.workflow import Workflow, WorkflowRun
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-# Connector registry
-CONNECTORS = {
-    "salesforce": SalesforceConnector,
-    "hubspot": HubSpotConnector,
-    "slack": SlackConnector,
-    "fireflies": FirefliesConnector,
-    "google_calendar": GoogleCalendarConnector,
-    "gmail": GmailConnector,
-    "microsoft_calendar": MicrosoftCalendarConnector,
-    "microsoft_mail": MicrosoftMailConnector,
-    "zoom": ZoomConnector,
-    "github": GitHubConnector,
-}
+# Connector registry – auto-discovered from backend/connectors/ + entry_points
+CONNECTORS = discover_connectors()
 
 # Simple in-memory sync status tracking (use Redis in production)
 _sync_status: dict[str, dict[str, str | datetime | None | dict[str, int]]] = {}
@@ -180,6 +161,9 @@ def _parse_celery_args(args: Any) -> list[Any]:
     if isinstance(args, tuple):
         return list(args)
     if isinstance(args, str):
+        args = args.strip()
+        if not args:
+            return []
         try:
             parsed = ast.literal_eval(args)
             if isinstance(parsed, tuple):
@@ -190,6 +174,106 @@ def _parse_celery_args(args: Any) -> list[Any]:
         except Exception:
             return [args]
     return []
+
+
+def _get_celery_task_args(task: dict[str, Any]) -> list[Any]:
+    """Extract Celery task args across protocol/version variants."""
+    parsed_args = _parse_celery_args(task.get("args"))
+    if parsed_args:
+        return parsed_args
+    # Celery can report repr-only fields depending on worker/protocol versions.
+    parsed_argsrepr = _parse_celery_args(task.get("argsrepr"))
+    if parsed_argsrepr:
+        logger.debug("Parsed Celery args from argsrepr for task %s", task.get("id"))
+    return parsed_argsrepr
+
+
+def _parse_celery_kwargs(kwargs: Any) -> dict[str, Any]:
+    """Normalize Celery active-task kwargs into a dict."""
+    if isinstance(kwargs, dict):
+        return kwargs
+    if isinstance(kwargs, str):
+        kwargs = kwargs.strip()
+        if not kwargs:
+            return {}
+        try:
+            parsed = ast.literal_eval(kwargs)
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+def _get_celery_task_kwargs(task: dict[str, Any]) -> dict[str, Any]:
+    """Extract Celery task kwargs across protocol/version variants."""
+    parsed_kwargs = _parse_celery_kwargs(task.get("kwargs"))
+    if parsed_kwargs:
+        return parsed_kwargs
+    # Celery can report repr-only fields depending on worker/protocol versions.
+    parsed_kwargsrepr = _parse_celery_kwargs(task.get("kwargsrepr"))
+    if parsed_kwargsrepr:
+        logger.debug("Parsed Celery kwargs from kwargsrepr for task %s", task.get("id"))
+    return parsed_kwargsrepr
+
+
+def _is_workflow_task(task_name: str) -> bool:
+    """Whether a task name represents workflow execution."""
+    normalized_name = task_name.strip()
+    if not normalized_name:
+        return False
+    return normalized_name.endswith(".workflows.execute_workflow") or normalized_name == "workers.tasks.workflows.execute_workflow"
+
+
+def _is_trackable_admin_task(task_name: str) -> bool:
+    """Whether a Celery task should appear in the admin running-jobs pane."""
+    if ".tasks.sync." in task_name or task_name.startswith("workers.tasks.sync"):
+        return True
+    return _is_workflow_task(task_name)
+
+
+def _extract_workflow_task_org_id(args: list[Any], kwargs: dict[str, Any]) -> str | None:
+    """Extract workflow organization_id from kwargs-first, then legacy positional args."""
+    org_id = kwargs.get("organization_id")
+    if org_id:
+        return str(org_id)
+    if len(args) >= 5 and args[4] is not None:
+        return str(args[4])
+    if len(args) >= 1 and isinstance(args[-1], str):
+        # Best-effort fallback for older/variant signatures.
+        return str(args[-1])
+    return None
+
+
+def _is_active_workflow_run_status(status: str) -> bool:
+    """Whether a workflow_run row represents in-progress work."""
+    normalized = status.strip().lower()
+    return normalized in {"pending", "running"}
+
+
+def _build_workflow_run_admin_job(
+    run: WorkflowRun,
+    workflow_name: str | None,
+    organization_name: str | None,
+) -> AdminRunningJob:
+    """Build an admin running-job payload from a workflow_runs row."""
+    trigger_label = run.triggered_by or "unknown"
+    workflow_label = workflow_name or str(run.workflow_id)
+    return AdminRunningJob(
+        id=str(run.id),
+        type="workflow",
+        status=run.status,
+        organization_id=str(run.organization_id),
+        organization_name=organization_name,
+        started_at=run.started_at.isoformat() if run.started_at else None,
+        title=f"Workflow run: {workflow_label}",
+        description=f"Status={run.status} trigger={trigger_label}",
+        metadata={
+            "source": "workflow_runs",
+            "workflow_id": str(run.workflow_id),
+            "workflow_name": workflow_name,
+            "triggered_by": run.triggered_by,
+        },
+    )
 
 
 @router.get("/admin/integrations", response_model=AdminIntegrationsResponse)
@@ -291,6 +375,7 @@ async def list_admin_running_jobs(user_id: str) -> AdminRunningJobsResponse:
     """List currently running jobs across chats, workflows, and connector syncs."""
     from models.database import get_admin_session
     from workers.celery_app import celery_app
+    from models.workflow import WorkflowRun, Workflow
 
     await _require_global_admin(user_id)
 
@@ -303,6 +388,13 @@ async def list_admin_running_jobs(user_id: str) -> AdminRunningJobsResponse:
             .join(Conversation, AgentTask.conversation_id == Conversation.id)
             .where(AgentTask.status == "running")
             .order_by(AgentTask.started_at.desc())
+        )
+
+        workflow_rows = await session.execute(
+            select(WorkflowRun, Workflow)
+            .join(Workflow, WorkflowRun.workflow_id == Workflow.id)
+            .where(WorkflowRun.status.in_(["pending", "running"]))
+            .order_by(WorkflowRun.started_at.desc())
         )
 
     jobs: list[AdminRunningJob] = []
@@ -327,6 +419,27 @@ async def list_admin_running_jobs(user_id: str) -> AdminRunningJobsResponse:
             )
         )
 
+    for workflow_run, workflow in workflow_rows.all():
+        org_id = str(workflow_run.organization_id)
+        jobs.append(
+            AdminRunningJob(
+                id=str(workflow_run.id),
+                type="workflow",
+                status=workflow_run.status,
+                organization_id=org_id,
+                organization_name=org_name_by_id.get(org_id),
+                started_at=workflow_run.started_at.isoformat() if workflow_run.started_at else None,
+                title=workflow.name,
+                description=f"Workflow run triggered by {workflow_run.triggered_by}",
+                metadata={
+                    "workflow_id": str(workflow.id),
+                    "workflow_name": workflow.name,
+                    "triggered_by": workflow_run.triggered_by,
+                    "conversation_id": (workflow_run.output or {}).get("conversation_id") if isinstance(workflow_run.output, dict) else None,
+                },
+            )
+        )
+
     try:
         inspector = celery_app.control.inspect(timeout=1.5)
         active_by_worker = inspector.active() or {}
@@ -337,21 +450,30 @@ async def list_admin_running_jobs(user_id: str) -> AdminRunningJobsResponse:
 
     for worker_name, active_tasks in active_by_worker.items():
         for task in active_tasks:
-            task_name = task.get("name", "")
-            if not task_name.startswith("workers.tasks.sync") and task_name != "workers.tasks.workflows.execute_workflow":
+            task_name = str(task.get("name") or task.get("type") or "")
+            if not _is_trackable_admin_task(task_name):
                 continue
 
             task_id = str(task.get("id"))
-            args = _parse_celery_args(task.get("args"))
-            task_type = "workflow" if task_name == "workers.tasks.workflows.execute_workflow" else "connector_sync"
-            org_id = str(args[-1]) if task_type == "workflow" and len(args) >= 5 else (str(args[0]) if args else None)
+            args = _get_celery_task_args(task)
+            kwargs = _get_celery_task_kwargs(task)
+            is_workflow_task = _is_workflow_task(task_name)
+            task_type = "workflow" if is_workflow_task else "connector_sync"
+
+            if task_type == "workflow":
+                org_id = _extract_workflow_task_org_id(args, kwargs)
+            else:
+                org_id = str(args[0]) if args else None
+
             org_name = org_name_by_id.get(org_id) if org_id else None
             provider = str(args[1]) if task_type == "connector_sync" and len(args) > 1 else None
 
+            workflow_id = str(kwargs.get("workflow_id")) if kwargs.get("workflow_id") is not None else (str(args[0]) if args else None)
+
             title = "Workflow execution" if task_type == "workflow" else f"{provider or 'connector'} sync"
             description = f"Running on worker {worker_name}"
-            if task_type == "workflow" and args:
-                description = f"Workflow {args[0]} running on worker {worker_name}"
+            if task_type == "workflow" and workflow_id:
+                description = f"Workflow {workflow_id} running on worker {worker_name}"
 
             jobs.append(
                 AdminRunningJob(
@@ -367,6 +489,7 @@ async def list_admin_running_jobs(user_id: str) -> AdminRunningJobsResponse:
                         "task_name": task_name,
                         "worker": worker_name,
                         "args": [str(arg) for arg in args],
+                        "kwargs": {k: str(v) for k, v in kwargs.items()},
                     },
                 )
             )
@@ -385,6 +508,8 @@ async def cancel_admin_running_job(
     """Cancel a running admin-visible job."""
     from services.task_manager import task_manager
     from workers.celery_app import celery_app
+    from models.database import get_admin_session
+    from models.workflow import WorkflowRun
 
     await _require_global_admin(user_id)
 
@@ -402,6 +527,32 @@ async def cancel_admin_running_job(
 
     if request.job_type not in {"workflow", "connector_sync"}:
         raise HTTPException(status_code=400, detail="Unsupported job_type")
+
+    if request.job_type == "workflow":
+        # First try treating job_id as WorkflowRun.id (DB-backed running workflow)
+        try:
+            run_uuid = UUID(job_id)
+        except ValueError:
+            run_uuid = None
+
+        if run_uuid is not None:
+            async with get_admin_session() as session:
+                result = await session.execute(
+                    select(WorkflowRun).where(WorkflowRun.id == run_uuid)
+                )
+                run = result.scalar_one_or_none()
+                if run and run.status == "running":
+                    run.status = "cancelled"
+                    run.completed_at = datetime.utcnow()
+                    run.error_message = "Cancelled by admin"
+                    await session.commit()
+                    logger.info("Admin %s cancelled workflow run %s", user_id, job_id)
+                    return AdminCancelJobResponse(
+                        status="cancelled",
+                        job_id=job_id,
+                        job_type=request.job_type,
+                        message="Workflow run marked as cancelled",
+                    )
 
     celery_app.control.revoke(job_id, terminate=True)
     logger.info("Admin %s revoked celery task %s of type %s", user_id, job_id, request.job_type)
@@ -422,7 +573,12 @@ async def cancel_admin_running_job(
 async def trigger_sync(
     organization_id: str, provider: str, background_tasks: BackgroundTasks
 ) -> SyncTriggerResponse:
-    """Trigger a sync for a specific integration."""
+    """Trigger a sync for a specific integration.
+
+    Per-user integrations (Gmail, Calendar, etc.) may have multiple rows per
+    provider.  We sync each one individually so every connected user gets
+    updated.
+    """
     try:
         customer_uuid = UUID(organization_id)
     except ValueError:
@@ -434,7 +590,7 @@ async def trigger_sync(
             detail=f"Unknown provider: {provider}. Available: {list(CONNECTORS.keys())}",
         )
 
-    # Verify integration exists and is active
+    # Fetch *all* active integrations for this provider (may be per-user)
     async with get_session(organization_id=organization_id) as session:
         result = await session.execute(
             select(Integration).where(
@@ -443,16 +599,16 @@ async def trigger_sync(
                 Integration.is_active == True,
             )
         )
-        integration = result.scalar_one_or_none()
+        integrations = result.scalars().all()
 
-        if not integration:
+        if not integrations:
             raise HTTPException(
                 status_code=404,
                 detail=f"No active {provider} integration found",
             )
 
     # Initialize sync status
-    status_key = _get_status_key(organization_id, provider)
+    status_key: str = _get_status_key(organization_id, provider)
     _sync_status[status_key] = {
         "status": "syncing",
         "started_at": datetime.utcnow(),
@@ -461,8 +617,12 @@ async def trigger_sync(
         "counts": None,
     }
 
-    # Add background task
-    background_tasks.add_task(sync_integration_data, organization_id, provider)
+    # Queue a background sync for each per-user integration
+    for integration in integrations:
+        user_id: str | None = str(integration.user_id) if integration.user_id else None
+        background_tasks.add_task(
+            sync_integration_data, organization_id, provider, user_id
+        )
 
     return SyncTriggerResponse(
         status="syncing", organization_id=organization_id, provider=provider
@@ -550,12 +710,13 @@ async def trigger_sync_all(
     if not integrations:
         raise HTTPException(status_code=404, detail="No active integrations found")
 
-    providers = [i.provider for i in integrations]
+    providers: list[str] = list({i.provider for i in integrations})
 
-    # Trigger sync for each integration
-    for provider in providers:
-        if provider in CONNECTORS:
-            status_key = _get_status_key(organization_id, provider)
+    # Trigger sync for each integration (including per-user variants)
+    for integration in integrations:
+        prov: str = integration.provider
+        if prov in CONNECTORS:
+            status_key: str = _get_status_key(organization_id, prov)
             _sync_status[status_key] = {
                 "status": "syncing",
                 "started_at": datetime.utcnow(),
@@ -563,7 +724,10 @@ async def trigger_sync_all(
                 "error": None,
                 "counts": None,
             }
-            background_tasks.add_task(sync_integration_data, organization_id, provider)
+            uid: str | None = str(integration.user_id) if integration.user_id else None
+            background_tasks.add_task(
+                sync_integration_data, organization_id, prov, uid
+            )
 
     return SyncAllResponse(
         status="syncing",
@@ -572,9 +736,20 @@ async def trigger_sync_all(
     )
 
 
-async def sync_integration_data(organization_id: str, provider: str) -> None:
-    """Background task to sync data for a specific integration."""
-    status_key = _get_status_key(organization_id, provider)
+async def sync_integration_data(
+    organization_id: str,
+    provider: str,
+    user_id: str | None = None,
+) -> None:
+    """Background task to sync data for a specific integration.
+
+    Args:
+        organization_id: UUID of the organization.
+        provider: Integration provider name.
+        user_id: Optional UUID of the user who owns this integration
+                 (for per-user providers like Gmail, Calendar, etc.).
+    """
+    status_key: str = _get_status_key(organization_id, provider)
     connector_class = CONNECTORS.get(provider)
 
     if not connector_class:
@@ -584,8 +759,9 @@ async def sync_integration_data(organization_id: str, provider: str) -> None:
         return
 
     try:
-        print(f"[Sync] Starting sync for {provider} in org {organization_id}")
-        connector = connector_class(organization_id)
+        user_label: str = f" user={user_id}" if user_id else ""
+        print(f"[Sync] Starting sync for {provider} in org {organization_id}{user_label}")
+        connector = connector_class(organization_id, user_id=user_id)
         counts = await connector.sync_all()
         print(f"[Sync] sync_all returned counts: {counts}")
         await connector.update_last_sync(counts)
@@ -976,7 +1152,7 @@ async def queue_sync(organization_id: str, provider: str) -> QueuedSyncResponse:
             detail=f"Unknown provider: {provider}. Available: {list(CONNECTORS.keys())}",
         )
 
-    # Verify integration exists
+    # Verify at least one integration exists
     async with get_session(organization_id=organization_id) as session:
         result = await session.execute(
             select(Integration).where(
@@ -985,21 +1161,25 @@ async def queue_sync(organization_id: str, provider: str) -> QueuedSyncResponse:
                 Integration.is_active == True,
             )
         )
-        integration = result.scalar_one_or_none()
+        integrations = result.scalars().all()
 
-        if not integration:
+        if not integrations:
             raise HTTPException(
                 status_code=404,
                 detail=f"No active {provider} integration found",
             )
 
-    # Queue task via Celery
+    # Queue a Celery task for each per-user integration
     from workers.tasks.sync import sync_integration
-    task = sync_integration.delay(organization_id, provider)
+    last_task_id: str = ""
+    for integration in integrations:
+        uid: str | None = str(integration.user_id) if integration.user_id else None
+        task = sync_integration.delay(organization_id, provider, uid)
+        last_task_id = task.id
 
     return QueuedSyncResponse(
         status="queued",
-        task_id=task.id,
+        task_id=last_task_id,
         organization_id=organization_id,
         provider=provider,
     )

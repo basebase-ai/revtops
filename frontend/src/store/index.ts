@@ -25,6 +25,9 @@ export interface UserProfile {
   email: string;
   name: string | null;
   avatarUrl: string | null;
+  agentGlobalCommands: string | null;
+  phoneNumber: string | null;
+  jobTitle: string | null;
   roles: string[]; // Global roles like ['global_admin']
 }
 
@@ -63,6 +66,10 @@ export interface SyncStats {
   sheets?: number;
   slides?: number;
   folders?: number;
+  // Issue tracker providers (Linear, Jira, Asana)
+  teams?: number;
+  projects?: number;
+  issues?: number;
 }
 
 export interface Integration {
@@ -120,6 +127,16 @@ export interface ArtifactBlock {
   };
 }
 
+export interface AppBlock {
+  type: "app";
+  app: {
+    id: string;
+    title: string;
+    description: string | null;
+    frontendCode: string;
+  };
+}
+
 export interface AttachmentBlock {
   type: "attachment";
   filename: string;
@@ -127,7 +144,7 @@ export interface AttachmentBlock {
   size: number;
 }
 
-export type ContentBlock = TextBlock | ToolUseBlock | ErrorBlock | ArtifactBlock | AttachmentBlock;
+export type ContentBlock = TextBlock | ToolUseBlock | ErrorBlock | ArtifactBlock | AppBlock | AttachmentBlock;
 
 // Legacy type for streaming compatibility
 export interface ToolCallData {
@@ -151,8 +168,10 @@ export type View =
   | "chat"
   | "data-sources"
   | "data"
-  | "search"
   | "workflows"
+  | "memory"
+  | "apps"
+  | "app-view"
   | "admin"
   | "pending-changes";
 
@@ -212,6 +231,7 @@ interface AppState {
   sidebarCollapsed: boolean;
   currentView: View;
   currentChatId: string | null;
+  currentAppId: string | null;
   recentChats: ChatSummary[];
   pinnedChatIds: string[];
   pendingChatInput: string | null; // Pre-filled input for new chats
@@ -259,6 +279,7 @@ interface AppState {
   setSidebarCollapsed: (collapsed: boolean) => void;
   setCurrentView: (view: View) => void;
   setCurrentChatId: (id: string | null) => void;
+  setCurrentAppId: (id: string | null) => void;
   startNewChat: () => void;
   setPendingChatInput: (input: string | null) => void;
   setPendingChatAutoSend: (autoSend: boolean) => void;
@@ -305,6 +326,10 @@ interface AppState {
   addConversationArtifactBlock: (
     conversationId: string,
     artifact: ArtifactBlock["artifact"],
+  ) => void;
+  addConversationAppBlock: (
+    conversationId: string,
+    app: AppBlock["app"],
   ) => void;
   clearConversation: (conversationId: string) => void;
 
@@ -358,6 +383,7 @@ export const useAppStore = create<AppState>()(
       sidebarCollapsed: false,
       currentView: "home",
       currentChatId: null,
+      currentAppId: null,
       recentChats: [],
       pinnedChatIds: [],
       pendingChatInput: null,
@@ -394,67 +420,53 @@ export const useAppStore = create<AppState>()(
         const { user } = get();
         if (!user) return;
 
-        try {
-          const response = await fetch(
-            `${API_BASE}/auth/users/me/organizations?user_id=${user.id}`,
-          );
-          if (!response.ok) {
-            console.error("[Store] Failed to fetch user organizations:", response.status);
-            return;
-          }
-
-          interface OrgApiResponse {
-            id: string;
-            name: string;
-            logo_url: string | null;
-            role: string;
-            is_active: boolean;
-          }
-
-          const data = (await response.json()) as {
-            organizations: OrgApiResponse[];
-          };
-
-          const organizations: UserOrganization[] = data.organizations.map((o) => ({
-            id: o.id,
-            name: o.name,
-            logoUrl: o.logo_url,
-            role: o.role,
-            isActive: o.is_active,
-          }));
-
-          console.log("[Store] Fetched", organizations.length, "user organizations");
-          set({ organizations });
-        } catch (error) {
-          console.error("[Store] Error fetching user organizations:", error);
+        interface OrgApiResponse {
+          id: string;
+          name: string;
+          logo_url: string | null;
+          role: string;
+          is_active: boolean;
         }
+
+        const { data, error } = await apiRequest<{ organizations: OrgApiResponse[] }>(
+          "/auth/users/me/organizations",
+        );
+
+        if (error || !data) {
+          console.error("[Store] Failed to fetch user organizations:", error ?? "unknown");
+          return;
+        }
+
+        const organizations: UserOrganization[] = data.organizations.map((o) => ({
+          id: o.id,
+          name: o.name,
+          logoUrl: o.logo_url,
+          role: o.role,
+          isActive: o.is_active,
+        }));
+
+        console.log("[Store] Fetched", organizations.length, "user organizations");
+        set({ organizations });
       },
 
       switchActiveOrganization: async (orgId: string) => {
         const { user, organizations } = get();
         if (!user) return;
 
-        try {
-          const response = await fetch(
-            `${API_BASE}/auth/users/me/active-organization?user_id=${user.id}`,
-            {
-              method: "PATCH",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ organization_id: orgId }),
-            },
-          );
+        const { data, error } = await apiRequest<{
+          organization: { id: string; name: string; logo_url: string | null } | null;
+        }>("/auth/users/me/active-organization", {
+          method: "PATCH",
+          body: JSON.stringify({ organization_id: orgId }),
+        });
 
-          if (!response.ok) {
-            const errData = (await response.json().catch(() => ({}))) as { detail?: string };
-            console.error("[Store] Failed to switch org:", errData.detail ?? response.status);
-            return;
-          }
+        if (error) {
+          console.error("[Store] Failed to switch org:", error);
+          alert(error);
+          return;
+        }
 
-          const data = (await response.json()) as {
-            organization: { id: string; name: string; logo_url: string | null } | null;
-          };
-
-          if (data.organization) {
+        if (data?.organization) {
             set({
               organization: {
                 id: data.organization.id,
@@ -475,9 +487,6 @@ export const useAppStore = create<AppState>()(
           }
 
           console.log("[Store] Switched active organization to:", orgId);
-        } catch (error) {
-          console.error("[Store] Error switching organization:", error);
-        }
       },
 
       logout: () =>
@@ -642,6 +651,7 @@ export const useAppStore = create<AppState>()(
           ...(currentView !== "chat" ? { currentChatId: null } : {}),
         }),
       setCurrentChatId: (currentChatId) => set({ currentChatId }),
+      setCurrentAppId: (currentAppId) => set({ currentAppId }),
       startNewChat: () => set({ currentChatId: null, currentView: "chat" }),
       setPendingChatInput: (pendingChatInput) => set({ pendingChatInput }),
       setPendingChatAutoSend: (pendingChatAutoSend) =>
@@ -1107,7 +1117,35 @@ export const useAppStore = create<AppState>()(
       updateConversationToolMessage: (conversationId, toolId, updates) => {
         const { conversations } = get();
         const current = conversations[conversationId];
-        if (!current) return;
+        const defaultToolBlock = {
+          type: "tool_use" as const,
+          id: toolId,
+          name: updates.toolName ?? "workflow_tool",
+          input: updates.input ?? {},
+          result: (updates.result as Record<string, unknown>) ?? {},
+          status: (updates.status as "pending" | "running" | "complete" | undefined) ?? "running",
+        };
+
+        if (!current) {
+          const message = {
+            id: `tool-progress-${toolId}-${Date.now()}`,
+            role: "assistant" as const,
+            contentBlocks: [defaultToolBlock],
+            timestamp: new Date(),
+          };
+          set({
+            conversations: {
+              ...conversations,
+              [conversationId]: {
+                ...defaultConversationState,
+                messages: [message],
+              },
+            },
+          });
+          return;
+        }
+
+        let foundMatchingTool = false;
 
         const updated = current.messages.map((msg) => {
           const blocks = msg.contentBlocks ?? [];
@@ -1115,6 +1153,7 @@ export const useAppStore = create<AppState>()(
             (block) => block.type === "tool_use" && block.id === toolId,
           );
           if (!hasMatchingTool) return msg;
+          foundMatchingTool = true;
 
           const updatedBlocks = blocks.map((block) => {
             if (block.type === "tool_use" && block.id === toolId) {
@@ -1123,8 +1162,14 @@ export const useAppStore = create<AppState>()(
               const newResult = updates.result 
                 ? { ...currentResult, ...updates.result }
                 : currentResult;
+              // If payload includes input and block has none, fill it (e.g. from tool_result so modal shows params)
+              const newInput =
+                updates.input != null && Object.keys(updates.input).length > 0 && Object.keys(block.input ?? {}).length === 0
+                  ? updates.input
+                  : block.input ?? {};
               return {
                 ...block,
+                input: newInput,
                 result: newResult,
                 status:
                   (updates.status as
@@ -1138,6 +1183,24 @@ export const useAppStore = create<AppState>()(
           });
           return { ...msg, contentBlocks: updatedBlocks };
         });
+
+        if (!foundMatchingTool) {
+          const lastMsg = updated[updated.length - 1];
+          if (lastMsg && lastMsg.role === "assistant") {
+            updated[updated.length - 1] = {
+              ...lastMsg,
+              contentBlocks: [...(lastMsg.contentBlocks ?? []), defaultToolBlock],
+            };
+          } else {
+            updated.push({
+              id: `tool-progress-${toolId}-${Date.now()}`,
+              role: "assistant",
+              contentBlocks: [defaultToolBlock],
+              timestamp: new Date(),
+            });
+          }
+        }
+
         set({
           conversations: {
             ...conversations,
@@ -1163,6 +1226,34 @@ export const useAppStore = create<AppState>()(
             return {
               ...msg,
               contentBlocks: [...blocks, { type: "artifact" as const, artifact }],
+            };
+          }
+          return msg;
+        });
+
+        set({
+          conversations: {
+            ...conversations,
+            [conversationId]: { ...current, messages: updated },
+          },
+        });
+      },
+
+      addConversationAppBlock: (conversationId, app) => {
+        const { conversations } = get();
+        const current: ConversationState | undefined = conversations[conversationId];
+        if (!current) return;
+
+        const updated: ChatMessage[] = current.messages.map((msg, idx, arr) => {
+          const isLastAssistant: boolean =
+            msg.role === "assistant" &&
+            !arr.slice(idx + 1).some((m) => m.role === "assistant");
+
+          if (isLastAssistant) {
+            const blocks: ContentBlock[] = msg.contentBlocks ?? [];
+            return {
+              ...msg,
+              contentBlocks: [...blocks, { type: "app" as const, app }],
             };
           }
           return msg;
@@ -1353,6 +1444,7 @@ export const useAppStore = create<AppState>()(
               email: user.email,
               name: user.name,
               avatar_url: user.avatarUrl,
+              agent_global_commands: user.agentGlobalCommands,
               organization_id: organization?.id,
             }),
           });
@@ -1373,6 +1465,9 @@ export const useAppStore = create<AppState>()(
             status: string;
             avatar_url: string | null;
             name: string | null;
+            agent_global_commands: string | null;
+            phone_number: string | null;
+            job_title: string | null;
             roles: string[];
             organization: {
               id: string;
@@ -1387,6 +1482,9 @@ export const useAppStore = create<AppState>()(
             data.id !== user.id ||
             data.avatar_url !== user.avatarUrl ||
             data.name !== user.name ||
+            data.agent_global_commands !== user.agentGlobalCommands ||
+            data.phone_number !== user.phoneNumber ||
+            data.job_title !== user.jobTitle ||
             JSON.stringify(newRoles) !== JSON.stringify(user.roles)
           ) {
             setUser({
@@ -1394,6 +1492,9 @@ export const useAppStore = create<AppState>()(
               id: data.id,
               name: data.name ?? user.name,
               avatarUrl: data.avatar_url ?? user.avatarUrl,
+              agentGlobalCommands: data.agent_global_commands ?? user.agentGlobalCommands,
+              phoneNumber: data.phone_number ?? user.phoneNumber,
+              jobTitle: data.job_title ?? user.jobTitle,
               roles: newRoles,
             });
           }

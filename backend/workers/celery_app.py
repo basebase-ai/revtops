@@ -29,7 +29,6 @@ if env_file.exists():
 from celery import Celery
 from celery.schedules import crontab
 from celery.signals import worker_process_shutdown
-from kombu import Exchange, Queue
 
 # Get Redis URL from environment
 REDIS_URL: str = os.environ.get("REDIS_URL", "redis://localhost:6379")
@@ -42,6 +41,7 @@ celery_app = Celery(
     include=[
         "workers.tasks.sync",
         "workers.tasks.workflows",
+        "workers.tasks.bulk_operations",
     ],
 )
 
@@ -68,23 +68,16 @@ celery_app.conf.update(
     # Keep concurrency low to limit database connections
     # Each worker process creates its own connection pool
     worker_prefetch_multiplier=1,  # One task at a time per worker
-    worker_concurrency=2,  # 2 concurrent tasks per worker (was 4)
+    worker_concurrency=4,  # 4 concurrent tasks per worker
     
     # Queue configuration
-    task_queues=(
-        Queue("default", Exchange("default"), routing_key="default"),
-        Queue("sync", Exchange("sync"), routing_key="sync.#"),
-        Queue("workflows", Exchange("workflows"), routing_key="workflow.#"),
-    ),
+    # All tasks go to the default queue. Separate queues add operational
+    # complexity (forgetting -Q enrichment) with no benefit when running a
+    # single worker instance. If you later need independent scaling, re-add
+    # queues and route tasks explicitly.
     task_default_queue="default",
     task_default_exchange="default",
     task_default_routing_key="default",
-    
-    # Route tasks to specific queues
-    task_routes={
-        "workers.tasks.sync.*": {"queue": "sync"},
-        "workers.tasks.workflows.*": {"queue": "workflows"},
-    },
 )
 
 # Beat schedule for periodic tasks
@@ -93,21 +86,18 @@ celery_app.conf.beat_schedule = {
     "hourly-sync-all-organizations": {
         "task": "workers.tasks.sync.sync_all_organizations",
         "schedule": crontab(minute=0),  # Every hour at :00
-        "options": {"queue": "sync"},
     },
     
     # Check for scheduled workflows every minute
     "check-scheduled-workflows": {
         "task": "workers.tasks.workflows.check_scheduled_workflows",
         "schedule": timedelta(minutes=1),
-        "options": {"queue": "workflows"},
     },
     
     # Process event-triggered workflows (check queue every 10 seconds)
     "process-workflow-events": {
         "task": "workers.tasks.workflows.process_pending_events",
         "schedule": timedelta(seconds=10),
-        "options": {"queue": "workflows"},
     },
 }
 

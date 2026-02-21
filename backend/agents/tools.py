@@ -2,38 +2,81 @@
 Tool definitions and execution for Claude.
 
 Tools are organized by category (see registry.py):
-- LOCAL_READ: run_sql_query, search_activities
-- LOCAL_WRITE: create_artifact, create_workflow, trigger_workflow
-- EXTERNAL_READ: web_search, fetch_url, enrich_contacts_with_apollo, enrich_company_with_apollo
-- EXTERNAL_WRITE: crm_write, send_email_from, send_slack, github_issues_access, trigger_sync
+- LOCAL_READ: run_sql_query
+- LOCAL_WRITE: create_artifact, run_sql_write, run_workflow, create_app, keep_notes, manage_memory
+- EXTERNAL_READ: query_system, list_connected_systems
+- EXTERNAL_WRITE: write_to_system, run_action, trigger_sync
 
-EXTERNAL_WRITE tools require user approval by default (can be overridden in settings).
+All external interactions go through generic connector tools (query_system,
+write_to_system, run_action) which dispatch to the appropriate connector.
 """
 
+from __future__ import annotations
+
+import asyncio
 import json
 import logging
 import re
+from collections.abc import Awaitable, Callable
 from datetime import date, datetime, timezone
 from decimal import Decimal
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
+if TYPE_CHECKING:
+    from connectors.base import BaseConnector
+
 import httpx
+from openai import AsyncOpenAI
 from sqlalchemy import select, text
 
 from config import settings
 from models.account import Account
+from models.app import App
 from models.artifact import Artifact
+from models.conversation import Conversation
 from models.contact import Contact
 from models.pending_operation import PendingOperation, CrmOperation  # CrmOperation is alias
 from models.database import get_session
 from models.deal import Deal
 from models.integration import Integration
+from models.tracker_team import TrackerTeam
 
 # Import the unified tool registry
 from agents.registry import get_tools_for_claude, get_tool, requires_approval
+from access_control import (
+    ConnectorContext,
+    RightsContext,
+    check_connector_call,
+    check_sql,
+)
 
 logger = logging.getLogger(__name__)
+
+_configured_openai_research_model = (settings.OPENAI_RESEARCH_MODEL or "").strip()
+_preferred_openai_research_model = (
+    _configured_openai_research_model
+    if _configured_openai_research_model.startswith("gpt-5")
+    else "gpt-5"
+)
+
+# Prefer GPT-5 family models for all research synthesis calls.
+OPENAI_WEB_RESEARCH_FALLBACK_MODELS: tuple[str, ...] = tuple(
+    dict.fromkeys(
+        (
+            _preferred_openai_research_model,
+            "gpt-5",
+            "gpt-5-mini",
+            "gpt-5-nano",
+        )
+    )
+)
+
+if _configured_openai_research_model and not _configured_openai_research_model.startswith("gpt-5"):
+    logger.warning(
+        "[Tools] OPENAI_RESEARCH_MODEL=%s is not GPT-5+. Falling back to GPT-5 family for research synthesis.",
+        _configured_openai_research_model,
+    )
 
 # =============================================================================
 # Pending Operations Store (temporary until Phase 6 PendingOperation table)
@@ -139,15 +182,19 @@ class ToolProgressUpdater:
 # Note: Row-Level Security (RLS) handles organization filtering at the database level
 ALLOWED_TABLES: set[str] = {
     "deals", "accounts", "contacts", "activities", "meetings", "integrations", "users", "organizations",
-    "pipelines", "pipeline_stages", "workflows", "workflow_runs", "user_mappings_for_identity",
+    "org_members",
+    "pipelines", "pipeline_stages", "goals", "workflows", "workflow_runs", "user_mappings_for_identity",
     "github_repositories", "github_commits", "github_pull_requests",
     "shared_files",
+    "tracker_teams", "tracker_projects", "tracker_issues",
+    "bulk_operations", "bulk_operation_results",
 }
 
 
-def get_tools() -> list[dict[str, Any]]:
+def get_tools(context: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     """Return tool definitions for Claude from the unified registry."""
-    return get_tools_for_claude()
+    in_workflow = bool((context or {}).get("is_workflow"))
+    return get_tools_for_claude(in_workflow=in_workflow)
 
 
 async def _should_skip_approval(
@@ -226,120 +273,94 @@ async def execute_tool(
     if organization_id is None:
         logger.warning("[Tools] No organization_id - returning error")
         return {"error": "No organization associated with user. Please complete onboarding."}
-    
+
+    conversation_id: str | None = (context or {}).get("conversation_id")
+    # Deduct credits before running the tool (fail fast if insufficient); import here to avoid circular import
+    from services.credits import credits_for_tool, deduct as deduct_credits
+    cost: int = credits_for_tool(tool_name, tool_input or {}, context)
+    if cost > 0:
+        ok = await deduct_credits(
+            organization_id,
+            cost,
+            "tool",
+            reference_type="conversation",
+            reference_id=conversation_id,
+            user_id=user_id,
+        )
+        if not ok:
+            return {
+                "error": "Insufficient credits. Please upgrade your plan or wait for your next billing period."
+            }
+
     # Check if this tool should bypass approval (for auto-approved workflows)
     skip_approval = await _should_skip_approval(tool_name, user_id, context)
-    
-    if tool_name == "run_sql_query":
-        result = await _run_sql_query(tool_input, organization_id, user_id)
-        logger.info("[Tools] run_sql_query returned %d rows", result.get("row_count", 0))
-        return result
 
-    elif tool_name == "run_sql_write":
-        result = await _run_sql_write(tool_input, organization_id, user_id, context)
-        logger.info("[Tools] run_sql_write completed: %s", result)
-        return result
+    if tool_name == "manage_memory" and context and context.get("is_workflow"):
+        action: str = (tool_input or {}).get("action", "save")
+        if action in ("save", "update"):
+            logger.info("[Tools] Blocking manage_memory(%s) during workflow execution", action)
+            return {"error": "manage_memory save/update is not available in workflows. Use keep_notes for workflow-scoped notes."}
 
-    elif tool_name == "search_activities":
-        result = await _search_activities(tool_input, organization_id, user_id)
-        logger.info("[Tools] search_activities returned %d results", len(result.get("results", [])))
-        return result
+    tool_handlers: dict[str, Callable[[], Awaitable[dict[str, Any]]]] = {
+        "run_sql_query": lambda: _run_sql_query(tool_input, organization_id, user_id),
+        "run_sql_write": lambda: _run_sql_write(tool_input, organization_id, user_id, context),
+        "run_workflow": lambda: _run_workflow(tool_input, organization_id, user_id, context),
+        "create_artifact": lambda: _create_artifact(tool_input, organization_id, user_id, context),
+        "create_app": lambda: _create_app(tool_input, organization_id, user_id, context),
+        "keep_notes": lambda: _keep_notes(tool_input, organization_id, user_id, context, skip_approval),
+        "manage_memory": lambda: _manage_memory(tool_input, organization_id, user_id, skip_approval),
+        "foreach": lambda: _foreach(tool_input, organization_id, user_id, context),
+        "trigger_sync": lambda: _trigger_sync(tool_input, organization_id),
+        # Connector-driven generic tools
+        "list_connected_systems": lambda: _list_connected_systems(organization_id),
+        "query_system": lambda: _query_system(tool_input, organization_id, user_id),
+        "write_to_system": lambda: _write_to_system(tool_input, organization_id, user_id, skip_approval, conversation_id),
+        "run_action": lambda: _run_action(tool_input, organization_id, user_id, skip_approval, context),
+    }
 
-    elif tool_name == "web_search":
-        result = await _web_search(tool_input)
-        logger.info("[Tools] web_search completed")
-        return result
-
-    elif tool_name == "trigger_workflow":
-        result = await _trigger_workflow(tool_input, organization_id)
-        logger.info("[Tools] trigger_workflow completed: %s", result)
-        return result
-
-    elif tool_name == "run_workflow":
-        result = await _run_workflow(tool_input, organization_id, user_id, context)
-        logger.info("[Tools] run_workflow completed: %s", result.get("status"))
-        return result
-
-    elif tool_name == "loop_over":
-        result = await _loop_over(tool_input, organization_id, user_id, context)
-        logger.info("[Tools] loop_over completed: %d/%d successful", result.get("succeeded", 0), result.get("total", 0))
-        return result
-
-    elif tool_name == "fetch_url":
-        result = await _fetch_url(tool_input)
-        logger.info("[Tools] fetch_url completed: %s", result.get("url"))
-        return result
-
-    elif tool_name == "enrich_contacts_with_apollo":
-        result = await _enrich_contacts_with_apollo(tool_input, organization_id)
-        logger.info("[Tools] enrich_contacts_with_apollo completed: %d results", len(result.get("enriched", [])))
-        return result
-
-    elif tool_name == "enrich_company_with_apollo":
-        result = await _enrich_company_with_apollo(tool_input, organization_id)
-        logger.info("[Tools] enrich_company_with_apollo completed")
-        return result
-
-    elif tool_name == "crm_write":
-        conversation_id: str | None = (context or {}).get("conversation_id")
-        result = await _crm_write(tool_input, organization_id, user_id, skip_approval, conversation_id=conversation_id)
-        logger.info("[Tools] crm_write completed: %s", result.get("status", result.get("error", "unknown")))
-        return result
-
-    elif tool_name == "send_email_from":
-        result = await _send_email_from(tool_input, organization_id, user_id, skip_approval)
-        logger.info("[Tools] send_email_from completed: %s", result.get("status"))
-        return result
-
-    elif tool_name == "send_slack":
-        result = await _send_slack(tool_input, organization_id, user_id, skip_approval)
-        logger.info("[Tools] send_slack completed: %s", result.get("status"))
-        return result
-
-    elif tool_name == "github_issues_access":
-        result = await _github_issues_access(tool_input, organization_id, user_id, skip_approval)
-        logger.info("[Tools] github_issues_access completed: %s", result.get("status", result.get("error", "unknown")))
-        return result
-
-    elif tool_name == "create_github_issue":
-        logger.warning("[Tools] create_github_issue is deprecated, remapping to github_issues_access")
-        result = await _github_issues_access(tool_input, organization_id, user_id, skip_approval)
-        logger.info("[Tools] create_github_issue completed via github_issues_access: %s", result.get("status", result.get("error", "unknown")))
-        return result
-
-    elif tool_name == "trigger_sync":
-        result = await _trigger_sync(tool_input, organization_id)
-        logger.info("[Tools] trigger_sync completed: %s", result.get("status"))
-        return result
-
-    elif tool_name == "search_cloud_files":
-        result = await _search_cloud_files(tool_input, organization_id, user_id)
-        logger.info("[Tools] search_cloud_files returned %d results", len(result.get("files", [])))
-        return result
-
-    elif tool_name == "read_cloud_file":
-        result = await _read_cloud_file(tool_input, organization_id, user_id)
-        logger.info("[Tools] read_cloud_file completed: %s", result.get("file_name", "unknown"))
-        return result
-
-    elif tool_name == "create_artifact":
-        result = await _create_artifact(tool_input, organization_id, user_id, context)
-        logger.info("[Tools] create_artifact completed: %s", result.get("artifact_id"))
-        return result
-
-    elif tool_name == "save_memory":
-        result = await _save_memory(tool_input, organization_id, user_id, skip_approval)
-        logger.info("[Tools] save_memory completed: %s", result.get("memory_id", result.get("error", result.get("status"))))
-        return result
-
-    elif tool_name == "delete_memory":
-        result = await _delete_memory(tool_input, organization_id, user_id)
-        logger.info("[Tools] delete_memory completed: %s", result.get("status", result.get("error")))
-        return result
-
-    else:
+    handler = tool_handlers.get(tool_name)
+    if handler is None:
         logger.error("[Tools] Unknown tool: %s", tool_name)
         return {"error": f"Unknown tool: {tool_name}"}
+
+    result = await handler()
+    _log_tool_execution_result(tool_name, tool_name, result)
+    return result
+
+
+def _log_tool_execution_result(
+    requested_tool_name: str,
+    executed_tool_name: str,
+    result: dict[str, Any],
+) -> None:
+    """Centralize tool execution logging so execute_tool remains easy to scan."""
+    if executed_tool_name == "run_sql_query":
+        logger.info("[Tools] run_sql_query returned %d rows", result.get("row_count", 0))
+    elif executed_tool_name == "foreach":
+        logger.info(
+            "[Tools] foreach completed: %d/%d successful",
+            result.get("succeeded", result.get("succeeded_items", 0)),
+            result.get("total", result.get("total_items", 0)),
+        )
+    elif executed_tool_name == "trigger_sync":
+        logger.info("[Tools] trigger_sync completed: %s", result.get("status"))
+    elif executed_tool_name in ("query_system", "write_to_system", "run_action"):
+        logger.info("[Tools] %s completed: %s", executed_tool_name, result.get("status", result.get("error", "ok")))
+    elif executed_tool_name == "list_connected_systems":
+        logger.info("[Tools] list_connected_systems returned manifest")
+    elif executed_tool_name == "search_cloud_files":
+        logger.info("[Tools] search_cloud_files returned %d results", len(result.get("files", [])))
+    elif executed_tool_name == "read_cloud_file":
+        logger.info("[Tools] read_cloud_file completed: %s", result.get("file_name", "unknown"))
+    elif executed_tool_name == "create_artifact":
+        logger.info("[Tools] create_artifact completed: %s", result.get("artifact_id"))
+    elif executed_tool_name == "keep_notes":
+        logger.info("[Tools] keep_notes completed: %s", result.get("note_id", result.get("error", result.get("status"))))
+    elif executed_tool_name == "manage_memory":
+        logger.info("[Tools] manage_memory completed: %s", result.get("memory_id", result.get("status", result.get("error"))))
+
+    else:
+        logger.info("[Tools] %s completed: %s", requested_tool_name, result.get("status", result))
 
 
 def _validate_sql_query(query: str) -> tuple[bool, str | None]:
@@ -417,52 +438,322 @@ def _serialize_value(value: Any) -> Any:
     return str(value)
 
 
+# Regex matching semantic_embed('...') placeholders in SQL.
+# The agent writes these; we replace them with real embedding vectors before execution.
+_SEMANTIC_EMBED_RE = re.compile(
+    r"semantic_embed\(\s*'((?:[^'\\]|\\')*)'\s*\)", re.IGNORECASE
+)
+
+
+async def _resolve_semantic_embeds(query: str) -> tuple[str, str | None]:
+    """Replace ``semantic_embed('text')`` placeholders with pgvector literals.
+
+    Returns (resolved_query, error_or_none).
+    """
+    matches: list[re.Match[str]] = list(_SEMANTIC_EMBED_RE.finditer(query))
+    if not matches:
+        return query, None
+
+    try:
+        from services.embeddings import get_embedding_service
+
+        svc = get_embedding_service()
+    except ValueError:
+        return query, (
+            "semantic_embed() requires OPENAI_API_KEY to be configured. "
+            "Use ILIKE for text search instead."
+        )
+
+    texts: list[str] = [m.group(1).replace("\\'", "'") for m in matches]
+    embeddings: list[list[float]] = await svc.generate_embeddings_batch(texts)
+
+    resolved: str = query
+    for match, embedding in zip(reversed(matches), reversed(embeddings)):
+        vec_literal: str = "'[" + ",".join(str(v) for v in embedding) + "]'::vector"
+        resolved = resolved[: match.start()] + vec_literal + resolved[match.end() :]
+
+    return resolved, None
+
+
+# =============================================================================
+# Connector-driven generic tool handlers
+# =============================================================================
+
+async def _get_connector_instance(
+    slug: str,
+    organization_id: str,
+    user_id: str | None,
+    required_capability: str | None = None,
+) -> tuple["BaseConnector | None", str | None]:
+    """Resolve a connector by slug, verify active Integration, and instantiate.
+
+    Returns (connector_instance, None) on success or (None, error_message) on failure.
+    """
+    from connectors.base import BaseConnector
+    from connectors.registry import Capability, ConnectorMeta, discover_connectors
+    from models.integration import Integration
+
+    registry = discover_connectors()
+    connector_cls: type[BaseConnector] | None = registry.get(slug)
+    if connector_cls is None:
+        return None, f"Unknown system '{slug}'. Use list_connected_systems to see available systems."
+
+    meta: ConnectorMeta = connector_cls.meta  # type: ignore[attr-defined]
+
+    if required_capability:
+        cap = Capability(required_capability)
+        if cap not in meta.capabilities:
+            return None, f"System '{slug}' does not support {required_capability}. Capabilities: {[c.value for c in meta.capabilities]}"
+
+    async with get_session(organization_id=organization_id) as session:
+        conditions = [
+            Integration.organization_id == UUID(organization_id),
+            Integration.provider == slug,
+            Integration.is_active == True,  # noqa: E712
+        ]
+        if meta.scope.value == "user" and user_id:
+            conditions.append(Integration.user_id == UUID(user_id))
+        result = await session.execute(select(Integration).where(*conditions))
+        integration: Integration | None = result.scalar_one_or_none()
+        if integration is None:
+            return None, f"System '{slug}' is not connected. Ask the user to connect it in the Connectors page."
+
+    if meta.scope.value == "user":
+        instance: BaseConnector = connector_cls(organization_id, user_id=user_id)
+    else:
+        instance = connector_cls(organization_id)
+
+    return instance, None
+
+
+async def _list_connected_systems(organization_id: str) -> dict[str, Any]:
+    """Return the systems manifest for all connected connectors."""
+    from connectors.registry import Capability, ConnectorMeta, discover_connectors
+    from models.integration import Integration
+
+    async with get_session(organization_id=organization_id) as session:
+        result = await session.execute(
+            select(Integration.provider).where(
+                Integration.organization_id == UUID(organization_id),
+                Integration.is_active == True,  # noqa: E712
+            )
+        )
+        active_providers: set[str] = {row[0] for row in result.all()}
+
+    registry = discover_connectors()
+
+    systems: list[dict[str, Any]] = []
+    for slug, connector_cls in sorted(registry.items()):
+        if slug not in active_providers:
+            continue
+        meta: ConnectorMeta = connector_cls.meta  # type: ignore[attr-defined]
+        entry: dict[str, Any] = {
+            "slug": meta.slug,
+            "name": meta.name,
+            "capabilities": [c.value for c in meta.capabilities],
+        }
+        if meta.query_description:
+            entry["query_description"] = meta.query_description
+        if meta.write_operations:
+            entry["write_operations"] = [
+                {"name": op.name, "entity_type": op.entity_type, "description": op.description, "parameters": op.parameters}
+                for op in meta.write_operations
+            ]
+        if meta.actions:
+            entry["actions"] = [
+                {"name": act.name, "description": act.description, "parameters": act.parameters}
+                for act in meta.actions
+            ]
+        systems.append(entry)
+
+    return {"systems": systems, "count": len(systems)}
+
+
+async def _query_system(
+    params: dict[str, Any], organization_id: str, user_id: str | None
+) -> dict[str, Any]:
+    """Dispatch a query to a QUERY-capable connector."""
+    system: str = (params.get("system") or "").strip()
+    query: str = (params.get("query") or "").strip()
+    if not system:
+        return {"error": "system is required"}
+    if not query:
+        return {"error": "query is required"}
+
+    dp_ctx = ConnectorContext(
+        organization_id=organization_id,
+        user_id=user_id,
+        provider=system,
+        operation="query",
+    )
+    dp_result = await check_connector_call(dp_ctx, {"system": system, "query": query})
+    if not dp_result.allowed:
+        return {"error": dp_result.deny_reason or "Connector query not allowed"}
+
+    instance, error = await _get_connector_instance(system, organization_id, user_id, required_capability="query")
+    if error:
+        return {"error": error}
+    assert instance is not None
+
+    try:
+        return await instance.query(query)
+    except Exception as exc:
+        logger.error("[Tools] query_system(%s) failed: %s", system, exc, exc_info=True)
+        return {"error": f"Query to {system} failed: {exc}"}
+
+
+async def _write_to_system(
+    params: dict[str, Any],
+    organization_id: str,
+    user_id: str | None,
+    skip_approval: bool,
+    conversation_id: str | None,
+) -> dict[str, Any]:
+    """Dispatch a write to a WRITE-capable connector."""
+    system: str = (params.get("system") or "").strip()
+    operation: str = (params.get("operation") or "").strip()
+    data: dict[str, Any] = params.get("data") or {}
+
+    if not system:
+        return {"error": "system is required"}
+    if not operation:
+        return {"error": "operation is required"}
+
+    dp_ctx = ConnectorContext(
+        organization_id=organization_id,
+        user_id=user_id,
+        provider=system,
+        operation="write",
+    )
+    dp_result = await check_connector_call(dp_ctx, {"system": system, "operation": operation, "data": data})
+    if not dp_result.allowed:
+        return {"error": dp_result.deny_reason or "Connector write not allowed"}
+
+    instance, error = await _get_connector_instance(system, organization_id, user_id, required_capability="write")
+    if error:
+        return {"error": error}
+    assert instance is not None
+
+    try:
+        return await instance.write(operation, data)
+    except Exception as exc:
+        logger.error("[Tools] write_to_system(%s, %s) failed: %s", system, operation, exc, exc_info=True)
+        return {"error": f"Write to {system}.{operation} failed: {exc}"}
+
+
+async def _run_action(
+    params: dict[str, Any],
+    organization_id: str,
+    user_id: str | None,
+    skip_approval: bool,
+    context: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Dispatch an action to an ACTION-capable connector."""
+    system: str = (params.get("system") or "").strip()
+    action: str = (params.get("action") or "").strip()
+    action_params: dict[str, Any] = params.get("params") or {}
+
+    if not system:
+        return {"error": "system is required"}
+    if not action:
+        return {"error": "action is required"}
+
+    # Inject conversation_id for code_sandbox execute_command
+    if system == "code_sandbox" and action == "execute_command":
+        conversation_id: str | None = (context or {}).get("conversation_id")
+        if conversation_id:
+            action_params["conversation_id"] = conversation_id
+
+    dp_ctx = ConnectorContext(
+        organization_id=organization_id,
+        user_id=user_id,
+        provider=system,
+        operation="action",
+    )
+    dp_result = await check_connector_call(dp_ctx, {"system": system, "action": action, "params": action_params})
+    if not dp_result.allowed:
+        return {"error": dp_result.deny_reason or "Connector action not allowed"}
+
+    instance, error = await _get_connector_instance(system, organization_id, user_id, required_capability="action")
+    if error:
+        return {"error": error}
+    assert instance is not None
+
+    try:
+        return await instance.execute_action(action, action_params)
+    except Exception as exc:
+        logger.error("[Tools] run_action(%s, %s) failed: %s", system, action, exc, exc_info=True)
+        return {"error": f"Action {system}.{action} failed: {exc}"}
+
+
+# =============================================================================
+# SQL Tools
+# =============================================================================
+
+
 async def _run_sql_query(
     params: dict[str, Any], organization_id: str, user_id: str | None
 ) -> dict[str, Any]:
     """
     Execute a read-only SQL query with Row-Level Security (RLS).
-    
-    RLS is enforced at the database level via policies that check 
+
+    RLS is enforced at the database level via policies that check
     `app.current_org_id` session variable. This handles all query patterns
     automatically (JOINs, subqueries, CTEs, etc.) without fragile SQL parsing.
+
+    Supports ``semantic_embed('text')`` as an inline placeholder that is
+    resolved to a real embedding vector before execution, enabling semantic
+    search directly via SQL (e.g. ORDER BY embedding <=> semantic_embed('...')).
     """
-    query = params.get("query", "").strip()
-    
+    query: str = (params.get("query") or "").strip()
+
     if not query:
         return {"error": "No query provided"}
-    
+
     logger.info("[Tools._run_sql_query] Query: %s", query)
-    
+
     # Validate query is safe (SELECT only, no dangerous keywords)
     is_valid, error = _validate_sql_query(query)
     if not is_valid:
         logger.warning("[Tools._run_sql_query] Query validation failed: %s", error)
         return {"error": error}
-    
+
     # Extract tables and validate they're in the allowed list
-    tables = _extract_tables_from_query(query)
+    tables: set[str] = _extract_tables_from_query(query)
     logger.debug("[Tools._run_sql_query] Detected tables: %s", tables)
-    
-    disallowed = tables - ALLOWED_TABLES
+
+    disallowed: set[str] = tables - ALLOWED_TABLES
     if disallowed:
         return {"error": f"Access to tables not allowed: {disallowed}"}
-    
+
+    # Resolve semantic_embed('...') placeholders into real vectors
+    final_query, embed_error = await _resolve_semantic_embeds(query)
+    if embed_error is not None:
+        return {"error": embed_error}
+
     # Add LIMIT if not present to prevent huge result sets
-    final_query = query
     if not re.search(r'\bLIMIT\b', final_query, re.IGNORECASE):
         final_query = final_query.rstrip(';') + " LIMIT 100"
-    
+
+    rights_ctx = RightsContext(
+        organization_id=organization_id,
+        user_id=user_id,
+        conversation_id=None,
+        is_workflow=False,
+    )
+    rights_result = await check_sql(rights_ctx, final_query, None)
+    if not rights_result.allowed:
+        return {"error": rights_result.deny_reason or "SQL not allowed"}
+    query_to_run: str = (
+        rights_result.transformed_query if rights_result.transformed_query is not None else final_query
+    )
+
     try:
         async with get_session(organization_id=organization_id) as session:
-            # Execute the query - RLS automatically filters by organization
-            # (organization_id context is already set by get_session)
-            result = await session.execute(text(final_query))
+            result = await session.execute(text(query_to_run))
             rows = result.fetchall()
-            columns = list(result.keys())
-            
-            # Convert to list of dicts with consistent serialization
-            # All datetimes are formatted as ISO 8601 with Z suffix (UTC)
+            columns: list[str] = list(result.keys())
+
             data: list[dict[str, Any]] = []
             for row in rows:
                 row_dict: dict[str, Any] = {
@@ -470,9 +761,9 @@ async def _run_sql_query(
                     for i, col in enumerate(columns)
                 }
                 data.append(row_dict)
-            
+
             logger.info("[Tools._run_sql_query] Query returned %d rows", len(data))
-            
+
             return {
                 "columns": columns,
                 "rows": data,
@@ -486,10 +777,19 @@ async def _run_sql_query(
 # Tables that can be written to via run_sql_write
 WRITABLE_TABLES: set[str] = {
     "workflows",
-    "artifacts", 
+    "artifacts",
     "contacts",
     "deals",
     "accounts",
+    "org_members",
+    "users",
+    "temp_data",
+}
+
+# Per-table column restrictions: only these columns may appear in SET clauses.
+# Tables not listed here have no column restrictions.
+WRITABLE_COLUMNS: dict[str, set[str]] = {
+    "users": {"phone_number"},
 }
 
 # CRM tables that go through pending operations (review before commit)
@@ -501,7 +801,6 @@ CRM_TABLES: set[str] = {
 
 # Tables that are completely off-limits for writes
 PROTECTED_TABLES: set[str] = {
-    "users",
     "organizations", 
     "integrations",
     "activities",
@@ -923,6 +1222,11 @@ async def _run_sql_write(
     # Prevent autonomous workflow fan-out: a workflow run cannot create other
     # workflows that are automatically runnable (enabled + non-manual trigger).
     if context and context.get("is_workflow") and table == "workflows":
+        if operation == "INSERT":
+            limit_error = _workflow_child_creation_limit_error(context)
+            if limit_error:
+                return limit_error
+
         if operation == "INSERT" and _workflow_insert_would_auto_run(query):
             logger.warning(
                 "[Tools._run_sql_write] Blocked workflow-created auto-run workflow INSERT"
@@ -949,13 +1253,26 @@ async def _run_sql_write(
                     )
                 }
     
+    rights_ctx = RightsContext(
+        organization_id=organization_id,
+        user_id=user_id,
+        conversation_id=(context or {}).get("conversation_id"),
+        is_workflow=(context or {}).get("is_workflow", False),
+    )
+    rights_result = await check_sql(rights_ctx, query, None)
+    if not rights_result.allowed:
+        return {"error": rights_result.deny_reason or "SQL write not allowed"}
+    query_to_use: str = (
+        rights_result.transformed_query if rights_result.transformed_query is not None else query
+    )
+
     # ==========================================================================
     # CRM Tables: Route through PendingOperation for review/commit workflow
     # ==========================================================================
     if table in CRM_TABLES:
         conversation_id: str | None = (context or {}).get("conversation_id")
         return await _handle_crm_write_from_sql(
-            query=query,
+            query=query_to_use,
             table=table,
             operation=operation,
             organization_id=organization_id,
@@ -970,11 +1287,11 @@ async def _run_sql_write(
         async with get_session(organization_id=organization_id) as session:
             
             # For INSERT, inject required columns
-            final_query = query
+            final_query = query_to_use
             if operation == "INSERT":
                 # Parse INSERT INTO table (cols) VALUES (vals)
                 # Need to handle nested parens, quotes, and functions properly
-                parsed = _parse_insert_for_injection(query)
+                parsed = _parse_insert_for_injection(query_to_use)
                 if parsed is None:
                     return {"error": "INSERT query format not recognized. Use: INSERT INTO table (columns) VALUES (values)"}
                 
@@ -1020,11 +1337,25 @@ async def _run_sql_write(
                     new_vals = f"{values}, {', '.join(extra_vals)}"
                     final_query = f"INSERT INTO {table_part} ({new_cols}) VALUES ({new_vals})"
                 else:
-                    final_query = query
+                    final_query = query_to_use
             
             # Execute the query
             result = await session.execute(text(final_query))
             await session.commit()
+
+            if (
+                context
+                and context.get("is_workflow")
+                and table == "workflows"
+                and operation == "INSERT"
+            ):
+                updated_count = int(context.get("created_workflow_count", 0)) + 1
+                context["created_workflow_count"] = updated_count
+                logger.info(
+                    "[Tools._run_sql_write] Workflow-created child count incremented: workflow_id=%s count=%d",
+                    context.get("workflow_id"),
+                    updated_count,
+                )
             
             rows_affected = result.rowcount
             
@@ -1144,68 +1475,146 @@ async def _handle_crm_write_from_sql(
     }
 
 
-async def _search_activities(
-    params: dict[str, Any], organization_id: str, user_id: str | None
+def _web_search_normalized_error(
+    error: str, query: str, provider: str = "perplexity"
 ) -> dict[str, Any]:
-    """Execute semantic search across activities."""
-    query = params.get("query", "").strip()
-    
-    if not query:
-        return {"error": "No search query provided"}
-    
-    activity_types = params.get("types")
-    limit = min(params.get("limit", 10), 50)  # Cap at 50
-    
-    try:
-        from services.embedding_sync import search_activities_by_embedding
-        
-        results = await search_activities_by_embedding(
-            organization_id=organization_id,
-            query_text=query,
-            limit=limit,
-            activity_types=activity_types,
+    return {"error": error, "query": query, "provider": provider}
+
+
+def _format_contact_context_for_research(context: Any) -> str:
+    """Create a compact context block for external enrichment providers."""
+    if context is None:
+        return ""
+
+    if isinstance(context, str):
+        value = context.strip()
+        return value[:2000] if value else ""
+
+    if isinstance(context, list):
+        lines: list[str] = []
+        for idx, item in enumerate(context[:10], start=1):
+            if isinstance(item, dict):
+                detail = ", ".join(
+                    f"{k}={v}" for k, v in item.items() if v is not None and str(v).strip()
+                )
+                if detail:
+                    lines.append(f"- Contact {idx}: {detail}")
+            elif item is not None and str(item).strip():
+                lines.append(f"- Contact {idx}: {str(item).strip()}")
+        return "\n".join(lines)[:3000]
+
+    if isinstance(context, dict):
+        lines = [
+            f"- {k}: {v}"
+            for k, v in context.items()
+            if v is not None and str(v).strip()
+        ]
+        return "\n".join(lines)[:3000]
+
+    return str(context)[:2000]
+
+
+async def _openai_web_search_fallback(
+    query: str,
+    context_answer: str | None,
+    provider_context: str | None = None,
+) -> dict[str, Any] | None:
+    """Run an OpenAI synthesis pass for web-search results using known context."""
+    if not settings.OPENAI_API_KEY:
+        logger.info(
+            "[Tools._openai_web_search_fallback] Skipping fallback: OPENAI_API_KEY not configured"
         )
-        
-        if not results:
+        return None
+
+    client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+    prompt_context = context_answer or "No useful Perplexity context was available."
+    additional_context = (provider_context or "").strip()
+
+    for model in OPENAI_WEB_RESEARCH_FALLBACK_MODELS:
+        try:
+            logger.info(
+                "[Tools._openai_web_search_fallback] Running OpenAI fallback with model=%s",
+                model,
+            )
+            response = await client.chat.completions.create(
+                model=model,
+                temperature=0.2,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are a research assistant for sales and GTM workflows. "
+                            "Given a search query and context, provide concise, factual synthesis useful for decision-making. "
+                            "If uncertain, clearly label uncertainty and suggest verification steps."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Research query: {query}\n\n"
+                            f"Existing sparse research context:\n{prompt_context}\n\n"
+                            f"Known contact/company context:\n{additional_context or 'None provided'}\n\n"
+                            "Return concise findings with 4 sections: Key findings, Relevant context, Risks/unknowns, Suggested next actions."
+                        ),
+                    },
+                ],
+            )
+            content = (response.choices[0].message.content or "").strip()
+            if not content:
+                logger.warning(
+                    "[Tools._openai_web_search_fallback] Empty response for model=%s",
+                    model,
+                )
+                continue
             return {
-                "results": [],
-                "message": "No matching activities found. Activities may not have embeddings yet - try syncing data first.",
+                "answer": content,
+                "provider": "openai",
+                "model": model,
             }
-        
-        return {
-            "results": results,
-            "count": len(results),
-            "query": query,
-        }
-        
-    except ValueError as e:
-        # OpenAI API key not configured
-        logger.warning("[Tools._search_activities] Embedding service not available: %s", e)
-        return {
-            "error": "Semantic search is not configured. OPENAI_API_KEY may be missing.",
-            "suggestion": "Use run_sql_query with ILIKE for text search instead.",
-        }
-    except Exception as e:
-        logger.error("[Tools._search_activities] Search failed: %s", str(e))
-        return {"error": f"Search failed: {str(e)}"}
+        except Exception as exc:
+            logger.warning(
+                "[Tools._openai_web_search_fallback] Model %s failed: %s",
+                model,
+                str(exc),
+            )
+            continue
+
+    logger.error("[Tools._openai_web_search_fallback] All fallback models failed")
+    return None
 
 
-async def _web_search(params: dict[str, Any]) -> dict[str, Any]:
-    """Search the web using Perplexity's Sonar API."""
-    query = params.get("query", "").strip()
-    
-    if not query:
-        return {"error": "No search query provided"}
-    
+async def _web_search_perplexity(params: dict[str, Any]) -> dict[str, Any]:
+    """Search the web using Perplexity Sonar; returns normalized shape."""
+    query: str = params.get("query", "").strip()
+    research_context = _format_contact_context_for_research(
+        params.get("contact_context") or params.get("context")
+    )
     if not settings.PERPLEXITY_API_KEY:
-        return {
-            "error": "We do not currently run external web interactions; coming soon!",
-            "suggestion": "Add PERPLEXITY_API_KEY to your environment variables to enable web search.",
+        fallback_only = await _openai_web_search_fallback(
+            query,
+            context_answer=None,
+            provider_context=research_context,
+        )
+        if fallback_only:
+            return {
+                "query": query,
+                "provider": "perplexity",
+                "answer": None,
+                "sources": [],
+                "results": [],
+                "openai_fallback": fallback_only,
+                "fallback_reason": "perplexity_not_configured",
+            }
+        return _web_search_normalized_error(
+            "We do not currently run external web interactions; coming soon!",
+            query,
+            "perplexity",
+        ) | {
+            "suggestion": "Add PERPLEXITY_API_KEY (or OPENAI_API_KEY for fallback research) to enable web search.",
         }
-    
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(
+            response: httpx.Response = await client.post(
                 "https://api.perplexity.ai/chat/completions",
                 headers={
                     "Authorization": f"Bearer {settings.PERPLEXITY_API_KEY}",
@@ -1220,38 +1629,145 @@ async def _web_search(params: dict[str, Any]) -> dict[str, Any]:
                         },
                         {
                             "role": "user",
-                            "content": query,
+                            "content": (
+                                f"Search query: {query}\n\n"
+                                f"Known contact/company context:\n{research_context or 'None provided'}"
+                            ),
                         },
                     ],
                 },
             )
-            
             if response.status_code != 200:
-                logger.error("[Tools._web_search] API error: %s %s", response.status_code, response.text)
-                return {"error": f"Search API error: {response.status_code}"}
-            
-            data = response.json()
+                logger.error(
+                    "[Tools._web_search_perplexity] API error: %s %s",
+                    response.status_code,
+                    response.text,
+                )
+                return _web_search_normalized_error(
+                    f"Search API error: {response.status_code}", query, "perplexity"
+                )
+            data: dict[str, Any] = response.json()
             content: str = data["choices"][0]["message"]["content"]
-            
-            # Extract citations if available
             citations: list[str] = data.get("citations", [])
-            
             result: dict[str, Any] = {
-                "answer": content,
                 "query": query,
+                "provider": "perplexity",
+                "answer": content,
+                "sources": citations,
+                "results": [],
             }
-            
-            if citations:
-                result["sources"] = citations
-            
+
+            fallback_reason = "always_openai_supplement"
+            logger.info(
+                "[Tools._web_search_perplexity] Running OpenAI supplemental pass (reason=%s)",
+                fallback_reason,
+            )
+            fallback_result = await _openai_web_search_fallback(
+                query,
+                context_answer=content,
+                provider_context=research_context,
+            )
+            if fallback_result:
+                result["openai_fallback"] = fallback_result
+                result["fallback_reason"] = fallback_reason
+            else:
+                logger.warning(
+                    "[Tools._web_search_perplexity] OpenAI supplemental pass returned no result (reason=%s)",
+                    fallback_reason,
+                )
+
             return result
-            
     except httpx.TimeoutException:
-        logger.error("[Tools._web_search] Request timed out")
-        return {"error": "Search request timed out. Try a simpler query."}
+        logger.error("[Tools._web_search_perplexity] Request timed out")
+        return _web_search_normalized_error(
+            "Search request timed out. Try a simpler query.", query, "perplexity"
+        )
     except Exception as e:
-        logger.error("[Tools._web_search] Search failed: %s", str(e))
-        return {"error": f"Search failed: {str(e)}"}
+        logger.error("[Tools._web_search_perplexity] Search failed: %s", str(e))
+        return _web_search_normalized_error(f"Search failed: {str(e)}", query, "perplexity")
+
+
+async def _web_search_exa(params: dict[str, Any]) -> dict[str, Any]:
+    """Search the web using Exa; returns normalized shape with per-result content."""
+    query: str = params.get("query", "").strip()
+    if not settings.EXA_API_KEY:
+        return _web_search_normalized_error(
+            "Exa search is not configured.",
+            query,
+            "exa",
+        ) | {
+            "suggestion": "Add EXA_API_KEY to your environment variables to use provider='exa'.",
+        }
+    num_results: int = int(params.get("num_results") or 10)
+    num_results = max(1, min(100, num_results))
+    try:
+        body: dict[str, Any] = {
+            "query": query,
+            "numResults": num_results,
+            "type": "auto",
+            "contents": {"highlights": {"maxCharacters": 2000}},
+        }
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response: httpx.Response = await client.post(
+                "https://api.exa.ai/search",
+                headers={
+                    "x-api-key": settings.EXA_API_KEY,
+                    "Content-Type": "application/json",
+                },
+                json=body,
+            )
+        if response.status_code != 200:
+            logger.error(
+                "[Tools._web_search_exa] API error: %s %s",
+                response.status_code,
+                response.text,
+            )
+            return _web_search_normalized_error(
+                f"Exa API error: {response.status_code}", query, "exa"
+            )
+        data = response.json()
+        exa_results: list[dict[str, Any]] = data.get("results", [])
+        results: list[dict[str, Any]] = []
+        sources: list[str] = []
+        for r in exa_results:
+            url: str = r.get("url", "")
+            if url:
+                sources.append(url)
+            highlights: list[str] = r.get("highlights") or []
+            content_val: str | None = "\n\n".join(highlights).strip() or None if highlights else None
+            if content_val is None and r.get("summary"):
+                content_val = r["summary"]
+            results.append({
+                "title": r.get("title") or "",
+                "url": url,
+                "content": content_val,
+            })
+        return {
+            "query": query,
+            "provider": "exa",
+            "answer": None,
+            "sources": sources,
+            "results": results,
+        }
+    except httpx.TimeoutException:
+        logger.error("[Tools._web_search_exa] Request timed out")
+        return _web_search_normalized_error(
+            "Exa search timed out. Try a simpler query.", query, "exa"
+        )
+    except Exception as e:
+        logger.error("[Tools._web_search_exa] Search failed: %s", str(e))
+        return _web_search_normalized_error(f"Search failed: {str(e)}", query, "exa")
+
+
+async def _web_search(params: dict[str, Any]) -> dict[str, Any]:
+    """Dispatch web search to the chosen provider; returns normalized shape."""
+    query: str = (params.get("query") or "").strip()
+    if not query:
+        return _web_search_normalized_error("No search query provided", "", "exa")
+    provider: str = (params.get("provider") or "exa").strip().lower()
+    if provider == "exa":
+        return await _web_search_exa(params)
+    return await _web_search_perplexity(params)
 
 
 async def _fetch_url(params: dict[str, Any]) -> dict[str, Any]:
@@ -1392,7 +1908,36 @@ def _truncate_result(url: str, content: str, *, mode: str, max_chars: int) -> di
     return result
 
 
-async def _crm_write(
+# =============================================================================
+# Generic System-of-Record Write Dispatcher
+# =============================================================================
+# All external writes route through write_to_system_of_record, which dispatches
+# to the correct handler based on target_system. Adding a new integration is just
+# adding a new entry in _WRITE_HANDLERS.
+
+# Handler type: (records, record_type, operation, org_id, user_id, skip_approval, conversation_id) -> result
+from typing import Callable, Awaitable as _Awaitable
+
+_WriteHandler = Callable[
+    [list[dict[str, Any]], str, str, str, str | None, bool, str | None],
+    _Awaitable[dict[str, Any]],
+]
+
+# CRM systems whose bulk writes go through the ChangeSession / pending-changes flow
+_CRM_SYSTEMS: frozenset[str] = frozenset({"hubspot", "salesforce"})
+
+# Writes touching this many records or fewer execute immediately.
+# Above this threshold, CRM writes go through the Pending Changes UI for review.
+_DIRECT_WRITE_THRESHOLD: int = 5
+
+# Systems that support the "issue" record type via tracker connectors
+_TRACKER_SYSTEMS: frozenset[str] = frozenset({"linear", "jira", "asana"})
+
+# Systems that support the "issue" record type via code-repo connectors
+_CODE_REPO_SYSTEMS: frozenset[str] = frozenset({"github", "gitlab"})
+
+
+async def _write_to_system_of_record(
     params: dict[str, Any],
     organization_id: str,
     user_id: str | None,
@@ -1400,11 +1945,403 @@ async def _crm_write(
     conversation_id: str | None = None,
 ) -> dict[str, Any]:
     """
-    Create or update CRM records with user approval workflow.
-    
-    This function validates input, checks for duplicates, and either:
-    - Creates a pending CrmOperation for user approval (default)
-    - Executes immediately if skip_approval is True (auto-approved user/workflow)
+    Universal write dispatcher for all external systems of record.
+
+    Routes to the correct handler based on target_system.
+    The record count determines the execution mode:
+      - ≤ _DIRECT_WRITE_THRESHOLD  →  execute immediately
+      - >  _DIRECT_WRITE_THRESHOLD →  pending changes UI for review
+    """
+    target_system: str = params.get("target_system", "").lower().strip()
+    record_type: str = params.get("record_type", "").lower().strip()
+    operation: str = params.get("operation", "create").lower().strip()
+    records: list[dict[str, Any]] | Any = params.get("records", [])
+
+    if not target_system:
+        return {"error": "target_system is required (e.g. 'hubspot', 'linear', 'github')."}
+    if not record_type:
+        return {"error": "record_type is required (e.g. 'contact', 'issue', 'deal')."}
+    if operation not in ("create", "update"):
+        return {"error": f"Invalid operation '{operation}'. Must be 'create' or 'update'."}
+    if not records or not isinstance(records, list):
+        return {"error": "records must be a non-empty array of objects."}
+
+    all_systems: frozenset[str] = _CRM_SYSTEMS | _TRACKER_SYSTEMS | _CODE_REPO_SYSTEMS
+    if target_system not in all_systems:
+        return {"error": f"Unsupported target_system '{target_system}'. Supported: {', '.join(sorted(all_systems))}"}
+
+    # Validate record_type for non-CRM systems
+    if target_system in (_TRACKER_SYSTEMS | _CODE_REPO_SYSTEMS) and record_type != "issue":
+        return {"error": f"Unsupported record_type '{record_type}' for {target_system}. Only 'issue' is supported."}
+
+    require_review: bool = bool(params.get("require_review", False))
+    direct_execute: bool = (
+        len(records) <= _DIRECT_WRITE_THRESHOLD
+        and not require_review
+    )
+
+    if direct_execute:
+        # ── Small write: execute immediately against external API ──
+        return await _execute_direct_write(
+            target_system, record_type, operation, records,
+            organization_id, user_id, skip_approval, conversation_id,
+        )
+    else:
+        # ── Large write or require_review: go through Pending Changes UI ──
+        if require_review and target_system not in _CRM_SYSTEMS:
+            return {"error": f"require_review is only supported for CRM systems, not '{target_system}'."}
+        return await _execute_pending_write(
+            target_system, record_type, operation, records,
+            organization_id, user_id, skip_approval, conversation_id,
+        )
+
+
+async def _execute_direct_write(
+    target_system: str,
+    record_type: str,
+    operation: str,
+    records: list[dict[str, Any]],
+    organization_id: str,
+    user_id: str | None,
+    skip_approval: bool = False,
+    conversation_id: str | None = None,
+) -> dict[str, Any]:
+    """Small write (≤ threshold): execute immediately against the external API."""
+
+    if target_system in _CRM_SYSTEMS:
+        crm_params: dict[str, Any] = {
+            "target_system": target_system,
+            "record_type": record_type,
+            "operation": operation,
+            "records": records,
+        }
+        return await _crm_write(
+            crm_params, organization_id, user_id, skip_approval,
+            conversation_id=conversation_id, direct_execute=True,
+        )
+
+    if target_system in _TRACKER_SYSTEMS:
+        return await _handle_tracker_write(target_system, operation, records, organization_id, user_id)
+
+    if target_system in _CODE_REPO_SYSTEMS:
+        return await _handle_code_repo_write(target_system, operation, records, organization_id)
+
+    return {"error": f"Direct write not supported for '{target_system}'."}
+
+
+async def _execute_pending_write(
+    target_system: str,
+    record_type: str,
+    operation: str,
+    records: list[dict[str, Any]],
+    organization_id: str,
+    user_id: str | None,
+    skip_approval: bool = False,
+    conversation_id: str | None = None,
+) -> dict[str, Any]:
+    """Large write (> threshold): route through Pending Changes UI for review."""
+
+    if target_system in _CRM_SYSTEMS:
+        crm_params: dict[str, Any] = {
+            "target_system": target_system,
+            "record_type": record_type,
+            "operation": operation,
+            "records": records,
+        }
+        return await _crm_write(
+            crm_params, organization_id, user_id, skip_approval,
+            conversation_id=conversation_id, direct_execute=False,
+        )
+
+    # Non-CRM bulk writes: pending changes not yet supported, execute immediately
+    # TODO: extend Pending Changes UI to support tracker / code-repo bulk writes
+    logger.warning(
+        "[Tools] Bulk write (%d records) to %s — pending changes not yet supported, executing directly",
+        len(records), target_system,
+    )
+    return await _execute_direct_write(
+        target_system, record_type, operation, records,
+        organization_id, user_id, skip_approval, conversation_id,
+    )
+
+
+async def _handle_tracker_write(
+    target_system: str,
+    operation: str,
+    records: list[dict[str, Any]],
+    organization_id: str,
+    user_id: str | None,
+) -> dict[str, Any]:
+    """Handle writes to issue tracker systems (Linear, Jira, Asana)."""
+    # Check for active integration
+    async with get_session(organization_id=organization_id) as session:
+        result = await session.execute(
+            select(Integration).where(
+                Integration.organization_id == UUID(organization_id),
+                Integration.provider == target_system,
+                Integration.is_active == True,
+            )
+        )
+        integration: Integration | None = result.scalar_one_or_none()
+        if not integration:
+            return {
+                "error": f"No active {target_system} integration found. Please connect {target_system} in Data Sources.",
+            }
+
+    if target_system == "linear":
+        return await _handle_linear_write(operation, records, organization_id)
+    # Future: elif target_system == "jira": ...
+    # Future: elif target_system == "asana": ...
+
+    return {"error": f"Issue tracker '{target_system}' is not yet implemented."}
+
+
+async def _handle_linear_write(
+    operation: str,
+    records: list[dict[str, Any]],
+    organization_id: str,
+) -> dict[str, Any]:
+    """Handle create/update for Linear issues. Each record is processed individually."""
+    from connectors.linear import LinearConnector
+
+    connector: LinearConnector = LinearConnector(organization_id=organization_id)
+    results: list[dict[str, Any]] = []
+    errors: list[str] = []
+
+    for i, record in enumerate(records):
+        try:
+            if operation == "create":
+                issue_result: dict[str, Any] = await _execute_linear_create(connector, record)
+            else:
+                issue_result = await _execute_linear_update(connector, record, organization_id)
+            results.append(issue_result)
+        except Exception as exc:
+            error_msg: str = f"Record {i + 1}: {exc}"
+            logger.error("[Tools._handle_linear_write] %s", error_msg)
+            errors.append(error_msg)
+
+    if errors and not results:
+        return {"status": "failed", "errors": errors}
+
+    summary_parts: list[str] = []
+    for r in results:
+        identifier: str = r.get("identifier", "?")
+        title: str = r.get("title", "")
+        summary_parts.append(f"{identifier}: {title}")
+
+    return {
+        "status": "completed",
+        "message": f"{'Created' if operation == 'create' else 'Updated'} {len(results)} Linear issue(s)",
+        "issues": results,
+        "errors": errors if errors else None,
+    }
+
+
+async def _execute_linear_create(
+    connector: "LinearConnector",  # type: ignore[name-defined]
+    record: dict[str, Any],
+) -> dict[str, Any]:
+    """Create a single Linear issue from a record dict."""
+    team_key: str = record.get("team_key", "").strip()
+    title: str = record.get("title", "").strip()
+    if not team_key:
+        raise ValueError("team_key is required (e.g. 'ENG')")
+    if not title:
+        raise ValueError("title is required")
+
+    team: dict[str, Any] | None = await connector.resolve_team_by_key(team_key)
+    if not team:
+        raise ValueError(f"Team with key '{team_key}' not found in Linear")
+
+    assignee_id: str | None = None
+    assignee_name: str | None = record.get("assignee_name")
+    if assignee_name:
+        user: dict[str, Any] | None = await connector.resolve_assignee_by_name(assignee_name)
+        if user:
+            assignee_id = user["id"]
+        else:
+            logger.warning("Could not resolve Linear user '%s'", assignee_name)
+
+    project_id: str | None = None
+    project_name: str | None = record.get("project_name")
+    if project_name:
+        project: dict[str, Any] | None = await connector.resolve_project_by_name(project_name)
+        if project:
+            project_id = project["id"]
+        else:
+            logger.warning("Could not resolve Linear project '%s'", project_name)
+
+    issue: dict[str, Any] = await connector.create_issue(
+        team_id=team["id"],
+        title=title,
+        description=record.get("description"),
+        priority=record.get("priority"),
+        assignee_id=assignee_id,
+        project_id=project_id,
+    )
+    return issue
+
+
+async def _execute_linear_update(
+    connector: "LinearConnector",  # type: ignore[name-defined]
+    record: dict[str, Any],
+    organization_id: str,
+) -> dict[str, Any]:
+    """Update a single Linear issue from a record dict."""
+    from models.tracker_issue import TrackerIssue
+
+    issue_identifier: str = record.get("issue_identifier", "").strip()
+    if not issue_identifier:
+        raise ValueError("issue_identifier is required (e.g. 'ENG-123')")
+
+    update_fields: list[str] = ["title", "description", "state_name", "priority", "assignee_name"]
+    has_update: bool = any(record.get(f) is not None for f in update_fields)
+    if not has_update:
+        raise ValueError("At least one field to update must be provided (title, description, state_name, priority, assignee_name)")
+
+    # Look up the Linear issue ID from synced data
+    org_uuid: UUID = UUID(organization_id)
+    linear_issue_id: str | None = None
+    linear_team_id: str | None = None
+
+    async with get_session(organization_id=organization_id) as session:
+        row_result = await session.execute(
+            select(TrackerIssue.source_id, TrackerTeam.source_id)
+            .join(TrackerTeam, TrackerIssue.team_id == TrackerTeam.id)
+            .where(
+                TrackerIssue.organization_id == org_uuid,
+                TrackerIssue.source_system == "linear",
+                TrackerIssue.identifier == issue_identifier,
+            )
+        )
+        row = row_result.first()
+        if row:
+            linear_issue_id = row[0]
+            linear_team_id = row[1]
+
+    if not linear_issue_id or not linear_team_id:
+        raise ValueError(f"Issue '{issue_identifier}' not found in synced data. Try running a sync first.")
+
+    # Resolve state name → state ID
+    state_id: str | None = None
+    state_name: str | None = record.get("state_name")
+    if state_name:
+        state: dict[str, Any] | None = await connector.resolve_state_by_name(linear_team_id, state_name)
+        if state:
+            state_id = state["id"]
+        else:
+            raise ValueError(f"Workflow state '{state_name}' not found for this team")
+
+    # Resolve assignee name → user ID
+    assignee_id: str | None = None
+    assignee_name: str | None = record.get("assignee_name")
+    if assignee_name:
+        user: dict[str, Any] | None = await connector.resolve_assignee_by_name(assignee_name)
+        if user:
+            assignee_id = user["id"]
+        else:
+            logger.warning("Could not resolve Linear user '%s'", assignee_name)
+
+    issue: dict[str, Any] = await connector.update_issue(
+        issue_id=linear_issue_id,
+        title=record.get("title"),
+        description=record.get("description"),
+        state_id=state_id,
+        priority=record.get("priority"),
+        assignee_id=assignee_id,
+    )
+    return issue
+
+
+async def _handle_code_repo_write(
+    target_system: str,
+    operation: str,
+    records: list[dict[str, Any]],
+    organization_id: str,
+) -> dict[str, Any]:
+    """Handle writes to code repository systems (GitHub, GitLab)."""
+    if operation != "create":
+        return {"error": f"Only 'create' operation is supported for {target_system} issues."}
+
+    # Check for active integration
+    async with get_session(organization_id=organization_id) as session:
+        result = await session.execute(
+            select(Integration).where(
+                Integration.organization_id == UUID(organization_id),
+                Integration.provider == target_system,
+                Integration.is_active == True,
+            )
+        )
+        integration: Integration | None = result.scalar_one_or_none()
+        if not integration:
+            return {
+                "error": f"No active {target_system} integration found. Please connect {target_system} in Data Sources.",
+            }
+
+    if target_system == "github":
+        return await _handle_github_write(records, organization_id)
+    # Future: elif target_system == "gitlab": ...
+
+    return {"error": f"Code repository '{target_system}' is not yet implemented."}
+
+
+async def _handle_github_write(
+    records: list[dict[str, Any]],
+    organization_id: str,
+) -> dict[str, Any]:
+    """Handle creating GitHub issues. Each record is processed individually."""
+    from connectors.github import GitHubConnector
+
+    connector: GitHubConnector = GitHubConnector(organization_id=organization_id)
+    results: list[dict[str, Any]] = []
+    errors: list[str] = []
+
+    for i, record in enumerate(records):
+        repo_full_name: str = record.get("repo_full_name", "").strip()
+        title: str = record.get("title", "").strip()
+
+        if not repo_full_name or "/" not in repo_full_name:
+            errors.append(f"Record {i + 1}: repo_full_name is required in 'owner/repo' format")
+            continue
+        if not title:
+            errors.append(f"Record {i + 1}: title is required")
+            continue
+
+        try:
+            issue: dict[str, Any] = await connector.create_issue(
+                repo_full_name=repo_full_name,
+                title=title,
+                body=record.get("body"),
+                labels=record.get("labels"),
+                assignees=record.get("assignees"),
+            )
+            results.append(issue)
+        except Exception as exc:
+            error_msg: str = f"Record {i + 1}: {exc}"
+            logger.error("[Tools._handle_github_write] %s", error_msg)
+            errors.append(error_msg)
+
+    if errors and not results:
+        return {"status": "failed", "errors": errors}
+
+    return {
+        "status": "completed",
+        "message": f"Created {len(results)} GitHub issue(s)",
+        "issues": results,
+        "errors": errors if errors else None,
+    }
+
+
+async def _crm_write(
+    params: dict[str, Any],
+    organization_id: str,
+    user_id: str | None,
+    skip_approval: bool = False,
+    conversation_id: str | None = None,
+    direct_execute: bool = False,
+) -> dict[str, Any]:
+    """
+    Create or update CRM records.
     
     Args:
         params: CRM operation parameters
@@ -1412,6 +2349,8 @@ async def _crm_write(
         user_id: User UUID
         skip_approval: If True, execute immediately without approval
         conversation_id: Conversation UUID for grouping into a ChangeSession
+        direct_execute: If True, write directly to the external CRM API
+            (skip ChangeSession / Pending Changes). Used for small writes.
     """
     target_system = params.get("target_system", "").lower()
     record_type = params.get("record_type", "").lower()
@@ -1542,7 +2481,38 @@ async def _crm_write(
     
     if not validated_records:
         return {"error": "No valid records after validation"}
-    
+
+    # ── Deduplicate within the batch (prevents AI from creating the same record twice) ──
+    if operation in ("create", "upsert") and not is_engagement:
+        _DEDUP_KEY_FIELD: dict[str, str] = {
+            "contact": "email",
+            "company": "domain",
+            "deal": "dealname",
+        }
+        dedup_field: str | None = _DEDUP_KEY_FIELD.get(record_type)
+        if dedup_field:
+            seen_keys: set[str] = set()
+            unique_records: list[dict[str, Any]] = []
+            dedup_dropped: int = 0
+            for rec in validated_records:
+                key_val: str = str(rec.get(dedup_field, "")).strip().lower()
+                if key_val and key_val in seen_keys:
+                    dedup_dropped += 1
+                    logger.info(
+                        "[Tools._crm_write] Dropping intra-batch duplicate %s=%r",
+                        dedup_field, rec.get(dedup_field),
+                    )
+                    continue
+                if key_val:
+                    seen_keys.add(key_val)
+                unique_records.append(rec)
+            if dedup_dropped:
+                logger.warning(
+                    "[Tools._crm_write] Removed %d intra-batch duplicate(s) by %s",
+                    dedup_dropped, dedup_field,
+                )
+            validated_records = unique_records
+
     # Check for duplicates in HubSpot (for create/upsert operations on CRM record types)
     # Engagements don't have duplicate detection
     # Only check first 10 records to avoid API rate limits and connection pool exhaustion
@@ -1631,11 +2601,39 @@ async def _crm_write(
         will_update = len(duplicate_warnings)
         will_create = len(validated_records) - will_update
     
-    # Local-first: Execute immediately, creates records locally with sync_status='pending'
-    # User can then use the bottom panel to "Commit All" to HubSpot or "Undo All" to discard
-    logger.info("[Tools._crm_write] Executing local-first CRM operation")
-    result = await execute_crm_operation(operation_id, skip_duplicates=True, organization_id=organization_id)
-    return result
+    if direct_execute:
+        # ── Small write: push directly to external CRM, no Pending Changes ──
+        logger.info("[Tools._crm_write] Direct-executing CRM operation (small write)")
+        async with get_session(organization_id=organization_id) as session:
+            crm_op = await session.get(CrmOperation, UUID(operation_id))
+            if not crm_op:
+                return {"status": "failed", "error": "CrmOperation not found after creation"}
+            crm_op.status = "executing"
+            await session.commit()
+
+            direct_result: dict[str, Any] = await _execute_hubspot_operation(
+                crm_op, skip_duplicates=True, user_id=user_id,
+            )
+
+            # Reload to update status
+            await session.refresh(crm_op)
+            if "error" in direct_result:
+                crm_op.status = "failed"
+                crm_op.error_message = direct_result.get("error")
+            else:
+                crm_op.status = "completed"
+                crm_op.success_count = direct_result.get("success_count", 0)
+                crm_op.failure_count = direct_result.get("failure_count", 0)
+                crm_op.result = direct_result
+            crm_op.executed_at = datetime.utcnow()
+            await session.commit()
+
+        return direct_result
+    else:
+        # ── Large write: local-first with Pending Changes review ──
+        logger.info("[Tools._crm_write] Executing local-first CRM operation (pending changes)")
+        result = await execute_crm_operation(operation_id, skip_duplicates=True, organization_id=organization_id)
+        return result
 
 
 async def execute_crm_operation(
@@ -2018,9 +3016,54 @@ async def _execute_hubspot_operation(
             "created": [],
         }
     
+    # ── Default hubspot_owner_id to the requesting user when creating ──
+    if crm_op.operation == "create" and user_id:
+        needs_owner: bool = any(
+            not record.get("hubspot_owner_id") for record in records_to_process
+        )
+        if needs_owner:
+            try:
+                from uuid import UUID as _UUID
+                hs_owner_id: str | None = await connector.map_user_to_hs_owner(_UUID(user_id))
+                if hs_owner_id:
+                    for record in records_to_process:
+                        if not record.get("hubspot_owner_id"):
+                            record["hubspot_owner_id"] = hs_owner_id
+                    logger.info(
+                        "[Tools._execute_hubspot_operation] Defaulted hubspot_owner_id=%s for %d record(s)",
+                        hs_owner_id, len(records_to_process),
+                    )
+            except Exception as owner_exc:
+                logger.warning(
+                    "[Tools._execute_hubspot_operation] Could not resolve owner for user %s: %s",
+                    user_id, owner_exc,
+                )
+
     # Determine if this is an engagement type
     _engagement_types: frozenset[str] = frozenset({"call", "email", "meeting", "note"})
     is_engagement: bool = crm_op.record_type in _engagement_types
+
+    # ── Deduplicate within the batch (safety net) ─────────────────────────
+    if crm_op.operation in ("create", "upsert") and not is_engagement:
+        _DEDUP_FIELD: dict[str, str] = {
+            "contact": "email", "company": "domain", "deal": "dealname",
+        }
+        dk: str | None = _DEDUP_FIELD.get(crm_op.record_type)
+        if dk:
+            _seen: set[str] = set()
+            _deduped: list[dict[str, Any]] = []
+            for _rec in records_to_process:
+                _kv: str = str(_rec.get(dk, "")).strip().lower()
+                if _kv and _kv in _seen:
+                    logger.info(
+                        "[Tools._execute_hubspot_operation] Dropping intra-batch dup %s=%r",
+                        dk, _rec.get(dk),
+                    )
+                    continue
+                if _kv:
+                    _seen.add(_kv)
+                _deduped.append(_rec)
+            records_to_process = _deduped
 
     # Execute based on record type and operation
     created: list[dict[str, Any]] = []
@@ -2579,6 +3622,32 @@ async def commit_change_session(
             elif snapshot.table_name == "deals":
                 deals_to_update.append((record_id, hs_props, source_data))
 
+    # ── 2b. Deduplicate create lists (same key → keep first occurrence) ────
+    def _dedup_creates(
+        items: list[tuple[UUID, dict[str, Any]]], key_field: str,
+    ) -> list[tuple[UUID, dict[str, Any]]]:
+        seen: set[str] = set()
+        result: list[tuple[UUID, dict[str, Any]]] = []
+        for local_id, props in items:
+            kv: str = str(props.get(key_field, "")).strip().lower()
+            if kv and kv in seen:
+                _log.info("[commit:dedup] Dropping duplicate %s=%r (id=%s)", key_field, props.get(key_field), local_id)
+                continue
+            if kv:
+                seen.add(kv)
+            result.append((local_id, props))
+        return result
+
+    pre_dedup_deals: int = len(deals_to_create)
+    contacts_to_create = _dedup_creates(contacts_to_create, "email")
+    accounts_to_create = _dedup_creates(accounts_to_create, "name")
+    deals_to_create = _dedup_creates(deals_to_create, "dealname")
+    if len(deals_to_create) < pre_dedup_deals:
+        _log.warning(
+            "[commit] Removed %d duplicate deal snapshot(s) before HubSpot push",
+            pre_dedup_deals - len(deals_to_create),
+        )
+
     total_creates: int = len(contacts_to_create) + len(accounts_to_create) + len(deals_to_create) + len(engagements_to_create)
     total_updates: int = len(contacts_to_update) + len(accounts_to_update) + len(deals_to_update)
     total_records: int = total_creates + total_updates
@@ -3064,58 +4133,16 @@ async def get_crm_operation_status(operation_id: str, organization_id: str | Non
         return {"error": str(e)}
 
 
-async def _trigger_workflow(
+
+
+async def _enrich_with_apollo(
     params: dict[str, Any], organization_id: str
 ) -> dict[str, Any]:
-    """
-    Manually trigger a workflow execution.
-    
-    Args:
-        params: Contains workflow_id
-        organization_id: Organization UUID
-        
-    Returns:
-        Task ID and status
-    """
-    from models.workflow import Workflow
-    
-    workflow_id = params.get("workflow_id", "").strip()
-    
-    if not workflow_id:
-        return {"error": "workflow_id is required"}
-    
-    try:
-        # Verify workflow exists and belongs to org
-        async with get_session(organization_id=organization_id) as session:
-            result = await session.execute(
-                select(Workflow).where(
-                    Workflow.id == UUID(workflow_id),
-                    Workflow.organization_id == UUID(organization_id),
-                )
-            )
-            workflow = result.scalar_one_or_none()
-            
-            if not workflow:
-                return {"error": f"Workflow {workflow_id} not found"}
-            
-            if not workflow.is_enabled:
-                return {"error": "Workflow is disabled. Enable it first in the Automations tab."}
-        
-        # Queue execution via Celery
-        from workers.tasks.workflows import execute_workflow
-        task = execute_workflow.delay(workflow_id, "manual", None, None, organization_id)
-        
-        return {
-            "success": True,
-            "task_id": task.id,
-            "workflow_id": workflow_id,
-            "workflow_name": workflow.name,
-            "message": f"Workflow '{workflow.name}' triggered. Check the Automations tab for results.",
-        }
-        
-    except Exception as e:
-        logger.error("[Tools._trigger_workflow] Failed: %s", str(e))
-        return {"error": f"Failed to trigger workflow: {str(e)}"}
+    """Unified Apollo enrichment dispatcher."""
+    enrich_type: str = params.get("type", "contacts")
+    if enrich_type == "company":
+        return await _enrich_company_with_apollo(params, organization_id)
+    return await _enrich_contacts_with_apollo(params, organization_id)
 
 
 async def _enrich_contacts_with_apollo(
@@ -3176,13 +4203,47 @@ async def _enrich_contacts_with_apollo(
 
         for i, person in enumerate(contacts):
             original: dict[str, Any] = person if isinstance(person, dict) else {}
+
+            # Build best-effort Apollo identifiers from all known contact context.
+            full_name = str(original.get("name") or "").strip()
+            name_parts = [part for part in full_name.split() if part]
+            first_name = (original.get("first_name") or (name_parts[0] if name_parts else None))
+            last_name = (original.get("last_name") or (" ".join(name_parts[1:]) if len(name_parts) > 1 else None))
+            email = original.get("email")
+            domain = (
+                original.get("domain")
+                or original.get("company_domain")
+                or original.get("website_domain")
+            )
+            linkedin_url = original.get("linkedin_url") or original.get("linkedin")
+            organization_name = (
+                original.get("organization_name")
+                or original.get("company")
+                or original.get("current_company")
+                or original.get("former_company")
+            )
+
+            logger.info(
+                "[Tools._enrich_contacts_with_apollo] Contact %d/%d context: email=%s phone=%s first_name=%s last_name=%s org=%s domain=%s linkedin=%s former_company=%s",
+                i + 1,
+                len(contacts),
+                email,
+                original.get("phone") or original.get("phone_number"),
+                first_name,
+                last_name,
+                organization_name,
+                domain,
+                linkedin_url,
+                original.get("former_company"),
+            )
+
             enrichment: dict[str, Any] | None = await connector.enrich_person(
-                email=original.get("email"),
-                first_name=original.get("first_name"),
-                last_name=original.get("last_name"),
-                domain=original.get("domain"),
-                linkedin_url=original.get("linkedin_url"),
-                organization_name=original.get("organization_name"),
+                email=email,
+                first_name=first_name,
+                last_name=last_name,
+                domain=domain,
+                linkedin_url=linkedin_url,
+                organization_name=organization_name,
                 reveal_personal_emails=reveal_personal_emails,
                 reveal_phone_number=reveal_phone_numbers,
             )
@@ -3617,124 +4678,43 @@ async def execute_send_slack(
 
 
 
-async def _github_issues_access(
-    params: dict[str, Any], organization_id: str, user_id: str | None, skip_approval: bool = False
+async def _send_sms(
+    params: dict[str, Any],
+    organization_id: str,
+    user_id: str | None,
 ) -> dict[str, Any]:
-    """
-    Create a GitHub issue in a repository.
+    """Send an SMS text message via Twilio."""
+    from services.sms import send_sms
 
-    Requires approval by default unless auto-approved.
-    """
-    repo_full_name = params.get("repo_full_name", "").strip()
-    title = params.get("title", "").strip()
-    body = params.get("body")
-    labels = params.get("labels")
-    assignees = params.get("assignees")
+    to: str = params.get("to", "").strip()
+    body: str = params.get("body", "").strip()
 
-    if not repo_full_name:
-        return {"error": "repo_full_name is required (owner/repo)."}
-    if "/" not in repo_full_name:
-        return {"error": "repo_full_name must be in 'owner/repo' format."}
-    if not title:
-        return {"error": "Issue title is required."}
+    if not to:
+        return {"error": "to is required (E.164 phone number, e.g. +14155551234)."}
+    if not body:
+        return {"error": "body is required."}
 
-    # Validate optional fields early so approval preview is trustworthy
-    if labels is not None and not isinstance(labels, list):
-        return {"error": "labels must be an array of strings."}
-    if assignees is not None and not isinstance(assignees, list):
-        return {"error": "assignees must be an array of GitHub usernames."}
+    # Normalise bare US 10-digit numbers
+    import re as _re
 
-    async with get_session(organization_id=organization_id) as session:
-        result = await session.execute(
-            select(Integration).where(
-                Integration.organization_id == UUID(organization_id),
-                Integration.provider == "github",
-                Integration.is_active == True,
-            )
-        )
-        integration = result.scalar_one_or_none()
+    digits_only: str = _re.sub(r"[^\d]", "", to)
+    if not to.startswith("+"):
+        if len(digits_only) == 10:
+            digits_only = f"1{digits_only}"
+        to = f"+{digits_only}"
 
-        if not integration:
-            return {
-                "error": "No active GitHub integration found. Please connect GitHub in Data Sources.",
-                "suggestion": "Go to Data Sources and connect GitHub before filing issues.",
-            }
+    if len(digits_only) < 7 or len(digits_only) > 15:
+        return {"error": f"Invalid phone number '{to}'. Expected E.164 format, e.g. +14155551234."}
 
-    if skip_approval:
-        logger.info("[Tools._github_issues_access] Auto-approved, creating issue immediately")
-        return await execute_github_issues_access(params, organization_id)
+    result: dict[str, str | bool] = await send_sms(to=to, body=body)
 
-    operation_id = str(uuid4())
-    store_pending_operation(
-        operation_id=operation_id,
-        tool_name="github_issues_access",
-        params=params,
-        organization_id=organization_id,
-        user_id=user_id or "",
-    )
-
-    return {
-        "type": "pending_approval",
-        "status": "pending_approval",
-        "operation_id": operation_id,
-        "tool_name": "github_issues_access",
-        "preview": {
-            "repo_full_name": repo_full_name,
-            "title": title,
-            "body": (body[:500] + "...") if isinstance(body, str) and len(body) > 500 else body,
-            "labels": labels or [],
-            "assignees": assignees or [],
-        },
-        "message": f"Ready to create GitHub issue in {repo_full_name}. Please review and click Approve to create it.",
-    }
-
-
-async def execute_github_issues_access(
-    params: dict[str, Any], organization_id: str
-) -> dict[str, Any]:
-    """Actually create a GitHub issue (called after user approval)."""
-    from connectors.github import GitHubConnector
-
-    repo_full_name = params.get("repo_full_name", "").strip()
-    title = params.get("title", "").strip()
-    body = params.get("body")
-    labels = params.get("labels")
-    assignees = params.get("assignees")
-
-    if not repo_full_name or not title:
+    if result.get("success"):
         return {
-            "status": "failed",
-            "error": "repo_full_name and title are required.",
+            "status": "sent",
+            "to": to,
+            "message_sid": result.get("message_sid"),
         }
-
-    try:
-        connector = GitHubConnector(organization_id=organization_id)
-        issue = await connector.create_issue(
-            repo_full_name=repo_full_name,
-            title=title,
-            body=body,
-            labels=labels,
-            assignees=assignees,
-        )
-        logger.info("[Tools] Created GitHub issue %s in %s", issue.get("number"), repo_full_name)
-        return {
-            "status": "completed",
-            "message": f"Created GitHub issue #{issue.get('number')} in {repo_full_name}",
-            "issue": issue,
-        }
-    except httpx.HTTPStatusError as e:
-        logger.error("[Tools.execute_github_issues_access] GitHub API failed: %s", str(e))
-        detail = e.response.text[:500] if e.response is not None else str(e)
-        return {
-            "status": "failed",
-            "error": f"GitHub API error: {detail}",
-        }
-    except Exception as e:
-        logger.error("[Tools.execute_github_issues_access] Failed: %s", str(e))
-        return {
-            "status": "failed",
-            "error": str(e),
-        }
+    return {"error": result.get("error", "Failed to send SMS.")}
 
 
 async def _trigger_sync(
@@ -3774,6 +4754,16 @@ async def _trigger_sync(
                 "suggestion": f"Go to Data Sources and connect {provider}.",
             }
     
+    dp_ctx = ConnectorContext(
+        organization_id=organization_id,
+        user_id=None,
+        provider=provider,
+        operation="sync",
+    )
+    dp_result = await check_connector_call(dp_ctx, {"provider": provider})
+    if not dp_result.allowed:
+        return {"error": dp_result.deny_reason or "Connector sync not allowed"}
+
     try:
         # Queue sync via Celery
         from workers.tasks.sync import sync_integration
@@ -3798,11 +4788,41 @@ async def _trigger_sync(
 # Maximum depth for nested workflow calls to prevent infinite recursion
 MAX_WORKFLOW_CALL_DEPTH: int = 5
 
-# Maximum items that can be processed in loop_over
+# Maximum number of workflows a workflow execution tree may create.
+MAX_CREATED_CHILD_WORKFLOWS: int = 5
+
+# Maximum items for foreach workflow path
 MAX_LOOP_ITEMS: int = 500
 
-# Maximum concurrent workflow executions in loop_over
+# Maximum concurrent workflow executions for foreach workflow path
 MAX_CONCURRENT_WORKFLOWS: int = 10
+
+
+def _workflow_child_creation_limit_error(
+    context: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Return an error when a workflow execution has created too many child workflows."""
+    if not context or not context.get("is_workflow"):
+        return None
+
+    created_count = int(context.get("created_workflow_count", 0))
+    if created_count < MAX_CREATED_CHILD_WORKFLOWS:
+        return None
+
+    workflow_id = context.get("workflow_id")
+    logger.warning(
+        "[Tools._run_sql_write] Blocked workflow child creation limit: workflow_id=%s created=%d limit=%d",
+        workflow_id,
+        created_count,
+        MAX_CREATED_CHILD_WORKFLOWS,
+    )
+    return {
+        "error": (
+            "Workflow child-creation limit reached. "
+            f"A workflow execution can create at most {MAX_CREATED_CHILD_WORKFLOWS} child workflows."
+        ),
+        "status": "rejected",
+    }
 
 
 async def _run_workflow(
@@ -3945,203 +4965,6 @@ async def _run_workflow(
         return {"error": f"Failed to run workflow: {str(e)}", "status": "failed"}
 
 
-async def _loop_over(
-    params: dict[str, Any],
-    organization_id: str,
-    user_id: str | None,
-    context: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """
-    Execute a workflow for each item in a list.
-    
-    This is the "map" operation for workflows - process a batch of items
-    by running a workflow for each one.
-    
-    Args:
-        params: Contains items, workflow_id, max_concurrent, max_items, continue_on_error
-        organization_id: Organization UUID
-        user_id: User UUID
-        context: Workflow context for recursion detection
-        
-    Returns:
-        Summary of results and failures
-    """
-    import asyncio
-    from models.workflow import Workflow
-    
-    items: list[dict[str, Any]] = params.get("items", [])
-    workflow_id: str = params.get("workflow_id", "").strip()
-    max_concurrent: int = min(params.get("max_concurrent", 3), MAX_CONCURRENT_WORKFLOWS)
-    max_items: int = min(params.get("max_items", 100), MAX_LOOP_ITEMS)
-    continue_on_error: bool = params.get("continue_on_error", True)
-    
-    if not workflow_id:
-        return {"error": "workflow_id is required"}
-    
-    if not items:
-        return {"error": "items array is required and cannot be empty"}
-    
-    if not isinstance(items, list):
-        return {"error": "items must be an array"}
-    
-    # Apply item limit
-    original_count: int = len(items)
-    items = items[:max_items]
-    truncated: bool = original_count > max_items
-    
-    # Verify workflow exists
-    async with get_session(organization_id=organization_id) as session:
-        result = await session.execute(
-            select(Workflow).where(
-                Workflow.id == UUID(workflow_id),
-                Workflow.organization_id == UUID(organization_id),
-            )
-        )
-        workflow = result.scalar_one_or_none()
-        
-        if not workflow:
-            return {"error": f"Workflow {workflow_id} not found"}
-        
-        if not workflow.is_enabled:
-            return {"error": f"Workflow '{workflow.name}' is disabled."}
-        
-        workflow_name: str = workflow.name
-    
-    # === Execute workflow for each item ===
-    results: list[dict[str, Any]] = []
-    failures: list[dict[str, Any]] = []
-    semaphore = asyncio.Semaphore(max_concurrent)
-    completed_count = 0
-    
-    # Centralized progress updater
-    progress = ToolProgressUpdater(context, organization_id)
-    conversation_id = progress.conversation_id  # Keep for parent context linking
-    
-    logger.info(
-        "[Tools._loop_over] Progress context: can_update=%s",
-        progress.can_update,
-    )
-    
-    async def send_progress() -> None:
-        """Send loop progress update."""
-        await progress.update({
-            "completed": completed_count,
-            "total": len(items),
-            "workflow_name": workflow_name,
-            "succeeded": len(results),
-            "failed": len(failures),
-        })
-        logger.info("[Tools._loop_over] Updating progress: %d/%d", completed_count, len(items))
-    
-    # Send initial progress update (0 completed)
-    await send_progress()
-    
-    async def process_item(index: int, item: dict[str, Any]) -> dict[str, Any]:
-        """Process a single item through the workflow."""
-        nonlocal completed_count
-        
-        async with semaphore:
-            try:
-                # Run workflow with item directly as input_data (not wrapped)
-                # The item IS the input, plus we add _loop_context for metadata
-                input_data: dict[str, Any] = {
-                    **item,  # Spread the item properties at root level
-                    "_loop_context": {
-                        "index": index,
-                        "total": len(items),
-                    },
-                }
-                
-                # Also pass parent_conversation_id so child can link back
-                if conversation_id:
-                    input_data["_parent_context"] = input_data.get("_parent_context", {})
-                    input_data["_parent_context"]["parent_conversation_id"] = conversation_id
-                
-                result = await _run_workflow(
-                    params={
-                        "workflow_id": workflow_id,
-                        "input_data": input_data,
-                        "wait_for_completion": True,
-                    },
-                    organization_id=organization_id,
-                    user_id=user_id,
-                    context=context,
-                )
-                
-                return {
-                    "index": index,
-                    "item": item,
-                    "result": result,
-                    "success": result.get("status") == "completed",
-                }
-                
-            except Exception as e:
-                logger.error(f"[Tools._loop_over] Item {index} failed: {str(e)}")
-                return {
-                    "index": index,
-                    "item": item,
-                    "result": {"error": str(e)},
-                    "success": False,
-                }
-            finally:
-                # Update progress after each item (success or failure)
-                completed_count += 1
-                await send_progress()
-    
-    # Create tasks for all items
-    tasks: list[asyncio.Task[dict[str, Any]]] = [
-        asyncio.create_task(process_item(i, item))
-        for i, item in enumerate(items)
-    ]
-    
-    # Process with or without early termination
-    if continue_on_error:
-        # Wait for all tasks
-        item_results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        for item_result in item_results:
-            if isinstance(item_result, Exception):
-                failures.append({"error": str(item_result)})
-            elif item_result.get("success"):
-                results.append(item_result)
-            else:
-                failures.append(item_result)
-    else:
-        # Stop on first error
-        for task in asyncio.as_completed(tasks):
-            item_result = await task
-            
-            if not item_result.get("success"):
-                failures.append(item_result)
-                # Cancel remaining tasks
-                for t in tasks:
-                    if not t.done():
-                        t.cancel()
-                break
-            
-            results.append(item_result)
-    
-    succeeded: int = len(results)
-    failed: int = len(failures)
-    
-    return {
-        "status": "completed" if failed == 0 else ("partial" if succeeded > 0 else "failed"),
-        "workflow_id": workflow_id,
-        "workflow_name": workflow_name,
-        "total": len(items),
-        "succeeded": succeeded,
-        "failed": failed,
-        "truncated": truncated,
-        "original_count": original_count if truncated else None,
-        "results": results,
-        "failures": failures[:10],  # Limit failure details to first 10
-        "message": (
-            f"Processed {len(items)} items: {succeeded} succeeded, {failed} failed."
-            + (f" (Truncated from {original_count} items)" if truncated else "")
-        ),
-    }
-
-
 # =============================================================================
 # Artifact Creation Tool
 # =============================================================================
@@ -4238,12 +5061,14 @@ async def _create_artifact(
     })
     
     # Create artifact in database
-    artifact_id: str = str(uuid4())
-    
+    artifact_uuid: UUID = uuid4()
+    artifact_id_str: str = str(artifact_uuid)
+    user_uuid: UUID | None = UUID(user_id) if user_id else None
+
     async with get_session(organization_id=organization_id) as session:
         artifact = Artifact(
-            id=artifact_id,
-            user_id=user_id,
+            id=artifact_uuid,
+            user_id=user_uuid,
             organization_id=organization_id,
             type="file",  # Use 'file' type to distinguish from dashboards/reports
             title=title,
@@ -4259,7 +5084,7 @@ async def _create_artifact(
         
         logger.info(
             "[Tools._create_artifact] Created artifact: id=%s, type=%s, title=%s",
-            artifact_id,
+            artifact_id_str,
             content_type,
             title,
         )
@@ -4278,15 +5103,148 @@ async def _create_artifact(
     # Use camelCase for frontend compatibility
     return {
         "status": "success",
-        "artifact_id": artifact_id,
+        "artifact_id": artifact_id_str,
         "artifact": {
-            "id": artifact_id,
+            "id": artifact_id_str,
             "title": title,
             "filename": filename,
             "contentType": content_type,  # camelCase for frontend
             "mimeType": CONTENT_TYPE_TO_MIME.get(content_type, "application/octet-stream"),  # camelCase
         },
         "message": f"Created {content_type} artifact: {title}",
+    }
+
+
+# =============================================================================
+# Penny Apps (interactive mini-apps)
+# =============================================================================
+
+
+async def _create_app(
+    params: dict[str, Any],
+    organization_id: str,
+    user_id: str | None,
+    context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """
+    Create an interactive mini-app (React + server-side SQL).
+
+    Validates queries, test-executes them, and stores as an Artifact
+    with type='app' and config={queries, frontend_code}.
+    """
+    title: str = params.get("title", "Untitled App")
+    description: str = params.get("description", "")
+    queries: dict[str, Any] = params.get("queries", {})
+    frontend_code: str = params.get("frontend_code", "")
+
+    # Validate inputs
+    if not queries:
+        return {"error": "At least one query is required in the 'queries' object"}
+    if not frontend_code.strip():
+        return {"error": "frontend_code cannot be empty"}
+
+    # Validate each query: must be SELECT-only
+    select_re = re.compile(r"^\s*SELECT\b", re.IGNORECASE)
+    dangerous_re = re.compile(
+        r"\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE|GRANT|REVOKE)\b",
+        re.IGNORECASE,
+    )
+
+    for qname, qspec in queries.items():
+        sql: str = qspec.get("sql", "")
+        if not sql.strip():
+            return {"error": f"Query '{qname}' has empty SQL"}
+        if not select_re.match(sql):
+            return {"error": f"Query '{qname}' must be a SELECT statement"}
+        if dangerous_re.search(sql):
+            return {"error": f"Query '{qname}' contains disallowed SQL keywords"}
+
+    # Test-execute each query with empty/default params to catch syntax errors
+    errors: list[str] = []
+    async with get_session(organization_id=organization_id) as session:
+        for qname, qspec in queries.items():
+            sql = qspec.get("sql", "")
+            param_defs: dict[str, Any] = qspec.get("params", {})
+
+            # Build dummy params for test execution
+            test_params: dict[str, Any] = {}
+            for pname, pdef in param_defs.items():
+                ptype: str = pdef.get("type", "string")
+                if ptype == "date":
+                    test_params[pname] = "2020-01-01"
+                elif ptype == "integer":
+                    test_params[pname] = 0
+                elif ptype == "number":
+                    test_params[pname] = 0.0
+                else:
+                    test_params[pname] = ""
+
+            # Wrap with LIMIT 0 to avoid returning data during validation
+            test_sql: str = f"SELECT * FROM ({sql.rstrip().rstrip(';')}) AS _test LIMIT 0"
+            try:
+                await session.execute(text(test_sql), test_params)
+            except Exception as exc:
+                errors.append(f"Query '{qname}': {exc}")
+
+    if errors:
+        return {"error": "SQL validation failed:\n" + "\n".join(errors)}
+
+    message_id: str | None = context.get("message_id") if context else None
+    conversation_id: str | None = (context or {}).get("conversation_id")
+
+    # Resolve user_id: required for apps table (NOT NULL). Use context or conversation owner.
+    user_uuid: UUID | None = UUID(user_id) if user_id else None
+    if not user_uuid and conversation_id:
+        async with get_session(organization_id=organization_id) as session:
+            row = await session.execute(
+                select(Conversation.user_id).where(
+                    Conversation.id == UUID(conversation_id),
+                )
+            )
+            conv_user_id: UUID | None = row.scalar_one_or_none()
+            if conv_user_id is not None:
+                user_uuid = conv_user_id
+    if not user_uuid:
+        return {
+            "error": "App creation requires a user context. This can happen in some automated flows; try creating the app from a normal chat message.",
+        }
+
+    app_uuid: UUID = uuid4()
+    app_id_str: str = str(app_uuid)
+    org_uuid: UUID = UUID(organization_id) if isinstance(organization_id, str) else organization_id
+
+    async with get_session(organization_id=organization_id) as session:
+        app = App(
+            id=app_uuid,
+            user_id=user_uuid,
+            organization_id=org_uuid,
+            title=title,
+            description=description,
+            queries=queries,
+            frontend_code=frontend_code,
+            conversation_id=UUID(conversation_id) if conversation_id else None,
+            message_id=message_id,
+        )
+        session.add(app)
+        await session.commit()
+
+        logger.info(
+            "[Tools._create_app] Created app: id=%s, title=%s, queries=%s",
+            app_id_str,
+            title,
+            list(queries.keys()),
+        )
+
+    return {
+        "status": "success",
+        "app_id": app_id_str,
+        "app": {
+            "id": app_id_str,
+            "title": title,
+            "description": description,
+            "frontendCode": frontend_code,
+        },
+        "message": f"Created interactive app: {title}",
     }
 
 
@@ -4398,7 +5356,7 @@ async def _read_cloud_file(
                     )
                 )
             )
-            file_record: SharedFile | None = result.scalar_one_or_none()
+            file_record: SharedFile | None = result.scalars().first()
 
         if not file_record:
             return {"error": f"File not found in synced metadata: {external_id}"}
@@ -4422,9 +5380,195 @@ async def _read_cloud_file(
         return {"error": f"Failed to read cloud file: {str(e)}"}
 
 
+async def _create_cloud_file(
+    params: dict[str, Any],
+    organization_id: str,
+    user_id: str | None,
+    skip_approval: bool = False,
+) -> dict[str, Any]:
+    """
+    Create a new Google Workspace file (Doc, Sheet, or Slides) in the user's Drive.
+
+    Routes to GoogleDriveConnector.create_file() for the actual API calls.
+    """
+    file_type: str = params.get("file_type", "").strip()
+    title: str = params.get("title", "").strip()
+    content: Any = params.get("content")
+    folder_id: str | None = params.get("folder_id")
+
+    if not file_type:
+        return {"error": "file_type is required (document, spreadsheet, or presentation)."}
+    if not title:
+        return {"error": "title is required."}
+    if not user_id:
+        return {"error": "Google Drive file creation requires an authenticated user."}
+
+    if not skip_approval:
+        operation_id: str = str(uuid4())
+        store_pending_operation(
+            operation_id=operation_id,
+            tool_name="create_cloud_file",
+            params=params,
+            organization_id=organization_id,
+            user_id=user_id,
+        )
+        return {
+            "type": "pending_approval",
+            "status": "pending_approval",
+            "operation_id": operation_id,
+            "tool_name": "create_cloud_file",
+            "preview": {
+                "file_type": file_type,
+                "title": title,
+                "folder_id": folder_id,
+            },
+            "message": f"Ready to create a Google {file_type} titled \"{title}\". Please approve to proceed.",
+        }
+
+    return await execute_create_cloud_file(params, organization_id, user_id)
+
+
+async def execute_create_cloud_file(
+    params: dict[str, Any],
+    organization_id: str,
+    user_id: str,
+) -> dict[str, Any]:
+    """Execute the actual Google Drive file creation (called after approval)."""
+    file_type: str = params.get("file_type", "").strip()
+    title: str = params.get("title", "").strip()
+    content: Any = params.get("content")
+    folder_id: str | None = params.get("folder_id")
+
+    try:
+        from connectors.google_drive import GoogleDriveConnector
+
+        connector = GoogleDriveConnector(organization_id, user_id)
+        result: dict[str, Any] = await connector.create_file(
+            file_type=file_type,
+            title=title,
+            content=content,
+            folder_id=folder_id,
+        )
+        return result
+    except ValueError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        logger.error("[Tools._create_cloud_file] Failed: %s", e)
+        return {"error": f"Failed to create cloud file: {str(e)}"}
+
+
 # =============================================================================
 # User Memory Tools
 # =============================================================================
+
+
+async def _keep_notes(
+    params: dict[str, Any],
+    organization_id: str,
+    user_id: str | None,
+    context: dict[str, Any] | None,
+    skip_approval: bool = False,
+) -> dict[str, Any]:
+    """Save a workflow-scoped note that can be reused in future runs."""
+    content: str = params.get("content", "").strip()
+    if not content:
+        return {"error": "content is required."}
+
+    workflow_id: str | None = (context or {}).get("workflow_id")
+    run_id: str | None = (context or {}).get("workflow_run_id")
+    if not workflow_id or not run_id:
+        return {"error": "keep_notes can only be used in a workflow run."}
+
+    if skip_approval:
+        logger.info("[Tools._keep_notes] Auto-approved, saving note immediately")
+        return await execute_keep_notes(params, organization_id, user_id, workflow_id, run_id)
+
+    operation_id = str(uuid4())
+    pending_params = dict(params)
+    pending_params["workflow_id"] = workflow_id
+    pending_params["run_id"] = run_id
+    store_pending_operation(
+        operation_id=operation_id,
+        tool_name="keep_notes",
+        params=pending_params,
+        organization_id=organization_id,
+        user_id=user_id,
+    )
+
+    return {
+        "type": "pending_approval",
+        "status": "pending_approval",
+        "operation_id": operation_id,
+        "tool_name": "keep_notes",
+        "preview": {
+            "content": content[:500] + ("..." if len(content) > 500 else ""),
+        },
+        "message": "Ready to keep workflow notes. Please review and click Approve to persist them.",
+    }
+
+
+async def execute_keep_notes(
+    params: dict[str, Any],
+    organization_id: str,
+    user_id: str | None,
+    workflow_id: str,
+    run_id: str | None = None,
+) -> dict[str, Any]:
+    """Persist a workflow-scoped note onto the active workflow run."""
+    content: str = params.get("content", "").strip()
+    if not content:
+        return {"status": "failed", "error": "content is required."}
+
+    from datetime import datetime, timezone
+    from sqlalchemy import and_
+    from models.workflow import WorkflowRun
+
+    if not run_id:
+        return {"status": "failed", "error": "run_id is required for keep_notes."}
+
+    async with get_session(organization_id=organization_id) as session:
+        result = await session.execute(
+            select(WorkflowRun).where(
+                and_(
+                    WorkflowRun.id == UUID(run_id),
+                    WorkflowRun.organization_id == UUID(organization_id),
+                    WorkflowRun.workflow_id == UUID(workflow_id),
+                )
+            )
+        )
+        run: WorkflowRun | None = result.scalar_one_or_none()
+        if not run:
+            logger.warning(
+                "[Tools.execute_keep_notes] Workflow run not found: run_id=%s workflow_id=%s",
+                run_id,
+                workflow_id,
+            )
+            return {"status": "failed", "error": "Workflow run not found for keep_notes."}
+
+        notes = list(run.workflow_notes or [])
+        notes.append(
+            {
+                "content": content,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "created_by_user_id": user_id,
+            }
+        )
+        run.workflow_notes = notes
+        await session.commit()
+
+    return {"note_id": f"{run_id}:{len(notes) - 1}", "content": content, "status": "saved"}
+
+
+async def _manage_memory(
+    params: dict[str, Any], organization_id: str, user_id: str | None, skip_approval: bool = False
+) -> dict[str, Any]:
+    """Unified memory dispatcher: save, update, or delete."""
+    action: str = params.get("action", "save")
+    if action == "delete":
+        return await _delete_memory(params, organization_id, user_id)
+    if action == "update":
+        return await _update_memory(params, organization_id, user_id)
+    return await _save_memory(params, organization_id, user_id, skip_approval)
 
 
 async def _save_memory(
@@ -4433,12 +5577,16 @@ async def _save_memory(
     user_id: str | None,
     skip_approval: bool = False,
 ) -> dict[str, Any]:
-    """Save a persistent memory for the current user."""
+    """Save a persistent memory at the user, organization, or job level."""
     content: str = params.get("content", "").strip()
     if not content:
         return {"error": "content is required."}
     if not user_id:
         return {"error": "Cannot save memory without a user context."}
+
+    entity_type: str = params.get("entity_type", "user").strip()
+    if entity_type not in ("user", "organization", "organization_member"):
+        return {"error": f"Invalid entity_type '{entity_type}'. Must be 'user', 'organization', or 'organization_member'."}
 
     if skip_approval:
         logger.info("[Tools._save_memory] Auto-approved, saving memory immediately")
@@ -4447,7 +5595,7 @@ async def _save_memory(
     operation_id = str(uuid4())
     store_pending_operation(
         operation_id=operation_id,
-        tool_name="save_memory",
+        tool_name="manage_memory",
         params=params,
         organization_id=organization_id,
         user_id=user_id,
@@ -4457,9 +5605,10 @@ async def _save_memory(
         "type": "pending_approval",
         "status": "pending_approval",
         "operation_id": operation_id,
-        "tool_name": "save_memory",
+        "tool_name": "manage_memory",
         "preview": {
             "content": content[:500] + ("..." if len(content) > 500 else ""),
+            "entity_type": entity_type,
         },
         "message": "Ready to save memory. Please review and click Approve to persist it.",
     }
@@ -4470,24 +5619,60 @@ async def execute_save_memory(
     organization_id: str,
     user_id: str,
 ) -> dict[str, Any]:
-    """Persist a user memory after approval."""
+    """Persist a memory after approval."""
     content: str = params.get("content", "").strip()
     if not content:
         return {"status": "failed", "error": "content is required."}
 
-    from models.user_memory import UserMemory
+    entity_type: str = params.get("entity_type", "user").strip()
+    category: str | None = params.get("category")
+    if category:
+        category = category.strip() or None
 
-    memory = UserMemory(
-        user_id=UUID(user_id),
+    from models.memory import Memory
+    from models.org_member import OrgMember
+
+    # Resolve the entity_id based on entity_type
+    entity_id: UUID
+    if entity_type == "user":
+        entity_id = UUID(user_id)
+    elif entity_type == "organization":
+        entity_id = UUID(organization_id)
+    elif entity_type == "organization_member":
+        # Look up the membership for this user + org
+        async with get_session(organization_id=organization_id) as session:
+            result = await session.execute(
+                select(OrgMember.id).where(
+                    OrgMember.user_id == UUID(user_id),
+                    OrgMember.organization_id == UUID(organization_id),
+                )
+            )
+            membership_id: UUID | None = result.scalar_one_or_none()
+            if not membership_id:
+                return {"status": "failed", "error": "No organization membership found for this user."}
+            entity_id = membership_id
+    else:
+        return {"status": "failed", "error": f"Invalid entity_type '{entity_type}'."}
+
+    memory = Memory(
+        entity_type=entity_type,
+        entity_id=entity_id,
         organization_id=UUID(organization_id),
+        category=category,
         content=content,
+        created_by_user_id=UUID(user_id),
     )
 
     async with get_session(organization_id=organization_id) as session:
         session.add(memory)
         await session.commit()
 
-    return {"memory_id": str(memory.id), "content": content, "status": "saved"}
+    return {
+        "memory_id": str(memory.id),
+        "entity_type": entity_type,
+        "content": content,
+        "status": "saved",
+    }
 
 
 async def _delete_memory(
@@ -4502,25 +5687,817 @@ async def _delete_memory(
     if not user_id:
         return {"error": "Cannot delete memory without a user context."}
 
-    from models.user_memory import UserMemory
+    from models.memory import Memory
 
     async with get_session(organization_id=organization_id) as session:
         result = await session.execute(
-            select(UserMemory).where(
-                UserMemory.id == UUID(memory_id),
-                UserMemory.user_id == UUID(user_id),
+            select(Memory).where(
+                Memory.id == UUID(memory_id),
+                Memory.organization_id == UUID(organization_id),
             )
         )
-        memory: UserMemory | None = result.scalar_one_or_none()
+        memory: Memory | None = result.scalar_one_or_none()
         if not memory:
-            return {"error": f"Memory {memory_id} not found or does not belong to this user."}
+            return {"error": f"Memory {memory_id} not found."}
+
+        # User-level and job-level memories can only be deleted by the owner.
+        # Org-level memories can be deleted by any org member.
+        if memory.entity_type != "organization":
+            if memory.created_by_user_id and str(memory.created_by_user_id) != user_id:
+                return {"error": f"Memory {memory_id} does not belong to this user."}
+
         await session.delete(memory)
         await session.commit()
 
     return {"status": "deleted", "memory_id": memory_id}
 
 
+async def _update_memory(
+    params: dict[str, Any],
+    organization_id: str,
+    user_id: str | None,
+) -> dict[str, Any]:
+    """Update the content of an existing memory."""
+    memory_id: str = params.get("memory_id", "").strip()
+    if not memory_id:
+        return {"error": "memory_id is required."}
+    new_content: str = params.get("content", "").strip()
+    if not new_content:
+        return {"error": "content is required."}
+    if not user_id:
+        return {"error": "Cannot update memory without a user context."}
 
-async def execute_create_github_issue(params: dict[str, Any], organization_id: str) -> dict[str, Any]:
-    """Backward-compatible alias for deprecated function name."""
-    return await execute_github_issues_access(params, organization_id)
+    from models.memory import Memory
+
+    async with get_session(organization_id=organization_id) as session:
+        result = await session.execute(
+            select(Memory).where(
+                Memory.id == UUID(memory_id),
+                Memory.organization_id == UUID(organization_id),
+            )
+        )
+        memory: Memory | None = result.scalar_one_or_none()
+        if not memory:
+            return {"error": f"Memory {memory_id} not found."}
+
+        # Permission check: same rules as delete
+        if memory.entity_type != "organization":
+            if memory.created_by_user_id and str(memory.created_by_user_id) != user_id:
+                return {"error": f"Memory {memory_id} does not belong to this user."}
+
+        memory.content = new_content
+        await session.commit()
+
+    return {"status": "updated", "memory_id": memory_id, "content": new_content}
+
+
+# =============================================================================
+# foreach — Unified batch execution for tools and workflows
+# =============================================================================
+
+
+async def _foreach(
+    params: dict[str, Any],
+    organization_id: str,
+    user_id: str | None,
+    context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Run a tool or workflow for each item in a list.
+
+    Routes to:
+    - **Tool path**: Celery distributed workers (for tool targets), with inline
+      monitoring that blocks until completion.
+    - **Workflow path**: In-process async execution (for workflow targets), with
+      context propagation and semaphore-based concurrency.
+
+    Both paths stream live progress via WebSocket.
+    """
+    tool_name: str = (params.get("tool") or "").strip()
+    workflow_id: str = (params.get("workflow_id") or "").strip()
+
+    if tool_name and workflow_id:
+        return {"error": "Provide either 'tool' or 'workflow_id', not both."}
+    if not tool_name and not workflow_id:
+        return {"error": "Either 'tool' (tool name) or 'workflow_id' (workflow UUID) is required."}
+
+    if tool_name:
+        return await _foreach_tool(params, tool_name, organization_id, user_id, context)
+    else:
+        return await _foreach_workflow(params, workflow_id, organization_id, user_id, context)
+
+
+# -- Tool path (Celery) -------------------------------------------------------
+
+
+async def _foreach_tool(
+    params: dict[str, Any],
+    tool_name: str,
+    organization_id: str,
+    user_id: str | None,
+    context: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Queue a bulk tool run via Celery and monitor it until completion."""
+    from models.bulk_operation import BulkOperation
+    from workers.tasks.bulk_operations import bulk_tool_run_coordinator
+
+    items_query: str | None = params.get("items_query")
+    inline_items: list[dict[str, Any]] | None = params.get("items")
+    params_template: dict[str, Any] = params.get("params_template", {})
+    rate_limit: int = min(max(params.get("rate_limit_per_minute", 200), 1), 2000)
+    operation_name: str = (params.get("operation_name") or f"foreach {tool_name}").strip()
+
+    if not params_template:
+        return {"error": "params_template is required when using tool mode (how to build tool params from each item)."}
+
+    if not items_query and not inline_items:
+        return {"error": "Either items_query (SQL SELECT) or items (inline list) is required."}
+
+    if items_query:
+        stripped: str = items_query.strip()
+        if not stripped.upper().startswith("SELECT"):
+            return {"error": "items_query must be a SELECT statement."}
+
+    conversation_id: str | None = (context or {}).get("conversation_id")
+    tool_call_id: str | None = (context or {}).get("tool_id")
+
+    # Create the BulkOperation record
+    async with get_session(organization_id=organization_id) as session:
+        operation = BulkOperation(
+            organization_id=UUID(organization_id),
+            user_id=UUID(user_id) if user_id else None,
+            operation_name=operation_name,
+            tool_name=tool_name,
+            params_template=params_template,
+            items_query=items_query,
+            rate_limit_per_minute=rate_limit,
+            conversation_id=conversation_id,
+            tool_call_id=tool_call_id,
+            status="pending",
+        )
+        session.add(operation)
+        await session.commit()
+        await session.refresh(operation)
+        op_id: str = str(operation.id)
+
+    # Store inline items in Redis for the Celery coordinator
+    if inline_items and not items_query:
+        import redis.asyncio as aioredis
+        from config import settings
+
+        r: aioredis.Redis = aioredis.from_url(
+            settings.REDIS_URL, decode_responses=True
+        )
+        try:
+            clean_items: list[dict[str, Any]] = []
+            for item in inline_items:
+                clean: dict[str, Any] = {}
+                for k, v in item.items():
+                    clean[k] = str(v) if isinstance(v, UUID) else v
+                clean_items.append(clean)
+            await r.set(
+                f"bulk_op:{op_id}:items",
+                json.dumps(clean_items),
+                ex=3600 * 6,
+            )
+        finally:
+            await r.close()
+
+    # Queue the Celery coordinator
+    task = bulk_tool_run_coordinator.delay(
+        operation_id=op_id,
+        organization_id=organization_id,
+        user_id=user_id,
+    )
+
+    async with get_session(organization_id=organization_id) as session:
+        result = await session.execute(
+            select(BulkOperation).where(BulkOperation.id == UUID(op_id))
+        )
+        op = result.scalar_one()
+        op.celery_task_id = task.id
+        await session.commit()
+
+    # Block and monitor until completion (absorbs the old monitor_operation)
+    return await _poll_bulk_operation(op_id, organization_id, context)
+
+
+async def _poll_bulk_operation(
+    op_id: str,
+    organization_id: str,
+    context: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Poll a bulk operation until completion, broadcasting live progress via WebSocket.
+
+    Reads real-time progress from Redis counters (updated atomically by each
+    Celery item task) and checks the DB for terminal status.
+
+    Safety: max 4 hours, stale detection at 10 minutes with no progress.
+    """
+    import asyncio
+    import time
+    import redis.asyncio as aioredis
+    from models.bulk_operation import BulkOperation
+    from config import settings
+
+    progress: ToolProgressUpdater = ToolProgressUpdater(context, organization_id)
+    poll_interval: float = 5.0
+    terminal_statuses: frozenset[str] = frozenset({"completed", "failed", "cancelled"})
+
+    max_poll_seconds: float = 4 * 3600
+    stale_timeout_seconds: float = 600.0
+    start_time: float = time.monotonic()
+    last_progress_change_time: float = start_time
+    last_completed: int = -1
+
+    def _rkey(field: str) -> str:
+        return f"bulk_op:{op_id}:{field}"
+
+    r: aioredis.Redis = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+    try:
+        while True:
+            elapsed: float = time.monotonic() - start_time
+
+            if elapsed > max_poll_seconds:
+                logger.warning(
+                    "[foreach] Aborting poll after %.0fs for operation %s",
+                    elapsed, op_id[:8],
+                )
+                return {
+                    "operation_id": op_id,
+                    "status": "timeout",
+                    "error": f"Monitoring timed out after {elapsed / 3600:.1f} hours.",
+                    "message": "The operation may still be running. Check status with run_sql_query.",
+                }
+
+            total_raw: str | None = await r.get(_rkey("total"))
+            completed_raw: str | None = await r.get(_rkey("completed"))
+            succeeded_raw: str | None = await r.get(_rkey("succeeded"))
+            failed_raw: str | None = await r.get(_rkey("failed"))
+
+            total: int = int(total_raw) if total_raw else 0
+            completed: int = int(completed_raw) if completed_raw else 0
+            succeeded: int = int(succeeded_raw) if succeeded_raw else 0
+            failed: int = int(failed_raw) if failed_raw else 0
+
+            async with get_session(organization_id=organization_id) as session:
+                result = await session.execute(
+                    select(BulkOperation).where(
+                        BulkOperation.id == UUID(op_id),
+                        BulkOperation.organization_id == UUID(organization_id),
+                    )
+                )
+                operation: BulkOperation | None = result.scalar_one_or_none()
+
+            if not operation:
+                return {"error": f"Bulk operation {op_id} not found."}
+
+            status: str = operation.status
+            op_name: str = operation.operation_name or "foreach"
+
+            if total == 0:
+                total = operation.total_items
+                completed = operation.completed_items
+                succeeded = operation.succeeded_items
+                failed = operation.failed_items
+
+            if completed != last_completed:
+                last_completed = completed
+                last_progress_change_time = time.monotonic()
+            elif time.monotonic() - last_progress_change_time > stale_timeout_seconds:
+                logger.warning(
+                    "[foreach] No progress for %.0fs on operation %s (completed=%d/%d)",
+                    stale_timeout_seconds, op_id[:8], completed, total,
+                )
+                return {
+                    "operation_id": op_id,
+                    "operation_name": op_name,
+                    "status": "stale",
+                    "total_items": total,
+                    "succeeded_items": succeeded,
+                    "failed_items": failed,
+                    "error": f"No progress for {stale_timeout_seconds / 60:.0f} minutes.",
+                    "message": (
+                        f"Stale: {completed}/{total} completed but no progress for "
+                        f"{stale_timeout_seconds / 60:.0f} min. Check status with run_sql_query."
+                    ),
+                }
+
+            await progress.update({
+                "operation_id": op_id,
+                "operation_name": op_name,
+                "total": total,
+                "completed": completed,
+                "succeeded": succeeded,
+                "failed": failed,
+                "status": status,
+            })
+
+            if status in terminal_statuses:
+                response: dict[str, Any] = {
+                    "operation_id": op_id,
+                    "operation_name": op_name,
+                    "status": status,
+                    "total_items": total,
+                    "succeeded_items": succeeded,
+                    "failed_items": failed,
+                }
+                if status == "completed":
+                    response["message"] = (
+                        f"Completed: {succeeded} succeeded, {failed} failed out of {total}."
+                    )
+                elif status == "failed":
+                    response["error"] = operation.error
+                    response["message"] = f"Failed: {operation.error}"
+                else:
+                    response["message"] = "Cancelled."
+                return response
+
+            await asyncio.sleep(poll_interval)
+    finally:
+        await r.close()
+
+
+# -- Workflow path (in-process async) ------------------------------------------
+
+
+async def _foreach_workflow(
+    params: dict[str, Any],
+    workflow_id: str,
+    organization_id: str,
+    user_id: str | None,
+    context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Execute a workflow for each item using in-process async with semaphore concurrency."""
+    import asyncio
+    from models.workflow import Workflow
+
+    items: list[dict[str, Any]] = params.get("items", [])
+    items_query: str | None = params.get("items_query")
+    max_concurrent: int = min(params.get("max_concurrent", 5), MAX_CONCURRENT_WORKFLOWS)
+    max_items: int = min(params.get("max_items", 500), MAX_LOOP_ITEMS)
+    continue_on_error: bool = params.get("continue_on_error", True)
+    operation_name: str | None = params.get("operation_name")
+
+    # Resolve items from SQL query if provided
+    if items_query:
+        query_result: dict[str, Any] = await _run_sql_query(
+            {"query": items_query}, organization_id, user_id
+        )
+        if "error" in query_result:
+            return {"error": f"items_query failed: {query_result['error']}"}
+        items = query_result.get("rows", [])
+
+    if not items:
+        return {"error": "items array is required and cannot be empty"}
+
+    if not isinstance(items, list):
+        return {"error": "items must be an array"}
+
+    original_count: int = len(items)
+    items = items[:max_items]
+    truncated: bool = original_count > max_items
+
+    # Verify workflow exists
+    async with get_session(organization_id=organization_id) as session:
+        result = await session.execute(
+            select(Workflow).where(
+                Workflow.id == UUID(workflow_id),
+                Workflow.organization_id == UUID(organization_id),
+            )
+        )
+        workflow: Workflow | None = result.scalar_one_or_none()
+
+        if not workflow:
+            return {"error": f"Workflow {workflow_id} not found"}
+
+        if not workflow.is_enabled:
+            return {"error": f"Workflow '{workflow.name}' is disabled."}
+
+        workflow_name: str = workflow.name
+
+    display_name: str = operation_name or workflow_name
+
+    results: list[dict[str, Any]] = []
+    failures: list[dict[str, Any]] = []
+    semaphore = asyncio.Semaphore(max_concurrent)
+    completed_count: int = 0
+
+    progress_updater: ToolProgressUpdater = ToolProgressUpdater(context, organization_id)
+    conversation_id: str | None = progress_updater.conversation_id
+
+    async def send_progress() -> None:
+        await progress_updater.update({
+            "completed": completed_count,
+            "total": len(items),
+            "workflow_name": display_name,
+            "succeeded": len(results),
+            "failed": len(failures),
+        })
+
+    await send_progress()
+
+    async def process_item(index: int, item: dict[str, Any]) -> dict[str, Any]:
+        nonlocal completed_count
+
+        async with semaphore:
+            try:
+                input_data: dict[str, Any] = {
+                    **item,
+                    "_loop_context": {
+                        "index": index,
+                        "total": len(items),
+                    },
+                }
+
+                if conversation_id:
+                    input_data["_parent_context"] = input_data.get("_parent_context", {})
+                    input_data["_parent_context"]["parent_conversation_id"] = conversation_id
+
+                wf_result: dict[str, Any] = await _run_workflow(
+                    params={
+                        "workflow_id": workflow_id,
+                        "input_data": input_data,
+                        "wait_for_completion": True,
+                    },
+                    organization_id=organization_id,
+                    user_id=user_id,
+                    context=context,
+                )
+
+                completed_count += 1
+
+                if "error" in wf_result:
+                    failures.append({
+                        "index": index,
+                        "item": item,
+                        "error": wf_result["error"],
+                    })
+                    if not continue_on_error:
+                        raise RuntimeError(f"Item {index} failed: {wf_result['error']}")
+                else:
+                    results.append({
+                        "index": index,
+                        "item": item,
+                        "result": wf_result,
+                    })
+
+                await send_progress()
+                return wf_result
+
+            except Exception as e:
+                completed_count += 1
+                failures.append({
+                    "index": index,
+                    "item": item,
+                    "error": str(e),
+                })
+                await send_progress()
+
+                if not continue_on_error:
+                    raise
+                return {"error": str(e)}
+
+    tasks: list[asyncio.Task[dict[str, Any]]] = [
+        asyncio.create_task(process_item(i, item))
+        for i, item in enumerate(items)
+    ]
+
+    try:
+        await asyncio.gather(*tasks, return_exceptions=continue_on_error)
+    except Exception:
+        for t in tasks:
+            if not t.done():
+                t.cancel()
+
+    summary: dict[str, Any] = {
+        "status": "completed",
+        "total_items": len(items),
+        "succeeded": len(results),
+        "failed": len(failures),
+        "workflow_name": display_name,
+    }
+
+    if truncated:
+        summary["warning"] = (
+            f"Only processed {max_items} of {original_count} items (max_items limit)."
+        )
+
+    if failures:
+        summary["failures"] = failures[:20]
+        if len(failures) > 20:
+            summary["failures_truncated"] = True
+
+    if results:
+        summary["sample_results"] = [r["result"] for r in results[:5]]
+
+    return summary
+
+
+# =============================================================================
+# execute_command — Sandboxed code execution via E2B
+# =============================================================================
+
+# Sandbox timeout in seconds (30 minutes)
+_SANDBOX_TIMEOUT_SECONDS: int = 1800
+
+# Command execution timeout in seconds
+_COMMAND_TIMEOUT_SECONDS: float = 120
+
+# Maximum combined stdout+stderr length returned to the model
+_MAX_OUTPUT_LENGTH: int = 50_000
+
+# Python helper injected into every new sandbox for easy DB access
+_SANDBOX_DB_HELPER_TEMPLATE: str = """
+import os
+import psycopg2
+
+_DATABASE_URL: str = os.environ["DATABASE_URL"]
+_ORG_ID: str = os.environ["ORG_ID"]
+
+def get_connection() -> psycopg2.extensions.connection:
+    \"\"\"
+    Return a psycopg2 connection scoped to the current organization via RLS.
+
+    Usage:
+        from db import get_connection
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM deals LIMIT 10")
+        rows = cur.fetchall()
+    \"\"\"
+    conn: psycopg2.extensions.connection = psycopg2.connect(_DATABASE_URL)
+    conn.autocommit = True
+    with conn.cursor() as cur:
+        cur.execute("SET ROLE revtops_app")
+        cur.execute("SET app.current_org_id = %s", (_ORG_ID,))
+    return conn
+""".strip()
+
+
+# ---- Sandbox ID persistence (DB-backed) ------------------------------------
+
+async def _get_sandbox_id_from_db(
+    conversation_id: str,
+    organization_id: str,
+) -> str | None:
+    """Load the sandbox_id stored on the conversation row."""
+    async with get_session(organization_id=organization_id) as session:
+        row = await session.execute(
+            text("SELECT sandbox_id FROM conversations WHERE id = CAST(:cid AS uuid)").bindparams(
+                cid=conversation_id,
+            )
+        )
+        result: str | None = row.scalar_one_or_none()
+        return result
+
+
+async def _save_sandbox_id_to_db(
+    conversation_id: str,
+    organization_id: str,
+    sandbox_id: str | None,
+) -> None:
+    """Persist (or clear) the sandbox_id on the conversation row."""
+    async with get_session(organization_id=organization_id) as session:
+        from models.conversation import Conversation
+        await session.execute(
+            text(
+                "UPDATE conversations SET sandbox_id = :sid WHERE id = CAST(:cid AS uuid)"
+            ).bindparams(sid=sandbox_id, cid=conversation_id)
+        )
+        await session.commit()
+
+
+# ---- Synchronous E2B helpers (run via asyncio.to_thread) --------------------
+
+def _create_sandbox_sync(
+    organization_id: str,
+    conversation_id: str,
+) -> str:
+    """Create an E2B sandbox and inject the DB helper. Returns the sandbox_id."""
+    from e2b import Sandbox
+
+    sandbox: Sandbox = Sandbox.create(
+        timeout=_SANDBOX_TIMEOUT_SECONDS,
+        envs={
+            "DATABASE_URL": settings.sandbox_database_url,
+            "ORG_ID": organization_id,
+        },
+        metadata={
+            "conversation_id": conversation_id,
+            "organization_id": organization_id,
+        },
+        api_key=settings.E2B_API_KEY,
+    )
+
+    sandbox.files.write("/home/user/db.py", _SANDBOX_DB_HELPER_TEMPLATE)
+    sandbox.files.make_dir("/home/user/output")
+
+    sandbox_id: str = sandbox.sandbox_id
+    logger.info(
+        "[Sandbox] Created sandbox %s for conversation %s",
+        sandbox_id,
+        conversation_id[:8],
+    )
+    return sandbox_id
+
+
+def _is_sandbox_alive_sync(sandbox_id: str) -> bool:
+    """Check if a sandbox is still running. Returns False on any error."""
+    from e2b import Sandbox
+
+    try:
+        sbx: Sandbox = Sandbox.connect(sandbox_id, api_key=settings.E2B_API_KEY)
+        return sbx.is_running()
+    except Exception:
+        return False
+
+
+def _run_command_sync(
+    sandbox_id: str,
+    command: str,
+) -> dict[str, Any]:
+    """Execute a shell command in an existing E2B sandbox. Returns result dict."""
+    from e2b import Sandbox
+
+    sandbox: Sandbox = Sandbox.connect(
+        sandbox_id,
+        api_key=settings.E2B_API_KEY,
+    )
+
+    result = sandbox.commands.run(
+        command,
+        timeout=_COMMAND_TIMEOUT_SECONDS,
+        cwd="/home/user",
+    )
+
+    stdout: str = result.stdout or ""
+    stderr: str = result.stderr or ""
+    exit_code: int = result.exit_code
+
+    return {
+        "stdout": stdout,
+        "stderr": stderr,
+        "exit_code": exit_code,
+    }
+
+
+def _list_output_files_sync(sandbox_id: str) -> list[dict[str, Any]]:
+    """List files in /home/user/output/ and read their contents."""
+    from e2b import Sandbox
+
+    sandbox: Sandbox = Sandbox.connect(
+        sandbox_id,
+        api_key=settings.E2B_API_KEY,
+    )
+
+    try:
+        entries = sandbox.files.list("/home/user/output")
+    except Exception:
+        return []
+
+    output_files: list[dict[str, Any]] = []
+    for entry in entries:
+        if entry.type == "file":
+            try:
+                data: bytearray = sandbox.files.read(
+                    f"/home/user/output/{entry.name}",
+                    format="bytes",
+                )
+                output_files.append({
+                    "filename": entry.name,
+                    "content_bytes": bytes(data),
+                })
+            except Exception as exc:
+                logger.warning("[Sandbox] Failed to read output file %s: %s", entry.name, exc)
+    return output_files
+
+
+def _kill_sandbox_sync(sandbox_id: str) -> bool:
+    """Kill a sandbox by ID. Returns True if killed."""
+    from e2b import Sandbox
+
+    try:
+        return Sandbox.kill(sandbox_id, api_key=settings.E2B_API_KEY)
+    except Exception as exc:
+        logger.warning("[Sandbox] Failed to kill sandbox %s: %s", sandbox_id, exc)
+        return False
+
+
+# ---- Public cleanup helpers -------------------------------------------------
+
+async def cleanup_sandbox(conversation_id: str, organization_id: str | None = None) -> None:
+    """Kill the sandbox associated with a conversation and clear its DB record."""
+    sandbox_id: str | None = None
+    if organization_id:
+        sandbox_id = await _get_sandbox_id_from_db(conversation_id, organization_id)
+    if sandbox_id is not None:
+        logger.info("[Sandbox] Cleaning up sandbox %s for conversation %s", sandbox_id, conversation_id[:8])
+        await asyncio.to_thread(_kill_sandbox_sync, sandbox_id)
+        if organization_id:
+            await _save_sandbox_id_to_db(conversation_id, organization_id, None)
+
+
+async def cleanup_all_sandboxes() -> None:
+    """Kill all running E2B sandboxes owned by this app. Called on shutdown."""
+    try:
+        from e2b import Sandbox
+        paginator = await asyncio.to_thread(lambda: Sandbox.list(api_key=settings.E2B_API_KEY))
+        sandboxes = await asyncio.to_thread(paginator.next_items)
+        if not sandboxes:
+            return
+        logger.info("[Sandbox] Shutting down %d active sandbox(es)", len(sandboxes))
+        await asyncio.gather(
+            *(asyncio.to_thread(_kill_sandbox_sync, s.sandbox_id) for s in sandboxes),
+            return_exceptions=True,
+        )
+    except Exception as exc:
+        logger.warning("[Sandbox] Failed to list/kill sandboxes on shutdown: %s", exc)
+
+
+# ---- Main handler -----------------------------------------------------------
+
+async def _execute_command(
+    params: dict[str, Any],
+    organization_id: str,
+    user_id: str | None,
+    context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Execute a shell command in a persistent E2B sandbox."""
+
+    if not settings.E2B_API_KEY:
+        return {"error": "E2B_API_KEY is not configured. Cannot run sandboxed commands."}
+
+    command: str = params.get("command", "").strip()
+    if not command:
+        return {"error": "No command provided."}
+
+    conversation_id: str | None = (context or {}).get("conversation_id")
+    if not conversation_id:
+        return {"error": "execute_command requires a conversation context."}
+
+    # --- Get or create sandbox for this conversation ---
+    sandbox_id: str | None = await _get_sandbox_id_from_db(conversation_id, organization_id)
+
+    if sandbox_id is not None:
+        alive: bool = await asyncio.to_thread(_is_sandbox_alive_sync, sandbox_id)
+        if not alive:
+            logger.info("[Sandbox] Sandbox %s expired or dead, creating new one", sandbox_id)
+            sandbox_id = None
+
+    if sandbox_id is None:
+        try:
+            sandbox_id = await asyncio.to_thread(
+                _create_sandbox_sync, organization_id, conversation_id,
+            )
+            await _save_sandbox_id_to_db(conversation_id, organization_id, sandbox_id)
+        except Exception as exc:
+            logger.error("[Sandbox] Failed to create sandbox: %s", exc)
+            return {"error": f"Failed to create sandbox: {exc}"}
+
+    # --- Execute the command ---
+    try:
+        result: dict[str, Any] = await asyncio.to_thread(
+            _run_command_sync, sandbox_id, command,
+        )
+    except Exception as exc:
+        error_str: str = str(exc)
+        if "not found" in error_str.lower() or "not running" in error_str.lower():
+            await _save_sandbox_id_to_db(conversation_id, organization_id, None)
+        logger.error("[Sandbox] Command execution failed: %s", exc)
+        return {"error": f"Command execution failed: {error_str}"}
+
+    # Truncate very long output to avoid blowing up context
+    stdout: str = result["stdout"]
+    stderr: str = result["stderr"]
+    exit_code: int = result["exit_code"]
+
+    combined_len: int = len(stdout) + len(stderr)
+    if combined_len > _MAX_OUTPUT_LENGTH:
+        half: int = _MAX_OUTPUT_LENGTH // 2
+        if len(stdout) > half:
+            stdout = stdout[:half] + f"\n\n... [truncated, {len(result['stdout'])} chars total]"
+        if len(stderr) > half:
+            stderr = stderr[:half] + f"\n\n... [truncated, {len(result['stderr'])} chars total]"
+
+    tool_result: dict[str, Any] = {
+        "exit_code": exit_code,
+        "stdout": stdout,
+        "stderr": stderr,
+    }
+
+    # --- Check for output files (artifacts) ---
+    try:
+        output_files: list[dict[str, Any]] = await asyncio.to_thread(
+            _list_output_files_sync, sandbox_id,
+        )
+        if output_files:
+            artifact_names: list[str] = [f["filename"] for f in output_files]
+            tool_result["output_files"] = artifact_names
+            tool_result["output_files_note"] = (
+                f"Files available in /home/user/output/: {', '.join(artifact_names)}"
+            )
+    except Exception as exc:
+        logger.warning("[Sandbox] Failed to list output files: %s", exc)
+
+    return tool_result
+

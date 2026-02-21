@@ -44,6 +44,7 @@ interface Workflow {
   last_error: string | null;
   created_at: string;
   updated_at: string;
+  latest_run_status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | null;
 }
 
 interface WorkflowRun {
@@ -731,12 +732,14 @@ function WorkflowModal({
   // Tools that can be auto-approved for workflows
   const availableAutoApproveTools = [
     { id: 'run_sql_query', label: 'Query Data', description: 'Run SQL queries to read from your synced data' },
+    { id: 'foreach', label: 'Foreach', description: 'Run a tool or workflow for each item in a list (sequential or parallel)' },
+    { id: 'web_search', label: 'Web Search', description: 'Search the web for real-time information' },
     { id: 'run_workflow', label: 'Run Workflow', description: 'Execute another workflow and wait for results' },
-    { id: 'loop_over', label: 'Loop Over Items', description: 'Run a workflow for each item in a list' },
     { id: 'send_slack', label: 'Post to Slack', description: 'Send messages to Slack channels' },
     { id: 'send_email_from', label: 'Send Email', description: 'Send emails from your connected account' },
-    { id: 'github_issues_access', label: 'GitHub Issues Access', description: 'Create GitHub issues (no code write access)' },
-    { id: 'save_memory', label: 'Save Interim Values', description: 'Store intermediate values and preferences for later workflow steps' },
+    { id: 'write_to_system_of_record', label: 'Write to System of Record', description: 'Create or update records in any connected system (CRM, issue trackers, code repos)' },
+    { id: 'keep_notes', label: 'Keep Notes', description: 'Store workflow-scoped notes shared across workflow runs' },
+    { id: 'fetch_url', label: 'Fetch URL', description: 'Fetch and read content from a web page' },
     { id: 'run_sql_write', label: 'Write Data', description: 'Insert, update, or delete records' },
   ];
 
@@ -942,7 +945,7 @@ function WorkflowModal({
                 Child Workflows
               </label>
               <p className="text-xs text-surface-500 mb-3">
-                Select workflows this one can call using run_workflow or loop_over.
+                Select workflows this one can call using run_workflow or foreach.
                 Selected workflows will be auto-injected into the prompt with their IDs and schemas.
               </p>
               <div className="space-y-2 max-h-48 overflow-y-auto">
@@ -1084,11 +1087,18 @@ export function Workflows(): JSX.Element {
   const [showModal, setShowModal] = useState(false);
   const [editingWorkflow, setEditingWorkflow] = useState<Workflow | null>(null);
 
-  // Fetch workflows
+  // Fetch workflows — poll every 5s when any workflow is running/pending
   const { data: workflows = [], isLoading, error, refetch } = useQuery({
     queryKey: ['workflows', organization?.id],
     queryFn: () => fetchWorkflows(organization?.id ?? ''),
     enabled: !!organization?.id,
+    refetchInterval: (query) => {
+      const wfs = query.state.data;
+      const hasActive = wfs?.some(
+        (w) => w.latest_run_status === 'running' || w.latest_run_status === 'pending'
+      );
+      return hasActive ? 5000 : false;
+    },
   });
 
   const { data: teamMembersData } = useTeamMembers(organization?.id ?? null, user?.id ?? null);
@@ -1365,20 +1375,37 @@ function WorkflowCard({
     }
   };
 
+  const isActive = workflow.latest_run_status === 'running' || workflow.latest_run_status === 'pending';
+
   return (
     <div
       onClick={onClick}
       onKeyDown={handleCardKeyDown}
       role="button"
       tabIndex={0}
-      className="text-left p-4 bg-surface-900 border border-surface-800 rounded-xl hover:border-surface-700 transition-colors cursor-pointer"
+      className={`text-left p-4 bg-surface-900 border rounded-xl hover:border-surface-700 transition-colors cursor-pointer ${
+        isActive ? 'border-blue-500/40' : 'border-surface-800'
+      }`}
     >
       <div className="flex items-start justify-between mb-2">
         <h3 className="font-medium text-surface-100 truncate flex-1">{workflow.name}</h3>
         <div className="ml-2 flex items-center gap-2">
-          <span className={`w-2 h-2 rounded-full ${workflow.is_enabled ? 'bg-green-500' : 'bg-surface-600'}`} />
+          {isActive ? (
+            <span className="relative flex h-2.5 w-2.5">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
+              <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-blue-500" />
+            </span>
+          ) : (
+            <span className={`w-2 h-2 rounded-full ${workflow.is_enabled ? 'bg-green-500' : 'bg-surface-600'}`} />
+          )}
         </div>
       </div>
+
+      {isActive && (
+        <p className="text-xs text-blue-400 mb-2 font-medium">
+          {workflow.latest_run_status === 'running' ? 'Running...' : 'Starting...'}
+        </p>
+      )}
       
       <p className="text-xs text-surface-500 mb-3">{getTriggerDescription(workflow)}</p>
       <p className="text-xs text-surface-500 mb-3">Created by {creatorDisplay}</p>

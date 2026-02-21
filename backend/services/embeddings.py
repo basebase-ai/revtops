@@ -3,9 +3,10 @@ Embedding service for semantic search.
 
 Uses OpenAI's text-embedding-3-small model to generate embeddings
 for activities (emails, meetings, slack messages, etc.)
+
+Embeddings are stored as native pgvector vector(1536) columns.
 """
 
-import struct
 from typing import Optional
 
 from openai import AsyncOpenAI
@@ -93,17 +94,6 @@ class EmbeddingService:
                 embeddings.append(item.embedding)
 
         return embeddings
-
-    @staticmethod
-    def embedding_to_bytes(embedding: list[float]) -> bytes:
-        """Convert embedding list to bytes for storage."""
-        return struct.pack(f"{len(embedding)}f", *embedding)
-
-    @staticmethod
-    def bytes_to_embedding(data: bytes) -> list[float]:
-        """Convert bytes back to embedding list."""
-        num_floats = len(data) // 4  # 4 bytes per float
-        return list(struct.unpack(f"{num_floats}f", data))
 
 
 def build_searchable_text(

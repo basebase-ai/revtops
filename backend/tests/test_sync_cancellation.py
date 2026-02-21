@@ -1,4 +1,5 @@
 import asyncio
+from typing import Optional
 
 from api.routes import sync as sync_routes
 from connectors.base import SyncCancelledError
@@ -6,8 +7,9 @@ from workers.tasks import sync as sync_tasks
 
 
 class CancelledConnector:
-    def __init__(self, organization_id: str) -> None:
+    def __init__(self, organization_id: str, user_id: Optional[str] = None) -> None:
         self.organization_id = organization_id
+        self.user_id = user_id
 
     async def sync_all(self) -> dict[str, int]:
         raise SyncCancelledError("hubspot integration disconnected during sync (sync_all:after_accounts)")
@@ -20,9 +22,11 @@ class CancelledConnector:
 
 
 def test_celery_sync_returns_cancelled_when_connector_disconnects(monkeypatch) -> None:
-    from connectors import hubspot
-
-    monkeypatch.setattr(hubspot, "HubSpotConnector", CancelledConnector)
+    """Patch discover_connectors so _sync_integration uses CancelledConnector for hubspot."""
+    monkeypatch.setattr(
+        "connectors.registry.discover_connectors",
+        lambda: {"hubspot": CancelledConnector},
+    )
 
     result = asyncio.run(sync_tasks._sync_integration("11111111-1111-1111-1111-111111111111", "hubspot"))
 

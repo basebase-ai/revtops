@@ -24,6 +24,7 @@ import json
 import logging
 import re
 import time
+from contextlib import asynccontextmanager
 from typing import Any
 
 import redis.asyncio as redis
@@ -44,6 +45,60 @@ router = APIRouter()
 
 # Redis client for event deduplication
 _redis_client: redis.Redis | None = None
+
+
+class SlackThreadLockManager:
+    """In-process async lock manager keyed by Slack thread identity."""
+
+    def __init__(self) -> None:
+        self._locks: dict[str, asyncio.Lock] = {}
+        self._lock_refs: dict[str, int] = {}
+        self._manager_lock = asyncio.Lock()
+
+    @staticmethod
+    def build_lock_key(team_id: str, channel_id: str, thread_ts: str) -> str:
+        return f"{team_id}:{channel_id}:{thread_ts}"
+
+    @asynccontextmanager
+    async def thread_lock(self, lock_key: str):
+        """Acquire/release the per-thread lock, cleaning up idle keys."""
+        async with self._manager_lock:
+            lock = self._locks.get(lock_key)
+            if lock is None:
+                lock = asyncio.Lock()
+                self._locks[lock_key] = lock
+                self._lock_refs[lock_key] = 0
+                logger.debug("[slack_events] Created thread lock key=%s", lock_key)
+            self._lock_refs[lock_key] = self._lock_refs.get(lock_key, 0) + 1
+            queued_count = self._lock_refs[lock_key]
+
+        logger.info(
+            "[slack_events] Waiting for thread lock key=%s queued=%d",
+            lock_key,
+            queued_count,
+        )
+        await lock.acquire()
+        logger.info("[slack_events] Acquired thread lock key=%s", lock_key)
+
+        try:
+            yield
+        finally:
+            lock.release()
+            logger.info("[slack_events] Released thread lock key=%s", lock_key)
+            async with self._manager_lock:
+                remaining = max(self._lock_refs.get(lock_key, 1) - 1, 0)
+                if remaining == 0:
+                    self._lock_refs.pop(lock_key, None)
+                    self._locks.pop(lock_key, None)
+                    logger.debug(
+                        "[slack_events] Removed idle thread lock key=%s",
+                        lock_key,
+                    )
+                else:
+                    self._lock_refs[lock_key] = remaining
+
+
+_thread_lock_manager = SlackThreadLockManager()
 
 
 async def get_redis() -> redis.Redis:
@@ -126,6 +181,40 @@ async def is_duplicate_event(event_id: str) -> bool:
     except Exception as e:
         logger.error("[slack_events] Redis error during deduplication: %s", e)
         # If Redis fails, process the event anyway (better to duplicate than miss)
+        return False
+
+
+async def is_duplicate_message(channel_id: str, message_ts: str) -> bool:
+    """
+    Cross-event-type dedup for the same Slack message.
+
+    When a user @mentions the bot in a thread, Slack fires *two* events with
+    different ``event_id`` values:
+      1. ``app_mention`` — handled by :func:`process_slack_mention`
+      2. ``message``     — handled by :func:`process_slack_thread_reply`
+
+    Both events share the same ``channel`` + ``ts`` (the message timestamp).
+    This function claims a Redis lock on ``channel:ts`` so only the first
+    event to arrive gets processed; the second is skipped.
+
+    Uses a short TTL (5 minutes) since the two events arrive within seconds.
+
+    Args:
+        channel_id: Slack channel ID
+        message_ts: Message timestamp (``event.ts``)
+
+    Returns:
+        True if this message was already claimed by another event type
+    """
+    if not channel_id or not message_ts:
+        return False
+    try:
+        redis_client = await get_redis()
+        key: str = f"revtops:slack_msg_dedup:{channel_id}:{message_ts}"
+        was_set: bool | None = await redis_client.set(key, "1", nx=True, ex=300)
+        return not was_set
+    except Exception as e:
+        logger.error("[slack_events] Redis error during message dedup: %s", e)
         return False
 
 
@@ -232,7 +321,7 @@ async def _process_event_callback_impl(payload: dict[str, Any]) -> None:
             channel_id = event.get("channel", "")
             user_id = event.get("user", "")
             text = event.get("text", "")
-            event_ts = event.get("event_ts", "")
+            message_ts = event.get("ts") or event.get("event_ts", "")
             files: list[dict[str, Any]] = event.get("files", [])
             if not text.strip() and not files:
                 return
@@ -242,7 +331,7 @@ async def _process_event_callback_impl(payload: dict[str, Any]) -> None:
                 channel_id=channel_id,
                 user_id=user_id,
                 message_text=text,
-                event_ts=event_ts,
+                event_ts=message_ts,
                 files=files,
             )
             return
@@ -252,22 +341,36 @@ async def _process_event_callback_impl(payload: dict[str, Any]) -> None:
             channel_id = event.get("channel", "")
             user_id = event.get("user", "")
             text = event.get("text", "")
+            message_ts: str = event.get("ts", "")
             files: list[dict[str, Any]] = event.get("files", [])
             if not text.strip() and not files:
                 return
+
+            # Cross-event-type dedup: if the same message already triggered
+            # an app_mention handler, skip the redundant thread-reply path.
+            if message_ts and channel_id and await is_duplicate_message(channel_id, message_ts):
+                logger.info(
+                    "[slack_events] Skipping duplicate message %s:%s (already claimed by another event type)",
+                    channel_id,
+                    message_ts,
+                )
+                return
+
             logger.info(
                 "[slack_events] Processing thread reply from %s in %s (thread %s): %s (files=%d)",
                 user_id, channel_id, thread_ts, text[:50], len(files),
             )
-            await process_slack_thread_reply(
-                team_id=team_id,
-                channel_id=channel_id,
-                user_id=user_id,
-                message_text=text,
-                thread_ts=thread_ts,
-                event_ts=event.get("ts", ""),
-                files=files,
-            )
+            lock_key = SlackThreadLockManager.build_lock_key(team_id, channel_id, thread_ts)
+            async with _thread_lock_manager.thread_lock(lock_key):
+                await process_slack_thread_reply(
+                    team_id=team_id,
+                    channel_id=channel_id,
+                    user_id=user_id,
+                    message_text=text,
+                    thread_ts=thread_ts,
+                    event_ts=message_ts,
+                    files=files,
+                )
             return
 
     if inner_type == "app_mention":
@@ -275,19 +378,34 @@ async def _process_event_callback_impl(payload: dict[str, Any]) -> None:
         user_id = event.get("user", "")
         text = re.sub(r"<@[A-Z0-9]+>\s*", "", event.get("text", "")).strip()
         event_ts = event.get("event_ts", "")
+        message_ts = event.get("ts", "") or event_ts
         thread_ts = event.get("thread_ts")
         files: list[dict[str, Any]] = event.get("files", [])
         if not text and not files:
             return
+
+        # Cross-event-type dedup: if the same message already triggered
+        # a thread-reply handler, skip the redundant app_mention path.
+        if message_ts and channel_id and await is_duplicate_message(channel_id, message_ts):
+            logger.info(
+                "[slack_events] Skipping duplicate message %s:%s (already claimed by another event type)",
+                channel_id,
+                message_ts,
+            )
+            return
+
         logger.info("[slack_events] Processing @mention from %s in %s: %s (files=%d)", user_id, channel_id, text[:50], len(files))
-        await process_slack_mention(
-            team_id=team_id,
-            channel_id=channel_id,
-            user_id=user_id,
-            message_text=text,
-            thread_ts=thread_ts or event_ts,
-            files=files,
-        )
+        lock_thread_ts = thread_ts or event_ts
+        lock_key = SlackThreadLockManager.build_lock_key(team_id, channel_id, lock_thread_ts)
+        async with _thread_lock_manager.thread_lock(lock_key):
+            await process_slack_mention(
+                team_id=team_id,
+                channel_id=channel_id,
+                user_id=user_id,
+                message_text=text,
+                thread_ts=lock_thread_ts,
+                files=files,
+            )
 
 
 @router.post("/events", response_model=None)

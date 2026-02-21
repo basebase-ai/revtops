@@ -21,14 +21,17 @@ import logging
 from typing import Any, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
-from pydantic import BaseModel
+
+from api.auth_middleware import AuthContext, get_current_auth
+from pydantic import BaseModel, Field
 from sqlalchemy import select, text
 
 from config import settings, get_nango_integration_id, get_provider_scope
 from models.database import get_admin_session, get_session
 from models.integration import Integration
+from models.memory import Memory
 from models.user import User
 from models.organization import Organization
 from services.nango import extract_connection_metadata, get_nango_client
@@ -36,6 +39,69 @@ from services.slack_conversations import upsert_slack_user_mappings_from_metadat
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+_AGENT_GLOBAL_COMMANDS_CATEGORY = "global_commands"
+
+
+async def _get_user_global_commands(session: Any, user: User) -> Optional[str]:
+    if not user.organization_id:
+        return None
+
+    result = await session.execute(
+        select(Memory.content)
+        .where(
+            Memory.organization_id == user.organization_id,
+            Memory.entity_type == "user",
+            Memory.entity_id == user.id,
+            Memory.category == _AGENT_GLOBAL_COMMANDS_CATEGORY,
+        )
+        .order_by(Memory.updated_at.desc().nullslast(), Memory.created_at.desc().nullslast())
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
+
+
+async def _set_user_global_commands(
+    session: Any,
+    user: User,
+    commands: Optional[str],
+) -> Optional[str]:
+    if not user.organization_id:
+        return None
+
+    result = await session.execute(
+        select(Memory).where(
+            Memory.organization_id == user.organization_id,
+            Memory.entity_type == "user",
+            Memory.entity_id == user.id,
+            Memory.category == _AGENT_GLOBAL_COMMANDS_CATEGORY,
+        )
+    )
+    memory: Optional[Memory] = result.scalar_one_or_none()
+
+    normalized = (commands or "").strip()
+    if not normalized:
+        if memory:
+            await session.delete(memory)
+        return None
+
+    if memory:
+        memory.content = normalized
+        memory.created_by_user_id = user.id
+        return normalized
+
+    session.add(
+        Memory(
+            entity_type="user",
+            entity_id=user.id,
+            organization_id=user.organization_id,
+            category=_AGENT_GLOBAL_COMMANDS_CATEGORY,
+            content=normalized,
+            created_by_user_id=user.id,
+        )
+    )
+    return normalized
 
 _NANGO_SENSITIVE_KEYS = {"credentials", "access_token", "refresh_token", "api_key", "apiKey", "token"}
 _NANGO_HIGHLIGHT_KEYS = {"end_user", "errors", "id", "last_fetched_at", "metadata"}
@@ -100,6 +166,9 @@ class UserResponse(BaseModel):
     name: Optional[str]
     role: Optional[str]
     avatar_url: Optional[str]
+    agent_global_commands: Optional[str]
+    phone_number: Optional[str]
+    job_title: Optional[str]
     organization_id: Optional[str]
 
 
@@ -174,10 +243,25 @@ async def get_current_user(user_id: Optional[str] = None) -> UserResponse:
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid user ID")
 
+    from models.org_member import OrgMember
+
     async with get_admin_session() as session:
         user = await session.get(User, user_uuid)
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
+
+        # Look up job title from organization membership
+        job_title: Optional[str] = None
+        if user.organization_id:
+            membership_result = await session.execute(
+                select(OrgMember.title).where(
+                    OrgMember.user_id == user_uuid,
+                    OrgMember.organization_id == user.organization_id,
+                )
+            )
+            job_title = membership_result.scalar_one_or_none()
+
+        agent_global_commands = await _get_user_global_commands(session, user)
 
         return UserResponse(
             id=str(user.id),
@@ -185,6 +269,9 @@ async def get_current_user(user_id: Optional[str] = None) -> UserResponse:
             name=user.name,
             role=user.role,
             avatar_url=user.avatar_url,
+            agent_global_commands=agent_global_commands,
+            phone_number=user.phone_number,
+            job_title=job_title,
             organization_id=str(user.organization_id) if user.organization_id else None,
         )
 
@@ -194,6 +281,9 @@ class UpdateProfileRequest(BaseModel):
 
     name: Optional[str] = None
     avatar_url: Optional[str] = None
+    agent_global_commands: Optional[str] = Field(default=None, max_length=500)
+    phone_number: Optional[str] = Field(default=None, max_length=30)
+    job_title: Optional[str] = Field(default=None, max_length=255)
 
 
 @router.patch("/me", response_model=UserResponse)
@@ -210,19 +300,45 @@ async def update_profile(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid user ID")
 
+    from models.org_member import OrgMember
+
     async with get_admin_session() as session:
         user = await session.get(User, user_uuid)
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
 
-        # Update fields if provided
+        # Update user-level fields if provided
         if request.name is not None:
             user.name = request.name
         if request.avatar_url is not None:
             user.avatar_url = request.avatar_url
+        agent_global_commands: Optional[str] = None
+        if request.agent_global_commands is not None:
+            agent_global_commands = await _set_user_global_commands(session, user, request.agent_global_commands)
+        else:
+            agent_global_commands = await _get_user_global_commands(session, user)
+        if request.phone_number is not None:
+            user.phone_number = request.phone_number or None
+
+        # Update job title on org_members
+        job_title: Optional[str] = None
+        if user.organization_id:
+            membership_result = await session.execute(
+                select(OrgMember).where(
+                    OrgMember.user_id == user_uuid,
+                    OrgMember.organization_id == user.organization_id,
+                )
+            )
+            membership: Optional[OrgMember] = membership_result.scalar_one_or_none()
+            if membership:
+                if request.job_title is not None:
+                    membership.title = request.job_title or None
+                job_title = membership.title
 
         await session.commit()
         await session.refresh(user)
+
+        agent_global_commands = await _get_user_global_commands(session, user)
 
         return UserResponse(
             id=str(user.id),
@@ -230,6 +346,9 @@ async def update_profile(
             name=user.name,
             role=user.role,
             avatar_url=user.avatar_url,
+            agent_global_commands=agent_global_commands,
+            phone_number=user.phone_number,
+            job_title=job_title,
             organization_id=str(user.organization_id) if user.organization_id else None,
         )
 
@@ -264,6 +383,7 @@ class SyncUserRequest(BaseModel):
     email: str
     name: Optional[str] = None
     avatar_url: Optional[str] = None
+    agent_global_commands: Optional[str] = None
     organization_id: Optional[str] = None
 
 
@@ -273,6 +393,7 @@ class SyncOrganizationData(BaseModel):
     id: str
     name: str
     logo_url: Optional[str] = None
+    subscription_required: bool = True
 
 
 class SyncUserResponse(BaseModel):
@@ -282,6 +403,9 @@ class SyncUserResponse(BaseModel):
     email: str
     name: Optional[str]
     avatar_url: Optional[str]
+    agent_global_commands: Optional[str]
+    phone_number: Optional[str] = None
+    job_title: Optional[str] = None
     organization_id: Optional[str]
     organization: Optional[SyncOrganizationData] = None
     status: str  # 'waitlist', 'invited', 'active'
@@ -352,7 +476,7 @@ async def sync_user(request: SyncUserRequest) -> SyncUserResponse:
                     f"Successfully migrated user ID from {old_id} to {user_uuid}"
                 )
 
-            from models.organization_membership import OrganizationMembership
+            from models.org_member import OrgMember
 
             # Always update last_login on sync (user just logged in)
             existing.last_login = datetime.utcnow()
@@ -362,13 +486,13 @@ async def sync_user(request: SyncUserRequest) -> SyncUserResponse:
                 existing.organization_id = org_uuid
                 # Ensure a membership exists for the new org
                 existing_membership_result = await session.execute(
-                    select(OrganizationMembership).where(
-                        OrganizationMembership.user_id == existing.id,
-                        OrganizationMembership.organization_id == org_uuid,
+                    select(OrgMember).where(
+                        OrgMember.user_id == existing.id,
+                        OrgMember.organization_id == org_uuid,
                     )
                 )
                 if not existing_membership_result.scalar_one_or_none():
-                    session.add(OrganizationMembership(
+                    session.add(OrgMember(
                         user_id=existing.id,
                         organization_id=org_uuid,
                         role=existing.role or "member",
@@ -394,12 +518,12 @@ async def sync_user(request: SyncUserRequest) -> SyncUserResponse:
 
             # Auto-activate any pending invitation memberships on login
             pending_result = await session.execute(
-                select(OrganizationMembership).where(
-                    OrganizationMembership.user_id == existing.id,
-                    OrganizationMembership.status == "invited",
+                select(OrgMember).where(
+                    OrgMember.user_id == existing.id,
+                    OrgMember.status == "invited",
                 )
             )
-            pending_memberships: list[OrganizationMembership] = list(
+            pending_memberships: list[OrgMember] = list(
                 pending_result.scalars().all()
             )
             for pm in pending_memberships:
@@ -418,34 +542,47 @@ async def sync_user(request: SyncUserRequest) -> SyncUserResponse:
             await session.commit()
             await session.refresh(existing)
             
-            # Load organization data if user has one
+            # Load organization data and job title if user has an org
             org_data: Optional[SyncOrganizationData] = None
+            sync_job_title: Optional[str] = None
             if existing.organization_id:
                 org = await session.get(Organization, existing.organization_id)
                 if org:
+                    _sub_ok = (org.subscription_status or "") in ("active", "trialing")
                     org_data = SyncOrganizationData(
                         id=str(org.id),
                         name=org.name,
                         logo_url=org.logo_url,
+                        subscription_required=not _sub_ok,
                     )
+                title_result = await session.execute(
+                    select(OrgMember.title).where(
+                        OrgMember.user_id == existing.id,
+                        OrgMember.organization_id == existing.organization_id,
+                    )
+                )
+                sync_job_title = title_result.scalar_one_or_none()
             
             return SyncUserResponse(
                 id=str(existing.id),
                 email=existing.email,
                 name=existing.name,
                 avatar_url=existing.avatar_url,
+                agent_global_commands=await _get_user_global_commands(session, existing),
+                phone_number=existing.phone_number,
+                job_title=sync_job_title,
                 organization_id=str(existing.organization_id) if existing.organization_id else None,
                 organization=org_data,
                 status=existing.status,
                 roles=existing.roles or [],
             )
 
-        from models.organization_membership import OrganizationMembership
+        from models.org_member import OrgMember
 
         # User doesn't exist — check for pending invitation first
         invite_result = await session.execute(
-            select(OrganizationMembership).where(
-                OrganizationMembership.status == "invited",
+            select(OrgMember).where(
+                OrgMember.status == "invited",
             )
         )
         # We need to find invitations that match this email, but the membership
@@ -488,7 +625,7 @@ async def sync_user(request: SyncUserRequest) -> SyncUserResponse:
                 await session.flush()
 
                 # Also create membership record
-                new_membership = OrganizationMembership(
+                new_membership = OrgMember(
                     user_id=new_user.id,
                     organization_id=existing_org.id,
                     role="member",
@@ -496,21 +633,27 @@ async def sync_user(request: SyncUserRequest) -> SyncUserResponse:
                     joined_at=datetime.utcnow(),
                 )
                 session.add(new_membership)
+                global_commands = await _set_user_global_commands(session, new_user, request.agent_global_commands)
                 await session.commit()
                 await session.refresh(new_user)
-                
+
                 # Include organization data for new user
+                _sub_ok = (existing_org.subscription_status or "") in ("active", "trialing")
                 org_data = SyncOrganizationData(
                     id=str(existing_org.id),
                     name=existing_org.name,
                     logo_url=existing_org.logo_url,
+                    subscription_required=not _sub_ok,
                 )
-                
+
                 return SyncUserResponse(
                     id=str(new_user.id),
                     email=new_user.email,
                     name=new_user.name,
                     avatar_url=new_user.avatar_url,
+                    agent_global_commands=global_commands,
+                    phone_number=new_user.phone_number,
+                    job_title=None,
                     organization_id=str(new_user.organization_id),
                     organization=org_data,
                     status=new_user.status,
@@ -619,6 +762,7 @@ class TeamMemberResponse(BaseModel):
     email: str
     role: Optional[str]
     avatar_url: Optional[str]
+    job_title: Optional[str] = None
     status: Optional[str] = None  # 'active', 'crm_only', etc.
     identities: list[IdentityMappingResponse] = []
 
@@ -646,33 +790,31 @@ class UnlinkIdentityRequest(BaseModel):
 @router.get("/organizations/{org_id}/members", response_model=TeamMembersListResponse)
 async def get_organization_members(
     org_id: str,
-    user_id: Optional[str] = None,
+    auth: AuthContext = Depends(get_current_auth),
 ) -> TeamMembersListResponse:
     """Get all team members for an organization, including identity mappings.
 
     Only accessible by members of that organization.
-    Uses organization_memberships table for membership lookups.
+    Uses JWT to identify the requester.
     """
     from models.slack_user_mapping import SlackUserMapping
-    from models.organization_membership import OrganizationMembership
-
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+    from models.org_member import OrgMember
 
     try:
         org_uuid = UUID(org_id)
-        user_uuid = UUID(user_id)
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid ID format")
+        raise HTTPException(status_code=400, detail="Invalid organization ID format")
+
+    user_uuid = auth.user_id
 
     # Use admin session so we can join across users + memberships without RLS issues
     async with get_admin_session() as session:
         # Verify requesting user has an active membership in this org
         requester_check = await session.execute(
-            select(OrganizationMembership).where(
-                OrganizationMembership.user_id == user_uuid,
-                OrganizationMembership.organization_id == org_uuid,
-                OrganizationMembership.status == "active",
+            select(OrgMember).where(
+                OrgMember.user_id == user_uuid,
+                OrgMember.organization_id == org_uuid,
+                OrgMember.status == "active",
             )
         )
         if not requester_check.scalar_one_or_none():
@@ -680,15 +822,18 @@ async def get_organization_members(
 
         # Fetch members via memberships (active and invited)
         membership_result = await session.execute(
-            select(User, OrganizationMembership)
-            .join(OrganizationMembership, User.id == OrganizationMembership.user_id)
+            select(User, OrgMember)
+            .join(OrgMember, User.id == OrgMember.user_id)
             .where(
-                OrganizationMembership.organization_id == org_uuid,
-                OrganizationMembership.status.in_(["active", "invited"]),
+                OrgMember.organization_id == org_uuid,
+                OrgMember.status.in_(["active", "invited"]),
             )
         )
         member_rows = membership_result.all()
         users: list[User] = [row[0] for row in member_rows]
+        membership_by_user: dict[UUID, OrgMember] = {
+            row[1].user_id: row[1] for row in member_rows
+        }
 
         # Fetch all identity mappings for this org in one query
         mappings_result = await session.execute(
@@ -721,6 +866,7 @@ async def get_organization_members(
                 )
                 for m in user_mappings
             ]
+            membership: OrgMember | None = membership_by_user.get(u.id)
             members.append(
                 TeamMemberResponse(
                     id=str(u.id),
@@ -728,6 +874,7 @@ async def get_organization_members(
                     email=u.email,
                     role=u.role,
                     avatar_url=u.avatar_url,
+                    job_title=membership.title if membership else None,
                     status=u.status,
                     identities=identities,
                 )
@@ -738,6 +885,7 @@ async def get_organization_members(
 
         # Avoid showing stale "unmapped" rows when the same external account
         # is already linked to a team user via the same source + external identity.
+        # Keep manually unlinked identities visible so admins can relink them.
         linked_identity_keys: set[tuple[str, str]] = set()
         for mapping in all_mappings:
             if mapping.user_id is None:
@@ -750,6 +898,16 @@ async def get_organization_members(
         for mapping in unmapped_mappings:
             identity_value = mapping.external_email or mapping.external_userid
             if not identity_value:
+                filtered_unmapped_mappings.append(mapping)
+                continue
+            if mapping.match_source == "manual_unlink":
+                logger.info(
+                    "Keeping manually unlinked identity id=%s org=%s source=%s identity=%s visible for relinking",
+                    mapping.id,
+                    org_id,
+                    mapping.source,
+                    identity_value,
+                )
                 filtered_unmapped_mappings.append(mapping)
                 continue
             if (mapping.source, identity_value.lower()) in linked_identity_keys:
@@ -887,6 +1045,7 @@ class InviteToOrgRequest(BaseModel):
 
     email: str
     role: str = "member"
+    name: Optional[str] = None
 
 
 class InviteToOrgResponse(BaseModel):
@@ -910,7 +1069,7 @@ async def invite_to_organization(
     Creates a membership with status='invited'. If the user doesn't exist
     yet, creates a stub user with status='invited'. Sends an invitation email.
     """
-    from models.organization_membership import OrganizationMembership
+    from models.org_member import OrgMember
     from services.email import send_org_invitation_email
 
     if not user_id:
@@ -927,27 +1086,30 @@ async def invite_to_organization(
         raise HTTPException(status_code=400, detail="Invalid email address")
 
     async with get_admin_session() as session:
-        # Verify inviter belongs to this org
+        # Verify inviter and load org
         inviter: Optional[User] = await session.get(User, inviter_uuid)
         if not inviter:
             raise HTTPException(status_code=403, detail="Not authorized")
 
-        # Check inviter has an active membership in this org
-        result = await session.execute(
-            select(OrganizationMembership).where(
-                OrganizationMembership.user_id == inviter_uuid,
-                OrganizationMembership.organization_id == org_uuid,
-                OrganizationMembership.status == "active",
-            )
-        )
-        inviter_membership: Optional[OrganizationMembership] = result.scalar_one_or_none()
-        if not inviter_membership:
-            raise HTTPException(status_code=403, detail="Not a member of this organization")
-
-        # Load the org for the email
         org: Optional[Organization] = await session.get(Organization, org_uuid)
         if not org:
             raise HTTPException(status_code=404, detail="Organization not found")
+
+        # Require inviter to be an active member, or be a global admin (e.g. Admin Panel inviting to any org)
+        is_global_admin: bool = (
+            inviter.role == "global_admin" or bool(inviter.roles and "global_admin" in inviter.roles)
+        )
+        if not is_global_admin:
+            result = await session.execute(
+                select(OrgMember).where(
+                    OrgMember.user_id == inviter_uuid,
+                    OrgMember.organization_id == org_uuid,
+                    OrgMember.status == "active",
+                )
+            )
+            inviter_membership: Optional[OrgMember] = result.scalar_one_or_none()
+            if not inviter_membership:
+                raise HTTPException(status_code=403, detail="Not a member of this organization")
 
         # Find or create the target user
         result = await session.execute(
@@ -957,8 +1119,10 @@ async def invite_to_organization(
 
         if not target_user:
             # Create stub user
+            invite_name: Optional[str] = (request.name or "").strip() or None
             target_user = User(
                 email=invite_email,
+                name=invite_name,
                 status="invited",
                 role="member",
                 invited_at=datetime.utcnow(),
@@ -968,12 +1132,12 @@ async def invite_to_organization(
 
         # Check for existing membership
         result = await session.execute(
-            select(OrganizationMembership).where(
-                OrganizationMembership.user_id == target_user.id,
-                OrganizationMembership.organization_id == org_uuid,
+            select(OrgMember).where(
+                OrgMember.user_id == target_user.id,
+                OrgMember.organization_id == org_uuid,
             )
         )
-        existing_membership: Optional[OrganizationMembership] = result.scalar_one_or_none()
+        existing_membership: Optional[OrgMember] = result.scalar_one_or_none()
 
         if existing_membership:
             if existing_membership.status == "active":
@@ -994,7 +1158,7 @@ async def invite_to_organization(
             await session.commit()
             membership_id_str: str = str(existing_membership.id)
         else:
-            new_membership = OrganizationMembership(
+            new_membership = OrgMember(
                 user_id=target_user.id,
                 organization_id=org_uuid,
                 role=request.role,
@@ -1041,18 +1205,12 @@ class UserOrganizationsListResponse(BaseModel):
 
 @router.get("/users/me/organizations", response_model=UserOrganizationsListResponse)
 async def list_user_organizations(
-    user_id: Optional[str] = None,
+    auth: AuthContext = Depends(get_current_auth),
 ) -> UserOrganizationsListResponse:
-    """List all organizations the authenticated user belongs to."""
-    from models.organization_membership import OrganizationMembership
+    """List all organizations the authenticated user belongs to (from JWT)."""
+    from models.org_member import OrgMember
 
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-
-    try:
-        user_uuid = UUID(user_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid user ID")
+    user_uuid = auth.user_id
 
     # Cross-org query — must bypass RLS
     async with get_admin_session() as session:
@@ -1061,11 +1219,11 @@ async def list_user_organizations(
             raise HTTPException(status_code=404, detail="User not found")
 
         result = await session.execute(
-            select(OrganizationMembership, Organization)
-            .join(Organization, OrganizationMembership.organization_id == Organization.id)
+            select(OrgMember, Organization)
+            .join(Organization, OrgMember.organization_id == Organization.id)
             .where(
-                OrganizationMembership.user_id == user_uuid,
-                OrganizationMembership.status == "active",
+                OrgMember.user_id == user_uuid,
+                OrgMember.status == "active",
             )
         )
         rows = result.all()
@@ -1093,23 +1251,20 @@ class SwitchActiveOrgRequest(BaseModel):
 @router.patch("/users/me/active-organization", response_model=SyncUserResponse)
 async def switch_active_organization(
     request: SwitchActiveOrgRequest,
-    user_id: Optional[str] = None,
+    auth: AuthContext = Depends(get_current_auth),
 ) -> SyncUserResponse:
     """Switch the user's active organization.
 
-    Validates that the user has an active membership in the target org,
+    Validates that the user (from JWT) has an active membership in the target org,
     then updates User.organization_id.
     """
-    from models.organization_membership import OrganizationMembership
-
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+    from models.org_member import OrgMember
 
     try:
-        user_uuid = UUID(user_id)
+        user_uuid = auth.user_id
         target_org_uuid = UUID(request.organization_id)
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid ID format")
+        raise HTTPException(status_code=400, detail="Invalid organization ID format")
 
     async with get_admin_session() as session:
         user: Optional[User] = await session.get(User, user_uuid)
@@ -1118,13 +1273,13 @@ async def switch_active_organization(
 
         # Validate membership
         result = await session.execute(
-            select(OrganizationMembership).where(
-                OrganizationMembership.user_id == user_uuid,
-                OrganizationMembership.organization_id == target_org_uuid,
-                OrganizationMembership.status == "active",
+            select(OrgMember).where(
+                OrgMember.user_id == user_uuid,
+                OrgMember.organization_id == target_org_uuid,
+                OrgMember.status == "active",
             )
         )
-        membership: Optional[OrganizationMembership] = result.scalar_one_or_none()
+        membership: Optional[OrgMember] = result.scalar_one_or_none()
         if not membership:
             raise HTTPException(
                 status_code=403,
@@ -1142,17 +1297,24 @@ async def switch_active_organization(
         org: Optional[Organization] = await session.get(Organization, target_org_uuid)
         org_data: Optional[SyncOrganizationData] = None
         if org:
+            _sub_ok = (org.subscription_status or "") in ("active", "trialing")
             org_data = SyncOrganizationData(
                 id=str(org.id),
                 name=org.name,
                 logo_url=org.logo_url,
+                subscription_required=not _sub_ok,
             )
+
+        agent_global_commands = await _get_user_global_commands(session, user)
 
         return SyncUserResponse(
             id=str(user.id),
             email=user.email,
             name=user.name,
             avatar_url=user.avatar_url,
+            agent_global_commands=agent_global_commands,
+            phone_number=user.phone_number,
+            job_title=membership.title if membership else None,
             organization_id=str(user.organization_id) if user.organization_id else None,
             organization=org_data,
             status=user.status,
@@ -1167,7 +1329,7 @@ async def remove_organization_member(
     user_id: Optional[str] = None,
 ) -> dict[str, str]:
     """Remove a member from an organization (deactivate membership)."""
-    from models.organization_membership import OrganizationMembership
+    from models.org_member import OrgMember
 
     if not user_id:
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -1182,24 +1344,24 @@ async def remove_organization_member(
     async with get_admin_session() as session:
         # Verify requester is a member of the org
         result = await session.execute(
-            select(OrganizationMembership).where(
-                OrganizationMembership.user_id == requester_uuid,
-                OrganizationMembership.organization_id == org_uuid,
-                OrganizationMembership.status == "active",
+            select(OrgMember).where(
+                OrgMember.user_id == requester_uuid,
+                OrgMember.organization_id == org_uuid,
+                OrgMember.status == "active",
             )
         )
-        requester_membership: Optional[OrganizationMembership] = result.scalar_one_or_none()
+        requester_membership: Optional[OrgMember] = result.scalar_one_or_none()
         if not requester_membership:
             raise HTTPException(status_code=403, detail="Not authorized")
 
         # Find target membership
         result = await session.execute(
-            select(OrganizationMembership).where(
-                OrganizationMembership.user_id == target_uuid,
-                OrganizationMembership.organization_id == org_uuid,
+            select(OrgMember).where(
+                OrgMember.user_id == target_uuid,
+                OrgMember.organization_id == org_uuid,
             )
         )
-        target_membership: Optional[OrganizationMembership] = result.scalar_one_or_none()
+        target_membership: Optional[OrgMember] = result.scalar_one_or_none()
         if not target_membership:
             raise HTTPException(status_code=404, detail="Member not found")
 
@@ -1326,10 +1488,12 @@ async def get_masquerade_user(
         if target_user.organization_id:
             org = await session.get(Organization, target_user.organization_id)
             if org:
+                _sub_ok = (org.subscription_status or "") in ("active", "trialing")
                 org_data = SyncOrganizationData(
                     id=str(org.id),
                     name=org.name,
                     logo_url=org.logo_url,
+                    subscription_required=not _sub_ok,
                 )
         
         return MasqueradeUserResponse(
@@ -1362,6 +1526,8 @@ async def get_available_integrations() -> AvailableIntegrationsResponse:
             {"id": "google_drive", "name": "Google Drive", "description": "Sync files from Google Drive — search and read Docs, Sheets, Slides"},
             {"id": "apollo", "name": "Apollo.io", "description": "Data enrichment - Update contact job titles, companies, emails"},
             {"id": "github", "name": "GitHub", "description": "Track repos, commits, and pull requests by team"},
+            {"id": "linear", "name": "Linear", "description": "Issue tracking - sync and manage teams, projects, and issues"},
+            {"id": "asana", "name": "Asana", "description": "Project management - sync and manage teams, projects, and tasks"},
         ]
     )
 
@@ -1566,6 +1732,29 @@ async def confirm_integration(
                 nango_connection_id,
                 slack_user_payload,
             )
+        # For Slack, ensure team_id is present in connection_metadata.
+        # Nango may store the Slack OAuth response in credentials.raw which
+        # contains team.id, or the auth.test response may be in data.
+        if request.provider == "slack":
+            if connection_metadata is None:
+                connection_metadata = {}
+            if "team_id" not in connection_metadata:
+                # Try credentials.raw.team.id (Slack OAuth v2 response)
+                creds_raw: dict[str, Any] = (connection.get("credentials") or {}).get("raw") or {}
+                raw_team: dict[str, Any] = creds_raw.get("team") or {}
+                raw_team_id: Optional[str] = raw_team.get("id") or creds_raw.get("team_id")
+                if raw_team_id:
+                    connection_metadata["team_id"] = raw_team_id
+                    logger.info(
+                        "[Confirm] Extracted Slack team_id=%s from credentials.raw for connection_id=%s",
+                        raw_team_id,
+                        nango_connection_id,
+                    )
+                else:
+                    logger.warning(
+                        "[Confirm] Could not extract Slack team_id from Nango connection for connection_id=%s",
+                        nango_connection_id,
+                    )
         if connection_metadata:
             print(
                 f"[Confirm] Retrieved Nango metadata for provider={request.provider}, "
@@ -1647,6 +1836,75 @@ async def confirm_integration(
         )
     
     return {"status": "confirmed", "provider": request.provider}
+
+
+_BUILTIN_CONNECTORS: frozenset[str] = frozenset({"web_search", "code_sandbox", "twilio"})
+
+
+class ConnectBuiltinRequest(BaseModel):
+    """Request to connect a built-in connector (no OAuth)."""
+
+    organization_id: str
+    provider: str  # web_search | code_sandbox | twilio
+    user_id: Optional[str] = None  # current user (for connected_by_user_id)
+
+
+@router.post("/integrations/connect-builtin")
+async def connect_builtin(request: ConnectBuiltinRequest) -> dict[str, Any]:
+    """
+    Create an Integration row for a built-in connector (Web Search, Code Sandbox, Twilio).
+
+    These connectors use platform credentials and do not go through Nango.
+    The user must explicitly "connect" them in the Connectors tab before the agent can use them.
+    """
+    if request.provider not in _BUILTIN_CONNECTORS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Provider '{request.provider}' is not a built-in connector. Use the regular connect flow for OAuth integrations.",
+        )
+    try:
+        org_uuid = UUID(request.organization_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid organization ID")
+
+    connected_by_uuid: Optional[UUID] = None
+    if request.user_id:
+        try:
+            connected_by_uuid = UUID(request.user_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid user ID")
+
+    async with get_session(organization_id=request.organization_id) as session:
+        await session.execute(
+            text("SELECT set_config('app.current_org_id', :org_id, true)"),
+            {"org_id": request.organization_id},
+        )
+        result = await session.execute(
+            select(Integration).where(
+                Integration.organization_id == org_uuid,
+                Integration.provider == request.provider,
+                Integration.user_id.is_(None),
+            )
+        )
+        existing = result.scalar_one_or_none()
+        if existing:
+            existing.is_active = True
+            existing.nango_connection_id = "builtin"
+            existing.updated_at = datetime.utcnow()
+        else:
+            new_integration = Integration(
+                organization_id=org_uuid,
+                provider=request.provider,
+                scope="organization",
+                user_id=None,
+                nango_connection_id="builtin",
+                connected_by_user_id=connected_by_uuid,
+                is_active=True,
+            )
+            session.add(new_integration)
+        await session.commit()
+
+    return {"status": "connected", "provider": request.provider}
 
 
 @router.get("/connect/{provider}/redirect")
@@ -1792,7 +2050,7 @@ async def list_integrations(
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid user ID")
 
-        async with get_session() as db_session:
+        async with get_admin_session() as db_session:
             user = await db_session.get(User, current_user_uuid)
             if not user or not user.organization_id:
                 raise HTTPException(status_code=404, detail="User not found")
@@ -2179,6 +2437,45 @@ async def disconnect_integration(
             deleted_meetings = len(result.fetchall())
             print(f"Disconnect: Deleted {deleted_meetings} orphaned meetings")
 
+            # 9. Delete tracker issues (references tracker_teams via team_id)
+            result = await db_session.execute(
+                text("""
+                    DELETE FROM tracker_issues
+                    WHERE organization_id = :org_id
+                      AND source_system = :source_system
+                    RETURNING id
+                """),
+                params,
+            )
+            deleted_tracker_issues: int = len(result.fetchall())
+            print(f"Disconnect: Deleted {deleted_tracker_issues} tracker issues")
+
+            # 10. Delete tracker projects
+            result = await db_session.execute(
+                text("""
+                    DELETE FROM tracker_projects
+                    WHERE organization_id = :org_id
+                      AND source_system = :source_system
+                    RETURNING id
+                """),
+                params,
+            )
+            deleted_tracker_projects: int = len(result.fetchall())
+            print(f"Disconnect: Deleted {deleted_tracker_projects} tracker projects")
+
+            # 11. Delete tracker teams (references integrations via integration_id)
+            result = await db_session.execute(
+                text("""
+                    DELETE FROM tracker_teams
+                    WHERE organization_id = :org_id
+                      AND source_system = :source_system
+                    RETURNING id
+                """),
+                params,
+            )
+            deleted_tracker_teams: int = len(result.fetchall())
+            print(f"Disconnect: Deleted {deleted_tracker_teams} tracker teams")
+
         print(f"Disconnect: Deleting integration from database")
         await db_session.delete(integration)
         await db_session.commit()
@@ -2236,7 +2533,7 @@ async def register_user(request: CreateUserRequest) -> CreateUserResponse:
                 organization_id=str(existing_user.organization_id) if existing_user.organization_id else "",
             )
 
-        from models.organization_membership import OrganizationMembership
+        from models.org_member import OrgMember
 
         # Create customer
         organization = Organization(
@@ -2256,7 +2553,7 @@ async def register_user(request: CreateUserRequest) -> CreateUserResponse:
         await session.flush()
 
         # Create membership
-        membership = OrganizationMembership(
+        membership = OrgMember(
             user_id=user.id,
             organization_id=organization.id,
             role="admin",
@@ -2302,6 +2599,8 @@ async def run_initial_sync(
     from connectors.fireflies import FirefliesConnector
     from connectors.zoom import ZoomConnector
     from connectors.github import GitHubConnector
+    from connectors.linear import LinearConnector
+    from connectors.asana import AsanaConnector
 
     # Google Drive uses a different sync pattern (not BaseConnector)
     if provider == "google_drive":
@@ -2319,6 +2618,8 @@ async def run_initial_sync(
         "fireflies": FirefliesConnector,
         "zoom": ZoomConnector,
         "github": GitHubConnector,
+        "linear": LinearConnector,
+        "asana": AsanaConnector,
     }
 
     connector_class = connectors.get(provider)

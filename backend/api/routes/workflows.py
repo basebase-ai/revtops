@@ -5,18 +5,32 @@ Provides CRUD operations for user-defined workflow automations.
 """
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 from typing import Any, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import select, and_
+from sqlalchemy import select, and_, func
 
 from models.database import get_session
 from models.workflow import Workflow, WorkflowRun
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
+
+
+DISALLOWED_WORKFLOW_TOOLS = {"manage_memory"}
+
+
+def _sanitize_workflow_auto_approve_tools(tools: list[str] | None) -> list[str]:
+    """Remove tool permissions that workflows are not allowed to use."""
+    sanitized = [tool for tool in (tools or []) if tool not in DISALLOWED_WORKFLOW_TOOLS]
+    removed = [tool for tool in (tools or []) if tool in DISALLOWED_WORKFLOW_TOOLS]
+    for tool in removed:
+        logger.info("[Workflows API] Removing disallowed workflow tool: %s", tool)
+    return sanitized
 
 
 # ============================================================================
@@ -95,6 +109,7 @@ class WorkflowResponse(BaseModel):
     last_error: Optional[str]
     created_at: str
     updated_at: str
+    latest_run_status: Optional[str] = None  # 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
 
 
 class WorkflowRunResponse(BaseModel):
@@ -152,8 +167,41 @@ async def list_workflows(
         result = await session.execute(query)
         workflows = result.scalars().all()
 
+        # Fetch latest run status for each workflow in one query
+        workflow_ids: list[UUID] = [w.id for w in workflows]
+        latest_run_statuses: dict[str, str] = {}
+        if workflow_ids:
+            # Subquery: max started_at per workflow
+            latest_sq = (
+                select(
+                    WorkflowRun.workflow_id,
+                    func.max(WorkflowRun.started_at).label("max_started"),
+                )
+                .where(WorkflowRun.workflow_id.in_(workflow_ids))
+                .group_by(WorkflowRun.workflow_id)
+                .subquery()
+            )
+            # Join back to get the status of that latest run
+            latest_result = await session.execute(
+                select(WorkflowRun.workflow_id, WorkflowRun.status).join(
+                    latest_sq,
+                    and_(
+                        WorkflowRun.workflow_id == latest_sq.c.workflow_id,
+                        WorkflowRun.started_at == latest_sq.c.max_started,
+                    ),
+                )
+            )
+            for wf_id, status in latest_result.all():
+                latest_run_statuses[str(wf_id)] = status
+
         return WorkflowListResponse(
-            workflows=[WorkflowResponse(**w.to_dict()) for w in workflows],
+            workflows=[
+                WorkflowResponse(
+                    **w.to_dict(),
+                    latest_run_status=latest_run_statuses.get(str(w.id)),
+                )
+                for w in workflows
+            ],
             total=len(workflows),
         )
 
@@ -237,7 +285,7 @@ async def create_workflow(
             trigger_config=request.trigger_config.model_dump(exclude_none=True),
             steps=[s.model_dump() for s in request.steps],
             prompt=request.prompt,
-            auto_approve_tools=request.auto_approve_tools,
+            auto_approve_tools=_sanitize_workflow_auto_approve_tools(request.auto_approve_tools),
             input_schema=request.input_schema,
             output_schema=request.output_schema,
             child_workflows=request.child_workflows,
@@ -292,7 +340,7 @@ async def update_workflow(
         if request.prompt is not None:
             workflow.prompt = request.prompt
         if request.auto_approve_tools is not None:
-            workflow.auto_approve_tools = request.auto_approve_tools
+            workflow.auto_approve_tools = _sanitize_workflow_auto_approve_tools(request.auto_approve_tools)
         if request.input_schema is not None:
             workflow.input_schema = request.input_schema
         if request.output_schema is not None:

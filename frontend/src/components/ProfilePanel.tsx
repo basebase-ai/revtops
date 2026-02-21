@@ -10,6 +10,7 @@
 import { useState } from 'react';
 import type { UserProfile } from './AppLayout';
 import { API_BASE } from '../lib/api';
+import { Memories } from './Memories';
 
 interface ProfilePanelProps {
   user: UserProfile;
@@ -19,7 +20,10 @@ interface ProfilePanelProps {
 }
 
 export function ProfilePanel({ user, onClose, onLogout, onUpdateUser }: ProfilePanelProps): JSX.Element {
+  const [activeTab, setActiveTab] = useState<'profile' | 'memories'>('profile');
   const [name, setName] = useState(user.name ?? '');
+  const [jobTitle, setJobTitle] = useState(user.jobTitle ?? '');
+  const [phoneNumber, setPhoneNumber] = useState(user.phoneNumber ?? '');
   const [isSaving, setIsSaving] = useState(false);
   // Only use local state for a NEW avatar selection, otherwise use the user prop directly
   const [newAvatarFile, setNewAvatarFile] = useState<string | null>(null);
@@ -38,6 +42,9 @@ export function ProfilePanel({ user, onClose, onLogout, onUpdateUser }: ProfileP
         body: JSON.stringify({
           name: name || null,
           avatar_url: avatarPreview,
+          agent_global_commands: user.agentGlobalCommands,
+          phone_number: phoneNumber.trim() || null,
+          job_title: jobTitle.trim() || null,
         }),
       });
 
@@ -46,12 +53,21 @@ export function ProfilePanel({ user, onClose, onLogout, onUpdateUser }: ProfileP
         throw new Error(data.detail ?? 'Failed to update profile');
       }
 
-      const updatedUser = await response.json() as { name: string | null; avatar_url: string | null };
+      const updatedUser = await response.json() as {
+        name: string | null;
+        avatar_url: string | null;
+        agent_global_commands: string | null;
+        phone_number: string | null;
+        job_title: string | null;
+      };
       
       // Update the store
       onUpdateUser({
         name: updatedUser.name,
         avatarUrl: updatedUser.avatar_url,
+        agentGlobalCommands: updatedUser.agent_global_commands,
+        phoneNumber: updatedUser.phone_number,
+        jobTitle: updatedUser.job_title,
       });
       
       onClose();
@@ -108,8 +124,35 @@ export function ProfilePanel({ user, onClose, onLogout, onUpdateUser }: ProfileP
           </button>
         </header>
 
+        <div className="px-6 pt-4 border-b border-surface-800">
+          <div className="flex gap-2">
+            <button
+              onClick={() => setActiveTab('profile')}
+              className={`px-3 py-2 text-sm rounded-t-lg transition-colors ${
+                activeTab === 'profile'
+                  ? 'bg-surface-800 text-surface-100'
+                  : 'text-surface-400 hover:text-surface-200 hover:bg-surface-800/60'
+              }`}
+            >
+              Profile
+            </button>
+            <button
+              onClick={() => setActiveTab('memories')}
+              className={`px-3 py-2 text-sm rounded-t-lg transition-colors ${
+                activeTab === 'memories'
+                  ? 'bg-surface-800 text-surface-100'
+                  : 'text-surface-400 hover:text-surface-200 hover:bg-surface-800/60'
+              }`}
+            >
+              Memories
+            </button>
+          </div>
+        </div>
+
         {/* Content */}
         <div className="flex-1 overflow-y-auto p-6 space-y-6">
+          {activeTab === 'profile' && (
+            <>
           {/* Avatar Section */}
           <div className="flex flex-col items-center">
             <div className="relative">
@@ -141,9 +184,6 @@ export function ProfilePanel({ user, onClose, onLogout, onUpdateUser }: ProfileP
             <p className="text-sm text-surface-400 mt-3">
               Click camera icon to change photo
             </p>
-            {error && (
-              <p className="text-sm text-red-400 mt-2">{error}</p>
-            )}
           </div>
 
           {/* Form Fields */}
@@ -161,6 +201,38 @@ export function ProfilePanel({ user, onClose, onLogout, onUpdateUser }: ProfileP
               />
             </div>
 
+
+            <div>
+              <label className="block text-sm font-medium text-surface-200 mb-2">
+                Job title
+              </label>
+              <input
+                type="text"
+                value={jobTitle}
+                onChange={(e) => setJobTitle(e.target.value)}
+                placeholder="e.g. VP of Sales, Account Executive"
+                className="input-field"
+                maxLength={255}
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-surface-200 mb-2">
+                Phone number
+              </label>
+              <input
+                type="tel"
+                value={phoneNumber}
+                onChange={(e) => setPhoneNumber(e.target.value)}
+                placeholder="e.g. +1 415-555-1234"
+                className="input-field"
+                maxLength={30}
+              />
+              <p className="text-xs text-surface-500 mt-1">
+                Used for urgent SMS alerts from workflows
+              </p>
+            </div>
+
             <div>
               <label className="block text-sm font-medium text-surface-200 mb-2">
                 Email
@@ -176,15 +248,6 @@ export function ProfilePanel({ user, onClose, onLogout, onUpdateUser }: ProfileP
               </p>
             </div>
           </div>
-
-          {/* Save Button */}
-          <button
-            onClick={() => void handleSave()}
-            disabled={isSaving}
-            className="w-full btn-primary disabled:opacity-50"
-          >
-            {isSaving ? 'Saving...' : 'Save changes'}
-          </button>
 
           {/* Account Info */}
           <div className="pt-4 border-t border-surface-800">
@@ -213,10 +276,30 @@ export function ProfilePanel({ user, onClose, onLogout, onUpdateUser }: ProfileP
               </div>
             </div>
           </div>
+            </>
+          )}
+
+          {activeTab === 'memories' && (
+            <div className="-m-6 h-full">
+              <Memories />
+            </div>
+          )}
         </div>
 
-        {/* Footer */}
-        <div className="p-6 border-t border-surface-800">
+        {/* Footer - always visible */}
+        <div className="p-6 border-t border-surface-800 space-y-3">
+          {error && (
+            <p className="text-sm text-red-400 text-center">{error}</p>
+          )}
+          {activeTab === 'profile' && (
+            <button
+              onClick={() => void handleSave()}
+              disabled={isSaving}
+              className="w-full btn-primary disabled:opacity-50"
+            >
+              {isSaving ? 'Saving...' : 'Save changes'}
+            </button>
+          )}
           <button
             onClick={handleLogout}
             className="w-full flex items-center justify-center gap-2 px-4 py-3 text-red-400 hover:text-red-300 hover:bg-red-500/10 rounded-lg transition-colors font-medium"

@@ -17,6 +17,7 @@ from typing import Any, Optional
 import httpx
 
 from connectors.base import BaseConnector
+from connectors.registry import AuthType, Capability, ConnectorMeta, ConnectorScope
 from models.activity import Activity
 from models.database import get_session
 from services.meeting_dedup import find_or_create_meeting
@@ -30,6 +31,16 @@ class MicrosoftCalendarConnector(BaseConnector):
     """Connector for Microsoft Outlook Calendar data via Microsoft Graph."""
 
     source_system = "microsoft_calendar"
+    meta = ConnectorMeta(
+        name="Microsoft Calendar",
+        slug="microsoft_calendar",
+        auth_type=AuthType.OAUTH2,
+        scope=ConnectorScope.USER,
+        entity_types=["activities"],
+        capabilities=[Capability.SYNC],
+        nango_integration_id="microsoft-calendar",
+        description="Microsoft Outlook Calendar – event sync",
+    )
 
     async def _get_headers(self) -> dict[str, str]:
         """Get authorization headers for Microsoft Graph API."""

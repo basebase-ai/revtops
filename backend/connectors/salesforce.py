@@ -18,6 +18,7 @@ import httpx
 from sqlalchemy import select
 
 from connectors.base import BaseConnector
+from connectors.registry import AuthType, Capability, ConnectorMeta, ConnectorScope
 from models.account import Account
 from models.activity import Activity
 from models.contact import Contact
@@ -34,6 +35,16 @@ class SalesforceConnector(BaseConnector):
     """Connector for Salesforce CRM."""
 
     source_system = "salesforce"
+    meta = ConnectorMeta(
+        name="Salesforce",
+        slug="salesforce",
+        auth_type=AuthType.OAUTH2,
+        scope=ConnectorScope.ORGANIZATION,
+        entity_types=["deals", "accounts", "contacts", "activities", "pipelines", "goals"],
+        capabilities=[Capability.SYNC, Capability.QUERY],
+        nango_integration_id="salesforce",
+        description="Salesforce CRM – opportunities, accounts, contacts, and activities",
+    )
 
     def __init__(self, organization_id: str) -> None:
         """Initialize the connector."""

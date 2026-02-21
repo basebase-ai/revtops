@@ -38,7 +38,7 @@ interface UseWebSocketReturn {
   reconnect: () => void;
 }
 
-export function useWebSocket(path: string, options?: UseWebSocketOptions): UseWebSocketReturn {
+export function useWebSocket(path: string, options?: UseWebSocketOptions, reconnectKey?: string): UseWebSocketReturn {
   const [isConnected, setIsConnected] = useState<boolean>(false);
   const [connectionState, setConnectionState] = useState<
     'connecting' | 'connected' | 'disconnected' | 'error'
@@ -134,6 +134,17 @@ export function useWebSocket(path: string, options?: UseWebSocketOptions): UseWe
 
     wsRef.current = ws;
   }, [path]);
+
+  // When reconnectKey changes (e.g. org switch), force a full reconnect
+  const reconnectKeyRef = useRef<string | undefined>(reconnectKey);
+  useEffect(() => {
+    if (reconnectKeyRef.current !== undefined && reconnectKeyRef.current !== reconnectKey) {
+      reconnectAttemptsRef.current = 0;
+      wsRef.current?.close();
+      void connect();
+    }
+    reconnectKeyRef.current = reconnectKey;
+  }, [reconnectKey, connect]);
 
   const reconnect = useCallback(() => {
     reconnectAttemptsRef.current = 0;

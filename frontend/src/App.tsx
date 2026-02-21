@@ -17,13 +17,15 @@ import { API_BASE } from './lib/api';
 import { useAppStore } from './store';
 import { Auth } from './components/Auth';
 import { CompanySetup } from './components/CompanySetup';
+import { SubscriptionSetup } from './components/SubscriptionSetup';
 import { AppLayout } from './components/AppLayout';
 import { OAuthCallback } from './components/OAuthCallback';
 import { AdminWaitlist } from './components/AdminWaitlist';
+import { AppEmbed } from './components/apps/AppEmbed';
 import type { User, AuthChangeEvent, Session } from '@supabase/supabase-js';
 import { queryClient } from './lib/queryClient';
 
-type Screen = 'auth' | 'blocked-email' | 'not-registered' | 'waitlist' | 'company-setup' | 'app';
+type Screen = 'auth' | 'blocked-email' | 'not-registered' | 'waitlist' | 'company-setup' | 'payment-setup' | 'app';
 
 // URL for public website (landing, blog, waitlist form)
 const WWW_URL = import.meta.env.VITE_WWW_URL ?? 'https://www.revtops.com';
@@ -135,6 +137,9 @@ function App(): JSX.Element {
               email: 'user@example.com',
               name: null,
               avatarUrl: null,
+              agentGlobalCommands: null,
+              phoneNumber: null,
+              jobTitle: null,
               roles: [],
             });
             setOrganization({
@@ -221,6 +226,9 @@ function App(): JSX.Element {
       email,
       name,
       avatarUrl,
+      agentGlobalCommands: existingUser?.agentGlobalCommands ?? null,
+      phoneNumber: existingUser?.phoneNumber ?? null,
+      jobTitle: existingUser?.jobTitle ?? null,
       roles: [],
     });
 
@@ -236,6 +244,7 @@ function App(): JSX.Element {
           email,
           name,
           avatar_url: avatarUrl,
+          agent_global_commands: existingUser?.agentGlobalCommands ?? null,
         }),
       });
 
@@ -257,6 +266,9 @@ function App(): JSX.Element {
           avatar_url: string | null;
           name: string | null;
           roles: string[];
+          agent_global_commands: string | null;
+          phone_number: string | null;
+          job_title: string | null;
           organization_id: string | null;
           organization: { id: string; name: string; logo_url: string | null } | null;
         };
@@ -268,6 +280,9 @@ function App(): JSX.Element {
           email,
           name: userData.name ?? name,
           avatarUrl: userData.avatar_url ?? avatarUrl,
+          agentGlobalCommands: userData.agent_global_commands ?? existingUser?.agentGlobalCommands ?? null,
+          phoneNumber: userData.phone_number ?? existingUser?.phoneNumber ?? null,
+          jobTitle: userData.job_title ?? existingUser?.jobTitle ?? null,
           roles: userData.roles ?? [],
         });
         
@@ -278,14 +293,33 @@ function App(): JSX.Element {
         // If status is 'invited', it gets upgraded to 'active' by the backend
 
         // If sync returned an organization (e.g. invited user who auto-activated),
-        // set it and go directly to app — skip domain lookup entirely
+        // set it then show app or payment-setup (only when no plan chosen yet)
         if (userData.organization) {
+          const org = userData.organization as { id: string; name: string; logo_url: string | null; subscription_required?: boolean };
           setOrganization({
-            id: userData.organization.id,
-            name: userData.organization.name,
-            logoUrl: userData.organization.logo_url,
+            id: org.id,
+            name: org.name,
+            logoUrl: org.logo_url ?? null,
           });
           await fetchUserOrganizations();
+          try {
+            const token = (await supabase.auth.getSession()).data.session?.access_token ?? null;
+            const res = await fetch(`${API_BASE}/billing/status`, {
+              headers: token ? { Authorization: `Bearer ${token}` } : {},
+            });
+            if (res.ok) {
+              const statusData = (await res.json()) as { subscription_required?: boolean; subscription_tier?: string | null };
+              if (statusData.subscription_required && !statusData.subscription_tier) {
+                setScreen('payment-setup');
+                return;
+              }
+            }
+          } catch (_e) {
+            if (org.subscription_required) {
+              setScreen('payment-setup');
+              return;
+            }
+          }
           setScreen('app');
           return;
         }
@@ -357,7 +391,22 @@ function App(): JSX.Element {
     // Fetch the user's org list (for multi-org switcher)
     await fetchUserOrganizations();
 
-    // Go directly to app - Home screen shows data source prompt if needed
+    // Check billing: only show full-screen payment-setup when no plan chosen yet
+    try {
+      const token = (await supabase.auth.getSession()).data.session?.access_token ?? null;
+      const res = await fetch(`${API_BASE}/billing/status`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      if (res.ok) {
+        const statusData = (await res.json()) as { subscription_required?: boolean; subscription_tier?: string | null };
+        if (statusData.subscription_required && !statusData.subscription_tier) {
+          setScreen('payment-setup');
+          return;
+        }
+      }
+    } catch (_e) {
+      // Proceed to app if billing check fails (e.g. not configured)
+    }
     setScreen('app');
   };
 
@@ -399,7 +448,22 @@ function App(): JSX.Element {
     // Fetch the user's org list (for multi-org switcher)
     await fetchUserOrganizations();
 
-    // Go directly to app - Home screen shows data source prompt if needed
+    // Check billing: only show full-screen payment-setup when no plan chosen yet
+    try {
+      const token = (await supabase.auth.getSession()).data.session?.access_token ?? null;
+      const res = await fetch(`${API_BASE}/billing/status`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      if (res.ok) {
+        const statusData = (await res.json()) as { subscription_required?: boolean; subscription_tier?: string | null };
+        if (statusData.subscription_required && !statusData.subscription_tier) {
+          setScreen('payment-setup');
+          return;
+        }
+      }
+    } catch (_e) {
+      // Proceed to app if billing check fails
+    }
     setScreen('app');
   };
 
@@ -461,6 +525,11 @@ function App(): JSX.Element {
   // Handle admin waitlist route
   if (path === '/admin/waitlist') {
     return <AdminWaitlist />;
+  }
+
+  // Handle embed route (standalone, no auth required – token in URL)
+  if (path.startsWith('/embed/')) {
+    return <AppEmbed />;
   }
 
   // Loading state
@@ -562,6 +631,14 @@ function App(): JSX.Element {
         <CompanySetup
           emailDomain={emailDomain}
           onComplete={(name) => void handleCompanySetup(name)}
+          onBack={() => void handleLogout()}
+        />
+      );
+
+    case 'payment-setup':
+      return (
+        <SubscriptionSetup
+          onComplete={() => setScreen('app')}
           onBack={() => void handleLogout()}
         />
       );

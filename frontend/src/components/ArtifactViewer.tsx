@@ -139,7 +139,7 @@ export function ArtifactViewer({
   if (isFileArtifact(artifact)) {
     return (
       <div className="h-full flex flex-col">
-        {/* Header with download button */}
+        {/* Header */}
         <div className="flex items-center justify-between mb-4 pb-3 border-b border-surface-700">
           <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-surface-700 text-surface-300">
             {getContentTypeLabel(artifact.contentType)}

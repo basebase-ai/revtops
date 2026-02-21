@@ -11,19 +11,22 @@ import json
 import logging
 import re
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
-from sqlalchemy import select, text, update
+from sqlalchemy import or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from agents.orchestrator import ChatOrchestrator
 from connectors.slack import SlackConnector
+from services.credits import can_use_credits
 from models.activity import Activity
 from models.conversation import Conversation
 from models.database import get_admin_session, get_session
 from models.integration import Integration
+from models.org_member import OrgMember
 from models.slack_user_mapping import SlackUserMapping
 from models.user import User
 from services.nango import extract_connection_metadata, get_nango_client
@@ -57,6 +60,8 @@ async def find_organization_by_slack_team(team_id: str) -> str | None:
     Find the organization ID for a Slack team/workspace.
 
     Matches the incoming team_id against metadata on active Slack integrations.
+    Falls back to calling Slack's ``auth.test`` to resolve and backfill the
+    team_id when it is missing from ``extra_data``.
 
     Args:
         team_id: Slack workspace/team ID (e.g., "T04ABCDEF")
@@ -71,10 +76,11 @@ async def find_organization_by_slack_team(team_id: str) -> str | None:
             .where(Integration.is_active == True)
         )
         result = await session.execute(query)
-        integrations = result.scalars().all()
+        integrations: list[Integration] = list(result.scalars().all())
 
+        # --- Fast path: match on stored team_id in extra_data ---
         for integration in integrations:
-            extra_data = integration.extra_data or {}
+            extra_data: dict[str, Any] = integration.extra_data or {}
             if extra_data.get("team_id") == team_id:
                 logger.info(
                     "[slack_conversations] Matched Slack team %s to org %s via integration metadata",
@@ -91,8 +97,99 @@ async def find_organization_by_slack_team(team_id: str) -> str | None:
             )
             return str(integrations[0].organization_id)
 
+        # --- Slow path: resolve team_id via auth.test for integrations missing it ---
+        integrations_missing_team_id: list[Integration] = [
+            i for i in integrations if not (i.extra_data or {}).get("team_id")
+        ]
+        if integrations_missing_team_id:
+            logger.info(
+                "[slack_conversations] %d Slack integration(s) missing team_id in extra_data; resolving via auth.test",
+                len(integrations_missing_team_id),
+            )
+            for integration in integrations_missing_team_id:
+                resolved_team_id: str | None = await _resolve_team_id_via_auth_test(integration)
+                if resolved_team_id is None:
+                    continue
+                # Backfill the team_id so future lookups use the fast path
+                merged_extra: dict[str, Any] = dict(integration.extra_data or {})
+                merged_extra["team_id"] = resolved_team_id
+                await _update_integration_metadata(integration.id, merged_extra)
+                logger.info(
+                    "[slack_conversations] Backfilled team_id=%s for Slack integration %s (org %s)",
+                    resolved_team_id,
+                    integration.id,
+                    integration.organization_id,
+                )
+                if resolved_team_id == team_id:
+                    logger.info(
+                        "[slack_conversations] Matched Slack team %s to org %s via auth.test",
+                        team_id,
+                        integration.organization_id,
+                    )
+                    return str(integration.organization_id)
+
     logger.warning("[slack_conversations] No Slack integration found for team=%s", team_id)
     return None
+
+
+async def _resolve_team_id_via_auth_test(integration: Integration) -> str | None:
+    """Call Slack ``auth.test`` to discover the team_id for an integration.
+
+    Returns the team_id string, or None on failure.
+    """
+    import httpx
+
+    nango_connection_id: str | None = integration.nango_connection_id
+    if not nango_connection_id:
+        logger.warning(
+            "[slack_conversations] Cannot resolve team_id: integration %s has no nango_connection_id",
+            integration.id,
+        )
+        return None
+
+    try:
+        nango = get_nango_client()
+        nango_integration_id: str = get_nango_integration_id("slack")
+        token: str = await nango.get_token(nango_integration_id, nango_connection_id)
+    except Exception as exc:
+        logger.warning(
+            "[slack_conversations] Failed to get Slack token for integration %s: %s",
+            integration.id,
+            exc,
+        )
+        return None
+
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                "https://slack.com/api/auth.test",
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=10.0,
+            )
+            resp.raise_for_status()
+            data: dict[str, Any] = resp.json()
+            if not data.get("ok"):
+                logger.warning(
+                    "[slack_conversations] auth.test failed for integration %s: %s",
+                    integration.id,
+                    data.get("error", "unknown"),
+                )
+                return None
+            resolved: str | None = data.get("team_id")
+            if resolved:
+                logger.info(
+                    "[slack_conversations] auth.test returned team_id=%s for integration %s",
+                    resolved,
+                    integration.id,
+                )
+            return resolved
+    except Exception as exc:
+        logger.warning(
+            "[slack_conversations] auth.test request failed for integration %s: %s",
+            integration.id,
+            exc,
+        )
+        return None
 
 
 def _extract_slack_user_ids(extra_data: dict[str, Any]) -> set[str]:
@@ -231,9 +328,21 @@ async def refresh_slack_user_mappings_from_directory(
         organization_id,
     )
     async with get_admin_session() as session:
-        users_query = select(User).where(User.organization_id == UUID(organization_id))
+        # Include users from org_members (multi-org support).
+        org_uuid: UUID = UUID(organization_id)
+        membership_subq = (
+            select(OrgMember.user_id)
+            .where(OrgMember.organization_id == org_uuid)
+            .where(OrgMember.status == "active")
+        )
+        users_query = select(User).where(
+            or_(
+                User.organization_id == org_uuid,
+                User.id.in_(membership_subq),
+            )
+        )
         users_result = await session.execute(users_query)
-        org_users = users_result.scalars().all()
+        org_users: list[User] = list(users_result.scalars().all())
 
     email_to_user: dict[str, User] = {}
     for user in org_users:
@@ -881,6 +990,30 @@ def _extract_slack_display_name(slack_user: dict[str, Any] | None) -> str | None
     return display_name or None
 
 
+def _extract_slack_timezone(slack_user: dict[str, Any] | None) -> str | None:
+    """Extract the IANA timezone string (e.g. ``America/Los_Angeles``) from a
+    Slack ``users.info`` response.  Returns ``None`` when unavailable."""
+    if not slack_user:
+        return None
+    tz: str = (slack_user.get("tz") or "").strip()
+    return tz or None
+
+
+def _compute_local_time_iso(timezone: str | None) -> str | None:
+    """Return the current time in *timezone* as an ISO-8601 string, or
+    ``None`` if the timezone is unknown / invalid."""
+    if not timezone:
+        return None
+    try:
+        zone: ZoneInfo = ZoneInfo(timezone)
+        return datetime.now(UTC).astimezone(zone).strftime("%Y-%m-%dT%H:%M:%S")
+    except (KeyError, Exception):
+        logger.warning(
+            "[slack_conversations] Invalid IANA timezone from Slack: %s", timezone,
+        )
+        return None
+
+
 async def resolve_revtops_user_for_slack_actor(
     organization_id: str,
     slack_user_id: str,
@@ -889,9 +1022,22 @@ async def resolve_revtops_user_for_slack_actor(
     """Resolve the RevTops user linked to a Slack actor in this organization."""
 
     async with get_admin_session() as session:
-        users_query = select(User).where(User.organization_id == UUID(organization_id))
+        # Find users who belong to this org — either via their active org
+        # or via the org_members table (multi-org support).
+        org_uuid: UUID = UUID(organization_id)
+        membership_subq = (
+            select(OrgMember.user_id)
+            .where(OrgMember.organization_id == org_uuid)
+            .where(OrgMember.status == "active")
+        )
+        users_query = select(User).where(
+            or_(
+                User.organization_id == org_uuid,
+                User.id.in_(membership_subq),
+            )
+        )
         users_result = await session.execute(users_query)
-        org_users = users_result.scalars().all()
+        org_users: list[User] = list(users_result.scalars().all())
 
         # "Connected their Slack" can be represented by either user-scoped Slack
         # integrations (user_id) or organization-scoped Slack integrations that were
@@ -1087,12 +1233,62 @@ async def resolve_revtops_user_for_slack_actor(
     return None
 
 
+def _merge_participating_user_ids(
+    existing_ids: list[UUID] | None,
+    candidate_user_id: str | None,
+) -> list[UUID]:
+    """Return participant UUIDs with candidate moved to the end as most recent."""
+    merged_ids: list[UUID] = list(existing_ids or [])
+    if not candidate_user_id:
+        return merged_ids
+
+    candidate_uuid: UUID = UUID(candidate_user_id)
+    merged_ids = [participant for participant in merged_ids if participant != candidate_uuid]
+    merged_ids.append(candidate_uuid)
+    return merged_ids
+
+
+def _resolve_current_revtops_user_id(
+    linked_user: User | None,
+    conversation: Conversation,
+) -> str | None:
+    """Pick the current user context using most recent speaker first, then historical fallback."""
+    if linked_user:
+        return str(linked_user.id)
+
+    participant_ids: list[UUID] = list(conversation.participating_user_ids or [])
+    if participant_ids:
+        return str(participant_ids[-1])
+
+    if conversation.user_id:
+        return str(conversation.user_id)
+
+    return None
+
+
+def _resolve_thread_active_user_id(
+    linked_user: User | None,
+    conversation: Conversation,
+    speaker_changed: bool,
+) -> str | None:
+    """Resolve thread active user, forcing handoff to the newest speaker."""
+    if speaker_changed:
+        return str(linked_user.id) if linked_user else None
+
+    return _resolve_current_revtops_user_id(
+        linked_user=linked_user,
+        conversation=conversation,
+    )
+
+
 async def find_or_create_conversation(
     organization_id: str,
     slack_channel_id: str,
     slack_user_id: str,
     revtops_user_id: str | None,
     slack_user_name: str | None = None,
+    slack_source: str = "dm",
+    clear_current_user_on_unresolved: bool = False,
 ) -> Conversation:
     """
     Find an existing Slack conversation or create a new one.
@@ -1101,9 +1297,10 @@ async def find_or_create_conversation(
     
     Args:
         organization_id: The organization this conversation belongs to
-        slack_channel_id: Slack DM channel ID
+        slack_channel_id: Slack channel ID (plain for DMs, channel:thread_ts for mentions/threads)
         slack_user_id: Slack user ID who initiated the conversation
         revtops_user_id: Linked RevTops user UUID string if available
+        slack_source: Origin type — "dm", "mention", or "thread"
         
     Returns:
         Existing or new Conversation instance
@@ -1120,22 +1317,66 @@ async def find_or_create_conversation(
         conversation = result.scalar_one_or_none()
         
         if conversation:
-            if revtops_user_id and conversation.user_id is None:
-                conversation.user_id = UUID(revtops_user_id)
-                await session.commit()
+            changed: bool = False
+            previous_source_user_id: str | None = conversation.source_user_id
+
+            if conversation.source_user_id != slack_user_id:
+                conversation.source_user_id = slack_user_id
+                changed = True
                 logger.info(
-                    "[slack_conversations] Linked existing conversation %s to user %s",
+                    "[slack_conversations] Updated conversation %s source_user_id from %s to %s",
                     conversation.id,
-                    revtops_user_id,
+                    previous_source_user_id,
+                    slack_user_id,
                 )
-            if slack_user_name and (not conversation.title or conversation.title == "Slack DM"):
-                conversation.title = f"Slack DM - {slack_user_name}"
-                await session.commit()
+
+            merged_participants = _merge_participating_user_ids(
+                conversation.participating_user_ids,
+                revtops_user_id,
+            )
+            if merged_participants != (conversation.participating_user_ids or []):
+                conversation.participating_user_ids = merged_participants
+                changed = True
+                logger.info(
+                    "[slack_conversations] Added participant to conversation %s participants=%s",
+                    conversation.id,
+                    [str(participant) for participant in merged_participants],
+                )
+
+            if revtops_user_id:
+                resolved_user_id = UUID(revtops_user_id)
+                if conversation.user_id != resolved_user_id:
+                    conversation.user_id = resolved_user_id
+                    changed = True
+                    logger.info(
+                        "[slack_conversations] Set conversation %s current user to %s",
+                        conversation.id,
+                        revtops_user_id,
+                    )
+            elif clear_current_user_on_unresolved and conversation.user_id is not None:
+                previous_user_id: str = str(conversation.user_id)
+                conversation.user_id = None
+                changed = True
+                logger.info(
+                    "[slack_conversations] Cleared conversation %s current user (was %s) after unresolved Slack speaker %s",
+                    conversation.id,
+                    previous_user_id,
+                    slack_user_id,
+                )
+
+            source_label: str = {"dm": "Slack DM", "mention": "Slack @mention", "thread": "Slack Thread"}.get(slack_source, "Slack")
+            default_titles: set[str] = {"Slack DM", "Slack @mention", "Slack Thread", "Slack"}
+            if slack_user_name and (not conversation.title or conversation.title in default_titles):
+                conversation.title = f"{source_label} - {slack_user_name}"
+                changed = True
                 logger.info(
                     "[slack_conversations] Updated Slack conversation %s title to %s",
                     conversation.id,
                     conversation.title,
                 )
+
+            if changed:
+                await session.commit()
 
             logger.info(
                 "[slack_conversations] Found existing conversation %s for channel %s",
@@ -1144,15 +1385,17 @@ async def find_or_create_conversation(
             )
             return conversation
         
-        # Create new conversation for this Slack DM
+        # Create new conversation for this Slack channel/thread
+        source_label = {"dm": "Slack DM", "mention": "Slack @mention", "thread": "Slack Thread"}.get(slack_source, "Slack")
         conversation = Conversation(
             organization_id=UUID(organization_id),
             user_id=UUID(revtops_user_id) if revtops_user_id else None,
             source="slack",
             source_channel_id=slack_channel_id,
             source_user_id=slack_user_id,
+            participating_user_ids=_merge_participating_user_ids([], revtops_user_id),
             type="agent",
-            title=f"Slack DM - {slack_user_name}" if slack_user_name else "Slack DM",
+            title=f"{source_label} - {slack_user_name}" if slack_user_name else source_label,
         )
         session.add(conversation)
         await session.commit()
@@ -1467,20 +1710,15 @@ async def process_slack_dm(
         slack_user_id=user_id,
         slack_user=slack_user,
     )
-    slack_user_name = _extract_slack_display_name(slack_user)
-    slack_user_email = _extract_slack_email(slack_user)
+    slack_user_name: str | None = _extract_slack_display_name(slack_user)
+    slack_user_email: str | None = _extract_slack_email(slack_user)
+    slack_user_tz: str | None = _extract_slack_timezone(slack_user)
     if not linked_user:
-        logger.warning(
-            "[slack_conversations] No linked RevTops user for Slack actor=%s org=%s",
+        logger.info(
+            "[slack_conversations] No linked RevTops user for Slack actor=%s org=%s; proceeding without user context",
             user_id,
             organization_id,
         )
-        await _post_cannot_action_response(
-            connector=connector,
-            channel=channel_id,
-        )
-        await connector.remove_reaction(channel=channel_id, timestamp=event_ts)
-        return {"status": "error", "error": "No linked RevTops user for Slack actor"}
 
     # Find or create conversation
     conversation = await find_or_create_conversation(
@@ -1496,7 +1734,16 @@ async def process_slack_dm(
     if files:
         attachment_ids = await _download_and_store_slack_files(connector, files)
 
+    if not await can_use_credits(organization_id):
+        await connector.post_message(
+            channel=channel_id,
+            text="You're out of credits or don't have an active subscription. Please add a payment method in Revtops to continue.",
+        )
+        await connector.remove_reaction(channel=channel_id, timestamp=event_ts)
+        return {"status": "error", "error": "insufficient_credits"}
+
     # Process message through orchestrator
+    local_time_iso: str | None = _compute_local_time_iso(slack_user_tz)
     orchestrator = ChatOrchestrator(
         user_id=str(linked_user.id) if linked_user else None,
         organization_id=organization_id,
@@ -1505,6 +1752,9 @@ async def process_slack_dm(
         source_user_id=user_id,
         source_user_email=slack_user_email,
         workflow_context=None,
+        source="slack_dm",
+        timezone=slack_user_tz,
+        local_time=local_time_iso,
     )
 
     total_length: int = await _stream_and_post_responses(
@@ -1586,43 +1836,86 @@ async def process_slack_mention(
         slack_user_id=user_id,
         slack_user=slack_user,
     )
-    slack_user_name = _extract_slack_display_name(slack_user)
-    slack_user_email = _extract_slack_email(slack_user)
+    existing_conversation: Conversation | None = await find_thread_conversation(
+        organization_id=organization_id,
+        channel_id=channel_id,
+        thread_ts=thread_ts,
+    )
+    speaker_changed: bool = bool(
+        existing_conversation and existing_conversation.source_user_id != user_id
+    )
+    previous_source_user_id: str | None = (
+        existing_conversation.source_user_id if existing_conversation else None
+    )
+
+    current_user_id: str | None
+    if existing_conversation:
+        current_user_id = _resolve_thread_active_user_id(
+            linked_user=linked_user,
+            conversation=existing_conversation,
+            speaker_changed=speaker_changed,
+        )
+    else:
+        current_user_id = str(linked_user.id) if linked_user else None
+
+    if speaker_changed:
+        logger.info(
+            "[slack_conversations] Mention thread %s:%s speaker handoff detected from %s to %s; switching active user to %s",
+            channel_id,
+            thread_ts,
+            previous_source_user_id,
+            user_id,
+            current_user_id,
+        )
+
+    slack_user_name: str | None = _extract_slack_display_name(slack_user)
+    slack_user_email: str | None = _extract_slack_email(slack_user)
+    slack_user_tz: str | None = _extract_slack_timezone(slack_user)
     if not linked_user:
-        logger.warning(
-            "[slack_conversations] No linked RevTops user for Slack actor=%s org=%s",
+        logger.info(
+            "[slack_conversations] No linked RevTops user for Slack actor=%s org=%s; proceeding without user context",
             user_id,
             organization_id,
         )
-        await _post_cannot_action_response(
-            connector=connector,
-            channel=channel_id,
-            thread_ts=thread_ts,
-        )
-        await connector.remove_reaction(channel=channel_id, timestamp=thread_ts)
-        return {"status": "error", "error": "No linked RevTops user for Slack actor"}
     conversation = await find_or_create_conversation(
         organization_id=organization_id,
         slack_channel_id=source_channel_id,
         slack_user_id=user_id,
-        revtops_user_id=str(linked_user.id) if linked_user else None,
+        revtops_user_id=current_user_id,
         slack_user_name=slack_user_name,
+        slack_source="mention",
+        clear_current_user_on_unresolved=speaker_changed,
     )
+
+    active_user_id: str | None = str(conversation.user_id) if conversation.user_id else None
 
     # Download any attached Slack files
     attachment_ids: list[str] = []
     if files:
         attachment_ids = await _download_and_store_slack_files(connector, files)
 
+    if not await can_use_credits(organization_id):
+        await connector.post_message(
+            channel=channel_id,
+            text="You're out of credits or don't have an active subscription. Please add a payment method in Revtops to continue.",
+            thread_ts=thread_ts,
+        )
+        await connector.remove_reaction(channel=channel_id, timestamp=thread_ts)
+        return {"status": "error", "error": "insufficient_credits"}
+
     # Process message through orchestrator
+    local_time_iso: str | None = _compute_local_time_iso(slack_user_tz)
     orchestrator = ChatOrchestrator(
-        user_id=str(linked_user.id) if linked_user else None,
+        user_id=active_user_id,
         organization_id=organization_id,
         conversation_id=str(conversation.id),
-        user_email=linked_user.email if linked_user else None,
+        user_email=linked_user.email if linked_user and active_user_id == str(linked_user.id) else None,
         source_user_id=user_id,
         source_user_email=slack_user_email,
-        workflow_context=None,
+        workflow_context={"slack_channel_id": channel_id, "slack_thread_ts": thread_ts},
+        source="slack_mention",
+        timezone=slack_user_tz,
+        local_time=local_time_iso,
     )
 
     total_length: int = await _stream_and_post_responses(
@@ -1706,19 +1999,68 @@ async def process_slack_thread_reply(
         )
         return {"status": "ignored", "reason": "bot not participating in thread"}
 
+    speaker_changed: bool = conversation.source_user_id != user_id
+    previous_source_user_id: str | None = conversation.source_user_id
+    current_source_user_id: str = user_id if speaker_changed else (conversation.source_user_id or user_id)
+
     connector = SlackConnector(organization_id=organization_id)
 
-    # Show a reaction on the user's reply so they know the bot is working
+    # Show a reaction on the user's reply immediately so they know the bot is working
     await connector.add_reaction(channel=channel_id, timestamp=event_ts)
+
+    if speaker_changed:
+        logger.info(
+            "[slack_conversations] Thread %s:%s speaker handoff detected from %s to %s; applying source speaker handoff before additional processing",
+            channel_id,
+            thread_ts,
+            previous_source_user_id,
+            user_id,
+        )
+        conversation = await find_or_create_conversation(
+            organization_id=organization_id,
+            slack_channel_id=f"{channel_id}:{thread_ts}",
+            slack_user_id=current_source_user_id,
+            revtops_user_id=None,
+            slack_source="thread",
+            clear_current_user_on_unresolved=True,
+        )
+
     slack_user = await _fetch_slack_user_info(
         organization_id=organization_id,
         slack_user_id=user_id,
     )
-    slack_user_email = _extract_slack_email(slack_user)
-    await resolve_revtops_user_for_slack_actor(
+    slack_user_email: str | None = _extract_slack_email(slack_user)
+    slack_user_tz: str | None = _extract_slack_timezone(slack_user)
+    linked_user = await resolve_revtops_user_for_slack_actor(
         organization_id=organization_id,
         slack_user_id=user_id,
         slack_user=slack_user,
+    )
+
+    current_user_id: str | None = _resolve_thread_active_user_id(
+        linked_user=linked_user,
+        conversation=conversation,
+        speaker_changed=speaker_changed,
+    )
+    current_user_email: str | None = linked_user.email if linked_user else None
+
+    if speaker_changed:
+        logger.info(
+            "[slack_conversations] Thread %s:%s global context handoff to active user=%s completed for speaker=%s",
+            channel_id,
+            thread_ts,
+            current_user_id,
+            user_id,
+        )
+
+    # Ensure speaker and active user context are persisted before any further processing.
+    conversation = await find_or_create_conversation(
+        organization_id=organization_id,
+        slack_channel_id=f"{channel_id}:{thread_ts}",
+        slack_user_id=current_source_user_id,
+        revtops_user_id=current_user_id,
+        slack_source="thread",
+        clear_current_user_on_unresolved=speaker_changed,
     )
 
     # Download any attached Slack files
@@ -1726,15 +2068,28 @@ async def process_slack_thread_reply(
     if files:
         attachment_ids = await _download_and_store_slack_files(connector, files)
 
+    if not await can_use_credits(organization_id):
+        await connector.post_message(
+            channel=channel_id,
+            text="You're out of credits or don't have an active subscription. Please add a payment method in Revtops to continue.",
+            thread_ts=thread_ts,
+        )
+        await connector.remove_reaction(channel=channel_id, timestamp=event_ts)
+        return {"status": "error", "error": "insufficient_credits"}
+
     # Process message through orchestrator, posting incrementally
+    local_time_iso: str | None = _compute_local_time_iso(slack_user_tz)
     orchestrator = ChatOrchestrator(
-        user_id=None,
+        user_id=current_user_id,
         organization_id=organization_id,
         conversation_id=str(conversation.id),
-        user_email=None,
-        source_user_id=user_id,
+        user_email=current_user_email,
+        source_user_id=current_source_user_id,
         source_user_email=slack_user_email,
-        workflow_context={"slack_channel_id": channel_id},
+        workflow_context={"slack_channel_id": channel_id, "slack_thread_ts": thread_ts},
+        source="slack_thread",
+        timezone=slack_user_tz,
+        local_time=local_time_iso,
     )
 
     total_length: int = await _stream_and_post_responses(

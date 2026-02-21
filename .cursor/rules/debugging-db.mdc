@@ -1,0 +1,18 @@
+---
+description: Use dbq.py for quick database queries during debugging
+globs: backend/**/*.py
+alwaysApply: false
+---
+
+# Database Debugging
+
+A lightweight SQL query tool exists at `backend/scripts/dbq.py`. Use it for ad-hoc database inspection:
+
+```bash
+python3 backend/scripts/dbq.py "SELECT id, role, created_at FROM chat_messages WHERE conversation_id = '...' ORDER BY created_at"
+```
+
+- Reads `DATABASE_URL` from the project root `.env`
+- Outputs JSON with proper UUID/datetime serialisation
+- Works for both SELECT and DML statements
+- Run from the `backend/` directory or project root

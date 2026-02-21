@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from models.deal import Deal
     from models.user_tool_setting import UserToolSetting
     from models.change_session import ChangeSession
+    from models.credit_transaction import CreditTransaction
 
 
 class User(Base):
@@ -40,7 +41,10 @@ class User(Base):
         JSONB, nullable=False, default=list
     )  # Global roles like ['global_admin']
     avatar_url: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
-    
+    phone_number: Mapped[Optional[str]] = mapped_column(
+        String(30), nullable=True, unique=True
+    )  # E.164 format, e.g. "+14155551234"
+
     # Waitlist fields
     status: Mapped[str] = mapped_column(
         String(20), nullable=False, default="active"
@@ -69,6 +73,9 @@ class User(Base):
     change_sessions: Mapped[list["ChangeSession"]] = relationship(
         "ChangeSession", back_populates="user", foreign_keys="ChangeSession.user_id"
     )
+    credit_transactions: Mapped[list["CreditTransaction"]] = relationship(
+        "CreditTransaction", back_populates="user", foreign_keys="CreditTransaction.user_id"
+    )
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for API responses."""
@@ -80,5 +87,6 @@ class User(Base):
             "roles": self.roles,
             "status": self.status,
             "avatar_url": self.avatar_url,
+            "phone_number": self.phone_number,
             "organization_id": str(self.organization_id) if self.organization_id else None,
         }

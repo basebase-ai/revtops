@@ -47,11 +47,15 @@ class Settings(BaseSettings):
     # Anthropic
     ANTHROPIC_API_KEY: Optional[str] = None
     
-    # OpenAI (for embeddings)
+    # OpenAI (for embeddings + research fallback)
     OPENAI_API_KEY: Optional[str] = None
+    OPENAI_RESEARCH_MODEL: str = "gpt-5"  # Prefer GPT-5+ for web research synthesis
     
     # Perplexity (for web search)
     PERPLEXITY_API_KEY: Optional[str] = None
+
+    # Exa (for web search tool, provider="exa")
+    EXA_API_KEY: Optional[str] = None
 
     # Nango - OAuth & credential management for all integrations
     NANGO_SECRET_KEY: Optional[str] = None
@@ -68,9 +72,11 @@ class Settings(BaseSettings):
     NANGO_MICROSOFT_MAIL_INTEGRATION_ID: str = "microsoft"
     NANGO_FIREFLIES_INTEGRATION_ID: str = "fireflies"
     NANGO_ZOOM_INTEGRATION_ID: str = "zoom"
-    NANGO_GOOGLE_DRIVE_INTEGRATION_ID: str = "google-sheet"
+    NANGO_GOOGLE_DRIVE_INTEGRATION_ID: str = "google-drive"
     NANGO_APOLLO_INTEGRATION_ID: str = "apollo"
     NANGO_GITHUB_INTEGRATION_ID: str = "github"
+    NANGO_LINEAR_INTEGRATION_ID: str = "linear"
+    NANGO_ASANA_INTEGRATION_ID: str = "asana"
 
     # App
     SECRET_KEY: str = "dev-secret-change-in-production"
@@ -94,12 +100,26 @@ class Settings(BaseSettings):
     TWILIO_ACCOUNT_SID: Optional[str] = None
     TWILIO_AUTH_TOKEN: Optional[str] = None
     TWILIO_PHONE_NUMBER: Optional[str] = None  # E.164 format, e.g., +14155551234
+    TWILIO_WEBHOOK_URL: Optional[str] = None  # Exact public URL for signature validation, e.g., https://api.revtops.com/api/twilio/webhook
     
     # Slack Events API (for receiving DMs)
     SLACK_SIGNING_SECRET: Optional[str] = None
     
     # ScrapingBee (for fetch_url tool - web scraping with proxy support)
     SCRAPINGBEE_API_KEY: Optional[str] = None
+
+    # E2B (sandboxed code execution for execute_command tool)
+    E2B_API_KEY: Optional[str] = None
+
+    # Stripe (subscription billing)
+    STRIPE_SECRET_KEY: Optional[str] = None
+    STRIPE_WEBHOOK_SECRET: Optional[str] = None
+    STRIPE_PUBLISHABLE_KEY: Optional[str] = None
+
+    @property
+    def sandbox_database_url(self) -> str:
+        """Sync Postgres URL for E2B sandbox (strips SQLAlchemy asyncpg prefix)."""
+        return self.DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://")
 
     class Config:
         env_file = str(_env_file)
@@ -168,6 +188,8 @@ NANGO_INTEGRATION_IDS: dict[str, str] = {
     "google_drive": settings.NANGO_GOOGLE_DRIVE_INTEGRATION_ID,
     "apollo": settings.NANGO_APOLLO_INTEGRATION_ID,
     "github": settings.NANGO_GITHUB_INTEGRATION_ID,
+    "linear": settings.NANGO_LINEAR_INTEGRATION_ID,
+    "asana": settings.NANGO_ASANA_INTEGRATION_ID,
 }
 
 # Provider scope mapping: which integrations are user-scoped vs org-scoped
@@ -186,17 +208,54 @@ PROVIDER_SCOPES: dict[str, str] = {
     "google_drive": "user",
     "apollo": "organization",
     "github": "organization",
+    "linear": "organization",
+    "asana": "organization",
+    "web_search": "organization",
+    "code_sandbox": "organization",
+    "twilio": "organization",
 }
 
 
 def get_nango_integration_id(provider: str) -> str:
-    """Get the Nango integration ID for a provider."""
+    """Get the Nango integration ID for a provider.
+
+    Falls back to ConnectorMeta.nango_integration_id for connectors that
+    aren't in the hardcoded dict (e.g. community connectors).
+    """
     integration_id = NANGO_INTEGRATION_IDS.get(provider)
-    if not integration_id:
-        raise ValueError(f"Unknown provider: {provider}")
-    return integration_id
+    if integration_id:
+        return integration_id
+
+    try:
+        from connectors.registry import discover_connectors
+
+        registry = discover_connectors()
+        connector_cls = registry.get(provider)
+        if connector_cls and hasattr(connector_cls, "meta") and connector_cls.meta.nango_integration_id:
+            return connector_cls.meta.nango_integration_id
+    except Exception:
+        pass
+
+    raise ValueError(f"Unknown provider: {provider}")
 
 
 def get_provider_scope(provider: str) -> str:
-    """Get the scope for a provider ('organization' or 'user')."""
-    return PROVIDER_SCOPES.get(provider, "organization")
+    """Get the scope for a provider ('organization' or 'user').
+
+    Falls back to ConnectorMeta.scope for community connectors.
+    """
+    scope = PROVIDER_SCOPES.get(provider)
+    if scope:
+        return scope
+
+    try:
+        from connectors.registry import discover_connectors
+
+        registry = discover_connectors()
+        connector_cls = registry.get(provider)
+        if connector_cls and hasattr(connector_cls, "meta"):
+            return connector_cls.meta.scope.value
+    except Exception:
+        pass
+
+    return "organization"

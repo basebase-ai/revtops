@@ -63,6 +63,25 @@ class DriveFileContentResponse(BaseModel):
     content_length: int
 
 
+class DriveCreateFileRequest(BaseModel):
+    """Request to create a new Google Workspace file."""
+    file_type: str
+    title: str
+    content: Any
+    folder_id: Optional[str] = None
+
+
+class DriveCreateFileResponse(BaseModel):
+    """Response for file creation."""
+    status: str
+    external_id: str
+    name: str
+    file_type: str
+    mime_type: str
+    web_view_link: str
+    populate_warning: Optional[str] = None
+
+
 # =============================================================================
 # Endpoints
 # =============================================================================
@@ -146,6 +165,41 @@ async def read_file_content(
         raise HTTPException(
             status_code=500, detail=f"Failed to read file: {str(e)}"
         )
+
+
+@router.post("/files", response_model=DriveCreateFileResponse)
+async def create_file(
+    request: DriveCreateFileRequest,
+    auth: AuthContext = Depends(get_current_auth),
+) -> DriveCreateFileResponse:
+    """
+    Create a new Google Workspace file (Doc, Sheet, or Slides).
+
+    The file is created natively in Google Drive and populated with the
+    provided content via the Docs/Sheets/Slides API.
+    """
+    org_id, usr_id = _get_org_and_user(auth)
+
+    try:
+        connector = GoogleDriveConnector(org_id, usr_id)
+        result: dict[str, Any] = await connector.create_file(
+            file_type=request.file_type,
+            title=request.title,
+            content=request.content,
+            folder_id=request.folder_id,
+        )
+
+        if "error" in result:
+            raise HTTPException(status_code=400, detail=result["error"])
+
+        return DriveCreateFileResponse(**result)
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error("[Drive] Create file failed: %s", e)
+        raise HTTPException(status_code=500, detail=f"Failed to create file: {str(e)}")
 
 
 # =============================================================================

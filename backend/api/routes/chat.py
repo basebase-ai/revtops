@@ -58,7 +58,10 @@ def _build_conversation_access_filter(
     auth: AuthContext,
     slack_user_ids: set[str],
 ):
-    base_filter = Conversation.user_id == auth.user_id
+    base_filter = or_(
+        Conversation.user_id == auth.user_id,
+        Conversation.participating_user_ids.any(auth.user_id),
+    )
     if not slack_user_ids:
         return base_filter
     slack_filter = and_(
@@ -232,6 +235,7 @@ async def create_conversation(
         conversation = Conversation(
             user_id=auth.user_id,
             organization_id=auth.organization_id,
+            participating_user_ids=[auth.user_id],
             title=request.title,
         )
         session.add(conversation)
@@ -441,6 +445,7 @@ async def send_message(
     For streaming responses, use the WebSocket endpoint.
     """
     from agents.orchestrator import ChatOrchestrator
+    from services.credits import can_use_credits
 
     try:
         conv_uuid = UUID(request.conversation_id) if request.conversation_id else None
@@ -448,6 +453,11 @@ async def send_message(
         raise HTTPException(status_code=400, detail="Invalid conversation ID format")
 
     org_id = auth.organization_id_str
+    if org_id and not await can_use_credits(org_id):
+        raise HTTPException(
+            status_code=402,
+            detail="Insufficient credits or no active subscription. Please upgrade your plan or add a payment method.",
+        )
 
     async with get_session(organization_id=org_id) as session:
         # Create conversation if not provided

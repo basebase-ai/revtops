@@ -52,6 +52,9 @@ class ToolDefinition:
     
     default_requires_approval: bool
     """Whether this tool requires user approval by default."""
+
+    workflow_only: bool = False
+    """Whether this tool should only be exposed during workflow executions."""
     
     # Note: execute_fn is set separately to avoid circular imports
     # The actual execution functions are in tools.py
@@ -70,6 +73,7 @@ def register_tool(
     input_schema: dict[str, Any],
     category: ToolCategory,
     default_requires_approval: bool = False,
+    workflow_only: bool = False,
 ) -> None:
     """Register a tool in the registry."""
     TOOL_DEFINITIONS[name] = ToolDefinition(
@@ -78,6 +82,7 @@ def register_tool(
         input_schema=input_schema,
         category=category,
         default_requires_approval=default_requires_approval,
+        workflow_only=workflow_only,
     )
 
 
@@ -97,17 +102,30 @@ Available tables:
 - deals: Sales opportunities (name, amount, stage, close_date, owner_id, account_id)
 - accounts: Companies/customers (name, domain, industry, employee_count)
 - contacts: People at accounts (name, email, title, phone, account_id)
-- activities: Raw activity records - query by TYPE not source
+- activities: Raw activity records - query by TYPE not source. Has a vector embedding column for semantic search (see below)
 - pipelines: Sales pipelines (name, display_order, is_default)
 - pipeline_stages: Stages in pipelines (pipeline_id, name, probability)
+- goals: Revenue goals and quotas synced from CRM (name, target_amount, start_date, end_date, goal_type, owner_id, pipeline_id, source_system, source_id, custom_fields JSONB). Compare target_amount against deal totals to measure progress.
 - integrations: Connected data sources (provider, is_active, last_sync_at)
-- users: Team members (email, name, role)
+- users: Team members (email, name, role, phone_number in E.164 format e.g. +14155551234)
 - user_mappings_for_identity: Slack identity links (external_userid, external_email, match_source)
 - organizations: User's company info (name, logo_url)
+- workflows: Workflow definitions (name, trigger_type, prompt, is_enabled, auto_approve_tools). Useful for listing and inspecting automations.
+- workflow_runs: Workflow execution history (workflow_id, status, started_at, completed_at, output, workflow_notes). Useful for querying past run outcomes and notes.
 - github_repositories: Tracked GitHub repos (full_name, owner, name, is_tracked, last_sync_at). Join to commits/PRs via repository_id.
-- github_commits: Commits on tracked repos (repository_id, sha, message, author_name, author_email, author_login, author_date, additions, deletions, user_id). Use organization_id in WHERE.
-- github_pull_requests: PRs on tracked repos (repository_id, number, title, state, author_login, created_date, merged_date, additions, deletions, user_id). Use organization_id in WHERE.
-- shared_files: Synced file metadata from cloud sources like Google Drive (external_id, source, name, mime_type, folder_path, web_view_link, file_size, source_modified_at). Filter by organization_id AND user_id AND source (e.g. 'google_drive'). Use search_cloud_files tool instead for name-based searches.
+- github_commits: Commits on tracked repos (repository_id, sha, message, author_name, author_email, author_login, author_date, additions, deletions, user_id).
+- github_pull_requests: PRs on tracked repos (repository_id, number, title, state, author_login, created_date, merged_date, additions, deletions, user_id).
+- tracker_teams: Issue tracker teams/workspaces (source_system, source_id, name, key, description). Filter by source_system ('linear', 'jira', 'asana'). Join to issues via team_id.
+- tracker_projects: Issue tracker projects (source_system, source_id, name, description, state, progress, target_date, start_date, lead_name, team_ids JSONB). Filter by source_system.
+- tracker_issues: Issue tracker issues/tasks (source_system, source_id, team_id, identifier e.g. "ENG-123", title, description, state_name, state_type, priority 0-4, priority_label, issue_type, assignee_name, assignee_email, creator_name, project_id, labels JSONB, estimate, url, due_date, created_date, updated_date, completed_date, cancelled_date, user_id). Filter by source_system.
+- shared_files: Synced file metadata from cloud sources like Google Drive (external_id, source, name, mime_type, folder_path, web_view_link, file_size, source_modified_at). Filter by source (e.g. 'google_drive'). Use query_system(system='google_drive', query='search:...') for name-based searches.
+- temp_data: Agent-generated results and computed metrics. Flexible JSONB storage linked to entities. Columns: entity_type, entity_id, namespace, key, value (JSONB), metadata (JSONB), created_by_user_id, created_at, expires_at. Example: SELECT td.value->>'score' as confidence, d.name FROM temp_data td JOIN deals d ON d.id = td.entity_id WHERE td.namespace = 'deal_confidence'
+
+SEMANTIC SEARCH on activities: Use semantic_embed('natural language query') as an inline function to generate an embedding vector. Combine with the <=> cosine distance operator to rank by similarity.
+Example: SELECT id, type, subject, description, activity_date, 1 - (embedding <=> semantic_embed('pricing negotiations')) AS similarity FROM activities WHERE embedding IS NOT NULL ORDER BY embedding <=> semantic_embed('pricing negotiations') LIMIT 10
+You can add extra WHERE clauses (e.g. type = 'email') alongside the vector search.
+
+IMPORTANT: Do NOT add organization_id to WHERE clauses. Data is automatically scoped to the user's organization via row-level security. Adding organization_id filters will cause queries to return wrong results.
 
 IMPORTANT: Only SELECT queries are allowed. No INSERT, UPDATE, DELETE, DROP, etc.""",
     input_schema={
@@ -126,39 +144,110 @@ IMPORTANT: Only SELECT queries are allowed. No INSERT, UPDATE, DELETE, DROP, etc
 
 
 register_tool(
-    name="search_activities",
-    description="""Semantic search across emails, meetings, messages, and other activities.
+    name="list_connected_systems",
+    description="""Refresh and return the capabilities manifest for all connected systems.
 
-Use this when the user wants to find activities by meaning/concept rather than exact text.
-This searches the content of emails, meeting transcripts, messages, etc.
+Use this to get an up-to-date list of connected integrations and their capabilities
+(query, write, action). The manifest shows available operations and their parameters
+for each system. Useful when the user asks about available integrations or when you
+need to verify a system is connected before using it.""",
+    input_schema={
+        "type": "object",
+        "properties": {},
+        "required": [],
+    },
+    category=ToolCategory.LOCAL_READ,
+    default_requires_approval=False,
+)
 
-Examples:
-- "Find emails about pricing negotiations"
-- "Search for meeting discussions about the Q4 roadmap"
-- "Look for communications about contract renewal"
 
-For exact text matching, use run_sql_query with ILIKE instead.""",
+register_tool(
+    name="query_system",
+    description="""Query a connected system for on-demand data retrieval.
+
+Use this for any QUERY-capable connector: web search (web_search), Apollo enrichment,
+Google Drive file search/read, or any future connector with query capability.
+
+The query string format depends on the system — check the Connected Systems manifest
+in the system prompt for each system's query_description.""",
     input_schema={
         "type": "object",
         "properties": {
+            "system": {
+                "type": "string",
+                "description": "Connector slug (e.g. 'web_search', 'apollo', 'google_drive')",
+            },
             "query": {
                 "type": "string",
-                "description": "Natural language search query",
-            },
-            "types": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "Filter by type: 'email', 'meeting', 'meeting_transcript', 'slack_message', 'call'",
-            },
-            "limit": {
-                "type": "integer",
-                "description": "Max results to return (default 10)",
-                "default": 10,
+                "description": "Query string — format depends on the system (see Connected Systems manifest)",
             },
         },
-        "required": ["query"],
+        "required": ["system", "query"],
     },
-    category=ToolCategory.LOCAL_READ,
+    category=ToolCategory.EXTERNAL_READ,
+    default_requires_approval=False,
+)
+
+
+register_tool(
+    name="write_to_system",
+    description="""Create or update records in a connected system.
+
+Use this for any WRITE-capable connector: HubSpot (deals, contacts, companies),
+GitHub/Linear/Asana (issues), or any future connector with write capability.
+
+Check the Connected Systems manifest for available operations and their required parameters.""",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "system": {
+                "type": "string",
+                "description": "Connector slug (e.g. 'hubspot', 'linear', 'github', 'asana')",
+            },
+            "operation": {
+                "type": "string",
+                "description": "Write operation name (e.g. 'create_deal', 'update_issue')",
+            },
+            "data": {
+                "type": "object",
+                "description": "Record data — fields depend on system and operation (see Connected Systems manifest)",
+            },
+        },
+        "required": ["system", "operation", "data"],
+    },
+    category=ToolCategory.EXTERNAL_WRITE,
+    default_requires_approval=False,
+)
+
+
+register_tool(
+    name="run_action",
+    description="""Execute a side-effect action on a connected system.
+
+Use this for any ACTION-capable connector: sending Slack messages, sending emails
+(Gmail/Outlook), sending SMS (Twilio), fetching URLs (web_search), creating Google Drive
+files, executing sandbox commands (code_sandbox), or any future connector with action capability.
+
+Check the Connected Systems manifest for available actions and their required parameters.""",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "system": {
+                "type": "string",
+                "description": "Connector slug (e.g. 'slack', 'gmail', 'twilio', 'web_search', 'code_sandbox')",
+            },
+            "action": {
+                "type": "string",
+                "description": "Action name (e.g. 'send_message', 'send_email', 'send_sms', 'fetch_url', 'execute_command')",
+            },
+            "params": {
+                "type": "object",
+                "description": "Action parameters — fields depend on system and action (see Connected Systems manifest)",
+            },
+        },
+        "required": ["system", "action", "params"],
+    },
+    category=ToolCategory.EXTERNAL_WRITE,
     default_requires_approval=False,
 )
 
@@ -185,8 +274,10 @@ Writable tables:
 - contacts: (email, firstname, lastname, company, jobtitle, phone) → pending review
 - deals: (dealname, amount, dealstage, closedate) → pending review  
 - accounts: (name, domain, industry, numberofemployees) → pending review
+- users: (phone_number) → immediate. Phone numbers MUST be E.164 format with country code, e.g. +14155551234 for US numbers. If the user gives a 10-digit number like 4159028648, prepend +1.
 - workflows: See workflow format below → immediate
 - artifacts: (type, title, description, data) → immediate
+- temp_data: (entity_type, entity_id, namespace, key, value, metadata, expires_at) → immediate. Flexible JSONB store for computed results. Use namespace to group (e.g. 'deal_confidence'). value is JSONB, any shape.
 
 **WORKFLOW FORMAT (Important!):**
 Workflows are prompts sent to the agent on a schedule. Use these columns:
@@ -194,7 +285,7 @@ Workflows are prompts sent to the agent on a schedule. Use these columns:
 - prompt: Natural language instructions for what the agent should do
 - trigger_type: 'schedule', 'event', or 'manual'
 - trigger_config: JSON with cron expression, e.g. '{"cron": "0 9 * * *"}'
-- auto_approve_tools: JSON array of tools that run without approval, e.g. '["run_sql_query", "send_slack"]'
+- auto_approve_tools: JSON array of tools that run without approval, e.g. '["run_sql_query", "run_action"]'
 
 DO NOT use the 'steps' column - it's deprecated. Use 'prompt' instead.
 
@@ -205,7 +296,7 @@ VALUES (
   'Query deals to get a summary of open opportunities. Include total count, value by stage, and top 5 deals by amount. Format a nice summary with emojis and post to #sales on Slack.',
   'schedule',
   '{"cron": "0 9 * * *"}',
-  '["run_sql_query", "send_slack"]'
+  '["run_sql_query", "run_action"]'
 )
 
 Auto-managed columns (don't include):
@@ -278,399 +369,8 @@ For PDFs, write the content in markdown format - it will be converted to PDF."""
 
 
 # -----------------------------------------------------------------------------
-# EXTERNAL_READ Tools - May cost money but no side effects
+# EXTERNAL_WRITE Tools - Permanent external actions
 # -----------------------------------------------------------------------------
-
-register_tool(
-    name="web_search",
-    description="""Search the web for real-time information and get summarized results.
-
-Use this when you need external information not available in the user's data:
-- Industry benchmarks or best practices
-- Company information not in the CRM
-- Market trends or competitor analysis
-- Current events or news about companies
-- Sales methodologies or frameworks
-
-Do NOT use this for data that's in the user's database - use run_sql_query instead.""",
-    input_schema={
-        "type": "object",
-        "properties": {
-            "query": {
-                "type": "string",
-                "description": "The search query - be specific and include relevant context",
-            },
-        },
-        "required": ["query"],
-    },
-    category=ToolCategory.EXTERNAL_READ,
-    default_requires_approval=False,
-)
-
-
-register_tool(
-    name="fetch_url",
-    description="""Fetch the content of a web page by URL.
-
-Use this when you need to read the actual content of a specific web page:
-- Scrape a company's website, pricing page, or blog post
-- Read a specific article or documentation page
-- Extract structured data from a known URL
-- Get the raw HTML of a page for analysis
-
-By default this fetches directly (free, no proxy). Options:
-- extract_text: Return clean extracted text instead of raw HTML (recommended for most use cases)
-- render_js: Enable headless browser rendering for JS-heavy pages (uses ScrapingBee, costs credits)
-- premium_proxy: Use residential proxy for sites that block datacenter IPs (uses ScrapingBee, costs credits)
-- wait_ms: Wait time in ms after page load before capturing (only with render_js)
-
-Only enable render_js or premium_proxy when actually needed — plain fetches are free.
-For general web research where you don't have a specific URL, use web_search instead.""",
-    input_schema={
-        "type": "object",
-        "properties": {
-            "url": {
-                "type": "string",
-                "description": "The full URL to fetch (must start with http:// or https://)",
-            },
-            "extract_text": {
-                "type": "boolean",
-                "description": "If true, return clean extracted text instead of raw HTML. Recommended for readability.",
-                "default": True,
-            },
-            "render_js": {
-                "type": "boolean",
-                "description": "If true, render JavaScript using a headless browser. Use for SPAs and JS-heavy sites.",
-                "default": False,
-            },
-            "premium_proxy": {
-                "type": "boolean",
-                "description": "If true, use residential proxy. Use for sites that block datacenter IPs (e.g. LinkedIn).",
-                "default": False,
-            },
-            "wait_ms": {
-                "type": "integer",
-                "description": "Milliseconds to wait after page load before capturing (only with render_js=true, max 35000).",
-            },
-        },
-        "required": ["url"],
-    },
-    category=ToolCategory.EXTERNAL_READ,
-    default_requires_approval=False,
-)
-
-
-register_tool(
-    name="enrich_contacts_with_apollo",
-    description="""Enrich contacts using Apollo.io's database to get current job titles, companies, and contact info.
-
-Use this when users want to:
-- Update outdated job titles and companies for contacts
-- Fill in missing information like email, phone, LinkedIn
-- Verify and refresh contact data quality
-
-IMPORTANT: This requires Apollo.io integration and consumes credits.""",
-    input_schema={
-        "type": "object",
-        "properties": {
-            "contacts": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "email": {"type": "string"},
-                        "first_name": {"type": "string"},
-                        "last_name": {"type": "string"},
-                        "domain": {"type": "string"},
-                        "linkedin_url": {"type": "string"},
-                        "organization_name": {"type": "string"},
-                    },
-                },
-                "description": "List of contacts to enrich",
-            },
-            "reveal_personal_emails": {
-                "type": "boolean",
-                "description": "Request personal emails (uses additional credits)",
-                "default": False,
-            },
-            "reveal_phone_numbers": {
-                "type": "boolean",
-                "description": "Request phone numbers (uses additional credits)",
-                "default": False,
-            },
-            "limit": {
-                "type": "integer",
-                "description": "Maximum contacts to enrich (default 50, max 500)",
-                "default": 50,
-            },
-        },
-        "required": ["contacts"],
-    },
-    category=ToolCategory.EXTERNAL_READ,
-    default_requires_approval=False,
-)
-
-
-register_tool(
-    name="enrich_company_with_apollo",
-    description="""Enrich a company/organization using Apollo.io's database.
-
-Get detailed company information like:
-- Industry and sub-industry
-- Employee count and revenue estimates
-- Technologies used
-- Company description and keywords
-
-Requires company domain (e.g., "acme.com") to look up.""",
-    input_schema={
-        "type": "object",
-        "properties": {
-            "domain": {
-                "type": "string",
-                "description": "Company domain to enrich (e.g., 'acme.com')",
-            },
-        },
-        "required": ["domain"],
-    },
-    category=ToolCategory.EXTERNAL_READ,
-    default_requires_approval=False,
-)
-
-
-# -----------------------------------------------------------------------------
-# EXTERNAL_WRITE Tools - Permanent external actions, approval by default
-# -----------------------------------------------------------------------------
-
-register_tool(
-    name="crm_write",
-    description="""Create or update records in the CRM (HubSpot) in bulk.
-
-Use this when the user wants to add, update, or import contacts, companies, deals, or
-engagement activities (calls, emails, meetings, notes).
-This tool accepts a batch of records (up to 100) and routes them through a review workflow:
-changes appear as "pending" in the Pending Changes panel where the user can Commit or Discard.
-
-Property names for each record type:
-- **contact**: email (required), firstname, lastname, company, jobtitle, phone
-- **company**: name (required), domain, industry, numberofemployees
-- **deal**: dealname (required), amount, dealstage, closedate, pipeline
-- **call**: hs_timestamp (required), hs_call_title, hs_call_body, hs_call_duration (ms),
-  hs_call_direction (INBOUND/OUTBOUND), hs_call_status (COMPLETED/NO_ANSWER/BUSY/etc),
-  hs_call_disposition, hubspot_owner_id
-- **email**: hs_timestamp (required), hs_email_subject, hs_email_text,
-  hs_email_direction (EMAIL=outbound/INCOMING_EMAIL/FORWARDED_EMAIL),
-  hs_email_status (SENT/BOUNCED/etc), hubspot_owner_id
-- **meeting**: hs_timestamp (required), hs_meeting_title, hs_meeting_body,
-  hs_meeting_start_time, hs_meeting_end_time, hs_meeting_location,
-  hs_meeting_outcome (SCHEDULED/COMPLETED/RESCHEDULED/NO_SHOW/CANCELED), hubspot_owner_id
-- **note**: hs_timestamp (required), hs_note_body (max 65536 chars), hubspot_owner_id
-
-For engagements (call/email/meeting/note), each record can include an "associations" array
-to link the activity to existing HubSpot records:
-  "associations": [
-    {"to_object_type": "contact", "to_object_id": "12345"},
-    {"to_object_type": "deal", "to_object_id": "67890"}
-  ]
-Valid to_object_type values: contact, company, deal.
-The to_object_id must be a HubSpot record ID (use crm_search to find IDs).
-
-For updates (contacts/companies/deals only), each record MUST include an "id" field with the existing record UUID.
-
-Example: create 3 contacts from a CSV:
-{
-  "target_system": "hubspot",
-  "record_type": "contact",
-  "operation": "create",
-  "records": [
-    {"email": "alice@acme.com", "firstname": "Alice", "lastname": "Smith", "company": "Acme"},
-    {"email": "bob@acme.com", "firstname": "Bob", "lastname": "Jones", "company": "Acme"},
-    {"email": "carol@acme.com", "firstname": "Carol", "lastname": "Lee", "company": "Acme"}
-  ]
-}
-
-Example: log a call on a deal:
-{
-  "target_system": "hubspot",
-  "record_type": "call",
-  "operation": "create",
-  "records": [
-    {
-      "hs_timestamp": "2025-03-17T10:30:00Z",
-      "hs_call_title": "Discovery Call",
-      "hs_call_body": "Discussed product needs and timeline",
-      "hs_call_duration": "1800000",
-      "hs_call_direction": "OUTBOUND",
-      "hs_call_status": "COMPLETED",
-      "associations": [{"to_object_type": "deal", "to_object_id": "67890"}]
-    }
-  ]
-}
-
-IMPORTANT: Always explain what you're going to create/update BEFORE calling this tool.
-Do NOT add any text after the tool call - let the pending changes panel speak for itself.""",
-    input_schema={
-        "type": "object",
-        "properties": {
-            "target_system": {
-                "type": "string",
-                "enum": ["hubspot"],
-                "description": "Target CRM system",
-            },
-            "record_type": {
-                "type": "string",
-                "enum": ["contact", "company", "deal", "call", "email", "meeting", "note"],
-                "description": "Type of CRM record or engagement",
-            },
-            "operation": {
-                "type": "string",
-                "enum": ["create", "update"],
-                "description": "Whether to create new records or update existing ones. Engagements only support 'create'.",
-            },
-            "records": {
-                "type": "array",
-                "items": {"type": "object"},
-                "description": "Array of record objects (max 100). For updates, each must include 'id'. For engagements, each can include 'associations'.",
-            },
-        },
-        "required": ["target_system", "record_type", "operation", "records"],
-    },
-    category=ToolCategory.EXTERNAL_WRITE,
-    default_requires_approval=False,  # Has its own review flow via ChangeSession
-)
-
-
-register_tool(
-    name="send_email_from",
-    description="""Send an email from your connected Gmail or Outlook account.
-
-This sends as YOU, not as Revtops. The recipient will see the email from your address.
-Use this for personalized outreach, follow-ups, or any email you'd normally send yourself.
-
-The email will be sent from whichever email provider (Gmail or Outlook) you have connected.
-If you haven't connected an email provider, this tool will not work.""",
-    input_schema={
-        "type": "object",
-        "properties": {
-            "to": {
-                "type": "string",
-                "description": "Recipient email address",
-            },
-            "subject": {
-                "type": "string",
-                "description": "Email subject line",
-            },
-            "body": {
-                "type": "string",
-                "description": "Email body text (plain text)",
-            },
-            "cc": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "CC recipients (optional)",
-            },
-            "bcc": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "BCC recipients (optional)",
-            },
-        },
-        "required": ["to", "subject", "body"],
-    },
-    category=ToolCategory.EXTERNAL_WRITE,
-    default_requires_approval=True,
-)
-
-
-register_tool(
-    name="send_slack",
-    description="""Post a message to a Slack channel using your organization's Slack connection.
-
-Use this to send notifications, updates, or alerts to team channels.
-The message will appear as coming from the Revtops Slack app.
-
-IMPORTANT - Slack uses mrkdwn, NOT standard Markdown:
-- Bold: *text* (single asterisks, NOT **text**)
-- Italic: _text_ (underscores)
-- Strikethrough: ~text~
-- Code: `code`
-- Links: <https://url.com|link text>
-- Bullet lists: Start lines with - or •
-
-Examples:
-- Post deal alerts to #sales-alerts
-- Send weekly summaries to #revenue-team
-- Notify about stale deals in #deal-reviews""",
-    input_schema={
-        "type": "object",
-        "properties": {
-            "channel": {
-                "type": "string",
-                "description": "Channel name (e.g., '#sales-alerts') or channel ID",
-            },
-            "message": {
-                "type": "string",
-                "description": "Message text to post. Use Slack mrkdwn: *bold*, _italic_, ~strike~",
-            },
-            "thread_ts": {
-                "type": "string",
-                "description": "Thread timestamp to reply in thread (optional)",
-            },
-        },
-        "required": ["channel", "message"],
-    },
-    category=ToolCategory.EXTERNAL_WRITE,
-    default_requires_approval=True,
-)
-
-
-register_tool(
-    name="github_issues_access",
-    description="""Create a GitHub issue in a repository your organization has connected.
-
-Use this when the user asks to file/report issues in GitHub.
-
-Required:
-- repo_full_name: Repository in owner/repo format (e.g. 'octocat/Hello-World')
-- title: Issue title
-
-Optional:
-- body: Markdown body content for the issue
-- labels: List of label names
-- assignees: List of GitHub usernames to assign
-
-This only changes GitHub issues (never source code). It is an external write action and should be reviewed before sending unless auto-approved.""",
-    input_schema={
-        "type": "object",
-        "properties": {
-            "repo_full_name": {
-                "type": "string",
-                "description": "Repository in owner/repo format (e.g., 'octocat/Hello-World')",
-            },
-            "title": {
-                "type": "string",
-                "description": "Issue title",
-            },
-            "body": {
-                "type": "string",
-                "description": "Issue body in Markdown (optional)",
-            },
-            "labels": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "Label names to apply (optional)",
-            },
-            "assignees": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "GitHub usernames to assign (optional)",
-            },
-        },
-        "required": ["repo_full_name", "title"],
-    },
-    category=ToolCategory.EXTERNAL_WRITE,
-    default_requires_approval=True,
-)
-
 
 register_tool(
     name="trigger_sync",
@@ -694,111 +394,17 @@ The sync runs in the background and may take a few minutes to complete.""",
 
 
 # -----------------------------------------------------------------------------
-# Cloud File Tools (Google Drive, Airtable, OneDrive, etc.)
-# -----------------------------------------------------------------------------
-
-register_tool(
-    name="search_cloud_files",
-    description="""Search the user's synced cloud files by name.
-
-Searches files synced from any connected source (Google Drive, Airtable, OneDrive, etc.).
-Returns matching file metadata including name, MIME type, folder path, source, and external_id.
-Use the returned external_id with read_cloud_file to get the text content.
-
-Use '*' as the name_query to list all files (most recently modified first).
-Optionally filter by source (e.g. 'google_drive') if the user specifies a particular service.
-
-NOTE: Files must have been synced first. If no results are found, suggest the user
-sync from the Data Sources page.
-
-Examples:
-- "Find the Q4 planning doc"
-- "Search for spreadsheets with 'revenue' in the name"
-- "Show me all my synced files"
-""",
-    input_schema={
-        "type": "object",
-        "properties": {
-            "name_query": {
-                "type": "string",
-                "description": "File name to search for (case-insensitive substring match). Use '*' to list all files.",
-            },
-            "source": {
-                "type": "string",
-                "description": "Optional: filter by source (e.g. 'google_drive'). Omit to search all sources.",
-            },
-            "limit": {
-                "type": "integer",
-                "description": "Max results to return (default 20)",
-                "default": 20,
-            },
-        },
-        "required": ["name_query"],
-    },
-    category=ToolCategory.LOCAL_READ,
-    default_requires_approval=False,
-)
-
-
-register_tool(
-    name="read_cloud_file",
-    description="""Read the text content of a synced cloud file.
-
-Extracts text from files based on their source:
-- Google Docs → plain text
-- Google Sheets → CSV (all sheets combined)
-- Google Slides → plain text
-- Other text-based files → raw text
-
-Use search_cloud_files first to find the file's external_id, then use this tool
-to read its content into the conversation context.
-
-Content is truncated at ~100K characters for very large files.""",
-    input_schema={
-        "type": "object",
-        "properties": {
-            "external_id": {
-                "type": "string",
-                "description": "The file's external_id (from search_cloud_files results)",
-            },
-        },
-        "required": ["external_id"],
-    },
-    category=ToolCategory.EXTERNAL_READ,
-    default_requires_approval=False,
-)
-
-
-# -----------------------------------------------------------------------------
 # Workflow Management Tools
 # -----------------------------------------------------------------------------
 
 register_tool(
-    name="trigger_workflow",
-    description="""Manually trigger a workflow to run now.
-
-Use this to test a workflow or run it on-demand outside its normal schedule.
-The workflow will create a new conversation that you can view in the chat list.""",
-    input_schema={
-        "type": "object",
-        "properties": {
-            "workflow_id": {
-                "type": "string",
-                "description": "UUID of the workflow to trigger",
-            },
-        },
-        "required": ["workflow_id"],
-    },
-    category=ToolCategory.LOCAL_WRITE,
-    default_requires_approval=False,
-)
-
-
-register_tool(
     name="run_workflow",
-    description="""Execute another workflow and wait for its result.
+    description="""Execute a workflow — either to test it manually or to compose workflows.
 
-Use this to compose workflows - a parent workflow can delegate tasks to specialist workflows.
+Use cases:
+1. **Manual trigger**: Set wait_for_completion=false to fire-and-forget (e.g. "test this workflow now").
+2. **Workflow composition**: A parent workflow delegates to specialist child workflows and gets the result back.
+
 For example, an "Enrich All Contacts" workflow could call "Enrich Single Contact" for each contact.
 
 The child workflow executes with its own conversation and returns its output.
@@ -830,51 +436,69 @@ IMPORTANT: Avoid circular calls (A calls B calls A) - this will be detected and 
 
 
 register_tool(
-    name="loop_over",
-    description="""Execute a workflow for each item in a list.
+    name="foreach",
+    description="""Run a tool or workflow for each item in a list.
 
-Use this to process a batch of items (e.g., enrich 100 contacts, send 50 emails).
-Each item is passed to the workflow as input_data.
+Use this for any batch operation: enriching contacts, researching companies, sending emails, processing data, etc.
 
-Returns a summary with results and any failures.
+Provide EITHER tool (to call a tool per item) OR workflow_id (to run a workflow per item).
 
-Example: Query 100 contacts, then use loop_over to run "research-company" workflow for each.
+**Tool mode** — each item renders params_template ({{field}} placeholders filled from item), then the tool is called. Results stored in bulk_operation_results (queryable via run_sql_query). Uses distributed Celery workers.
+  Example: foreach(tool="query_system", items_query="SELECT id, name FROM contacts", params_template={"system": "web_search", "query": "Current role of {{name}}?"})
 
-Parameters:
-- items: List of objects to process
-- workflow_id: The workflow to run for each item
-- max_concurrent: How many to run in parallel (default 3, max 10)
-- max_items: Safety limit on total items (default 100, max 500)
-- continue_on_error: If true, continue processing even if some items fail""",
+**Workflow mode** — each item dict is passed as input_data to the workflow. Uses async in-process execution with context propagation.
+  Example: foreach(workflow_id="uuid-...", items=[{"email": "a@b.com"}, {"email": "c@d.com"}])
+
+Set max_concurrent=1 for sequential execution, higher for parallel. Blocks until all items complete, streaming live progress to the UI.""",
     input_schema={
         "type": "object",
         "properties": {
-            "items": {
-                "type": "array",
-                "items": {"type": "object"},
-                "description": "List of items to process. Each item is passed to the workflow as input_data.",
+            "tool": {
+                "type": "string",
+                "description": "Name of the tool to run per item (e.g., 'query_system', 'run_action'). Mutually exclusive with workflow_id.",
             },
             "workflow_id": {
                 "type": "string",
-                "description": "UUID of the workflow to execute for each item",
+                "description": "UUID of the workflow to run per item. Each item dict becomes input_data. Mutually exclusive with tool.",
+            },
+            "items_query": {
+                "type": "string",
+                "description": "SQL SELECT that returns the items to process. Column names map to {{placeholder}} names in params_template.",
+            },
+            "items": {
+                "type": "array",
+                "items": {"type": "object"},
+                "description": "Inline list of item dicts. Use items_query for large lists (>100 items).",
+            },
+            "params_template": {
+                "type": "object",
+                "description": "Template for tool params. Use {{column_name}} placeholders filled from each item. Required when using tool, ignored for workflow_id.",
             },
             "max_concurrent": {
                 "type": "integer",
-                "description": "Maximum parallel executions (default 3, max 10)",
-                "default": 3,
+                "description": "Parallel executions (1 = sequential). Default 5. Max 10 for workflows, 50 for tools.",
+                "default": 5,
+            },
+            "rate_limit_per_minute": {
+                "type": "integer",
+                "description": "Max API calls per minute (tool mode only). Default 200.",
+                "default": 200,
             },
             "max_items": {
                 "type": "integer",
-                "description": "Maximum items to process (default 100, max 500)",
-                "default": 100,
+                "description": "Safety cap on total items. Default 500 for workflows, 10000 for tools.",
             },
             "continue_on_error": {
                 "type": "boolean",
-                "description": "Continue processing if an item fails (default true)",
+                "description": "Keep processing if an item fails (default true).",
                 "default": True,
             },
+            "operation_name": {
+                "type": "string",
+                "description": "Human-readable name shown in progress updates.",
+            },
         },
-        "required": ["items", "workflow_id"],
+        "required": [],
     },
     category=ToolCategory.LOCAL_WRITE,
     default_requires_approval=False,
@@ -884,47 +508,164 @@ Parameters:
 # User Memory Tools - Save/delete persistent per-user preferences
 # -----------------------------------------------------------------------------
 
+# -----------------------------------------------------------------------------
+# Workflow Notes Tool - Save workflow-scoped notes shared across runs
+# -----------------------------------------------------------------------------
+
 register_tool(
-    name="save_memory",
-    description="""Save a memory or preference for the current user that will be recalled at the start of every future conversation.
+    name="create_app",
+    description="""Create an interactive mini-app that queries data and renders it with React.
 
-Use this when the user explicitly asks you to "remember" something, or states a preference they want persisted (e.g. "always be concise", "my territory is EMEA", "I prefer tables over lists").
+Use this when the user asks for a dashboard, interactive chart, or data view with controls
+(dropdowns, date pickers, filters, etc.) that should refresh when the user changes them.
 
-Each memory should be a single, self-contained statement. Save multiple memories as separate calls if the user gives you several things to remember.
+The app has two parts:
+1. **queries** (server-side): Named parameterized SQL queries. These stay on the server and are never exposed to the browser.
+2. **frontend_code** (client-side): React JSX code that renders the UI and calls the queries via the SDK.
 
-Do NOT save conversation-specific context (like "user asked about deal X") — only persistent preferences and facts.""",
+The React code runs in a sandboxed iframe with these pre-bundled packages:
+- react, react-dom (hooks: useState, useEffect, useCallback, useMemo, useRef)
+- react-plotly.js (import Plot from "react-plotly.js")
+- @revtops/app-sdk (useAppQuery, useDateRange, Spinner, ErrorBanner)
+
+**SDK API:**
+- useAppQuery(queryName, params) → { data, columns, loading, error, refetch }
+  - queryName: must match a key in the queries object
+  - params: object with values for the SQL :placeholders
+  - data: array of row objects, e.g. [{region: "West", revenue: 50000}, ...]
+- useDateRange(period) → { start, end } (ISO date strings)
+  - period: "last_7d", "last_30d", "last_90d", "last_quarter", "this_quarter", "ytd", "last_year", "this_year"
+- Spinner — loading spinner component
+- ErrorBanner({ message }) — error display component
+
+**Query params:**
+Each query declares its params with name, type, and required flag. The SDK sends
+param values to the server, where they are bound via parameterized queries (safe from injection).
+
+**Rules:**
+- All SQL must be SELECT-only. No INSERT/UPDATE/DELETE.
+- Do NOT add organization_id to WHERE clauses (RLS handles it).
+- frontend_code must export a default React component.
+- Use Tailwind-style inline CSS or the provided dark-theme base styles.
+- Keep the code concise — one file, one default export.
+
+**Example:**
+{
+  "title": "Revenue by Region",
+  "description": "Bar chart showing revenue by region with time period filter",
+  "queries": {
+    "revenue_data": {
+      "sql": "SELECT custom_fields->>'region' as region, SUM(amount) as revenue FROM deals WHERE close_date >= :start_date AND close_date <= :end_date AND stage = 'Closed Won' GROUP BY 1 ORDER BY revenue DESC",
+      "params": {
+        "start_date": { "type": "date", "required": true },
+        "end_date": { "type": "date", "required": true }
+      }
+    }
+  },
+  "frontend_code": "import { useState } from 'react';\\nimport { useAppQuery, useDateRange, Spinner, ErrorBanner } from '@revtops/app-sdk';\\nimport Plot from 'react-plotly.js';\\n\\nexport default function App() {\\n  const [period, setPeriod] = useState('last_quarter');\\n  const { start, end } = useDateRange(period);\\n  const { data, loading, error } = useAppQuery('revenue_data', { start_date: start, end_date: end });\\n\\n  return (\\n    <div style={{padding:'1rem'}}>\\n      <select value={period} onChange={e => setPeriod(e.target.value)}>\\n        <option value='last_30d'>Last 30 Days</option>\\n        <option value='last_quarter'>Last Quarter</option>\\n        <option value='ytd'>Year to Date</option>\\n      </select>\\n      {loading && <Spinner />}\\n      {error && <ErrorBanner message={error} />}\\n      {data && <Plot data={[{type:'bar', x:data.map(r=>r.region), y:data.map(r=>r.revenue)}]} layout={{title:'Revenue by Region', autosize:true, paper_bgcolor:'transparent', plot_bgcolor:'transparent', font:{color:'#a1a1aa'}}} style={{width:'100%',height:'400px'}} config={{responsive:true}} />}\\n    </div>\\n  );\\n}"
+}""",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "title": {
+                "type": "string",
+                "description": "Display title for the app",
+            },
+            "description": {
+                "type": "string",
+                "description": "Brief description of what the app shows",
+            },
+            "queries": {
+                "type": "object",
+                "description": "Named SQL queries. Each key is a query name, value is {sql, params}. SQL must be SELECT-only.",
+            },
+            "frontend_code": {
+                "type": "string",
+                "description": "React JSX code (single file). Must export default component. Uses @revtops/app-sdk hooks.",
+            },
+        },
+        "required": ["title", "queries", "frontend_code"],
+    },
+    category=ToolCategory.LOCAL_WRITE,
+    default_requires_approval=False,
+)
+
+
+register_tool(
+    name="keep_notes",
+    description="""Store workflow-scoped notes that should be available to future runs of the same workflow.
+
+Notes are persisted on `workflow_runs.workflow_notes`, which is the canonical field for workflow execution notes/state shared across runs of the same workflow.
+
+Use this in workflow executions for interim findings, state, or progress breadcrumbs that future runs can reference.
+
+This is workflow-scoped memory, not user-wide memory.""",
     input_schema={
         "type": "object",
         "properties": {
             "content": {
                 "type": "string",
-                "description": "The memory to save. A concise, self-contained statement (e.g. 'User prefers concise answers' or 'User manages the EMEA territory').",
+                "description": "The note content to store for this workflow.",
             },
         },
         "required": ["content"],
     },
     category=ToolCategory.LOCAL_WRITE,
-    default_requires_approval=True,
+    default_requires_approval=False,
+    workflow_only=True,
 )
 
 register_tool(
-    name="delete_memory",
-    description="""Delete a previously saved memory for the current user.
+    name="manage_memory",
+    description="""Save, update, or delete a persistent memory that is recalled at the start of every future conversation.
 
-Use this when the user asks you to forget something, or when a previously saved memory is no longer relevant. You must provide the exact memory_id (UUID) from the memories listed in the system prompt.""",
+Actions:
+- "save" (default): Create a new memory. Requires content.
+- "update": Revise an existing memory. Requires memory_id and content.
+- "delete": Remove a memory. Requires memory_id.
+
+Memories are scoped via entity_type:
+- "user": Personal facts/preferences (default).
+- "organization": Company-wide facts shared across all members.
+- "organization_member": Facts about the user's specific role.
+
+Use when the user asks you to "remember" or "forget" something, or when a saved memory needs revision.
+Each memory should be a single, self-contained statement. Do NOT save conversation-specific context.""",
     input_schema={
         "type": "object",
         "properties": {
+            "action": {
+                "type": "string",
+                "enum": ["save", "update", "delete"],
+                "description": "What to do: save a new memory, update an existing one, or delete one.",
+                "default": "save",
+            },
+            "content": {
+                "type": "string",
+                "description": "The memory content (required for save and update).",
+            },
             "memory_id": {
                 "type": "string",
-                "description": "UUID of the memory to delete.",
+                "description": "UUID of the memory to update or delete (required for update and delete).",
+            },
+            "entity_type": {
+                "type": "string",
+                "enum": ["user", "organization", "organization_member"],
+                "description": "Scope level. Defaults to 'user'.",
+                "default": "user",
+            },
+            "category": {
+                "type": "string",
+                "description": "Optional grouping category (e.g. 'preference', 'personal', 'professional').",
             },
         },
-        "required": ["memory_id"],
+        "required": [],
     },
     category=ToolCategory.LOCAL_WRITE,
     default_requires_approval=False,
 )
+
+
 
 # =============================================================================
 # Helper Functions
@@ -940,7 +681,7 @@ def get_all_tools() -> list[ToolDefinition]:
     return list(TOOL_DEFINITIONS.values())
 
 
-def get_tools_for_claude() -> list[dict[str, Any]]:
+def get_tools_for_claude(in_workflow: bool = False) -> list[dict[str, Any]]:
     """Get tool definitions formatted for Claude's API."""
     return [
         {
@@ -949,6 +690,7 @@ def get_tools_for_claude() -> list[dict[str, Any]]:
             "input_schema": tool.input_schema,
         }
         for tool in TOOL_DEFINITIONS.values()
+        if in_workflow or not tool.workflow_only
     ]
 
 

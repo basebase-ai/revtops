@@ -17,6 +17,7 @@ from typing import Any, Optional
 import httpx
 
 from connectors.base import BaseConnector
+from connectors.registry import AuthType, Capability, ConnectorMeta, ConnectorScope
 from models.activity import Activity
 from models.database import get_session
 from services.meeting_dedup import find_or_create_meeting
@@ -30,6 +31,16 @@ class GoogleCalendarConnector(BaseConnector):
     """Connector for Google Calendar data."""
 
     source_system = "google_calendar"
+    meta = ConnectorMeta(
+        name="Google Calendar",
+        slug="google_calendar",
+        auth_type=AuthType.OAUTH2,
+        scope=ConnectorScope.USER,
+        entity_types=["activities"],
+        capabilities=[Capability.SYNC],
+        nango_integration_id="google-calendar",
+        description="Google Calendar – event sync",
+    )
 
     async def _get_headers(self) -> dict[str, str]:
         """Get authorization headers for Google Calendar API."""
@@ -139,16 +150,19 @@ class GoogleCalendarConnector(BaseConnector):
         1. Find or create the canonical Meeting entity
         2. Create an Activity record for the calendar event
         3. Link the Activity to the Meeting
+        4. Resolve attendee emails to CRM contact/account/deal FKs
         """
+        from connectors.resolution import build_activity_resolver
+
         # Get events from primary calendar for the last 30 days and next 30 days
-        time_min = datetime.utcnow() - timedelta(days=30)
-        time_max = datetime.utcnow() + timedelta(days=30)
+        time_min: datetime = datetime.utcnow() - timedelta(days=30)
+        time_max: datetime = datetime.utcnow() + timedelta(days=30)
 
         # Import broadcast function for real-time progress updates
         from api.websockets import broadcast_sync_progress
         
         print(f"[GCal Sync] Fetching events from {time_min} to {time_max}")
-        events = await self.get_events(
+        events: list[dict[str, Any]] = await self.get_events(
             calendar_id="primary",
             time_min=time_min,
             time_max=time_max,
@@ -164,20 +178,27 @@ class GoogleCalendarConnector(BaseConnector):
             status="syncing",
         )
 
-        count = 0
+        # Build resolver from existing CRM data in the database
+        resolver = await build_activity_resolver(self.organization_id)
+
+        count: int = 0
         async with get_session(organization_id=self.organization_id) as session:
             from sqlalchemy import select
             
             for event in events:
                 try:
-                    parsed = self._parse_event(event)
+                    parsed: Optional[dict[str, Any]] = self._parse_event(event)
                     if not parsed:
                         continue
                     
                     # Convert activity_date to UTC for storage
-                    activity_date = parsed["activity_date"]
+                    activity_date: Optional[datetime] = parsed["activity_date"]
                     if activity_date and activity_date.tzinfo is not None:
                         activity_date = activity_date.astimezone(timezone.utc).replace(tzinfo=None)
+
+                    # Resolve attendee emails to CRM entities
+                    attendee_emails: list[str] = parsed.get("attendee_emails") or []
+                    resolved = resolver.resolve(attendee_emails)
                     
                     # Check if we already have an activity for this calendar event
                     # This handles rescheduled meetings - same event ID, different time
@@ -200,17 +221,20 @@ class GoogleCalendarConnector(BaseConnector):
                             print(f"[GCal Sync] Event {parsed['event_id']} rescheduled: {existing_meeting.scheduled_start} -> {activity_date}")
                             existing_meeting.scheduled_start = activity_date
                             if parsed["end_time"]:
-                                end_time = parsed["end_time"]
+                                end_time: datetime = parsed["end_time"]
                                 if end_time.tzinfo is not None:
                                     end_time = end_time.astimezone(timezone.utc).replace(tzinfo=None)
                                 existing_meeting.scheduled_end = end_time
                             existing_meeting.duration_minutes = parsed["duration_minutes"]
                             existing_meeting.status = parsed["meeting_status"]
                         
-                        # Update the activity with latest data
+                        # Update the activity with latest data + resolved FKs
                         existing_activity.activity_date = activity_date
                         existing_activity.subject = parsed["summary"] or "Untitled Event"
                         existing_activity.description = parsed["description"]
+                        existing_activity.contact_id = resolved.contact_id
+                        existing_activity.account_id = resolved.account_id
+                        existing_activity.deal_id = resolved.deal_id
                         existing_activity.custom_fields = {
                             "calendar_id": parsed["calendar_id"],
                             "location": parsed["location"],
@@ -237,12 +261,15 @@ class GoogleCalendarConnector(BaseConnector):
                         )
                         
                         # Create new Activity record linked to the Meeting
-                        activity = Activity(
+                        activity: Activity = Activity(
                             id=uuid.uuid4(),
                             organization_id=uuid.UUID(self.organization_id),
                             source_system=self.source_system,
                             source_id=parsed["event_id"],
                             meeting_id=meeting.id,
+                            contact_id=resolved.contact_id,
+                            account_id=resolved.account_id,
+                            deal_id=resolved.deal_id,
                             type=parsed["meeting_type"],
                             subject=parsed["summary"] or "Untitled Event",
                             description=parsed["description"],

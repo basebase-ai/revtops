@@ -8,6 +8,7 @@ Conversations can be:
 Sources:
 - source='web': From the web chat interface (has user_id)
 - source='slack': From Slack DMs (user_id is NULL, uses source_user_id)
+- source='sms': From inbound SMS via Twilio (user resolved via phone_number)
 """
 from __future__ import annotations
 
@@ -16,7 +17,7 @@ from datetime import datetime
 from typing import Any, Literal, Optional
 
 from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import ARRAY, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from models.database import Base
@@ -25,7 +26,7 @@ from models.database import Base
 ConversationType = Literal["agent", "workflow"]
 
 # Conversation sources
-ConversationSource = Literal["web", "slack"]
+ConversationSource = Literal["web", "slack", "sms"]
 
 
 class Conversation(Base):
@@ -57,6 +58,10 @@ class Conversation(Base):
     source_user_id: Mapped[Optional[str]] = mapped_column(
         String(100), nullable=True
     )  # External user ID (e.g., Slack user ID)
+    # All known RevTops users who have participated in this conversation.
+    participating_user_ids: Mapped[list[uuid.UUID]] = mapped_column(
+        ARRAY(UUID(as_uuid=True)), nullable=False, default=list
+    )
     
     # Conversation type: 'agent' for interactive, 'workflow' for automated
     type: Mapped[str] = mapped_column(
@@ -92,6 +97,11 @@ class Conversation(Base):
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
+    )
+
+    # E2B sandbox ID for persistent sandboxed code execution
+    sandbox_id: Mapped[Optional[str]] = mapped_column(
+        String(255), nullable=True
     )
 
     # Cached fields for fast list queries (denormalized)
@@ -135,6 +145,9 @@ class Conversation(Base):
             result["source_channel_id"] = self.source_channel_id
         if self.source_user_id:
             result["source_user_id"] = self.source_user_id
+        result["participating_user_ids"] = [
+            str(user_id) for user_id in (self.participating_user_ids or [])
+        ]
         return result
     
     @property

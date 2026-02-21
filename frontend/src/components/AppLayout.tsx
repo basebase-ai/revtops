@@ -5,7 +5,7 @@
  * - Collapsible left sidebar (icons when collapsed)
  * - Slide-out drawer on mobile
  * - New Chat button
- * - Data Sources tab with badge
+ * - Connectors tab with badge
  * - Chats tab with recent conversations
  * - Organization & Profile sections at bottom
  * 
@@ -14,7 +14,7 @@
  */
 
 import { useState, useEffect, useCallback } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { API_BASE } from '../lib/api';
 import { crossTab, subscribeCrossTab } from '../lib/crossTab';
 
@@ -39,14 +39,16 @@ import { Sidebar } from './Sidebar';
 import { Home } from './Home';
 import { DataSources } from './DataSources';
 import { Data } from './Data';
-import { Search } from './Search';
 import { Chat } from './Chat';
 import { Workflows } from './Workflows';
+import { Memories } from './Memories';
 import { AdminPanel } from './AdminPanel';
 import { PendingChangesPage } from './PendingChangesPage';
+import { AppsGallery } from './apps/AppsGallery';
+import { AppFullView } from './apps/AppFullView';
 import { OrganizationPanel } from './OrganizationPanel';
 import { ProfilePanel } from './ProfilePanel';
-import { useAppStore, useMasquerade, useIntegrations, type ActiveTask } from '../store';
+import { useAppStore, useMasquerade, useIntegrations, type ActiveTask, type ToolCallData } from '../store';
 import { useTeamMembers, useWebSocket } from '../hooks';
 import { apiRequest } from '../lib/api';
 
@@ -121,7 +123,13 @@ interface WsToolProgress {
   status: string;
 }
 
-type WsMessage = WsActiveTasks | WsTaskStarted | WsTaskChunk | WsTaskComplete | WsConversationCreated | WsCatchup | WsCrmApprovalResult | WsToolApprovalResult | WsToolProgress;
+interface WsError {
+  type: 'error';
+  error: string;
+  code?: string;
+}
+
+type WsMessage = WsActiveTasks | WsTaskStarted | WsTaskChunk | WsTaskComplete | WsConversationCreated | WsCatchup | WsCrmApprovalResult | WsToolApprovalResult | WsToolProgress | WsError;
 
 // Props
 interface AppLayoutProps {
@@ -129,6 +137,8 @@ interface AppLayoutProps {
 }
 
 export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
+  const queryClient = useQueryClient();
+  
   // Get state from Zustand store using shallow comparison to prevent unnecessary re-renders
   const {
     user,
@@ -136,6 +146,7 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
     sidebarCollapsed,
     currentView,
     currentChatId,
+    currentAppId,
     recentChats,
   } = useAppStore(
     useShallow((state) => ({
@@ -144,6 +155,7 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
       sidebarCollapsed: state.sidebarCollapsed,
       currentView: state.currentView,
       currentChatId: state.currentChatId,
+      currentAppId: state.currentAppId,
       recentChats: state.recentChats,
     }))
   );
@@ -173,6 +185,16 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
     enabled: !!organization?.id,
   });
   const workflowCount = workflows.length;
+
+  // Billing status for credits display in sidebar
+  const { data: billingStatus } = useQuery({
+    queryKey: ['billing', organization?.id],
+    queryFn: async () => {
+      const { data } = await apiRequest<{ credits_balance: number; credits_included: number }>('/billing/status');
+      return data;
+    },
+    enabled: !!organization?.id,
+  });
 
   // Pending changes count (for sidebar badge)
   const [pendingChangesCount, setPendingChangesCount] = useState<number>(0);
@@ -227,6 +249,7 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
   const setConversationThinking = useAppStore((state) => state.setConversationThinking);
   const updateConversationToolMessage = useAppStore((state) => state.updateConversationToolMessage);
   const addConversationArtifactBlock = useAppStore((state) => state.addConversationArtifactBlock);
+  const addConversationAppBlock = useAppStore((state) => state.addConversationAppBlock);
   
   // Mobile responsive state
   const isMobile = useIsMobile();
@@ -243,6 +266,8 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
   const [urlInitialized, setUrlInitialized] = useState(false);
 
   // Parse URL and update state
+  const setCurrentAppId = useAppStore((state) => state.setCurrentAppId);
+
   const syncStateFromUrl = useCallback(() => {
     const path = window.location.pathname;
     
@@ -253,6 +278,14 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
       setCurrentView('chat');
       return;
     }
+
+    // Match /apps/:id (full-screen app view)
+    const appMatch = path.match(/^\/apps\/([a-f0-9-]+)$/i);
+    if (appMatch && appMatch[1]) {
+      setCurrentAppId(appMatch[1]);
+      setCurrentView('app-view');
+      return;
+    }
     
     // Match view paths
     const viewPaths: Record<string, typeof currentView> = {
@@ -260,8 +293,9 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
       '/chat': 'chat',
       '/sources': 'data-sources',
       '/data': 'data',
-      '/search': 'search',
       '/workflows': 'workflows',
+      '/memory': 'memory',
+      '/apps': 'apps',
       '/admin': 'admin',
       '/changes': 'pending-changes',
     };
@@ -273,7 +307,7 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
       }
       setCurrentView(matchedView);
     }
-  }, [setCurrentChatId, setCurrentView]);
+  }, [setCurrentChatId, setCurrentAppId, setCurrentView]);
 
   // Sync URL with app state - restore state on page load (runs FIRST)
   useEffect(() => {
@@ -300,15 +334,19 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
     
     if (currentChatId) {
       newPath = `/chat/${currentChatId}`;
+    } else if (currentView === 'app-view' && currentAppId) {
+      newPath = `/apps/${currentAppId}`;
     } else {
       const viewPaths: Record<typeof currentView, string> = {
         'home': '/',
         'chat': '/chat',
         'data-sources': '/sources',
         'data': '/data',
-        'search': '/search',
         'workflows': '/workflows',
+        'apps': '/apps',
+        'app-view': '/apps',
         'admin': '/admin',
+        'memory': '/memory',
         'pending-changes': '/changes',
       };
       newPath = viewPaths[currentView] || '/';
@@ -317,11 +355,12 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
     if (window.location.pathname !== newPath) {
       window.history.pushState({}, '', newPath);
     }
-  }, [currentChatId, currentView, urlInitialized]);
+  }, [currentChatId, currentAppId, currentView, urlInitialized]);
   
   // Panels
   const [showOrgPanel, setShowOrgPanel] = useState(false);
   const [showProfilePanel, setShowProfilePanel] = useState(false);
+  const [orgPanelTab, setOrgPanelTab] = useState<'team' | 'billing' | 'settings'>('team');
 
   // CRM approval results (shared across chats) - use state to trigger re-renders
   const [crmApprovalResults, setCrmApprovalResults] = useState<Map<string, unknown>>(() => new Map());
@@ -500,21 +539,34 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
                 }
               }
             } else if (data.type === 'tool_result') {
-              // Tool result received
-              updateConversationToolMessage(conversation_id, data.tool_id as string, {
+              // Tool result received (include input so block has params if it was empty, e.g. modal)
+              const updates: Partial<ToolCallData> = {
                 result: data.result as Record<string, unknown>,
                 status: 'complete',
-              });
+              };
+              if (data.tool_input != null && typeof data.tool_input === 'object') {
+                updates.input = data.tool_input as Record<string, unknown>;
+              }
+              updateConversationToolMessage(conversation_id, data.tool_id as string, updates);
+              
+              // Check if tool failed due to insufficient credits
+              const result = data.result as Record<string, unknown> | undefined;
+              if (result?.error && typeof result.error === 'string' && 
+                  result.error.toLowerCase().includes('insufficient credits')) {
+                setShowOrgPanel(true);
+                setOrgPanelTab('billing');
+                // Refresh billing status to show updated credits
+                queryClient.invalidateQueries({ queryKey: ['billing'] });
+              }
               
               // If workflows table was modified, notify the Workflows component to refresh
-              const result = data.result as Record<string, unknown> | undefined;
               if (result?.table === 'workflows' && result?.success) {
                 window.dispatchEvent(new Event('workflows-updated'));
               }
               
               // If CRM write tool completed, notify PendingChangesBar to refresh
               const toolName = data.tool_name as string | undefined;
-              if (toolName === 'crm_write' || toolName === 'run_sql_write') {
+              if (toolName === 'write_to_system_of_record' || toolName === 'run_sql_write') {
                 window.dispatchEvent(new Event('pending-changes-updated'));
               }
             } else if (data.type === 'text_block_complete') {
@@ -552,6 +604,17 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
               } | undefined;
               if (artifact) {
                 addConversationArtifactBlock(conversation_id, artifact);
+              }
+            } else if (data.type === 'app') {
+              // App created - add app block to the message
+              const app = data.app as {
+                id: string;
+                title: string;
+                description: string | null;
+                frontendCode: string;
+              } | undefined;
+              if (app) {
+                addConversationAppBlock(conversation_id, app);
               }
             }
           }
@@ -607,6 +670,8 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
               });
             }
           }
+          // Refresh billing status since credits may have been consumed
+          queryClient.invalidateQueries({ queryKey: ['billing'] });
           break;
         }
         
@@ -630,6 +695,28 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
           }
           break;
         }
+
+        case 'error': {
+          const err = parsed as WsError;
+          if (err.code === 'insufficient_credits') {
+            // Add a message to the current conversation explaining the issue
+            const chatId = useAppStore.getState().currentChatId;
+            if (chatId) {
+              const errorMessage = {
+                id: `credits-error-${Date.now()}`,
+                role: 'assistant' as const,
+                contentBlocks: [{
+                  type: 'text' as const,
+                  text: "I wasn't able to complete your request because your organization has run out of credits for this billing period. You can view your usage and upgrade your plan in the **Billing** tab under Organization Settings.",
+                }],
+                timestamp: new Date(),
+              };
+              addConversationMessage(chatId, errorMessage);
+              setConversationThinking(chatId, false);
+            }
+          }
+          break;
+        }
         
         case 'crm_approval_result':
         case 'tool_approval_result': {
@@ -644,9 +731,10 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
         
         case 'tool_progress': {
           // Tool progress update - update tool result in real-time
-          const { conversation_id, tool_id, result, status } = parsed;
+          const { conversation_id, tool_id, tool_name, result, status } = parsed;
           if (conversation_id && tool_id) {
             updateConversationToolMessage(conversation_id, tool_id, {
+              toolName: tool_name,
               result,
               status: status === 'complete' ? 'complete' : 'running',
             });
@@ -671,7 +759,8 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
     setActiveTasks, setConversationActiveTask, setConversationThinking,
     addConversation, addConversationMessage, appendToConversationStreaming,
     startConversationStreaming, markConversationMessageComplete, updateConversationToolMessage,
-    addConversationArtifactBlock, setCurrentChatId
+    addConversationArtifactBlock, addConversationAppBlock, setCurrentChatId,
+    queryClient
   ]);
 
   // Cross-tab sync for optimistic UI and streamed updates
@@ -706,13 +795,15 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
   }, [addConversationMessage, handleWebSocketMessage, setConversationThinking]);
 
   // Global WebSocket connection - authenticated via JWT token
+  // reconnectKey = org ID so the socket reconnects when the user switches organizations
   const { sendJson, isConnected, connectionState } = useWebSocket(
     user ? '/ws/chat' : '',
     {
       onMessage: (message) => handleWebSocketMessage(message, 'ws'),
       onConnect: () => console.log('[AppLayout] WebSocket connected'),
       onDisconnect: () => console.log('[AppLayout] WebSocket disconnected'),
-    }
+    },
+    organization?.id ?? '',
   );
 
   // Fetch conversations on mount
@@ -727,7 +818,7 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
     const handleNavigate = (event: Event): void => {
       const customEvent = event as CustomEvent<string>;
       if (customEvent.detail) {
-        setCurrentView(customEvent.detail as 'home' | 'chat' | 'data-sources' | 'search' | 'workflows' | 'admin');
+        setCurrentView(customEvent.detail as 'home' | 'chat' | 'data-sources' | 'data' | 'workflows' | 'memory' | 'admin');
       }
     };
     window.addEventListener('navigate', handleNavigate);
@@ -743,6 +834,10 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
     void deleteConversation(chatId);
   }, [deleteConversation]);
 
+  const handleConversationNotFound = useCallback((): void => {
+    setCurrentChatId(null);
+  }, [setCurrentChatId]);
+
   // Guard against missing user/org (shouldn't happen, but be safe)
   if (!user || !organization) {
     return (
@@ -756,9 +851,9 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
   const viewTitles: Record<string, string> = {
     home: 'Home',
     chat: 'Chat',
-    'data-sources': 'Data Sources',
-    search: 'Search',
+    'data-sources': 'Connectors',
     workflows: 'Workflows',
+    memory: 'Memory',
     admin: 'Admin',
     'pending-changes': 'Pending Changes',
   };
@@ -851,7 +946,8 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
           onNewChat={startNewChat}
           organization={organization}
           memberCount={teamData?.members.length ?? 0}
-          onOpenOrgPanel={() => setShowOrgPanel(true)}
+          creditsDisplay={billingStatus ? { balance: billingStatus.credits_balance, included: billingStatus.credits_included } : null}
+          onOpenOrgPanel={() => { setOrgPanelTab('team'); setShowOrgPanel(true); }}
           onOpenProfilePanel={() => setShowProfilePanel(true)}
           isMobile={isMobile}
           onCloseMobile={() => setMobileSidebarOpen(false)}
@@ -872,6 +968,7 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
             isConnected={isConnected}
             connectionState={connectionState}
             crmApprovalResults={crmApprovalResults}
+            onConversationNotFound={handleConversationNotFound}
           />
         )}
         {currentView === 'data-sources' && (
@@ -880,11 +977,17 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
         {currentView === 'data' && (
           <Data />
         )}
-        {currentView === 'search' && (
-          <Search organizationId={organization.id} />
-        )}
         {currentView === 'workflows' && (
           <Workflows />
+        )}
+        {currentView === 'memory' && (
+          <Memories />
+        )}
+        {currentView === 'apps' && (
+          <AppsGallery />
+        )}
+        {currentView === 'app-view' && currentAppId && (
+          <AppFullView appId={currentAppId} />
         )}
         {currentView === 'admin' && (
           <AdminPanel />
@@ -899,6 +1002,7 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
         <OrganizationPanel
           organization={organization}
           currentUser={user}
+          initialTab={orgPanelTab}
           onClose={() => setShowOrgPanel(false)}
         />
       )}

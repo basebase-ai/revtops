@@ -20,13 +20,21 @@ if str(_backend_dir) not in sys.path:
 import asyncio
 import json
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
 from workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
+
+WORKFLOW_NESTING_GUARDRAIL = (
+    "Execution guardrail: Do NOT create or invoke child workflows (via "
+    "create_workflow, run_workflow, or foreach) unless the user or workflow "
+    "prompt explicitly asks you to do so. If you create child workflows, keep "
+    "the total created across this execution tree at 5 or fewer. Prefer "
+    "completing the task in this workflow directly."
+)
 
 
 # =============================================================================
@@ -165,7 +173,7 @@ def format_child_workflows_for_prompt(child_workflows: list[dict[str, Any]]) -> 
     
     Returns a string like:
     
-    Available child workflows (use with run_workflow or loop_over):
+    Available child workflows (use with run_workflow or foreach):
     
     1. "Enrich Single Contact" (id: 9645564e-...)
        Input: {email: string (required), first_name: string}
@@ -175,7 +183,11 @@ def format_child_workflows_for_prompt(child_workflows: list[dict[str, Any]]) -> 
         return None
     
     lines: list[str] = [
-        "Available child workflows (use with run_workflow or loop_over):",
+        (
+            "Available child workflows (optional, only use run_workflow or "
+            "foreach when explicitly requested; for small prompts or brief "
+            "tasks, prefer completing the work directly in this workflow):"
+        ),
         "",
     ]
     
@@ -275,14 +287,20 @@ def compute_effective_auto_approve_tools(
         Ordered list of effective tool names.
     """
     configured_tools: list[str] = list(workflow_auto_approve_tools or [])
+    disallowed_workflow_tools = {"manage_memory"}
+    sanitized_configured_tools = [tool for tool in configured_tools if tool not in disallowed_workflow_tools]
+    removed_disallowed_tools = [tool for tool in configured_tools if tool in disallowed_workflow_tools]
+    for removed_tool in removed_disallowed_tools:
+        logger.info("[Workflow] Removed disallowed workflow tool from auto-approve: %s", removed_tool)
+
     inherited_tools: list[str] | None = parent_auto_approve_tools
 
     # Root invocation: no parent restrictions to intersect with.
     if inherited_tools is None:
-        return configured_tools
+        return sanitized_configured_tools
 
     inherited_set = set(inherited_tools)
-    return [tool for tool in configured_tools if tool in inherited_set]
+    return [tool for tool in sanitized_configured_tools if tool in inherited_set]
 
 
 async def apply_user_auto_approve_permissions(
@@ -291,7 +309,7 @@ async def apply_user_auto_approve_permissions(
     auto_approve_tools: list[str],
 ) -> list[str]:
     """Restrict workflow auto-approve tools to explicit per-user permissions."""
-    tools_requiring_explicit_permissions = {"github_issues_access", "save_memory"}
+    tools_requiring_explicit_permissions = {"write_to_system_of_record"}
     restricted_tools = [tool for tool in auto_approve_tools if tool in tools_requiring_explicit_permissions]
     if not restricted_tools:
         return auto_approve_tools
@@ -392,6 +410,75 @@ def extract_structured_output(response_text: str) -> dict[str, Any] | None:
                 pass
     
     return None
+
+
+def _format_iso8601_utc(value: datetime | None) -> str | None:
+    """Format datetime as ISO-8601 UTC string for workflow context."""
+    if value is None:
+        return None
+    return value.isoformat(timespec="seconds") + "Z"
+
+
+def build_workflow_runtime_context(
+    workflow: Any,
+    run: Any,
+    triggered_by: str,
+    trigger_data: dict[str, Any] | None,
+    execution_started_at: datetime,
+) -> dict[str, str | None]:
+    """Build runtime metadata that every workflow execution should know."""
+    context_generated_at = datetime.now(UTC).replace(tzinfo=None)
+
+    invoker = f"process:{triggered_by}"
+    if trigger_data and isinstance(trigger_data.get("_invoked_by"), dict):
+        invoked_by = trigger_data.get("_invoked_by") or {}
+        source = (invoked_by.get("source") or "process").strip()
+        identifier = str(invoked_by.get("id") or triggered_by).strip()
+        invoker = f"{source}:{identifier}"
+    elif trigger_data and isinstance(trigger_data.get("_parent_context"), dict):
+        parent_context = trigger_data.get("_parent_context") or {}
+        parent_workflow_id = parent_context.get("parent_workflow_id")
+        if parent_workflow_id:
+            invoker = f"workflow:{parent_workflow_id}"
+    elif triggered_by == "manual":
+        invoker = f"user:{workflow.created_by_user_id}"
+
+    runtime_context: dict[str, str | None] = {
+        "workflow_id": str(workflow.id),
+        "invoked_by": invoker,
+        "current_datetime": _format_iso8601_utc(context_generated_at),
+        "execution_started_at": _format_iso8601_utc(execution_started_at),
+        "last_run_at": _format_iso8601_utc(workflow.last_run_at),
+        "run_id": str(run.id),
+    }
+
+    logger.info(
+        "[Workflow] Runtime context workflow_id=%s run_id=%s invoked_by=%s current_datetime=%s last_run_at=%s",
+        runtime_context["workflow_id"],
+        runtime_context["run_id"],
+        runtime_context["invoked_by"],
+        runtime_context["current_datetime"],
+        runtime_context["last_run_at"],
+    )
+    return runtime_context
+
+
+def format_workflow_runtime_context_for_prompt(
+    runtime_context: dict[str, str | None],
+) -> str:
+    """Format workflow runtime metadata for injection into the workflow prompt."""
+    last_run_value = runtime_context.get("last_run_at") or "never"
+    return "\n".join(
+        [
+            "Workflow runtime context (always use this metadata while executing):",
+            f"- Current workflow ID: {runtime_context.get('workflow_id')}",
+            f"- Invoked by: {runtime_context.get('invoked_by')}",
+            f"- Current date/time (UTC): {runtime_context.get('current_datetime')}",
+            f"- This run started at (UTC): {runtime_context.get('execution_started_at')}",
+            f"- Last run time (UTC): {last_run_value}",
+            f"- Current run ID: {runtime_context.get('run_id')}",
+        ]
+    )
 
 
 def run_async(coro: Any) -> Any:
@@ -595,6 +682,19 @@ async def _execute_workflow(
         
         # Check if this workflow uses the new prompt-based execution
         if workflow.prompt and workflow.prompt.strip():
+            from services.credits import can_use_credits
+            org_id_str = str(workflow.organization_id)
+            if not await can_use_credits(org_id_str):
+                run.status = "failed"
+                run.error_message = "Insufficient credits or no active subscription. Please add a payment method in Revtops."
+                run.completed_at = datetime.utcnow()
+                await session.commit()
+                return {
+                    "status": "failed",
+                    "workflow_id": workflow_id,
+                    "run_id": str(run_id),
+                    "error": "Insufficient credits or no active subscription.",
+                }
             # NEW: Execute via agent conversation
             try:
                 result = await _execute_workflow_via_agent(
@@ -741,20 +841,36 @@ async def _execute_workflow_via_agent(
                 "error": error_msg,
             }
     
-    # Build the prompt with typed parameters or raw trigger data
+    # Build execution and persisted prompts separately so internal execution
+    # guardrails are enforced without being shown in workflow run UI.
     prompt = workflow.prompt
-    
+    persisted_prompt = workflow.prompt
+
+    runtime_context = build_workflow_runtime_context(
+        workflow=workflow,
+        run=run,
+        triggered_by=triggered_by,
+        trigger_data=trigger_data,
+        execution_started_at=run.started_at,
+    )
+    runtime_context_text = format_workflow_runtime_context_for_prompt(runtime_context)
+    prompt += f"\n\n{runtime_context_text}"
+    # persisted_prompt += f"\n\n{runtime_context_text}" I don't think we disclose this context to the user?
+
     # If schema is defined, inject typed parameters; otherwise use raw trigger data
     typed_params = format_typed_parameters(user_trigger_data, input_schema)
     if typed_params:
         prompt += f"\n\n{typed_params}"
+        persisted_prompt += f"\n\n{typed_params}"
     elif user_trigger_data:
         prompt += f"\n\nTrigger data: {user_trigger_data}"
+        persisted_prompt += f"\n\nTrigger data: {user_trigger_data}"
     
     # Add output format instructions if schema is defined
     output_instruction = format_output_schema_instruction(output_schema)
     if output_instruction:
         prompt += f"\n\n{output_instruction}"
+        persisted_prompt += f"\n\n{output_instruction}"
     
     # Resolve and inject child workflows
     child_workflow_ids: list[str] = getattr(workflow, "child_workflows", []) or []
@@ -766,6 +882,7 @@ async def _execute_workflow_via_agent(
         child_workflows_text = format_child_workflows_for_prompt(resolved_children)
         if child_workflows_text:
             prompt += f"\n\n{child_workflows_text}"
+            persisted_prompt += f"\n\n{child_workflows_text}"
     
     # Extract call_stack from parent context for recursion detection
     call_stack: list[str] = []
@@ -797,8 +914,11 @@ async def _execute_workflow_via_agent(
     workflow_context: dict[str, Any] = {
         "is_workflow": True,
         "workflow_id": str(workflow.id),
+        "workflow_run_id": str(run.id),
+        "runtime_context": runtime_context,
         "auto_approve_tools": effective_auto_approve_tools,
         "call_stack": call_stack,  # For nested workflow recursion detection
+        "execution_guardrails": [WORKFLOW_NESTING_GUARDRAIL],
     }
     
     orchestrator = ChatOrchestrator(
@@ -806,12 +926,17 @@ async def _execute_workflow_via_agent(
         organization_id=str(workflow.organization_id),
         conversation_id=str(conversation.id),
         workflow_context=workflow_context,
+        source="workflow",
     )
     
     # Process the prompt (this streams through the agent)
     # Since we're in a background worker, we consume the generator fully
     response_text = ""
-    async for chunk in orchestrator.process_message(prompt, save_user_message=True):
+    async for chunk in orchestrator.process_message(
+        prompt,
+        save_user_message=True,
+        persisted_user_message=persisted_prompt,
+    ):
         # Collect text chunks (JSON chunks are tool events)
         if not chunk.startswith("{"):
             response_text += chunk
@@ -1013,17 +1138,18 @@ async def _action_run_query(
     - Query timeout enforced
     """
     from sqlalchemy import text
+    from access_control import RightsContext, check_sql
     from models.database import get_session
-    
+
     sql = params.get("sql", "")
     org_id = context.get("organization_id")
-    
+
     if not sql.strip():
         return {
             "status": "failed",
             "error": "No SQL query provided",
         }
-    
+
     # Security: Only allow SELECT statements
     sql_upper = sql.strip().upper()
     if not sql_upper.startswith("SELECT"):
@@ -1031,7 +1157,7 @@ async def _action_run_query(
             "status": "failed",
             "error": "Only SELECT queries are allowed",
         }
-    
+
     # Block dangerous keywords even in SELECT
     dangerous_keywords = ["INSERT", "UPDATE", "DELETE", "DROP", "TRUNCATE", "ALTER", "CREATE", "GRANT", "REVOKE"]
     for keyword in dangerous_keywords:
@@ -1040,13 +1166,32 @@ async def _action_run_query(
                 "status": "failed",
                 "error": f"Query contains disallowed keyword: {keyword}",
             }
-    
+
+    rights_ctx = RightsContext(
+        organization_id=org_id or "",
+        user_id=context.get("user_id"),
+        conversation_id=None,
+        is_workflow=True,
+    )
+    rights_result = await check_sql(rights_ctx, sql, {"org_id": org_id})
+    if not rights_result.allowed:
+        return {
+            "status": "failed",
+            "error": rights_result.deny_reason or "SQL not allowed",
+        }
+    query_to_run: str = (
+        rights_result.transformed_query if rights_result.transformed_query is not None else sql
+    )
+    params_to_use: dict[str, Any] = (
+        rights_result.transformed_params if rights_result.transformed_params is not None else {"org_id": org_id}
+    )
+
     try:
         async with get_session(organization_id=org_id) as session:
             # Execute with org_id parameter always available
             result = await session.execute(
-                text(sql),
-                {"org_id": org_id}
+                text(query_to_run),
+                params_to_use,
             )
             
             # Convert rows to list of dicts
@@ -1087,21 +1232,39 @@ async def _action_llm(
 ) -> dict[str, Any]:
     """Call an LLM for processing."""
     import anthropic
+    from access_control import RightsContext, check_external_api
     from config import settings
-    
+
     prompt = params.get("prompt", "")
     model = params.get("model", "claude-sonnet-4-20250514")
-    
+
     # Substitute context variables in prompt
     for key, value in context.items():
         prompt = prompt.replace(f"{{{key}}}", str(value))
-    
+
     if not settings.ANTHROPIC_API_KEY:
         return {
             "status": "failed",
             "error": "ANTHROPIC_API_KEY not configured",
         }
-    
+
+    rights_ctx = RightsContext(
+        organization_id=context.get("organization_id") or "",
+        user_id=context.get("user_id"),
+        conversation_id=None,
+        is_workflow=True,
+    )
+    rights_result = await check_external_api(
+        rights_ctx,
+        "anthropic",
+        {"model": model, "prompt_length": len(prompt)},
+    )
+    if not rights_result.allowed:
+        return {
+            "status": "failed",
+            "error": rights_result.deny_reason or "External API call not allowed",
+        }
+
     client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
     response = client.messages.create(
         model=model,
@@ -1526,7 +1689,12 @@ def process_pending_events(self: Any) -> dict[str, Any]:
     return run_async(_process_pending_events())
 
 
-@celery_app.task(bind=True, name="workers.tasks.workflows.execute_workflow")
+@celery_app.task(
+    bind=True,
+    name="workers.tasks.workflows.execute_workflow",
+    soft_time_limit=6 * 3600,      # 6 hours soft – workflows with foreach can run long
+    time_limit=6 * 3600 + 300,     # 6 hours + 5 min hard kill
+)
 def execute_workflow(
     self: Any,
     workflow_id: str,

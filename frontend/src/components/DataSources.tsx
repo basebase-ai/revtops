@@ -1,9 +1,9 @@
 /**
- * Data Sources management screen.
+ * Connectors management screen.
  * 
  * Features:
- * - View all connected data sources
- * - View available data sources to connect
+ * - View all connected connectors
+ * - View available connectors to connect
  * - Sync status and manual sync trigger
  * - Disconnect integrations
  * 
@@ -22,8 +22,9 @@ import {
   SiGmail,
   SiGoogledrive,
   SiGithub,
+  SiLinear,
 } from 'react-icons/si';
-import { HiOutlineCalendar, HiOutlineMail, HiGlobeAlt, HiUserGroup, HiExclamation, HiDeviceMobile, HiMicrophone } from 'react-icons/hi';
+import { HiOutlineCalendar, HiOutlineMail, HiGlobeAlt, HiUserGroup, HiExclamation, HiDeviceMobile, HiMicrophone, HiLightningBolt, HiX } from 'react-icons/hi';
 // Custom Apollo.io icon - 8-ray starburst matching their brand
 const ApolloIcon: IconType = ({ className, ...props }) => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className={className} {...props}>
@@ -75,6 +76,10 @@ const ICON_MAP: Record<string, IconType> = {
   google_drive: SiGoogledrive,
   apollo: ApolloIcon,
   github: SiGithub,
+  linear: SiLinear,
+  globe: HiGlobeAlt,
+  terminal: HiLightningBolt,
+  sms: HiDeviceMobile,
 };
 
 // User-scoped providers (each user connects individually vs org-wide connection)
@@ -102,9 +107,28 @@ const INTEGRATION_CONFIG: Record<string, { name: string; description: string; ic
   google_drive: { name: 'Google Drive', description: 'Sync files — search and read Docs, Sheets, Slides from Drive', icon: 'google_drive', color: 'from-yellow-500 to-amber-500' },
   apollo: { name: 'Apollo.io', description: 'Data enrichment - Contact titles, companies, emails', icon: 'apollo', color: 'from-yellow-400 to-yellow-500' },
   github: { name: 'GitHub', description: 'Track repos, commits, and pull requests by team', icon: 'github', color: 'from-gray-600 to-gray-700' },
+  linear: { name: 'Linear', description: 'Issue tracking - sync and manage teams, projects, and issues', icon: 'linear', color: 'from-indigo-500 to-violet-600' },
+  // Built-in connectors (no OAuth — connect with one click)
+  web_search: { name: 'Web Search', description: 'Web search and URL fetching — enable for the agent to search the web or fetch pages', icon: 'globe', color: 'from-emerald-500 to-teal-600' },
+  code_sandbox: { name: 'Code Sandbox', description: 'Run shell commands and scripts in a secure sandbox (Python, Node, bash)', icon: 'terminal', color: 'from-amber-500 to-orange-600' },
+  twilio: { name: 'Twilio', description: 'Send SMS messages to phone numbers', icon: 'sms', color: 'from-red-500 to-pink-600' },
 };
 
 const SUPPORTED_PROVIDERS = new Set(Object.keys(INTEGRATION_CONFIG));
+
+/** Built-in connectors that connect with one click (no OAuth popup). */
+const BUILTIN_CONNECTORS = new Set(['web_search', 'code_sandbox', 'twilio']);
+
+// Common integrations to show as tiles when org has zero connected (display order)
+const COMMON_INTEGRATION_KEYS: ReadonlyArray<{ provider: string; scope: 'organization' | 'user' }> = [
+  { provider: 'hubspot', scope: 'organization' },
+  { provider: 'salesforce', scope: 'organization' },
+  { provider: 'slack', scope: 'organization' },
+  { provider: 'gmail', scope: 'user' },
+  { provider: 'google_calendar', scope: 'user' },
+  { provider: 'zoom', scope: 'user' },
+  { provider: 'apollo', scope: 'organization' },
+];
 
 // Extended integration type with display info
 interface DisplayIntegration extends Integration {
@@ -142,6 +166,14 @@ function formatSyncStats(stats: SyncStats | null, provider: string): string | nu
     if (repos > 0) parts.push(`${repos} repos`);
     if (commits > 0) parts.push(`${commits.toLocaleString()} commits`);
     if (prs > 0) parts.push(`${prs} PRs`);
+  } else if (provider === 'linear' || provider === 'jira' || provider === 'asana') {
+    // Issue tracker providers: teams, projects, issues
+    const teams = stats.teams ?? 0;
+    const projects = stats.projects ?? 0;
+    const issues = stats.issues ?? 0;
+    if (teams > 0) parts.push(`${teams} ${teams === 1 ? 'team' : 'teams'}`);
+    if (projects > 0) parts.push(`${projects} ${projects === 1 ? 'project' : 'projects'}`);
+    if (issues > 0) parts.push(`${issues.toLocaleString()} issues`);
   } else if (provider === 'google_drive') {
     const total = stats.total_files ?? 0;
     const docs = stats.docs ?? 0;
@@ -191,10 +223,26 @@ function formatSyncStats(stats: SyncStats | null, provider: string): string | nu
 }
 
 /**
- * Get a provider-specific label for activities count.
+ * Map CRM sync step to the noun used in the count label (e.g. "accounts", "deals").
  */
-function getActivityLabel(provider: string, count: number): string {
+function getCrmStepNoun(step: string): string {
+  if (step === 'accounts' || step === 'fetching accounts') return 'accounts';
+  if (step === 'deals' || step === 'fetching deals') return 'deals';
+  if (step === 'contacts' || step === 'fetching contacts') return 'contacts';
+  if (step === 'activities') return 'activities';
+  if (step === 'goals' || step === 'fetching goals') return 'goals';
+  return 'items';
+}
+
+/**
+ * Get a provider-specific label for activities count.
+ * For CRM providers (HubSpot/Salesforce), pass optional step so the label matches the current sync phase (e.g. "0 accounts" during account sync).
+ */
+function getActivityLabel(provider: string, count: number, step?: string): string {
   const formatted = count.toLocaleString();
+  if ((provider === 'hubspot' || provider === 'salesforce') && step !== undefined) {
+    return `${formatted} ${getCrmStepNoun(step)}`;
+  }
   switch (provider) {
     case 'gmail':
     case 'microsoft_mail':
@@ -246,6 +294,9 @@ export function DataSources(): JSX.Element {
   const [slackShowAddForm, setSlackShowAddForm] = useState(false);
   const [showConnectModal, setShowConnectModal] = useState(false);
   const [connectSearch, setConnectSearch] = useState('');
+  const [pennyBotCtaDismissed, setPennyBotCtaDismissed] = useState<boolean>(
+    () => localStorage.getItem('penny_bot_cta_dismissed') === '1',
+  );
 
   // GitHub: available repos (from token), tracked repo ids, selection, loading
   interface GitHubRepo {
@@ -495,12 +546,31 @@ export function DataSources(): JSX.Element {
     if (connectingProvider || !organizationId) return;
     // User-scoped integrations require user_id
     if (scope === 'user' && !userId) return;
-    
+
     setConnectingProvider(provider);
 
     try {
-      // Get session token from backend
-      // For user-scoped integrations, include user_id
+      // Built-in connectors (Open Web, Code Sandbox, Twilio) — one-click, no OAuth
+      if (BUILTIN_CONNECTORS.has(provider)) {
+        const res = await fetch(`${API_BASE}/auth/integrations/connect-builtin`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            organization_id: organizationId,
+            provider,
+            user_id: userId ?? undefined,
+          }),
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({ detail: res.statusText }));
+          throw new Error((err as { detail?: string }).detail ?? 'Failed to connect');
+        }
+        void fetchIntegrations();
+        setConnectingProvider(null);
+        return;
+      }
+
+      // Get session token from backend for OAuth connectors
       const params = new URLSearchParams({ organization_id: organizationId });
       if (scope === 'user' && userId) {
         params.set('user_id', userId);
@@ -872,6 +942,8 @@ export function DataSources(): JSX.Element {
       'from-violet-500 to-violet-600': 'bg-violet-500',
       'from-yellow-400 to-yellow-500': 'bg-yellow-400',
       'from-yellow-500 to-amber-500': 'bg-yellow-500',
+      'from-indigo-500 to-violet-600': 'bg-indigo-500',
+      'from-gray-600 to-gray-700': 'bg-gray-600',
     };
     return colorMap[color] ?? 'bg-surface-600';
   };
@@ -967,6 +1039,55 @@ export function DataSources(): JSX.Element {
           {connectedCount > 0 && (
             <p className="text-xs text-surface-500 mt-1 pl-6">{nameText}</p>
           )}
+        </div>
+      );
+    };
+
+    const renderPennyBotCta = (): JSX.Element | null => {
+      if (integration.provider !== 'slack' || state !== 'connected' || pennyBotCtaDismissed) return null;
+
+      const handleDismiss = (): void => {
+        setPennyBotCtaDismissed(true);
+        localStorage.setItem('penny_bot_cta_dismissed', '1');
+      };
+
+      return (
+        <div className="mt-4 pt-4 border-t border-surface-700/50">
+          <div className="relative rounded-lg border border-purple-500/20 bg-purple-500/5 p-3.5">
+            <button
+              type="button"
+              onClick={handleDismiss}
+              className="absolute top-2 right-2 text-surface-500 hover:text-surface-300 transition-colors"
+              aria-label="Dismiss"
+            >
+              <HiX className="w-4 h-4" />
+            </button>
+            <div className="flex items-start gap-3 pr-4">
+              <div className="mt-0.5 flex-shrink-0 rounded-lg bg-purple-500/15 p-1.5">
+                <HiLightningBolt className="w-4 h-4 text-purple-400" />
+              </div>
+              <div className="space-y-1.5">
+                <h4 className="text-sm font-semibold text-surface-100">
+                  Add the Penny bot to Slack
+                </h4>
+                <p className="text-xs leading-relaxed text-surface-400">
+                  This integration syncs your Slack messages so Penny can search and reference them.
+                  To <span className="text-surface-300">DM Penny</span> or <span className="text-surface-300">@mention</span> her
+                  directly in channels, ask your workspace admin to install the
+                  {' '}<span className="font-medium text-purple-300">Penny</span> bot app from the Slack App Directory.
+                </p>
+                <a
+                  href="https://slack.com/apps"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 text-xs font-medium text-purple-400 hover:text-purple-300 transition-colors"
+                >
+                  Browse Slack App Directory
+                  <span aria-hidden="true">&rarr;</span>
+                </a>
+              </div>
+            </div>
+          </div>
         </div>
       );
     };
@@ -1242,7 +1363,7 @@ export function DataSources(): JSX.Element {
                 <p className="text-xs text-surface-400 mt-1 hidden sm:block">
                   {syncProgress[integration.provider] !== undefined ? (
                     <span className="text-primary-400">
-                      Syncing{syncStep[integration.provider] ? ` ${syncStep[integration.provider]}` : ''}... {getActivityLabel(integration.provider, syncProgress[integration.provider] ?? 0)}
+                      Syncing{syncStep[integration.provider] ? ` ${syncStep[integration.provider]}` : ''}... {getActivityLabel(integration.provider, syncProgress[integration.provider] ?? 0, syncStep[integration.provider])}
                     </span>
                   ) : integration.syncStats ? (
                     formatSyncStats(integration.syncStats, integration.provider)
@@ -1297,6 +1418,7 @@ export function DataSources(): JSX.Element {
 
         {/* Team connections footer */}
         {renderTeamInfo()}
+        {renderPennyBotCta()}
         {renderSlackMapping()}
         {renderGitHubRepos()}
       </div>
@@ -1328,7 +1450,7 @@ export function DataSources(): JSX.Element {
       <header className="hidden md:block sticky top-0 z-20 bg-surface-950 border-b border-surface-800 px-4 md:px-8 py-4 md:py-6">
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-xl md:text-2xl font-bold text-surface-50">Data Sources</h1>
+            <h1 className="text-xl md:text-2xl font-bold text-surface-50">Connectors</h1>
             <p className="text-surface-400 mt-1 text-sm md:text-base">
               Connect your sales tools to unlock AI-powered insights
             </p>
@@ -1452,7 +1574,7 @@ export function DataSources(): JSX.Element {
             <div>
               <h3 className="font-medium text-surface-100">Connect from your computer</h3>
               <p className="text-sm text-surface-400 mt-1">
-                For the best experience connecting data sources, please visit this page from a desktop or laptop computer. 
+                For the best experience connecting connectors, please visit this page from a desktop or laptop computer. 
                 OAuth sign-in works more reliably on larger screens.
               </p>
             </div>
@@ -1479,16 +1601,65 @@ export function DataSources(): JSX.Element {
           </h2>
 
           {connectedIntegrations.length === 0 ? (
-            <div className="card text-center py-12">
-              <div className="w-16 h-16 rounded-full bg-surface-800 flex items-center justify-center mx-auto mb-4">
-                <svg className="w-8 h-8 text-surface-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-                </svg>
+            <div className="card p-6 md:p-8">
+              <div className="text-center mb-6">
+                <div className="w-16 h-16 rounded-full bg-surface-800 flex items-center justify-center mx-auto mb-4">
+                  <svg className="w-8 h-8 text-surface-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                  </svg>
+                </div>
+                <h3 className="text-surface-200 font-medium mb-2">No connectors connected</h3>
+                <p className="text-surface-400 text-sm">
+                  Connect your first data source to get started
+                </p>
               </div>
-              <h3 className="text-surface-200 font-medium mb-2">No data sources connected</h3>
-              <p className="text-surface-400 text-sm">
-                Connect your first data source to get started
-              </p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 md:gap-4">
+                {COMMON_INTEGRATION_KEYS.filter(
+                  ({ provider }) =>
+                    INTEGRATION_CONFIG[provider] != null &&
+                    availableIntegrations.some((i) => i.provider === provider),
+                ).map(({ provider, scope }) => {
+                  const config = INTEGRATION_CONFIG[provider]!;
+                  const isConnecting = connectingProvider === provider;
+                  return (
+                    <button
+                      key={provider}
+                      type="button"
+                      onClick={() => {
+                        if (!isMobile) void handleConnect(provider, scope);
+                        else {
+                          setConnectSearch(config.name);
+                          setShowConnectModal(true);
+                        }
+                      }}
+                      disabled={isConnecting}
+                      className="card p-4 text-left hover:border-surface-600 hover:bg-surface-800/50 transition-colors disabled:opacity-50 flex items-start gap-3 group"
+                    >
+                      <div className={`${getColorClass(config.color)} p-2 rounded-lg text-white flex-shrink-0 opacity-90 group-hover:opacity-100 transition-opacity`}>
+                        {renderIcon(config.icon)}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="font-medium text-surface-100 group-hover:text-white transition-colors">
+                          {config.name}
+                        </div>
+                        <div className="text-xs text-surface-500 mt-0.5 line-clamp-2">
+                          {config.description}
+                        </div>
+                      </div>
+                      {isConnecting ? (
+                        <svg className="w-5 h-5 animate-spin text-primary-400 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                        </svg>
+                      ) : (
+                        <svg className="w-5 h-5 text-surface-500 group-hover:text-surface-400 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                        </svg>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
           ) : (
             <div className="grid gap-4">

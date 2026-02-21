@@ -167,3 +167,268 @@ def test_resolve_revtops_user_uses_existing_mapping(monkeypatch):
 
     assert resolved is not None
     assert resolved.id == jane_id
+
+
+def test_merge_participating_user_ids_adds_unique_uuid():
+    existing = [UUID("11111111-1111-1111-1111-111111111111")]
+
+    merged = slack_conversations._merge_participating_user_ids(
+        existing,
+        "22222222-2222-2222-2222-222222222222",
+    )
+
+    assert merged == [
+        UUID("11111111-1111-1111-1111-111111111111"),
+        UUID("22222222-2222-2222-2222-222222222222"),
+    ]
+
+
+def test_merge_participating_user_ids_moves_duplicate_to_end_for_recency():
+    existing = [
+        UUID("11111111-1111-1111-1111-111111111111"),
+        UUID("22222222-2222-2222-2222-222222222222"),
+    ]
+
+    merged = slack_conversations._merge_participating_user_ids(
+        existing,
+        "11111111-1111-1111-1111-111111111111",
+    )
+
+    assert merged == [
+        UUID("22222222-2222-2222-2222-222222222222"),
+        UUID("11111111-1111-1111-1111-111111111111"),
+    ]
+
+
+def test_resolve_current_revtops_user_id_prefers_linked_user_then_latest_participant():
+    linked_user = SimpleNamespace(id=UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"))
+    conversation = SimpleNamespace(
+        user_id=UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
+        participating_user_ids=[UUID("cccccccc-cccc-cccc-cccc-cccccccccccc")],
+    )
+
+    resolved_with_link = slack_conversations._resolve_current_revtops_user_id(
+        linked_user=linked_user,
+        conversation=conversation,
+    )
+    assert resolved_with_link == "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+
+    resolved_without_link = slack_conversations._resolve_current_revtops_user_id(
+        linked_user=None,
+        conversation=conversation,
+    )
+    assert resolved_without_link == "cccccccc-cccc-cccc-cccc-cccccccccccc"
+
+
+def test_resolve_current_revtops_user_id_uses_last_participant_when_primary_missing():
+    conversation = SimpleNamespace(
+        user_id=None,
+        participating_user_ids=[
+            UUID("cccccccc-cccc-cccc-cccc-cccccccccccc"),
+            UUID("dddddddd-dddd-dddd-dddd-dddddddddddd"),
+        ],
+    )
+
+    resolved_fallback = slack_conversations._resolve_current_revtops_user_id(
+        linked_user=None,
+        conversation=conversation,
+    )
+    assert resolved_fallback == "dddddddd-dddd-dddd-dddd-dddddddddddd"
+
+
+def test_resolve_current_revtops_user_id_falls_back_to_primary_when_no_participants():
+    conversation = SimpleNamespace(
+        user_id=UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
+        participating_user_ids=[],
+    )
+
+    resolved_fallback = slack_conversations._resolve_current_revtops_user_id(
+        linked_user=None,
+        conversation=conversation,
+    )
+    assert resolved_fallback == "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+
+
+def test_resolve_thread_active_user_id_uses_new_linked_speaker_on_handoff():
+    linked_user = SimpleNamespace(id=UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"))
+    conversation = SimpleNamespace(
+        user_id=UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
+        participating_user_ids=[UUID("cccccccc-cccc-cccc-cccc-cccccccccccc")],
+    )
+
+    resolved = slack_conversations._resolve_thread_active_user_id(
+        linked_user=linked_user,
+        conversation=conversation,
+        speaker_changed=True,
+    )
+
+    assert resolved == "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+
+
+def test_resolve_thread_active_user_id_clears_active_user_on_unresolved_handoff():
+    conversation = SimpleNamespace(
+        user_id=UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
+        participating_user_ids=[UUID("cccccccc-cccc-cccc-cccc-cccccccccccc")],
+    )
+
+    resolved = slack_conversations._resolve_thread_active_user_id(
+        linked_user=None,
+        conversation=conversation,
+        speaker_changed=True,
+    )
+
+    assert resolved is None
+
+
+def test_process_slack_thread_reply_applies_speaker_and_global_handoff_before_other_processing(monkeypatch):
+    events: list[str] = []
+    conversation = SimpleNamespace(
+        id=UUID("99999999-9999-9999-9999-999999999999"),
+        source_user_id="U_OLD",
+        user_id=UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
+        participating_user_ids=[UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")],
+    )
+
+    class _FakeSlackConnectorForThread:
+        def __init__(self, organization_id: str):
+            self.organization_id = organization_id
+
+        async def add_reaction(self, channel: str, timestamp: str):
+            events.append("add_reaction")
+
+        async def remove_reaction(self, channel: str, timestamp: str):
+            events.append("remove_reaction")
+
+    async def _fake_find_org(_team_id: str):
+        return "11111111-1111-1111-1111-111111111111"
+
+    async def _fake_find_thread_conversation(**_kwargs):
+        return conversation
+
+    async def _fake_find_or_create_conversation(**kwargs):
+        events.append(f"find_or_create:{kwargs['slack_user_id']}:{kwargs['revtops_user_id']}")
+        if kwargs["slack_user_id"] == "U_NEW" and kwargs["revtops_user_id"] is None:
+            conversation.source_user_id = "U_NEW"
+            conversation.user_id = None
+        if kwargs["revtops_user_id"]:
+            conversation.user_id = UUID(kwargs["revtops_user_id"])
+        return conversation
+
+    async def _fake_fetch_slack_user_info(**_kwargs):
+        events.append("fetch_slack_user")
+        return {}
+
+    async def _fake_resolve_user(**_kwargs):
+        events.append("resolve_user")
+        return SimpleNamespace(
+            id=UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+            email="new.user@acme.com",
+        )
+
+    async def _fake_stream_and_post_responses(**_kwargs):
+        events.append("stream")
+        return 3
+
+    async def _fake_can_use_credits(_org_id: str) -> bool:
+        return True
+
+    monkeypatch.setattr(slack_conversations, "find_organization_by_slack_team", _fake_find_org)
+    monkeypatch.setattr(slack_conversations, "find_thread_conversation", _fake_find_thread_conversation)
+    monkeypatch.setattr(slack_conversations, "find_or_create_conversation", _fake_find_or_create_conversation)
+    monkeypatch.setattr(slack_conversations, "_fetch_slack_user_info", _fake_fetch_slack_user_info)
+    monkeypatch.setattr(slack_conversations, "resolve_revtops_user_for_slack_actor", _fake_resolve_user)
+    monkeypatch.setattr(slack_conversations, "_stream_and_post_responses", _fake_stream_and_post_responses)
+    monkeypatch.setattr(slack_conversations, "SlackConnector", _FakeSlackConnectorForThread)
+    monkeypatch.setattr(slack_conversations, "can_use_credits", _fake_can_use_credits)
+
+    result = asyncio.run(
+        slack_conversations.process_slack_thread_reply(
+            team_id="T123",
+            channel_id="C123",
+            user_id="U_NEW",
+            message_text="hello",
+            thread_ts="111.222",
+            event_ts="111.333",
+            files=None,
+        )
+    )
+
+    assert result["status"] == "success"
+    assert events.index("add_reaction") < events.index("fetch_slack_user")
+    assert events.index("find_or_create:U_NEW:None") < events.index("fetch_slack_user")
+    assert events.index("add_reaction") < events.index("find_or_create:U_NEW:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+
+
+def test_process_slack_mention_clears_active_user_on_unresolved_speaker_handoff(monkeypatch):
+    events: list[str] = []
+    existing_conversation = SimpleNamespace(
+        id=UUID("99999999-9999-9999-9999-999999999999"),
+        source_user_id="U_OLD",
+        user_id=UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
+        participating_user_ids=[UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")],
+    )
+    persisted_conversation = SimpleNamespace(
+        id=existing_conversation.id,
+        source_user_id="U_NEW",
+        user_id=None,
+        participating_user_ids=[UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")],
+    )
+
+    class _FakeSlackConnectorForMention:
+        def __init__(self, organization_id: str):
+            self.organization_id = organization_id
+
+        async def add_reaction(self, channel: str, timestamp: str):
+            events.append("add_reaction")
+
+        async def remove_reaction(self, channel: str, timestamp: str):
+            events.append("remove_reaction")
+
+    async def _fake_find_org(_team_id: str):
+        return "11111111-1111-1111-1111-111111111111"
+
+    async def _fake_fetch_slack_user_info(**_kwargs):
+        return {}
+
+    async def _fake_resolve_user(**_kwargs):
+        return None
+
+    async def _fake_find_thread_conversation(**_kwargs):
+        return existing_conversation
+
+    async def _fake_find_or_create_conversation(**kwargs):
+        events.append(
+            f"find_or_create:{kwargs['slack_user_id']}:{kwargs['revtops_user_id']}:{kwargs['clear_current_user_on_unresolved']}"
+        )
+        return persisted_conversation
+
+    async def _fake_stream_and_post_responses(**kwargs):
+        events.append(f"stream_user_id:{kwargs['orchestrator'].user_id}")
+        return 2
+
+    async def _fake_can_use_credits(_org_id: str) -> bool:
+        return True
+
+    monkeypatch.setattr(slack_conversations, "find_organization_by_slack_team", _fake_find_org)
+    monkeypatch.setattr(slack_conversations, "_fetch_slack_user_info", _fake_fetch_slack_user_info)
+    monkeypatch.setattr(slack_conversations, "resolve_revtops_user_for_slack_actor", _fake_resolve_user)
+    monkeypatch.setattr(slack_conversations, "find_thread_conversation", _fake_find_thread_conversation)
+    monkeypatch.setattr(slack_conversations, "find_or_create_conversation", _fake_find_or_create_conversation)
+    monkeypatch.setattr(slack_conversations, "_stream_and_post_responses", _fake_stream_and_post_responses)
+    monkeypatch.setattr(slack_conversations, "SlackConnector", _FakeSlackConnectorForMention)
+    monkeypatch.setattr(slack_conversations, "can_use_credits", _fake_can_use_credits)
+
+    result = asyncio.run(
+        slack_conversations.process_slack_mention(
+            team_id="T123",
+            channel_id="C123",
+            user_id="U_NEW",
+            message_text="hello",
+            thread_ts="111.222",
+            files=None,
+        )
+    )
+
+    assert result["status"] == "success"
+    assert "find_or_create:U_NEW:None:True" in events
+    assert "stream_user_id:None" in events

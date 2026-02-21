@@ -28,9 +28,12 @@ class DealResponse(BaseModel):
     name: str
     amount: Optional[float]
     stage: Optional[str]
+    stage_probability: Optional[int]  # 0-100 from pipeline_stages, for prob-adjusted value
     close_date: Optional[str]
     pipeline_id: Optional[str]
     pipeline_name: Optional[str]
+    source_system: Optional[str]  # e.g. hubspot; for building CRM deal links
+    source_id: Optional[str]  # CRM deal id; for building CRM deal links
 
 
 class DealListResponse(BaseModel):
@@ -91,16 +94,17 @@ async def list_deals(
 
     async with get_session(organization_id=str(org_uuid)) as session:
 
-        # Subquery to get stage names by matching source_id within the same pipeline
+        # Subquery to get stage name and probability by matching source_id within the same pipeline
         stage_name_subquery = (
             select(
                 PipelineStage.source_id,
                 PipelineStage.pipeline_id,
                 PipelineStage.name.label("stage_name"),
+                PipelineStage.probability.label("stage_probability"),
             )
         ).subquery()
 
-        # Build query - join with pipeline_stages to get human-readable stage name
+        # Build query - join with pipeline_stages to get human-readable stage name and probability
         query = (
             select(
                 Deal.id,
@@ -108,9 +112,12 @@ async def list_deals(
                 Deal.amount,
                 Deal.stage,
                 stage_name_subquery.c.stage_name,
+                stage_name_subquery.c.stage_probability,
                 Deal.close_date,
                 Deal.pipeline_id,
                 Pipeline.name.label("pipeline_name"),
+                Deal.source_system,
+                Deal.source_id,
             )
             .outerjoin(Pipeline, Deal.pipeline_id == Pipeline.id)
             .outerjoin(
@@ -168,9 +175,12 @@ async def list_deals(
                 name=row.name,
                 amount=float(row.amount) if row.amount else None,
                 stage=row.stage_name or row.stage,  # Use human-readable name, fallback to source_id
+                stage_probability=int(row.stage_probability) if row.stage_probability is not None else None,
                 close_date=row.close_date.isoformat() if row.close_date else None,
                 pipeline_id=str(row.pipeline_id) if row.pipeline_id else None,
                 pipeline_name=row.pipeline_name,
+                source_system=getattr(row, "source_system", None),
+                source_id=getattr(row, "source_id", None),
             )
             for row in rows
         ]

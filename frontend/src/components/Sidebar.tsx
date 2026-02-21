@@ -4,7 +4,7 @@
  * Features:
  * - Expand/collapse toggle
  * - New Chat button
- * - Data Sources tab with badge
+ * - Connectors tab with badge
  * - Chats tab
  * - Recent chats list
  * - Organization section
@@ -43,11 +43,13 @@ function OrgSwitcherSection({
   collapsed,
   organization,
   memberCount,
+  creditsDisplay,
   onOpenOrgPanel,
 }: {
   collapsed: boolean;
   organization: OrganizationInfo;
   memberCount: number;
+  creditsDisplay: { balance: number; included: number } | null;
   onOpenOrgPanel: () => void;
 }): JSX.Element {
   const organizations: UserOrganization[] = useAppStore((state) => state.organizations);
@@ -101,8 +103,9 @@ function OrgSwitcherSection({
             <div className="text-sm font-medium text-surface-200 truncate">
               {organization.name}
             </div>
-            <div className="text-xs text-surface-500">
-              {memberCount} member{memberCount !== 1 ? 's' : ''}
+            <div className="text-[11px] text-surface-500">
+              {memberCount} {memberCount !== 1 ? 'members' : 'member'}
+              {creditsDisplay != null && ` · ${creditsDisplay.balance}/${creditsDisplay.included}`}
             </div>
           </div>
         )}
@@ -177,6 +180,7 @@ interface SidebarProps {
   onNewChat: () => void;
   organization: OrganizationInfo;
   memberCount: number;
+  creditsDisplay: { balance: number; included: number } | null;
   onOpenOrgPanel: () => void;
   onOpenProfilePanel: () => void;
   isMobile?: boolean;
@@ -198,6 +202,7 @@ export function Sidebar({
   onNewChat,
   organization,
   memberCount,
+  creditsDisplay,
   onOpenOrgPanel,
   onOpenProfilePanel,
   isMobile = false,
@@ -308,7 +313,7 @@ export function Sidebar({
           {!collapsed && <span>Home</span>}
         </button>
 
-        {/* Data Sources */}
+        {/* Connectors */}
         <button
           onClick={() => onViewChange('data-sources')}
           className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${
@@ -327,10 +332,10 @@ export function Sidebar({
               </span>
             )}
           </div>
-          {!collapsed && <span>Sources</span>}
+          {!collapsed && <span>Connectors</span>}
         </button>
 
-        {/* Data Inspector */}
+        {/* Search Data */}
         <button
           onClick={() => onViewChange('data')}
           className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${
@@ -342,22 +347,7 @@ export function Sidebar({
           <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h18M3 14h18m-9-4v8m-7 0h14a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
           </svg>
-          {!collapsed && <span>Data</span>}
-        </button>
-
-        {/* Search */}
-        <button
-          onClick={() => onViewChange('search')}
-          className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${
-            currentView === 'search'
-              ? 'bg-surface-800 text-surface-100'
-              : 'text-surface-400 hover:text-surface-200 hover:bg-surface-800/50'
-          } ${collapsed ? 'justify-center' : ''}`}
-        >
-          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-          </svg>
-          {!collapsed && <span>Search</span>}
+          {!collapsed && <span>Search Data</span>}
         </button>
 
         {/* Workflows */}
@@ -380,6 +370,21 @@ export function Sidebar({
             )}
           </div>
           {!collapsed && <span>Workflows</span>}
+        </button>
+
+        {/* Apps */}
+        <button
+          onClick={() => onViewChange('apps')}
+          className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${
+            currentView === 'apps' || currentView === 'app-view'
+              ? 'bg-surface-800 text-surface-100'
+              : 'text-surface-400 hover:text-surface-200 hover:bg-surface-800/50'
+          } ${collapsed ? 'justify-center' : ''}`}
+        >
+          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+          </svg>
+          {!collapsed && <span>Apps</span>}
         </button>
 
         {/* Pending Changes - only visible when there are pending changes */}
@@ -517,6 +522,7 @@ export function Sidebar({
           collapsed={collapsed}
           organization={organization}
           memberCount={memberCount}
+          creditsDisplay={creditsDisplay}
           onOpenOrgPanel={onOpenOrgPanel}
         />
 

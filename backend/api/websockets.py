@@ -18,6 +18,7 @@ Architecture:
 
 import json
 import logging
+import asyncio
 from collections import defaultdict
 from typing import Dict, Optional, Set
 from uuid import UUID, uuid4
@@ -162,12 +163,16 @@ from agents.tools import (
     update_tool_call_result,
     execute_send_email_from,
     execute_send_slack,
-    execute_github_issues_access,
     execute_save_memory,
+    execute_keep_notes,
 )
 from models.conversation import Conversation
 from models.database import get_session
 from models.user import User
+from models.chat_message import ChatMessage
+from models.workflow import WorkflowRun
+from sqlalchemy import and_, select
+from services.credits import can_use_credits
 from services.task_manager import task_manager
 
 
@@ -183,6 +188,125 @@ def _generate_title(message: str) -> str:
     return title or "New Chat"
 
 logger = logging.getLogger(__name__)
+
+
+async def _collect_running_workflow_tool_updates(organization_id: str) -> list[dict]:
+    """
+    Collect running workflow tool states from persisted chat messages.
+
+    This is used to keep clients in sync when tool execution happens inside
+    Celery workers (separate process) where in-memory websocket broadcasters
+    are not shared with the API process.
+    """
+    from models.conversation import Conversation
+
+    updates: list[dict] = []
+    logger.debug("[WebSocket] Collecting running workflow tool updates for org %s", organization_id)
+    async with get_session(organization_id=organization_id) as session:
+        run_rows = await session.execute(
+            select(WorkflowRun.output)
+            .where(
+                and_(
+                    WorkflowRun.organization_id == UUID(organization_id),
+                    WorkflowRun.status == "running",
+                )
+            )
+        )
+
+        conversation_ids: list[UUID] = []
+        for output in run_rows.scalars().all():
+            if not isinstance(output, dict):
+                continue
+            conv_id = output.get("conversation_id")
+            if not conv_id:
+                continue
+            try:
+                conversation_ids.append(UUID(str(conv_id)))
+            except ValueError:
+                continue
+
+        if not conversation_ids:
+            logger.debug("[WebSocket] No running workflow conversations found for org %s", organization_id)
+            return updates
+
+        message_rows = await session.execute(
+            select(ChatMessage)
+            .join(Conversation, ChatMessage.conversation_id == Conversation.id)
+            .where(
+                and_(
+                    Conversation.id.in_(conversation_ids),
+                    Conversation.type == "workflow",
+                    ChatMessage.role == "assistant",
+                    ChatMessage.content_blocks.isnot(None),
+                )
+            )
+            .order_by(ChatMessage.created_at.desc())
+        )
+
+        for message in message_rows.scalars().all():
+            for block in message.content_blocks or []:
+                if block.get("type") != "tool_use":
+                    continue
+                status = block.get("status")
+                if status not in {"running", "streaming", "pending"}:
+                    continue
+                updates.append(
+                    {
+                        "conversation_id": str(message.conversation_id),
+                        "tool_id": str(block.get("id", "")),
+                        "tool_name": str(block.get("name", "unknown")),
+                        "result": block.get("result") if isinstance(block.get("result"), dict) else {},
+                        "status": "running",
+                    }
+                )
+
+    return updates
+
+
+async def _stream_workflow_tool_status(websocket: WebSocket, organization_id: str) -> None:
+    """Poll persisted workflow tool states and push deltas to this websocket."""
+    last_sent: dict[str, str] = {}
+    consecutive_errors: int = 0
+    BASE_INTERVAL: float = 1.5
+    MAX_BACKOFF: float = 30.0
+    logger.info("[WebSocket] Starting workflow tool status stream for org %s", organization_id)
+    while True:
+        try:
+            updates = await _collect_running_workflow_tool_updates(organization_id)
+            consecutive_errors = 0
+            for update in updates:
+                key: str = f"{update['conversation_id']}:{update['tool_id']}"
+                signature: str = json.dumps(update.get("result") or {}, sort_keys=True, default=str)
+                signature = f"{update.get('status')}::{signature}"
+                if last_sent.get(key) == signature:
+                    continue
+                await websocket.send_text(
+                    json.dumps(
+                        {
+                            "type": "tool_progress",
+                            **update,
+                        }
+                    )
+                )
+                logger.debug(
+                    "[WebSocket] Sent workflow tool status: conv=%s tool=%s",
+                    update["conversation_id"],
+                    update["tool_id"],
+                )
+                last_sent[key] = signature
+        except Exception as exc:
+            consecutive_errors += 1
+            if consecutive_errors <= 3:
+                logger.warning("[WebSocket] Workflow status stream error: %s", exc)
+            elif consecutive_errors == 4:
+                logger.warning(
+                    "[WebSocket] Workflow status stream error (suppressing further): %s", exc
+                )
+        sleep_time: float = min(
+            BASE_INTERVAL * (2 ** consecutive_errors) if consecutive_errors > 0 else BASE_INTERVAL,
+            MAX_BACKOFF,
+        )
+        await asyncio.sleep(sleep_time)
 
 
 async def _execute_tool_approval(
@@ -214,8 +338,9 @@ async def _execute_tool_approval(
         remove_pending_operation,
         execute_send_email_from,
         execute_send_slack,
-        execute_github_issues_access,
         execute_save_memory,
+        execute_keep_notes,
+        execute_create_cloud_file,
     )
     
     # First check if this is in our in-memory pending operations store
@@ -246,14 +371,26 @@ async def _execute_tool_approval(
             result = await execute_send_slack(params, op_org_id)
             result["tool_name"] = tool_name
             return result
-        elif tool_name == "github_issues_access":
-            result = await execute_github_issues_access(params, op_org_id)
-            result["tool_name"] = tool_name
-            return result
-        elif tool_name == "save_memory":
+        elif tool_name == "manage_memory":
             result = await execute_save_memory(params, op_org_id, op_user_id)
             result["tool_name"] = tool_name
             return result
+        elif tool_name == "keep_notes":
+            workflow_id = params.get("workflow_id", "")
+            run_id = params.get("run_id")
+            result = await execute_keep_notes(params, op_org_id, op_user_id, workflow_id, run_id)
+            result["tool_name"] = tool_name
+            return result
+        elif tool_name == "create_cloud_file":
+            result = await execute_create_cloud_file(params, op_org_id, op_user_id)
+            result["tool_name"] = tool_name
+            return result
+
+
+
+
+
+
         else:
             return {
                 "status": "failed",
@@ -272,7 +409,7 @@ async def _execute_tool_approval(
                 result = await execute_crm_operation(operation_id, skip_duplicates)
             else:
                 result = await cancel_crm_operation(operation_id)
-            result["tool_name"] = "crm_write"
+            result["tool_name"] = "write_to_system_of_record"
             return result
     
     # Operation not found
@@ -329,10 +466,15 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         await websocket.close(code=1008, reason="You're on the waitlist. We'll notify you when you have access.")
         return
 
+    workflow_status_task: asyncio.Task[None] | None = None
+
     try:
         # Register for sync progress broadcasts
         if organization_id:
             sync_broadcaster.register(organization_id, websocket)
+            workflow_status_task = asyncio.create_task(
+                _stream_workflow_tool_status(websocket, organization_id)
+            )
         
         # Send active tasks on connect for client catchup
         active_tasks = await task_manager.get_active_tasks(user_id_str, organization_id)
@@ -396,6 +538,14 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     await websocket.send_text(json.dumps({
                         "type": "error",
                         "error": "No organization found. Please complete onboarding.",
+                    }))
+                    continue
+
+                if not await can_use_credits(organization_id):
+                    await websocket.send_text(json.dumps({
+                        "type": "error",
+                        "error": "Insufficient credits or no active subscription. Please upgrade your plan or add a payment method.",
+                        "code": "insufficient_credits",
                     }))
                     continue
 
@@ -575,6 +725,12 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     except WebSocketDisconnect:
         logger.info("User %s disconnected", user_id_str)
     finally:
+        if workflow_status_task:
+            workflow_status_task.cancel()
+            try:
+                await workflow_status_task
+            except asyncio.CancelledError:
+                pass
         # Clean up subscriptions
         await task_manager.unsubscribe_all(websocket)
         # Unregister from sync progress broadcasts

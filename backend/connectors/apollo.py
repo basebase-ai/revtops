@@ -18,6 +18,7 @@ from typing import Any, Optional
 import httpx
 
 from connectors.base import BaseConnector
+from connectors.registry import AuthType, Capability, ConnectorMeta, ConnectorScope
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,23 @@ class ApolloConnector(BaseConnector):
     """
 
     source_system = "apollo"
+    meta = ConnectorMeta(
+        name="Apollo",
+        slug="apollo",
+        auth_type=AuthType.API_KEY,
+        scope=ConnectorScope.ORGANIZATION,
+        entity_types=["contacts", "accounts"],
+        capabilities=[Capability.QUERY],
+        query_description=(
+            "Enrich a person or company using Apollo.io. "
+            "Pass a JSON string: "
+            '{"type":"person","email":"alice@acme.com"} or '
+            '{"type":"person","first_name":"Alice","last_name":"Smith","domain":"acme.com"} or '
+            '{"type":"company","domain":"acme.com"}'
+        ),
+        nango_integration_id="apollo",
+        description="Apollo.io data enrichment – contacts and company data",
+    )
 
     def __init__(self, organization_id: str) -> None:
         """Initialize Apollo connector."""
@@ -394,10 +412,39 @@ class ApolloConnector(BaseConnector):
         }
 
     # =========================================================================
+    # QUERY capability
+    # =========================================================================
+
+    async def query(self, request: str) -> dict[str, Any]:
+        """Dispatch enrichment queries: person or company."""
+        import json as _json
+
+        try:
+            payload: dict[str, Any] = _json.loads(request)
+        except (ValueError, TypeError):
+            payload = {"type": "person", "email": request.strip()}
+
+        query_type: str = payload.get("type", "person")
+
+        if query_type == "company":
+            domain: str | None = payload.get("domain")
+            if not domain:
+                return {"error": "domain is required for company enrichment"}
+            result = await self.enrich_organization(domain)
+            return result if result else {"error": f"No company found for domain '{domain}'"}
+
+        person_result = await self.enrich_person(
+            email=payload.get("email"),
+            first_name=payload.get("first_name"),
+            last_name=payload.get("last_name"),
+            domain=payload.get("domain"),
+            linkedin_url=payload.get("linkedin_url"),
+            organization_name=payload.get("organization_name"),
+        )
+        return person_result if person_result else {"error": "No person match found for the given identifiers"}
+
+    # =========================================================================
     # BaseConnector Abstract Methods (Not applicable for Apollo)
-    #
-    # Apollo is an enrichment service, not a CRM. These methods are
-    # required by BaseConnector but don't apply to Apollo's use case.
     # =========================================================================
 
     async def sync_deals(self) -> int:

@@ -8,6 +8,7 @@ from models.account import Account
 from models.contact import Contact
 from models.activity import Activity
 from models.meeting import Meeting
+from models.app import App
 from models.artifact import Artifact
 from models.conversation import Conversation
 from models.chat_message import ChatMessage
@@ -20,9 +21,12 @@ from models.change_session import ChangeSession
 from models.record_snapshot import RecordSnapshot
 from models.slack_user_mapping import SlackUserMapping
 from models.shared_file import SharedFile
-from models.user_memory import UserMemory
-from models.organization_membership import OrganizationMembership
+from models.memory import Memory
+from models.org_member import OrgMember
 from models.goal import Goal
+from models.tracker_team import TrackerTeam
+from models.tracker_project import TrackerProject
+from models.tracker_issue import TrackerIssue
 
 __all__ = [
     "Base",
@@ -37,6 +41,7 @@ __all__ = [
     "Contact",
     "Activity",
     "Meeting",
+    "App",
     "Artifact",
     "Conversation",
     "ChatMessage",
@@ -51,7 +56,10 @@ __all__ = [
     "RecordSnapshot",
     "SlackUserMapping",
     "SharedFile",
-    "UserMemory",
-    "OrganizationMembership",
+    "Memory",
+    "OrgMember",
     "Goal",
+    "TrackerTeam",
+    "TrackerProject",
+    "TrackerIssue",
 ]
