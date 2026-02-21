@@ -127,7 +127,11 @@ async def find_organization_by_slack_team(team_id: str) -> str | None:
                 attempt,
             )
             if attempt == 2:
-                raise
+                logger.error(
+                    "[slack_conversations] Exhausted Slack integration lookup retries for team=%s; returning no organization",
+                    team_id,
+                )
+                return None
             await asyncio.sleep(0.2)
 
     # --- Fast path: match on stored team_id in extra_data ---
