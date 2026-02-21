@@ -726,7 +726,7 @@ async def create_organization(request: CreateOrganizationRequest) -> Organizatio
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid organization ID")
 
-    async with get_session() as session:
+    async with get_admin_session() as session:
         # Check if organization already exists by ID
         existing = await session.get(Organization, org_uuid)
         if existing:
