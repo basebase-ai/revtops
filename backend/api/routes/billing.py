@@ -445,18 +445,45 @@ async def get_credit_details(
         period_start = org.current_period_start
         period_end = org.current_period_end
         
-        # Build query for transactions in current period
-        tx_query = (
-            select(CreditTransaction, User.email, User.name)
-            .outerjoin(User, CreditTransaction.user_id == User.id)
-            .where(CreditTransaction.organization_id == org_id)
-            .order_by(CreditTransaction.created_at.asc())
-        )
-        if period_start:
-            tx_query = tx_query.where(CreditTransaction.created_at >= period_start)
+        def build_transactions_query(filter_start: Optional[datetime]) -> Any:
+            q = (
+                select(CreditTransaction, User.email, User.name)
+                .outerjoin(User, CreditTransaction.user_id == User.id)
+                .where(CreditTransaction.organization_id == org_id)
+                .order_by(CreditTransaction.created_at.asc())
+            )
+            if filter_start:
+                q = q.where(CreditTransaction.created_at >= filter_start)
+            return q
         
-        tx_result = await session.execute(tx_query)
+        def build_usage_query(filter_start: Optional[datetime]) -> Any:
+            q = (
+                select(
+                    CreditTransaction.user_id,
+                    User.email,
+                    User.name,
+                    func.sum(func.abs(CreditTransaction.amount)).label("total_used"),
+                )
+                .outerjoin(User, CreditTransaction.user_id == User.id)
+                .where(CreditTransaction.organization_id == org_id)
+                .where(CreditTransaction.amount < 0)
+                .group_by(CreditTransaction.user_id, User.email, User.name)
+                .order_by(func.sum(func.abs(CreditTransaction.amount)).desc())
+            )
+            if filter_start:
+                q = q.where(CreditTransaction.created_at >= filter_start)
+            return q
+        
+        # Try current period first, fall back to all-time if empty
+        tx_result = await session.execute(build_transactions_query(period_start))
         rows = tx_result.all()
+        
+        effective_period_start = period_start
+        if not rows and period_start:
+            # No transactions in current period - show all-time data
+            tx_result = await session.execute(build_transactions_query(None))
+            rows = tx_result.all()
+            effective_period_start = None
         
         transactions: list[CreditTransactionItem] = []
         for tx, user_email, user_name in rows:
@@ -468,30 +495,16 @@ async def get_credit_details(
                 user_email=user_email,
             ))
         
-        # Calculate starting balance (balance before first transaction, or credits_included if no transactions)
+        # Calculate starting balance
+        # If showing current period, derive from first transaction
+        # If showing all-time (fallback), use credits_included since old transactions may be from different plans
         starting_balance = org.credits_included
-        if transactions:
+        if transactions and effective_period_start:
             first_tx = transactions[0]
             starting_balance = first_tx.balance_after - first_tx.amount
         
-        # Aggregate usage by user (only deductions, amount < 0)
-        usage_query = (
-            select(
-                CreditTransaction.user_id,
-                User.email,
-                User.name,
-                func.sum(func.abs(CreditTransaction.amount)).label("total_used"),
-            )
-            .outerjoin(User, CreditTransaction.user_id == User.id)
-            .where(CreditTransaction.organization_id == org_id)
-            .where(CreditTransaction.amount < 0)
-            .group_by(CreditTransaction.user_id, User.email, User.name)
-            .order_by(func.sum(func.abs(CreditTransaction.amount)).desc())
-        )
-        if period_start:
-            usage_query = usage_query.where(CreditTransaction.created_at >= period_start)
-        
-        usage_result = await session.execute(usage_query)
+        # Aggregate usage by user
+        usage_result = await session.execute(build_usage_query(effective_period_start))
         usage_rows = usage_result.all()
         
         usage_by_user: list[UserUsageItem] = []
@@ -503,11 +516,12 @@ async def get_credit_details(
                 total_credits_used=int(total_used) if total_used else 0,
             ))
         
+        # Return effective period (None if showing all-time)
         return CreditDetailsResponse(
             transactions=transactions,
             usage_by_user=usage_by_user,
-            period_start=period_start.isoformat().replace("+00:00", "Z") if period_start else None,
-            period_end=period_end.isoformat().replace("+00:00", "Z") if period_end else None,
+            period_start=effective_period_start.isoformat().replace("+00:00", "Z") if effective_period_start else None,
+            period_end=period_end.isoformat().replace("+00:00", "Z") if period_end and effective_period_start else None,
             starting_balance=starting_balance,
         )
 
@@ -567,11 +581,9 @@ async def _handle_invoice_paid(invoice: Any) -> None:
     sub = stripe.Subscription.retrieve(sub_id)
     org_id = sub.metadata.get("organization_id")
     tier = sub.metadata.get("tier") or _tier_from_price(invoice)
-    if not org_id or not tier:
+    if not org_id:
         return
-    plan = PLANS.get(tier, {})
-    credits_included = plan.get("credits_included", 100)
-    cap = ROLLOVER_CAP.get(tier, 0)
+    plan = PLANS.get(tier or "", {})
     async with get_admin_session() as session:
         from sqlalchemy import select
         result = await session.execute(
@@ -580,6 +592,13 @@ async def _handle_invoice_paid(invoice: Any) -> None:
         org = result.scalar_one_or_none()
         if not org:
             return
+        
+        # Use plan credits if tier found, otherwise keep org's existing credits_included
+        # This prevents overwriting 500 with 100 if tier lookup fails
+        credits_included: int = plan.get("credits_included") or org.credits_included or 100
+        effective_tier: str = tier or org.subscription_tier or ""
+        cap: int = ROLLOVER_CAP.get(effective_tier, 0)
+        
         rollover = 0
         if cap > 1 and org.credits_balance > 0:
             rollover = min(
