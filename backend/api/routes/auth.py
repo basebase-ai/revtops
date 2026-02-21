@@ -26,7 +26,7 @@ from fastapi.responses import RedirectResponse
 
 from api.auth_middleware import AuthContext, get_current_auth
 from pydantic import BaseModel, Field
-from sqlalchemy import select, text
+from sqlalchemy import func, or_, select, text
 
 from config import settings, get_nango_integration_id, get_provider_scope
 from models.database import get_admin_session, get_session
@@ -972,10 +972,60 @@ async def link_identity(
         if not mapping or mapping.organization_id != org_uuid:
             raise HTTPException(status_code=404, detail="Identity mapping not found")
 
+        logger.info(
+            "Linking identity mapping id=%s org=%s target_user=%s source=%s external_userid=%s external_email=%s",
+            mapping_uuid,
+            org_uuid,
+            target_uuid,
+            mapping.source,
+            mapping.external_userid,
+            mapping.external_email,
+        )
+
         # Set user_id on the mapping
         mapping.user_id = target_uuid
         mapping.revtops_email = target_user.email
+        if mapping.source == "slack" and not mapping.external_email and target_user.email:
+            mapping.external_email = target_user.email
         mapping.match_source = "admin_manual_link"
+
+        # Slack identities can appear as separate rows (Slack user id vs email-derived).
+        # Link related unmapped rows as well so both Slack UI and email views stay in sync.
+        if mapping.source == "slack":
+            related_filters = []
+            if mapping.external_userid:
+                related_filters.append(SlackUserMapping.external_userid == mapping.external_userid)
+            if mapping.external_email:
+                related_filters.append(func.lower(SlackUserMapping.external_email) == mapping.external_email.lower())
+            if target_user.email:
+                related_filters.append(func.lower(SlackUserMapping.external_email) == target_user.email.lower())
+
+            if related_filters:
+                related_result = await session.execute(
+                    select(SlackUserMapping)
+                    .where(SlackUserMapping.organization_id == org_uuid)
+                    .where(SlackUserMapping.source == "slack")
+                    .where(SlackUserMapping.id != mapping_uuid)
+                    .where(SlackUserMapping.user_id.is_(None))
+                    .where(or_(*related_filters))
+                )
+                related_mappings: list[SlackUserMapping] = list(related_result.scalars().all())
+                for related_mapping in related_mappings:
+                    related_mapping.user_id = target_uuid
+                    related_mapping.revtops_email = target_user.email
+                    if not related_mapping.external_email and target_user.email:
+                        related_mapping.external_email = target_user.email
+                    related_mapping.match_source = "admin_manual_link"
+
+                if related_mappings:
+                    logger.info(
+                        "Linked %d additional Slack mappings org=%s target_user=%s seed_mapping=%s",
+                        len(related_mappings),
+                        org_uuid,
+                        target_uuid,
+                        mapping_uuid,
+                    )
+
         await session.commit()
 
     return {"status": "linked"}
