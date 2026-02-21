@@ -11,6 +11,7 @@ import json
 import logging
 import re
 import uuid
+import asyncio
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
@@ -34,6 +35,8 @@ from config import get_nango_integration_id
 
 logger = logging.getLogger(__name__)
 EMAIL_PATTERN = re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.IGNORECASE)
+SLOW_REPLY_TIMEOUT_SECONDS = 30
+SLOW_REPLY_MESSAGE = "I'm sorry, I'll see if I can get to this, but it's taking a while."
 
 
 def _cannot_action_message() -> str:
@@ -68,6 +71,29 @@ async def _post_cannot_action_response(
     )
 
 
+
+
+async def post_slow_processing_notice(
+    team_id: str,
+    channel_id: str,
+    reaction_ts: str | None = None,
+    thread_ts: str | None = None,
+) -> None:
+    """Post the standard slow-processing Slack message and clear reaction state."""
+    organization_id = await find_organization_by_slack_team(team_id)
+    if not organization_id:
+        logger.warning(
+            "[slack_conversations] Unable to post slow-processing notice: no organization for team=%s",
+            team_id,
+        )
+        return
+
+    connector = SlackConnector(organization_id=organization_id)
+    await connector.post_message(channel=channel_id, text=SLOW_REPLY_MESSAGE, thread_ts=thread_ts)
+    if reaction_ts:
+        await connector.remove_reaction(channel=channel_id, timestamp=reaction_ts)
+
+
 async def find_organization_by_slack_team(team_id: str) -> str | None:
     """
     Find the organization ID for a Slack team/workspace.
@@ -82,64 +108,81 @@ async def find_organization_by_slack_team(team_id: str) -> str | None:
     Returns:
         Organization ID string or None if not found
     """
-    async with get_admin_session() as session:
-        query = (
-            select(Integration)
-            .where(Integration.provider == "slack")
-            .where(Integration.is_active == True)
-        )
-        result = await session.execute(query)
-        integrations: list[Integration] = list(result.scalars().all())
+    integrations: list[Integration] = []
+    query = (
+        select(Integration)
+        .where(Integration.provider == "slack")
+        .where(Integration.is_active == True)
+    )
+    for attempt in (1, 2):
+        try:
+            async with get_admin_session() as session:
+                result = await session.execute(query)
+                integrations = list(result.scalars().all())
+            break
+        except Exception:
+            logger.exception(
+                "[slack_conversations] Failed loading Slack integrations for team=%s attempt=%d",
+                team_id,
+                attempt,
+            )
+            if attempt == 2:
+                logger.error(
+                    "[slack_conversations] Exhausted Slack integration lookup retries for team=%s; returning no organization",
+                    team_id,
+                )
+                return None
+            await asyncio.sleep(0.2)
 
-        # --- Fast path: match on stored team_id in extra_data ---
-        for integration in integrations:
-            extra_data: dict[str, Any] = integration.extra_data or {}
-            if extra_data.get("team_id") == team_id:
+    # --- Fast path: match on stored team_id in extra_data ---
+    for integration in integrations:
+        extra_data: dict[str, Any] = integration.extra_data or {}
+        if extra_data.get("team_id") == team_id:
+            logger.info(
+                "[slack_conversations] Matched Slack team %s to org %s via integration metadata",
+                team_id,
+                integration.organization_id,
+            )
+            return str(integration.organization_id)
+
+    if len(integrations) == 1:
+        logger.warning(
+            "[slack_conversations] No team_id metadata match; using the only active Slack integration org=%s for team=%s",
+            integrations[0].organization_id,
+            team_id,
+        )
+        return str(integrations[0].organization_id)
+
+    # --- Slow path: resolve team_id via auth.test for integrations missing it ---
+    integrations_missing_team_id: list[Integration] = [
+        i for i in integrations if not (i.extra_data or {}).get("team_id")
+    ]
+    if integrations_missing_team_id:
+        logger.info(
+            "[slack_conversations] %d Slack integration(s) missing team_id in extra_data; resolving via auth.test",
+            len(integrations_missing_team_id),
+        )
+        for integration in integrations_missing_team_id:
+            resolved_team_id: str | None = await _resolve_team_id_via_auth_test(integration)
+            if resolved_team_id is None:
+                continue
+            # Backfill the team_id so future lookups use the fast path
+            merged_extra: dict[str, Any] = dict(integration.extra_data or {})
+            merged_extra["team_id"] = resolved_team_id
+            await _update_integration_metadata(integration.id, merged_extra)
+            logger.info(
+                "[slack_conversations] Backfilled team_id=%s for Slack integration %s (org %s)",
+                resolved_team_id,
+                integration.id,
+                integration.organization_id,
+            )
+            if resolved_team_id == team_id:
                 logger.info(
-                    "[slack_conversations] Matched Slack team %s to org %s via integration metadata",
+                    "[slack_conversations] Matched Slack team %s to org %s via auth.test",
                     team_id,
                     integration.organization_id,
                 )
                 return str(integration.organization_id)
-
-        if len(integrations) == 1:
-            logger.warning(
-                "[slack_conversations] No team_id metadata match; using the only active Slack integration org=%s for team=%s",
-                integrations[0].organization_id,
-                team_id,
-            )
-            return str(integrations[0].organization_id)
-
-        # --- Slow path: resolve team_id via auth.test for integrations missing it ---
-        integrations_missing_team_id: list[Integration] = [
-            i for i in integrations if not (i.extra_data or {}).get("team_id")
-        ]
-        if integrations_missing_team_id:
-            logger.info(
-                "[slack_conversations] %d Slack integration(s) missing team_id in extra_data; resolving via auth.test",
-                len(integrations_missing_team_id),
-            )
-            for integration in integrations_missing_team_id:
-                resolved_team_id: str | None = await _resolve_team_id_via_auth_test(integration)
-                if resolved_team_id is None:
-                    continue
-                # Backfill the team_id so future lookups use the fast path
-                merged_extra: dict[str, Any] = dict(integration.extra_data or {})
-                merged_extra["team_id"] = resolved_team_id
-                await _update_integration_metadata(integration.id, merged_extra)
-                logger.info(
-                    "[slack_conversations] Backfilled team_id=%s for Slack integration %s (org %s)",
-                    resolved_team_id,
-                    integration.id,
-                    integration.organization_id,
-                )
-                if resolved_team_id == team_id:
-                    logger.info(
-                        "[slack_conversations] Matched Slack team %s to org %s via auth.test",
-                        team_id,
-                        integration.organization_id,
-                    )
-                    return str(integration.organization_id)
 
     logger.warning("[slack_conversations] No Slack integration found for team=%s", team_id)
     return None
@@ -1684,121 +1727,108 @@ async def process_slack_dm(
 ) -> dict[str, Any]:
     """
     Process an incoming Slack DM and generate a response.
-    
-    This is the main entry point for handling Slack DMs:
-    1. Find the organization from the Slack team
-    2. Find or create a conversation for this DM channel
-    3. Process the message through the agent orchestrator
-    4. Post the response back to Slack
-    
-    Args:
-        team_id: Slack workspace/team ID
-        channel_id: Slack DM channel ID
-        user_id: Slack user ID who sent the message
-        message_text: The message content
-        event_ts: Event timestamp for deduplication
-        files: Optional list of Slack file objects attached to the message
-        
-    Returns:
-        Result dict with status and any error details
     """
     logger.info(
         "[slack_conversations] Processing DM from user %s in channel %s: %s",
         user_id,
         channel_id,
-        message_text[:100]
+        message_text[:100],
     )
-    
-    # Find organization from Slack team
+
     organization_id = await find_organization_by_slack_team(team_id)
     if not organization_id:
         logger.error("[slack_conversations] No organization found for team %s", team_id)
-        return {
-            "status": "error",
-            "error": f"No organization found for Slack team {team_id}"
-        }
-    
+        return {"status": "error", "error": f"No organization found for Slack team {team_id}"}
+
     connector = SlackConnector(organization_id=organization_id)
-
-    # Show a reaction so the user knows the bot is working
     await connector.add_reaction(channel=channel_id, timestamp=event_ts)
-    slack_user = await _fetch_slack_user_info(
-        organization_id=organization_id,
-        slack_user_id=user_id,
-    )
-    linked_user = await resolve_revtops_user_for_slack_actor(
-        organization_id=organization_id,
-        slack_user_id=user_id,
-        slack_user=slack_user,
-    )
-    slack_user_name: str | None = _extract_slack_display_name(slack_user)
-    slack_user_email: str | None = _extract_slack_email(slack_user)
-    slack_user_tz: str | None = _extract_slack_timezone(slack_user)
-    if not linked_user:
+
+    try:
+        slack_user = await _fetch_slack_user_info(
+            organization_id=organization_id,
+            slack_user_id=user_id,
+        )
+        linked_user = await resolve_revtops_user_for_slack_actor(
+            organization_id=organization_id,
+            slack_user_id=user_id,
+            slack_user=slack_user,
+        )
+        slack_user_name: str | None = _extract_slack_display_name(slack_user)
+        slack_user_email: str | None = _extract_slack_email(slack_user)
+        slack_user_tz: str | None = _extract_slack_timezone(slack_user)
+        if not linked_user:
+            logger.info(
+                "[slack_conversations] No linked RevTops user for Slack actor=%s org=%s; proceeding without user context",
+                user_id,
+                organization_id,
+            )
+
+        conversation = await find_or_create_conversation(
+            organization_id=organization_id,
+            slack_channel_id=channel_id,
+            slack_user_id=user_id,
+            revtops_user_id=str(linked_user.id) if linked_user else None,
+            slack_user_name=slack_user_name,
+        )
+
+        attachment_ids: list[str] = []
+        if files:
+            attachment_ids = await _download_and_store_slack_files(connector, files)
+
+        if not await can_use_credits(organization_id):
+            await connector.post_message(
+                channel=channel_id,
+                text="You're out of credits or don't have an active subscription. Please add a payment method in Revtops to continue.",
+            )
+            return {"status": "error", "error": "insufficient_credits"}
+
+        local_time_iso: str | None = _compute_local_time_iso(slack_user_tz)
+        orchestrator = ChatOrchestrator(
+            user_id=str(linked_user.id) if linked_user else None,
+            organization_id=organization_id,
+            conversation_id=str(conversation.id),
+            user_email=linked_user.email if linked_user else None,
+            source_user_id=user_id,
+            source_user_email=slack_user_email,
+            workflow_context=None,
+            source="slack_dm",
+            timezone=slack_user_tz,
+            local_time=local_time_iso,
+        )
+
+        total_length: int = await asyncio.wait_for(
+            _stream_and_post_responses(
+                orchestrator=orchestrator,
+                connector=connector,
+                message_text=message_text or "(see attached files)",
+                channel=channel_id,
+                attachment_ids=attachment_ids or None,
+            ),
+            timeout=SLOW_REPLY_TIMEOUT_SECONDS,
+        )
+
         logger.info(
-            "[slack_conversations] No linked RevTops user for Slack actor=%s org=%s; proceeding without user context",
+            "[slack_conversations] Posted response to channel %s (%d chars)",
+            channel_id,
+            total_length,
+        )
+        return {
+            "status": "success",
+            "conversation_id": str(conversation.id),
+            "response_length": total_length,
+        }
+    except asyncio.TimeoutError:
+        logger.warning(
+            "[slack_conversations] DM processing exceeded %ss team=%s channel=%s user=%s",
+            SLOW_REPLY_TIMEOUT_SECONDS,
+            team_id,
+            channel_id,
             user_id,
-            organization_id,
         )
-
-    # Find or create conversation
-    conversation = await find_or_create_conversation(
-        organization_id=organization_id,
-        slack_channel_id=channel_id,
-        slack_user_id=user_id,
-        revtops_user_id=str(linked_user.id) if linked_user else None,
-        slack_user_name=slack_user_name,
-    )
-
-    # Download any attached Slack files
-    attachment_ids: list[str] = []
-    if files:
-        attachment_ids = await _download_and_store_slack_files(connector, files)
-
-    if not await can_use_credits(organization_id):
-        await connector.post_message(
-            channel=channel_id,
-            text="You're out of credits or don't have an active subscription. Please add a payment method in Revtops to continue.",
-        )
+        await connector.post_message(channel=channel_id, text=SLOW_REPLY_MESSAGE)
+        return {"status": "timeout", "error": "slow_response"}
+    finally:
         await connector.remove_reaction(channel=channel_id, timestamp=event_ts)
-        return {"status": "error", "error": "insufficient_credits"}
-
-    # Process message through orchestrator
-    local_time_iso: str | None = _compute_local_time_iso(slack_user_tz)
-    orchestrator = ChatOrchestrator(
-        user_id=str(linked_user.id) if linked_user else None,
-        organization_id=organization_id,
-        conversation_id=str(conversation.id),
-        user_email=linked_user.email if linked_user else None,
-        source_user_id=user_id,
-        source_user_email=slack_user_email,
-        workflow_context=None,
-        source="slack_dm",
-        timezone=slack_user_tz,
-        local_time=local_time_iso,
-    )
-
-    total_length: int = await _stream_and_post_responses(
-        orchestrator=orchestrator,
-        connector=connector,
-        message_text=message_text or "(see attached files)",
-        channel=channel_id,
-        attachment_ids=attachment_ids or None,
-    )
-
-    # Remove the "thinking" reaction
-    await connector.remove_reaction(channel=channel_id, timestamp=event_ts)
-
-    logger.info(
-        "[slack_conversations] Posted response to channel %s (%d chars)",
-        channel_id,
-        total_length,
-    )
-    return {
-        "status": "success",
-        "conversation_id": str(conversation.id),
-        "response_length": total_length,
-    }
 
 
 async def process_slack_mention(
@@ -1939,29 +1969,47 @@ async def process_slack_mention(
         local_time=local_time_iso,
     )
 
-    total_length: int = await _stream_and_post_responses(
-        orchestrator=orchestrator,
-        connector=connector,
-        message_text=message_text or "(see attached files)",
-        channel=channel_id,
-        thread_ts=thread_ts,
-        attachment_ids=attachment_ids or None,
-    )
+    try:
+        total_length: int = await asyncio.wait_for(
+            _stream_and_post_responses(
+                orchestrator=orchestrator,
+                connector=connector,
+                message_text=message_text or "(see attached files)",
+                channel=channel_id,
+                thread_ts=thread_ts,
+                attachment_ids=attachment_ids or None,
+            ),
+            timeout=SLOW_REPLY_TIMEOUT_SECONDS,
+        )
 
-    # Remove the "thinking" reaction
-    await connector.remove_reaction(channel=channel_id, timestamp=thread_ts)
-
-    logger.info(
-        "[slack_conversations] Posted thread response to %s (thread %s, %d chars)",
-        channel_id,
-        thread_ts,
-        total_length,
-    )
-    return {
-        "status": "success",
-        "conversation_id": str(conversation.id),
-        "response_length": total_length,
-    }
+        logger.info(
+            "[slack_conversations] Posted thread response to %s (thread %s, %d chars)",
+            channel_id,
+            thread_ts,
+            total_length,
+        )
+        return {
+            "status": "success",
+            "conversation_id": str(conversation.id),
+            "response_length": total_length,
+        }
+    except asyncio.TimeoutError:
+        logger.warning(
+            "[slack_conversations] Mention processing exceeded %ss team=%s channel=%s user=%s thread=%s",
+            SLOW_REPLY_TIMEOUT_SECONDS,
+            team_id,
+            channel_id,
+            user_id,
+            thread_ts,
+        )
+        await connector.post_message(
+            channel=channel_id,
+            text=SLOW_REPLY_MESSAGE,
+            thread_ts=thread_ts,
+        )
+        return {"status": "timeout", "error": "slow_response"}
+    finally:
+        await connector.remove_reaction(channel=channel_id, timestamp=thread_ts)
 
 
 async def process_slack_thread_reply(
@@ -2113,27 +2161,45 @@ async def process_slack_thread_reply(
         local_time=local_time_iso,
     )
 
-    total_length: int = await _stream_and_post_responses(
-        orchestrator=orchestrator,
-        connector=connector,
-        message_text=message_text or "(see attached files)",
-        channel=channel_id,
-        thread_ts=thread_ts,
-        attachment_ids=attachment_ids or None,
-    )
+    try:
+        total_length: int = await asyncio.wait_for(
+            _stream_and_post_responses(
+                orchestrator=orchestrator,
+                connector=connector,
+                message_text=message_text or "(see attached files)",
+                channel=channel_id,
+                thread_ts=thread_ts,
+                attachment_ids=attachment_ids or None,
+            ),
+            timeout=SLOW_REPLY_TIMEOUT_SECONDS,
+        )
 
-    # Remove the "thinking" reaction
-    await connector.remove_reaction(channel=channel_id, timestamp=event_ts)
+        logger.info(
+            "[slack_conversations] Posted thread reply to %s (thread %s, %d chars)",
+            channel_id,
+            thread_ts,
+            total_length,
+        )
 
-    logger.info(
-        "[slack_conversations] Posted thread reply to %s (thread %s, %d chars)",
-        channel_id,
-        thread_ts,
-        total_length,
-    )
-
-    return {
-        "status": "success",
-        "conversation_id": str(conversation.id),
-        "response_length": total_length,
-    }
+        return {
+            "status": "success",
+            "conversation_id": str(conversation.id),
+            "response_length": total_length,
+        }
+    except asyncio.TimeoutError:
+        logger.warning(
+            "[slack_conversations] Thread processing exceeded %ss team=%s channel=%s user=%s thread=%s",
+            SLOW_REPLY_TIMEOUT_SECONDS,
+            team_id,
+            channel_id,
+            user_id,
+            thread_ts,
+        )
+        await connector.post_message(
+            channel=channel_id,
+            text=SLOW_REPLY_MESSAGE,
+            thread_ts=thread_ts,
+        )
+        return {"status": "timeout", "error": "slow_response"}
+    finally:
+        await connector.remove_reaction(channel=channel_id, timestamp=event_ts)

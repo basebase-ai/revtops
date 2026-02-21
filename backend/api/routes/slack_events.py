@@ -34,6 +34,8 @@ from fastapi.responses import JSONResponse
 from config import get_redis_connection_kwargs, settings
 from services.slack_conversations import (
     persist_slack_message_activity,
+    SLOW_REPLY_TIMEOUT_SECONDS,
+    post_slow_processing_notice,
     process_slack_dm,
     process_slack_mention,
     process_slack_thread_reply,
@@ -326,14 +328,31 @@ async def _process_event_callback_impl(payload: dict[str, Any]) -> None:
             if not text.strip() and not files:
                 return
             logger.info("[slack_events] Processing DM from %s in %s: %s (files=%d)", user_id, channel_id, text[:50], len(files))
-            await process_slack_dm(
-                team_id=team_id,
-                channel_id=channel_id,
-                user_id=user_id,
-                message_text=text,
-                event_ts=message_ts,
-                files=files,
-            )
+            try:
+                await asyncio.wait_for(
+                    process_slack_dm(
+                        team_id=team_id,
+                        channel_id=channel_id,
+                        user_id=user_id,
+                        message_text=text,
+                        event_ts=message_ts,
+                        files=files,
+                    ),
+                    timeout=SLOW_REPLY_TIMEOUT_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "[slack_events] DM handling exceeded %ss team=%s channel=%s user=%s",
+                    SLOW_REPLY_TIMEOUT_SECONDS,
+                    team_id,
+                    channel_id,
+                    user_id,
+                )
+                await post_slow_processing_notice(
+                    team_id=team_id,
+                    channel_id=channel_id,
+                    reaction_ts=message_ts,
+                )
             return
 
         thread_ts = event.get("thread_ts")
@@ -362,15 +381,34 @@ async def _process_event_callback_impl(payload: dict[str, Any]) -> None:
             )
             lock_key = SlackThreadLockManager.build_lock_key(team_id, channel_id, thread_ts)
             async with _thread_lock_manager.thread_lock(lock_key):
-                await process_slack_thread_reply(
-                    team_id=team_id,
-                    channel_id=channel_id,
-                    user_id=user_id,
-                    message_text=text,
-                    thread_ts=thread_ts,
-                    event_ts=message_ts,
-                    files=files,
-                )
+                try:
+                    await asyncio.wait_for(
+                        process_slack_thread_reply(
+                            team_id=team_id,
+                            channel_id=channel_id,
+                            user_id=user_id,
+                            message_text=text,
+                            thread_ts=thread_ts,
+                            event_ts=message_ts,
+                            files=files,
+                        ),
+                        timeout=SLOW_REPLY_TIMEOUT_SECONDS,
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "[slack_events] Thread handling exceeded %ss team=%s channel=%s user=%s thread=%s",
+                        SLOW_REPLY_TIMEOUT_SECONDS,
+                        team_id,
+                        channel_id,
+                        user_id,
+                        thread_ts,
+                    )
+                    await post_slow_processing_notice(
+                        team_id=team_id,
+                        channel_id=channel_id,
+                        reaction_ts=message_ts,
+                        thread_ts=thread_ts,
+                    )
             return
 
     if inner_type == "app_mention":
@@ -398,14 +436,33 @@ async def _process_event_callback_impl(payload: dict[str, Any]) -> None:
         lock_thread_ts = thread_ts or event_ts
         lock_key = SlackThreadLockManager.build_lock_key(team_id, channel_id, lock_thread_ts)
         async with _thread_lock_manager.thread_lock(lock_key):
-            await process_slack_mention(
-                team_id=team_id,
-                channel_id=channel_id,
-                user_id=user_id,
-                message_text=text,
-                thread_ts=lock_thread_ts,
-                files=files,
-            )
+            try:
+                await asyncio.wait_for(
+                    process_slack_mention(
+                        team_id=team_id,
+                        channel_id=channel_id,
+                        user_id=user_id,
+                        message_text=text,
+                        thread_ts=lock_thread_ts,
+                        files=files,
+                    ),
+                    timeout=SLOW_REPLY_TIMEOUT_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "[slack_events] Mention handling exceeded %ss team=%s channel=%s user=%s thread=%s",
+                    SLOW_REPLY_TIMEOUT_SECONDS,
+                    team_id,
+                    channel_id,
+                    user_id,
+                    lock_thread_ts,
+                )
+                await post_slow_processing_notice(
+                    team_id=team_id,
+                    channel_id=channel_id,
+                    reaction_ts=lock_thread_ts,
+                    thread_ts=lock_thread_ts,
+                )
 
 
 @router.post("/events", response_model=None)

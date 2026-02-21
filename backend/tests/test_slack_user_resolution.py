@@ -45,6 +45,19 @@ class _FakeAdminSessionContext:
         return False
 
 
+class _RaisingSession:
+    async def execute(self, _query):
+        raise RuntimeError("db down")
+
+
+class _RaisingAdminSessionContext:
+    async def __aenter__(self):
+        return _RaisingSession()
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+
 class _FakeSlackConnector:
     def __init__(self, organization_id: str):
         self.organization_id = organization_id
@@ -93,6 +106,20 @@ def test_resolve_revtops_user_falls_back_to_connected_slack_name_match(monkeypat
 
     assert resolved is not None
     assert resolved.id == jane_id
+
+
+def test_find_organization_by_slack_team_returns_none_when_lookup_fails(monkeypatch):
+    monkeypatch.setattr(
+        slack_conversations,
+        "get_admin_session",
+        lambda: _RaisingAdminSessionContext(),
+    )
+
+    resolved = asyncio.run(
+        slack_conversations.find_organization_by_slack_team("T123")
+    )
+
+    assert resolved is None
 
 
 def test_resolve_revtops_user_matches_slack_metadata(monkeypatch):
