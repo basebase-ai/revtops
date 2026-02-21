@@ -911,16 +911,19 @@ function CreditDetailsModal({ details, loading, onClose }: CreditDetailsModalPro
     const timestamps: string[] = [];
     const balances: number[] = [];
     
-    // Start with the starting balance at period start
-    if (details.period_start) {
-      timestamps.push(details.period_start);
-      balances.push(details.starting_balance);
-    }
+    // Start with starting_balance (which is credits_included when showing all-time)
+    let runningBalance = details.starting_balance;
     
-    // Add each transaction point
+    // Add starting point (use first transaction time if no period_start)
+    const startTime = details.period_start || details.transactions[0]?.timestamp || new Date().toISOString();
+    timestamps.push(startTime);
+    balances.push(runningBalance);
+    
+    // Add each transaction point, recalculating balance from starting point
     for (const tx of details.transactions) {
+      runningBalance += tx.amount; // amount is negative for deductions
       timestamps.push(tx.timestamp);
-      balances.push(tx.balance_after);
+      balances.push(runningBalance);
     }
     
     return { timestamps, balances };

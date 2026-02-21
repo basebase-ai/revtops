@@ -160,28 +160,28 @@ cd backend && alembic upgrade head
 
 ## Railway Deployment
 
-This monorepo deploys to Railway as **6 services** from a single GitHub repo:
+This monorepo deploys to Railway as **5 services** from a single GitHub repo:
 
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│  Railway Project                                                         │
-│                                                                          │
-│  ┌──────────────┐  ┌──────────────┐                                    │
-│  │   Frontend   │  │   Backend    │                                    │
-│  │    (APP)     │  │    (API)     │                                    │
-│  └──────────────┘  └──────┬───────┘                                    │
-│                                              │                          │
-│  ┌──────────────┐  ┌──────────────┐         │                          │
-│  │    Beat      │  │    Worker    │         │                          │
-│  │ (scheduler)  │  │ (executor)   │         │                          │
-│  └──────┬───────┘  └──────┬───────┘         │                          │
-│         │                 │                  │                          │
-│         └─────────────────┼──────────────────┘                          │
-│                           ▼                                              │
-│                    ┌─────────────┐                                       │
-│                    │    Redis    │                                       │
-│                    └─────────────┘                                       │
-└─────────────────────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────┐
+│  Railway Project                                      │
+│                                                       │
+│  ┌──────────────┐  ┌──────────────┐                  │
+│  │   Frontend   │  │   Backend    │                  │
+│  │    (APP)     │  │    (API)     │                  │
+│  └──────────────┘  └──────┬───────┘                  │
+│                           │                          │
+│  ┌──────────────┐  ┌──────┴───────┐                  │
+│  │    Beat      │  │    Worker    │                  │
+│  │ (scheduler)  │  │  (executor)  │                  │
+│  └──────┬───────┘  └──────┬───────┘                  │
+│         │                 │                          │
+│         └────────┬────────┘                          │
+│                  ▼                                   │
+│           ┌─────────────┐                            │
+│           │    Redis    │                            │
+│           └─────────────┘                            │
+└───────────────────────────────────────────────────────┘
 ```
 
 ### Service Configuration
@@ -221,16 +221,16 @@ Workers can be horizontally scaled - just duplicate the worker service. All work
 
 ### Environment Variables by Service
 
-| Variable            | Backend | Beat | Worker |
-| ------------------- | ------- | ---- | ------ |
-| `DATABASE_URL`      | ✅      | ❌   | ✅     |
-| `REDIS_URL`         | ✅      | ✅   | ✅     |
-| `ANTHROPIC_API_KEY` | ✅      | ❌   | ✅     |
-| `OPENAI_API_KEY`    | ✅      | ❌   | ✅     |
-| `NANGO_SECRET_KEY`  | ✅      | ❌   | ✅     |
-| Other API keys      | ✅      | ❌   | ✅     |
+| Variable            | Frontend | Backend | Beat | Worker |
+| ------------------- | -------- | ------- | ---- | ------ |
+| `DATABASE_URL`      | ❌       | ✅      | ❌   | ✅     |
+| `REDIS_URL`         | ❌       | ✅      | ✅   | ✅     |
+| `ANTHROPIC_API_KEY` | ❌       | ✅      | ❌   | ✅     |
+| `OPENAI_API_KEY`    | ❌       | ✅      | ❌   | ✅     |
+| `NANGO_SECRET_KEY`  | ❌       | ✅      | ❌   | ✅     |
+| `VITE_*` vars       | ✅       | ❌      | ❌   | ❌     |
 
-Beat only needs `REDIS_URL` to schedule tasks. Workers need full access to execute them.
+Frontend only needs `VITE_*` environment variables. Beat only needs `REDIS_URL` to schedule tasks. Workers need full access to execute them.
 
 ## Project Structure
 
@@ -324,50 +324,6 @@ We use [Nango](https://nango.dev) to handle all OAuth complexity:
 | `/api/waitlist`                        | POST   | Submit waitlist application                |
 | `/api/admin/waitlist`                  | GET    | List waitlist entries (admin key required) |
 | `/api/admin/waitlist/{user_id}/invite` | POST   | Invite user from waitlist                  |
-
-## Environment Variables
-
-### Backend
-
-| Variable              | Description                                                                                                                                                                                                                                           |
-| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `DATABASE_URL`        | PostgreSQL connection string                                                                                                                                                                                                                          |
-| `REDIS_URL`           | Redis connection string                                                                                                                                                                                                                               |
-| `ANTHROPIC_API_KEY`   | Anthropic API key for Claude (agent reasoning)                                                                                                                                                                                                        |
-| `OPENAI_API_KEY`      | OpenAI API key (embeddings for semantic search)                                                                                                                                                                                                       |
-| `EXA_API_KEY`         | Exa API key (default web search: semantic search, per-result excerpts). Get it: [exa.ai](https://exa.ai/) → sign up → [dashboard.exa.ai/api-keys](https://dashboard.exa.ai/api-keys). Put the key in `.env` in the project root as `EXA_API_KEY=...`. |
-| `PERPLEXITY_API_KEY`  | Optional. Perplexity API key for web search when `provider: "perplexity"` (single synthesized answer with citation URLs). [perplexity.ai/settings/api](https://www.perplexity.ai/settings/api).                                                       |
-| `SECRET_KEY`          | Application secret for sessions                                                                                                                                                                                                                       |
-| `FRONTEND_URL`        | Frontend URL for CORS and redirects                                                                                                                                                                                                                   |
-| `SUPABASE_URL`        | Supabase project URL (from Railway)                                                                                                                                                                                                                   |
-| `SUPABASE_JWT_SECRET` | Supabase JWT secret (from Railway)                                                                                                                                                                                                                    |
-
-Web search defaults to **Exa** (semantic search with per-result excerpts). Use **Perplexity** (set `PERPLEXITY_API_KEY` and pass `provider: "perplexity"`) when you want a single synthesized answer instead of a list of results.
-
-### Nango Configuration
-
-| Variable           | Description                         |
-| ------------------ | ----------------------------------- |
-| `NANGO_SECRET_KEY` | Nango secret key (from dashboard)   |
-| `NANGO_PUBLIC_KEY` | Nango public key (for frontend SDK) |
-
-### Frontend (Vite)
-
-| Variable                 | Description                                                           |
-| ------------------------ | --------------------------------------------------------------------- |
-| `VITE_API_URL`           | Backend API URL                                                       |
-| `VITE_SUPABASE_URL`      | Supabase project URL                                                  |
-| `VITE_SUPABASE_ANON_KEY` | Supabase anonymous key                                                |
-| `VITE_NANGO_PUBLIC_KEY`  | Nango public key for frontend SDK                                     |
-
-### Integration IDs (Optional - defaults provided)
-
-| Variable                               | Default           | Description                     |
-| -------------------------------------- | ----------------- | ------------------------------- |
-| `NANGO_HUBSPOT_INTEGRATION_ID`         | `hubspot`         | HubSpot integration ID in Nango |
-| `NANGO_SLACK_INTEGRATION_ID`           | `slack`           | Slack integration ID in Nango   |
-| `NANGO_GOOGLE_CALENDAR_INTEGRATION_ID` | `google-calendar` | Google Calendar integration ID  |
-| `NANGO_SALESFORCE_INTEGRATION_ID`      | `salesforce`      | Salesforce integration ID       |
 
 ## Claude Tool Architecture
 
