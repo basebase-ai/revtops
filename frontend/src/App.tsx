@@ -25,7 +25,7 @@ import { AppEmbed } from './components/apps/AppEmbed';
 import type { User, AuthChangeEvent, Session } from '@supabase/supabase-js';
 import { queryClient } from './lib/queryClient';
 
-type Screen = 'auth' | 'blocked-email' | 'not-registered' | 'waitlist' | 'company-setup' | 'payment-setup' | 'app';
+type Screen = 'auth' | 'blocked-email' | 'not-registered' | 'waitlist' | 'company-setup' | 'welcome-free-tier' | 'payment-setup' | 'app';
 
 // URL for public website (landing, blog, waitlist form)
 const WWW_URL = import.meta.env.VITE_WWW_URL ?? 'https://www.revtops.com';
@@ -182,8 +182,13 @@ function App(): JSX.Element {
           setIsLoading(false);
         } else if (event === 'SIGNED_OUT') {
           clearAllLocalData();
-          // Redirect to public website on sign out
-          window.location.href = WWW_URL;
+          // Redirect to public website on sign out (only in production)
+          if (window.location.hostname !== 'localhost') {
+            window.location.href = WWW_URL;
+          } else {
+            // In local dev, just reload to show login screen
+            window.location.reload();
+          }
         }
       }
     );
@@ -249,14 +254,14 @@ function App(): JSX.Element {
       });
 
       if (syncResponse.status === 403) {
-        // User not registered — block personal emails only if not in the system
+        // User not registered — block personal emails only
         if (isPersonalEmail(email)) {
           setScreen('blocked-email');
           return;
         }
-        // Work email but not registered - needs to join waitlist
-        setScreen('not-registered');
-        return;
+        // Work email - this shouldn't happen anymore since waitlist is disabled
+        // but handle gracefully by proceeding to company setup
+        console.warn('Unexpected 403 for work email, proceeding to company setup');
       }
 
       if (syncResponse.ok) {
@@ -286,40 +291,19 @@ function App(): JSX.Element {
           roles: userData.roles ?? [],
         });
         
-        if (userData.status === 'waitlist') {
-          setScreen('waitlist');
-          return;
-        }
         // If status is 'invited', it gets upgraded to 'active' by the backend
+        // Waitlist status is no longer used - all users are auto-activated
 
         // If sync returned an organization (e.g. invited user who auto-activated),
-        // set it then show app or payment-setup (only when no plan chosen yet)
+        // set it and go directly to app (orgs are auto-enrolled in free tier)
         if (userData.organization) {
-          const org = userData.organization as { id: string; name: string; logo_url: string | null; subscription_required?: boolean };
+          const org = userData.organization as { id: string; name: string; logo_url: string | null };
           setOrganization({
             id: org.id,
             name: org.name,
             logoUrl: org.logo_url ?? null,
           });
           await fetchUserOrganizations();
-          try {
-            const token = (await supabase.auth.getSession()).data.session?.access_token ?? null;
-            const res = await fetch(`${API_BASE}/billing/status`, {
-              headers: token ? { Authorization: `Bearer ${token}` } : {},
-            });
-            if (res.ok) {
-              const statusData = (await res.json()) as { subscription_required?: boolean; subscription_tier?: string | null };
-              if (statusData.subscription_required && !statusData.subscription_tier) {
-                setScreen('payment-setup');
-                return;
-              }
-            }
-          } catch (_e) {
-            if (org.subscription_required) {
-              setScreen('payment-setup');
-              return;
-            }
-          }
           setScreen('app');
           return;
         }
@@ -391,22 +375,7 @@ function App(): JSX.Element {
     // Fetch the user's org list (for multi-org switcher)
     await fetchUserOrganizations();
 
-    // Check billing: only show full-screen payment-setup when no plan chosen yet
-    try {
-      const token = (await supabase.auth.getSession()).data.session?.access_token ?? null;
-      const res = await fetch(`${API_BASE}/billing/status`, {
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-      });
-      if (res.ok) {
-        const statusData = (await res.json()) as { subscription_required?: boolean; subscription_tier?: string | null };
-        if (statusData.subscription_required && !statusData.subscription_tier) {
-          setScreen('payment-setup');
-          return;
-        }
-      }
-    } catch (_e) {
-      // Proceed to app if billing check fails (e.g. not configured)
-    }
+    // Go directly to app - orgs are auto-enrolled in free tier
     setScreen('app');
   };
 
@@ -448,30 +417,19 @@ function App(): JSX.Element {
     // Fetch the user's org list (for multi-org switcher)
     await fetchUserOrganizations();
 
-    // Check billing: only show full-screen payment-setup when no plan chosen yet
-    try {
-      const token = (await supabase.auth.getSession()).data.session?.access_token ?? null;
-      const res = await fetch(`${API_BASE}/billing/status`, {
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-      });
-      if (res.ok) {
-        const statusData = (await res.json()) as { subscription_required?: boolean; subscription_tier?: string | null };
-        if (statusData.subscription_required && !statusData.subscription_tier) {
-          setScreen('payment-setup');
-          return;
-        }
-      }
-    } catch (_e) {
-      // Proceed to app if billing check fails
-    }
-    setScreen('app');
+    // Show welcome screen for new orgs on free tier
+    setScreen('welcome-free-tier');
   };
 
   const handleLogout = async (): Promise<void> => {
     await supabase.auth.signOut();
     clearAllLocalData();
-    // Redirect to public website
-    window.location.href = WWW_URL;
+    // Redirect to public website (only in production)
+    if (window.location.hostname !== 'localhost') {
+      window.location.href = WWW_URL;
+    } else {
+      window.location.reload();
+    }
   };
 
   /**
@@ -635,11 +593,64 @@ function App(): JSX.Element {
         />
       );
 
+    case 'welcome-free-tier':
+      return (
+        <div className="min-h-screen bg-surface-900 flex items-center justify-center p-4">
+          <div className="max-w-md w-full">
+            <div className="text-center mb-8">
+              <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-gradient-to-br from-primary-500 to-primary-700 mb-6">
+                <svg className="w-8 h-8 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                </svg>
+              </div>
+              <h1 className="text-2xl font-bold text-white mb-2">Welcome to Revtops!</h1>
+              <p className="text-surface-400">Your account is ready to go.</p>
+            </div>
+
+            <div className="card p-6 mb-6">
+              <div className="text-center mb-5 pb-5 border-b border-surface-700">
+                <p className="text-xs text-surface-400 uppercase tracking-wide mb-1">Your Plan</p>
+                <h2 className="text-3xl font-bold text-white">Free</h2>
+                <p className="text-surface-400 text-sm mt-1">100 credits/month</p>
+              </div>
+              <div className="space-y-3">
+                <div className="flex items-center gap-3 text-surface-300">
+                  <svg className="w-5 h-5 text-primary-500 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                  </svg>
+                  <span>Connect your CRM and Slack</span>
+                </div>
+                <div className="flex items-center gap-3 text-surface-300">
+                  <svg className="w-5 h-5 text-primary-500 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                  </svg>
+                  <span>Invite your team</span>
+                </div>
+                <div className="flex items-center gap-3 text-surface-300">
+                  <svg className="w-5 h-5 text-primary-500 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                  </svg>
+                  <span>Upgrade anytime for more credits</span>
+                </div>
+              </div>
+            </div>
+
+            <button
+              onClick={() => setScreen('app')}
+              className="w-full btn-primary py-3 text-base font-medium"
+            >
+              Get started
+            </button>
+          </div>
+        </div>
+      );
+
     case 'payment-setup':
       return (
         <SubscriptionSetup
           onComplete={() => setScreen('app')}
           onBack={() => void handleLogout()}
+          backLabel="Sign out"
         />
       );
 
