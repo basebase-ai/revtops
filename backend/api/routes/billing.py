@@ -12,7 +12,7 @@ Billing and subscription API (Stripe).
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 from uuid import UUID
 
@@ -30,9 +30,9 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # Tier config: name, price_cents, credits_included
-# "partner" tier is hidden from UI and assigned manually for dev partners
+# "free" tier requires no credit card; "partner" tier is hidden and assigned manually
 PLANS: dict[str, dict[str, Any]] = {
-    "starter": {"name": "Starter", "price_cents": 2000, "credits_included": 100},
+    "free": {"name": "Free", "price_cents": 0, "credits_included": 100},
     "pro": {"name": "Pro", "price_cents": 10000, "credits_included": 500},
     "business": {"name": "Business", "price_cents": 25000, "credits_included": 2500},
     "scale": {"name": "Scale", "price_cents": 60000, "credits_included": 8000},
@@ -41,7 +41,7 @@ PLANS: dict[str, dict[str, Any]] = {
 
 # Rollover cap multiplier per tier (e.g. Pro: unused credits up to 2x included)
 ROLLOVER_CAP: dict[str, int] = {
-    "starter": 0,
+    "free": 0,
     "pro": 2,
     "business": 2,
     "scale": 3,
@@ -51,14 +51,13 @@ ROLLOVER_CAP: dict[str, int] = {
 # Stripe Price IDs (Dashboard → Products → [your product] → Pricing → copy "Price ID", e.g. price_1ABC...)
 # Subscription.create requires price IDs, not product IDs (prod_xxx).
 # These are selected based on STRIPE_SECRET_KEY prefix (sk_live_ vs sk_test_)
+# Note: "free" tier doesn't use Stripe, so no price ID needed
 STRIPE_PRICE_IDS_TEST: dict[str, str] = {
-    "starter": "price_1T2zFwBB0TvgbMzReazNnwin",
     "pro": "price_1T2zG6BB0TvgbMzRkCwxwTKm",
     "business": "price_1T2zGkBB0TvgbMzRYy2b7Y0r",
     "scale": "price_1T2zH1BB0TvgbMzRmJF4RglP",
 }
 STRIPE_PRICE_IDS_LIVE: dict[str, str] = {
-    "starter": "price_1T31ohP5SO7X9dBUREhHctUJ",
     "pro": "price_1T31ohP5SO7X9dBUQ1noH603",
     "business": "price_1T31oiP5SO7X9dBUeVPJdaiW",
     "scale": "price_1T31oiP5SO7X9dBUkbZiwevH",
@@ -98,12 +97,12 @@ class SetupIntentResponse(BaseModel):
 
 
 class SubscribeRequest(BaseModel):
-    payment_method_id: str = Field(..., min_length=1)
-    tier: str = Field(..., pattern="^(starter|pro|business|scale)$")
+    payment_method_id: Optional[str] = Field(None, min_length=1)
+    tier: str = Field(..., pattern="^(free|pro|business|scale)$")
 
 
 class ChangePlanRequest(BaseModel):
-    tier: str = Field(..., pattern="^(starter|pro|business|scale)$")
+    tier: str = Field(..., pattern="^(free|pro|business|scale)$")
 
 
 class PlanItem(BaseModel):
@@ -247,6 +246,43 @@ async def subscribe(
     auth: AuthContext = Depends(require_organization),
 ) -> dict[str, str]:
     """Create or update subscription with the given payment method and tier."""
+    org_id = auth.organization_id
+    if not org_id:
+        raise HTTPException(status_code=403, detail="Organization required")
+
+    plan = PLANS.get(body.tier)
+    if not plan:
+        raise HTTPException(status_code=400, detail=f"Unknown tier: {body.tier}")
+
+    # Free tier: no Stripe interaction needed
+    is_free_tier = plan.get("price_cents", 0) == 0
+
+    if is_free_tier:
+        async with get_admin_session() as session:
+            from sqlalchemy import select
+            result = await session.execute(
+                select(Organization).where(Organization.id == org_id)
+            )
+            org = result.scalar_one_or_none()
+            if not org:
+                raise HTTPException(status_code=404, detail="Organization not found")
+
+            now = datetime.now(timezone.utc)
+            org.subscription_tier = body.tier
+            org.subscription_status = "active"
+            org.credits_included = plan.get("credits_included", 100)
+            org.credits_balance = org.credits_included
+            org.current_period_start = now
+            org.current_period_end = now + timedelta(days=30)
+            await session.commit()
+            return {"status": "ok", "subscription_id": "free"}
+
+    # Paid tier: require payment method and Stripe
+    if not body.payment_method_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Payment method required for paid plans",
+        )
     if not settings.STRIPE_SECRET_KEY:
         raise HTTPException(status_code=503, detail="Billing is not configured")
     price_id = _stripe_price_id_for_tier(body.tier)
@@ -255,9 +291,7 @@ async def subscribe(
             status_code=400,
             detail=f"Stripe price not configured for tier {body.tier}",
         )
-    org_id = auth.organization_id
-    if not org_id:
-        raise HTTPException(status_code=403, detail="Organization required")
+
     import stripe
     stripe.api_key = settings.STRIPE_SECRET_KEY
     async with get_admin_session() as session:
@@ -296,7 +330,6 @@ async def subscribe(
         )
         org.stripe_subscription_id = sub.id
         org.subscription_tier = body.tier
-        plan = PLANS.get(body.tier, {})
         org.credits_included = plan.get("credits_included", 100)
 
         # If subscription is incomplete, try to pay the first invoice immediately
@@ -445,18 +478,45 @@ async def get_credit_details(
         period_start = org.current_period_start
         period_end = org.current_period_end
         
-        # Build query for transactions in current period
-        tx_query = (
-            select(CreditTransaction, User.email, User.name)
-            .outerjoin(User, CreditTransaction.user_id == User.id)
-            .where(CreditTransaction.organization_id == org_id)
-            .order_by(CreditTransaction.created_at.asc())
-        )
-        if period_start:
-            tx_query = tx_query.where(CreditTransaction.created_at >= period_start)
+        def build_transactions_query(filter_start: Optional[datetime]) -> Any:
+            q = (
+                select(CreditTransaction, User.email, User.name)
+                .outerjoin(User, CreditTransaction.user_id == User.id)
+                .where(CreditTransaction.organization_id == org_id)
+                .order_by(CreditTransaction.created_at.asc())
+            )
+            if filter_start:
+                q = q.where(CreditTransaction.created_at >= filter_start)
+            return q
         
-        tx_result = await session.execute(tx_query)
+        def build_usage_query(filter_start: Optional[datetime]) -> Any:
+            q = (
+                select(
+                    CreditTransaction.user_id,
+                    User.email,
+                    User.name,
+                    func.sum(func.abs(CreditTransaction.amount)).label("total_used"),
+                )
+                .outerjoin(User, CreditTransaction.user_id == User.id)
+                .where(CreditTransaction.organization_id == org_id)
+                .where(CreditTransaction.amount < 0)
+                .group_by(CreditTransaction.user_id, User.email, User.name)
+                .order_by(func.sum(func.abs(CreditTransaction.amount)).desc())
+            )
+            if filter_start:
+                q = q.where(CreditTransaction.created_at >= filter_start)
+            return q
+        
+        # Try current period first, fall back to all-time if empty
+        tx_result = await session.execute(build_transactions_query(period_start))
         rows = tx_result.all()
+        
+        effective_period_start = period_start
+        if not rows and period_start:
+            # No transactions in current period - show all-time data
+            tx_result = await session.execute(build_transactions_query(None))
+            rows = tx_result.all()
+            effective_period_start = None
         
         transactions: list[CreditTransactionItem] = []
         for tx, user_email, user_name in rows:
@@ -468,30 +528,16 @@ async def get_credit_details(
                 user_email=user_email,
             ))
         
-        # Calculate starting balance (balance before first transaction, or credits_included if no transactions)
+        # Calculate starting balance
+        # If showing current period, derive from first transaction
+        # If showing all-time (fallback), use credits_included since old transactions may be from different plans
         starting_balance = org.credits_included
-        if transactions:
+        if transactions and effective_period_start:
             first_tx = transactions[0]
             starting_balance = first_tx.balance_after - first_tx.amount
         
-        # Aggregate usage by user (only deductions, amount < 0)
-        usage_query = (
-            select(
-                CreditTransaction.user_id,
-                User.email,
-                User.name,
-                func.sum(func.abs(CreditTransaction.amount)).label("total_used"),
-            )
-            .outerjoin(User, CreditTransaction.user_id == User.id)
-            .where(CreditTransaction.organization_id == org_id)
-            .where(CreditTransaction.amount < 0)
-            .group_by(CreditTransaction.user_id, User.email, User.name)
-            .order_by(func.sum(func.abs(CreditTransaction.amount)).desc())
-        )
-        if period_start:
-            usage_query = usage_query.where(CreditTransaction.created_at >= period_start)
-        
-        usage_result = await session.execute(usage_query)
+        # Aggregate usage by user
+        usage_result = await session.execute(build_usage_query(effective_period_start))
         usage_rows = usage_result.all()
         
         usage_by_user: list[UserUsageItem] = []
@@ -503,11 +549,12 @@ async def get_credit_details(
                 total_credits_used=int(total_used) if total_used else 0,
             ))
         
+        # Return effective period (None if showing all-time)
         return CreditDetailsResponse(
             transactions=transactions,
             usage_by_user=usage_by_user,
-            period_start=period_start.isoformat().replace("+00:00", "Z") if period_start else None,
-            period_end=period_end.isoformat().replace("+00:00", "Z") if period_end else None,
+            period_start=effective_period_start.isoformat().replace("+00:00", "Z") if effective_period_start else None,
+            period_end=period_end.isoformat().replace("+00:00", "Z") if period_end and effective_period_start else None,
             starting_balance=starting_balance,
         )
 
@@ -567,11 +614,9 @@ async def _handle_invoice_paid(invoice: Any) -> None:
     sub = stripe.Subscription.retrieve(sub_id)
     org_id = sub.metadata.get("organization_id")
     tier = sub.metadata.get("tier") or _tier_from_price(invoice)
-    if not org_id or not tier:
+    if not org_id:
         return
-    plan = PLANS.get(tier, {})
-    credits_included = plan.get("credits_included", 100)
-    cap = ROLLOVER_CAP.get(tier, 0)
+    plan = PLANS.get(tier or "", {})
     async with get_admin_session() as session:
         from sqlalchemy import select
         result = await session.execute(
@@ -580,6 +625,13 @@ async def _handle_invoice_paid(invoice: Any) -> None:
         org = result.scalar_one_or_none()
         if not org:
             return
+        
+        # Use plan credits if tier found, otherwise keep org's existing credits_included
+        # This prevents overwriting 500 with 100 if tier lookup fails
+        credits_included: int = plan.get("credits_included") or org.credits_included or 100
+        effective_tier: str = tier or org.subscription_tier or ""
+        cap: int = ROLLOVER_CAP.get(effective_tier, 0)
+        
         rollover = 0
         if cap > 1 and org.credits_balance > 0:
             rollover = min(

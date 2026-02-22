@@ -23,6 +23,7 @@ import {
   SiGoogledrive,
   SiGithub,
   SiLinear,
+  SiJira,
 } from 'react-icons/si';
 import { HiOutlineCalendar, HiOutlineMail, HiGlobeAlt, HiUserGroup, HiExclamation, HiDeviceMobile, HiMicrophone, HiLightningBolt, HiX } from 'react-icons/hi';
 // Custom Apollo.io icon - 8-ray starburst matching their brand
@@ -77,6 +78,7 @@ const ICON_MAP: Record<string, IconType> = {
   apollo: ApolloIcon,
   github: SiGithub,
   linear: SiLinear,
+  jira: SiJira,
   globe: HiGlobeAlt,
   terminal: HiLightningBolt,
   sms: HiDeviceMobile,
@@ -108,6 +110,7 @@ const INTEGRATION_CONFIG: Record<string, { name: string; description: string; ic
   apollo: { name: 'Apollo.io', description: 'Data enrichment - Contact titles, companies, emails', icon: 'apollo', color: 'from-yellow-400 to-yellow-500' },
   github: { name: 'GitHub', description: 'Track repos, commits, and pull requests by team', icon: 'github', color: 'from-gray-600 to-gray-700' },
   linear: { name: 'Linear', description: 'Issue tracking - sync and manage teams, projects, and issues', icon: 'linear', color: 'from-indigo-500 to-violet-600' },
+  jira: { name: 'Jira', description: 'Issue tracking - sync projects and issues from Atlassian Jira', icon: 'jira', color: 'from-blue-500 to-blue-600' },
   // Built-in connectors (no OAuth — connect with one click)
   web_search: { name: 'Web Search', description: 'Web search and URL fetching — enable for the agent to search the web or fetch pages', icon: 'globe', color: 'from-emerald-500 to-teal-600' },
   code_sandbox: { name: 'Code Sandbox', description: 'Run shell commands and scripts in a secure sandbox (Python, Node, bash)', icon: 'terminal', color: 'from-amber-500 to-orange-600' },
@@ -1660,6 +1663,16 @@ export function DataSources(): JSX.Element {
                   );
                 })}
               </div>
+              <p className="text-center text-sm text-surface-500 mt-4">
+                Looking for something else?{' '}
+                <button
+                  type="button"
+                  onClick={() => { setShowConnectModal(true); setConnectSearch(''); }}
+                  className="text-primary-400 hover:text-primary-300 underline underline-offset-2"
+                >
+                  Browse all connectors
+                </button>
+              </p>
             </div>
           ) : (
             <div className="grid gap-4">

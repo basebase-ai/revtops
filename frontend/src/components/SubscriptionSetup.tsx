@@ -1,6 +1,7 @@
 /**
- * Subscription setup: select plan and add payment method (Stripe).
- * Shown during onboarding when the org has no active subscription.
+ * Subscription upgrade: select paid plan and add payment method (Stripe).
+ * Shown when user clicks "Upgrade" from billing panel.
+ * Free tier users are auto-enrolled, so this only shows paid plans.
  */
 
 import { useCallback, useEffect, useState } from 'react';
@@ -38,6 +39,8 @@ interface Plan {
 interface SubscriptionSetupProps {
   onComplete: () => void;
   onBack: () => void;
+  backLabel?: string;
+  currentTier?: string | null;
 }
 
 function formatPrice(cents: number): string {
@@ -52,6 +55,7 @@ function SubscribeForm({
   clientSecret,
   plans,
   selectedTier,
+  currentTier,
   onTierChange,
   onSuccess,
   onError,
@@ -59,6 +63,7 @@ function SubscribeForm({
   clientSecret: string;
   plans: Plan[];
   selectedTier: string;
+  currentTier: string | null;
   onTierChange: (tier: string) => void;
   onSuccess: () => void;
   onError: (msg: string) => void;
@@ -67,9 +72,40 @@ function SubscribeForm({
   const elements = useElements();
   const [loading, setLoading] = useState(false);
 
+  const selectedPlan = plans.find((p) => p.tier === selectedTier);
+  const isFreeTier = selectedPlan?.price_cents === 0;
+
+  const handleDowngradeToFree = useCallback(async () => {
+    setLoading(true);
+    onError('');
+    try {
+      const { data, error: subError } = await apiRequest<{ status: string }>(
+        '/billing/subscribe',
+        {
+          method: 'POST',
+          body: JSON.stringify({ tier: 'free' }),
+        }
+      );
+      if (subError || !data) {
+        onError(subError ?? 'Downgrade failed');
+        setLoading(false);
+        return;
+      }
+      onSuccess();
+    } catch (err) {
+      onError(err instanceof Error ? err.message : 'Something went wrong');
+    } finally {
+      setLoading(false);
+    }
+  }, [onSuccess, onError]);
+
   const handleSubmit = useCallback(
     async (e: React.FormEvent) => {
       e.preventDefault();
+      if (isFreeTier) {
+        await handleDowngradeToFree();
+        return;
+      }
       if (!stripe || !elements) return;
       const cardEl = elements.getElement(CardElement);
       if (!cardEl) {
@@ -118,8 +154,15 @@ function SubscribeForm({
         setLoading(false);
       }
     },
-    [stripe, elements, clientSecret, selectedTier, onSuccess, onError]
+    [stripe, elements, clientSecret, selectedTier, isFreeTier, handleDowngradeToFree, onSuccess, onError]
   );
+
+  // Sort plans: free first, then by price ascending
+  const sortedPlans = [...plans].sort((a, b) => {
+    if (a.price_cents === 0) return -1;
+    if (b.price_cents === 0) return 1;
+    return a.price_cents - b.price_cents;
+  });
 
   return (
     <form onSubmit={handleSubmit} className="space-y-6">
@@ -128,56 +171,70 @@ function SubscribeForm({
           Plan
         </label>
         <div className="space-y-2">
-          {plans.map((plan) => (
-            <label
-              key={plan.tier}
-              className={`flex items-center justify-between p-3 rounded-xl border cursor-pointer transition-colors ${
-                selectedTier === plan.tier
-                  ? 'border-primary-500 bg-primary-500/10'
-                  : 'border-surface-700 hover:border-surface-600'
-              }`}
-            >
-              <input
-                type="radio"
-                name="tier"
-                value={plan.tier}
-                checked={selectedTier === plan.tier}
-                onChange={() => onTierChange(plan.tier)}
-                className="sr-only"
-              />
-              <span className="text-surface-100 font-medium">{plan.name}</span>
-              <span className="text-surface-400 text-sm">
-                {formatPrice(plan.price_cents)}/mo · {plan.credits_included} credits
-              </span>
-            </label>
-          ))}
+          {sortedPlans.map((plan) => {
+            const isCurrent = plan.tier === currentTier;
+            return (
+              <label
+                key={plan.tier}
+                className={`flex items-center justify-between p-3 rounded-xl border cursor-pointer transition-colors ${
+                  selectedTier === plan.tier
+                    ? 'border-primary-500 bg-primary-500/10'
+                    : 'border-surface-700 hover:border-surface-600'
+                }`}
+              >
+                <input
+                  type="radio"
+                  name="tier"
+                  value={plan.tier}
+                  checked={selectedTier === plan.tier}
+                  onChange={() => onTierChange(plan.tier)}
+                  className="sr-only"
+                />
+                <span className="flex items-center gap-2">
+                  <span className="text-surface-100 font-medium">{plan.name}</span>
+                  {isCurrent && (
+                    <span className="px-1.5 py-0.5 text-xs font-medium bg-surface-700 text-surface-300 rounded">
+                      Current
+                    </span>
+                  )}
+                </span>
+                <span className="text-surface-400 text-sm">
+                  {plan.price_cents === 0 ? 'Free' : `${formatPrice(plan.price_cents)}/mo`} · {plan.credits_included} credits
+                </span>
+              </label>
+            );
+          })}
         </div>
       </div>
-      <div>
-        <label className="block text-sm font-medium text-surface-300 mb-2">
-          Card details
-        </label>
-        <div className="p-4 rounded-xl border border-surface-700 bg-surface-900/50">
-          <CardElement
-            options={{
-              style: {
-                base: {
-                  fontSize: '16px',
-                  color: '#e2e8f0',
-                  '::placeholder': { color: '#94a3b8' },
+      {!isFreeTier && (
+        <div>
+          <label className="block text-sm font-medium text-surface-300 mb-2">
+            Card details
+          </label>
+          <div className="p-4 rounded-xl border border-surface-700 bg-surface-900/50">
+            <CardElement
+              options={{
+                style: {
+                  base: {
+                    fontSize: '16px',
+                    color: '#e2e8f0',
+                    '::placeholder': { color: '#94a3b8' },
+                  },
+                  invalid: { color: '#f87171' },
                 },
-                invalid: { color: '#f87171' },
-              },
-            }}
-          />
+              }}
+            />
+          </div>
         </div>
-      </div>
+      )}
       <button
         type="submit"
-        disabled={!stripe || loading}
+        disabled={(!isFreeTier && !stripe) || loading}
         className="w-full btn-primary disabled:opacity-50"
       >
-        {loading ? 'Setting up…' : 'Subscribe and continue'}
+        {loading
+          ? isFreeTier ? 'Switching…' : 'Upgrading…'
+          : isFreeTier ? 'Switch to Free' : 'Upgrade plan'}
       </button>
     </form>
   );
@@ -209,10 +266,10 @@ function LoadingSpinner(): JSX.Element {
   );
 }
 
-export function SubscriptionSetup({ onComplete, onBack }: SubscriptionSetupProps): JSX.Element {
+export function SubscriptionSetup({ onComplete, onBack, backLabel = 'Back', currentTier = null }: SubscriptionSetupProps): JSX.Element {
   const [plans, setPlans] = useState<Plan[]>([]);
   const [clientSecret, setClientSecret] = useState<string | null>(null);
-  const [selectedTier, setSelectedTier] = useState<string>('starter');
+  const [selectedTier, setSelectedTier] = useState<string>('pro');
   const [error, setError] = useState<string | null>(null);
   const [loadingPlans, setLoadingPlans] = useState(true);
   const [formLoadFailed, setFormLoadFailed] = useState(false);
@@ -226,8 +283,10 @@ export function SubscriptionSetup({ onComplete, onBack }: SubscriptionSetupProps
         setLoadingPlans(false);
         return;
       }
-      setPlans(plansData.plans);
-      const defaultTier = plansData.plans.find((p) => p.tier === 'starter')?.tier ?? plansData.plans[0]?.tier ?? 'starter';
+      // Include all plans - free tier shown for downgrade option
+      const allPlans = plansData.plans;
+      setPlans(allPlans);
+      const defaultTier = allPlans.find((p) => p.tier === 'pro')?.tier ?? allPlans[0]?.tier ?? 'pro';
       setSelectedTier(defaultTier);
       const { data: setupData } = await apiRequest<{ client_secret: string }>(
         '/billing/setup-intent',
@@ -248,13 +307,17 @@ export function SubscriptionSetup({ onComplete, onBack }: SubscriptionSetupProps
 
   if (!stripePublishableKey) {
     return (
-      <div className="min-h-screen flex items-center justify-center p-4">
-        <div className="max-w-md w-full text-center">
-          <p className="text-surface-400 mb-4">Billing is not configured for this environment.</p>
-          <button onClick={onBack} className="btn-secondary">
-            Sign out
-          </button>
-        </div>
+      <div className="space-y-4">
+        <button
+          onClick={onBack}
+          className="flex items-center gap-1.5 text-surface-400 hover:text-surface-200 transition-colors text-sm"
+        >
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+          </svg>
+          {backLabel}
+        </button>
+        <p className="text-surface-400 text-sm">Billing is not configured for this environment.</p>
       </div>
     );
   }
@@ -265,73 +328,69 @@ export function SubscriptionSetup({ onComplete, onBack }: SubscriptionSetupProps
   const showFormLoading = !showForm && !formLoadFailed && plans.length > 0;
 
   return (
-    <div className="min-h-screen flex items-center justify-center p-4">
-      <div className="fixed inset-0 overflow-hidden pointer-events-none">
-        <div className="absolute -top-1/2 -right-1/4 w-[800px] h-[800px] rounded-full bg-gradient-to-br from-primary-600/20 to-transparent blur-3xl" />
-      </div>
-      <div className="relative z-10 w-full max-w-md">
+    <div className="space-y-4">
+      {/* Header */}
+      <div className="flex items-center justify-between">
         <button
           onClick={onBack}
-          className="flex items-center gap-2 text-surface-400 hover:text-surface-200 transition-colors mb-8"
+          className="flex items-center gap-1.5 text-surface-400 hover:text-surface-200 transition-colors text-sm"
         >
-          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
           </svg>
-          Sign out
+          {backLabel}
         </button>
-        <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-gradient-to-br from-primary-500 to-primary-700 mb-4">
-            <svg className="w-7 h-7 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z" />
-            </svg>
-          </div>
-          <h1 className="text-2xl font-bold text-surface-50">Choose your plan</h1>
-          <p className="text-surface-400 mt-2">
-            Add a payment method to start using Revtops.
-          </p>
-        </div>
-        <div className="bg-surface-900/80 backdrop-blur-sm border border-surface-800 rounded-2xl p-8">
-          {loadingPlans && plans.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-8 gap-3">
-              <LoadingSpinner />
-              <p className="text-surface-400 text-sm">Loading plans…</p>
-            </div>
-          ) : showFormLoading ? (
-            <div className="flex flex-col items-center justify-center py-8 gap-3">
-              <LoadingSpinner />
-              <p className="text-surface-400 text-sm">Loading payment form…</p>
-            </div>
-          ) : formLoadFailed ? (
-            <p className="text-surface-400 text-sm">
-              Unable to load payment form. Please try again or contact support.
-            </p>
-          ) : showForm ? (
-            <>
-              {error && (
-                <div className="mb-4 p-3 rounded-lg bg-red-500/10 border border-red-500/30 text-red-400 text-sm">
-                  {error}
-                </div>
-              )}
-              <Elements
-                stripe={stripePromise}
-                options={{
-                  clientSecret: clientSecret!,
-                  appearance: { theme: 'night' as const },
-                }}
-              >
-                <SubscribeForm
-                  clientSecret={clientSecret!}
-                  plans={plans}
-                  selectedTier={selectedTier}
-                  onTierChange={setSelectedTier}
-                  onSuccess={onComplete}
-                  onError={setError}
-                />
-              </Elements>
-            </>
-          ) : null}
-        </div>
       </div>
+
+      {/* Title */}
+      <div>
+        <h2 className="text-lg font-semibold text-surface-50">Upgrade your plan</h2>
+        <p className="text-surface-400 text-sm mt-1">
+          Add a payment method to unlock more credits.
+        </p>
+      </div>
+
+      {/* Content */}
+      {loadingPlans && plans.length === 0 ? (
+        <div className="flex flex-col items-center justify-center py-6 gap-2">
+          <LoadingSpinner />
+          <p className="text-surface-400 text-sm">Loading plans…</p>
+        </div>
+      ) : showFormLoading ? (
+        <div className="flex flex-col items-center justify-center py-6 gap-2">
+          <LoadingSpinner />
+          <p className="text-surface-400 text-sm">Loading payment form…</p>
+        </div>
+      ) : formLoadFailed ? (
+        <p className="text-surface-400 text-sm py-4">
+          Unable to load payment form. Please try again or contact support.
+        </p>
+      ) : showForm ? (
+        <>
+          {error && (
+            <div className="p-3 rounded-lg bg-red-500/10 border border-red-500/30 text-red-400 text-sm">
+              {error}
+            </div>
+          )}
+          <Elements
+            stripe={stripePromise}
+            options={{
+              clientSecret: clientSecret!,
+              appearance: { theme: 'night' as const },
+            }}
+          >
+            <SubscribeForm
+              clientSecret={clientSecret!}
+              plans={plans}
+              selectedTier={selectedTier}
+              currentTier={currentTier}
+              onTierChange={setSelectedTier}
+              onSuccess={onComplete}
+              onError={setError}
+            />
+          </Elements>
+        </>
+      ) : null}
     </div>
   );
 }

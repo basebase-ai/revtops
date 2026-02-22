@@ -578,17 +578,35 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                     setBillingRefresh((k) => k + 1);
                   }}
                   onBack={() => setShowSubscriptionSetup(false)}
+                  currentTier={billing?.subscription_tier ?? null}
                 />
               ) : (
                 <>
                   {/* Current Plan & Credits */}
                   <div className="p-4 rounded-xl bg-gradient-to-r from-primary-600/20 to-primary-500/10 border border-primary-500/30">
-                    <div className="flex items-center justify-between mb-2">
-                      <h3 className="font-medium text-surface-100">Current Plan</h3>
-                      <span className="px-2 py-1 text-xs font-medium bg-primary-500 text-white rounded-full capitalize">
+                    <div className="mb-3">
+                      <p className="text-xs text-surface-400 uppercase tracking-wide mb-1">Current Plan</p>
+                      <h3 className="text-2xl font-bold text-white capitalize">
                         {billing?.subscription_tier ?? 'None'}
-                      </span>
+                      </h3>
                     </div>
+                    {/* Free tier - show upgrade CTA */}
+                    {billing?.subscription_tier === 'free' && (
+                      <>
+                        <p className="text-sm text-surface-400 mb-3">
+                          {billing?.credits_included ?? 100} credits/month included.
+                          Upgrade to unlock more.
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => setShowSubscriptionSetup(true)}
+                          className="px-4 py-2 text-sm font-medium text-white bg-primary-500 hover:bg-primary-600 rounded-lg transition-colors"
+                        >
+                          Upgrade plan
+                        </button>
+                      </>
+                    )}
+                    {/* No subscription at all (legacy) */}
                     {billing?.subscription_required && !billing?.subscription_tier && (
                       <>
                         <p className="text-sm text-surface-400 mb-3">
@@ -603,7 +621,8 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                         </button>
                       </>
                     )}
-                    {billing?.subscription_required && billing?.subscription_tier && (
+                    {/* Payment pending for paid tier */}
+                    {billing?.subscription_required && billing?.subscription_tier && billing?.subscription_tier !== 'free' && (
                       <p className="text-sm text-surface-400">
                         Payment pending. Credits will be available once your first payment is confirmed.
                       </p>
@@ -621,7 +640,8 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                           : ''}
                       </p>
                     )}
-                    {billing?.subscription_tier && !showChangePlan && (
+                    {/* Change/Cancel buttons only for paid tiers (not free) */}
+                    {billing?.subscription_tier && billing?.subscription_tier !== 'free' && !showChangePlan && (
                       <div className="flex flex-wrap gap-2 mt-3">
                         <button
                           type="button"
@@ -911,16 +931,19 @@ function CreditDetailsModal({ details, loading, onClose }: CreditDetailsModalPro
     const timestamps: string[] = [];
     const balances: number[] = [];
     
-    // Start with the starting balance at period start
-    if (details.period_start) {
-      timestamps.push(details.period_start);
-      balances.push(details.starting_balance);
-    }
+    // Start with starting_balance (which is credits_included when showing all-time)
+    let runningBalance = details.starting_balance;
     
-    // Add each transaction point
+    // Add starting point (use first transaction time if no period_start)
+    const startTime = details.period_start || details.transactions[0]?.timestamp || new Date().toISOString();
+    timestamps.push(startTime);
+    balances.push(runningBalance);
+    
+    // Add each transaction point, recalculating balance from starting point
     for (const tx of details.transactions) {
+      runningBalance += tx.amount; // amount is negative for deductions
       timestamps.push(tx.timestamp);
-      balances.push(tx.balance_after);
+      balances.push(runningBalance);
     }
     
     return { timestamps, balances };
