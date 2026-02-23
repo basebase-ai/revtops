@@ -39,7 +39,7 @@ export interface AvatarUser {
 export type AvatarSize = 'xs' | 'sm' | 'md' | 'lg';
 
 const SIZE_CONFIG: Record<AvatarSize, { container: string; text: string }> = {
-  xs: { container: 'w-4 h-4', text: 'text-[8px]' },
+  xs: { container: 'w-5 h-5', text: 'text-[10px]' },
   sm: { container: 'w-[30px] h-[30px]', text: 'text-xs' },
   md: { container: 'w-8 h-8', text: 'text-sm' },
   lg: { container: 'w-10 h-10', text: 'text-base' },

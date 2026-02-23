@@ -35,7 +35,13 @@ from config import get_nango_integration_id
 
 logger = logging.getLogger(__name__)
 EMAIL_PATTERN = re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.IGNORECASE)
+SLACK_MENTION_PATTERN = re.compile(r"<@[A-Z0-9]+>\s*")
 SLOW_REPLY_TIMEOUT_SECONDS = 30
+
+
+def _strip_slack_mentions(text: str) -> str:
+    """Remove Slack user mentions like <@U09HDFN8DO8> from text."""
+    return SLACK_MENTION_PATTERN.sub("", text).strip()
 SLOW_REPLY_MESSAGE = "Still working on this..."
 
 
@@ -1697,10 +1703,11 @@ async def _stream_and_post_responses(
     """
     current_text: str = ""
     total_length: int = 0
+    cleaned_message = _strip_slack_mentions(message_text)
 
     try:
         async for chunk in orchestrator.process_message(
-            message_text, attachment_ids=attachment_ids,
+            cleaned_message, attachment_ids=attachment_ids,
         ):
             if chunk.startswith("{"):
                 # Tool-call boundary — send whatever text we have so far

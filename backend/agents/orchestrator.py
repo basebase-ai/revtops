@@ -13,6 +13,7 @@ Responsibilities:
 import asyncio
 import json
 import logging
+import re
 from datetime import UTC, datetime
 from typing import Any, AsyncGenerator
 from uuid import UUID, uuid4
@@ -2124,6 +2125,9 @@ WHERE scheduled_start >= '2026-01-27'::date AND scheduled_start < '2026-01-28'::
         """Generate a title from the first message."""
         # Clean and truncate the message
         cleaned = message.strip().replace("\n", " ")
+        
+        # Strip Slack user mentions like <@U09HDFN8DO8>
+        cleaned = re.sub(r"<@[A-Z0-9]+>\s*", "", cleaned).strip()
 
         # If it's a question, use it as-is (truncated)
         if cleaned.endswith("?") and len(cleaned) <= 50:

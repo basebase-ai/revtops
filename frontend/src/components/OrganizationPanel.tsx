@@ -17,6 +17,7 @@ import { useAppStore } from '../store';
 import { useTeamMembers, useUpdateOrganization, useLinkIdentity, useUnlinkIdentity } from '../hooks';
 import type { TeamMember, IdentityMapping } from '../hooks';
 import { apiRequest } from '../lib/api';
+import { Avatar } from './Avatar';
 import { SubscriptionSetup } from './SubscriptionSetup';
 
 interface BillingStatus {
@@ -412,17 +413,7 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                             onClick={() => setExpandedMemberId(isExpanded ? null : member.id)}
                             className="flex items-center gap-3 p-3 w-full text-left hover:bg-surface-800/80 transition-colors"
                           >
-                            {member.avatarUrl ? (
-                              <img
-                                src={member.avatarUrl}
-                                alt={displayName}
-                                className="w-10 h-10 rounded-full object-cover"
-                              />
-                            ) : (
-                              <div className="w-10 h-10 rounded-full bg-primary-600 flex items-center justify-center text-white font-medium">
-                                {displayName.charAt(0).toUpperCase()}
-                              </div>
-                            )}
+                            <Avatar user={member} size="lg" />
                             <div className="flex-1 min-w-0">
                               <div className="flex items-center gap-2">
                                 <span className="font-medium text-surface-100 truncate">

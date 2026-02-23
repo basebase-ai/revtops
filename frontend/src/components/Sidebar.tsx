@@ -465,7 +465,7 @@ export function Sidebar({
                             ))}
                             {chat.participants.length > 3 && (
                               <div
-                                className="w-4 h-4 rounded-full border border-surface-800 bg-surface-700 flex items-center justify-center text-[8px] font-medium text-surface-300"
+                                className="w-5 h-5 rounded-full border border-surface-800 bg-surface-700 flex items-center justify-center text-[10px] font-medium text-surface-300"
                                 title={`${chat.participants.length - 3} more`}
                               >
                                 +{chat.participants.length - 3}
