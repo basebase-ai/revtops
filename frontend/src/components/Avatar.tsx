@@ -5,7 +5,7 @@
 
 import { useState } from 'react';
 
-const AVATAR_COLORS = [
+const AVATAR_COLORS: readonly string[] = [
   '#6366f1', // indigo
   '#8b5cf6', // violet
   '#ec4899', // pink
@@ -16,16 +16,18 @@ const AVATAR_COLORS = [
   '#14b8a6', // teal
   '#06b6d4', // cyan
   '#3b82f6', // blue
-];
+] as const;
+
+const DEFAULT_COLOR = '#6366f1';
 
 /** Generate a deterministic color based on user ID */
-export function getAvatarColor(userId: string): string {
+function getAvatarColor(userId: string): string {
   let hash = 0;
   for (let i = 0; i < userId.length; i++) {
     hash = ((hash << 5) - hash) + userId.charCodeAt(i);
     hash = hash & hash;
   }
-  return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length];
+  return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length] ?? DEFAULT_COLOR;
 }
 
 /** User-like object that can be rendered as an avatar */

@@ -717,6 +717,13 @@ export const useAppStore = create<AppState>()(
               last_message_preview: string | null;
               type?: string;
               workflow_id?: string;
+              scope?: "private" | "shared";
+              participants?: Array<{
+                id: string;
+                name: string | null;
+                email: string;
+                avatar_url?: string | null;
+              }>;
             }>;
             total: number;
           }>(`/chat/conversations?limit=20`);

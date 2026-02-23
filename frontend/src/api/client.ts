@@ -37,6 +37,9 @@ export interface ChatMessage {
   role: "user" | "assistant";
   content_blocks: ContentBlock[];
   created_at: string;
+  user_id?: string | null;
+  sender_name?: string | null;
+  sender_email?: string | null;
 }
 
 export interface ConversationSummary {
@@ -63,6 +66,13 @@ export interface ConversationDetailResponse {
   created_at: string;
   updated_at: string;
   type: "chat" | "workflow" | null;
+  scope: "private" | "shared";
+  participants: Array<{
+    id: string;
+    name: string | null;
+    email: string;
+    avatar_url?: string | null;
+  }>;
   messages: ChatMessage[];
 }
 

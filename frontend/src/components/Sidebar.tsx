@@ -13,7 +13,7 @@
 
 import { useMemo, useState, useRef, useEffect } from 'react';
 import type { View, ChatSummary, OrganizationInfo } from './AppLayout';
-import { useAppStore, useIsGlobalAdmin, useActiveTasksByConversation, type UserProfile, type UserOrganization } from '../store';
+import { useAppStore, useIsGlobalAdmin, useActiveTasksByConversation, type UserOrganization } from '../store';
 import { Avatar } from './Avatar';
 
 /** Organization switcher in the sidebar bottom section. */

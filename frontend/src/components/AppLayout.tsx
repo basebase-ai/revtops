@@ -49,7 +49,7 @@ import { AppsGallery } from './apps/AppsGallery';
 import { AppFullView } from './apps/AppFullView';
 import { OrganizationPanel } from './OrganizationPanel';
 import { ProfilePanel } from './ProfilePanel';
-import { useAppStore, useMasquerade, useIntegrations, type ActiveTask, type ToolCallData } from '../store';
+import { useAppStore, useMasquerade, useIntegrations, type ActiveTask, type ToolCallData, type ChatMessage, type ContentBlock } from '../store';
 import { useTeamMembers, useWebSocket } from '../hooks';
 import { apiRequest } from '../lib/api';
 
@@ -130,7 +130,22 @@ interface WsError {
   code?: string;
 }
 
-type WsMessage = WsActiveTasks | WsTaskStarted | WsTaskChunk | WsTaskComplete | WsConversationCreated | WsCatchup | WsCrmApprovalResult | WsToolApprovalResult | WsToolProgress | WsError;
+interface WsNewMessage {
+  type: 'new_message';
+  conversation_id: string;
+  message: {
+    id: string;
+    role: 'user' | 'assistant';
+    content_blocks: Array<{ type: string; text?: string; [key: string]: unknown }>;
+    created_at: string;
+    user_id?: string | null;
+    sender_name?: string | null;
+    sender_email?: string | null;
+  };
+  sender_user_id: string;
+}
+
+type WsMessage = WsActiveTasks | WsTaskStarted | WsTaskChunk | WsTaskComplete | WsConversationCreated | WsCatchup | WsCrmApprovalResult | WsToolApprovalResult | WsToolProgress | WsError | WsNewMessage;
 
 // Props
 interface AppLayoutProps {
@@ -818,10 +833,10 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
           if (conversation_id && message) {
             console.log('[AppLayout] New message from participant:', sender_user_id, 'in conversation:', conversation_id);
             // Convert API message format to store format
-            const chatMessage = {
+            const chatMessage: ChatMessage = {
               id: message.id,
               role: message.role as 'user' | 'assistant',
-              contentBlocks: message.content_blocks,
+              contentBlocks: message.content_blocks as ContentBlock[],
               timestamp: new Date(message.created_at),
               userId: message.user_id ?? undefined,
               senderName: message.sender_name ?? undefined,
