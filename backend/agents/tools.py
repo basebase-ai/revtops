@@ -311,6 +311,7 @@ async def execute_tool(
         "manage_memory": lambda: _manage_memory(tool_input, organization_id, user_id, skip_approval),
         "foreach": lambda: _foreach(tool_input, organization_id, user_id, context),
         "trigger_sync": lambda: _trigger_sync(tool_input, organization_id),
+        "initiate_connector": lambda: _initiate_connector(tool_input, organization_id, user_id),
         # Connector-driven generic tools
         "list_connected_systems": lambda: _list_connected_systems(organization_id),
         "query_system": lambda: _query_system(tool_input, organization_id, user_id),
@@ -4779,6 +4780,101 @@ async def _trigger_sync(
     except Exception as e:
         logger.error(f"[Tools._trigger_sync] Failed: {str(e)}")
         return {"error": f"Failed to trigger sync: {str(e)}"}
+
+
+async def _initiate_connector(
+    params: dict[str, Any],
+    organization_id: str,
+    user_id: str | None,
+) -> dict[str, Any]:
+    """
+    Initiate OAuth connection flow for a connector.
+    
+    Returns session info that the frontend uses to open the OAuth popup.
+    """
+    from config import get_nango_integration_id, get_provider_scope, PROVIDER_SCOPES
+    from connectors.registry import discover_connectors
+    from services.nango import get_nango_client
+    
+    provider = params.get("provider", "").strip().lower()
+    
+    if not provider:
+        return {"error": "provider is required (e.g., 'jira', 'salesforce', 'hubspot')."}
+    
+    # Validate provider exists
+    registry = discover_connectors()
+    if provider not in registry and provider not in PROVIDER_SCOPES:
+        available = sorted(set(list(registry.keys()) + list(PROVIDER_SCOPES.keys())))
+        return {
+            "error": f"Unknown provider '{provider}'.",
+            "available_connectors": available,
+        }
+    
+    # Check if already connected
+    async with get_session(organization_id=organization_id) as session:
+        scope = get_provider_scope(provider)
+        conditions = [
+            Integration.organization_id == UUID(organization_id),
+            Integration.provider == provider,
+            Integration.is_active == True,  # noqa: E712
+        ]
+        if scope == "user" and user_id:
+            conditions.append(Integration.user_id == UUID(user_id))
+        
+        result = await session.execute(select(Integration).where(*conditions))
+        existing = result.scalar_one_or_none()
+        
+        if existing:
+            return {
+                "status": "already_connected",
+                "message": f"{provider} is already connected.",
+                "provider": provider,
+            }
+    
+    # Handle built-in connectors (no OAuth needed)
+    builtin_connectors = {"web_search", "code_sandbox", "twilio"}
+    if provider in builtin_connectors:
+        return {
+            "action": "connect_builtin",
+            "provider": provider,
+            "scope": "organization",
+            "message": f"Click to enable {provider}.",
+        }
+    
+    # Get Nango integration ID
+    try:
+        nango_integration_id = get_nango_integration_id(provider)
+    except ValueError:
+        return {"error": f"Provider '{provider}' is not configured for OAuth."}
+    
+    # Determine scope and connection ID
+    scope = get_provider_scope(provider)
+    if scope == "user":
+        if not user_id:
+            return {"error": f"{provider} requires user authentication. User ID is missing."}
+        connection_id = f"{organization_id}:user:{user_id}"
+    else:
+        connection_id = organization_id
+    
+    # Create Nango session
+    nango = get_nango_client()
+    try:
+        session_data = await nango.create_connect_session(
+            integration_id=nango_integration_id,
+            connection_id=connection_id,
+        )
+    except Exception as e:
+        logger.error(f"[Tools._initiate_connector] Nango session failed: {e}")
+        return {"error": f"Failed to create OAuth session: {str(e)}"}
+    
+    return {
+        "action": "connect_oauth",
+        "provider": provider,
+        "scope": scope,
+        "session_token": session_data.get("token"),
+        "connection_id": connection_id,
+        "message": f"Opening {provider} authorization...",
+    }
 
 
 # =============================================================================

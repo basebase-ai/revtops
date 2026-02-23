@@ -15,6 +15,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import Nango from '@nangohq/frontend';
 import { API_BASE } from '../lib/api';
 import { crossTab, subscribeCrossTab } from '../lib/crossTab';
 
@@ -615,6 +616,66 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
               } | undefined;
               if (app) {
                 addConversationAppBlock(conversation_id, app);
+              }
+            } else if (data.type === 'connector_connect') {
+              // Connector connection initiated - open OAuth popup or connect builtin
+              const connectData = data as {
+                type: string;
+                action: 'connect_oauth' | 'connect_builtin';
+                provider: string;
+                scope: 'organization' | 'user';
+                session_token?: string;
+                connection_id?: string;
+              };
+              
+              // Get current org/user from store (not closure) to ensure fresh values
+              const currentState = useAppStore.getState();
+              const orgId = currentState.organization?.id;
+              const currentUserId = currentState.user?.id;
+              
+              if (connectData.action === 'connect_oauth' && connectData.session_token) {
+                // Open Nango OAuth popup
+                const nango = new Nango();
+                nango.openConnectUI({
+                  sessionToken: connectData.session_token,
+                  onEvent: async (event) => {
+                    const eventType = event.type as string;
+                    if (eventType === 'connect' || eventType === 'connection-created' || eventType === 'success') {
+                      // Confirm integration with backend
+                      const eventData = event as { connectionId?: string; connection_id?: string; payload?: { connectionId?: string } };
+                      const nangoConnectionId = eventData.connectionId || eventData.connection_id || eventData.payload?.connectionId || connectData.connection_id;
+                      
+                      try {
+                        await fetch(`${API_BASE}/auth/integrations/confirm`, {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({
+                            provider: connectData.provider,
+                            connection_id: nangoConnectionId,
+                            organization_id: orgId,
+                            user_id: connectData.scope === 'user' ? currentUserId : undefined,
+                          }),
+                        });
+                        // Refresh integrations list
+                        queryClient.invalidateQueries({ queryKey: ['integrations'] });
+                      } catch (err) {
+                        console.error('Failed to confirm integration:', err);
+                      }
+                    }
+                  },
+                });
+              } else if (connectData.action === 'connect_builtin') {
+                // Connect built-in connector directly
+                fetch(`${API_BASE}/auth/integrations/connect-builtin`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    provider: connectData.provider,
+                    organization_id: orgId,
+                  }),
+                })
+                  .then(() => queryClient.invalidateQueries({ queryKey: ['integrations'] }))
+                  .catch((err) => console.error('Failed to connect builtin:', err));
               }
             }
           }

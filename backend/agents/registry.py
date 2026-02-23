@@ -393,6 +393,41 @@ The sync runs in the background and may take a few minutes to complete.""",
 )
 
 
+register_tool(
+    name="initiate_connector",
+    description="""Initiate the OAuth connection flow for a new connector.
+
+Use this when the user asks to connect a new integration like Jira, Salesforce, HubSpot, Slack, etc.
+This opens an OAuth popup in the user's browser to authorize the connection.
+
+Available connectors include:
+- CRM: hubspot, salesforce
+- Communication: slack
+- Issue tracking: jira, linear, asana
+- Code: github
+- Email/Calendar (user-scoped): gmail, google_calendar, microsoft_mail, microsoft_calendar
+- Storage: google_drive
+- Meetings: zoom, fireflies
+- Data enrichment: apollo
+- Built-in: web_search, code_sandbox, twilio
+
+For user-scoped connectors (email, calendar, drive), each team member connects their own account.
+For org-scoped connectors (CRM, Slack, issue trackers), one connection serves the whole organization.""",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "provider": {
+                "type": "string",
+                "description": "The connector to connect (e.g., 'jira', 'salesforce', 'hubspot', 'slack')",
+            },
+        },
+        "required": ["provider"],
+    },
+    category=ToolCategory.LOCAL_WRITE,
+    default_requires_approval=False,
+)
+
+
 # -----------------------------------------------------------------------------
 # Workflow Management Tools
 # -----------------------------------------------------------------------------
