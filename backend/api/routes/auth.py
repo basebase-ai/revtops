@@ -827,6 +827,20 @@ async def create_organization(request: CreateOrganizationRequest) -> Organizatio
             current_period_end=now + timedelta(days=30),
         )
         session.add(new_org)
+        await session.flush()
+
+        # Auto-enable web_search for new organizations
+        web_search_integration = Integration(
+            organization_id=org_uuid,
+            provider="web_search",
+            scope="organization",
+            user_id=None,
+            nango_connection_id="builtin",
+            connected_by_user_id=None,
+            is_active=True,
+        )
+        session.add(web_search_integration)
+
         await session.commit()
         await session.refresh(new_org)
 
@@ -2636,6 +2650,83 @@ async def disconnect_integration(
         response["deleted_pipelines"] = deleted_pipelines
         response["deleted_meetings"] = deleted_meetings
     return response
+
+
+# =============================================================================
+# User Merge (consolidate duplicate accounts)
+# =============================================================================
+
+
+class MergeUsersRequest(BaseModel):
+    """Request model for merging two user accounts."""
+
+    target_user_id: str = Field(..., description="The user ID to keep (receives all records)")
+    source_user_id: str = Field(..., description="The user ID to merge away (will be deleted)")
+    delete_source: bool = Field(True, description="Whether to delete the source user after merge")
+
+
+class MergeUsersResponse(BaseModel):
+    """Response model for user merge operation."""
+
+    success: bool
+    target_user_id: str
+    source_user_id: str
+    source_email: str
+    tables_updated: dict[str, int]
+    error: Optional[str] = None
+
+
+@router.post("/users/merge", response_model=MergeUsersResponse)
+async def merge_users_endpoint(
+    request: MergeUsersRequest,
+    auth: AuthContext = Depends(get_current_auth),
+) -> MergeUsersResponse:
+    """
+    Merge two user accounts into one.
+    
+    This is useful when a user has multiple accounts (e.g., different email
+    addresses for Slack vs web app login) and needs to consolidate them.
+    
+    The source user's records are either:
+    - Reassigned to the target user (ownership, authorship)
+    - Deleted (conversations, messages, user mappings)
+    
+    Requires admin role or global_admin.
+    """
+    from services.user_merge import merge_users
+    
+    if not auth.organization_id:
+        raise HTTPException(status_code=400, detail="Organization context required")
+    
+    # Check admin permissions
+    is_admin = False
+    if auth.user:
+        is_admin = (
+            auth.user.role == "admin"
+            or "global_admin" in (auth.user.roles or [])
+        )
+    
+    if not is_admin:
+        raise HTTPException(status_code=403, detail="Admin role required to merge users")
+    
+    result = await merge_users(
+        target_user_id=request.target_user_id,
+        source_user_id=request.source_user_id,
+        organization_id=auth.organization_id,
+        delete_source=request.delete_source,
+    )
+    
+    if not result.success:
+        raise HTTPException(status_code=400, detail=result.error)
+    
+    return MergeUsersResponse(
+        success=result.success,
+        target_user_id=result.target_user_id,
+        source_user_id=result.source_user_id,
+        source_email=result.source_email,
+        tables_updated=result.tables_updated,
+        error=result.error,
+    )
 
 
 # =============================================================================

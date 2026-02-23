@@ -519,6 +519,20 @@ async def create_admin_organization(
         session.add(new_org)
         await session.flush()
 
+        # Auto-enable web_search for new organizations
+        from models.integration import Integration
+
+        web_search_integration = Integration(
+            organization_id=new_org.id,
+            provider="web_search",
+            scope="organization",
+            user_id=None,
+            nango_connection_id="builtin",
+            connected_by_user_id=auth.user_id,
+            is_active=True,
+        )
+        session.add(web_search_integration)
+
         membership = OrgMember(
             user_id=auth.user_id,
             organization_id=new_org.id,

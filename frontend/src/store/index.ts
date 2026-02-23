@@ -87,6 +87,13 @@ export interface Integration {
   syncStats: SyncStats | null;
 }
 
+export interface Participant {
+  id: string;
+  name: string | null;
+  email: string;
+  avatarUrl?: string | null;
+}
+
 export interface ChatSummary {
   id: string;
   title: string;
@@ -94,6 +101,8 @@ export interface ChatSummary {
   previewText: string;
   type?: "agent" | "workflow"; // 'agent' for interactive, 'workflow' for automated
   workflowId?: string; // ID of the workflow that triggered this conversation
+  scope: "private" | "shared";
+  participants?: Participant[];
 }
 
 // Content block types (matches API)
@@ -161,6 +170,9 @@ export interface ChatMessage {
   contentBlocks: ContentBlock[];
   timestamp: Date;
   isStreaming?: boolean;
+  userId?: string;
+  senderName?: string | null;
+  senderEmail?: string | null;
 }
 
 export type View =
@@ -286,7 +298,7 @@ interface AppState {
   togglePinChat: (id: string) => void;
 
   // Actions - Conversations
-  addConversation: (id: string, title: string) => void;
+  addConversation: (id: string, title: string, scope?: "private" | "shared") => void;
   fetchConversations: () => Promise<void>;
   deleteConversation: (id: string) => Promise<void>;
 
@@ -672,16 +684,16 @@ export const useAppStore = create<AppState>()(
       },
 
       // Conversation actions
-      addConversation: (id, title) => {
+      addConversation: (id, title, scope?: "private" | "shared") => {
         const { recentChats } = get();
         if (recentChats.some((chat) => chat.id === id)) {
           console.log("[Store] Conversation already exists:", id);
           return;
         }
-        console.log("[Store] Adding conversation:", id, title);
+        console.log("[Store] Adding conversation:", id, title, scope);
         set({
           recentChats: [
-            { id, title, lastMessageAt: new Date(), previewText: "" },
+            { id, title, lastMessageAt: new Date(), previewText: "", scope: scope ?? "shared" },
             ...recentChats.slice(0, 9),
           ],
         });
@@ -705,6 +717,13 @@ export const useAppStore = create<AppState>()(
               last_message_preview: string | null;
               type?: string;
               workflow_id?: string;
+              scope?: "private" | "shared";
+              participants?: Array<{
+                id: string;
+                name: string | null;
+                email: string;
+                avatar_url?: string | null;
+              }>;
             }>;
             total: number;
           }>(`/chat/conversations?limit=20`);
@@ -742,6 +761,13 @@ export const useAppStore = create<AppState>()(
             previewText: conv.last_message_preview ?? "",
             type: (conv.type ?? "agent") as "agent" | "workflow",
             workflowId: conv.workflow_id,
+            scope: (conv.scope ?? "shared") as "private" | "shared",
+            participants: conv.participants?.map((p: { id: string; name: string | null; email: string; avatar_url?: string | null }) => ({
+              id: p.id,
+              name: p.name,
+              email: p.email,
+              avatarUrl: p.avatar_url,
+            })),
           }));
 
           set({ recentChats });

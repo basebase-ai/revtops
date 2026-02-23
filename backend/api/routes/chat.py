@@ -30,6 +30,7 @@ from api.auth_middleware import AuthContext, get_current_auth
 from models.database import get_session
 from models.chat_message import ChatMessage
 from models.conversation import Conversation
+from models.user import User
 from services.file_handler import store_file, MAX_FILE_SIZE
 from services.slack_conversations import get_slack_user_ids_for_revtops_user
 
@@ -80,6 +81,7 @@ def _build_conversation_access_filter(
 class ConversationCreate(BaseModel):
     """Request model for creating a conversation."""
     title: Optional[str] = None
+    scope: Optional[str] = "shared"  # "private" or "shared" (default)
 
 
 class ConversationUpdate(BaseModel):
@@ -87,16 +89,26 @@ class ConversationUpdate(BaseModel):
     title: Optional[str] = None
 
 
+class ParticipantResponse(BaseModel):
+    """Response model for a conversation participant."""
+    id: str
+    name: Optional[str]
+    email: str
+    avatar_url: Optional[str] = None
+
+
 class ConversationResponse(BaseModel):
     """Response model for a conversation."""
     id: str
-    user_id: str
+    user_id: Optional[str]
     title: Optional[str]
     summary: Optional[str]
     created_at: str
     updated_at: str
     message_count: int = 0
     last_message_preview: Optional[str] = None
+    scope: str = "shared"
+    participants: list[ParticipantResponse] = []
 
 
 class ConversationListResponse(BaseModel):
@@ -112,17 +124,22 @@ class ChatMessageResponse(BaseModel):
     role: str
     content_blocks: list[dict]
     created_at: str
+    user_id: Optional[str] = None
+    sender_name: Optional[str] = None
+    sender_email: Optional[str] = None
 
 
 class ConversationDetailResponse(BaseModel):
     """Response model for conversation with messages."""
     id: str
-    user_id: str
+    user_id: Optional[str]
     title: Optional[str]
     summary: Optional[str]
     created_at: str
     updated_at: str
     type: Optional[str]
+    scope: str = "shared"
+    participants: list[ParticipantResponse] = []
     messages: list[ChatMessageResponse]
 
 
@@ -185,6 +202,22 @@ async def list_conversations(
         # Extract total from first row (window function returns same value for all rows)
         total: int = rows[0][1] if rows else 0
 
+        # Collect all participant user IDs to fetch in one query
+        all_participant_ids: set[UUID] = set()
+        for row in rows:
+            conv: Conversation = row[0]
+            for uid in (conv.participating_user_ids or []):
+                all_participant_ids.add(uid)
+
+        # Fetch all participants in one query
+        participants_by_id: dict[UUID, User] = {}
+        if all_participant_ids:
+            users_result = await session.execute(
+                select(User).where(User.id.in_(all_participant_ids))
+            )
+            for user in users_result.scalars().all():
+                participants_by_id[user.id] = user
+
         # Build response using cached fields
         response_items: list[ConversationResponse] = []
         for row in rows:
@@ -206,15 +239,29 @@ async def list_conversations(
                         conv.source_channel_id,
                     )
 
+            # Build participants list
+            participants: list[ParticipantResponse] = []
+            for uid in (conv.participating_user_ids or []):
+                user = participants_by_id.get(uid)
+                if user:
+                    participants.append(ParticipantResponse(
+                        id=str(user.id),
+                        name=user.name,
+                        email=user.email,
+                        avatar_url=user.avatar_url,
+                    ))
+
             response_items.append(ConversationResponse(
                 id=str(conv.id),
-                user_id=str(conv.user_id),
+                user_id=str(conv.user_id) if conv.user_id else None,
                 title=conv.title,
                 summary=conv.summary,
                 created_at=f"{conv.created_at.isoformat()}Z" if conv.created_at else "",
                 updated_at=f"{conv.updated_at.isoformat()}Z" if conv.updated_at else "",
                 message_count=conv.message_count,
                 last_message_preview=conv.last_message_preview[:100] if conv.last_message_preview else None,
+                scope=conv.scope,
+                participants=participants,
             ))
 
         return ConversationListResponse(
@@ -231,22 +278,46 @@ async def create_conversation(
     """Create a new conversation for the authenticated user."""
     org_id = auth.organization_id_str
 
+    # Validate scope
+    scope = request.scope or "shared"
+    if scope not in ("private", "shared"):
+        raise HTTPException(status_code=400, detail="Invalid scope. Must be 'private' or 'shared'")
+
     async with get_session(organization_id=org_id) as session:
         conversation = Conversation(
             user_id=auth.user_id,
             organization_id=auth.organization_id,
             participating_user_ids=[auth.user_id],
             title=request.title,
+            scope=scope,
         )
         session.add(conversation)
         # Capture values before commit (model defaults are set on instantiation)
         conv_id = str(conversation.id)
         conv_title = conversation.title
         conv_summary = conversation.summary
+        conv_scope = conversation.scope
         conv_created_at = conversation.created_at
         conv_updated_at = conversation.updated_at
+
+        # Fetch user info for participant response
+        user_result = await session.execute(
+            select(User).where(User.id == auth.user_id)
+        )
+        user = user_result.scalar_one_or_none()
+
         await session.commit()
         # Note: don't call refresh() - it can fail due to RLS after commit
+
+        # Build participant list (just the creator for new conversations)
+        participants: list[ParticipantResponse] = []
+        if user:
+            participants.append(ParticipantResponse(
+                id=str(user.id),
+                name=user.name,
+                email=user.email,
+                avatar_url=user.avatar_url,
+            ))
 
         return ConversationResponse(
             id=conv_id,
@@ -257,6 +328,8 @@ async def create_conversation(
             updated_at=f"{conv_updated_at.isoformat()}Z" if conv_updated_at else "",
             message_count=0,
             last_message_preview=None,
+            scope=conv_scope,
+            participants=participants,
         )
 
 
@@ -285,25 +358,42 @@ async def get_conversation(
         if not conversation:
             raise HTTPException(status_code=404, detail="Conversation not found")
 
-        # Get messages
+        # Get messages with sender info via left join
         msg_result = await session.execute(
-            select(ChatMessage)
+            select(ChatMessage, User.name, User.email)
+            .outerjoin(User, ChatMessage.user_id == User.id)
             .where(ChatMessage.conversation_id == conv_uuid)
             .order_by(ChatMessage.created_at.asc())
         )
-        messages = msg_result.scalars().all()
+        message_rows = msg_result.all()
+
+        # Fetch participants
+        participants: list[ParticipantResponse] = []
+        if conversation.participating_user_ids:
+            users_result = await session.execute(
+                select(User).where(User.id.in_(conversation.participating_user_ids))
+            )
+            for user in users_result.scalars().all():
+                participants.append(ParticipantResponse(
+                    id=str(user.id),
+                    name=user.name,
+                    email=user.email,
+                    avatar_url=user.avatar_url,
+                ))
 
         return ConversationDetailResponse(
             id=str(conversation.id),
-            user_id=str(conversation.user_id),
+            user_id=str(conversation.user_id) if conversation.user_id else None,
             title=conversation.title,
             summary=conversation.summary,
             created_at=f"{conversation.created_at.isoformat()}Z" if conversation.created_at else "",
             updated_at=f"{conversation.updated_at.isoformat()}Z" if conversation.updated_at else "",
             type=conversation.type,
+            scope=conversation.scope,
+            participants=participants,
             messages=[
-                ChatMessageResponse(**msg.to_dict())
-                for msg in messages
+                ChatMessageResponse(**msg.to_dict(sender_name=sender_name, sender_email=sender_email))
+                for msg, sender_name, sender_email in message_rows
             ],
         )
 
@@ -341,11 +431,27 @@ async def update_conversation(
         
         # Capture values before commit
         conv_id = str(conversation.id)
-        conv_user_id = str(conversation.user_id)
+        conv_user_id = str(conversation.user_id) if conversation.user_id else None
         conv_title = conversation.title
         conv_summary = conversation.summary
+        conv_scope = conversation.scope
         conv_created_at = conversation.created_at
         conv_updated_at = conversation.updated_at
+        conv_participant_ids = list(conversation.participating_user_ids or [])
+
+        # Fetch participants
+        participants: list[ParticipantResponse] = []
+        if conv_participant_ids:
+            users_result = await session.execute(
+                select(User).where(User.id.in_(conv_participant_ids))
+            )
+            for user in users_result.scalars().all():
+                participants.append(ParticipantResponse(
+                    id=str(user.id),
+                    name=user.name,
+                    email=user.email,
+                    avatar_url=user.avatar_url,
+                ))
 
         await session.commit()
         # Note: don't call refresh() - it can fail due to RLS after commit
@@ -359,6 +465,8 @@ async def update_conversation(
             updated_at=f"{conv_updated_at.isoformat()}Z" if conv_updated_at else "",
             message_count=0,
             last_message_preview=None,
+            scope=conv_scope,
+            participants=participants,
         )
 
 
@@ -391,6 +499,239 @@ async def delete_conversation(
         await session.commit()
 
         return {"success": True}
+
+
+# =============================================================================
+# Participant Management Endpoints
+# =============================================================================
+
+class AddParticipantRequest(BaseModel):
+    """Request model for adding a participant."""
+    user_id: Optional[str] = None
+    email: Optional[str] = None
+
+
+class AddParticipantResponse(BaseModel):
+    """Response model for adding a participant."""
+    success: bool
+    participant: ParticipantResponse
+
+
+@router.post("/conversations/{conversation_id}/participants", response_model=AddParticipantResponse)
+async def add_participant(
+    conversation_id: str,
+    request: AddParticipantRequest,
+    auth: AuthContext = Depends(get_current_auth),
+) -> AddParticipantResponse:
+    """Add a participant to a shared conversation."""
+    try:
+        conv_uuid = UUID(conversation_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid conversation ID format")
+
+    if not request.user_id and not request.email:
+        raise HTTPException(status_code=400, detail="Must provide user_id or email")
+
+    org_id = auth.organization_id_str
+
+    slack_user_ids = await _get_slack_user_ids(auth)
+    async with get_session(organization_id=org_id) as session:
+        # Get conversation
+        result = await session.execute(
+            select(Conversation)
+            .where(Conversation.id == conv_uuid)
+            .where(_build_conversation_access_filter(auth, slack_user_ids))
+        )
+        conversation = result.scalar_one_or_none()
+
+        if not conversation:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+
+        if conversation.scope == "private":
+            raise HTTPException(status_code=400, detail="Cannot add participants to a private conversation")
+
+        # Find the user to add
+        if request.user_id:
+            try:
+                target_user_uuid = UUID(request.user_id)
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid user_id format")
+            user_result = await session.execute(
+                select(User).where(User.id == target_user_uuid)
+            )
+        else:
+            user_result = await session.execute(
+                select(User).where(User.email == request.email)
+            )
+        
+        target_user = user_result.scalar_one_or_none()
+        if not target_user:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        # Verify user is in the same organization
+        if target_user.organization_id != auth.organization_id:
+            raise HTTPException(status_code=403, detail="User is not in your organization")
+
+        # Check if already a participant
+        current_participants = list(conversation.participating_user_ids or [])
+        if target_user.id in current_participants:
+            # Already a participant, just return success
+            return AddParticipantResponse(
+                success=True,
+                participant=ParticipantResponse(
+                    id=str(target_user.id),
+                    name=target_user.name,
+                    email=target_user.email,
+                    avatar_url=target_user.avatar_url,
+                ),
+            )
+
+        # Add participant
+        current_participants.append(target_user.id)
+        conversation.participating_user_ids = current_participants
+        conversation.updated_at = datetime.utcnow()
+
+        await session.commit()
+
+        return AddParticipantResponse(
+            success=True,
+            participant=ParticipantResponse(
+                id=str(target_user.id),
+                name=target_user.name,
+                email=target_user.email,
+                avatar_url=target_user.avatar_url,
+            ),
+        )
+
+
+@router.delete("/conversations/{conversation_id}/participants/{user_id}")
+async def remove_participant(
+    conversation_id: str,
+    user_id: str,
+    auth: AuthContext = Depends(get_current_auth),
+) -> dict[str, bool]:
+    """Remove a participant from a shared conversation."""
+    try:
+        conv_uuid = UUID(conversation_id)
+        target_user_uuid = UUID(user_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid ID format")
+
+    org_id = auth.organization_id_str
+
+    slack_user_ids = await _get_slack_user_ids(auth)
+    async with get_session(organization_id=org_id) as session:
+        result = await session.execute(
+            select(Conversation)
+            .where(Conversation.id == conv_uuid)
+            .where(_build_conversation_access_filter(auth, slack_user_ids))
+        )
+        conversation = result.scalar_one_or_none()
+
+        if not conversation:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+
+        if conversation.scope == "private":
+            raise HTTPException(status_code=400, detail="Cannot remove participants from a private conversation")
+
+        # Cannot remove yourself if you're the only participant
+        current_participants = list(conversation.participating_user_ids or [])
+        if target_user_uuid not in current_participants:
+            return {"success": True}  # Already not a participant
+
+        if len(current_participants) == 1:
+            raise HTTPException(status_code=400, detail="Cannot remove the last participant")
+
+        # Remove participant
+        current_participants.remove(target_user_uuid)
+        conversation.participating_user_ids = current_participants
+        conversation.updated_at = datetime.utcnow()
+
+        await session.commit()
+
+        return {"success": True}
+
+
+class UpdateScopeRequest(BaseModel):
+    """Request model for updating conversation scope."""
+    scope: str  # Only "shared" is allowed (one-way conversion)
+
+
+@router.patch("/conversations/{conversation_id}/scope", response_model=ConversationResponse)
+async def update_scope(
+    conversation_id: str,
+    request: UpdateScopeRequest,
+    auth: AuthContext = Depends(get_current_auth),
+) -> ConversationResponse:
+    """Convert a private conversation to shared (one-way)."""
+    try:
+        conv_uuid = UUID(conversation_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid conversation ID format")
+
+    if request.scope != "shared":
+        raise HTTPException(status_code=400, detail="Can only convert to 'shared' scope")
+
+    org_id = auth.organization_id_str
+
+    slack_user_ids = await _get_slack_user_ids(auth)
+    async with get_session(organization_id=org_id) as session:
+        result = await session.execute(
+            select(Conversation)
+            .where(Conversation.id == conv_uuid)
+            .where(_build_conversation_access_filter(auth, slack_user_ids))
+        )
+        conversation = result.scalar_one_or_none()
+
+        if not conversation:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+
+        if conversation.scope == "shared":
+            # Already shared, just return current state
+            pass
+        else:
+            # Convert to shared
+            conversation.scope = "shared"
+            conversation.updated_at = datetime.utcnow()
+
+        # Capture values before commit
+        conv_id = str(conversation.id)
+        conv_user_id = str(conversation.user_id) if conversation.user_id else None
+        conv_title = conversation.title
+        conv_summary = conversation.summary
+        conv_scope = conversation.scope
+        conv_created_at = conversation.created_at
+        conv_updated_at = conversation.updated_at
+        conv_participant_ids = list(conversation.participating_user_ids or [])
+
+        # Fetch participants
+        participants: list[ParticipantResponse] = []
+        if conv_participant_ids:
+            users_result = await session.execute(
+                select(User).where(User.id.in_(conv_participant_ids))
+            )
+            for user in users_result.scalars().all():
+                participants.append(ParticipantResponse(
+                    id=str(user.id),
+                    name=user.name,
+                    email=user.email,
+                    avatar_url=user.avatar_url,
+                ))
+
+        await session.commit()
+
+        return ConversationResponse(
+            id=conv_id,
+            user_id=conv_user_id,
+            title=conv_title,
+            summary=conv_summary,
+            created_at=f"{conv_created_at.isoformat()}Z" if conv_created_at else "",
+            updated_at=f"{conv_updated_at.isoformat()}Z" if conv_updated_at else "",
+            message_count=0,
+            last_message_preview=None,
+            scope=conv_scope,
+            participants=participants,
+        )
 
 
 # =============================================================================

@@ -69,8 +69,17 @@ class ChatMessage(Base):
         "Conversation", back_populates="messages"
     )
 
-    def to_dict(self) -> dict[str, Any]:
-        """Convert to dictionary for API responses."""
+    def to_dict(
+        self,
+        sender_name: str | None = None,
+        sender_email: str | None = None,
+    ) -> dict[str, Any]:
+        """Convert to dictionary for API responses.
+        
+        Args:
+            sender_name: Optional sender name (populated by API join for user messages)
+            sender_email: Optional sender email (populated by API join for user messages)
+        """
         # Use content_blocks if available and non-empty, otherwise convert legacy format
         blocks = self.content_blocks
         if not blocks:  # Handles None, empty list, etc.
@@ -82,6 +91,9 @@ class ChatMessage(Base):
             "role": self.role,
             "content_blocks": blocks,
             "created_at": f"{self.created_at.isoformat()}Z" if self.created_at else None,
+            "user_id": str(self.user_id) if self.user_id else None,
+            "sender_name": sender_name,
+            "sender_email": sender_email or self.source_user_email,
         }
     
     def _legacy_to_blocks(self) -> list[dict[str, Any]]:

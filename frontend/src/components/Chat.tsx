@@ -17,6 +17,7 @@ import { ArtifactViewer, type FileArtifact } from './ArtifactViewer';
 import { ArtifactTile } from './ArtifactTile';
 import { AppTile } from './apps/AppTile';
 import { AppViewer } from './apps/AppViewer';
+import { Avatar } from './Avatar';
 import { PendingApprovalCard, type ApprovalResult } from './PendingApprovalCard';
 import { getConversation, uploadChatFile, type UploadResponse } from '../api/client';
 import { crossTab } from '../lib/crossTab';
@@ -114,7 +115,16 @@ export function Chat({
   const [pendingMessages, setPendingMessages] = useState<ChatMessage[]>([]);
   const [pendingThinking, setPendingThinking] = useState<boolean>(false);
   const [conversationType, setConversationType] = useState<string | null>(null);
+  const [conversationScope, setConversationScope] = useState<'private' | 'shared'>('shared');
+  const [conversationParticipants, setConversationParticipants] = useState<Array<{
+    id: string;
+    name: string | null;
+    email: string;
+    avatarUrl?: string | null;
+  }>>([]);
   const [isWorkflowPolling, setIsWorkflowPolling] = useState<boolean>(false);
+  const [showInviteModal, setShowInviteModal] = useState(false);
+  const [newConversationScope, setNewConversationScope] = useState<'private' | 'shared'>('shared');
   
   // Attachment state
   const [pendingAttachments, setPendingAttachments] = useState<UploadResponse[]>([]);
@@ -233,10 +243,11 @@ export function Chat({
     setLocalConversationId(chatId ?? null);
     setCurrentArtifact(null);
     setCurrentApp(null);
-    // Reset conversation type when starting a new chat
+    // Reset conversation type and scope when starting a new chat
     if (!chatId) {
       setConversationType(null);
       setIsWorkflowPolling(false);
+      setNewConversationScope('shared'); // Default to shared for new conversations
     }
     // Reset workflow-done flag whenever the conversation changes
     workflowDoneRef.current = false;
@@ -340,13 +351,25 @@ export function Chat({
             role: msg.role as 'user' | 'assistant',
             contentBlocks: msg.content_blocks,
             timestamp: new Date(msg.created_at),
+            userId: msg.user_id ?? undefined,
+            senderName: msg.sender_name ?? undefined,
+            senderEmail: msg.sender_email ?? undefined,
           }));
 
           // Set conversation state
           setConversationMessages(chatId, loadedMessages);
           setConversationTitle(chatId, data.title ?? 'New Chat');
           setConversationType(data.type ?? null);
-          console.log('[Chat] Loaded', loadedMessages.length, 'messages, type:', data.type);
+          setConversationScope((data.scope ?? 'shared') as 'private' | 'shared');
+          setConversationParticipants(
+            (data.participants ?? []).map((p: { id: string; name: string | null; email: string; avatar_url?: string | null }) => ({
+              id: p.id,
+              name: p.name,
+              email: p.email,
+              avatarUrl: p.avatar_url,
+            }))
+          );
+          console.log('[Chat] Loaded', loadedMessages.length, 'messages, type:', data.type, 'scope:', data.scope);
 
           // Scroll to bottom immediately after loading
           setTimeout(() => {
@@ -590,6 +613,8 @@ export function Chat({
       local_time: localIso,
       timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
       ...(attachmentIds.length > 0 ? { attachment_ids: attachmentIds } : {}),
+      // Include scope for new conversations
+      ...(!currentConvId ? { scope: newConversationScope } : {}),
     });
 
     console.log(`[Chat] Sent to WebSocket (${source}) with ${attachmentIds.length} attachment(s)`);
@@ -608,6 +633,7 @@ export function Chat({
     addConversationMessage,
     setConversationThinking,
     pendingAttachments,
+    newConversationScope,
   ]);
 
   // Consume pending chat input (from Search "Ask about" button or pipeline deal click)
@@ -772,6 +798,39 @@ export function Chat({
     }
   }, [messages]);
 
+  // Convert private conversation to shared
+  const handleMakeShared = useCallback(async () => {
+    if (!chatId) return;
+    
+    try {
+      const response = await fetch(`/api/chat/conversations/${chatId}/scope`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ scope: 'shared' }),
+        credentials: 'include',
+      });
+      
+      if (!response.ok) {
+        const data = await response.json();
+        console.error('Failed to make shared:', data.detail);
+        return;
+      }
+      
+      const data = await response.json();
+      setConversationScope('shared');
+      setConversationParticipants(
+        (data.participants ?? []).map((p: { id: string; name: string | null; email: string; avatar_url?: string | null }) => ({
+          id: p.id,
+          name: p.name,
+          email: p.email,
+          avatarUrl: p.avatar_url,
+        }))
+      );
+    } catch (err) {
+      console.error('Failed to make shared:', err);
+    }
+  }, [chatId]);
+
   if (isLoading) {
     return (
       <div className="flex-1 flex items-center justify-center min-h-0 overflow-hidden">
@@ -791,6 +850,16 @@ export function Chat({
           <h1 className="text-lg font-semibold text-surface-100 truncate max-w-[200px] md:max-w-md">
             {chatTitle}
           </h1>
+          {/* Scope badge */}
+          {chatId && (
+            <span className={`px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide rounded ${
+              conversationScope === 'shared' 
+                ? 'bg-primary-500/20 text-primary-400' 
+                : 'bg-surface-700 text-surface-400'
+            }`}>
+              {conversationScope}
+            </span>
+          )}
           {messages.length > 0 && (
             <button
               onClick={() => void handleCopyConversation()}
@@ -809,7 +878,57 @@ export function Chat({
             </button>
           )}
         </div>
-        <ConnectionStatus state={connectionState} />
+        <div className="flex items-center gap-3">
+          {/* Make Shared button for private conversations */}
+          {conversationScope === 'private' && chatId && (
+            <button
+              onClick={() => void handleMakeShared()}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-surface-300 hover:text-surface-100 bg-surface-800 hover:bg-surface-700 rounded-lg transition-colors"
+              title="Convert to shared conversation so teammates can participate"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
+              </svg>
+              Make Shared
+            </button>
+          )}
+          {/* Participant avatars for shared conversations */}
+          {conversationScope === 'shared' && conversationParticipants.length > 0 && (
+            <div className="flex items-center gap-2">
+              <div className="flex -space-x-2">
+                {conversationParticipants.slice(0, 4).map((p, idx) => (
+                  <Avatar
+                    key={p.id}
+                    user={p}
+                    size="sm"
+                    bordered
+                    className="border-2 border-surface-900"
+                    style={{ zIndex: 4 - idx }}
+                  />
+                ))}
+                {conversationParticipants.length > 4 && (
+                  <div
+                    className="w-6 h-6 rounded-full border-2 border-surface-900 bg-surface-700 flex items-center justify-center text-xs font-medium text-surface-300"
+                    title={`${conversationParticipants.length - 4} more participants`}
+                  >
+                    +{conversationParticipants.length - 4}
+                  </div>
+                )}
+              </div>
+              {/* Invite button */}
+              <button
+                onClick={() => setShowInviteModal(true)}
+                className="p-1.5 rounded-md text-surface-400 hover:text-surface-200 hover:bg-surface-800 transition-colors"
+                title="Invite teammate"
+              >
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z" />
+                </svg>
+              </button>
+            </div>
+          )}
+          <ConnectionStatus state={connectionState} />
+        </div>
       </header>
 
       {/* Content area with messages and optional artifact sidebar */}
@@ -861,6 +980,8 @@ export function Chat({
                     result: block.result,
                     status: block.status === 'complete' ? 'complete' : 'running',
                   })}
+                  conversationScope={conversationScope}
+                  currentUserId={userId}
                 />
               ))}
 
@@ -992,24 +1113,58 @@ export function Chat({
               autoFocus={chatId === null}
             />
 
-            {/* Bottom row: attach on left, send/stop on right */}
+            {/* Bottom row: attach on left, scope toggle (for new chats), send/stop on right */}
             <div className="flex items-center justify-between px-2 pb-2">
-              {/* Attach button */}
-              <button
-                type="button"
-                onClick={() => fileInputRef.current?.click()}
-                disabled={isUploading || isThinking}
-                className="flex w-8 h-8 rounded-full text-surface-400 hover:text-surface-200 hover:bg-surface-800 items-center justify-center transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                title="Attach file"
-              >
-                {isUploading ? (
-                  <div className="w-4 h-4 border-2 border-surface-600 border-t-primary-500 rounded-full animate-spin" />
-                ) : (
-                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-                  </svg>
+              <div className="flex items-center gap-2">
+                {/* Attach button */}
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={isUploading || isThinking}
+                  className="flex w-8 h-8 rounded-full text-surface-400 hover:text-surface-200 hover:bg-surface-800 items-center justify-center transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                  title="Attach file"
+                >
+                  {isUploading ? (
+                    <div className="w-4 h-4 border-2 border-surface-600 border-t-primary-500 rounded-full animate-spin" />
+                  ) : (
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                    </svg>
+                  )}
+                </button>
+
+                {/* Scope toggle - only for new conversations */}
+                {!chatId && !localConversationId && (
+                  <button
+                    type="button"
+                    onClick={() => setNewConversationScope(prev => prev === 'shared' ? 'private' : 'shared')}
+                    className={`flex items-center gap-1.5 px-2 py-1 rounded-full text-xs font-medium transition-colors ${
+                      newConversationScope === 'shared'
+                        ? 'bg-primary-500/20 text-primary-400 hover:bg-primary-500/30'
+                        : 'bg-surface-700 text-surface-400 hover:bg-surface-600'
+                    }`}
+                    title={newConversationScope === 'shared' 
+                      ? 'Shared: Teammates can join this conversation' 
+                      : 'Private: Only you can see this conversation'}
+                  >
+                    {newConversationScope === 'shared' ? (
+                      <>
+                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
+                        </svg>
+                        Shared
+                      </>
+                    ) : (
+                      <>
+                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                        </svg>
+                        Private
+                      </>
+                    )}
+                  </button>
                 )}
-              </button>
+              </div>
 
               {/* Send/Stop button */}
               {isThinking ? (
@@ -1045,6 +1200,124 @@ export function Chat({
           onClose={() => setSelectedToolCall(null)} 
         />
       )}
+
+      {/* Invite Participant Modal */}
+      {showInviteModal && chatId && (
+        <InviteParticipantModal
+          conversationId={chatId}
+          onClose={() => setShowInviteModal(false)}
+          onParticipantAdded={(participant) => {
+            setConversationParticipants((prev) => [...prev, participant]);
+            setShowInviteModal(false);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+/**
+ * Modal for inviting participants to a shared conversation
+ */
+function InviteParticipantModal({
+  conversationId,
+  onClose,
+  onParticipantAdded,
+}: {
+  conversationId: string;
+  onClose: () => void;
+  onParticipantAdded: (participant: { id: string; name: string | null; email: string; avatarUrl?: string | null }) => void;
+}): JSX.Element {
+  const [email, setEmail] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleInvite = async (): Promise<void> => {
+    if (!email.trim()) return;
+    
+    setIsLoading(true);
+    setError(null);
+    
+    try {
+      const response = await fetch(`/api/chat/conversations/${conversationId}/participants`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: email.trim() }),
+        credentials: 'include',
+      });
+      
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.detail || 'Failed to add participant');
+      }
+      
+      const data = await response.json();
+      onParticipantAdded({
+        id: data.participant.id,
+        name: data.participant.name,
+        email: data.participant.email,
+        avatarUrl: data.participant.avatar_url,
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to add participant');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+      <div className="bg-surface-900 rounded-xl border border-surface-700 shadow-xl w-full max-w-md mx-4">
+        <div className="flex items-center justify-between px-4 py-3 border-b border-surface-700">
+          <h3 className="text-lg font-semibold text-surface-100">Invite Teammate</h3>
+          <button
+            onClick={onClose}
+            className="p-1 rounded-md text-surface-400 hover:text-surface-200 hover:bg-surface-800 transition-colors"
+          >
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+        <div className="p-4">
+          <label className="block text-sm font-medium text-surface-300 mb-2">
+            Email address
+          </label>
+          <input
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder="teammate@company.com"
+            className="w-full px-3 py-2 bg-surface-800 border border-surface-700 rounded-lg text-surface-100 placeholder-surface-500 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !isLoading) {
+                void handleInvite();
+              }
+            }}
+          />
+          {error && (
+            <p className="mt-2 text-sm text-red-400">{error}</p>
+          )}
+          <p className="mt-2 text-xs text-surface-500">
+            The user must be a member of your organization.
+          </p>
+        </div>
+        <div className="flex justify-end gap-2 px-4 py-3 border-t border-surface-700">
+          <button
+            onClick={onClose}
+            className="px-4 py-2 text-sm font-medium text-surface-300 hover:text-surface-100 hover:bg-surface-800 rounded-lg transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={() => void handleInvite()}
+            disabled={!email.trim() || isLoading}
+            className="px-4 py-2 text-sm font-medium bg-primary-600 text-white rounded-lg hover:bg-primary-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          >
+            {isLoading ? 'Adding...' : 'Add to Conversation'}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -1060,6 +1333,8 @@ function MessageWithBlocks({
   onToolApprove,
   onToolCancel,
   onToolClick,
+  conversationScope,
+  currentUserId,
 }: {
   message: ChatMessage;
   toolApprovals: Map<string, { operationId: string; toolName: string; isProcessing: boolean; result: unknown }>;
@@ -1068,6 +1343,8 @@ function MessageWithBlocks({
   onToolApprove: (operationId: string, options?: Record<string, unknown>) => void;
   onToolCancel: (operationId: string) => void;
   onToolClick: (block: ToolUseBlock) => void;
+  conversationScope: 'private' | 'shared';
+  currentUserId?: string | null;
 }): JSX.Element {
   const blocks = message.contentBlocks ?? [];
   const isUser = message.role === 'user';
@@ -1087,6 +1364,48 @@ function MessageWithBlocks({
       (b): b is AttachmentBlock => b.type === 'attachment',
     );
     
+    // In shared conversations, check if this is from the current user or another participant
+    const isOwnMessage = !message.userId || message.userId === currentUserId;
+    const showSenderInfo = conversationScope === 'shared' && !isOwnMessage;
+    
+    // For other users' messages in shared conversations, show on the left like assistant
+    if (showSenderInfo) {
+      const senderName = message.senderName ?? message.senderEmail ?? 'Unknown';
+      const senderUser = {
+        id: message.userId ?? 'unknown',
+        name: message.senderName,
+        email: message.senderEmail,
+      };
+      
+      return (
+        <div className="flex gap-2 animate-slide-up">
+          {/* Avatar */}
+          <Avatar user={senderUser} size="sm" className="flex-shrink-0 rounded-md" />
+
+          {/* Content */}
+          <div className="flex-1 max-w-[85%]">
+            <div className="text-xs text-surface-400 mb-0.5">{senderName}</div>
+            <div className="inline-block px-3 py-2 rounded-xl rounded-tl-sm bg-surface-700 text-surface-100 text-[13px] leading-relaxed">
+              <div className="whitespace-pre-wrap break-words">{textContent}</div>
+            </div>
+            {attachments.length > 0 && (
+              <div className="flex flex-wrap gap-2 mt-1.5">
+                {attachments.map((att, i) => (
+                  <AttachmentCard key={`att-${i}`} filename={att.filename} mimeType={att.mimeType} size={att.size} />
+                ))}
+              </div>
+            )}
+            <div className="mt-0.5">
+              <span className="text-[10px] text-surface-500">
+                {message.timestamp.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}
+              </span>
+            </div>
+          </div>
+        </div>
+      );
+    }
+    
+    // Own messages (or private conversation) - right-aligned
     return (
       <div className="flex gap-2 flex-row-reverse animate-slide-up">
         {/* Avatar */}

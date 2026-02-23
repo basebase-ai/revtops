@@ -153,6 +153,104 @@ async def broadcast_tool_progress(
 
 
 # =============================================================================
+# Conversation Message Broadcasting (Multi-User)
+# =============================================================================
+
+class ConversationBroadcaster:
+    """
+    Manages WebSocket connections for broadcasting conversation messages.
+    
+    Tracks connections by user_id so we can send messages to specific
+    participants in a shared conversation.
+    """
+    
+    def __init__(self) -> None:
+        # user_id -> set of websockets (a user can have multiple tabs open)
+        self._user_connections: Dict[str, Set[WebSocket]] = defaultdict(set)
+    
+    def register(self, user_id: str, websocket: WebSocket) -> None:
+        """Register a websocket for a user."""
+        self._user_connections[user_id].add(websocket)
+    
+    def unregister(self, user_id: str, websocket: WebSocket) -> None:
+        """Unregister a websocket."""
+        self._user_connections[user_id].discard(websocket)
+        if not self._user_connections[user_id]:
+            del self._user_connections[user_id]
+    
+    async def broadcast_to_users(
+        self,
+        user_ids: list[str],
+        event_type: str,
+        data: dict,
+        exclude_user_id: Optional[str] = None,
+    ) -> None:
+        """Broadcast an event to specific users (excluding sender)."""
+        message = json.dumps({
+            "type": event_type,
+            **data,
+        })
+        
+        dead_connections: list[tuple[str, WebSocket]] = []
+        for user_id in user_ids:
+            if exclude_user_id and user_id == exclude_user_id:
+                continue
+            
+            websockets = self._user_connections.get(user_id, set())
+            for ws in websockets:
+                try:
+                    await ws.send_text(message)
+                except Exception:
+                    dead_connections.append((user_id, ws))
+        
+        # Clean up dead connections
+        for user_id, ws in dead_connections:
+            self._user_connections[user_id].discard(ws)
+
+
+# Global conversation broadcaster instance
+conversation_broadcaster = ConversationBroadcaster()
+
+
+async def broadcast_conversation_message(
+    conversation_id: str,
+    scope: str,
+    participant_user_ids: list[str],
+    message_data: dict,
+    sender_user_id: Optional[str] = None,
+) -> None:
+    """
+    Broadcast a new message to all conversation participants.
+    
+    Only broadcasts for shared conversations. Private conversations
+    don't need broadcast since there's only one user.
+    
+    Args:
+        conversation_id: The conversation UUID
+        scope: "private" or "shared"
+        participant_user_ids: List of user UUIDs who are in the conversation
+        message_data: The message dict (from ChatMessage.to_dict())
+        sender_user_id: The user who sent the message (excluded from broadcast)
+    """
+    if scope == "private":
+        return  # No broadcast needed for private conversations
+    
+    if not participant_user_ids:
+        return
+    
+    await conversation_broadcaster.broadcast_to_users(
+        user_ids=participant_user_ids,
+        event_type="new_message",
+        data={
+            "conversation_id": conversation_id,
+            "message": message_data,
+            "sender_user_id": sender_user_id,
+        },
+        exclude_user_id=sender_user_id,
+    )
+
+
+# =============================================================================
 # Chat WebSocket Handler
 # =============================================================================
 
@@ -476,6 +574,9 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 _stream_workflow_tool_status(websocket, organization_id)
             )
         
+        # Register for conversation message broadcasts (multi-user support)
+        conversation_broadcaster.register(user_id_str, websocket)
+        
         # Send active tasks on connect for client catchup
         active_tasks = await task_manager.get_active_tasks(user_id_str, organization_id)
         await websocket.send_text(json.dumps({
@@ -516,12 +617,19 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     # Generate UUID upfront - SQLAlchemy default isn't populated until flush
                     conv_uuid = uuid4()
                     
+                    # Get scope from request (default to shared)
+                    conv_scope = data.get("scope", "shared")
+                    if conv_scope not in ("private", "shared"):
+                        conv_scope = "shared"
+                    
                     async with get_session(organization_id=organization_id) as session:
                         conversation = Conversation(
                             id=conv_uuid,
                             user_id=UUID(user_id_str), 
                             organization_id=UUID(organization_id) if organization_id else None,
+                            participating_user_ids=[UUID(user_id_str)],
                             title=title,
+                            scope=conv_scope,
                         )
                         session.add(conversation)
                         await session.commit()
@@ -532,6 +640,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                         "type": "conversation_created",
                         "conversation_id": conversation_id,
                         "title": title,
+                        "scope": conv_scope,
                     }))
 
                 if not organization_id:
@@ -736,3 +845,5 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         # Unregister from sync progress broadcasts
         if organization_id:
             sync_broadcaster.unregister(organization_id, websocket)
+        # Unregister from conversation message broadcasts
+        conversation_broadcaster.unregister(user_id_str, websocket)

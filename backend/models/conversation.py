@@ -28,6 +28,9 @@ ConversationType = Literal["agent", "workflow"]
 # Conversation sources
 ConversationSource = Literal["web", "slack", "sms"]
 
+# Conversation scopes
+ConversationScope = Literal["private", "shared"]
+
 
 class Conversation(Base):
     """Conversation model for grouping chat messages."""
@@ -61,6 +64,11 @@ class Conversation(Base):
     # All known RevTops users who have participated in this conversation.
     participating_user_ids: Mapped[list[uuid.UUID]] = mapped_column(
         ARRAY(UUID(as_uuid=True)), nullable=False, default=list
+    )
+    
+    # Scope: 'private' for single-user DM, 'shared' for multi-user (default)
+    scope: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="shared", index=True
     )
     
     # Conversation type: 'agent' for interactive, 'workflow' for automated
@@ -130,6 +138,7 @@ class Conversation(Base):
             "user_id": str(self.user_id) if self.user_id else None,
             "type": self.type,
             "source": self.source,
+            "scope": self.scope,
             "title": self.title,
             "summary": self.summary,
             "created_at": f"{self.created_at.isoformat()}Z" if self.created_at else None,

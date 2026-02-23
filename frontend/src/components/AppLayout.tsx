@@ -49,7 +49,7 @@ import { AppsGallery } from './apps/AppsGallery';
 import { AppFullView } from './apps/AppFullView';
 import { OrganizationPanel } from './OrganizationPanel';
 import { ProfilePanel } from './ProfilePanel';
-import { useAppStore, useMasquerade, useIntegrations, type ActiveTask, type ToolCallData } from '../store';
+import { useAppStore, useMasquerade, useIntegrations, type ActiveTask, type ToolCallData, type ChatMessage, type ContentBlock } from '../store';
 import { useTeamMembers, useWebSocket } from '../hooks';
 import { apiRequest } from '../lib/api';
 
@@ -130,7 +130,22 @@ interface WsError {
   code?: string;
 }
 
-type WsMessage = WsActiveTasks | WsTaskStarted | WsTaskChunk | WsTaskComplete | WsConversationCreated | WsCatchup | WsCrmApprovalResult | WsToolApprovalResult | WsToolProgress | WsError;
+interface WsNewMessage {
+  type: 'new_message';
+  conversation_id: string;
+  message: {
+    id: string;
+    role: 'user' | 'assistant';
+    content_blocks: Array<{ type: string; text?: string; [key: string]: unknown }>;
+    created_at: string;
+    user_id?: string | null;
+    sender_name?: string | null;
+    sender_email?: string | null;
+  };
+  sender_user_id: string;
+}
+
+type WsMessage = WsActiveTasks | WsTaskStarted | WsTaskChunk | WsTaskComplete | WsConversationCreated | WsCatchup | WsCrmApprovalResult | WsToolApprovalResult | WsToolProgress | WsError | WsNewMessage;
 
 // Props
 interface AppLayoutProps {
@@ -378,6 +393,7 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
       'tool_progress',
       'crm_approval_result',
       'tool_approval_result',
+      'new_message',
     ].includes(type);
   }, []);
 
@@ -799,6 +815,34 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
               result,
               status: status === 'complete' ? 'complete' : 'running',
             });
+          }
+          break;
+        }
+
+        case 'new_message': {
+          // New message from another participant in a shared conversation
+          const { conversation_id, message, sender_user_id } = parsed;
+          const currentUserId = useAppStore.getState().user?.id;
+          
+          // Skip if this is our own message (already added optimistically)
+          if (sender_user_id === currentUserId) {
+            console.log('[AppLayout] Skipping own message broadcast');
+            break;
+          }
+          
+          if (conversation_id && message) {
+            console.log('[AppLayout] New message from participant:', sender_user_id, 'in conversation:', conversation_id);
+            // Convert API message format to store format
+            const chatMessage: ChatMessage = {
+              id: message.id,
+              role: message.role as 'user' | 'assistant',
+              contentBlocks: message.content_blocks as ContentBlock[],
+              timestamp: new Date(message.created_at),
+              userId: message.user_id ?? undefined,
+              senderName: message.sender_name ?? undefined,
+              senderEmail: message.sender_email ?? undefined,
+            };
+            addConversationMessage(conversation_id, chatMessage);
           }
           break;
         }

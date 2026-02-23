@@ -13,6 +13,7 @@ Responsibilities:
 import asyncio
 import json
 import logging
+import re
 from datetime import UTC, datetime
 from typing import Any, AsyncGenerator
 from uuid import UUID, uuid4
@@ -1969,21 +1970,23 @@ WHERE scheduled_start >= '2026-01-27'::date AND scheduled_start < '2026-01-28'::
             blocks.extend(attachment_meta)
         blocks.append({"type": "text", "text": user_msg})
 
+        message_id = uuid4()
         async with get_session(organization_id=self.organization_id) as session:
-            session.add(
-                ChatMessage(
-                    conversation_id=conv_uuid,
-                    user_id=user_uuid,
-                    organization_id=UUID(self.organization_id) if self.organization_id else None,
-                    role="user",
-                    content_blocks=blocks,
-                    source_user_id=self.source_user_id,
-                    source_user_email=self.source_user_email,
-
-                )
+            message = ChatMessage(
+                id=message_id,
+                conversation_id=conv_uuid,
+                user_id=user_uuid,
+                organization_id=UUID(self.organization_id) if self.organization_id else None,
+                role="user",
+                content_blocks=blocks,
+                source_user_id=self.source_user_id,
+                source_user_email=self.source_user_email,
             )
+            session.add(message)
 
-            # Update conversation's cached fields
+            # Update conversation's cached fields and get scope/participants for broadcast
+            conv_scope: str | None = None
+            conv_participants: list[str] = []
             if conv_uuid:
                 await session.execute(
                     update(Conversation)
@@ -1994,9 +1997,32 @@ WHERE scheduled_start >= '2026-01-27'::date AND scheduled_start < '2026-01-28'::
                         last_message_preview=user_msg[:200] if user_msg else None,
                     )
                 )
+                # Fetch conversation for broadcast info
+                conv_result = await session.execute(
+                    select(Conversation.scope, Conversation.participating_user_ids)
+                    .where(Conversation.id == conv_uuid)
+                )
+                conv_row = conv_result.one_or_none()
+                if conv_row:
+                    conv_scope = conv_row[0]
+                    conv_participants = [str(uid) for uid in (conv_row[1] or [])]
 
             await session.commit()
             logger.info("[Orchestrator] Saved user message to conversation %s", self.conversation_id)
+
+            # Broadcast to other participants in shared conversations
+            if conv_scope == "shared" and conv_participants:
+                from api.websockets import broadcast_conversation_message
+                await broadcast_conversation_message(
+                    conversation_id=self.conversation_id or "",
+                    scope=conv_scope,
+                    participant_user_ids=conv_participants,
+                    message_data=message.to_dict(
+                        sender_name=self.user_name,
+                        sender_email=self.user_email or self.source_user_email,
+                    ),
+                    sender_user_id=self.user_id,
+                )
 
     async def _save_assistant_message(self, assistant_blocks: list[dict[str, Any]]) -> None:
         """Save or update assistant message in database."""
@@ -2099,6 +2125,9 @@ WHERE scheduled_start >= '2026-01-27'::date AND scheduled_start < '2026-01-28'::
         """Generate a title from the first message."""
         # Clean and truncate the message
         cleaned = message.strip().replace("\n", " ")
+        
+        # Strip Slack user mentions like <@U09HDFN8DO8>
+        cleaned = re.sub(r"<@[A-Z0-9]+>\s*", "", cleaned).strip()
 
         # If it's a question, use it as-is (truncated)
         if cleaned.endswith("?") and len(cleaned) <= 50:
