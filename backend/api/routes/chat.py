@@ -59,19 +59,36 @@ def _build_conversation_access_filter(
     auth: AuthContext,
     slack_user_ids: set[str],
 ):
-    base_filter = or_(
+    # User's own conversations (private or shared)
+    user_filter = or_(
         Conversation.user_id == auth.user_id,
         Conversation.participating_user_ids.any(auth.user_id),
     )
-    if not slack_user_ids:
-        return base_filter
-    slack_filter = and_(
-        Conversation.source == "slack",
-        Conversation.source_user_id.in_(slack_user_ids),
-    )
-    if auth.organization_id:
-        slack_filter = and_(slack_filter, Conversation.organization_id == auth.organization_id)
-    return or_(base_filter, slack_filter)
+    
+    # Shared conversations are visible to everyone in the org
+    shared_org_filter = and_(
+        Conversation.scope == "shared",
+        Conversation.organization_id == auth.organization_id,
+    ) if auth.organization_id else None
+    
+    # Slack conversations where user is the source
+    slack_filter = None
+    if slack_user_ids:
+        slack_filter = and_(
+            Conversation.source == "slack",
+            Conversation.source_user_id.in_(slack_user_ids),
+        )
+        if auth.organization_id:
+            slack_filter = and_(slack_filter, Conversation.organization_id == auth.organization_id)
+    
+    # Combine all filters
+    filters = [user_filter]
+    if shared_org_filter is not None:
+        filters.append(shared_org_filter)
+    if slack_filter is not None:
+        filters.append(slack_filter)
+    
+    return or_(*filters)
 
 
 # =============================================================================
@@ -127,6 +144,7 @@ class ChatMessageResponse(BaseModel):
     user_id: Optional[str] = None
     sender_name: Optional[str] = None
     sender_email: Optional[str] = None
+    sender_avatar_url: Optional[str] = None
 
 
 class ConversationDetailResponse(BaseModel):
@@ -172,9 +190,14 @@ class SendMessageResponse(BaseModel):
 async def list_conversations(
     auth: AuthContext = Depends(get_current_auth),
     limit: int = 50,
-    offset: int = 0
+    offset: int = 0,
+    scope: Optional[str] = None,
 ) -> ConversationListResponse:
-    """List conversations for the authenticated user, ordered by most recent."""
+    """List conversations for the authenticated user, ordered by most recent.
+    
+    Args:
+        scope: Optional filter - "shared" or "private". If not provided, returns all.
+    """
     org_id = auth.organization_id_str
     slack_user_ids = await _get_slack_user_ids(auth)
 
@@ -186,6 +209,10 @@ async def list_conversations(
             .where(Conversation.type != "workflow")
         )
         query = query.where(_build_conversation_access_filter(auth, slack_user_ids))
+        
+        # Optional scope filter
+        if scope in ("shared", "private"):
+            query = query.where(Conversation.scope == scope)
         if slack_user_ids:
             logger.info(
                 "[chat] Listing conversations for user=%s with Slack IDs %s",
@@ -360,7 +387,7 @@ async def get_conversation(
 
         # Get messages with sender info via left join
         msg_result = await session.execute(
-            select(ChatMessage, User.name, User.email)
+            select(ChatMessage, User.name, User.email, User.avatar_url)
             .outerjoin(User, ChatMessage.user_id == User.id)
             .where(ChatMessage.conversation_id == conv_uuid)
             .order_by(ChatMessage.created_at.asc())
@@ -392,8 +419,8 @@ async def get_conversation(
             scope=conversation.scope,
             participants=participants,
             messages=[
-                ChatMessageResponse(**msg.to_dict(sender_name=sender_name, sender_email=sender_email))
-                for msg, sender_name, sender_email in message_rows
+                ChatMessageResponse(**msg.to_dict(sender_name=sender_name, sender_email=sender_email, sender_avatar_url=sender_avatar_url))
+                for msg, sender_name, sender_email, sender_avatar_url in message_rows
             ],
         )
 

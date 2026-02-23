@@ -354,6 +354,7 @@ export function Chat({
             userId: msg.user_id ?? undefined,
             senderName: msg.sender_name ?? undefined,
             senderEmail: msg.sender_email ?? undefined,
+            senderAvatarUrl: msg.sender_avatar_url ?? undefined,
           }));
 
           // Set conversation state
@@ -1375,6 +1376,7 @@ function MessageWithBlocks({
         id: message.userId ?? 'unknown',
         name: message.senderName,
         email: message.senderEmail,
+        avatarUrl: message.senderAvatarUrl,
       };
       
       return (

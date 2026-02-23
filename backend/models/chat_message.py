@@ -73,12 +73,14 @@ class ChatMessage(Base):
         self,
         sender_name: str | None = None,
         sender_email: str | None = None,
+        sender_avatar_url: str | None = None,
     ) -> dict[str, Any]:
         """Convert to dictionary for API responses.
         
         Args:
             sender_name: Optional sender name (populated by API join for user messages)
             sender_email: Optional sender email (populated by API join for user messages)
+            sender_avatar_url: Optional sender avatar URL (populated by API join for user messages)
         """
         # Use content_blocks if available and non-empty, otherwise convert legacy format
         blocks = self.content_blocks
@@ -94,6 +96,7 @@ class ChatMessage(Base):
             "user_id": str(self.user_id) if self.user_id else None,
             "sender_name": sender_name,
             "sender_email": sender_email or self.source_user_email,
+            "sender_avatar_url": sender_avatar_url,
         }
     
     def _legacy_to_blocks(self) -> list[dict[str, Any]]:
