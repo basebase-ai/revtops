@@ -729,25 +729,24 @@ export const useAppStore = create<AppState>()(
             total: number;
           };
 
-          // Fetch shared and private conversations in parallel (20 each max)
-          const [sharedResult, privateResult] = await Promise.all([
-            apiRequest<ConversationApiResponse>(`/chat/conversations?limit=20&scope=shared`),
-            apiRequest<ConversationApiResponse>(`/chat/conversations?limit=20&scope=private`),
-          ]);
+          const requestStart = performance.now();
+          // Fetch all visible conversations in a single call to reduce sidebar load latency.
+          const { data, error } = await apiRequest<ConversationApiResponse>(
+            `/chat/conversations?limit=40`,
+          );
 
-          if (sharedResult.error && privateResult.error) {
-            console.error("[Store] Failed to fetch conversations:", sharedResult.error, privateResult.error);
+          if (error) {
+            console.error("[Store] Failed to fetch conversations:", error);
             return;
           }
-
-          const sharedConvs = sharedResult.data?.conversations ?? [];
-          const privateConvs = privateResult.data?.conversations ?? [];
+          const conversations = data?.conversations ?? [];
           
           console.log(
-            "[Store] Conversations fetched - shared:",
-            sharedConvs.length,
-            "private:",
-            privateConvs.length,
+            "[Store] Conversations fetched:",
+            conversations.length,
+            "in",
+            Math.round(performance.now() - requestStart),
+            "ms",
           );
 
           const mapConversation = (conv: ConversationApiResponse["conversations"][0]): ChatSummary => ({
@@ -766,11 +765,10 @@ export const useAppStore = create<AppState>()(
             })),
           });
 
-          // Combine and sort by lastMessageAt (most recent first)
-          const recentChats: ChatSummary[] = [
-            ...sharedConvs.map(mapConversation),
-            ...privateConvs.map(mapConversation),
-          ].sort((a, b) => b.lastMessageAt.getTime() - a.lastMessageAt.getTime());
+          // Ensure most-recent-first ordering.
+          const recentChats: ChatSummary[] = conversations
+            .map(mapConversation)
+            .sort((a, b) => b.lastMessageAt.getTime() - a.lastMessageAt.getTime());
 
           set({ recentChats });
         } catch (error) {
