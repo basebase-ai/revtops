@@ -8,6 +8,10 @@ Instead of switching between a dozen tabs, employees ask **Penny** (our AI agent
 
 ![Revtops System Architecture](docs/architecture.png)
 
+## Connector Documentation
+
+- [Zoom Connector Knowledge Base](docs/zoom_connector_kb.md)
+
 ### What Can Revtops Do?
 
 - **Answer questions across all your data** — "What deals closed this quarter?", "Show me all emails with Acme Corp", "What's on my calendar tomorrow?"

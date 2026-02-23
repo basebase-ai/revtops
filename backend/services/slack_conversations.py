@@ -810,6 +810,14 @@ async def _upsert_slack_user_mapping(
                 )
                 existing_mapping = existing_result.scalar_one_or_none()
                 if existing_mapping:
+                    if existing_mapping.match_source == "manual_unlink":
+                        logger.info(
+                            "[slack_conversations] Skipping promotion for manually unlinked Slack mapping org=%s slack_user=%s user=%s",
+                            organization_id,
+                            normalized_slack_user_id,
+                            user_id,
+                        )
+                        return
                     existing_mapping.user_id = user_id
                     existing_mapping.revtops_email = resolved_revtops_email
                     existing_mapping.external_email = slack_email
@@ -870,6 +878,13 @@ async def _upsert_slack_user_mapping(
             if any_existing:
                 # A row exists — only update if it's still unmapped
                 if any_existing.user_id is None:
+                    if any_existing.match_source == "manual_unlink":
+                        logger.info(
+                            "[slack_conversations] Preserving manually unlinked Slack mapping org=%s slack_user=%s",
+                            organization_id,
+                            normalized_slack_user_id,
+                        )
+                        return
                     any_existing.external_email = slack_email
                     any_existing.source = "slack"
                     any_existing.match_source = match_source
