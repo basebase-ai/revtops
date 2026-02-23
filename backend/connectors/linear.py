@@ -895,24 +895,84 @@ class LinearConnector(BaseConnector):
                 return state
         return None
 
-    async def resolve_assignee_by_name(self, name: str) -> dict[str, Any] | None:
-        """Find a user by display name (case-insensitive)."""
-        data: dict[str, Any] = await self._gql("""
-        query {
-            users {
+    async def list_users(self) -> list[dict[str, Any]]:
+        """List users in the Linear workspace (paginated)."""
+        query: str = """
+        query Users($after: String) {
+            users(first: 100, after: $after) {
                 nodes {
                     id
                     name
                     email
                 }
+                pageInfo {
+                    hasNextPage
+                    endCursor
+                }
             }
         }
-        """)
-        users: list[dict[str, Any]] = data.get("users", {}).get("nodes", [])
-        name_lower: str = name.lower().strip()
+        """
+        users: list[dict[str, Any]] = await self._gql_paginated(query, ["users"])
+        logger.debug("Loaded %d Linear users for assignee resolution", len(users))
+        return users
+
+    async def resolve_assignee_by_name(self, name: str) -> dict[str, Any] | None:
+        """Find a Linear user by email or display name.
+
+        Historically this accepted only exact display-name matches, which was brittle
+        and caused assignment failures for common inputs (email, partial name).
+        """
+        needle: str = name.strip()
+        if not needle:
+            return None
+
+        users: list[dict[str, Any]] = await self.list_users()
+        needle_lower: str = needle.lower()
+
+        # 1) Exact email match (most stable identifier)
         for user in users:
-            if user["name"].lower() == name_lower:
+            email: str = (user.get("email") or "").strip().lower()
+            if email and email == needle_lower:
+                logger.info("Resolved Linear assignee '%s' by exact email", name)
                 return user
+
+        # 2) Exact display-name match
+        for user in users:
+            user_name: str = (user.get("name") or "").strip().lower()
+            if user_name and user_name == needle_lower:
+                logger.info("Resolved Linear assignee '%s' by exact name", name)
+                return user
+
+        # 3) Unique prefix match (e.g. "alex" -> "Alex Kim")
+        prefix_matches: list[dict[str, Any]] = [
+            user
+            for user in users
+            if (user.get("name") or "").strip().lower().startswith(needle_lower)
+        ]
+        if len(prefix_matches) == 1:
+            logger.info("Resolved Linear assignee '%s' by unique name prefix", name)
+            return prefix_matches[0]
+
+        # 4) Unique contains match as a final fallback
+        contains_matches: list[dict[str, Any]] = [
+            user
+            for user in users
+            if needle_lower in (user.get("name") or "").strip().lower()
+        ]
+        if len(contains_matches) == 1:
+            logger.info("Resolved Linear assignee '%s' by unique contains match", name)
+            return contains_matches[0]
+
+        if len(prefix_matches) > 1 or len(contains_matches) > 1:
+            logger.warning(
+                "Linear assignee lookup for '%s' is ambiguous (prefix=%d contains=%d)",
+                name,
+                len(prefix_matches),
+                len(contains_matches),
+            )
+        else:
+            logger.warning("Linear assignee '%s' not found", name)
+
         return None
 
     async def resolve_labels_by_names(self, label_names: list[str]) -> list[str]:
