@@ -496,15 +496,51 @@ class LinearConnector(BaseConnector):
     async def create_issue(
         self,
         *,
-        team_id: str,
+        team_key: str,
         title: str,
         description: str | None = None,
         priority: int | None = None,
-        assignee_id: str | None = None,
-        project_id: str | None = None,
-        label_ids: list[str] | None = None,
+        assignee_name: str | None = None,
+        project_name: str | None = None,
+        labels: list[str] | None = None,
     ) -> dict[str, Any]:
-        """Create an issue in Linear via the issueCreate mutation."""
+        """Create an issue in Linear via the issueCreate mutation.
+
+        Accepts human-friendly parameters (team_key, assignee_name, etc.)
+        and resolves them to Linear IDs internally.
+        """
+        # Resolve team_key → team_id (required)
+        team: dict[str, Any] | None = await self.resolve_team_by_key(team_key)
+        if not team:
+            raise ValueError(f"Team with key '{team_key}' not found")
+        team_id: str = team["id"]
+
+        # Resolve optional assignee_name → assignee_id
+        assignee_id: str | None = None
+        if assignee_name:
+            assignee: dict[str, Any] | None = await self.resolve_assignee_by_name(assignee_name)
+            if assignee:
+                assignee_id = assignee["id"]
+            else:
+                logger.warning("Assignee '%s' not found, creating issue unassigned", assignee_name)
+
+        # Resolve optional project_name → project_id
+        project_id: str | None = None
+        if project_name:
+            project: dict[str, Any] | None = await self.resolve_project_by_name(project_name)
+            if project:
+                project_id = project["id"]
+            else:
+                logger.warning("Project '%s' not found, creating issue without project", project_name)
+
+        # Resolve optional label names → label_ids
+        label_ids: list[str] | None = None
+        if labels:
+            label_ids = await self.resolve_labels_by_names(labels)
+            if not label_ids:
+                logger.warning("No matching labels found for %s", labels)
+                label_ids = None
+
         variables: dict[str, Any] = {
             "teamId": team_id,
             "title": title,
@@ -570,14 +606,43 @@ class LinearConnector(BaseConnector):
     async def update_issue(
         self,
         *,
-        issue_id: str,
+        issue_identifier: str,
         title: str | None = None,
         description: str | None = None,
-        state_id: str | None = None,
+        state_name: str | None = None,
         priority: int | None = None,
-        assignee_id: str | None = None,
+        assignee_name: str | None = None,
     ) -> dict[str, Any]:
-        """Update an existing issue in Linear via the issueUpdate mutation."""
+        """Update an existing issue in Linear via the issueUpdate mutation.
+
+        Accepts human-friendly parameters (issue_identifier, state_name, assignee_name)
+        and resolves them to Linear IDs internally.
+        """
+        # Resolve issue_identifier → issue_id
+        issue_data: dict[str, Any] | None = await self.resolve_issue_by_identifier(issue_identifier)
+        if not issue_data:
+            raise ValueError(f"Issue '{issue_identifier}' not found")
+        issue_id: str = issue_data["id"]
+        team_id: str = issue_data["team"]["id"]
+
+        # Resolve optional state_name → state_id
+        state_id: str | None = None
+        if state_name:
+            state: dict[str, Any] | None = await self.resolve_state_by_name(team_id, state_name)
+            if state:
+                state_id = state["id"]
+            else:
+                logger.warning("State '%s' not found for team, skipping state update", state_name)
+
+        # Resolve optional assignee_name → assignee_id
+        assignee_id: str | None = None
+        if assignee_name:
+            assignee: dict[str, Any] | None = await self.resolve_assignee_by_name(assignee_name)
+            if assignee:
+                assignee_id = assignee["id"]
+            else:
+                logger.warning("Assignee '%s' not found, skipping assignee update", assignee_name)
+
         input_fields: dict[str, Any] = {}
         if title is not None:
             input_fields["title"] = title
@@ -849,6 +914,40 @@ class LinearConnector(BaseConnector):
             if user["name"].lower() == name_lower:
                 return user
         return None
+
+    async def resolve_labels_by_names(self, label_names: list[str]) -> list[str]:
+        """Resolve label names to Linear label IDs."""
+        if not label_names:
+            return []
+        data: dict[str, Any] = await self._gql("""
+        query {
+            issueLabels {
+                nodes {
+                    id
+                    name
+                }
+            }
+        }
+        """)
+        all_labels: list[dict[str, Any]] = data.get("issueLabels", {}).get("nodes", [])
+        label_map: dict[str, str] = {lbl["name"].lower(): lbl["id"] for lbl in all_labels}
+        return [label_map[name.lower()] for name in label_names if name.lower() in label_map]
+
+    async def resolve_issue_by_identifier(self, identifier: str) -> dict[str, Any] | None:
+        """Find an issue by its identifier (e.g. 'ENG-123')."""
+        data: dict[str, Any] = await self._gql(
+            """
+            query IssueByIdentifier($identifier: String!) {
+                issue(id: $identifier) {
+                    id
+                    identifier
+                    team { id key }
+                }
+            }
+            """,
+            {"identifier": identifier},
+        )
+        return data.get("issue")
 
     # ── LISTEN: Inbound webhooks (issue done → workflow triggers) ───────
 

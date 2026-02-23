@@ -40,6 +40,7 @@ export interface ChatMessage {
   user_id?: string | null;
   sender_name?: string | null;
   sender_email?: string | null;
+  sender_avatar_url?: string | null;
 }
 
 export interface ConversationSummary {

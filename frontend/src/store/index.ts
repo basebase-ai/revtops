@@ -173,6 +173,7 @@ export interface ChatMessage {
   userId?: string;
   senderName?: string | null;
   senderEmail?: string | null;
+  senderAvatarUrl?: string | null;
 }
 
 export type View =
@@ -708,8 +709,8 @@ export const useAppStore = create<AppState>()(
 
         try {
           console.log("[Store] Fetching conversations for user:", user.id);
-          // Use apiRequest for authenticated requests (JWT in Authorization header)
-          const { data, error } = await apiRequest<{
+          
+          type ConversationApiResponse = {
             conversations: Array<{
               id: string;
               title: string | null;
@@ -726,35 +727,30 @@ export const useAppStore = create<AppState>()(
               }>;
             }>;
             total: number;
-          }>(`/chat/conversations?limit=20`);
+          };
 
-          if (error || !data) {
-            console.error("[Store] Failed to fetch conversations:", error);
+          // Fetch shared and private conversations in parallel (20 each max)
+          const [sharedResult, privateResult] = await Promise.all([
+            apiRequest<ConversationApiResponse>(`/chat/conversations?limit=20&scope=shared`),
+            apiRequest<ConversationApiResponse>(`/chat/conversations?limit=20&scope=private`),
+          ]);
+
+          if (sharedResult.error && privateResult.error) {
+            console.error("[Store] Failed to fetch conversations:", sharedResult.error, privateResult.error);
             return;
           }
 
+          const sharedConvs = sharedResult.data?.conversations ?? [];
+          const privateConvs = privateResult.data?.conversations ?? [];
+          
           console.log(
-            "[Store] Conversations response:",
-            data.conversations.length,
-            "conversations",
+            "[Store] Conversations fetched - shared:",
+            sharedConvs.length,
+            "private:",
+            privateConvs.length,
           );
-          const slackPreviewGaps = data.conversations.filter(
-            (conv) =>
-              (conv.title ?? "").toLowerCase().includes("slack") &&
-              !conv.last_message_preview,
-          );
-          if (slackPreviewGaps.length > 0) {
-            console.debug(
-              "[Store] Slack conversations missing previews:",
-              slackPreviewGaps.map((conv) => ({
-                id: conv.id,
-                title: conv.title,
-                updated_at: conv.updated_at,
-              })),
-            );
-          }
 
-          const recentChats: ChatSummary[] = data.conversations.map((conv) => ({
+          const mapConversation = (conv: ConversationApiResponse["conversations"][0]): ChatSummary => ({
             id: conv.id,
             title: conv.title ?? "New Chat",
             lastMessageAt: new Date(conv.updated_at),
@@ -762,13 +758,19 @@ export const useAppStore = create<AppState>()(
             type: (conv.type ?? "agent") as "agent" | "workflow",
             workflowId: conv.workflow_id,
             scope: (conv.scope ?? "shared") as "private" | "shared",
-            participants: conv.participants?.map((p: { id: string; name: string | null; email: string; avatar_url?: string | null }) => ({
+            participants: conv.participants?.map((p) => ({
               id: p.id,
               name: p.name,
               email: p.email,
               avatarUrl: p.avatar_url,
             })),
-          }));
+          });
+
+          // Combine and sort by lastMessageAt (most recent first)
+          const recentChats: ChatSummary[] = [
+            ...sharedConvs.map(mapConversation),
+            ...privateConvs.map(mapConversation),
+          ].sort((a, b) => b.lastMessageAt.getTime() - a.lastMessageAt.getTime());
 
           set({ recentChats });
         } catch (error) {

@@ -911,12 +911,13 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
     organization?.id ?? '',
   );
 
-  // Fetch conversations on mount
+  // Fetch conversations on mount (only once per user)
+  const userId = user?.id;
   useEffect(() => {
-    if (user) {
+    if (userId) {
       void fetchConversations();
     }
-  }, [user, fetchConversations]);
+  }, [userId, fetchConversations]);
 
   // Listen for navigation events from child components (e.g., Home banner)
   useEffect(() => {
@@ -1044,7 +1045,7 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
           connectedSourcesCount={connectedIntegrationsCount}
           workflowCount={workflowCount}
           pendingChangesCount={pendingChangesCount}
-          recentChats={recentChats.slice(0, 10)}
+          recentChats={recentChats}
           onSelectChat={handleSelectChat}
           onDeleteChat={handleDeleteChat}
           currentChatId={currentChatId}
