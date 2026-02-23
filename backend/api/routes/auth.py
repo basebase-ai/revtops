@@ -16,6 +16,7 @@ Endpoints:
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import httpx
 import json
 import logging
 from typing import Any, Optional
@@ -156,6 +157,68 @@ def _log_slack_nango_connection(connection: dict[str, Any], connection_id: str) 
 # =============================================================================
 # Response Models
 # =============================================================================
+
+
+class PasswordResetRequest(BaseModel):
+    """Request model for initiating password reset emails."""
+
+    email: str
+
+
+class PasswordResetResponse(BaseModel):
+    """Response model for password reset requests."""
+
+    success: bool
+    message: str
+
+
+@router.post("/password-reset/request", response_model=PasswordResetResponse)
+async def request_password_reset(request: PasswordResetRequest) -> PasswordResetResponse:
+    """Request a password reset email through Supabase Auth with server-side logging."""
+    email: str = request.email.strip().lower()
+    if not email or "@" not in email:
+        raise HTTPException(status_code=400, detail="Invalid email address")
+
+    if not settings.SUPABASE_URL or not settings.SUPABASE_ANON_KEY:
+        logger.error("Password reset unavailable due to missing Supabase config")
+        raise HTTPException(status_code=500, detail="Password reset is temporarily unavailable")
+
+    redirect_to = f"{settings.FRONTEND_URL.rstrip('/')}/auth"
+    payload = {"email": email, "redirect_to": redirect_to}
+    headers = {
+        "apikey": settings.SUPABASE_ANON_KEY,
+        "Authorization": f"Bearer {settings.SUPABASE_ANON_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(
+                f"{settings.SUPABASE_URL.rstrip('/')}/auth/v1/recover",
+                headers=headers,
+                json=payload,
+            )
+
+        if not (200 <= response.status_code < 300):
+            logger.error(
+                "Supabase password reset request failed email=%s status=%s body=%s",
+                email,
+                response.status_code,
+                response.text,
+            )
+            raise HTTPException(status_code=502, detail="Failed to send password reset email")
+
+        logger.info("Password reset email requested successfully for email=%s", email)
+        return PasswordResetResponse(
+            success=True,
+            message="If your account exists, check your email for a password reset link.",
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Unexpected password reset failure for email=%s", email)
+        raise HTTPException(status_code=500, detail="Failed to request password reset") from exc
+
 
 
 class UserResponse(BaseModel):

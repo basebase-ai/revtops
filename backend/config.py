@@ -88,6 +88,8 @@ class Settings(BaseSettings):
     SUPABASE_URL: Optional[str] = None
     # JWT Secret: Legacy HS256 secret (optional if using ES256)
     SUPABASE_JWT_SECRET: Optional[str] = None
+    # Public anon key for browser-safe auth operations (password recovery, etc.)
+    SUPABASE_ANON_KEY: Optional[str] = None
     
     # Admin
     ADMIN_KEY: Optional[str] = None  # Simple admin auth for MVP
@@ -157,6 +159,7 @@ EXPECTED_ENV_VARS: tuple[str, ...] = (
     "FRONTEND_URL",
     "SUPABASE_URL",
     "SUPABASE_JWT_SECRET",
+    "SUPABASE_ANON_KEY",
     "ADMIN_KEY",
     "RESEND_API_KEY",
     "EMAIL_FROM",

@@ -12,6 +12,11 @@ import httpx
 from config import settings
 
 
+def _resend_request_succeeded(status_code: int) -> bool:
+    """Return whether a Resend API response should be considered successful."""
+    return 200 <= status_code < 300
+
+
 async def send_email(
     to: str | list[str],
     subject: str,
@@ -76,7 +81,7 @@ async def send_email(
                 timeout=10.0,
             )
             
-            if response.status_code == 200:
+            if _resend_request_succeeded(response.status_code):
                 print(f"[Email] Sent to {to_list}")
                 return True
             else:
@@ -180,7 +185,7 @@ Needs: {needs or "—"}
                 timeout=10.0,
             )
             
-            if response.status_code == 200:
+            if _resend_request_succeeded(response.status_code):
                 print(f"[Email] Waitlist notification sent for {applicant_email}")
                 return True
             else:
@@ -268,7 +273,7 @@ We'll be in touch soon with next steps.
                 timeout=10.0,
             )
             
-            if response.status_code == 200:
+            if _resend_request_succeeded(response.status_code):
                 print(f"[Email] Waitlist confirmation sent to {to_email}")
                 return True
             else:
@@ -363,7 +368,7 @@ Questions? Just reply to this email.
                 timeout=10.0,
             )
             
-            if response.status_code == 200:
+            if _resend_request_succeeded(response.status_code):
                 print(f"[Email] Invitation sent to {to_email}")
                 return True
             else:
@@ -396,43 +401,68 @@ async def send_org_invitation_email(
         return False
 
     inviter_line: str = (
-        f"<p>{invited_by_name} has invited you to join <strong>{org_name}</strong> on Revtops.</p>"
+        f"{invited_by_name} has invited you to join <strong>{org_name}</strong> on Revtops."
         if invited_by_name
-        else f"<p>You've been invited to join <strong>{org_name}</strong> on Revtops.</p>"
+        else f"You've been invited to join <strong>{org_name}</strong> on Revtops."
     )
 
     html_content: str = f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset="utf-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    </head>
-    <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
-        <div style="text-align: center; margin-bottom: 30px;">
-            <div style="display: inline-block; width: 48px; height: 48px; background: linear-gradient(135deg, #6366f1, #4f46e5); border-radius: 12px; margin-bottom: 16px;"></div>
-            <h1 style="margin: 0; font-size: 24px; color: #111;">You're Invited!</h1>
-        </div>
-
-        {inviter_line}
-
-        <p>Revtops connects your CRM, Slack, email, and calendar so you can chat with your revenue data and build automations that save your team hours every week.</p>
-
-        <div style="text-align: center; margin: 30px 0;">
-            <a href="{settings.FRONTEND_URL}" style="display: inline-block; background: linear-gradient(135deg, #6366f1, #4f46e5); color: white; text-decoration: none; padding: 14px 28px; border-radius: 8px; font-weight: 600;">Accept Invitation</a>
-        </div>
-
-        <p>Questions? Just reply to this email.</p>
-
-        <p>— The Revtops Team</p>
-
-        <hr style="border: none; border-top: 1px solid #eee; margin: 30px 0;">
-
-        <p style="font-size: 12px; color: #666;">
-            You received this email because someone invited you to {org_name} on Revtops.
-        </p>
-    </body>
-    </html>
+<!DOCTYPE html>
+<html lang="en" xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>You're invited to Revtops</title>
+</head>
+<body style="margin:0;padding:0;background:#0b0f1a;color:#e5e7eb;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#0b0f1a;padding:24px 12px;">
+    <tr>
+      <td align="center">
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:640px;background:linear-gradient(160deg,#111827,#0f172a);border:1px solid #1f2937;border-radius:20px;overflow:hidden;">
+          <tr>
+            <td style="padding:36px 32px 12px;text-align:center;">
+              <img
+                src="https://app.revtops.com/logo.svg"
+                alt="Revtops"
+                width="52"
+                height="52"
+                style="display:inline-block;height:52px;width:52px;border-radius:14px;"
+              />
+              <h1 style="margin:18px 0 8px;font-size:30px;line-height:1.2;color:#f8fafc;font-weight:700;">You're invited</h1>
+              <p style="margin:0;color:#94a3b8;font-size:15px;line-height:1.6;">{inviter_line}</p>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:20px 32px 0;">
+              <div style="background:#0b1222;border:1px solid #1e293b;border-radius:14px;padding:18px;">
+                <p style="margin:0 0 8px;color:#cbd5e1;font-size:14px;line-height:1.5;">Invitation sent to:</p>
+                <p style="margin:0;color:#f8fafc;font-size:16px;line-height:1.5;font-weight:600;">{to_email}</p>
+                <p style="margin:10px 0 0;color:#94a3b8;font-size:13px;line-height:1.6;">Organization: <strong style="color:#f8fafc;">{org_name}</strong></p>
+              </div>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:28px 32px 8px;text-align:center;">
+              <a href="{settings.FRONTEND_URL}" style="display:inline-block;background:linear-gradient(135deg,#6366f1,#4f46e5);color:#ffffff;text-decoration:none;font-size:16px;font-weight:700;padding:14px 28px;border-radius:12px;">Accept invitation</a>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:8px 32px 30px;text-align:center;">
+              <p style="margin:0;color:#64748b;font-size:13px;line-height:1.6;">If the button doesn&apos;t work, copy and paste this link into your browser:</p>
+              <p style="margin:8px 0 0;color:#94a3b8;font-size:12px;line-height:1.6;word-break:break-all;">{settings.FRONTEND_URL}</p>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:20px 32px;border-top:1px solid #1f2937;background:#0b1222;">
+              <p style="margin:0;color:#64748b;font-size:12px;line-height:1.6;">You received this email because someone invited you to {org_name} on Revtops. If this wasn&apos;t expected, you can safely ignore this message.</p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
     """
 
     inviter_text: str = (
@@ -471,7 +501,7 @@ Questions? Just reply to this email.
                 timeout=10.0,
             )
 
-            if response.status_code == 200:
+            if _resend_request_succeeded(response.status_code):
                 print(f"[Email] Org invitation sent to {to_email} for org {org_name}")
                 return True
             else:

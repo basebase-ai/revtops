@@ -9,6 +9,7 @@ import { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
 import { isPersonalEmail } from '../lib/email';
 import { validateGoodPassword } from '../lib/password';
+import { API_BASE } from '../lib/api';
 
 interface AuthProps {
   onBack: () => void;
@@ -67,10 +68,18 @@ export function Auth({ onBack, onSuccess }: AuthProps): JSX.Element {
         if (error) throw error;
         setMessage('Check your email to confirm your account!');
       } else if (mode === 'forgot') {
-        const { error } = await supabase.auth.resetPasswordForEmail(email, {
-          redirectTo: `${window.location.origin}/auth`,
+        const response = await fetch(`${API_BASE}/auth/password-reset/request`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email }),
         });
-        if (error) throw error;
+
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({}));
+          const detail = typeof errorData.detail === 'string' ? errorData.detail : 'Failed to send reset email';
+          throw new Error(detail);
+        }
+
         setMessage('Check your email for a password reset link!');
       } else if (mode === 'reset') {
         if (newPassword !== confirmPassword) {
