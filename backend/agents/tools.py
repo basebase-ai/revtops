@@ -2114,7 +2114,7 @@ async def _handle_linear_write(
             if operation == "create":
                 issue_result: dict[str, Any] = await _execute_linear_create(connector, record)
             else:
-                issue_result = await _execute_linear_update(connector, record, organization_id)
+                issue_result = await _execute_linear_update(connector, record)
             results.append(issue_result)
         except Exception as exc:
             error_msg: str = f"Record {i + 1}: {exc}"
@@ -2150,35 +2150,14 @@ async def _execute_linear_create(
     if not title:
         raise ValueError("title is required")
 
-    team: dict[str, Any] | None = await connector.resolve_team_by_key(team_key)
-    if not team:
-        raise ValueError(f"Team with key '{team_key}' not found in Linear")
-
-    assignee_id: str | None = None
-    assignee_name: str | None = record.get("assignee_name")
-    if assignee_name:
-        user: dict[str, Any] | None = await connector.resolve_assignee_by_name(assignee_name)
-        if user:
-            assignee_id = user["id"]
-        else:
-            logger.warning("Could not resolve Linear user '%s'", assignee_name)
-
-    project_id: str | None = None
-    project_name: str | None = record.get("project_name")
-    if project_name:
-        project: dict[str, Any] | None = await connector.resolve_project_by_name(project_name)
-        if project:
-            project_id = project["id"]
-        else:
-            logger.warning("Could not resolve Linear project '%s'", project_name)
-
     issue: dict[str, Any] = await connector.create_issue(
-        team_id=team["id"],
+        team_key=team_key,
         title=title,
         description=record.get("description"),
         priority=record.get("priority"),
-        assignee_id=assignee_id,
-        project_id=project_id,
+        assignee_name=record.get("assignee_name"),
+        project_name=record.get("project_name"),
+        labels=record.get("labels"),
     )
     return issue
 
@@ -2186,11 +2165,8 @@ async def _execute_linear_create(
 async def _execute_linear_update(
     connector: "LinearConnector",  # type: ignore[name-defined]
     record: dict[str, Any],
-    organization_id: str,
 ) -> dict[str, Any]:
     """Update a single Linear issue from a record dict."""
-    from models.tracker_issue import TrackerIssue
-
     issue_identifier: str = record.get("issue_identifier", "").strip()
     if not issue_identifier:
         raise ValueError("issue_identifier is required (e.g. 'ENG-123')")
@@ -2200,56 +2176,13 @@ async def _execute_linear_update(
     if not has_update:
         raise ValueError("At least one field to update must be provided (title, description, state_name, priority, assignee_name)")
 
-    # Look up the Linear issue ID from synced data
-    org_uuid: UUID = UUID(organization_id)
-    linear_issue_id: str | None = None
-    linear_team_id: str | None = None
-
-    async with get_session(organization_id=organization_id) as session:
-        row_result = await session.execute(
-            select(TrackerIssue.source_id, TrackerTeam.source_id)
-            .join(TrackerTeam, TrackerIssue.team_id == TrackerTeam.id)
-            .where(
-                TrackerIssue.organization_id == org_uuid,
-                TrackerIssue.source_system == "linear",
-                TrackerIssue.identifier == issue_identifier,
-            )
-        )
-        row = row_result.first()
-        if row:
-            linear_issue_id = row[0]
-            linear_team_id = row[1]
-
-    if not linear_issue_id or not linear_team_id:
-        raise ValueError(f"Issue '{issue_identifier}' not found in synced data. Try running a sync first.")
-
-    # Resolve state name → state ID
-    state_id: str | None = None
-    state_name: str | None = record.get("state_name")
-    if state_name:
-        state: dict[str, Any] | None = await connector.resolve_state_by_name(linear_team_id, state_name)
-        if state:
-            state_id = state["id"]
-        else:
-            raise ValueError(f"Workflow state '{state_name}' not found for this team")
-
-    # Resolve assignee name → user ID
-    assignee_id: str | None = None
-    assignee_name: str | None = record.get("assignee_name")
-    if assignee_name:
-        user: dict[str, Any] | None = await connector.resolve_assignee_by_name(assignee_name)
-        if user:
-            assignee_id = user["id"]
-        else:
-            logger.warning("Could not resolve Linear user '%s'", assignee_name)
-
     issue: dict[str, Any] = await connector.update_issue(
-        issue_id=linear_issue_id,
+        issue_identifier=issue_identifier,
         title=record.get("title"),
         description=record.get("description"),
-        state_id=state_id,
+        state_name=record.get("state_name"),
         priority=record.get("priority"),
-        assignee_id=assignee_id,
+        assignee_name=record.get("assignee_name"),
     )
     return issue
 
@@ -6596,4 +6529,3 @@ async def _execute_command(
         logger.warning("[Sandbox] Failed to list output files: %s", exc)
 
     return tool_result
-
