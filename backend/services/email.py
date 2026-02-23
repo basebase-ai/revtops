@@ -207,6 +207,8 @@ async def send_waitlist_confirmation(to_email: str, name: str) -> bool:
         print(f"[Email] RESEND_API_KEY not set, skipping confirmation to {to_email}")
         return False
 
+    safe_name = name.strip() or "there"
+
     html_content = f"""
     <!DOCTYPE html>
     <html>
@@ -214,32 +216,49 @@ async def send_waitlist_confirmation(to_email: str, name: str) -> bool:
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
     </head>
-    <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
-        <div style="text-align: center; margin-bottom: 30px;">
-            <div style="display: inline-block; width: 48px; height: 48px; background: linear-gradient(135deg, #6366f1, #4f46e5); border-radius: 12px; margin-bottom: 16px;"></div>
-            <h1 style="margin: 0; font-size: 24px; color: #111;">You're on the list!</h1>
-        </div>
-        
-        <p>Hey {name},</p>
-        
-        <p>Thanks for signing up for Revtops! We've added you to our waitlist and will reach out as soon as your spot is ready.</p>
-        
-        <p>We're building Revtops to help revenue teams unlock insights by connecting your CRM, Slack, email, and calendar — all through a simple chat interface.</p>
-        
-        <p>We'll be in touch soon with next steps.</p>
-        
-        <p>— The Revtops Team</p>
-        
-        <hr style="border: none; border-top: 1px solid #eee; margin: 30px 0;">
-        
-        <p style="font-size: 12px; color: #666;">
-            You received this email because you signed up for the Revtops waitlist.
-        </p>
+    <body style="margin: 0; padding: 0; background-color: #f4f7fb; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; color: #111827;">
+        <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color: #f4f7fb; padding: 24px 12px;">
+            <tr>
+                <td align="center">
+                    <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="max-width: 640px;">
+                        <tr>
+                            <td style="padding: 8px 8px 16px; text-align: center; font-size: 13px; color: #6b7280; letter-spacing: 0.04em; text-transform: uppercase; font-weight: 600;">
+                                RevTops
+                            </td>
+                        </tr>
+                        <tr>
+                            <td style="background: #ffffff; border-radius: 16px; border: 1px solid #e5e7eb; overflow: hidden;">
+                                <div style="background: linear-gradient(135deg, #6366f1 0%, #4338ca 100%); padding: 26px 24px; text-align: center;">
+                                    <div style="font-size: 32px; line-height: 1; margin-bottom: 8px;">🎉</div>
+                                    <h1 style="margin: 0; font-size: 26px; color: #ffffff; font-weight: 700;">You&apos;re on the list</h1>
+                                </div>
+                                <div style="padding: 28px 24px 18px;">
+                                    <p style="margin: 0 0 14px; font-size: 16px; line-height: 1.6;">Hey {safe_name},</p>
+                                    <p style="margin: 0 0 14px; font-size: 16px; line-height: 1.6; color: #374151;">Thanks for signing up for Revtops. Your waitlist spot is confirmed, and we&apos;ll email you as soon as your access is ready.</p>
+                                    <p style="margin: 0 0 18px; font-size: 16px; line-height: 1.6; color: #374151;">We&apos;re building Revtops to help revenue teams unlock insights by connecting your CRM, Slack, email, and calendar through one simple chat interface.</p>
+                                    <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin: 0 0 20px;">
+                                        <tr>
+                                            <td style="background: #eef2ff; border: 1px solid #c7d2fe; border-radius: 12px; padding: 14px; color: #3730a3; font-size: 14px; line-height: 1.5;">
+                                                We&apos;ll follow up with launch details and next steps soon.
+                                            </td>
+                                        </tr>
+                                    </table>
+                                    <p style="margin: 0 0 8px; font-size: 16px; line-height: 1.6;">— The Revtops Team</p>
+                                </div>
+                                <div style="padding: 16px 24px 24px; border-top: 1px solid #e5e7eb;">
+                                    <p style="margin: 0; font-size: 12px; line-height: 1.5; color: #6b7280;">You received this email because you signed up for the Revtops waitlist.</p>
+                                </div>
+                            </td>
+                        </tr>
+                    </table>
+                </td>
+            </tr>
+        </table>
     </body>
     </html>
     """
 
-    text_content = f"""Hey {name},
+    text_content = f"""Hey {safe_name},
 
 Thanks for signing up for Revtops! We've added you to our waitlist and will reach out as soon as your spot is ready.
 
