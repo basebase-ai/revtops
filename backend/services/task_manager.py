@@ -12,6 +12,7 @@ import asyncio
 import json
 import logging
 from datetime import datetime
+from contextlib import asynccontextmanager
 from typing import Any, Callable, Coroutine
 from uuid import UUID, uuid4
 
@@ -59,9 +60,57 @@ class TaskManager:
         
         # Lock for thread-safe subscription management
         self._lock = asyncio.Lock()
+
+        # Per-conversation execution locks so turns are processed in arrival order.
+        # This prevents overlapping model runs from interleaving context when
+        # multiple speakers/sources send messages to the same conversation quickly.
+        self._conversation_locks: dict[str, asyncio.Lock] = {}
+        self._conversation_lock_refs: dict[str, int] = {}
+        self._conversation_manager_lock = asyncio.Lock()
         
         self._initialized = True
         logger.info("TaskManager initialized")
+
+    @asynccontextmanager
+    async def _conversation_execution_lock(self, conversation_id: str):
+        """Serialize task execution per conversation while allowing fast enqueueing."""
+        async with self._conversation_manager_lock:
+            lock = self._conversation_locks.get(conversation_id)
+            if lock is None:
+                lock = asyncio.Lock()
+                self._conversation_locks[conversation_id] = lock
+                self._conversation_lock_refs[conversation_id] = 0
+                logger.debug("Created conversation execution lock for %s", conversation_id)
+
+            self._conversation_lock_refs[conversation_id] = (
+                self._conversation_lock_refs.get(conversation_id, 0) + 1
+            )
+            queued_count: int = self._conversation_lock_refs[conversation_id]
+
+        logger.info(
+            "Task queued for conversation=%s queued_count=%d",
+            conversation_id,
+            queued_count,
+        )
+        await lock.acquire()
+        logger.info("Task execution started for conversation=%s", conversation_id)
+
+        try:
+            yield
+        finally:
+            lock.release()
+            logger.info("Task execution released for conversation=%s", conversation_id)
+            async with self._conversation_manager_lock:
+                remaining: int = max(
+                    self._conversation_lock_refs.get(conversation_id, 1) - 1,
+                    0,
+                )
+                if remaining == 0:
+                    self._conversation_lock_refs.pop(conversation_id, None)
+                    self._conversation_locks.pop(conversation_id, None)
+                    logger.debug("Removed idle conversation lock for %s", conversation_id)
+                else:
+                    self._conversation_lock_refs[conversation_id] = remaining
     
     async def start_task(
         self,
@@ -157,58 +206,59 @@ class TaskManager:
         and broadcasts to subscribed WebSockets.
         """
         try:
-            orchestrator = ChatOrchestrator(
-                user_id=user_id,
-                organization_id=organization_id,
-                conversation_id=conversation_id,
-                user_email=user_email,
-                local_time=local_time,
-                timezone=timezone,
-            )
-            
-            chunk_index = 0
-            
-            async for chunk in orchestrator.process_message(
-                user_message,
-                skip_history=is_new_conversation,
-                attachment_ids=attachment_ids,
-            ):
-                # Create chunk record
-                chunk_data: dict[str, Any] = {
-                    "index": chunk_index,
-                    "timestamp": datetime.utcnow().isoformat(),
-                }
-                
-                # Parse chunk - could be JSON (tool call/result) or plain text
-                try:
-                    parsed = json.loads(chunk)
-                    # Only treat as structured data if it's a dict with a type field
-                    if isinstance(parsed, dict):
-                        chunk_data["type"] = parsed.get("type", "json")
-                        chunk_data["data"] = parsed
-                    else:
-                        # JSON parsed but not a dict (e.g., number, string, list)
+            async with self._conversation_execution_lock(conversation_id):
+                orchestrator = ChatOrchestrator(
+                    user_id=user_id,
+                    organization_id=organization_id,
+                    conversation_id=conversation_id,
+                    user_email=user_email,
+                    local_time=local_time,
+                    timezone=timezone,
+                )
+
+                chunk_index = 0
+
+                async for chunk in orchestrator.process_message(
+                    user_message,
+                    skip_history=is_new_conversation,
+                    attachment_ids=attachment_ids,
+                ):
+                    # Create chunk record
+                    chunk_data: dict[str, Any] = {
+                        "index": chunk_index,
+                        "timestamp": datetime.utcnow().isoformat(),
+                    }
+
+                    # Parse chunk - could be JSON (tool call/result) or plain text
+                    try:
+                        parsed = json.loads(chunk)
+                        # Only treat as structured data if it's a dict with a type field
+                        if isinstance(parsed, dict):
+                            chunk_data["type"] = parsed.get("type", "json")
+                            chunk_data["data"] = parsed
+                        else:
+                            # JSON parsed but not a dict (e.g., number, string, list)
+                            chunk_data["type"] = "text_delta"
+                            chunk_data["data"] = chunk
+                    except json.JSONDecodeError:
                         chunk_data["type"] = "text_delta"
                         chunk_data["data"] = chunk
-                except json.JSONDecodeError:
-                    chunk_data["type"] = "text_delta"
-                    chunk_data["data"] = chunk
-                
-                # Broadcast FIRST — get the chunk to the UI as fast as possible
-                await self._broadcast(task_id, {
-                    "type": "task_chunk",
-                    "task_id": task_id,
-                    "conversation_id": conversation_id,
-                    "chunk": chunk_data,
-                })
-                
-                # Persist important events to database in the background (fire-and-forget).
-                # Text deltas are ephemeral — the full message is saved at the end by orchestrator.
-                # DB persistence is for catchup on reconnect, not the critical display path.
-                if chunk_data["type"] != "text_delta":
-                    asyncio.create_task(self._append_chunk_safe(task_id, chunk_data))
-                
-                chunk_index += 1
+
+                    # Broadcast FIRST — get the chunk to the UI as fast as possible
+                    await self._broadcast(task_id, {
+                        "type": "task_chunk",
+                        "task_id": task_id,
+                        "conversation_id": conversation_id,
+                        "chunk": chunk_data,
+                    })
+
+                    # Persist important events to database in the background (fire-and-forget).
+                    # Text deltas are ephemeral — the full message is saved at the end by orchestrator.
+                    # DB persistence is for catchup on reconnect, not the critical display path.
+                    if chunk_data["type"] != "text_delta":
+                        asyncio.create_task(self._append_chunk_safe(task_id, chunk_data))
+
+                    chunk_index += 1
             
             # Mark task as completed
             await self._complete_task(task_id, "completed")
