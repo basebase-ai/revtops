@@ -30,10 +30,10 @@ SELECT
   COUNT(*)::int                                        AS total_deals,
   COALESCE(SUM(d.amount), 0)::float                    AS total_value,
   COALESCE(AVG(d.amount), 0)::float                    AS avg_deal_size,
-  COALESCE(SUM(d.amount * COALESCE(d.probability, 50) / 100.0), 0)::float AS weighted_value
+  COALESCE(SUM(d.amount * COALESCE(ps.probability, 50) / 100.0), 0)::float AS weighted_value
 FROM deals d
 LEFT JOIN pipeline_stages ps
-  ON ps.pipeline_id = d.pipeline_id AND ps.name = d.stage
+  ON ps.pipeline_id = d.pipeline_id AND ps.source_id = d.stage
 WHERE d.organization_id = :org_id
   AND (ps.id IS NULL OR (ps.is_closed_won = false AND ps.is_closed_lost = false))
   AND (
@@ -48,12 +48,12 @@ WHERE d.organization_id = :org_id
     "deals_by_stage": {
         "sql": """
 SELECT
-  COALESCE(d.stage, 'Unknown') AS stage,
+  COALESCE(ps.name, d.stage, 'Unknown') AS stage,
   COUNT(*)::int                AS deal_count,
   COALESCE(SUM(d.amount), 0)::float AS total_value
 FROM deals d
 LEFT JOIN pipeline_stages ps
-  ON ps.pipeline_id = d.pipeline_id AND ps.name = d.stage
+  ON ps.pipeline_id = d.pipeline_id AND ps.source_id = d.stage
 WHERE d.organization_id = :org_id
   AND (ps.id IS NULL OR (ps.is_closed_won = false AND ps.is_closed_lost = false))
   AND (
@@ -62,7 +62,7 @@ WHERE d.organization_id = :org_id
     OR (:period = 'quarter' AND d.created_date >= DATE_TRUNC('quarter', NOW()))
     OR (:period = 'ytd'     AND d.created_date >= DATE_TRUNC('year', NOW()))
   )
-GROUP BY d.stage
+GROUP BY COALESCE(ps.name, d.stage, 'Unknown')
 ORDER BY total_value DESC
 """,
         "params": {"period": "all"},
@@ -81,7 +81,7 @@ SELECT
   END AS win_rate_pct
 FROM deals d
 JOIN pipeline_stages ps
-  ON ps.pipeline_id = d.pipeline_id AND ps.name = d.stage
+  ON ps.pipeline_id = d.pipeline_id AND ps.source_id = d.stage
 WHERE d.organization_id = :org_id
   AND (ps.is_closed_won OR ps.is_closed_lost)
   AND (
@@ -98,11 +98,11 @@ WHERE d.organization_id = :org_id
 SELECT
   d.name,
   COALESCE(d.amount, 0)::float AS amount,
-  d.stage,
+  COALESCE(ps.name, d.stage) AS stage,
   d.close_date::text AS close_date
 FROM deals d
 LEFT JOIN pipeline_stages ps
-  ON ps.pipeline_id = d.pipeline_id AND ps.name = d.stage
+  ON ps.pipeline_id = d.pipeline_id AND ps.source_id = d.stage
 WHERE d.organization_id = :org_id
   AND d.close_date BETWEEN CURRENT_DATE AND CURRENT_DATE + 30
   AND (ps.id IS NULL OR (ps.is_closed_won = false AND ps.is_closed_lost = false))

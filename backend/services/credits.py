@@ -169,8 +169,8 @@ def credits_for_tool(
         if isinstance(total, (int, float)):
             return min(max(1, int(total)), 50)
         return 5
-    # Sync, create_app, keep_notes, manage_memory
-    if tool_name in ("trigger_sync", "create_app", "keep_notes", "manage_memory"):
+    # Sync, write_app, keep_notes, manage_memory
+    if tool_name in ("trigger_sync", "write_app", "keep_notes", "manage_memory"):
         return 1
     # run_sql_write
     if tool_name == "run_sql_write":
