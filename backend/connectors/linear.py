@@ -27,9 +27,11 @@ from connectors.registry import (
     AuthType, Capability, ConnectorMeta, ConnectorScope, WriteOperation,
 )
 from models.database import get_session
+from models.slack_user_mapping import SlackUserMapping
 from models.tracker_issue import TrackerIssue
 from models.tracker_project import TrackerProject
 from models.tracker_team import TrackerTeam
+from models.user import User
 
 logger = logging.getLogger(__name__)
 
@@ -887,13 +889,87 @@ class LinearConnector(BaseConnector):
     async def resolve_state_by_name(
         self, team_id: str, state_name: str
     ) -> dict[str, Any] | None:
-        """Find a workflow state by name within a team."""
+        """Find a workflow state by name/type within a team."""
         states: list[dict[str, Any]] = await self.list_workflow_states(team_id)
         name_lower: str = state_name.lower().strip()
+
+        # 1) Exact state name match
         for state in states:
-            if state["name"].lower() == name_lower:
+            if (state.get("name") or "").lower() == name_lower:
                 return state
+
+        # 2) Alias match on state type to support common task language like "todo"
+        type_aliases: dict[str, set[str]] = {
+            "backlog": {"backlog", "triage"},
+            "unstarted": {"todo", "to do", "open", "new", "unstarted", "not started"},
+            "started": {"in progress", "doing", "active", "started", "wip"},
+            "completed": {"done", "complete", "completed", "closed", "resolved"},
+            "canceled": {"canceled", "cancelled", "wontfix", "won't fix"},
+        }
+        target_type: str | None = None
+        for state_type, aliases in type_aliases.items():
+            if name_lower in aliases:
+                target_type = state_type
+                break
+
+        if target_type:
+            for state in states:
+                if (state.get("type") or "").lower() == target_type:
+                    logger.info(
+                        "Resolved Linear state '%s' to workflow type '%s' (%s)",
+                        state_name,
+                        target_type,
+                        state.get("name"),
+                    )
+                    return state
         return None
+
+    async def _resolve_current_user_assignee_candidates(self) -> list[str]:
+        """Return identity tokens for the current user that may match a Linear assignee."""
+        if not self.user_id:
+            return []
+
+        user_uuid: UUID = UUID(self.user_id)
+        org_uuid: UUID = UUID(self.organization_id)
+        candidates: list[str] = []
+
+        async with get_session(organization_id=self.organization_id) as session:
+            user_result = await session.execute(select(User).where(User.id == user_uuid))
+            user: User | None = user_result.scalar_one_or_none()
+            if user:
+                if user.name:
+                    candidates.append(user.name)
+                if user.email:
+                    candidates.append(user.email)
+
+            mapping_rows = await session.execute(
+                select(SlackUserMapping).where(
+                    SlackUserMapping.organization_id == org_uuid,
+                    SlackUserMapping.user_id == user_uuid,
+                    SlackUserMapping.source == "linear",
+                )
+            )
+            mappings: list[SlackUserMapping] = list(mapping_rows.scalars().all())
+            for mapping in mappings:
+                if mapping.external_userid:
+                    candidates.append(mapping.external_userid)
+                if mapping.external_email:
+                    candidates.append(mapping.external_email)
+
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for raw in candidates:
+            token: str = raw.strip()
+            if not token:
+                continue
+            key: str = token.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(token)
+
+        logger.info("Linear 'me' assignee resolution candidates=%s", deduped)
+        return deduped
 
     async def list_users(self) -> list[dict[str, Any]]:
         """List users in the Linear workspace (paginated)."""
@@ -927,20 +1003,55 @@ class LinearConnector(BaseConnector):
             return None
 
         users: list[dict[str, Any]] = await self.list_users()
-        needle_lower: str = needle.lower()
+
+        needles: list[str] = [needle]
+        if needle.lower() in {"me", "myself", "self", "@me"}:
+            me_tokens: list[str] = await self._resolve_current_user_assignee_candidates()
+            needles = [*me_tokens, needle]
+
+        for candidate in needles:
+            matched = self._resolve_assignee_from_users(users, candidate)
+            if matched:
+                if candidate != needle:
+                    logger.info(
+                        "Resolved Linear assignee '%s' using candidate '%s'",
+                        name,
+                        candidate,
+                    )
+                return matched
+
+        logger.warning("Linear assignee '%s' not found", name)
+        return None
+
+    def _resolve_assignee_from_users(
+        self,
+        users: list[dict[str, Any]],
+        needle: str,
+    ) -> dict[str, Any] | None:
+        """Resolve a single assignee token against a user list."""
+        needle_lower: str = needle.strip().lower()
+        if not needle_lower:
+            return None
+
+        # 0) Exact Linear user ID match
+        for user in users:
+            linear_user_id: str = (user.get("id") or "").strip().lower()
+            if linear_user_id and linear_user_id == needle_lower:
+                logger.info("Resolved Linear assignee '%s' by exact user id", needle)
+                return user
 
         # 1) Exact email match (most stable identifier)
         for user in users:
             email: str = (user.get("email") or "").strip().lower()
             if email and email == needle_lower:
-                logger.info("Resolved Linear assignee '%s' by exact email", name)
+                logger.info("Resolved Linear assignee '%s' by exact email", needle)
                 return user
 
         # 2) Exact display-name match
         for user in users:
             user_name: str = (user.get("name") or "").strip().lower()
             if user_name and user_name == needle_lower:
-                logger.info("Resolved Linear assignee '%s' by exact name", name)
+                logger.info("Resolved Linear assignee '%s' by exact name", needle)
                 return user
 
         # 3) Unique prefix match (e.g. "alex" -> "Alex Kim")
@@ -950,7 +1061,7 @@ class LinearConnector(BaseConnector):
             if (user.get("name") or "").strip().lower().startswith(needle_lower)
         ]
         if len(prefix_matches) == 1:
-            logger.info("Resolved Linear assignee '%s' by unique name prefix", name)
+            logger.info("Resolved Linear assignee '%s' by unique name prefix", needle)
             return prefix_matches[0]
 
         # 4) Unique contains match as a final fallback
@@ -960,19 +1071,16 @@ class LinearConnector(BaseConnector):
             if needle_lower in (user.get("name") or "").strip().lower()
         ]
         if len(contains_matches) == 1:
-            logger.info("Resolved Linear assignee '%s' by unique contains match", name)
+            logger.info("Resolved Linear assignee '%s' by unique contains match", needle)
             return contains_matches[0]
 
         if len(prefix_matches) > 1 or len(contains_matches) > 1:
             logger.warning(
                 "Linear assignee lookup for '%s' is ambiguous (prefix=%d contains=%d)",
-                name,
+                needle,
                 len(prefix_matches),
                 len(contains_matches),
             )
-        else:
-            logger.warning("Linear assignee '%s' not found", name)
-
         return None
 
     async def resolve_labels_by_names(self, label_names: list[str]) -> list[str]:
