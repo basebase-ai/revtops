@@ -1921,6 +1921,42 @@ function getToolStatusText(
       }
       return 'Running action (details when available)...';
     }
+    case 'write_app': {
+      const operation: string = typeof input?.operation === 'string' ? input.operation : 'create';
+      const appTitle: string = typeof input?.title === 'string' ? input.title 
+        : (typeof result?.title === 'string' ? result.title : 'app');
+      if (operation === 'create') {
+        if (isComplete) {
+          return result?.error ? 'Failed to create app' : `Created app: ${appTitle}`;
+        }
+        return `Creating app: ${appTitle}...`;
+      }
+      if (operation === 'update') {
+        if (isComplete) {
+          return result?.error ? 'Failed to update app' : `Updated app: ${appTitle}`;
+        }
+        return `Updating app...`;
+      }
+      if (operation === 'read') {
+        if (isComplete) {
+          return result?.error ? 'Failed to read app' : `Read app: ${appTitle}`;
+        }
+        return 'Reading app code...';
+      }
+      if (operation === 'test_query') {
+        const queryName: string = typeof input?.query_name === 'string' ? input.query_name : 'query';
+        const rowCount: number | undefined = typeof result?.row_count === 'number' ? result.row_count : undefined;
+        if (isComplete) {
+          return result?.error ? `Query test failed` : `Tested query "${queryName}" (${rowCount ?? 0} rows)`;
+        }
+        return `Testing query "${queryName}"...`;
+      }
+      // Fallback for unknown operations
+      if (isComplete) {
+        return result?.error ? 'App operation failed' : 'Completed app operation';
+      }
+      return 'Working on app...';
+    }
     default:
       return isComplete ? `Completed ${toolName}` : `Running ${toolName}...`;
   }

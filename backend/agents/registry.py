@@ -548,67 +548,89 @@ Set max_concurrent=1 for sequential execution, higher for parallel. Blocks until
 # -----------------------------------------------------------------------------
 
 register_tool(
-    name="create_app",
-    description="""Create an interactive mini-app that queries data and renders it with React.
+    name="write_app",
+    description="""Create, update, read, or test interactive mini-apps that query data and render with React.
 
-Use this when the user asks for a dashboard, interactive chart, or data view with controls
-(dropdowns, date pickers, filters, etc.) that should refresh when the user changes them.
+**Operations:**
+- **create** (default): Create a new app. Requires title, queries, frontend_code.
+- **update**: Update an existing app. Requires app_id, plus queries and/or frontend_code to change.
+- **read**: Read back an app's queries and frontend_code. Requires app_id.
+- **test_query**: Run a query and return sample data to verify correctness. Requires app_id, query_name.
 
-The app has two parts:
-1. **queries** (server-side): Named parameterized SQL queries. These stay on the server and are never exposed to the browser.
-2. **frontend_code** (client-side): React JSX code that renders the UI and calls the queries via the SDK.
+**Recommended workflow:**
+1. Create the app with operation="create"
+2. Test queries with operation="test_query" to verify data looks correct
+3. If data is wrong, use operation="read" to inspect, then operation="update" to fix
 
-The React code runs in a sandboxed iframe with these pre-bundled packages:
+**App structure:**
+1. **queries** (server-side): Named parameterized SQL queries. Never exposed to browser.
+2. **frontend_code** (client-side): React JSX rendered in a sandboxed iframe.
+
+**Available packages in frontend_code:**
 - react, react-dom (hooks: useState, useEffect, useCallback, useMemo, useRef)
 - react-plotly.js (import Plot from "react-plotly.js")
 - @revtops/app-sdk (useAppQuery, useDateRange, Spinner, ErrorBanner)
 
 **SDK API:**
 - useAppQuery(queryName, params) → { data, columns, loading, error, refetch }
-  - queryName: must match a key in the queries object
-  - params: object with values for the SQL :placeholders
-  - data: array of row objects, e.g. [{region: "West", revenue: 50000}, ...]
 - useDateRange(period) → { start, end } (ISO date strings)
   - period: "last_7d", "last_30d", "last_90d", "last_quarter", "this_quarter", "ytd", "last_year", "this_year"
 - Spinner — loading spinner component
 - ErrorBanner({ message }) — error display component
 
-**Query params:**
-Each query declares its params with name, type, and required flag. The SDK sends
-param values to the server, where they are bound via parameterized queries (safe from injection).
-
 **Rules:**
 - All SQL must be SELECT-only. No INSERT/UPDATE/DELETE.
 - Do NOT add organization_id to WHERE clauses (RLS handles it).
 - frontend_code must export a default React component.
-- Use Tailwind-style inline CSS or the provided dark-theme base styles.
-- Keep the code concise — one file, one default export.
 
-**Example:**
+**Example create:**
 {
+  "operation": "create",
   "title": "Revenue by Region",
-  "description": "Bar chart showing revenue by region with time period filter",
   "queries": {
     "revenue_data": {
-      "sql": "SELECT custom_fields->>'region' as region, SUM(amount) as revenue FROM deals WHERE close_date >= :start_date AND close_date <= :end_date AND stage = 'Closed Won' GROUP BY 1 ORDER BY revenue DESC",
-      "params": {
-        "start_date": { "type": "date", "required": true },
-        "end_date": { "type": "date", "required": true }
-      }
+      "sql": "SELECT custom_fields->>'region' as region, SUM(amount) as revenue FROM deals WHERE close_date >= :start_date GROUP BY 1",
+      "params": { "start_date": { "type": "date" } }
     }
   },
-  "frontend_code": "import { useState } from 'react';\\nimport { useAppQuery, useDateRange, Spinner, ErrorBanner } from '@revtops/app-sdk';\\nimport Plot from 'react-plotly.js';\\n\\nexport default function App() {\\n  const [period, setPeriod] = useState('last_quarter');\\n  const { start, end } = useDateRange(period);\\n  const { data, loading, error } = useAppQuery('revenue_data', { start_date: start, end_date: end });\\n\\n  return (\\n    <div style={{padding:'1rem'}}>\\n      <select value={period} onChange={e => setPeriod(e.target.value)}>\\n        <option value='last_30d'>Last 30 Days</option>\\n        <option value='last_quarter'>Last Quarter</option>\\n        <option value='ytd'>Year to Date</option>\\n      </select>\\n      {loading && <Spinner />}\\n      {error && <ErrorBanner message={error} />}\\n      {data && <Plot data={[{type:'bar', x:data.map(r=>r.region), y:data.map(r=>r.revenue)}]} layout={{title:'Revenue by Region', autosize:true, paper_bgcolor:'transparent', plot_bgcolor:'transparent', font:{color:'#a1a1aa'}}} style={{width:'100%',height:'400px'}} config={{responsive:true}} />}\\n    </div>\\n  );\\n}"
+  "frontend_code": "import { useAppQuery } from '@revtops/app-sdk';\\nexport default function App() { ... }"
+}
+
+**Example test_query:**
+{
+  "operation": "test_query",
+  "app_id": "abc-123",
+  "query_name": "revenue_data",
+  "params": { "start_date": "2024-01-01" },
+  "limit": 5
+}
+
+**Example update:**
+{
+  "operation": "update",
+  "app_id": "abc-123",
+  "queries": { "revenue_data": { "sql": "...fixed SQL...", "params": {...} } }
 }""",
     input_schema={
         "type": "object",
         "properties": {
+            "operation": {
+                "type": "string",
+                "enum": ["create", "update", "read", "test_query"],
+                "description": "Operation to perform. Default: create.",
+                "default": "create",
+            },
+            "app_id": {
+                "type": "string",
+                "description": "UUID of existing app (required for update, read, test_query).",
+            },
             "title": {
                 "type": "string",
-                "description": "Display title for the app",
+                "description": "Display title for the app (required for create).",
             },
             "description": {
                 "type": "string",
-                "description": "Brief description of what the app shows",
+                "description": "Brief description of what the app shows.",
             },
             "queries": {
                 "type": "object",
@@ -616,10 +638,23 @@ param values to the server, where they are bound via parameterized queries (safe
             },
             "frontend_code": {
                 "type": "string",
-                "description": "React JSX code (single file). Must export default component. Uses @revtops/app-sdk hooks.",
+                "description": "React JSX code (single file). Must export default component.",
+            },
+            "query_name": {
+                "type": "string",
+                "description": "Name of query to test (required for test_query operation).",
+            },
+            "params": {
+                "type": "object",
+                "description": "Parameter values for test_query operation.",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Max rows to return for test_query (default 5, max 50).",
+                "default": 5,
             },
         },
-        "required": ["title", "queries", "frontend_code"],
+        "required": [],
     },
     category=ToolCategory.LOCAL_WRITE,
     default_requires_approval=False,

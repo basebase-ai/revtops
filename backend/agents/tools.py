@@ -3,7 +3,7 @@ Tool definitions and execution for Claude.
 
 Tools are organized by category (see registry.py):
 - LOCAL_READ: run_sql_query
-- LOCAL_WRITE: create_artifact, run_sql_write, run_workflow, create_app, keep_notes, manage_memory
+- LOCAL_WRITE: create_artifact, run_sql_write, run_workflow, write_app, keep_notes, manage_memory
 - EXTERNAL_READ: query_system, list_connected_systems
 - EXTERNAL_WRITE: write_to_system, run_action, trigger_sync
 
@@ -182,7 +182,7 @@ class ToolProgressUpdater:
 # Note: Row-Level Security (RLS) handles organization filtering at the database level
 ALLOWED_TABLES: set[str] = {
     "deals", "accounts", "contacts", "activities", "meetings", "integrations", "users", "organizations",
-    "org_members",
+    "org_members", "apps",
     "pipelines", "pipeline_stages", "goals", "workflows", "workflow_runs", "user_mappings_for_identity",
     "github_repositories", "github_commits", "github_pull_requests",
     "shared_files",
@@ -306,7 +306,7 @@ async def execute_tool(
         "run_sql_write": lambda: _run_sql_write(tool_input, organization_id, user_id, context),
         "run_workflow": lambda: _run_workflow(tool_input, organization_id, user_id, context),
         "create_artifact": lambda: _create_artifact(tool_input, organization_id, user_id, context),
-        "create_app": lambda: _create_app(tool_input, organization_id, user_id, context),
+        "write_app": lambda: _write_app(tool_input, organization_id, user_id, context),
         "keep_notes": lambda: _keep_notes(tool_input, organization_id, user_id, context, skip_approval),
         "manage_memory": lambda: _manage_memory(tool_input, organization_id, user_id, skip_approval),
         "foreach": lambda: _foreach(tool_input, organization_id, user_id, context),
@@ -5185,30 +5185,37 @@ async def _create_artifact(
 # =============================================================================
 
 
-async def _create_app(
+async def _write_app(
     params: dict[str, Any],
     organization_id: str,
     user_id: str | None,
     context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
-    Create an interactive mini-app (React + server-side SQL).
+    Create, update, read, or test interactive mini-apps.
 
-    Validates queries, test-executes them, and stores as an Artifact
-    with type='app' and config={queries, frontend_code}.
+    Operations:
+    - create: Create a new app (requires title, queries, frontend_code)
+    - update: Update an existing app (requires app_id, plus queries and/or frontend_code)
+    - read: Read back app contents (requires app_id)
+    - test_query: Run a query and return sample data (requires app_id, query_name)
     """
-    title: str = params.get("title", "Untitled App")
-    description: str = params.get("description", "")
-    queries: dict[str, Any] = params.get("queries", {})
-    frontend_code: str = params.get("frontend_code", "")
+    operation: str = params.get("operation", "create")
 
-    # Validate inputs
-    if not queries:
-        return {"error": "At least one query is required in the 'queries' object"}
-    if not frontend_code.strip():
-        return {"error": "frontend_code cannot be empty"}
+    if operation == "create":
+        return await _write_app_create(params, organization_id, user_id, context)
+    elif operation == "update":
+        return await _write_app_update(params, organization_id)
+    elif operation == "read":
+        return await _write_app_read(params, organization_id)
+    elif operation == "test_query":
+        return await _write_app_test_query(params, organization_id)
+    else:
+        return {"error": f"Unknown operation: {operation}. Must be one of: create, update, read, test_query"}
 
-    # Validate each query: must be SELECT-only
+
+def _validate_queries(queries: dict[str, Any]) -> str | None:
+    """Validate queries dict. Returns error message or None if valid."""
     select_re = re.compile(r"^\s*SELECT\b", re.IGNORECASE)
     dangerous_re = re.compile(
         r"\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE|GRANT|REVOKE)\b",
@@ -5218,23 +5225,30 @@ async def _create_app(
     for qname, qspec in queries.items():
         sql: str = qspec.get("sql", "")
         if not sql.strip():
-            return {"error": f"Query '{qname}' has empty SQL"}
+            return f"Query '{qname}' has empty SQL"
         if not select_re.match(sql):
-            return {"error": f"Query '{qname}' must be a SELECT statement"}
+            return f"Query '{qname}' must be a SELECT statement"
         if dangerous_re.search(sql):
-            return {"error": f"Query '{qname}' contains disallowed SQL keywords"}
+            return f"Query '{qname}' contains disallowed SQL keywords"
+    return None
 
-    # Test-execute each query with empty/default params to catch syntax errors
+
+async def _test_execute_queries(
+    queries: dict[str, Any], organization_id: str
+) -> list[str]:
+    """Test-execute queries with dummy params. Returns list of errors."""
     errors: list[str] = []
     async with get_session(organization_id=organization_id) as session:
         for qname, qspec in queries.items():
-            sql = qspec.get("sql", "")
+            sql: str = qspec.get("sql", "")
             param_defs: dict[str, Any] = qspec.get("params", {})
 
-            # Build dummy params for test execution
-            test_params: dict[str, Any] = {}
+            test_params: dict[str, Any] = {"org_id": organization_id}
             for pname, pdef in param_defs.items():
-                ptype: str = pdef.get("type", "string")
+                if isinstance(pdef, dict):
+                    ptype: str = pdef.get("type", "string")
+                else:
+                    ptype = "string"
                 if ptype == "date":
                     test_params[pname] = "2020-01-01"
                 elif ptype == "integer":
@@ -5244,20 +5258,42 @@ async def _create_app(
                 else:
                     test_params[pname] = ""
 
-            # Wrap with LIMIT 0 to avoid returning data during validation
             test_sql: str = f"SELECT * FROM ({sql.rstrip().rstrip(';')}) AS _test LIMIT 0"
             try:
                 await session.execute(text(test_sql), test_params)
             except Exception as exc:
                 errors.append(f"Query '{qname}': {exc}")
+    return errors
 
+
+async def _write_app_create(
+    params: dict[str, Any],
+    organization_id: str,
+    user_id: str | None,
+    context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Create a new app."""
+    title: str = params.get("title", "Untitled App")
+    description: str = params.get("description", "")
+    queries: dict[str, Any] = params.get("queries", {})
+    frontend_code: str = params.get("frontend_code", "")
+
+    if not queries:
+        return {"error": "At least one query is required in the 'queries' object"}
+    if not frontend_code.strip():
+        return {"error": "frontend_code cannot be empty"}
+
+    validation_error: str | None = _validate_queries(queries)
+    if validation_error:
+        return {"error": validation_error}
+
+    errors: list[str] = await _test_execute_queries(queries, organization_id)
     if errors:
         return {"error": "SQL validation failed:\n" + "\n".join(errors)}
 
     message_id: str | None = context.get("message_id") if context else None
     conversation_id: str | None = (context or {}).get("conversation_id")
 
-    # Resolve user_id: required for apps table (NOT NULL). Use context or conversation owner.
     user_uuid: UUID | None = UUID(user_id) if user_id else None
     if not user_uuid and conversation_id:
         async with get_session(organization_id=organization_id) as session:
@@ -5294,7 +5330,7 @@ async def _create_app(
         await session.commit()
 
         logger.info(
-            "[Tools._create_app] Created app: id=%s, title=%s, queries=%s",
+            "[Tools._write_app] Created app: id=%s, title=%s, queries=%s",
             app_id_str,
             title,
             list(queries.keys()),
@@ -5311,6 +5347,198 @@ async def _create_app(
         },
         "message": f"Created interactive app: {title}",
     }
+
+
+async def _write_app_update(
+    params: dict[str, Any],
+    organization_id: str,
+) -> dict[str, Any]:
+    """Update an existing app's queries and/or frontend_code."""
+    app_id: str | None = params.get("app_id")
+    if not app_id:
+        return {"error": "app_id is required for update operation"}
+
+    new_queries: dict[str, Any] | None = params.get("queries")
+    new_frontend_code: str | None = params.get("frontend_code")
+    new_title: str | None = params.get("title")
+    new_description: str | None = params.get("description")
+
+    if not new_queries and not new_frontend_code and not new_title and not new_description:
+        return {"error": "At least one of queries, frontend_code, title, or description must be provided for update"}
+
+    org_uuid: UUID = UUID(organization_id) if isinstance(organization_id, str) else organization_id
+
+    async with get_session(organization_id=organization_id) as session:
+        result = await session.execute(
+            select(App).where(
+                App.id == UUID(app_id),
+                App.organization_id == org_uuid,
+            )
+        )
+        app: App | None = result.scalar_one_or_none()
+
+        if not app:
+            return {"error": f"App not found: {app_id}"}
+
+        if new_queries:
+            validation_error: str | None = _validate_queries(new_queries)
+            if validation_error:
+                return {"error": validation_error}
+
+            errors: list[str] = await _test_execute_queries(new_queries, organization_id)
+            if errors:
+                return {"error": "SQL validation failed:\n" + "\n".join(errors)}
+
+            app.queries = new_queries
+
+        if new_frontend_code is not None:
+            if not new_frontend_code.strip():
+                return {"error": "frontend_code cannot be empty"}
+            app.frontend_code = new_frontend_code
+
+        if new_title is not None:
+            app.title = new_title
+
+        if new_description is not None:
+            app.description = new_description
+
+        await session.commit()
+
+        logger.info(
+            "[Tools._write_app] Updated app: id=%s, title=%s",
+            app_id,
+            app.title,
+        )
+
+    return {
+        "status": "success",
+        "app_id": app_id,
+        "message": f"Updated app: {app.title}",
+        "updated_fields": [
+            f for f in ["queries", "frontend_code", "title", "description"]
+            if params.get(f) is not None
+        ],
+    }
+
+
+def _add_line_numbers(code: str) -> str:
+    """Add line numbers to code for easier reference when editing."""
+    lines: list[str] = code.split("\n")
+    width: int = len(str(len(lines)))
+    numbered_lines: list[str] = [
+        f"{i + 1:>{width}}| {line}" for i, line in enumerate(lines)
+    ]
+    return "\n".join(numbered_lines)
+
+
+async def _write_app_read(
+    params: dict[str, Any],
+    organization_id: str,
+) -> dict[str, Any]:
+    """Read back an app's queries and frontend_code with line numbers."""
+    app_id: str | None = params.get("app_id")
+    if not app_id:
+        return {"error": "app_id is required for read operation"}
+
+    org_uuid: UUID = UUID(organization_id) if isinstance(organization_id, str) else organization_id
+
+    async with get_session(organization_id=organization_id) as session:
+        result = await session.execute(
+            select(App).where(
+                App.id == UUID(app_id),
+                App.organization_id == org_uuid,
+            )
+        )
+        app: App | None = result.scalar_one_or_none()
+
+        if not app:
+            return {"error": f"App not found: {app_id}"}
+
+        queries_with_line_numbers: dict[str, Any] = {}
+        for qname, qspec in app.queries.items():
+            queries_with_line_numbers[qname] = {
+                **qspec,
+                "sql_with_lines": _add_line_numbers(qspec.get("sql", "")),
+            }
+
+        return {
+            "status": "success",
+            "app_id": app_id,
+            "title": app.title,
+            "description": app.description,
+            "queries": queries_with_line_numbers,
+            "frontend_code": app.frontend_code,
+            "frontend_code_with_lines": _add_line_numbers(app.frontend_code),
+        }
+
+
+async def _write_app_test_query(
+    params: dict[str, Any],
+    organization_id: str,
+) -> dict[str, Any]:
+    """Run a query from an app and return sample data."""
+    app_id: str | None = params.get("app_id")
+    query_name: str | None = params.get("query_name")
+    query_params: dict[str, Any] = params.get("params", {})
+    limit: int = min(params.get("limit", 5), 50)
+
+    if not app_id:
+        return {"error": "app_id is required for test_query operation"}
+    if not query_name:
+        return {"error": "query_name is required for test_query operation"}
+
+    org_uuid: UUID = UUID(organization_id) if isinstance(organization_id, str) else organization_id
+
+    async with get_session(organization_id=organization_id) as session:
+        result = await session.execute(
+            select(App).where(
+                App.id == UUID(app_id),
+                App.organization_id == org_uuid,
+            )
+        )
+        app: App | None = result.scalar_one_or_none()
+
+        if not app:
+            return {"error": f"App not found: {app_id}"}
+
+        queries: dict[str, Any] = app.queries
+        if query_name not in queries:
+            return {
+                "error": f"Query '{query_name}' not found in app. Available queries: {list(queries.keys())}"
+            }
+
+        query_spec: dict[str, Any] = queries[query_name]
+        sql: str = query_spec.get("sql", "")
+
+        exec_params: dict[str, Any] = {"org_id": organization_id, **query_params}
+
+        limited_sql: str = f"SELECT * FROM ({sql.rstrip().rstrip(';')}) AS _q LIMIT {limit}"
+
+        try:
+            result = await session.execute(text(limited_sql), exec_params)
+            rows: list[dict[str, Any]] = [dict(row._mapping) for row in result.fetchall()]
+
+            for row in rows:
+                for key, value in row.items():
+                    if isinstance(value, UUID):
+                        row[key] = str(value)
+                    elif hasattr(value, "isoformat"):
+                        row[key] = value.isoformat()
+
+            return {
+                "status": "success",
+                "app_id": app_id,
+                "query_name": query_name,
+                "row_count": len(rows),
+                "limit": limit,
+                "data": rows,
+            }
+        except Exception as exc:
+            return {
+                "error": f"Query execution failed: {exc}",
+                "query_name": query_name,
+                "sql": sql,
+            }
 
 
 # =============================================================================
