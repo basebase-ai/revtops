@@ -519,17 +519,22 @@ async def create_admin_organization(
         session.add(new_org)
         await session.flush()
 
-        # Auto-enable web_search for new organizations
+        # Auto-enable web_search for new organizations (user-scoped)
+        from config import get_provider_sharing_defaults
         from models.integration import Integration
 
+        sharing_defaults = get_provider_sharing_defaults("web_search")
         web_search_integration = Integration(
             organization_id=new_org.id,
             provider="web_search",
-            scope="organization",
-            user_id=None,
+            user_id=auth.user_id,
             nango_connection_id="builtin",
             connected_by_user_id=auth.user_id,
             is_active=True,
+            share_synced_data=sharing_defaults.share_synced_data,
+            share_query_access=sharing_defaults.share_query_access,
+            share_write_access=sharing_defaults.share_write_access,
+            pending_sharing_config=False,
         )
         session.add(web_search_integration)
 

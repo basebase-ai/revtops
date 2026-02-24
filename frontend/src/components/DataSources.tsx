@@ -25,7 +25,7 @@ import {
   SiLinear,
   SiJira,
 } from 'react-icons/si';
-import { HiOutlineCalendar, HiOutlineMail, HiGlobeAlt, HiUserGroup, HiExclamation, HiDeviceMobile, HiMicrophone, HiLightningBolt, HiX } from 'react-icons/hi';
+import { HiOutlineCalendar, HiOutlineMail, HiGlobeAlt, HiUserGroup, HiExclamation, HiDeviceMobile, HiMicrophone, HiLightningBolt, HiX, HiCog, HiShare, HiLockClosed } from 'react-icons/hi';
 // Custom Apollo.io icon - 8-ray starburst matching their brand
 const ApolloIcon: IconType = ({ className, ...props }) => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className={className} {...props}>
@@ -84,16 +84,27 @@ const ICON_MAP: Record<string, IconType> = {
   sms: HiDeviceMobile,
 };
 
-// User-scoped providers (each user connects individually vs org-wide connection)
-const USER_SCOPED_PROVIDERS = new Set([
-  'gmail',
-  'google_calendar',
-  'microsoft_calendar',
-  'microsoft_mail',
-  'zoom',
-  'fireflies',
-  'google_drive',
-]);
+// Sharing defaults for providers (used when showing the sharing modal)
+const PROVIDER_SHARING_DEFAULTS: Record<string, { shareSyncedData: boolean; shareQueryAccess: boolean; shareWriteAccess: boolean }> = {
+  hubspot: { shareSyncedData: true, shareQueryAccess: false, shareWriteAccess: false },
+  salesforce: { shareSyncedData: true, shareQueryAccess: false, shareWriteAccess: false },
+  slack: { shareSyncedData: true, shareQueryAccess: false, shareWriteAccess: false },
+  apollo: { shareSyncedData: true, shareQueryAccess: false, shareWriteAccess: false },
+  github: { shareSyncedData: true, shareQueryAccess: false, shareWriteAccess: false },
+  linear: { shareSyncedData: true, shareQueryAccess: false, shareWriteAccess: false },
+  jira: { shareSyncedData: true, shareQueryAccess: false, shareWriteAccess: false },
+  asana: { shareSyncedData: true, shareQueryAccess: false, shareWriteAccess: false },
+  web_search: { shareSyncedData: true, shareQueryAccess: false, shareWriteAccess: false },
+  code_sandbox: { shareSyncedData: true, shareQueryAccess: false, shareWriteAccess: false },
+  twilio: { shareSyncedData: true, shareQueryAccess: false, shareWriteAccess: false },
+  gmail: { shareSyncedData: false, shareQueryAccess: false, shareWriteAccess: false },
+  google_calendar: { shareSyncedData: false, shareQueryAccess: false, shareWriteAccess: false },
+  microsoft_calendar: { shareSyncedData: false, shareQueryAccess: false, shareWriteAccess: false },
+  microsoft_mail: { shareSyncedData: false, shareQueryAccess: false, shareWriteAccess: false },
+  fireflies: { shareSyncedData: false, shareQueryAccess: false, shareWriteAccess: false },
+  zoom: { shareSyncedData: false, shareQueryAccess: false, shareWriteAccess: false },
+  google_drive: { shareSyncedData: false, shareQueryAccess: false, shareWriteAccess: false },
+};
 
 // Integration display config (colors, icons, descriptions)
 const INTEGRATION_CONFIG: Record<string, { name: string; description: string; icon: string; color: string }> = {
@@ -123,14 +134,14 @@ const SUPPORTED_PROVIDERS = new Set(Object.keys(INTEGRATION_CONFIG));
 const BUILTIN_CONNECTORS = new Set(['web_search', 'code_sandbox', 'twilio']);
 
 // Common integrations to show as tiles when org has zero connected (display order)
-const COMMON_INTEGRATION_KEYS: ReadonlyArray<{ provider: string; scope: 'organization' | 'user' }> = [
-  { provider: 'hubspot', scope: 'organization' },
-  { provider: 'salesforce', scope: 'organization' },
-  { provider: 'slack', scope: 'organization' },
-  { provider: 'gmail', scope: 'user' },
-  { provider: 'google_calendar', scope: 'user' },
-  { provider: 'zoom', scope: 'user' },
-  { provider: 'apollo', scope: 'organization' },
+const COMMON_INTEGRATION_KEYS: ReadonlyArray<string> = [
+  'hubspot',
+  'salesforce',
+  'slack',
+  'gmail',
+  'google_calendar',
+  'zoom',
+  'apollo',
 ];
 
 // Extended integration type with display info
@@ -325,6 +336,20 @@ export function DataSources(): JSX.Element {
   // Live sync progress from WebSocket
   const [syncProgress, setSyncProgress] = useState<Record<string, number>>({});
   const [syncStep, setSyncStep] = useState<Record<string, string>>({});
+
+  // Sharing modal state
+  interface SharingModalState {
+    isOpen: boolean;
+    integrationId: string;
+    provider: string;
+    providerName: string;
+    shareSyncedData: boolean;
+    shareQueryAccess: boolean;
+    shareWriteAccess: boolean;
+    isInitialSetup: boolean;  // true = post-OAuth, false = editing existing
+  }
+  const [sharingModal, setSharingModal] = useState<SharingModalState | null>(null);
+  const [sharingSaving, setSharingSaving] = useState(false);
 
   const organizationId = organization?.id ?? '';
   const userId = user?.id ?? '';
@@ -522,11 +547,11 @@ export function DataSources(): JSX.Element {
     .filter((provider) => INTEGRATION_CONFIG[provider] !== undefined)
     .map((provider) => {
       const config = INTEGRATION_CONFIG[provider]!;
-      const scope = USER_SCOPED_PROVIDERS.has(provider) ? 'user' as const : 'organization' as const;
+      const defaults = PROVIDER_SHARING_DEFAULTS[provider] ?? { shareSyncedData: false, shareQueryAccess: false, shareWriteAccess: false };
       return {
         id: provider,
         provider,
-        scope,
+        userId: null,
         isActive: false,
         lastSyncAt: null,
         lastError: null,
@@ -536,6 +561,11 @@ export function DataSources(): JSX.Element {
         teamConnections: [],
         teamTotal: 0,
         syncStats: null,
+        shareSyncedData: defaults.shareSyncedData,
+        shareQueryAccess: defaults.shareQueryAccess,
+        shareWriteAccess: defaults.shareWriteAccess,
+        pendingSharingConfig: false,
+        isOwner: false,
         name: config.name,
         description: config.description,
         icon: config.icon,
@@ -545,10 +575,8 @@ export function DataSources(): JSX.Element {
     });
   const allIntegrations: DisplayIntegration[] = [...integrations, ...availableIntegrationsDisplay];
 
-  const handleConnect = async (provider: string, scope: 'organization' | 'user'): Promise<void> => {
-    if (connectingProvider || !organizationId) return;
-    // User-scoped integrations require user_id
-    if (scope === 'user' && !userId) return;
+  const handleConnect = async (provider: string): Promise<void> => {
+    if (connectingProvider || !organizationId || !userId) return;
 
     setConnectingProvider(provider);
 
@@ -561,7 +589,7 @@ export function DataSources(): JSX.Element {
           body: JSON.stringify({
             organization_id: organizationId,
             provider,
-            user_id: userId ?? undefined,
+            user_id: userId,
           }),
         });
         if (!res.ok) {
@@ -574,10 +602,7 @@ export function DataSources(): JSX.Element {
       }
 
       // Get session token from backend for OAuth connectors
-      const params = new URLSearchParams({ organization_id: organizationId });
-      if (scope === 'user' && userId) {
-        params.set('user_id', userId);
-      }
+      const params = new URLSearchParams({ organization_id: organizationId, user_id: userId });
       const response = await fetch(
         `${API_BASE}/auth/connect/${provider}/session?${params.toString()}`
       );
@@ -591,12 +616,12 @@ export function DataSources(): JSX.Element {
 
       // Initialize Nango and open connect UI in popup
       const nango = new Nango();
-      
+
       nango.openConnectUI({
         sessionToken: session_token,
         onEvent: async (event) => {
           console.log('Nango event:', event);
-          
+
           // Handle different possible event types from Nango
           const eventType = event.type as string;
           if (
@@ -605,11 +630,9 @@ export function DataSources(): JSX.Element {
             eventType === 'success'
           ) {
             // Connection successful - confirm and create integration record
-            // Extract the actual Nango connection_id from the event
-            // The event payload contains the real connection_id that Nango created
             const eventData = event as { type: string; connectionId?: string; connection_id?: string; payload?: { connectionId?: string } };
             const nangoConnectionId = eventData.connectionId || eventData.connection_id || eventData.payload?.connectionId || connection_id;
-            
+
             console.log('Connection successful, confirming integration with connectionId:', nangoConnectionId);
             try {
               const confirmResponse = await fetch(`${API_BASE}/auth/integrations/confirm`, {
@@ -617,23 +640,46 @@ export function DataSources(): JSX.Element {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                   provider,
-                  connection_id: nangoConnectionId,  // Use the actual Nango connection_id
+                  connection_id: nangoConnectionId,
                   organization_id: organizationId,
-                  user_id: scope === 'user' ? userId : undefined,
+                  user_id: userId,
                 }),
               });
-              
+
               if (!confirmResponse.ok) {
                 console.error('Failed to confirm integration:', await confirmResponse.text());
-              } else {
-                console.log('Integration confirmed successfully');
+                void fetchIntegrations();
+                setConnectingProvider(null);
+                return;
               }
+
+              // Get the response with integration_id and sharing defaults
+              const confirmData = await confirmResponse.json() as {
+                status: string;
+                integration_id: string;
+                sharing_defaults: { share_synced_data: boolean; share_query_access: boolean; share_write_access: boolean };
+              };
+
+              console.log('Integration confirmed, showing sharing modal:', confirmData);
+
+              // Show sharing modal for user to configure
+              const config = INTEGRATION_CONFIG[provider];
+              setSharingModal({
+                isOpen: true,
+                integrationId: confirmData.integration_id,
+                provider,
+                providerName: config?.name ?? provider,
+                shareSyncedData: confirmData.sharing_defaults.share_synced_data,
+                shareQueryAccess: confirmData.sharing_defaults.share_query_access,
+                shareWriteAccess: confirmData.sharing_defaults.share_write_access,
+                isInitialSetup: true,
+              });
+
+              void fetchIntegrations();
             } catch (confirmError) {
               console.error('Error confirming integration:', confirmError);
             }
-            
-            // Invalidate cache to refetch integrations
-            void fetchIntegrations();
+
             setConnectingProvider(null);
           } else if (eventType === 'close' || eventType === 'closed') {
             // User closed the popup
@@ -648,19 +694,10 @@ export function DataSources(): JSX.Element {
   };
 
   const handleDisconnect = async (provider: string): Promise<void> => {
-    if (!organizationId || disconnectingProviders.has(provider)) return;
-    
-    // Derive scope from provider (source of truth) rather than trusting passed value
-    const isUserScoped = USER_SCOPED_PROVIDERS.has(provider);
-    
-    // User-scoped integrations require user_id
-    if (isUserScoped && !userId) {
-      alert('Unable to disconnect: user session not found. Please refresh the page.');
-      return;
-    }
-    
+    if (!organizationId || !userId || disconnectingProviders.has(provider)) return;
+
     if (!confirm(`Are you sure you want to disconnect ${provider}?`)) return;
-    
+
     // Ask if user wants to delete all synced data
     const deleteData = confirm(
       `Do you also want to delete all data synced from ${provider}?\n\n` +
@@ -671,10 +708,7 @@ export function DataSources(): JSX.Element {
     // Set disconnecting state immediately for instant UI feedback
     setDisconnectingProviders((prev) => new Set(prev).add(provider));
 
-    const params = new URLSearchParams({ organization_id: organizationId });
-    if (isUserScoped && userId) {
-      params.set('user_id', userId);
-    }
+    const params = new URLSearchParams({ organization_id: organizationId, user_id: userId });
     if (deleteData) {
       params.set('delete_data', 'true');
     }
@@ -749,6 +783,59 @@ export function DataSources(): JSX.Element {
         return next;
       });
     }
+  };
+
+  // Save sharing preferences (POST for initial setup, PATCH for updates)
+  const handleSaveSharing = async (): Promise<void> => {
+    if (!sharingModal || sharingSaving) return;
+
+    setSharingSaving(true);
+    try {
+      const endpoint = sharingModal.isInitialSetup
+        ? `${API_BASE}/auth/integrations/${sharingModal.integrationId}/sharing`
+        : `${API_BASE}/auth/integrations/${sharingModal.integrationId}/sharing`;
+      const method = sharingModal.isInitialSetup ? 'POST' : 'PATCH';
+
+      const params = userId ? new URLSearchParams({ user_id: userId }) : '';
+      const response = await fetch(`${endpoint}?${params}`, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          share_synced_data: sharingModal.shareSyncedData,
+          share_query_access: sharingModal.shareQueryAccess,
+          share_write_access: sharingModal.shareWriteAccess,
+        }),
+      });
+
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({ detail: response.statusText }));
+        throw new Error((err as { detail?: string }).detail ?? 'Failed to save sharing settings');
+      }
+
+      console.log('Sharing settings saved successfully');
+      setSharingModal(null);
+      void fetchIntegrations();
+    } catch (error) {
+      console.error('Failed to save sharing settings:', error);
+      alert(`Failed to save: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    } finally {
+      setSharingSaving(false);
+    }
+  };
+
+  // Open sharing modal for editing an existing integration
+  const handleOpenSharingSettings = (integration: DisplayIntegration): void => {
+    const config = INTEGRATION_CONFIG[integration.provider];
+    setSharingModal({
+      isOpen: true,
+      integrationId: integration.id,
+      provider: integration.provider,
+      providerName: config?.name ?? integration.provider,
+      shareSyncedData: integration.shareSyncedData,
+      shareQueryAccess: integration.shareQueryAccess,
+      shareWriteAccess: integration.shareWriteAccess,
+      isInitialSetup: false,
+    });
   };
 
   const handleSync = async (provider: string): Promise<void> => {
@@ -915,14 +1002,14 @@ export function DataSources(): JSX.Element {
   };
 
   // Separate integrations into three categories:
-  // 1. Action Required: user-scoped where team has connected but current user hasn't
-  // 2. Connected: org-scoped, or user-scoped where current user has connected
+  // 1. Action Required: connected by team but not by current user (and not shared for query)
+  // 2. Connected: current user connected, or team connected with sharing enabled
   // 3. Available: not connected by anyone
   const actionRequiredIntegrations = allIntegrations.filter(
-    (i) => i.scope === 'user' && i.connected && !i.currentUserConnected
+    (i) => i.connected && !i.currentUserConnected && !i.shareQueryAccess
   );
   const connectedIntegrations = allIntegrations.filter(
-    (i) => i.connected && (i.scope === 'organization' || i.currentUserConnected)
+    (i) => i.connected && (i.currentUserConnected || i.shareQueryAccess)
   );
   const availableIntegrations = allIntegrations.filter((i) => !i.connected);
 
@@ -1003,27 +1090,57 @@ export function DataSources(): JSX.Element {
       if (state === 'action-required') {
         return {
           text: isMobile ? 'Use desktop to connect' : (isConnecting ? 'Connecting...' : `Connect Your ${integration.name}`),
-          className: isMobile 
+          className: isMobile
             ? 'px-4 py-2 text-sm font-medium text-surface-500 border border-surface-700 rounded-lg cursor-not-allowed'
             : 'px-4 py-2 text-sm font-medium text-amber-400 border border-amber-500/30 hover:bg-amber-500/10 disabled:opacity-50 rounded-lg transition-colors',
-          action: () => { if (!isMobile) void handleConnect(integration.provider, integration.scope); },
+          action: () => { if (!isMobile) void handleConnect(integration.provider); },
           disabled: isMobile || isConnecting,
         };
       }
       return {
-        text: isMobile ? 'Use desktop to connect' : (isConnecting ? 'Connecting...' : (integration.scope === 'user' ? 'Connect your account' : 'Connect')),
+        text: isMobile ? 'Use desktop to connect' : (isConnecting ? 'Connecting...' : 'Connect'),
         className: isMobile
           ? 'px-4 py-2 text-sm font-medium text-surface-500 border border-surface-700 rounded-lg cursor-not-allowed'
           : 'px-4 py-2 text-sm font-medium text-primary-400 border border-primary-500/30 hover:bg-primary-500/10 disabled:opacity-50 rounded-lg transition-colors',
-        action: () => { if (!isMobile) void handleConnect(integration.provider, integration.scope); },
+        action: () => { if (!isMobile) void handleConnect(integration.provider); },
         disabled: isMobile || isConnecting,
       };
     };
     const buttonConfig = getButtonConfig();
 
-    // Team connections info for user-scoped integrations
+    // Sharing status badge
+    const renderSharingBadge = (): JSX.Element | null => {
+      if (state !== 'connected') return null;
+
+      if (integration.pendingSharingConfig) {
+        return (
+          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs bg-amber-500/20 text-amber-400">
+            <HiExclamation className="w-3 h-3" />
+            Setup required
+          </span>
+        );
+      }
+
+      if (integration.shareSyncedData) {
+        return (
+          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs bg-primary-500/20 text-primary-400">
+            <HiShare className="w-3 h-3" />
+            Shared with team
+          </span>
+        );
+      }
+
+      return (
+        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs bg-surface-700 text-surface-400">
+          <HiLockClosed className="w-3 h-3" />
+          Private
+        </span>
+      );
+    };
+
+    // Team connections info
     const renderTeamInfo = (): JSX.Element | null => {
-      if (integration.scope !== 'user' || integration.teamTotal === 0) return null;
+      if (integration.teamTotal === 0) return null;
 
       const connectedCount = integration.teamConnections.length;
       const names = integration.teamConnections.map((tc) => tc.userName);
@@ -1355,8 +1472,14 @@ export function DataSources(): JSX.Element {
                     {badge.text}
                   </span>
                 )}
+                {renderSharingBadge()}
               </div>
               <p className="text-sm text-surface-400 mt-0.5 hidden sm:block">{integration.description}</p>
+              {state === 'connected' && integration.connectedBy && !integration.isOwner && (
+                <p className="text-xs text-surface-500 mt-1 hidden sm:block">
+                  Connected by {integration.connectedBy}
+                </p>
+              )}
               {state === 'connected' && integration.lastSyncAt && (
                 <p className="text-xs text-surface-500 mt-1 hidden sm:block">
                   Last synced: {new Date(integration.lastSyncAt).toLocaleString()}
@@ -1384,8 +1507,18 @@ export function DataSources(): JSX.Element {
             </div>
           </div>
 
-          {/* Actions - full width on mobile */}
-          <div className="flex items-center gap-2 sm:flex-shrink-0">
+          {/* Actions - full width on mobile, right-aligned on desktop */}
+          <div className="flex items-center gap-2 sm:flex-shrink-0 sm:ml-auto">
+            {/* Settings button for owners */}
+            {state === 'connected' && integration.isOwner && (
+              <button
+                onClick={() => handleOpenSharingSettings(integration)}
+                title="Sharing settings"
+                className="p-2 text-surface-400 hover:text-surface-200 hover:bg-surface-800 rounded-lg transition-colors"
+              >
+                <HiCog className="w-5 h-5" />
+              </button>
+            )}
             {!buttonConfig.hidden && (
               <button
                 onClick={buttonConfig.action}
@@ -1401,7 +1534,7 @@ export function DataSources(): JSX.Element {
                 {buttonConfig.text}
               </button>
             )}
-            {state === 'connected' && (
+            {state === 'connected' && integration.isOwner && (
               <button
                 onClick={() => void handleDisconnect(integration.provider)}
                 disabled={isDisconnecting}
@@ -1517,7 +1650,7 @@ export function DataSources(): JSX.Element {
                         onClick={() => {
                           if (!isMobile) {
                             setShowConnectModal(false);
-                            void handleConnect(integration.provider, integration.scope);
+                            void handleConnect(integration.provider);
                           }
                         }}
                         disabled={isMobile || isConnecting}
@@ -1618,10 +1751,10 @@ export function DataSources(): JSX.Element {
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 md:gap-4">
                 {COMMON_INTEGRATION_KEYS.filter(
-                  ({ provider }) =>
+                  (provider) =>
                     INTEGRATION_CONFIG[provider] != null &&
                     availableIntegrations.some((i) => i.provider === provider),
-                ).map(({ provider, scope }) => {
+                ).map((provider) => {
                   const config = INTEGRATION_CONFIG[provider]!;
                   const isConnecting = connectingProvider === provider;
                   return (
@@ -1629,7 +1762,7 @@ export function DataSources(): JSX.Element {
                       key={provider}
                       type="button"
                       onClick={() => {
-                        if (!isMobile) void handleConnect(provider, scope);
+                        if (!isMobile) void handleConnect(provider);
                         else {
                           setConnectSearch(config.name);
                           setShowConnectModal(true);
@@ -1682,6 +1815,110 @@ export function DataSources(): JSX.Element {
         </section>
 
       </div>
+
+      {/* Sharing Preferences Modal */}
+      {sharingModal?.isOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="bg-surface-900 border border-surface-700 rounded-xl shadow-xl w-full max-w-md mx-4">
+            <div className="p-6">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-lg font-semibold text-surface-100">
+                  {sharingModal.isInitialSetup
+                    ? `${sharingModal.providerName} Connected`
+                    : `${sharingModal.providerName} Sharing Settings`}
+                </h2>
+                <button
+                  onClick={() => setSharingModal(null)}
+                  className="p-1 text-surface-400 hover:text-surface-200 rounded"
+                >
+                  <HiX className="w-5 h-5" />
+                </button>
+              </div>
+
+              <p className="text-sm text-surface-400 mb-6">
+                {sharingModal.isInitialSetup
+                  ? 'Configure how your team can access data from this connection.'
+                  : 'Update sharing settings for this integration.'}
+              </p>
+
+              <div className="space-y-4">
+                <label className="flex items-start gap-3 cursor-pointer group">
+                  <input
+                    type="checkbox"
+                    checked={sharingModal.shareSyncedData}
+                    onChange={(e) => setSharingModal({ ...sharingModal, shareSyncedData: e.target.checked })}
+                    className="mt-1 w-4 h-4 rounded border-surface-600 bg-surface-800 text-primary-500 focus:ring-primary-500 focus:ring-offset-0"
+                  />
+                  <div>
+                    <div className="font-medium text-surface-100 group-hover:text-white">
+                      Share synced data with team
+                    </div>
+                    <div className="text-xs text-surface-500 mt-0.5">
+                      Team members can see deals, contacts, and other synced records
+                    </div>
+                  </div>
+                </label>
+
+                <label className="flex items-start gap-3 cursor-pointer group">
+                  <input
+                    type="checkbox"
+                    checked={sharingModal.shareQueryAccess}
+                    onChange={(e) => setSharingModal({ ...sharingModal, shareQueryAccess: e.target.checked })}
+                    className="mt-1 w-4 h-4 rounded border-surface-600 bg-surface-800 text-primary-500 focus:ring-primary-500 focus:ring-offset-0"
+                  />
+                  <div>
+                    <div className="font-medium text-surface-100 group-hover:text-white">
+                      Allow team to query live data
+                    </div>
+                    <div className="text-xs text-surface-500 mt-0.5">
+                      Team can run queries using your connection (not recommended for personal data)
+                    </div>
+                  </div>
+                </label>
+
+                <label className="flex items-start gap-3 cursor-pointer group">
+                  <input
+                    type="checkbox"
+                    checked={sharingModal.shareWriteAccess}
+                    onChange={(e) => setSharingModal({ ...sharingModal, shareWriteAccess: e.target.checked })}
+                    className="mt-1 w-4 h-4 rounded border-surface-600 bg-surface-800 text-primary-500 focus:ring-primary-500 focus:ring-offset-0"
+                  />
+                  <div>
+                    <div className="font-medium text-surface-100 group-hover:text-white">
+                      Allow team to write data
+                    </div>
+                    <div className="text-xs text-surface-500 mt-0.5">
+                      Team can create/update records as you (rarely needed)
+                    </div>
+                  </div>
+                </label>
+              </div>
+
+              <div className="flex justify-end gap-3 mt-6 pt-4 border-t border-surface-700">
+                <button
+                  onClick={() => setSharingModal(null)}
+                  className="px-4 py-2 text-sm font-medium text-surface-300 hover:text-surface-100 transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={() => void handleSaveSharing()}
+                  disabled={sharingSaving}
+                  className="px-4 py-2 text-sm font-medium bg-primary-600 hover:bg-primary-500 text-white rounded-lg disabled:opacity-50 transition-colors flex items-center gap-2"
+                >
+                  {sharingSaving && (
+                    <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                    </svg>
+                  )}
+                  {sharingModal.isInitialSetup ? 'Save & Start Sync' : 'Save Changes'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
     </div>
   );

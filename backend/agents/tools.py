@@ -514,6 +514,9 @@ async def _get_connector_instance(
 ) -> tuple["BaseConnector | None", str | None]:
     """Resolve a connector by slug, verify active Integration, and instantiate.
 
+    All connectors are user-scoped. For query/write operations, checks sharing flags
+    to determine if the requesting user has access.
+
     Returns (connector_instance, None) on success or (None, error_message) on failure.
     """
     from connectors.base import BaseConnector
@@ -532,23 +535,62 @@ async def _get_connector_instance(
         if cap not in meta.capabilities:
             return None, f"System '{slug}' does not support {required_capability}. Capabilities: {[c.value for c in meta.capabilities]}"
 
+    # Find an integration the user can access
     async with get_session(organization_id=organization_id) as session:
-        conditions = [
-            Integration.organization_id == UUID(organization_id),
-            Integration.provider == slug,
-            Integration.is_active == True,  # noqa: E712
-        ]
-        if meta.scope.value == "user" and user_id:
-            conditions.append(Integration.user_id == UUID(user_id))
-        result = await session.execute(select(Integration).where(*conditions))
-        integration: Integration | None = result.scalar_one_or_none()
+        # First, try to find user's own integration
+        if user_id:
+            result = await session.execute(
+                select(Integration).where(
+                    Integration.organization_id == UUID(organization_id),
+                    Integration.provider == slug,
+                    Integration.user_id == UUID(user_id),
+                    Integration.is_active == True,  # noqa: E712
+                )
+            )
+            integration: Integration | None = result.scalar_one_or_none()
+        else:
+            integration = None
+
+        # If no personal integration, look for shared integrations
         if integration is None:
+            # For query/write, need to check sharing flags
+            if required_capability in ("query", "write"):
+                share_flag = (
+                    Integration.share_query_access if required_capability == "query"
+                    else Integration.share_write_access
+                )
+                result = await session.execute(
+                    select(Integration).where(
+                        Integration.organization_id == UUID(organization_id),
+                        Integration.provider == slug,
+                        Integration.is_active == True,  # noqa: E712
+                        share_flag == True,  # noqa: E712
+                    )
+                )
+                integration = result.scalar_one_or_none()
+            else:
+                # For sync, find any active integration
+                result = await session.execute(
+                    select(Integration).where(
+                        Integration.organization_id == UUID(organization_id),
+                        Integration.provider == slug,
+                        Integration.is_active == True,  # noqa: E712
+                    )
+                )
+                integration = result.scalar_one_or_none()
+
+        if integration is None:
+            if required_capability == "query":
+                return None, f"No {slug} integration with query access. Connect your own or ask a teammate to enable query sharing."
+            elif required_capability == "write":
+                return None, f"No {slug} integration with write access. Connect your own or ask a teammate to enable write sharing."
             return None, f"System '{slug}' is not connected. Ask the user to connect it in the Connectors page."
 
-    if meta.scope.value == "user":
-        instance: BaseConnector = connector_cls(organization_id, user_id=user_id)
-    else:
-        instance = connector_cls(organization_id)
+        # Store integration owner's user_id for the connector
+        integration_user_id = str(integration.user_id)
+
+    # Instantiate connector with the integration owner's user_id
+    instance: BaseConnector = connector_cls(organization_id, user_id=integration_user_id)
 
     return instance, None
 
@@ -4761,70 +4803,65 @@ async def _initiate_connector(
     
     Returns session info that the frontend uses to open the OAuth popup.
     """
-    from config import get_nango_integration_id, get_provider_scope, PROVIDER_SCOPES
+    from config import get_nango_integration_id, PROVIDER_SHARING_DEFAULTS
     from connectors.registry import discover_connectors
     from services.nango import get_nango_client
-    
+
     provider = params.get("provider", "").strip().lower()
-    
+
     if not provider:
         return {"error": "provider is required (e.g., 'jira', 'salesforce', 'hubspot')."}
-    
+
     # Validate provider exists
     registry = discover_connectors()
-    if provider not in registry and provider not in PROVIDER_SCOPES:
-        available = sorted(set(list(registry.keys()) + list(PROVIDER_SCOPES.keys())))
+    if provider not in registry and provider not in PROVIDER_SHARING_DEFAULTS:
+        available = sorted(set(list(registry.keys()) + list(PROVIDER_SHARING_DEFAULTS.keys())))
         return {
             "error": f"Unknown provider '{provider}'.",
             "available_connectors": available,
         }
-    
-    # Check if already connected
+
+    # All integrations are user-scoped, user_id is required
+    if not user_id:
+        return {"error": "user_id is required for all connector authentication."}
+
+    # Check if already connected for this user
     async with get_session(organization_id=organization_id) as session:
-        scope = get_provider_scope(provider)
-        conditions = [
-            Integration.organization_id == UUID(organization_id),
-            Integration.provider == provider,
-            Integration.is_active == True,  # noqa: E712
-        ]
-        if scope == "user" and user_id:
-            conditions.append(Integration.user_id == UUID(user_id))
-        
-        result = await session.execute(select(Integration).where(*conditions))
+        result = await session.execute(
+            select(Integration).where(
+                Integration.organization_id == UUID(organization_id),
+                Integration.provider == provider,
+                Integration.user_id == UUID(user_id),
+                Integration.is_active == True,  # noqa: E712
+            )
+        )
         existing = result.scalar_one_or_none()
-        
+
         if existing:
             return {
                 "status": "already_connected",
                 "message": f"{provider} is already connected.",
                 "provider": provider,
             }
-    
+
     # Handle built-in connectors (no OAuth needed)
     builtin_connectors = {"web_search", "code_sandbox", "twilio"}
     if provider in builtin_connectors:
         return {
             "action": "connect_builtin",
             "provider": provider,
-            "scope": "organization",
             "message": f"Click to enable {provider}.",
         }
-    
+
     # Get Nango integration ID
     try:
         nango_integration_id = get_nango_integration_id(provider)
     except ValueError:
         return {"error": f"Provider '{provider}' is not configured for OAuth."}
-    
-    # Determine scope and connection ID
-    scope = get_provider_scope(provider)
-    if scope == "user":
-        if not user_id:
-            return {"error": f"{provider} requires user authentication. User ID is missing."}
-        connection_id = f"{organization_id}:user:{user_id}"
-    else:
-        connection_id = organization_id
-    
+
+    # All connections are user-scoped
+    connection_id = f"{organization_id}:user:{user_id}"
+
     # Create Nango session
     nango = get_nango_client()
     try:
@@ -4839,7 +4876,6 @@ async def _initiate_connector(
     return {
         "action": "connect_oauth",
         "provider": provider,
-        "scope": scope,
         "session_token": session_data.get("token"),
         "connection_id": connection_id,
         "message": f"Opening {provider} authorization...",

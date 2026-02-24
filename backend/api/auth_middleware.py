@@ -114,22 +114,33 @@ async def _get_jwks() -> dict:
     
     jwks_url = f"{supabase_url}/auth/v1/.well-known/jwks.json"
     
-    try:
-        async with httpx.AsyncClient() as client:
-            response = await client.get(jwks_url)
-            response.raise_for_status()
-            _jwks_cache = response.json()
-            logger.info(f"Fetched JWKS from {jwks_url}")
-            return _jwks_cache
-    except Exception as e:
-        logger.error(f"Failed to fetch JWKS from {jwks_url}: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to fetch authentication keys",
-        )
+    # Try with retries and timeout
+    max_retries = 3
+    last_error: Exception | None = None
+    
+    for attempt in range(max_retries):
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(5.0)) as client:
+                response = await client.get(jwks_url)
+                response.raise_for_status()
+                _jwks_cache = response.json()
+                logger.info(f"Fetched JWKS from {jwks_url}")
+                return _jwks_cache
+        except Exception as e:
+            last_error = e
+            logger.warning(f"JWKS fetch attempt {attempt + 1}/{max_retries} failed: {e}")
+            if attempt < max_retries - 1:
+                import asyncio
+                await asyncio.sleep(0.5 * (attempt + 1))  # Backoff
+    
+    logger.error(f"Failed to fetch JWKS from {jwks_url} after {max_retries} attempts: {last_error}")
+    raise HTTPException(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        detail="Failed to fetch authentication keys",
+    )
 
 
-def _get_signing_key(jwks: dict, token: str) -> dict:
+def _get_signing_key(jwks: dict, token: str) -> str:
     """
     Find the correct signing key from JWKS based on the token's kid header.
     
@@ -138,8 +149,10 @@ def _get_signing_key(jwks: dict, token: str) -> dict:
         token: The JWT token string
         
     Returns:
-        The matching key from JWKS
+        The PEM-encoded public key string
     """
+    from jose import jwk
+    
     try:
         unverified_header = jwt.get_unverified_header(token)
     except JWTError:
@@ -153,7 +166,7 @@ def _get_signing_key(jwks: dict, token: str) -> dict:
     if not kid:
         # Fallback: try legacy HS256 if no kid
         if settings.SUPABASE_JWT_SECRET:
-            return {"kty": "oct", "k": settings.SUPABASE_JWT_SECRET}
+            return settings.SUPABASE_JWT_SECRET
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Token missing key ID",
@@ -162,7 +175,8 @@ def _get_signing_key(jwks: dict, token: str) -> dict:
     
     for key in jwks.get("keys", []):
         if key.get("kid") == kid:
-            return key
+            # Convert JWK to PEM format for verification
+            return jwk.construct(key).to_pem().decode('utf-8')
     
     # Key not found - clear cache and fail
     global _jwks_cache

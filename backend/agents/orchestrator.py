@@ -779,7 +779,6 @@ class ChatOrchestrator:
                 result = await session.execute(
                     select(
                         Integration.provider,
-                        Integration.scope,
                         Integration.last_sync_at,
                         Integration.last_error,
                     )
@@ -794,9 +793,8 @@ class ChatOrchestrator:
             active_providers: dict[str, dict[str, Any]] = {}
             for row in rows:
                 active_providers[row[0]] = {
-                    "scope": row[1],
-                    "last_sync": row[2],
-                    "last_error": row[3],
+                    "last_sync": row[1],
+                    "last_error": row[2],
                 }
 
             registry = discover_connectors()

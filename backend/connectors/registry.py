@@ -46,8 +46,10 @@ class AuthType(Enum):
     CUSTOM = "custom"
 
 
+# ConnectorScope is deprecated - all connectors are now user-scoped.
+# Kept for backward compatibility during migration.
 class ConnectorScope(Enum):
-    """Whether a connector is org-wide or per-user."""
+    """DEPRECATED: All connectors are now user-scoped."""
 
     ORGANIZATION = "organization"
     USER = "user"
@@ -56,6 +58,15 @@ class ConnectorScope(Enum):
 # ---------------------------------------------------------------------------
 # Metadata dataclasses
 # ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class SharingDefaults:
+    """Default sharing settings for a connector."""
+
+    share_synced_data: bool = False
+    share_query_access: bool = False
+    share_write_access: bool = False
 
 
 @dataclass(frozen=True)
@@ -103,7 +114,9 @@ class ConnectorMeta:
     name: str
     slug: str
     auth_type: AuthType
-    scope: ConnectorScope
+    # DEPRECATED: scope is ignored - all connectors are user-scoped.
+    # Kept for backward compatibility; will be removed in future version.
+    scope: ConnectorScope = ConnectorScope.USER
     entity_types: list[str] = field(default_factory=list)
     capabilities: list[Capability] = field(default_factory=lambda: [Capability.SYNC])
     write_operations: list[WriteOperation] = field(default_factory=list)
@@ -115,8 +128,10 @@ class ConnectorMeta:
     nango_integration_id: str | None = None
     description: str = ""
     icon: str = ""
-    # For LISTEN: key in integration.extra_data holding the webhook signing secret (e.g. "linear_webhook_secret")
+    # For LISTEN: key in integration.extra_data holding the webhook signing secret
     webhook_secret_extra_data_key: str | None = None
+    # Default sharing settings for this connector (used in UI)
+    default_sharing: SharingDefaults | None = None
 
 
 # ---------------------------------------------------------------------------

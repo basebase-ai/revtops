@@ -39,7 +39,6 @@ async def list_connectors() -> list[dict[str, Any]]:
             "name": meta.name,
             "description": meta.description,
             "auth_type": meta.auth_type.value,
-            "scope": meta.scope.value,
             "entity_types": meta.entity_types,
             "capabilities": [c.value for c in meta.capabilities],
             "write_operations": [

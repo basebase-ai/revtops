@@ -75,12 +75,19 @@ export interface SyncStats {
 export interface Integration {
   id: string;
   provider: string;
-  scope: "organization" | "user";
+  userId: string | null;
   isActive: boolean;
   lastSyncAt: string | null;
   lastError: string | null;
   connectedAt: string | null;
   connectedBy: string | null;
+  // Sharing settings
+  shareSyncedData: boolean;
+  shareQueryAccess: boolean;
+  shareWriteAccess: boolean;
+  pendingSharingConfig: boolean;
+  // Ownership
+  isOwner: boolean;
   currentUserConnected: boolean;
   teamConnections: TeamConnection[];
   teamTotal: number;
@@ -598,12 +605,17 @@ export const useAppStore = create<AppState>()(
           interface IntegrationApiResponse {
             id: string;
             provider: string;
-            scope: string;
+            user_id: string | null;
             is_active: boolean;
             last_sync_at: string | null;
             last_error: string | null;
             connected_at: string | null;
             connected_by: string | null;
+            share_synced_data: boolean;
+            share_query_access: boolean;
+            share_write_access: boolean;
+            pending_sharing_config: boolean;
+            is_owner: boolean;
             current_user_connected: boolean;
             team_connections: Array<{ user_id: string; user_name: string }>;
             team_total: number;
@@ -617,12 +629,17 @@ export const useAppStore = create<AppState>()(
           const integrations: Integration[] = data.integrations.map((i) => ({
             id: i.id,
             provider: i.provider,
-            scope: i.scope as "organization" | "user",
+            userId: i.user_id,
             isActive: i.is_active,
             lastSyncAt: i.last_sync_at,
             lastError: i.last_error,
             connectedAt: i.connected_at,
             connectedBy: i.connected_by,
+            shareSyncedData: i.share_synced_data,
+            shareQueryAccess: i.share_query_access,
+            shareWriteAccess: i.share_write_access,
+            pendingSharingConfig: i.pending_sharing_config,
+            isOwner: i.is_owner,
             currentUserConnected: i.current_user_connected,
             teamConnections: i.team_connections.map((tc) => ({
               userId: tc.user_id,

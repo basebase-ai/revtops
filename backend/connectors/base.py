@@ -41,22 +41,22 @@ class BaseConnector(ABC):
     # Not required yet (backward compat) but needed for auto-discovery.
     meta: ConnectorMeta
 
-    def __init__(self, organization_id: str, user_id: Optional[str] = None) -> None:
+    def __init__(self, organization_id: str, user_id: str | None = None) -> None:
         """
         Initialize the connector.
 
         Args:
             organization_id: UUID of the organization to sync data for
-            user_id: Optional UUID of specific user (for per-user integrations like Gmail)
+            user_id: UUID of the user who owns this integration (required for all connectors)
         """
         self.organization_id = organization_id
         self.user_id = user_id
-        self._token: Optional[str] = None
-        self._credentials: Optional[dict[str, Any]] = None
-        self._integration: Optional[Integration] = None
+        self._token: str | None = None
+        self._credentials: dict[str, Any] | None = None
+        self._integration: Integration | None = None
 
     async def ensure_sync_active(self, stage: str) -> None:
-        """Stop in-flight syncs when integration has been disconnected."""
+        """Stop in-flight syncs when integration has been disconnected or pending config."""
         async with get_session(organization_id=self.organization_id) as session:
             conditions = [
                 Integration.organization_id == UUID(self.organization_id),
@@ -64,8 +64,6 @@ class BaseConnector(ABC):
             ]
             if self.user_id:
                 conditions.append(Integration.user_id == UUID(self.user_id))
-            else:
-                conditions.append(Integration.user_id.is_(None))
 
             result = await session.execute(select(Integration).where(*conditions))
             integration = result.scalar_one_or_none()
@@ -99,7 +97,72 @@ class BaseConnector(ABC):
                 f"{self.source_system} integration deactivated during sync ({stage})"
             )
 
+        if integration.pending_sharing_config:
+            logger.info(
+                "Sync cancelled because sharing config is pending",
+                extra={
+                    "organization_id": self.organization_id,
+                    "provider": self.source_system,
+                    "integration_id": str(integration.id),
+                    "user_id": self.user_id,
+                    "stage": stage,
+                },
+            )
+            raise SyncCancelledError(
+                f"{self.source_system} integration pending sharing configuration ({stage})"
+            )
+
         self._integration = integration
+
+    async def check_access(
+        self, operation: str, requesting_user_id: str | None
+    ) -> tuple[bool, str | None]:
+        """
+        Check if a user has access to perform an operation via this connector.
+
+        Args:
+            operation: "sync", "query", or "write"
+            requesting_user_id: UUID of the user requesting access
+
+        Returns:
+            Tuple of (allowed, deny_reason)
+        """
+        if not self._integration:
+            await self._load_integration()
+
+        if not self._integration:
+            return False, "Integration not found"
+
+        # Owner always has access
+        if requesting_user_id and str(self._integration.user_id) == requesting_user_id:
+            return True, None
+
+        # Check sharing flags for non-owners
+        if operation == "sync":
+            return True, None  # Sync is always allowed (runs as owner)
+        elif operation == "query":
+            if self._integration.share_query_access:
+                return True, None
+            return False, "Query access not shared for this integration"
+        elif operation == "write":
+            if self._integration.share_write_access:
+                return True, None
+            return False, "Write access not shared for this integration"
+
+        return False, f"Unknown operation: {operation}"
+
+    async def _load_integration(self) -> None:
+        """Load integration record from database."""
+        async with get_session(organization_id=self.organization_id) as session:
+            conditions = [
+                Integration.organization_id == UUID(self.organization_id),
+                Integration.provider == self.source_system,
+            ]
+            if self.user_id:
+                conditions.append(Integration.user_id == UUID(self.user_id))
+
+            result = await session.execute(select(Integration).where(*conditions))
+            self._integration = result.scalar_one_or_none()
 
     @abstractmethod
     async def sync_deals(self) -> int:
@@ -199,18 +262,17 @@ class BaseConnector(ABC):
         if self._token:
             return self._token, ""
 
-        # Verify we have an active integration
+        # Verify we have an active integration for this user
         async with get_session(organization_id=self.organization_id) as session:
-            # Build base query
             conditions = [
                 Integration.organization_id == UUID(self.organization_id),
                 Integration.provider == self.source_system,
-                Integration.is_active == True,
+                Integration.is_active == True,  # noqa: E712
             ]
-            # Add user_id filter for per-user integrations (Gmail, Outlook)
+            # All integrations are user-scoped
             if self.user_id:
                 conditions.append(Integration.user_id == UUID(self.user_id))
-            
+
             result = await session.execute(
                 select(Integration).where(*conditions)
             )

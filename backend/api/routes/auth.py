@@ -29,7 +29,7 @@ from api.auth_middleware import AuthContext, get_current_auth
 from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select, text
 
-from config import settings, get_nango_integration_id, get_provider_scope
+from config import settings, get_nango_integration_id, get_provider_sharing_defaults, PROVIDER_SHARING_DEFAULTS
 from models.database import get_admin_session, get_session
 from models.integration import Integration
 from models.memory import Memory
@@ -247,18 +247,25 @@ class IntegrationResponse(BaseModel):
 
     id: str
     provider: str
-    scope: str  # 'organization' or 'user'
     is_active: bool
     last_sync_at: Optional[str]
     last_error: Optional[str]
     connected_at: Optional[str]
-    # For org-scoped integrations
-    connected_by: Optional[str] = None
-    # For user-scoped integrations
+    # Owner info
+    user_id: Optional[str] = None
+    connected_by: Optional[str] = None  # Display name of owner
+    # Sharing settings
+    share_synced_data: bool = False
+    share_query_access: bool = False
+    share_write_access: bool = False
+    pending_sharing_config: bool = False
+    # Whether current user owns this integration
+    is_owner: bool = False
+    # Team connections (other users who have connected this provider)
     current_user_connected: bool = False
     team_connections: list[TeamConnection] = []
     team_total: int = 0
-    # Sync statistics - counts of objects synced
+    # Sync statistics
     sync_stats: Optional[dict[str, int]] = None
 
 
@@ -827,19 +834,6 @@ async def create_organization(request: CreateOrganizationRequest) -> Organizatio
             current_period_end=now + timedelta(days=30),
         )
         session.add(new_org)
-        await session.flush()
-
-        # Auto-enable web_search for new organizations
-        web_search_integration = Integration(
-            organization_id=org_uuid,
-            provider="web_search",
-            scope="organization",
-            user_id=None,
-            nango_connection_id="builtin",
-            connected_by_user_id=None,
-            is_active=True,
-        )
-        session.add(web_search_integration)
 
         await session.commit()
         await session.refresh(new_org)
@@ -1759,18 +1753,11 @@ async def get_connect_session(
     This is the recommended approach - returns a session token that
     the frontend uses with @nangohq/frontend to open a popup OAuth flow.
 
-    For user-scoped integrations (email, calendar), user_id is REQUIRED.
-    For org-scoped integrations (CRMs), either user_id or organization_id works.
-    
-    Connection ID format:
-    - Organization-scoped: "{org_id}"
-    - User-scoped: "{org_id}:user:{user_id}"
+    All integrations are user-scoped, so user_id is REQUIRED.
+    Connection ID format: "{org_id}:user:{user_id}"
     """
     org_id_str: str = ""
-    user_id_str: Optional[str] = None
-    
-    # Get the scope for this provider
-    scope = get_provider_scope(provider)
+    user_id_str: str | None = None
 
     if organization_id:
         try:
@@ -1778,7 +1765,7 @@ async def get_connect_session(
             org_id_str = organization_id
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid organization ID")
-    
+
     if user_id:
         try:
             user_uuid = UUID(user_id)
@@ -1791,15 +1778,15 @@ async def get_connect_session(
             if not user or not user.organization_id:
                 raise HTTPException(status_code=404, detail="User not found")
             org_id_str = str(user.organization_id)
-    
+
     if not org_id_str:
         raise HTTPException(status_code=400, detail="Either user_id or organization_id required")
-    
-    # For user-scoped integrations, user_id is required
-    if scope == "user" and not user_id_str:
+
+    # All integrations are user-scoped, user_id is required
+    if not user_id_str:
         raise HTTPException(
-            status_code=400, 
-            detail=f"{provider} is a user-scoped integration. user_id is required."
+            status_code=400,
+            detail="user_id is required for all integrations"
         )
 
     try:
@@ -1807,11 +1794,8 @@ async def get_connect_session(
     except ValueError:
         raise HTTPException(status_code=400, detail=f"Unknown provider: {provider}")
 
-    # Build connection ID based on scope
-    if scope == "user":
-        connection_id = f"{org_id_str}:user:{user_id_str}"
-    else:
-        connection_id = org_id_str
+    # All connections are user-scoped
+    connection_id = f"{org_id_str}:user:{user_id_str}"
 
     nango = get_nango_client()
     try:
@@ -1835,47 +1819,36 @@ class ConfirmConnectionRequest(BaseModel):
     provider: str
     connection_id: str
     organization_id: str
-    user_id: Optional[str] = None
+    user_id: str  # Required - all integrations are user-scoped
 
 
 @router.post("/integrations/confirm")
 async def confirm_integration(
     request: ConfirmConnectionRequest,
     background_tasks: BackgroundTasks,
-) -> dict[str, str]:
+) -> dict[str, Any]:
     """
     Confirm and create an integration record after successful OAuth.
-    
+
     Called by the frontend after receiving a success event from Nango.
-    Queries Nango to get the actual connection_id and stores it.
+    Creates integration with pending_sharing_config=true - sync won't start
+    until user configures sharing preferences via /integrations/{id}/sharing.
     """
     try:
         org_uuid = UUID(request.organization_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid organization ID")
-    
-    user_uuid: Optional[UUID] = None
-    if request.user_id:
-        try:
-            user_uuid = UUID(request.user_id)
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid user ID")
-    
-    scope = get_provider_scope(request.provider)
-    
-    # For user-scoped integrations, user_id is required
-    if scope == "user" and not user_uuid:
-        raise HTTPException(
-            status_code=400,
-            detail=f"{request.provider} is a user-scoped integration. user_id is required."
-        )
-    
+
+    try:
+        user_uuid = UUID(request.user_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid user ID")
+
     # The frontend now passes the actual Nango connection_id from the event callback
-    # We trust this value and store it directly
     nango_connection_id: str = request.connection_id
     print(f"[Confirm] Received connection_id from frontend: {nango_connection_id}")
 
-    connection_metadata: Optional[dict[str, Any]] = None
+    connection_metadata: dict[str, Any] | None = None
     try:
         nango = get_nango_client()
         nango_integration_id = get_nango_integration_id(request.provider)
@@ -1892,16 +1865,13 @@ async def confirm_integration(
                 slack_user_payload,
             )
         # For Slack, ensure team_id is present in connection_metadata.
-        # Nango may store the Slack OAuth response in credentials.raw which
-        # contains team.id, or the auth.test response may be in data.
         if request.provider == "slack":
             if connection_metadata is None:
                 connection_metadata = {}
             if "team_id" not in connection_metadata:
-                # Try credentials.raw.team.id (Slack OAuth v2 response)
                 creds_raw: dict[str, Any] = (connection.get("credentials") or {}).get("raw") or {}
                 raw_team: dict[str, Any] = creds_raw.get("team") or {}
-                raw_team_id: Optional[str] = raw_team.get("id") or creds_raw.get("team_id")
+                raw_team_id: str | None = raw_team.get("id") or creds_raw.get("team_id")
                 if raw_team_id:
                     connection_metadata["team_id"] = raw_team_id
                     logger.info(
@@ -1929,62 +1899,60 @@ async def confirm_integration(
             f"[Confirm] Failed to fetch Nango metadata for provider={request.provider}, "
             f"connection_id={nango_connection_id}: {exc}"
         )
-    
+
+    # Get default sharing settings for this provider
+    sharing_defaults = get_provider_sharing_defaults(request.provider)
+
+    integration_id: str = ""
     async with get_session() as session:
-        # Set RLS context
         await session.execute(
             text("SELECT set_config('app.current_org_id', :org_id, true)"),
             {"org_id": str(org_uuid)}
         )
-        
-        # Check for existing integration
-        if scope == "user":
-            result = await session.execute(
-                select(Integration).where(
-                    Integration.organization_id == org_uuid,
-                    Integration.provider == request.provider,
-                    Integration.user_id == user_uuid,
-                )
+
+        # Check for existing integration for this user
+        result = await session.execute(
+            select(Integration).where(
+                Integration.organization_id == org_uuid,
+                Integration.provider == request.provider,
+                Integration.user_id == user_uuid,
             )
-        else:
-            result = await session.execute(
-                select(Integration).where(
-                    Integration.organization_id == org_uuid,
-                    Integration.provider == request.provider,
-                    Integration.user_id.is_(None),
-                )
-            )
-        
+        )
+
         existing = result.scalar_one_or_none()
-        
+
         if existing:
-            # Update existing integration with the actual Nango connection_id
             existing.nango_connection_id = nango_connection_id
             existing.is_active = True
             existing.last_error = None
             existing.updated_at = datetime.utcnow()
+            existing.pending_sharing_config = True  # Re-prompt for sharing config on reconnect
             if connection_metadata:
                 existing.extra_data = connection_metadata
+            integration_id = str(existing.id)
         else:
-            # Create new integration with the actual Nango connection_id
             new_integration = Integration(
                 organization_id=org_uuid,
                 provider=request.provider,
-                scope=scope,
-                user_id=user_uuid if scope == "user" else None,
+                user_id=user_uuid,
                 nango_connection_id=nango_connection_id,
                 connected_by_user_id=user_uuid,
                 is_active=True,
                 extra_data=connection_metadata,
+                # Sharing flags - defaults from provider config, user will confirm in modal
+                share_synced_data=sharing_defaults.share_synced_data,
+                share_query_access=sharing_defaults.share_query_access,
+                share_write_access=sharing_defaults.share_write_access,
+                pending_sharing_config=True,  # Sync won't start until user confirms
             )
             session.add(new_integration)
-        
+            await session.flush()
+            integration_id = str(new_integration.id)
+
         await session.commit()
-    
-    # Trigger initial sync in the background
-    # For user-scoped integrations, pass user_id so the connector can find the right integration
-    user_id_for_sync: Optional[str] = str(user_uuid) if scope == "user" and user_uuid else None
-    background_tasks.add_task(run_initial_sync, str(org_uuid), request.provider, user_id_for_sync)
+
+    # Don't trigger sync yet - wait for user to configure sharing preferences
+    # Sync will be triggered by POST /integrations/{id}/sharing
 
     if request.provider == "slack" and user_uuid:
         background_tasks.add_task(
@@ -1993,8 +1961,159 @@ async def confirm_integration(
             user_uuid,
             connection_metadata,
         )
-    
-    return {"status": "confirmed", "provider": request.provider}
+
+    return {
+        "status": "pending_sharing_config",
+        "provider": request.provider,
+        "integration_id": integration_id,
+        "sharing_defaults": {
+            "share_synced_data": sharing_defaults.share_synced_data,
+            "share_query_access": sharing_defaults.share_query_access,
+            "share_write_access": sharing_defaults.share_write_access,
+        },
+    }
+
+
+class UpdateSharingRequest(BaseModel):
+    """Request to update sharing preferences for an integration."""
+    share_synced_data: bool
+    share_query_access: bool
+    share_write_access: bool
+
+
+@router.post("/integrations/{integration_id}/sharing")
+async def update_integration_sharing(
+    integration_id: str,
+    request: UpdateSharingRequest,
+    background_tasks: BackgroundTasks,
+    user_id: str | None = None,
+) -> dict[str, Any]:
+    """
+    Update sharing preferences for an integration.
+
+    Called after OAuth to configure sharing, or later to modify settings.
+    If pending_sharing_config was true, clears it and triggers initial sync.
+    Only the integration owner can modify sharing settings.
+    """
+    try:
+        integration_uuid = UUID(integration_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid integration ID")
+
+    user_uuid: UUID | None = None
+    if user_id:
+        try:
+            user_uuid = UUID(user_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid user ID")
+
+    async with get_session() as session:
+        result = await session.execute(
+            select(Integration).where(Integration.id == integration_uuid)
+        )
+        integration = result.scalar_one_or_none()
+
+        if not integration:
+            raise HTTPException(status_code=404, detail="Integration not found")
+
+        # Only the owner can modify sharing settings
+        if user_uuid and integration.user_id != user_uuid:
+            raise HTTPException(
+                status_code=403,
+                detail="Only the integration owner can modify sharing settings"
+            )
+
+        # Set RLS context
+        await session.execute(
+            text("SELECT set_config('app.current_org_id', :org_id, true)"),
+            {"org_id": str(integration.organization_id)}
+        )
+
+        was_pending = integration.pending_sharing_config
+
+        integration.share_synced_data = request.share_synced_data
+        integration.share_query_access = request.share_query_access
+        integration.share_write_access = request.share_write_access
+        integration.pending_sharing_config = False
+        integration.updated_at = datetime.utcnow()
+
+        await session.commit()
+
+        org_id_str = str(integration.organization_id)
+        user_id_str = str(integration.user_id)
+        provider = integration.provider
+
+    # If this was the initial sharing config, trigger sync now
+    if was_pending:
+        background_tasks.add_task(run_initial_sync, org_id_str, provider, user_id_str)
+
+    return {
+        "status": "updated",
+        "integration_id": integration_id,
+        "share_synced_data": request.share_synced_data,
+        "share_query_access": request.share_query_access,
+        "share_write_access": request.share_write_access,
+        "sync_triggered": was_pending,
+    }
+
+
+@router.patch("/integrations/{integration_id}/sharing")
+async def patch_integration_sharing(
+    integration_id: str,
+    request: UpdateSharingRequest,
+    user_id: str | None = None,
+) -> dict[str, Any]:
+    """
+    Update sharing preferences for an existing integration (no sync trigger).
+
+    Use POST for initial setup (triggers sync), PATCH for later modifications.
+    """
+    try:
+        integration_uuid = UUID(integration_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid integration ID")
+
+    user_uuid: UUID | None = None
+    if user_id:
+        try:
+            user_uuid = UUID(user_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid user ID")
+
+    async with get_session() as session:
+        result = await session.execute(
+            select(Integration).where(Integration.id == integration_uuid)
+        )
+        integration = result.scalar_one_or_none()
+
+        if not integration:
+            raise HTTPException(status_code=404, detail="Integration not found")
+
+        if user_uuid and integration.user_id != user_uuid:
+            raise HTTPException(
+                status_code=403,
+                detail="Only the integration owner can modify sharing settings"
+            )
+
+        await session.execute(
+            text("SELECT set_config('app.current_org_id', :org_id, true)"),
+            {"org_id": str(integration.organization_id)}
+        )
+
+        integration.share_synced_data = request.share_synced_data
+        integration.share_query_access = request.share_query_access
+        integration.share_write_access = request.share_write_access
+        integration.updated_at = datetime.utcnow()
+
+        await session.commit()
+
+    return {
+        "status": "updated",
+        "integration_id": integration_id,
+        "share_synced_data": request.share_synced_data,
+        "share_query_access": request.share_query_access,
+        "share_write_access": request.share_write_access,
+    }
 
 
 _BUILTIN_CONNECTORS: frozenset[str] = frozenset({"web_search", "code_sandbox", "twilio"})
@@ -2005,7 +2124,7 @@ class ConnectBuiltinRequest(BaseModel):
 
     organization_id: str
     provider: str  # web_search | code_sandbox | twilio
-    user_id: Optional[str] = None  # current user (for connected_by_user_id)
+    user_id: str  # Required - all integrations are user-scoped
 
 
 @router.post("/integrations/connect-builtin")
@@ -2026,12 +2145,12 @@ async def connect_builtin(request: ConnectBuiltinRequest) -> dict[str, Any]:
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid organization ID")
 
-    connected_by_uuid: Optional[UUID] = None
-    if request.user_id:
-        try:
-            connected_by_uuid = UUID(request.user_id)
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid user ID")
+    try:
+        user_uuid = UUID(request.user_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid user ID")
+
+    sharing_defaults = get_provider_sharing_defaults(request.provider)
 
     async with get_session(organization_id=request.organization_id) as session:
         await session.execute(
@@ -2042,7 +2161,7 @@ async def connect_builtin(request: ConnectBuiltinRequest) -> dict[str, Any]:
             select(Integration).where(
                 Integration.organization_id == org_uuid,
                 Integration.provider == request.provider,
-                Integration.user_id.is_(None),
+                Integration.user_id == user_uuid,
             )
         )
         existing = result.scalar_one_or_none()
@@ -2054,11 +2173,14 @@ async def connect_builtin(request: ConnectBuiltinRequest) -> dict[str, Any]:
             new_integration = Integration(
                 organization_id=org_uuid,
                 provider=request.provider,
-                scope="organization",
-                user_id=None,
+                user_id=user_uuid,
                 nango_connection_id="builtin",
-                connected_by_user_id=connected_by_uuid,
+                connected_by_user_id=user_uuid,
                 is_active=True,
+                share_synced_data=sharing_defaults.share_synced_data,
+                share_query_access=sharing_defaults.share_query_access,
+                share_write_access=sharing_defaults.share_write_access,
+                pending_sharing_config=False,  # Built-in connectors don't need sharing config
             )
             session.add(new_integration)
         await session.commit()
@@ -2108,20 +2230,29 @@ async def nango_callback(
     connection_id: str,
     user_id: str,
     background_tasks: BackgroundTasks,
-) -> dict[str, str]:
+) -> dict[str, Any]:
     """
-    Handle callback after Nango OAuth completes.
+    Handle callback after Nango OAuth completes (legacy endpoint).
 
-    This is called by the frontend after Nango redirects back.
-    We record the integration in our database and trigger initial sync.
+    Prefer using POST /integrations/confirm instead.
+    This creates an integration with pending_sharing_config=true.
     """
     try:
         user_uuid = UUID(user_id)
-        org_uuid = UUID(connection_id)
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid ID format")
+        raise HTTPException(status_code=400, detail="Invalid user ID format")
 
-    # Verify the connection exists in Nango
+    # Extract org_id from connection_id (format: "{org_id}:user:{user_id}")
+    if ":user:" in connection_id:
+        org_id_str = connection_id.split(":user:")[0]
+    else:
+        org_id_str = connection_id
+
+    try:
+        org_uuid = UUID(org_id_str)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid organization ID in connection_id")
+
     nango = get_nango_client()
     nango_integration_id = get_nango_integration_id(provider)
 
@@ -2133,53 +2264,65 @@ async def nango_callback(
             detail=f"Failed to verify Nango connection: {str(e)}",
         )
 
-    # Record integration in our database
+    sharing_defaults = get_provider_sharing_defaults(provider)
+
+    integration_id: str = ""
     async with get_session() as session:
-        # Set RLS context so queries/inserts work for this organization
         await session.execute(
             text("SELECT set_config('app.current_org_id', :org_id, true)"),
             {"org_id": str(org_uuid)}
         )
-        
-        # Verify user
+
         user = await session.get(User, user_uuid)
         if not user or user.organization_id != org_uuid:
             raise HTTPException(status_code=403, detail="User not authorized")
 
-        # Check for existing integration
         result = await session.execute(
             select(Integration).where(
                 Integration.organization_id == org_uuid,
                 Integration.provider == provider,
+                Integration.user_id == user_uuid,
             )
         )
-        integration = result.scalar_one_or_none()
+        existing = result.scalar_one_or_none()
 
-        if integration:
-            integration.is_active = True
-            integration.last_error = None
-            integration.nango_connection_id = connection_id
-            integration.updated_at = datetime.utcnow()
+        if existing:
+            existing.is_active = True
+            existing.last_error = None
+            existing.nango_connection_id = connection_id
+            existing.updated_at = datetime.utcnow()
+            existing.pending_sharing_config = True
+            integration_id = str(existing.id)
         else:
-            integration = Integration(
+            new_integration = Integration(
                 organization_id=org_uuid,
                 provider=provider,
+                user_id=user_uuid,
                 nango_connection_id=connection_id,
                 connected_by_user_id=user_uuid,
                 is_active=True,
                 extra_data=connection.get("metadata"),
+                share_synced_data=sharing_defaults.share_synced_data,
+                share_query_access=sharing_defaults.share_query_access,
+                share_write_access=sharing_defaults.share_write_access,
+                pending_sharing_config=True,
             )
-            session.add(integration)
+            session.add(new_integration)
+            await session.flush()
+            integration_id = str(new_integration.id)
 
         await session.commit()
 
-    # Trigger initial sync in the background
-    # For user-scoped integrations, pass user_id so the connector can find the right integration
-    scope = get_provider_scope(provider)
-    user_id_for_sync: Optional[str] = str(user_uuid) if scope == "user" else None
-    background_tasks.add_task(run_initial_sync, str(org_uuid), provider, user_id_for_sync)
-
-    return {"status": "connected", "provider": provider, "sync_started": True}
+    return {
+        "status": "pending_sharing_config",
+        "provider": provider,
+        "integration_id": integration_id,
+        "sharing_defaults": {
+            "share_synced_data": sharing_defaults.share_synced_data,
+            "share_query_access": sharing_defaults.share_query_access,
+            "share_write_access": sharing_defaults.share_write_access,
+        },
+    }
 
 
 @router.get("/integrations", response_model=IntegrationsListResponse)
@@ -2187,22 +2330,19 @@ async def list_integrations(
     user_id: Optional[str] = None, organization_id: Optional[str] = None
 ) -> IntegrationsListResponse:
     """List all integrations for a user's organization.
-    
-    Returns both org-scoped and user-scoped integrations.
-    For user-scoped integrations, includes team connection status.
-    
-    Checks both our local database AND Nango for connections,
-    syncing any new connections found in Nango to our database.
+
+    All integrations are user-scoped. Returns integrations grouped by provider,
+    showing the current user's integration (if any) and team connections.
     """
-    org_uuid: Optional[UUID] = None
-    current_user_uuid: Optional[UUID] = None
+    org_uuid: UUID | None = None
+    current_user_uuid: UUID | None = None
 
     if organization_id:
         try:
             org_uuid = UUID(organization_id)
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid organization ID")
-    
+
     if user_id:
         try:
             current_user_uuid = UUID(user_id)
@@ -2214,100 +2354,45 @@ async def list_integrations(
             if not user or not user.organization_id:
                 raise HTTPException(status_code=404, detail="User not found")
             org_uuid = user.organization_id
-    
+
     if not org_uuid:
         raise HTTPException(status_code=400, detail="Either user_id or organization_id required")
 
-    # We no longer query Nango to filter integrations
-    # Just show what's in the database - the nango_connection_id is stored there
-    # This avoids issues with inconsistent end_user.id values in Nango
-
     async with get_session(organization_id=str(org_uuid)) as db_session:
-        # RLS context is set by get_session()
-        
-        # Get all integrations from our database for this org
         result = await db_session.execute(
             select(Integration).where(Integration.organization_id == org_uuid)
         )
         all_integrations = list(result.scalars().all())
-        
-        # Use PROVIDER_SCOPES as the canonical source of truth for scope,
-        # not the stored scope field (which may be stale/incorrect for older records).
-        from config import PROVIDER_SCOPES
 
-        # Build lookup structures
-        # For org-scoped: key is provider
-        # For user-scoped: key is (provider, user_id)
-        org_scoped_integrations: dict[str, Integration] = {}
-        user_scoped_integrations: dict[str, list[Integration]] = {}
-        
+        # Group integrations by provider
+        integrations_by_provider: dict[str, list[Integration]] = {}
         for i in all_integrations:
-            canonical_scope: str = PROVIDER_SCOPES.get(i.provider, "organization")
-            if canonical_scope == "user":
-                if i.provider not in user_scoped_integrations:
-                    user_scoped_integrations[i.provider] = []
-                user_scoped_integrations[i.provider].append(i)
-            else:
-                org_scoped_integrations[i.provider] = i
+            if i.provider not in integrations_by_provider:
+                integrations_by_provider[i.provider] = []
+            integrations_by_provider[i.provider].append(i)
 
-        # Get team members for validating user IDs and building response
+        # Get team members
         team_result = await db_session.execute(
             select(User).where(User.organization_id == org_uuid)
         )
         team_members: dict[UUID, User] = {u.id: u for u in team_result.scalars().all()}
         team_total = len(team_members)
 
-        # Integration records are created by confirm_integration endpoint after OAuth
-        # We trust the database records - no filtering by Nango
-        # The stored nango_connection_id will be used when fetching tokens
-
-        # Build response
         response_integrations: list[IntegrationResponse] = []
-        
-        # Add org-scoped integrations
-        for provider, integration in org_scoped_integrations.items():
-            # Note: don't call refresh() - the data is already loaded and refresh
-            # can fail due to RLS/session state changes after commits
-            
-            # Get connected_by user name
-            connected_by_name: Optional[str] = None
-            if integration.connected_by_user_id:
-                connected_by_user = team_members.get(integration.connected_by_user_id)
-                if connected_by_user:
-                    connected_by_name = connected_by_user.name or connected_by_user.email
-            
-            response_integrations.append(IntegrationResponse(
-                id=str(integration.id),
-                provider=integration.provider,
-                scope="organization",
-                is_active=integration.is_active,
-                last_sync_at=f"{integration.last_sync_at.isoformat()}Z" if integration.last_sync_at else None,
-                last_error=integration.last_error,
-                connected_at=f"{integration.created_at.isoformat()}Z" if integration.created_at else None,
-                connected_by=connected_by_name,
-                current_user_connected=True,  # Org-scoped is shared, so always "connected" for UI
-                team_connections=[],
-                team_total=team_total,
-                sync_stats=integration.sync_stats,
-            ))
-        
-        # Add user-scoped integrations (aggregated by provider)
-        all_user_scoped_providers = set(user_scoped_integrations.keys())
-        # Also include providers that are user-scoped but have no connections yet
-        for p, s in PROVIDER_SCOPES.items():
-            if s == "user":
-                all_user_scoped_providers.add(p)
-        
-        for provider in all_user_scoped_providers:
-            integrations_for_provider = user_scoped_integrations.get(provider, [])
-            
-            # Check if current user has connected
+
+        # Include all known providers (from PROVIDER_SHARING_DEFAULTS)
+        all_providers = set(integrations_by_provider.keys()) | set(PROVIDER_SHARING_DEFAULTS.keys())
+
+        for provider in sorted(all_providers):
+            integrations_for_provider = integrations_by_provider.get(provider, [])
+
+            # Find current user's integration
             current_user_integration = next(
                 (i for i in integrations_for_provider if i.user_id == current_user_uuid),
                 None
             )
-            
-            # Build team connections list
+
+            # Build team connections list (excluding current user)
             team_connections: list[TeamConnection] = []
             for integration in integrations_for_provider:
                 if integration.user_id and integration.user_id in team_members:
@@ -2316,19 +2401,42 @@ async def list_integrations(
                         user_id=str(integration.user_id),
                         user_name=user_obj.name or user_obj.email,
                     ))
-            
-            # Use current user's integration for metadata if available
-            ref_integration = current_user_integration or (integrations_for_provider[0] if integrations_for_provider else None)
-            
+
+            # Use current user's integration for display, or first available
+            ref_integration = current_user_integration or (
+                integrations_for_provider[0] if integrations_for_provider else None
+            )
+
+            # Get owner name
+            connected_by_name: str | None = None
+            if ref_integration and ref_integration.user_id in team_members:
+                owner = team_members[ref_integration.user_id]
+                connected_by_name = owner.name or owner.email
+
             response_integrations.append(IntegrationResponse(
                 id=str(ref_integration.id) if ref_integration else f"pending-{provider}",
                 provider=provider,
-                scope="user",
                 is_active=ref_integration.is_active if ref_integration else False,
-                last_sync_at=f"{ref_integration.last_sync_at.isoformat()}Z" if ref_integration and ref_integration.last_sync_at else None,
+                last_sync_at=(
+                    f"{ref_integration.last_sync_at.isoformat()}Z"
+                    if ref_integration and ref_integration.last_sync_at else None
+                ),
                 last_error=ref_integration.last_error if ref_integration else None,
-                connected_at=f"{ref_integration.created_at.isoformat()}Z" if ref_integration and ref_integration.created_at else None,
-                connected_by=None,
+                connected_at=(
+                    f"{ref_integration.created_at.isoformat()}Z"
+                    if ref_integration and ref_integration.created_at else None
+                ),
+                user_id=str(ref_integration.user_id) if ref_integration else None,
+                connected_by=connected_by_name,
+                share_synced_data=ref_integration.share_synced_data if ref_integration else False,
+                share_query_access=ref_integration.share_query_access if ref_integration else False,
+                share_write_access=ref_integration.share_write_access if ref_integration else False,
+                pending_sharing_config=ref_integration.pending_sharing_config if ref_integration else False,
+                is_owner=(
+                    current_user_uuid is not None
+                    and ref_integration is not None
+                    and ref_integration.user_id == current_user_uuid
+                ),
                 current_user_connected=current_user_integration is not None,
                 team_connections=team_connections,
                 team_total=team_total,
@@ -2358,14 +2466,12 @@ async def disconnect_integration(
     """
     org_uuid: Optional[UUID] = None
     current_user_uuid: Optional[UUID] = None
-    scope = get_provider_scope(provider)
-
     if organization_id:
         try:
             org_uuid = UUID(organization_id)
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid organization ID")
-    
+
     if user_id:
         try:
             current_user_uuid = UUID(user_id)
@@ -2377,61 +2483,43 @@ async def disconnect_integration(
             if not user or not user.organization_id:
                 raise HTTPException(status_code=404, detail="User not found")
             org_uuid = user.organization_id
-    
+
     if not org_uuid:
         raise HTTPException(status_code=400, detail="Either user_id or organization_id required")
-    
-    # For user-scoped integrations, user_id is required
-    if scope == "user" and not current_user_uuid:
+
+    # All integrations are user-scoped, user_id is required
+    if not current_user_uuid:
         raise HTTPException(
             status_code=400,
-            detail=f"{provider} is a user-scoped integration. user_id is required."
+            detail="user_id is required to disconnect an integration"
         )
 
     async with get_session() as db_session:
-        # Set RLS context so queries/deletes work for this organization
         await db_session.execute(
             text("SELECT set_config('app.current_org_id', :org_id, true)"),
             {"org_id": str(org_uuid)}
         )
-        
-        # Find integration based on scope
-        integration: Optional[Integration] = None
-        
-        if scope == "user":
-            # First try to find by user_id
-            result = await db_session.execute(
-                select(Integration).where(
-                    Integration.organization_id == org_uuid,
-                    Integration.provider == provider,
-                    Integration.user_id == current_user_uuid,
-                )
+
+        # Find integration for this user
+        integration: Integration | None = None
+
+        result = await db_session.execute(
+            select(Integration).where(
+                Integration.organization_id == org_uuid,
+                Integration.provider == provider,
+                Integration.user_id == current_user_uuid,
             )
-            integration = result.scalar_one_or_none()
-            
-            # Fallback: check by nango_connection_id for old records where user_id wasn't set
-            if not integration:
-                expected_conn_id = f"{org_uuid}:user:{current_user_uuid}"
-                result = await db_session.execute(
-                    select(Integration).where(
-                        Integration.organization_id == org_uuid,
-                        Integration.provider == provider,
-                        Integration.nango_connection_id == expected_conn_id,
-                    )
-                )
-                integration = result.scalar_one_or_none()
-                
-                # If found via connection_id, update the user_id field for future queries
-                if integration and integration.user_id is None:
-                    print(f"Disconnect: Fixing missing user_id on integration {integration.id}")
-                    integration.user_id = current_user_uuid
-        else:
-            # Find org-level integration
+        )
+        integration = result.scalar_one_or_none()
+
+        # Fallback: check by nango_connection_id for old records
+        if not integration:
+            expected_conn_id = f"{org_uuid}:user:{current_user_uuid}"
             result = await db_session.execute(
                 select(Integration).where(
                     Integration.organization_id == org_uuid,
                     Integration.provider == provider,
-                    Integration.user_id.is_(None),
+                    Integration.nango_connection_id == expected_conn_id,
                 )
             )
             integration = result.scalar_one_or_none()

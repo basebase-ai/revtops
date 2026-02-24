@@ -195,27 +195,46 @@ NANGO_INTEGRATION_IDS: dict[str, str] = {
     "asana": settings.NANGO_ASANA_INTEGRATION_ID,
 }
 
-# Provider scope mapping: which integrations are user-scoped vs org-scoped
-# - 'organization': One connection for the entire org (CRMs)
-# - 'user': Each user connects individually (email, calendar)
-PROVIDER_SCOPES: dict[str, str] = {
-    "hubspot": "organization",
-    "salesforce": "organization",
-    "slack": "organization",
-    "google_calendar": "user",
-    "gmail": "user",
-    "microsoft_calendar": "user",
-    "microsoft_mail": "user",
-    "fireflies": "user",
-    "zoom": "user",
-    "google_drive": "user",
-    "apollo": "organization",
-    "github": "organization",
-    "linear": "organization",
-    "asana": "organization",
-    "web_search": "organization",
-    "code_sandbox": "organization",
-    "twilio": "organization",
+# Default sharing settings for each provider when user first connects.
+# All connectors are user-scoped; these defaults populate the sharing modal.
+# - share_synced_data: Team can see synced records (deals, contacts, etc.)
+# - share_query_access: Team can query live data via this connection
+# - share_write_access: Team can write data via this connection
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class SharingDefaults:
+    """Default sharing settings for a provider."""
+
+    share_synced_data: bool = False
+    share_query_access: bool = False
+    share_write_access: bool = False
+
+
+PROVIDER_SHARING_DEFAULTS: dict[str, SharingDefaults] = {
+    # CRMs - typically share synced data with team
+    "hubspot": SharingDefaults(share_synced_data=True),
+    "salesforce": SharingDefaults(share_synced_data=True),
+    "apollo": SharingDefaults(share_synced_data=True),
+    # Collaboration tools - share synced data
+    "slack": SharingDefaults(share_synced_data=True),
+    "github": SharingDefaults(share_synced_data=True),
+    "linear": SharingDefaults(share_synced_data=True),
+    "asana": SharingDefaults(share_synced_data=True),
+    "jira": SharingDefaults(share_synced_data=True),
+    # Personal tools - private by default
+    "google_calendar": SharingDefaults(),
+    "gmail": SharingDefaults(),
+    "microsoft_calendar": SharingDefaults(),
+    "microsoft_mail": SharingDefaults(),
+    "fireflies": SharingDefaults(),
+    "zoom": SharingDefaults(),
+    "google_drive": SharingDefaults(),
+    # Utility connectors - share synced data
+    "web_search": SharingDefaults(share_synced_data=True),
+    "code_sandbox": SharingDefaults(share_synced_data=True),
+    "twilio": SharingDefaults(share_synced_data=True),
 }
 
 
@@ -242,23 +261,24 @@ def get_nango_integration_id(provider: str) -> str:
     raise ValueError(f"Unknown provider: {provider}")
 
 
-def get_provider_scope(provider: str) -> str:
-    """Get the scope for a provider ('organization' or 'user').
+def get_provider_sharing_defaults(provider: str) -> SharingDefaults:
+    """Get the default sharing settings for a provider.
 
-    Falls back to ConnectorMeta.scope for community connectors.
+    Falls back to ConnectorMeta.default_sharing for community connectors,
+    or all-false defaults if not specified.
     """
-    scope = PROVIDER_SCOPES.get(provider)
-    if scope:
-        return scope
+    defaults = PROVIDER_SHARING_DEFAULTS.get(provider)
+    if defaults:
+        return defaults
 
     try:
         from connectors.registry import discover_connectors
 
         registry = discover_connectors()
         connector_cls = registry.get(provider)
-        if connector_cls and hasattr(connector_cls, "meta"):
-            return connector_cls.meta.scope.value
+        if connector_cls and hasattr(connector_cls, "meta") and connector_cls.meta.default_sharing:
+            return connector_cls.meta.default_sharing
     except Exception:
         pass
 
-    return "organization"
+    return SharingDefaults()
