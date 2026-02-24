@@ -2248,7 +2248,10 @@ async def list_integrations(
                     user_scoped_integrations[i.provider] = []
                 user_scoped_integrations[i.provider].append(i)
             else:
-                org_scoped_integrations[i.provider] = i
+                # For org-scoped, prefer active integration if multiple exist
+                existing = org_scoped_integrations.get(i.provider)
+                if existing is None or (i.is_active and not existing.is_active):
+                    org_scoped_integrations[i.provider] = i
 
         # Get team members for validating user IDs and building response
         team_result = await db_session.execute(
