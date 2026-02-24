@@ -8,7 +8,9 @@ Nango handles:
 - Connection management
 """
 
+import asyncio
 import logging
+import time
 from typing import Any, Optional
 
 import httpx
@@ -17,7 +19,15 @@ from config import settings
 
 NANGO_API_BASE = settings.NANGO_HOST
 
+# In-memory token cache TTL (seconds). Reduces repeated Nango API calls when
+# multiple connectors are created per request (e.g. Slack message handling).
+_TOKEN_CACHE_TTL_SECONDS: int = 300
+
 logger = logging.getLogger(__name__)
+
+
+def _token_cache_key(integration_id: str, connection_id: str) -> tuple[str, str]:
+    return (integration_id, connection_id)
 
 
 def extract_connection_metadata(connection: dict[str, Any]) -> dict[str, Any] | None:
@@ -58,6 +68,8 @@ class NangoClient:
         self.public_key = public_key or settings.NANGO_PUBLIC_KEY
         if not self.secret_key:
             raise ValueError("NANGO_SECRET_KEY is required")
+        self._token_cache: dict[tuple[str, str], tuple[str, float]] = {}
+        self._token_cache_lock: asyncio.Lock = asyncio.Lock()
 
     def _get_headers(self) -> dict[str, str]:
         """Get authorization headers for Nango API."""
@@ -182,33 +194,42 @@ class NangoClient:
         """
         Get an access token for a connection.
 
-        Nango automatically handles token refresh.
-
-        Args:
-            integration_id: The Nango integration ID
-            connection_id: The unique connection identifier
-
-        Returns:
-            Valid access token
+        Nango automatically handles token refresh. Tokens are cached in memory
+        for _TOKEN_CACHE_TTL_SECONDS to avoid repeated Nango API calls when
+        multiple connector instances are used in the same request.
         """
+        key: tuple[str, str] = _token_cache_key(integration_id, connection_id)
+        now: float = time.monotonic()
+        async with self._token_cache_lock:
+            entry = self._token_cache.get(key)
+            if entry is not None:
+                token, expires_at = entry
+                if now < expires_at:
+                    return token
+                del self._token_cache[key]
+
         connection = await self.get_connection(integration_id, connection_id)
         credentials = connection.get("credentials", {})
 
         # Debug: log what credentials Nango returned
         print(f"[Nango] Credentials for {integration_id}:{connection_id}: {list(credentials.keys())}")
 
-        # Handle different credential types
+        token: str
         if "access_token" in credentials:
-            return credentials["access_token"]
+            token = credentials["access_token"]
         elif "api_key" in credentials:
-            return credentials["api_key"]
+            token = credentials["api_key"]
         elif "apiKey" in credentials:
-            return credentials["apiKey"]
+            token = credentials["apiKey"]
         elif "token" in credentials:
-            return credentials["token"]
+            token = credentials["token"]
         else:
             print(f"[Nango] Full credentials object: {credentials}")
             raise ValueError(f"No token found for {integration_id}:{connection_id}")
+
+        async with self._token_cache_lock:
+            self._token_cache[key] = (token, now + _TOKEN_CACHE_TTL_SECONDS)
+        return token
 
     async def get_credentials(
         self,

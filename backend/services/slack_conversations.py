@@ -7,11 +7,12 @@ channel messages as Activity rows for real-time queryability.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
+import time
 import uuid
-import asyncio
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
@@ -37,6 +38,21 @@ logger = logging.getLogger(__name__)
 EMAIL_PATTERN = re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.IGNORECASE)
 SLACK_MENTION_PATTERN = re.compile(r"<@[A-Z0-9]+>\s*")
 SLOW_REPLY_TIMEOUT_SECONDS = 30
+
+# In-memory cache for Slack users.info to avoid repeated API calls within a request.
+# Key: (organization_id, slack_user_id). Value: (user_dict or None, expires_at monotonic).
+_SLACK_USER_INFO_CACHE_TTL_SUCCESS_SECONDS: int = 600   # 10 min for successful lookups
+_SLACK_USER_INFO_CACHE_TTL_NOT_FOUND_SECONDS: int = 120  # 2 min for not-found/errors
+_SLACK_USER_INFO_CACHE_MAX_ENTRIES: int = 5000  # cap to avoid unbounded growth in long-lived processes
+_slack_user_info_cache: dict[tuple[str, str], tuple[dict[str, Any] | None, float]] = {}
+_slack_user_info_cache_lock: asyncio.Lock = asyncio.Lock()
+
+
+def _slack_user_info_cache_evict_expired(now: float) -> None:
+    """Drop expired entries. Caller must hold _slack_user_info_cache_lock."""
+    expired = [k for k, (_, exp) in _slack_user_info_cache.items() if exp <= now]
+    for k in expired:
+        del _slack_user_info_cache[k]
 
 
 def _strip_slack_mentions(text: str) -> str:
@@ -964,6 +980,16 @@ async def _fetch_slack_user_info(
     organization_id: str,
     slack_user_id: str,
 ) -> dict[str, Any] | None:
+    key: tuple[str, str] = (organization_id, slack_user_id)
+    now: float = time.monotonic()
+    async with _slack_user_info_cache_lock:
+        entry = _slack_user_info_cache.get(key)
+        if entry is not None:
+            cached_val, expires_at = entry
+            if now < expires_at:
+                return cached_val
+            del _slack_user_info_cache[key]
+
     try:
         logger.info(
             "[slack_conversations] Fetching Slack user info for user=%s org=%s",
@@ -971,7 +997,14 @@ async def _fetch_slack_user_info(
             organization_id,
         )
         connector = SlackConnector(organization_id=organization_id)
-        return await connector.get_user_info(slack_user_id)
+        result: dict[str, Any] = await connector.get_user_info(slack_user_id)
+        ttl = _SLACK_USER_INFO_CACHE_TTL_SUCCESS_SECONDS
+        async with _slack_user_info_cache_lock:
+            if len(_slack_user_info_cache) >= _SLACK_USER_INFO_CACHE_MAX_ENTRIES:
+                _slack_user_info_cache_evict_expired(now)
+            if len(_slack_user_info_cache) < _SLACK_USER_INFO_CACHE_MAX_ENTRIES:
+                _slack_user_info_cache[key] = (result, now + ttl)
+        return result
     except Exception as exc:
         logger.warning(
             "[slack_conversations] Failed Slack users.info lookup for user=%s org=%s: %s",
@@ -980,6 +1013,12 @@ async def _fetch_slack_user_info(
             exc,
             exc_info=True,
         )
+        ttl = _SLACK_USER_INFO_CACHE_TTL_NOT_FOUND_SECONDS
+        async with _slack_user_info_cache_lock:
+            if len(_slack_user_info_cache) >= _SLACK_USER_INFO_CACHE_MAX_ENTRIES:
+                _slack_user_info_cache_evict_expired(now)
+            if len(_slack_user_info_cache) < _SLACK_USER_INFO_CACHE_MAX_ENTRIES:
+                _slack_user_info_cache[key] = (None, now + ttl)
         return None
 
 
