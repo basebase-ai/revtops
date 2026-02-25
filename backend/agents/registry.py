@@ -400,19 +400,18 @@ register_tool(
 Use this when the user asks to connect a new integration like Jira, Salesforce, HubSpot, Slack, etc.
 This opens an OAuth popup in the user's browser to authorize the connection.
 
+All connectors are user-scoped: each user connects their own account. For some connectors (e.g. HubSpot, Linear), the user can optionally share query or write access with teammates so others can use the data or act through that connection.
+
 Available connectors include:
 - CRM: hubspot, salesforce
 - Communication: slack
 - Issue tracking: jira, linear, asana
 - Code: github
-- Email/Calendar (user-scoped): gmail, google_calendar, microsoft_mail, microsoft_calendar
+- Email/Calendar: gmail, google_calendar, microsoft_mail, microsoft_calendar
 - Storage: google_drive
 - Meetings: zoom, fireflies
 - Data enrichment: apollo
-- Built-in: web_search, code_sandbox, twilio
-
-For user-scoped connectors (email, calendar, drive), each team member connects their own account.
-For org-scoped connectors (CRM, Slack, issue trackers), one connection serves the whole organization.""",
+- Built-in: web_search, code_sandbox, twilio""",
     input_schema={
         "type": "object",
         "properties": {

@@ -1935,6 +1935,7 @@ async def confirm_integration(
                 organization_id=org_uuid,
                 provider=request.provider,
                 user_id=user_uuid,
+                scope="user",  # Satisfy DB NOT NULL; column deprecated, all integrations are user-scoped
                 nango_connection_id=nango_connection_id,
                 connected_by_user_id=user_uuid,
                 is_active=True,
@@ -2152,38 +2153,48 @@ async def connect_builtin(request: ConnectBuiltinRequest) -> dict[str, Any]:
 
     sharing_defaults = get_provider_sharing_defaults(request.provider)
 
-    async with get_session(organization_id=request.organization_id) as session:
-        await session.execute(
-            text("SELECT set_config('app.current_org_id', :org_id, true)"),
-            {"org_id": request.organization_id},
-        )
-        result = await session.execute(
-            select(Integration).where(
-                Integration.organization_id == org_uuid,
-                Integration.provider == request.provider,
-                Integration.user_id == user_uuid,
+    try:
+        async with get_session(organization_id=request.organization_id) as session:
+            await session.execute(
+                text("SELECT set_config('app.current_org_id', :org_id, true)"),
+                {"org_id": request.organization_id},
             )
-        )
-        existing = result.scalar_one_or_none()
-        if existing:
-            existing.is_active = True
-            existing.nango_connection_id = "builtin"
-            existing.updated_at = datetime.utcnow()
-        else:
-            new_integration = Integration(
-                organization_id=org_uuid,
-                provider=request.provider,
-                user_id=user_uuid,
-                nango_connection_id="builtin",
-                connected_by_user_id=user_uuid,
-                is_active=True,
-                share_synced_data=sharing_defaults.share_synced_data,
-                share_query_access=sharing_defaults.share_query_access,
-                share_write_access=sharing_defaults.share_write_access,
-                pending_sharing_config=False,  # Built-in connectors don't need sharing config
+            result = await session.execute(
+                select(Integration).where(
+                    Integration.organization_id == org_uuid,
+                    Integration.provider == request.provider,
+                    Integration.user_id == user_uuid,
+                )
             )
-            session.add(new_integration)
-        await session.commit()
+            existing = result.scalar_one_or_none()
+            if existing:
+                existing.is_active = True
+                existing.nango_connection_id = "builtin"
+                existing.updated_at = datetime.utcnow()
+            else:
+                new_integration = Integration(
+                    organization_id=org_uuid,
+                    provider=request.provider,
+                    user_id=user_uuid,
+                    scope="user",  # Satisfy DB NOT NULL; column deprecated, all integrations are user-scoped
+                    nango_connection_id="builtin",
+                    connected_by_user_id=user_uuid,
+                    is_active=True,
+                    share_synced_data=sharing_defaults.share_synced_data,
+                    share_query_access=sharing_defaults.share_query_access,
+                    share_write_access=sharing_defaults.share_write_access,
+                    pending_sharing_config=False,  # Built-in connectors don't need sharing config
+                )
+                session.add(new_integration)
+            await session.commit()
+    except Exception as e:
+        logger.exception(
+            "connect_builtin failed: provider=%s org=%s user=%s",
+            request.provider,
+            request.organization_id,
+            request.user_id,
+        )
+        raise HTTPException(status_code=500, detail="Failed to connect built-in integration.") from e
 
     return {"status": "connected", "provider": request.provider}
 
@@ -2298,6 +2309,7 @@ async def nango_callback(
                 organization_id=org_uuid,
                 provider=provider,
                 user_id=user_uuid,
+                scope="user",  # Satisfy DB NOT NULL; column deprecated, all integrations are user-scoped
                 nango_connection_id=connection_id,
                 connected_by_user_id=user_uuid,
                 is_active=True,
