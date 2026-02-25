@@ -69,7 +69,7 @@ class _RaisingAdminSessionContext:
 
 
 class _FakeSlackConnector:
-    def __init__(self, organization_id: str):
+    def __init__(self, organization_id: str, team_id: str | None = None):
         self.organization_id = organization_id
 
     async def get_user_info(self, slack_user_id: str):
@@ -180,7 +180,7 @@ def test_resolve_revtops_user_matches_slack_metadata(monkeypatch):
     )
 
     class _NoSlackConnector:
-        def __init__(self, organization_id: str):
+        def __init__(self, organization_id: str, team_id: str | None = None):
             raise AssertionError("SlackConnector should not be called when metadata matches")
 
     monkeypatch.setattr(slack_conversations, "SlackConnector", _NoSlackConnector)
@@ -222,7 +222,7 @@ def test_resolve_revtops_user_uses_legacy_mapping_source_and_normalizes_id(monke
     )
 
     class _NoSlackConnector:
-        def __init__(self, organization_id: str):
+        def __init__(self, organization_id: str, team_id: str | None = None):
             raise AssertionError("SlackConnector should not be called when legacy mapping exists")
 
     monkeypatch.setattr(slack_conversations, "SlackConnector", _NoSlackConnector)
@@ -257,7 +257,7 @@ def test_resolve_revtops_user_uses_existing_mapping(monkeypatch):
     )
 
     class _NoSlackConnector:
-        def __init__(self, organization_id: str):
+        def __init__(self, organization_id: str, team_id: str | None = None):
             raise AssertionError("SlackConnector should not be called when mapping exists")
 
     monkeypatch.setattr(slack_conversations, "SlackConnector", _NoSlackConnector)
@@ -394,7 +394,7 @@ def test_process_slack_thread_reply_applies_speaker_and_global_handoff_before_ot
     )
 
     class _FakeSlackConnectorForThread:
-        def __init__(self, organization_id: str):
+        def __init__(self, organization_id: str, team_id: str | None = None):
             self.organization_id = organization_id
 
         async def add_reaction(self, channel: str, timestamp: str):
@@ -479,7 +479,7 @@ def test_process_slack_mention_clears_active_user_on_unresolved_speaker_handoff(
     )
 
     class _FakeSlackConnectorForMention:
-        def __init__(self, organization_id: str):
+        def __init__(self, organization_id: str, team_id: str | None = None):
             self.organization_id = organization_id
 
         async def add_reaction(self, channel: str, timestamp: str):

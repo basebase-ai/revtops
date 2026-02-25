@@ -65,6 +65,7 @@ from connectors.registry import (
 )
 from models.activity import Activity
 from models.database import get_session
+from models.integration import Integration
 from models.user import User
 
 SLACK_API_BASE = "https://slack.com/api"
@@ -97,6 +98,80 @@ class SlackConnector(BaseConnector):
         nango_integration_id="slack",
         description="Slack workspace – messages, channels, and real-time events",
     )
+
+    def __init__(
+        self,
+        organization_id: str,
+        user_id: str | None = None,
+        team_id: str | None = None,
+    ) -> None:
+        """Initialize Slack connector.
+
+        Args:
+            organization_id: Organization UUID.
+            user_id: Optional owner user UUID.
+            team_id: Optional Slack team/workspace ID used to disambiguate
+                between multiple Slack integrations in the same org.
+        """
+        super().__init__(organization_id=organization_id, user_id=user_id)
+        self.team_id = (team_id or "").strip() or None
+
+    async def _select_integration(
+        self,
+        session: Any,
+        *,
+        require_active: bool = False,
+    ) -> Integration | None:
+        """Select the matching Slack integration.
+
+        When team_id is provided, prefer an integration with matching
+        ``extra_data.team_id`` to avoid cross-workspace token mix-ups.
+        """
+        if not self.team_id:
+            return await super()._select_integration(
+                session,
+                require_active=require_active,
+            )
+
+        conditions = [
+            Integration.organization_id == uuid.UUID(self.organization_id),
+            Integration.provider == self.source_system,
+            Integration.extra_data["team_id"].astext == self.team_id,
+        ]
+        if require_active:
+            conditions.append(Integration.is_active == True)  # noqa: E712
+        if self.user_id:
+            conditions.append(Integration.user_id == uuid.UUID(self.user_id))
+
+        result = await session.execute(
+            select(Integration)
+            .where(*conditions)
+            .order_by(
+                Integration.updated_at.desc().nullslast(),
+                Integration.created_at.desc().nullslast(),
+            )
+            .limit(2)
+        )
+        candidates = result.scalars().all()
+        if len(candidates) > 1 and not self.user_id:
+            logger.warning(
+                "Multiple Slack integrations matched org=%s team=%s with no user_id; using integration=%s",
+                self.organization_id,
+                self.team_id,
+                candidates[0].id,
+            )
+        if candidates:
+            return candidates[0]
+
+        logger.warning(
+            "No Slack integration matched org=%s team=%s; falling back to default connector selection",
+            self.organization_id,
+            self.team_id,
+        )
+        return await super()._select_integration(
+            session,
+            require_active=require_active,
+        )
 
     async def _get_headers(self) -> dict[str, str]:
         """Get authorization headers for Slack API."""

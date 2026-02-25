@@ -113,7 +113,7 @@ async def post_slow_processing_notice(
         )
         return
 
-    connector = SlackConnector(organization_id=organization_id)
+    connector = SlackConnector(organization_id=organization_id, team_id=team_id)
     await connector.post_message(channel=channel_id, text=SLOW_REPLY_MESSAGE, thread_ts=thread_ts)
     if reaction_ts:
         await connector.remove_reaction(channel=channel_id, timestamp=reaction_ts)
@@ -1867,7 +1867,7 @@ async def process_slack_dm(
         logger.error("[slack_conversations] No organization found for team %s", team_id)
         return {"status": "error", "error": f"No organization found for Slack team {team_id}"}
 
-    connector = SlackConnector(organization_id=organization_id)
+    connector = SlackConnector(organization_id=organization_id, team_id=team_id)
     await connector.add_reaction(channel=channel_id, timestamp=event_ts)
 
     slack_user = await _fetch_slack_user_info(
@@ -2015,7 +2015,7 @@ async def process_slack_mention(
         logger.warning("[slack_conversations] No organization found for team %s", team_id)
         return {"status": "error", "error": f"No organization found for team {team_id}"}
     
-    connector = SlackConnector(organization_id=organization_id)
+    connector = SlackConnector(organization_id=organization_id, team_id=team_id)
 
     # Show a reaction so the user knows the bot is working
     await connector.add_reaction(channel=channel_id, timestamp=thread_ts)
@@ -2231,7 +2231,7 @@ async def process_slack_thread_reply(
     previous_source_user_id: str | None = conversation.source_user_id
     current_source_user_id: str = user_id if speaker_changed else (conversation.source_user_id or user_id)
 
-    connector = SlackConnector(organization_id=organization_id)
+    connector = SlackConnector(organization_id=organization_id, team_id=team_id)
 
     # Show a reaction on the user's reply immediately so they know the bot is working
     await connector.add_reaction(channel=channel_id, timestamp=event_ts)

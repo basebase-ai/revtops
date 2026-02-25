@@ -9,8 +9,9 @@ def test_process_slack_dm_posts_reply_in_same_thread(monkeypatch) -> None:
     captured: dict[str, str | None] = {}
 
     class _FakeConnector:
-        def __init__(self, organization_id: str) -> None:
+        def __init__(self, organization_id: str, team_id: str | None = None) -> None:
             self.organization_id = organization_id
+            captured["team_id"] = team_id
 
         async def add_reaction(self, channel: str, timestamp: str) -> None:
             captured["add_reaction_timestamp"] = timestamp
@@ -69,3 +70,4 @@ def test_process_slack_dm_posts_reply_in_same_thread(monkeypatch) -> None:
     assert result["status"] == "success"
     assert captured["thread_ts"] == "100.0"
     assert captured["slack_channel_id"] == "D1:100.0"
+    assert captured["team_id"] == "T1"
