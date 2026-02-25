@@ -38,6 +38,10 @@ logger = logging.getLogger(__name__)
 EMAIL_PATTERN = re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.IGNORECASE)
 SLACK_MENTION_PATTERN = re.compile(r"<@[A-Z0-9]+>\s*")
 SLOW_REPLY_TIMEOUT_SECONDS = 30
+SLACK_STREAM_FLUSH_CHAR_THRESHOLD = 240
+SLACK_STREAM_FLUSH_INTERVAL_SECONDS = 0.7
+SLACK_CREDITS_CHECK_SOFT_TIMEOUT_SECONDS = 0.5
+_SLACK_CREDITS_GATE_CACHE_TTL_SECONDS = 2.0
 
 # In-memory cache for Slack users.info to avoid repeated API calls within a request.
 # Key: (organization_id, slack_user_id). Value: (user_dict or None, expires_at monotonic).
@@ -49,6 +53,8 @@ _slack_user_info_cache_lock: asyncio.Lock = asyncio.Lock()
 _SLACK_TEAM_ORG_CACHE_TTL_SECONDS: int = 300  # 5 min for workspace -> org lookups
 _slack_team_org_cache: dict[str, tuple[str | None, float]] = {}
 _slack_team_org_cache_lock: asyncio.Lock = asyncio.Lock()
+_slack_credits_gate_cache: dict[str, tuple[bool, float]] = {}
+_slack_credits_gate_cache_lock: asyncio.Lock = asyncio.Lock()
 
 
 def _slack_user_info_cache_evict_expired(now: float) -> None:
@@ -94,6 +100,99 @@ async def _post_cannot_action_response(
         text=_cannot_action_message(),
         thread_ts=thread_ts,
     )
+
+
+async def _get_cached_can_use_credits(organization_id: str) -> bool | None:
+    """Return cached credit-gate result if fresh."""
+    now = time.monotonic()
+    async with _slack_credits_gate_cache_lock:
+        cached = _slack_credits_gate_cache.get(organization_id)
+        if not cached:
+            return None
+        cached_value, expires_at = cached
+        if expires_at <= now:
+            _slack_credits_gate_cache.pop(organization_id, None)
+            return None
+        logger.debug(
+            "[slack_conversations] Credits gate cache hit org=%s allowed=%s",
+            organization_id,
+            cached_value,
+        )
+        return cached_value
+
+
+async def _cache_can_use_credits(organization_id: str, allowed: bool) -> None:
+    """Cache credit-gate result briefly to reduce repeated DB checks."""
+    expires_at = time.monotonic() + _SLACK_CREDITS_GATE_CACHE_TTL_SECONDS
+    async with _slack_credits_gate_cache_lock:
+        _slack_credits_gate_cache[organization_id] = (allowed, expires_at)
+
+
+async def _monitor_late_credits_check(
+    credits_task: asyncio.Task[bool],
+    *,
+    organization_id: str,
+    context: str,
+) -> None:
+    """Observe soft-timed-out credit checks so task exceptions are handled."""
+    try:
+        allowed = await credits_task
+        await _cache_can_use_credits(organization_id, allowed)
+        logger.info(
+            "[slack_conversations] Late credits check completed org=%s context=%s allowed=%s",
+            organization_id,
+            context,
+            allowed,
+        )
+    except Exception:
+        logger.exception(
+            "[slack_conversations] Late credits check failed org=%s context=%s",
+            organization_id,
+            context,
+        )
+
+
+async def _allow_response_with_credit_grace(
+    organization_id: str,
+    *,
+    context: str,
+) -> bool:
+    """Allow a response if credits are valid or credits check exceeds soft timeout."""
+    cached = await _get_cached_can_use_credits(organization_id)
+    if cached is not None:
+        return cached
+
+    credits_task: asyncio.Task[bool] = asyncio.create_task(can_use_credits(organization_id))
+    started_at = time.monotonic()
+    try:
+        allowed = await asyncio.wait_for(
+            asyncio.shield(credits_task),
+            timeout=SLACK_CREDITS_CHECK_SOFT_TIMEOUT_SECONDS,
+        )
+        await _cache_can_use_credits(organization_id, allowed)
+        logger.info(
+            "[slack_conversations] Credits check completed quickly org=%s context=%s allowed=%s elapsed_ms=%.1f",
+            organization_id,
+            context,
+            allowed,
+            (time.monotonic() - started_at) * 1000,
+        )
+        return allowed
+    except asyncio.TimeoutError:
+        logger.warning(
+            "[slack_conversations] Credits check exceeded %.0fms org=%s context=%s; allowing initial response with soft-grace",
+            SLACK_CREDITS_CHECK_SOFT_TIMEOUT_SECONDS * 1000,
+            organization_id,
+            context,
+        )
+        asyncio.create_task(
+            _monitor_late_credits_check(
+                credits_task,
+                organization_id=organization_id,
+                context=context,
+            )
+        )
+        return True
 
 
 
@@ -1789,9 +1888,12 @@ async def _stream_and_post_responses(
     attachment_ids: list[str] | None = None,
 ) -> int:
     """
-    Stream orchestrator output and post each text segment to Slack
-    incrementally — flushing whenever a tool-call boundary (JSON chunk)
-    is encountered so the user sees early messages immediately.
+    Stream orchestrator output and post text segments to Slack incrementally.
+
+    Flushes happen when:
+    - a tool-call boundary arrives (JSON chunk),
+    - buffered output reaches ``SLACK_STREAM_FLUSH_CHAR_THRESHOLD``, or
+    - ``SLACK_STREAM_FLUSH_INTERVAL_SECONDS`` elapsed since last flush.
 
     Args:
         orchestrator: Initialised ChatOrchestrator
@@ -1807,23 +1909,45 @@ async def _stream_and_post_responses(
     current_text: str = ""
     total_length: int = 0
     cleaned_message = _strip_slack_mentions(message_text)
+    last_flush_at = time.monotonic()
+
+    async def _flush_current_text(*, reason: str) -> None:
+        nonlocal current_text, total_length, last_flush_at
+        text_to_send = current_text.strip()
+        if not text_to_send:
+            current_text = ""
+            return
+
+        await connector.post_message(
+            channel=channel,
+            text=text_to_send,
+            thread_ts=thread_ts,
+        )
+        total_length += len(text_to_send)
+        logger.info(
+            "[slack_conversations] Flushed Slack stream chunk reason=%s channel=%s thread_ts=%s chars=%d",
+            reason,
+            channel,
+            thread_ts,
+            len(text_to_send),
+        )
+        current_text = ""
+        last_flush_at = time.monotonic()
 
     try:
         async for chunk in orchestrator.process_message(
             cleaned_message, attachment_ids=attachment_ids,
         ):
             if chunk.startswith("{"):
-                # Tool-call boundary — send whatever text we have so far
-                if current_text.strip():
-                    await connector.post_message(
-                        channel=channel,
-                        text=current_text.strip(),
-                        thread_ts=thread_ts,
-                    )
-                    total_length += len(current_text)
-                    current_text = ""
+                await _flush_current_text(reason="tool_boundary")
             else:
                 current_text += chunk
+                should_flush_for_size = len(current_text) >= SLACK_STREAM_FLUSH_CHAR_THRESHOLD
+                should_flush_for_time = (time.monotonic() - last_flush_at) >= SLACK_STREAM_FLUSH_INTERVAL_SECONDS
+                if should_flush_for_size or should_flush_for_time:
+                    await _flush_current_text(
+                        reason="buffer_size" if should_flush_for_size else "flush_interval",
+                    )
     except Exception as e:
         logger.error(
             "[slack_conversations] Error during streaming: %s", e, exc_info=True,
@@ -1831,13 +1955,7 @@ async def _stream_and_post_responses(
         current_text += f"\n{_cannot_action_message()}"
 
     # Post any remaining text after the stream ends
-    if current_text.strip():
-        await connector.post_message(
-            channel=channel,
-            text=current_text.strip(),
-            thread_ts=thread_ts,
-        )
-        total_length += len(current_text)
+    await _flush_current_text(reason="stream_end")
 
     return total_length
 
@@ -1902,7 +2020,10 @@ async def process_slack_dm(
     if files:
         attachment_ids = await _download_and_store_slack_files(connector, files)
 
-    if not await can_use_credits(organization_id):
+    if not await _allow_response_with_credit_grace(
+        organization_id,
+        context=f"slack_dm:{channel_id}:{thread_ts or event_ts}",
+    ):
         await connector.post_message(
             channel=channel_id,
             text="You're out of credits or don't have an active subscription. Please add a payment method in Revtops to continue.",
@@ -2091,7 +2212,10 @@ async def process_slack_mention(
     if files:
         attachment_ids = await _download_and_store_slack_files(connector, files)
 
-    if not await can_use_credits(organization_id):
+    if not await _allow_response_with_credit_grace(
+        organization_id,
+        context=f"slack_mention:{channel_id}:{thread_ts}",
+    ):
         await connector.post_message(
             channel=channel_id,
             text="You're out of credits or don't have an active subscription. Please add a payment method in Revtops to continue.",
@@ -2296,7 +2420,10 @@ async def process_slack_thread_reply(
     if files:
         attachment_ids = await _download_and_store_slack_files(connector, files)
 
-    if not await can_use_credits(organization_id):
+    if not await _allow_response_with_credit_grace(
+        organization_id,
+        context=f"slack_thread:{channel_id}:{thread_ts}",
+    ):
         await connector.post_message(
             channel=channel_id,
             text="You're out of credits or don't have an active subscription. Please add a payment method in Revtops to continue.",
