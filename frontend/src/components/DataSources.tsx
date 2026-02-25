@@ -1647,12 +1647,10 @@ export function DataSources(): JSX.Element {
                     <li key={integration.provider}>
                       <button
                         onClick={() => {
-                          if (!isMobile) {
-                            setShowConnectModal(false);
-                            void handleConnect(integration.provider);
-                          }
+                          setShowConnectModal(false);
+                          void handleConnect(integration.provider);
                         }}
-                        disabled={isMobile || isConnecting}
+                        disabled={isConnecting}
                         className="w-full flex items-center gap-4 px-4 py-3 rounded-xl hover:bg-surface-800 transition-colors text-left group disabled:opacity-50"
                       >
                         <div className={`${getColorClass(integration.color)} p-2 rounded-lg text-white flex-shrink-0`}>
@@ -1707,10 +1705,10 @@ export function DataSources(): JSX.Element {
               <HiDeviceMobile className="w-5 h-5 text-primary-400" />
             </div>
             <div>
-              <h3 className="font-medium text-surface-100">Connect from your computer</h3>
+              <h3 className="font-medium text-surface-100">Using mobile?</h3>
               <p className="text-sm text-surface-400 mt-1">
-                For the best experience connecting connectors, please visit this page from a desktop or laptop computer. 
-                OAuth sign-in works more reliably on larger screens.
+                You can connect new connectors from mobile now. If any OAuth popup is blocked or interrupted,
+                retry from a desktop or laptop for the most reliable setup flow.
               </p>
             </div>
           </div>
