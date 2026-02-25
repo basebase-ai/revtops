@@ -38,6 +38,8 @@ logger = logging.getLogger(__name__)
 EMAIL_PATTERN = re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.IGNORECASE)
 SLACK_MENTION_PATTERN = re.compile(r"<@[A-Z0-9]+>\s*")
 SLOW_REPLY_TIMEOUT_SECONDS = 30
+SLACK_FIRST_TEXT_RESPONSE_SOFT_DELAY_SECONDS = 1.25
+SLACK_FIRST_TEXT_RESPONSE_MESSAGE = "On it — I’m working on your request."
 SLACK_STREAM_FLUSH_CHAR_THRESHOLD = 240
 SLACK_STREAM_FLUSH_INTERVAL_SECONDS = 0.7
 SLACK_CREDITS_CHECK_SOFT_TIMEOUT_SECONDS = 0.5
@@ -217,6 +219,48 @@ async def post_slow_processing_notice(
     await connector.post_message(channel=channel_id, text=SLOW_REPLY_MESSAGE, thread_ts=thread_ts)
     if reaction_ts:
         await connector.remove_reaction(channel=channel_id, timestamp=reaction_ts)
+
+
+async def _post_quick_ack_if_stream_not_started(
+    connector: SlackConnector,
+    *,
+    channel_id: str,
+    thread_ts: str | None,
+    stream_started: asyncio.Event,
+    context: str,
+) -> bool:
+    """Post a quick text acknowledgement when first streamed output is delayed."""
+    try:
+        await asyncio.sleep(SLACK_FIRST_TEXT_RESPONSE_SOFT_DELAY_SECONDS)
+        if stream_started.is_set():
+            logger.debug(
+                "[slack_conversations] Quick ack skipped; stream already started context=%s channel=%s thread=%s",
+                context,
+                channel_id,
+                thread_ts,
+            )
+            return False
+        await connector.post_message(
+            channel=channel_id,
+            text=SLACK_FIRST_TEXT_RESPONSE_MESSAGE,
+            thread_ts=thread_ts,
+        )
+        logger.info(
+            "[slack_conversations] Posted quick ack context=%s channel=%s thread=%s delay_s=%.2f",
+            context,
+            channel_id,
+            thread_ts,
+            SLACK_FIRST_TEXT_RESPONSE_SOFT_DELAY_SECONDS,
+        )
+        return True
+    except Exception:
+        logger.exception(
+            "[slack_conversations] Failed to post quick ack context=%s channel=%s thread=%s",
+            context,
+            channel_id,
+            thread_ts,
+        )
+        return False
 
 
 async def find_organization_by_slack_team(team_id: str) -> str | None:
@@ -1887,6 +1931,7 @@ async def _stream_and_post_responses(
     channel: str,
     thread_ts: str | None = None,
     attachment_ids: list[str] | None = None,
+    first_text_response_event: asyncio.Event | None = None,
 ) -> int:
     """
     Stream orchestrator output and post text segments to Slack incrementally.
@@ -1947,6 +1992,14 @@ async def _stream_and_post_responses(
             text=text_to_send,
             thread_ts=thread_ts,
         )
+        if first_text_response_event and not first_text_response_event.is_set():
+            first_text_response_event.set()
+            logger.info(
+                "[slack_conversations] First text response emitted channel=%s thread_ts=%s reason=%s",
+                channel,
+                thread_ts,
+                reason,
+            )
         total_length += len(text_to_send)
         logger.info(
             "[slack_conversations] Flushed Slack stream chunk reason=%s channel=%s thread_ts=%s chars=%d",
@@ -2009,7 +2062,16 @@ async def process_slack_dm(
         return {"status": "error", "error": f"No organization found for Slack team {team_id}"}
 
     connector = SlackConnector(organization_id=organization_id, team_id=team_id)
-    await connector.add_reaction(channel=channel_id, timestamp=event_ts)
+    reaction_task = asyncio.create_task(
+        connector.add_reaction(channel=channel_id, timestamp=event_ts)
+    )
+    logger.info(
+        "[slack_conversations] Scheduled DM reaction team=%s channel=%s event_ts=%s",
+        team_id,
+        channel_id,
+        event_ts,
+    )
+    await asyncio.sleep(0)
 
     slack_user = await _fetch_slack_user_info(
         organization_id=organization_id,
@@ -2051,6 +2113,7 @@ async def process_slack_dm(
             channel=channel_id,
             text="You're out of credits or don't have an active subscription. Please add a payment method in Revtops to continue.",
         )
+        await asyncio.gather(reaction_task, return_exceptions=True)
         await connector.remove_reaction(channel=channel_id, timestamp=event_ts)
         return {"status": "error", "error": "insufficient_credits"}
 
@@ -2068,6 +2131,16 @@ async def process_slack_dm(
         local_time=local_time_iso,
     )
 
+    first_text_response_event = asyncio.Event()
+    quick_ack_task = asyncio.create_task(
+        _post_quick_ack_if_stream_not_started(
+            connector,
+            channel_id=channel_id,
+            thread_ts=thread_ts,
+            stream_started=first_text_response_event,
+            context="slack_dm",
+        )
+    )
     response_task = asyncio.create_task(
         _stream_and_post_responses(
             orchestrator=orchestrator,
@@ -2076,12 +2149,16 @@ async def process_slack_dm(
             channel=channel_id,
             thread_ts=thread_ts,
             attachment_ids=attachment_ids or None,
+            first_text_response_event=first_text_response_event,
         )
     )
 
     done, _ = await asyncio.wait({response_task}, timeout=SLOW_REPLY_TIMEOUT_SECONDS)
 
     if response_task in done:
+        await asyncio.gather(reaction_task, return_exceptions=True)
+        quick_ack_task.cancel()
+        await asyncio.gather(quick_ack_task, return_exceptions=True)
         total_length: int = response_task.result()
         logger.info(
             "[slack_conversations] Posted response to channel %s (%d chars)",
@@ -2115,6 +2192,7 @@ async def process_slack_dm(
                 e,
             )
         finally:
+            await asyncio.gather(reaction_task, return_exceptions=True)
             await connector.remove_reaction(channel=channel_id, timestamp=event_ts)
 
     asyncio.create_task(_finish_slow_dm_response())
@@ -2161,8 +2239,17 @@ async def process_slack_mention(
     
     connector = SlackConnector(organization_id=organization_id, team_id=team_id)
 
-    # Show a reaction so the user knows the bot is working
-    await connector.add_reaction(channel=channel_id, timestamp=thread_ts)
+    # Show a reaction so the user knows the bot is working.
+    reaction_task = asyncio.create_task(
+        connector.add_reaction(channel=channel_id, timestamp=thread_ts)
+    )
+    logger.info(
+        "[slack_conversations] Scheduled mention reaction team=%s channel=%s thread=%s",
+        team_id,
+        channel_id,
+        thread_ts,
+    )
+    await asyncio.sleep(0)
     slack_user = await _fetch_slack_user_info(
         organization_id=organization_id,
         slack_user_id=user_id,
@@ -2244,6 +2331,7 @@ async def process_slack_mention(
             text="You're out of credits or don't have an active subscription. Please add a payment method in Revtops to continue.",
             thread_ts=thread_ts,
         )
+        await asyncio.gather(reaction_task, return_exceptions=True)
         await connector.remove_reaction(channel=channel_id, timestamp=thread_ts)
         return {"status": "error", "error": "insufficient_credits"}
 
@@ -2262,6 +2350,16 @@ async def process_slack_mention(
         local_time=local_time_iso,
     )
 
+    first_text_response_event = asyncio.Event()
+    quick_ack_task = asyncio.create_task(
+        _post_quick_ack_if_stream_not_started(
+            connector,
+            channel_id=channel_id,
+            thread_ts=thread_ts,
+            stream_started=first_text_response_event,
+            context="slack_mention",
+        )
+    )
     response_task = asyncio.create_task(
         _stream_and_post_responses(
             orchestrator=orchestrator,
@@ -2270,12 +2368,16 @@ async def process_slack_mention(
             channel=channel_id,
             thread_ts=thread_ts,
             attachment_ids=attachment_ids or None,
+            first_text_response_event=first_text_response_event,
         )
     )
 
     done, pending = await asyncio.wait({response_task}, timeout=SLOW_REPLY_TIMEOUT_SECONDS)
 
     if response_task in done:
+        await asyncio.gather(reaction_task, return_exceptions=True)
+        quick_ack_task.cancel()
+        await asyncio.gather(quick_ack_task, return_exceptions=True)
         total_length: int = response_task.result()
         logger.info(
             "[slack_conversations] Posted thread response to %s (thread %s, %d chars)",
@@ -2312,6 +2414,7 @@ async def process_slack_mention(
                 e,
             )
         finally:
+            await asyncio.gather(reaction_task, return_exceptions=True)
             await connector.remove_reaction(channel=channel_id, timestamp=thread_ts)
 
     asyncio.create_task(_finish_slow_response())
@@ -2380,8 +2483,18 @@ async def process_slack_thread_reply(
 
     connector = SlackConnector(organization_id=organization_id, team_id=team_id)
 
-    # Show a reaction on the user's reply immediately so they know the bot is working
-    await connector.add_reaction(channel=channel_id, timestamp=event_ts)
+    # Show a reaction on the user's reply immediately so they know the bot is working.
+    reaction_task = asyncio.create_task(
+        connector.add_reaction(channel=channel_id, timestamp=event_ts)
+    )
+    logger.info(
+        "[slack_conversations] Scheduled thread reaction team=%s channel=%s thread=%s event_ts=%s",
+        team_id,
+        channel_id,
+        thread_ts,
+        event_ts,
+    )
+    await asyncio.sleep(0)
 
     if speaker_changed:
         logger.info(
@@ -2452,6 +2565,7 @@ async def process_slack_thread_reply(
             text="You're out of credits or don't have an active subscription. Please add a payment method in Revtops to continue.",
             thread_ts=thread_ts,
         )
+        await asyncio.gather(reaction_task, return_exceptions=True)
         await connector.remove_reaction(channel=channel_id, timestamp=event_ts)
         return {"status": "error", "error": "insufficient_credits"}
 
@@ -2470,6 +2584,16 @@ async def process_slack_thread_reply(
         local_time=local_time_iso,
     )
 
+    first_text_response_event = asyncio.Event()
+    quick_ack_task = asyncio.create_task(
+        _post_quick_ack_if_stream_not_started(
+            connector,
+            channel_id=channel_id,
+            thread_ts=thread_ts,
+            stream_started=first_text_response_event,
+            context="slack_thread",
+        )
+    )
     response_task = asyncio.create_task(
         _stream_and_post_responses(
             orchestrator=orchestrator,
@@ -2478,12 +2602,16 @@ async def process_slack_thread_reply(
             channel=channel_id,
             thread_ts=thread_ts,
             attachment_ids=attachment_ids or None,
+            first_text_response_event=first_text_response_event,
         )
     )
 
     done, _ = await asyncio.wait({response_task}, timeout=SLOW_REPLY_TIMEOUT_SECONDS)
 
     if response_task in done:
+        await asyncio.gather(reaction_task, return_exceptions=True)
+        quick_ack_task.cancel()
+        await asyncio.gather(quick_ack_task, return_exceptions=True)
         total_length: int = response_task.result()
         logger.info(
             "[slack_conversations] Posted thread reply to %s (thread %s, %d chars)",
@@ -2520,6 +2648,7 @@ async def process_slack_thread_reply(
                 e,
             )
         finally:
+            await asyncio.gather(reaction_task, return_exceptions=True)
             await connector.remove_reaction(channel=channel_id, timestamp=event_ts)
 
     asyncio.create_task(_finish_slow_thread_response())
