@@ -55,7 +55,8 @@ _slack_team_org_cache: dict[str, tuple[str | None, float]] = {}
 _slack_team_org_cache_lock: asyncio.Lock = asyncio.Lock()
 _slack_credits_gate_cache: dict[str, tuple[bool, float]] = {}
 _slack_credits_gate_cache_lock: asyncio.Lock = asyncio.Lock()
-_SENTENCE_BOUNDARY_PATTERN = re.compile(r"(?s)^(.+?[.!?](?:[\"'\)\]\u201d\u2019]+)?)(?:\s+|$)")
+_SENTENCE_BOUNDARY_PATTERN = re.compile(r"[.!?](?:[\"'\)\]\u201d\u2019]+)?(?=\s+|$)")
+_NEXT_WORD_PATTERN = re.compile(r"\s+([a-z]{2,24})(?=\b)")
 
 
 def _slack_user_info_cache_evict_expired(now: float) -> None:
@@ -1914,15 +1915,29 @@ async def _stream_and_post_responses(
 
     def _split_flushable_sentences(text: str) -> tuple[str, str]:
         """Split text into a flushable sentence prefix and remaining suffix."""
-        idx = 0
-        while idx < len(text):
-            match = _SENTENCE_BOUNDARY_PATTERN.match(text[idx:])
-            if not match:
-                break
-            idx += len(match.group(0))
-        if idx == 0:
+        last_boundary_end = 0
+
+        for match in _SENTENCE_BOUNDARY_PATTERN.finditer(text):
+            punct_index = match.start()
+            boundary_end = match.end()
+
+            # Avoid flushing at `.` boundaries that are likely mid-email/domain
+            # line wraps, e.g. `vincent@basebase.\ncom`.
+            if text[punct_index] == "." and punct_index > 0 and text[punct_index - 1].isalnum():
+                remainder = text[boundary_end:]
+                next_word_match = _NEXT_WORD_PATTERN.match(remainder)
+                token_start = punct_index
+                while token_start > 0 and not text[token_start - 1].isspace():
+                    token_start -= 1
+                token = text[token_start:punct_index]
+                if ("@" in token or "." in token) and (next_word_match or not remainder.strip()):
+                    continue
+
+            last_boundary_end = boundary_end
+
+        if last_boundary_end == 0:
             return "", text
-        return text[:idx], text[idx:]
+        return text[:last_boundary_end], text[last_boundary_end:]
 
     async def _flush_current_text(*, reason: str, force: bool = False) -> None:
         nonlocal current_text, total_length, last_flush_at

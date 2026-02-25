@@ -130,6 +130,37 @@ def test_streaming_flushes_completed_sentences_before_stream_end(monkeypatch) ->
     assert total == sum(len(chunk) for chunk in posted)
 
 
+def test_streaming_does_not_flush_mid_email_domain_wrap(monkeypatch) -> None:
+    posted: list[str] = []
+
+    class _FakeConnector:
+        async def post_message(self, channel: str, text: str, thread_ts: str | None = None) -> None:
+            posted.append(text)
+
+    class _FakeOrchestrator:
+        async def process_message(self, _message_text: str, attachment_ids=None):
+            yield "- Email: vincent@basebase.\n"
+            yield "com\n"
+            yield "- Title: Head of \"No, that's Breach\""
+
+    monkeypatch.setattr(slack_conversations, "SLACK_STREAM_FLUSH_CHAR_THRESHOLD", 1)
+
+    total = asyncio.run(
+        slack_conversations._stream_and_post_responses(
+            orchestrator=_FakeOrchestrator(),
+            connector=_FakeConnector(),
+            message_text="hello",
+            channel="C123",
+            thread_ts="T123",
+        )
+    )
+
+    assert posted == [
+        "- Email: vincent@basebase.\ncom\n- Title: Head of \"No, that's Breach\"",
+    ]
+    assert total == len(posted[0])
+
+
 def test_process_slack_dm_allows_initial_response_when_credits_check_is_slow(monkeypatch) -> None:
     events: list[str] = []
 
