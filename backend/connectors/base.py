@@ -58,15 +58,7 @@ class BaseConnector(ABC):
     async def ensure_sync_active(self, stage: str) -> None:
         """Stop in-flight syncs when integration has been disconnected or pending config."""
         async with get_session(organization_id=self.organization_id) as session:
-            conditions = [
-                Integration.organization_id == UUID(self.organization_id),
-                Integration.provider == self.source_system,
-            ]
-            if self.user_id:
-                conditions.append(Integration.user_id == UUID(self.user_id))
-
-            result = await session.execute(select(Integration).where(*conditions))
-            integration = result.scalar_one_or_none()
+            integration = await self._select_integration(session)
 
         if not integration:
             logger.info(
@@ -154,15 +146,47 @@ class BaseConnector(ABC):
     async def _load_integration(self) -> None:
         """Load integration record from database."""
         async with get_session(organization_id=self.organization_id) as session:
-            conditions = [
-                Integration.organization_id == UUID(self.organization_id),
-                Integration.provider == self.source_system,
-            ]
-            if self.user_id:
-                conditions.append(Integration.user_id == UUID(self.user_id))
+            self._integration = await self._select_integration(session)
 
-            result = await session.execute(select(Integration).where(*conditions))
-            self._integration = result.scalar_one_or_none()
+    async def _select_integration(
+        self,
+        session: Any,
+        *,
+        require_active: bool = False,
+    ) -> Integration | None:
+        """Return the best matching integration row for this connector context.
+
+        When ``user_id`` is omitted, an org can have multiple user-scoped rows for a
+        provider. In that case, prefer the most recently updated connection and log a
+        warning to aid cleanup of ambiguous call sites.
+        """
+        conditions = [
+            Integration.organization_id == UUID(self.organization_id),
+            Integration.provider == self.source_system,
+        ]
+        if require_active:
+            conditions.append(Integration.is_active == True)  # noqa: E712
+        if self.user_id:
+            conditions.append(Integration.user_id == UUID(self.user_id))
+
+        result = await session.execute(
+            select(Integration)
+            .where(*conditions)
+            .order_by(
+                Integration.updated_at.desc().nullslast(),
+                Integration.created_at.desc().nullslast(),
+            )
+            .limit(2)
+        )
+        candidates = result.scalars().all()
+        if len(candidates) > 1 and not self.user_id:
+            logger.warning(
+                "Multiple active %s integrations found for org=%s with no user_id; using integration=%s",
+                self.source_system,
+                self.organization_id,
+                candidates[0].id,
+            )
+        return candidates[0] if candidates else None
 
     @abstractmethod
     async def sync_deals(self) -> int:
@@ -264,19 +288,7 @@ class BaseConnector(ABC):
 
         # Verify we have an active integration for this user
         async with get_session(organization_id=self.organization_id) as session:
-            conditions = [
-                Integration.organization_id == UUID(self.organization_id),
-                Integration.provider == self.source_system,
-                Integration.is_active == True,  # noqa: E712
-            ]
-            # All integrations are user-scoped
-            if self.user_id:
-                conditions.append(Integration.user_id == UUID(self.user_id))
-
-            result = await session.execute(
-                select(Integration).where(*conditions)
-            )
-            integration = result.scalar_one_or_none()
+            integration = await self._select_integration(session, require_active=True)
 
             if not integration:
                 user_msg = f" for user {self.user_id}" if self.user_id else ""
@@ -351,13 +363,7 @@ class BaseConnector(ABC):
         if not self._integration:
             # Try to load integration
             async with get_session(organization_id=self.organization_id) as session:
-                result = await session.execute(
-                    select(Integration).where(
-                        Integration.organization_id == UUID(self.organization_id),
-                        Integration.provider == self.source_system,
-                    )
-                )
-                self._integration = result.scalar_one_or_none()
+                self._integration = await self._select_integration(session)
 
         if not self._integration:
             print(f"[Sync] WARNING: No integration found for {self.source_system} in org {self.organization_id}")
