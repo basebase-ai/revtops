@@ -12,9 +12,12 @@ Always use the AuthContext returned by these dependencies.
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 from typing import Optional
 from uuid import UUID
+
+import asyncio
 
 import httpx
 from fastapi import Depends, Header, HTTPException, Query, WebSocket, status
@@ -30,6 +33,11 @@ logger = logging.getLogger(__name__)
 
 # Cache for JWKS public keys
 _jwks_cache: dict | None = None
+_jwks_cache_fetched_at: float | None = None
+_jwks_cache_lock = asyncio.Lock()
+
+# Keep JWKS warm in memory and avoid per-request network calls.
+_JWKS_CACHE_TTL_SECONDS = 60 * 60
 
 
 @dataclass
@@ -96,10 +104,13 @@ async def _get_jwks() -> dict:
     Returns:
         The JWKS dictionary containing public keys
     """
-    global _jwks_cache
-    
-    if _jwks_cache is not None:
-        return _jwks_cache
+    global _jwks_cache, _jwks_cache_fetched_at
+
+    # Fast-path without waiting on the lock.
+    if _jwks_cache is not None and _jwks_cache_fetched_at is not None:
+        cache_age = time.time() - _jwks_cache_fetched_at
+        if cache_age < _JWKS_CACHE_TTL_SECONDS:
+            return _jwks_cache
     
     # Extract Supabase project URL from VITE config or construct from settings
     # The JWKS endpoint is at /.well-known/jwks.json
@@ -114,29 +125,55 @@ async def _get_jwks() -> dict:
     
     jwks_url = f"{supabase_url}/auth/v1/.well-known/jwks.json"
     
-    # Try with retries and timeout
-    max_retries = 3
-    last_error: Exception | None = None
-    
-    for attempt in range(max_retries):
-        try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(5.0)) as client:
-                response = await client.get(jwks_url)
-                response.raise_for_status()
-                _jwks_cache = response.json()
-                logger.info(f"Fetched JWKS from {jwks_url}")
+    # Single-flight so we do not stampede external JWKS during traffic spikes.
+    async with _jwks_cache_lock:
+        # Re-check cache after acquiring the lock.
+        if _jwks_cache is not None and _jwks_cache_fetched_at is not None:
+            cache_age = time.time() - _jwks_cache_fetched_at
+            if cache_age < _JWKS_CACHE_TTL_SECONDS:
                 return _jwks_cache
-        except Exception as e:
-            last_error = e
-            logger.warning(f"JWKS fetch attempt {attempt + 1}/{max_retries} failed: {e}")
-            if attempt < max_retries - 1:
-                import asyncio
-                await asyncio.sleep(0.5 * (attempt + 1))  # Backoff
-    
-    logger.error(f"Failed to fetch JWKS from {jwks_url} after {max_retries} attempts: {last_error}")
+
+        # Try with retries and timeout
+        max_retries = 3
+        last_error: Exception | None = None
+
+        for attempt in range(max_retries):
+            try:
+                async with httpx.AsyncClient(timeout=httpx.Timeout(5.0)) as client:
+                    response = await client.get(jwks_url)
+                    response.raise_for_status()
+                    jwks_payload = response.json()
+                    if not isinstance(jwks_payload, dict) or not isinstance(jwks_payload.get("keys"), list):
+                        raise ValueError("Invalid JWKS payload: missing keys list")
+
+                    _jwks_cache = jwks_payload
+                    _jwks_cache_fetched_at = time.time()
+                    logger.info("Fetched JWKS from %s (keys=%d)", jwks_url, len(jwks_payload.get("keys", [])))
+                    return _jwks_cache
+            except Exception as e:
+                last_error = e
+                logger.warning("JWKS fetch attempt %d/%d failed: %s", attempt + 1, max_retries, e)
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(0.5 * (attempt + 1))  # Backoff
+
+        if _jwks_cache is not None:
+            # Stale-if-error fallback: continue serving existing keys during transient outages.
+            cache_age = (
+                (time.time() - _jwks_cache_fetched_at)
+                if _jwks_cache_fetched_at is not None
+                else -1
+            )
+            logger.warning(
+                "Using stale JWKS cache after fetch failure (age_seconds=%.2f): %s",
+                cache_age,
+                last_error,
+            )
+            return _jwks_cache
+
+    logger.error("Failed to fetch JWKS from %s after %d attempts: %s", jwks_url, max_retries, last_error)
     raise HTTPException(
-        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        detail="Failed to fetch authentication keys",
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="Authentication service temporarily unavailable",
     )
 
 
@@ -179,8 +216,9 @@ def _get_signing_key(jwks: dict, token: str) -> str:
             return jwk.construct(key).to_pem().decode('utf-8')
     
     # Key not found - clear cache and fail
-    global _jwks_cache
+    global _jwks_cache, _jwks_cache_fetched_at
     _jwks_cache = None
+    _jwks_cache_fetched_at = None
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Token signed with unknown key",
@@ -532,5 +570,6 @@ async def verify_websocket_token(websocket: WebSocket) -> AuthContext:
             is_global_admin=user.role == "global_admin",
         )
     except HTTPException as e:
-        await websocket.close(code=4001, reason=str(e.detail))
+        close_code = 1013 if e.status_code >= 500 else 4001
+        await websocket.close(code=close_code, reason=str(e.detail))
         raise
