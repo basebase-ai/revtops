@@ -57,6 +57,7 @@ _slack_credits_gate_cache: dict[str, tuple[bool, float]] = {}
 _slack_credits_gate_cache_lock: asyncio.Lock = asyncio.Lock()
 _SENTENCE_BOUNDARY_PATTERN = re.compile(r"[.!?](?:[\"'\)\]\u201d\u2019]+)?(?=\s+|$)")
 _NEXT_WORD_PATTERN = re.compile(r"\s+([a-z]{2,24})(?=\b)")
+_LIST_MARKER_BREAK_PATTERN = re.compile(r"(^|\n)(\s*(?:\d+[.)]|[-*+])\s*)\n+(?=\S)")
 
 
 def _slack_user_info_cache_evict_expired(now: float) -> None:
@@ -69,6 +70,13 @@ def _slack_user_info_cache_evict_expired(now: float) -> None:
 def _strip_slack_mentions(text: str) -> str:
     """Remove Slack user mentions like <@U09HDFN8DO8> from text."""
     return SLACK_MENTION_PATTERN.sub("", text).strip()
+
+
+def _collapse_list_marker_breaks(text: str) -> str:
+    """Collapse accidental line breaks after list markers to avoid split list items."""
+    return _LIST_MARKER_BREAK_PATTERN.sub(lambda m: f"{m.group(1)}{m.group(2).rstrip()} ", text)
+
+
 SLOW_REPLY_MESSAGE = "Still working on this..."
 
 
@@ -1938,6 +1946,10 @@ async def _stream_and_post_responses(
             # Avoid flushing at `.` boundaries that are likely mid-email/domain
             # line wraps, e.g. `vincent@basebase.\ncom`.
             if text[punct_index] == "." and punct_index > 0 and text[punct_index - 1].isalnum():
+                line_start = text.rfind("\n", 0, punct_index) + 1
+                if re.fullmatch(r"\s*\d+", text[line_start:punct_index]):
+                    continue
+
                 remainder = text[boundary_end:]
                 next_word_match = _NEXT_WORD_PATTERN.match(remainder)
                 token_start = punct_index
@@ -1970,6 +1982,8 @@ async def _stream_and_post_responses(
                 force,
             )
             return
+
+        text_to_send = _collapse_list_marker_breaks(text_to_send)
 
         await connector.post_message(
             channel=channel,
