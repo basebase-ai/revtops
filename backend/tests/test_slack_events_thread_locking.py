@@ -75,3 +75,56 @@ def test_process_event_callback_serializes_thread_reply_events(monkeypatch) -> N
     asyncio.run(_run())
 
     assert max_overlap == 1
+
+
+def test_process_event_callback_routes_thread_message_bot_mention_to_mention_handler(monkeypatch) -> None:
+    captured: dict[str, str] = {}
+
+    async def _fake_is_duplicate_event(_event_id: str) -> bool:
+        return False
+
+    async def _fake_is_duplicate_message(_channel_id: str, _message_ts: str) -> bool:
+        return False
+
+    async def _fake_process_slack_mention(**kwargs):
+        captured["thread_ts"] = kwargs["thread_ts"]
+        captured["message_text"] = kwargs["message_text"]
+        captured["channel_id"] = kwargs["channel_id"]
+
+    async def _fake_process_slack_thread_reply(**_kwargs):
+        raise AssertionError("thread reply handler should not be called")
+
+    monkeypatch.setattr(slack_events, "is_duplicate_event", _fake_is_duplicate_event)
+    monkeypatch.setattr(slack_events, "is_duplicate_message", _fake_is_duplicate_message)
+    monkeypatch.setattr(slack_events, "process_slack_mention", _fake_process_slack_mention)
+    monkeypatch.setattr(slack_events, "process_slack_thread_reply", _fake_process_slack_thread_reply)
+
+    payload = {
+        "type": "event_callback",
+        "event_id": "EvThreadMention1",
+        "team_id": "T123",
+        "authed_users": ["UBOT"],
+        "event": {
+            "type": "message",
+            "channel_type": "channel",
+            "channel": "C123",
+            "user": "U123",
+            "thread_ts": "1700000000.001",
+            "ts": "1700000000.002",
+            "text": "<@UBOT> can you help in this thread?",
+        },
+    }
+
+    asyncio.run(slack_events._process_event_callback_impl(payload))
+
+    assert captured == {
+        "thread_ts": "1700000000.001",
+        "message_text": "can you help in this thread?",
+        "channel_id": "C123",
+    }
+
+
+def test_strip_bot_mentions_removes_only_known_bot_mentions() -> None:
+    text = "<@UBOT> hi <@UOTHER> and <@UBOT>"
+    cleaned = slack_events._strip_bot_mentions(text, {"UBOT"})
+    assert cleaned == "hi <@UOTHER> and"

@@ -291,6 +291,7 @@ async def _process_event_callback_impl(payload: dict[str, Any]) -> None:
     event = payload.get("event", {})
     event_id = payload.get("event_id", "")
     team_id = payload.get("team_id", "")
+    bot_user_ids = _extract_bot_user_ids(payload)
 
     if event_id and await is_duplicate_event(event_id):
         logger.info("[slack_events] Skipping duplicate event: %s", event_id)
@@ -357,6 +358,41 @@ async def _process_event_callback_impl(payload: dict[str, Any]) -> None:
             if not text.strip() and not files:
                 return
 
+            # When a bot @mention happens inside an existing thread where the bot
+            # has not previously participated, Slack may deliver a message event
+            # before app_mention. In that ordering, treating this as a normal
+            # thread reply can cause the conversation lookup path to ignore the
+            # message before app_mention runs. If the current message explicitly
+            # mentions this bot, route it through mention handling for the same
+            # thread so the bot reliably joins and replies in-thread.
+            if _message_mentions_bot_user(text, bot_user_ids):
+                if message_ts and channel_id and await is_duplicate_message(channel_id, message_ts):
+                    logger.info(
+                        "[slack_events] Skipping duplicate message %s:%s (already claimed by another event type)",
+                        channel_id,
+                        message_ts,
+                    )
+                    return
+
+                normalized_text = _strip_bot_mentions(text, bot_user_ids)
+                logger.info(
+                    "[slack_events] Routing in-thread bot mention from message event to mention handler user=%s channel=%s thread=%s",
+                    user_id,
+                    channel_id,
+                    thread_ts,
+                )
+                lock_key = SlackThreadLockManager.build_lock_key(team_id, channel_id, thread_ts)
+                async with _thread_lock_manager.thread_lock(lock_key):
+                    await process_slack_mention(
+                        team_id=team_id,
+                        channel_id=channel_id,
+                        user_id=user_id,
+                        message_text=normalized_text,
+                        thread_ts=thread_ts,
+                        files=files,
+                    )
+                return
+
             # Cross-event-type dedup: if the same message already triggered
             # an app_mention handler, skip the redundant thread-reply path.
             if message_ts and channel_id and await is_duplicate_message(channel_id, message_ts):
@@ -417,6 +453,43 @@ async def _process_event_callback_impl(payload: dict[str, Any]) -> None:
                 thread_ts=lock_thread_ts,
                 files=files,
             )
+
+
+def _extract_bot_user_ids(payload: dict[str, Any]) -> set[str]:
+    """Extract known bot user IDs for this event payload."""
+    user_ids: set[str] = set()
+
+    authed_users = payload.get("authed_users")
+    if isinstance(authed_users, list):
+        for candidate in authed_users:
+            if isinstance(candidate, str) and candidate:
+                user_ids.add(candidate)
+
+    authorizations = payload.get("authorizations")
+    if isinstance(authorizations, list):
+        for authorization in authorizations:
+            if not isinstance(authorization, dict):
+                continue
+            candidate = authorization.get("user_id")
+            if isinstance(candidate, str) and candidate:
+                user_ids.add(candidate)
+
+    return user_ids
+
+
+def _message_mentions_bot_user(text: str, bot_user_ids: set[str]) -> bool:
+    """Return True when message text contains an explicit mention of this bot."""
+    if not text or not bot_user_ids:
+        return False
+    return any(f"<@{bot_user_id}>" in text for bot_user_id in bot_user_ids)
+
+
+def _strip_bot_mentions(text: str, bot_user_ids: set[str]) -> str:
+    """Normalize message text by removing all direct mentions of this bot."""
+    normalized: str = text
+    for bot_user_id in bot_user_ids:
+        normalized = re.sub(rf"<@{re.escape(bot_user_id)}>\s*", "", normalized)
+    return normalized.strip()
 
 
 @router.post("/events", response_model=None)
