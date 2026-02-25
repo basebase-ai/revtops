@@ -170,6 +170,17 @@ def monitor_dependencies(self: Any) -> dict[str, Any]:
             level = logging.INFO if result.healthy else logging.WARNING
             logger.log(level, "Dependency check: %s healthy=%s (%s)", result.name, result.healthy, result.details)
 
+            if result.healthy:
+                logger.info(
+                    "PagerDuty health check succeeded for %s; incident creation skipped",
+                    result.name,
+                )
+            else:
+                logger.warning(
+                    "PagerDuty health check failed for %s; incident will be created",
+                    result.name,
+                )
+
         for result in down:
             await _create_pagerduty_incident(
                 from_email=from_email,
