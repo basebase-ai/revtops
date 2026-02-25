@@ -300,17 +300,7 @@ async def _process_event_callback_impl(payload: dict[str, Any]) -> None:
 
     if inner_type == "message":
         channel_type = event.get("channel_type")
-        is_direct_message = channel_type in {"im", "mpim"}
-        event_bot_id = (event.get("bot_id") or "").strip()
-        is_bot_message = bool(event_bot_id or event.get("subtype") == "bot_message")
-        if is_bot_message and not is_direct_message:
-            logger.debug(
-                "[slack_events] Ignoring non-DM bot message team=%s channel=%s subtype=%s bot_id=%s",
-                team_id,
-                event.get("channel"),
-                event.get("subtype"),
-                event_bot_id,
-            )
+        if event.get("bot_id") or event.get("subtype") == "bot_message":
             return
         if event.get("subtype") in ("message_changed", "message_deleted"):
             return
@@ -327,30 +317,20 @@ async def _process_event_callback_impl(payload: dict[str, Any]) -> None:
                 )
             )
 
+        is_direct_message = channel_type in {"im", "mpim"}
         if is_direct_message:
             channel_id = event.get("channel", "")
             user_id = event.get("user", "")
-            actor_id = user_id or event_bot_id
             text = event.get("text", "")
             message_ts = event.get("ts") or event.get("event_ts", "")
             thread_ts = event.get("thread_ts")
             files: list[dict[str, Any]] = event.get("files", [])
-            if not actor_id:
-                logger.warning(
-                    "[slack_events] Skipping DM without actor id team=%s channel=%s ts=%s",
-                    team_id,
-                    channel_id,
-                    message_ts,
-                )
-                return
             if not text.strip() and not files:
                 return
             logger.info(
-                "[slack_events] Processing direct message type=%s actor=%s user=%s bot=%s in %s thread=%s: %s (files=%d)",
+                "[slack_events] Processing direct message type=%s from %s in %s thread=%s: %s (files=%d)",
                 channel_type,
-                actor_id,
                 user_id,
-                event_bot_id,
                 channel_id,
                 thread_ts,
                 text[:50],
@@ -359,8 +339,7 @@ async def _process_event_callback_impl(payload: dict[str, Any]) -> None:
             await process_slack_dm(
                 team_id=team_id,
                 channel_id=channel_id,
-                user_id=actor_id,
-                bot_id=event_bot_id or None,
+                user_id=user_id,
                 message_text=text,
                 event_ts=message_ts,
                 thread_ts=thread_ts,

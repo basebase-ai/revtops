@@ -15,7 +15,6 @@ def test_process_event_callback_routes_mpim_messages_to_direct_message_handler(m
         captured["user_id"] = kwargs["user_id"]
         captured["message_text"] = kwargs["message_text"]
         captured["event_ts"] = kwargs["event_ts"]
-        captured["bot_id"] = kwargs["bot_id"]
         captured["thread_ts"] = kwargs["thread_ts"]
 
     monkeypatch.setattr(slack_events, "is_duplicate_event", _fake_is_duplicate_event)
@@ -44,7 +43,6 @@ def test_process_event_callback_routes_mpim_messages_to_direct_message_handler(m
         "message_text": "hey penny",
         "event_ts": "1700000000.001",
         "thread_ts": None,
-        "bot_id": None,
     }
 
 
@@ -57,7 +55,6 @@ def test_process_event_callback_passes_thread_ts_for_direct_message_thread(monke
     async def _fake_process_slack_dm(**kwargs):
         captured["thread_ts"] = kwargs["thread_ts"]
         captured["event_ts"] = kwargs["event_ts"]
-        captured["bot_id"] = kwargs["bot_id"]
 
     monkeypatch.setattr(slack_events, "is_duplicate_event", _fake_is_duplicate_event)
     monkeypatch.setattr(slack_events, "process_slack_dm", _fake_process_slack_dm)
@@ -82,43 +79,4 @@ def test_process_event_callback_passes_thread_ts_for_direct_message_thread(monke
     assert captured == {
         "thread_ts": "1700000000.001",
         "event_ts": "1700000000.002",
-        "bot_id": None,
-    }
-
-
-def test_process_event_callback_routes_dm_bot_messages_to_direct_message_handler(monkeypatch) -> None:
-    captured: dict[str, str | None] = {}
-
-    async def _fake_is_duplicate_event(_event_id: str) -> bool:
-        return False
-
-    async def _fake_process_slack_dm(**kwargs):
-        captured["user_id"] = kwargs["user_id"]
-        captured["bot_id"] = kwargs["bot_id"]
-        captured["channel_id"] = kwargs["channel_id"]
-
-    monkeypatch.setattr(slack_events, "is_duplicate_event", _fake_is_duplicate_event)
-    monkeypatch.setattr(slack_events, "process_slack_dm", _fake_process_slack_dm)
-
-    payload = {
-        "type": "event_callback",
-        "event_id": "EvIMBot1",
-        "team_id": "T123",
-        "event": {
-            "type": "message",
-            "channel_type": "im",
-            "channel": "D123",
-            "bot_id": "B222",
-            "subtype": "bot_message",
-            "text": "hey from bot",
-            "ts": "1700000000.003",
-        },
-    }
-
-    asyncio.run(slack_events._process_event_callback_impl(payload))
-
-    assert captured == {
-        "user_id": "B222",
-        "bot_id": "B222",
-        "channel_id": "D123",
     }

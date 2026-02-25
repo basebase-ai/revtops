@@ -61,7 +61,6 @@ def test_process_slack_dm_posts_reply_in_same_thread(monkeypatch) -> None:
             team_id="T1",
             channel_id="D1",
             user_id="U1",
-            bot_id=None,
             message_text="hello",
             event_ts="100.1",
             thread_ts="100.0",
@@ -188,7 +187,6 @@ def test_process_slack_dm_allows_initial_response_when_credits_check_is_slow(mon
             team_id="T1",
             channel_id="D1",
             user_id="U1",
-            bot_id=None,
             message_text="hello",
             event_ts="100.1",
             thread_ts="100.0",
@@ -198,60 +196,3 @@ def test_process_slack_dm_allows_initial_response_when_credits_check_is_slow(mon
     assert result["status"] == "success"
     assert "stream" in events
     assert not any("out of credits" in e for e in events if e.startswith("post:"))
-
-
-def test_process_slack_dm_passes_bot_actor_id_to_orchestrator(monkeypatch) -> None:
-    captured: dict[str, str | None] = {}
-
-    class _FakeConnector:
-        def __init__(self, organization_id: str, team_id: str | None = None) -> None:
-            self.organization_id = organization_id
-
-        async def add_reaction(self, channel: str, timestamp: str) -> None:
-            return None
-
-        async def remove_reaction(self, channel: str, timestamp: str) -> None:
-            return None
-
-        async def post_message(self, channel: str, text: str, thread_ts: str | None = None) -> None:
-            return None
-
-    class _FakeOrchestrator:
-        def __init__(self, **kwargs) -> None:
-            captured["source_user_id"] = kwargs.get("source_user_id")
-            captured["source_user_email"] = kwargs.get("source_user_email")
-
-    async def _fake_find_org(_team_id: str) -> str:
-        return "org-1"
-
-    async def _fake_find_or_create_conversation(**_kwargs):
-        return SimpleNamespace(id=UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"))
-
-    async def _fake_stream_and_post_responses(**_kwargs) -> int:
-        return 11
-
-    async def _fake_can_use_credits(_organization_id: str) -> bool:
-        return True
-
-    monkeypatch.setattr(slack_conversations, "find_organization_by_slack_team", _fake_find_org)
-    monkeypatch.setattr(slack_conversations, "SlackConnector", _FakeConnector)
-    monkeypatch.setattr(slack_conversations, "find_or_create_conversation", _fake_find_or_create_conversation)
-    monkeypatch.setattr(slack_conversations, "can_use_credits", _fake_can_use_credits)
-    monkeypatch.setattr(slack_conversations, "ChatOrchestrator", _FakeOrchestrator)
-    monkeypatch.setattr(slack_conversations, "_stream_and_post_responses", _fake_stream_and_post_responses)
-
-    result = asyncio.run(
-        slack_conversations.process_slack_dm(
-            team_id="T1",
-            channel_id="D1",
-            user_id="B1",
-            bot_id="B1",
-            message_text="bot hello",
-            event_ts="100.1",
-            thread_ts=None,
-        )
-    )
-
-    assert result["status"] == "success"
-    assert captured["source_user_id"] == "B1"
-    assert captured["source_user_email"] is None
