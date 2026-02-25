@@ -1964,6 +1964,7 @@ async def process_slack_dm(
     team_id: str,
     channel_id: str,
     user_id: str,
+    bot_id: str | None,
     message_text: str,
     event_ts: str,
     thread_ts: str | None = None,
@@ -1973,8 +1974,10 @@ async def process_slack_dm(
     Process an incoming Slack DM and generate a response.
     """
     logger.info(
-        "[slack_conversations] Processing direct message from user %s in channel %s thread=%s: %s",
+        "[slack_conversations] Processing direct message actor=%s user=%s bot=%s channel=%s thread=%s: %s",
         user_id,
+        user_id,
+        bot_id,
         channel_id,
         thread_ts,
         message_text[:100],
@@ -1988,23 +1991,38 @@ async def process_slack_dm(
     connector = SlackConnector(organization_id=organization_id, team_id=team_id)
     await connector.add_reaction(channel=channel_id, timestamp=event_ts)
 
-    slack_user = await _fetch_slack_user_info(
-        organization_id=organization_id,
-        slack_user_id=user_id,
-    )
-    linked_user = await resolve_revtops_user_for_slack_actor(
-        organization_id=organization_id,
-        slack_user_id=user_id,
-        slack_user=slack_user,
-    )
-    slack_user_name: str | None = _extract_slack_display_name(slack_user)
-    slack_user_email: str | None = _extract_slack_email(slack_user)
-    slack_user_tz: str | None = _extract_slack_timezone(slack_user)
+    is_bot_actor = bool(bot_id and bot_id == user_id)
+    slack_user: dict[str, Any] | None = None
+    linked_user: User | None = None
+    slack_user_name: str | None = None
+    slack_user_email: str | None = None
+    slack_user_tz: str | None = None
+    if is_bot_actor:
+        slack_user_name = f"Slack bot {bot_id}"
+        logger.info(
+            "[slack_conversations] DM actor is Slack bot bot_id=%s org=%s",
+            bot_id,
+            organization_id,
+        )
+    else:
+        slack_user = await _fetch_slack_user_info(
+            organization_id=organization_id,
+            slack_user_id=user_id,
+        )
+        linked_user = await resolve_revtops_user_for_slack_actor(
+            organization_id=organization_id,
+            slack_user_id=user_id,
+            slack_user=slack_user,
+        )
+        slack_user_name = _extract_slack_display_name(slack_user)
+        slack_user_email = _extract_slack_email(slack_user)
+        slack_user_tz = _extract_slack_timezone(slack_user)
     if not linked_user:
         logger.info(
-            "[slack_conversations] No linked RevTops user for Slack actor=%s org=%s; proceeding without user context",
+            "[slack_conversations] No linked RevTops user for Slack actor=%s org=%s is_bot_actor=%s; proceeding without user context",
             user_id,
             organization_id,
+            is_bot_actor,
         )
 
     conversation_key = f"{channel_id}:{thread_ts}" if thread_ts else channel_id
