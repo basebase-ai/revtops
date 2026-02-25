@@ -1784,15 +1784,17 @@ async def process_slack_dm(
     user_id: str,
     message_text: str,
     event_ts: str,
+    thread_ts: str | None = None,
     files: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """
     Process an incoming Slack DM and generate a response.
     """
     logger.info(
-        "[slack_conversations] Processing DM from user %s in channel %s: %s",
+        "[slack_conversations] Processing direct message from user %s in channel %s thread=%s: %s",
         user_id,
         channel_id,
+        thread_ts,
         message_text[:100],
     )
 
@@ -1823,9 +1825,10 @@ async def process_slack_dm(
             organization_id,
         )
 
+    conversation_key = f"{channel_id}:{thread_ts}" if thread_ts else channel_id
     conversation = await find_or_create_conversation(
         organization_id=organization_id,
-        slack_channel_id=channel_id,
+        slack_channel_id=conversation_key,
         slack_user_id=user_id,
         revtops_user_id=str(linked_user.id) if linked_user else None,
         slack_user_name=slack_user_name,
@@ -1863,6 +1866,7 @@ async def process_slack_dm(
             connector=connector,
             message_text=message_text or "(see attached files)",
             channel=channel_id,
+            thread_ts=thread_ts,
             attachment_ids=attachment_ids or None,
         )
     )
@@ -1890,7 +1894,7 @@ async def process_slack_dm(
         channel_id,
         user_id,
     )
-    await connector.post_message(channel=channel_id, text=SLOW_REPLY_MESSAGE)
+    await connector.post_message(channel=channel_id, text=SLOW_REPLY_MESSAGE, thread_ts=thread_ts)
 
     async def _finish_slow_dm_response() -> None:
         try:

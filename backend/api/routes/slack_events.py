@@ -3,7 +3,7 @@ Slack Events API webhook endpoint.
 
 Handles incoming events from Slack, including:
 - URL verification challenge (when setting up the webhook)
-- message.im events (DMs to the bot)
+- message.im/message.mpim events (1:1 and multi-person DMs to the bot)
 - app_mention events (@mentions in channels)
 - message events in threads where the bot is already participating
 
@@ -317,21 +317,32 @@ async def _process_event_callback_impl(payload: dict[str, Any]) -> None:
                 )
             )
 
-        if channel_type == "im":
+        is_direct_message = channel_type in {"im", "mpim"}
+        if is_direct_message:
             channel_id = event.get("channel", "")
             user_id = event.get("user", "")
             text = event.get("text", "")
             message_ts = event.get("ts") or event.get("event_ts", "")
+            thread_ts = event.get("thread_ts")
             files: list[dict[str, Any]] = event.get("files", [])
             if not text.strip() and not files:
                 return
-            logger.info("[slack_events] Processing DM from %s in %s: %s (files=%d)", user_id, channel_id, text[:50], len(files))
+            logger.info(
+                "[slack_events] Processing direct message type=%s from %s in %s thread=%s: %s (files=%d)",
+                channel_type,
+                user_id,
+                channel_id,
+                thread_ts,
+                text[:50],
+                len(files),
+            )
             await process_slack_dm(
                 team_id=team_id,
                 channel_id=channel_id,
                 user_id=user_id,
                 message_text=text,
                 event_ts=message_ts,
+                thread_ts=thread_ts,
                 files=files,
             )
             return

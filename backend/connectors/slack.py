@@ -85,11 +85,12 @@ class SlackConnector(BaseConnector):
         actions=[
             ConnectorAction(
                 name="send_message",
-                description="Send a message to a Slack channel or user. Uses Slack mrkdwn: *bold*, _italic_, ~strike~.",
+                description="Send a message to Slack. Provide `channel` for channels/DM IDs, or `user_id` to open a DM and send directly to that user. Uses Slack mrkdwn: *bold*, _italic_, ~strike~.",
                 parameters=[
-                    {"name": "channel", "type": "string", "required": True, "description": "Channel name (e.g. '#sales-alerts') or channel ID"},
-                    {"name": "message", "type": "string", "required": True, "description": "Message text in Slack mrkdwn format"},
-                    {"name": "thread_ts", "type": "string", "required": False, "description": "Thread timestamp to reply in thread"},
+                    {"name": "channel", "type": "string", "required": False, "description": "Channel/DM/MPIM ID (e.g. 'C123', 'D123', 'G123') or channel name"},
+                    {"name": "user_id", "type": "string", "required": False, "description": "Slack user ID (e.g. 'U123'). If provided without channel, Penny opens a DM to this user and sends the message."},
+                    {"name": "text", "type": "string", "required": True, "description": "Message text in Slack mrkdwn format"},
+                    {"name": "thread_ts", "type": "string", "required": False, "description": "Thread timestamp to reply in-thread (when channel is provided)"},
                 ],
             ),
         ],
@@ -757,13 +758,15 @@ class SlackConnector(BaseConnector):
         if action == "send_message":
             channel: str | None = params.get("channel")
             user_id: str | None = params.get("user_id")
-            text: str = params.get("text", "")
+            text: str = params.get("text") or params.get("message") or ""
             thread_ts: str | None = params.get("thread_ts")
+            if not str(text).strip():
+                raise ValueError("send_message requires non-empty text")
             if user_id and not channel:
                 return await self.send_direct_message(user_id, text)
             if channel:
                 return await self.post_message(channel, text, thread_ts=thread_ts)
-            raise ValueError("send_message requires 'channel' or 'user_id'")
+            raise ValueError("send_message requires 'channel' or 'user_id' and non-empty text")
         raise ValueError(f"Unknown action: {action}")
 
     async def post_message(
