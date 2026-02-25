@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from models.credit_transaction import CreditTransaction
 from models.database import get_admin_session
 from models.organization import Organization
+from config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -130,6 +131,83 @@ async def deduct(
         if ok:
             await sess.commit()
         return ok
+
+
+async def deduct_with_grace(
+    organization_id: str,
+    amount: int,
+    reason: str,
+    *,
+    reference_type: str | None = None,
+    reference_id: str | None = None,
+    user_id: str | None = None,
+    session: AsyncSession | None = None,
+) -> tuple[bool, bool]:
+    """
+    Deduct credits and allow temporary overage up to NUM_GRACE_CREDITS.
+
+    Returns (ok, used_grace).
+    """
+    if amount <= 0:
+        return True, False
+
+    max_grace: int = max(0, int(settings.NUM_GRACE_CREDITS))
+
+    async def _run(sess: AsyncSession) -> tuple[bool, bool]:
+        result = await sess.execute(
+            select(Organization).where(Organization.id == UUID(organization_id))
+        )
+        org: Organization | None = result.scalar_one_or_none()
+        if org is None:
+            logger.warning("[Credits] deduct_with_grace: organization %s not found", organization_id)
+            return False, False
+
+        current: int = int(org.credits_balance)
+        new_balance: int = current - amount
+        allowed_floor: int = -max_grace
+        if new_balance < allowed_floor:
+            logger.info(
+                "[Credits] deduct_with_grace: org %s would exceed grace (%d -> %d, floor=%d)",
+                organization_id,
+                current,
+                new_balance,
+                allowed_floor,
+            )
+            return False, False
+
+        await sess.execute(
+            update(Organization)
+            .where(Organization.id == UUID(organization_id))
+            .values(credits_balance=new_balance)
+        )
+        tx = CreditTransaction(
+            organization_id=UUID(organization_id),
+            user_id=UUID(user_id) if user_id else None,
+            amount=-amount,
+            balance_after=new_balance,
+            reason=reason[:64],
+            reference_type=reference_type,
+            reference_id=reference_id,
+        )
+        sess.add(tx)
+        used_grace = new_balance < 0
+        logger.info(
+            "[Credits] deduct_with_grace: org %s deducted %d, new balance %d, used_grace=%s",
+            organization_id,
+            amount,
+            new_balance,
+            used_grace,
+        )
+        return True, used_grace
+
+    if session is not None:
+        return await _run(session)
+
+    async with get_admin_session() as sess:
+        ok, used_grace = await _run(sess)
+        if ok:
+            await sess.commit()
+        return ok, used_grace
 
 
 def credits_for_tool(

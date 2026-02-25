@@ -32,12 +32,12 @@ def test_write_to_system_routes_to_dispatcher(monkeypatch) -> None:
         called["conversation_id"] = conversation_id
         return {"status": "created", "message": "ok"}
 
-    async def _fake_deduct_credits(*args, **kwargs) -> bool:
-        return True
+    async def _fake_deduct_with_grace(*args, **kwargs):
+        return True, False
 
     monkeypatch.setattr(tools, "_should_skip_approval", _fake_should_skip_approval)
     monkeypatch.setattr(tools, "_write_to_system", _fake_write_to_system)
-    monkeypatch.setattr(credits, "deduct", _fake_deduct_credits)
+    monkeypatch.setattr(credits, "deduct_with_grace", _fake_deduct_with_grace)
 
     result = asyncio.run(
         tools.execute_tool(

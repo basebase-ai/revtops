@@ -132,6 +132,9 @@ class Settings(BaseSettings):
     )
     PAGERDUTY_SERVICE_ID: Optional[str] = None
 
+    # Credits
+    NUM_GRACE_CREDITS: int = 5
+
     @property
     def sandbox_database_url(self) -> str:
         """Sync Postgres URL for E2B sandbox (strips SQLAlchemy asyncpg prefix)."""
