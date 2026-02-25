@@ -25,7 +25,7 @@ import {
   SiLinear,
   SiJira,
 } from 'react-icons/si';
-import { HiOutlineCalendar, HiOutlineMail, HiGlobeAlt, HiUserGroup, HiExclamation, HiDeviceMobile, HiMicrophone, HiLightningBolt, HiX, HiCog, HiShare, HiLockClosed } from 'react-icons/hi';
+import { HiOutlineCalendar, HiOutlineMail, HiGlobeAlt, HiUserGroup, HiExclamation, HiDeviceMobile, HiMicrophone, HiLightningBolt, HiX, HiCog, HiShare, HiLockClosed, HiDocumentText } from 'react-icons/hi';
 // Custom Apollo.io icon - 8-ray starburst matching their brand
 const ApolloIcon: IconType = ({ className, ...props }) => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className={className} {...props}>
@@ -79,6 +79,7 @@ const ICON_MAP: Record<string, IconType> = {
   github: SiGithub,
   linear: SiLinear,
   jira: SiJira,
+  granola: HiDocumentText,
   globe: HiGlobeAlt,
   terminal: HiLightningBolt,
   sms: HiDeviceMobile,
@@ -94,6 +95,7 @@ const PROVIDER_SHARING_DEFAULTS: Record<string, { shareSyncedData: boolean; shar
   linear: { shareSyncedData: true, shareQueryAccess: false, shareWriteAccess: false },
   jira: { shareSyncedData: true, shareQueryAccess: false, shareWriteAccess: false },
   asana: { shareSyncedData: true, shareQueryAccess: false, shareWriteAccess: false },
+  granola: { shareSyncedData: true, shareQueryAccess: false, shareWriteAccess: false },
   web_search: { shareSyncedData: true, shareQueryAccess: false, shareWriteAccess: false },
   code_sandbox: { shareSyncedData: true, shareQueryAccess: false, shareWriteAccess: false },
   twilio: { shareSyncedData: true, shareQueryAccess: false, shareWriteAccess: false },
@@ -122,6 +124,7 @@ const INTEGRATION_CONFIG: Record<string, { name: string; description: string; ic
   github: { name: 'GitHub', description: 'Track repos, commits, and pull requests by team', icon: 'github', color: 'from-gray-600 to-gray-700' },
   linear: { name: 'Linear', description: 'Issue tracking - sync and manage teams, projects, and issues', icon: 'linear', color: 'from-indigo-500 to-violet-600' },
   jira: { name: 'Jira', description: 'Issue tracking - sync projects and issues from Atlassian Jira', icon: 'jira', color: 'from-blue-500 to-blue-600' },
+  granola: { name: 'Granola', description: 'Meeting notes and transcripts – sync and query', icon: 'granola', color: 'from-amber-400 to-amber-600' },
   // Built-in connectors (no OAuth — connect with one click)
   web_search: { name: 'Web Search', description: 'Web search and URL fetching — enable for the agent to search the web or fetch pages', icon: 'globe', color: 'from-emerald-500 to-teal-600' },
   code_sandbox: { name: 'Code Sandbox', description: 'Run shell commands and scripts in a secure sandbox (Python, Node, bash)', icon: 'terminal', color: 'from-amber-500 to-orange-600' },
@@ -1192,18 +1195,21 @@ export function DataSources(): JSX.Element {
                 </h4>
                 <p className="text-xs leading-relaxed text-surface-400">
                   This integration syncs your Slack messages so Penny can search and reference them.
-                  To <span className="text-surface-300">DM Penny</span> or <span className="text-surface-300">@mention</span> her
-                  directly in channels, ask your workspace admin to install the
-                  {' '}<span className="font-medium text-purple-300">Penny</span> bot app from the Slack App Directory.
+                  Add the <span className="font-medium text-purple-300">Penny</span> bot to your workspace to DM her or @mention her in channels.
                 </p>
                 <a
-                  href="https://slack.com/apps"
+                  href="https://slack.com/oauth/v2/authorize?client_id=9568538602452.9561224829205&scope=app_mentions:read,channels:history,channels:read,chat:write,chat:write.public,files:read,groups:history,groups:read,im:history,im:write,mpim:history,reactions:read,reactions:write&user_scope=users:read,users:read.email"
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1 text-xs font-medium text-purple-400 hover:text-purple-300 transition-colors"
+                  className="inline-block mt-1"
                 >
-                  Browse Slack App Directory
-                  <span aria-hidden="true">&rarr;</span>
+                  <img
+                    alt="Add to Slack"
+                    height={40}
+                    width={139}
+                    src="https://platform.slack-edge.com/img/add_to_slack.png"
+                    srcSet="https://platform.slack-edge.com/img/add_to_slack.png 1x, https://platform.slack-edge.com/img/add_to_slack@2x.png 2x"
+                  />
                 </a>
               </div>
             </div>

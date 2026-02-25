@@ -3,6 +3,7 @@ from connectors.apollo import ApolloConnector
 from connectors.asana import AsanaConnector
 from connectors.base import BaseConnector
 from connectors.fireflies import FirefliesConnector
+from connectors.granola import GranolaConnector
 from connectors.github import GitHubConnector
 from connectors.gmail import GmailConnector
 from connectors.google_calendar import GoogleCalendarConnector
@@ -19,6 +20,7 @@ __all__ = [
     "AsanaConnector",
     "BaseConnector",
     "FirefliesConnector",
+    "GranolaConnector",
     "GitHubConnector",
     "GmailConnector",
     "GoogleCalendarConnector",
