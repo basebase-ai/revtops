@@ -865,7 +865,7 @@ async def _upsert_slack_user_mapping(
                     .where(SlackUserMapping.organization_id == UUID(organization_id))
                     .where(_slack_mapping_source_clause())
                     .where(SlackUserMapping.external_userid == normalized_slack_user_id)
-                    .where(SlackUserMapping.user_id.is_(None))
+                    .order_by(SlackUserMapping.updated_at.desc())
                     .limit(1)
                 )
                 existing_mapping = existing_result.scalar_one_or_none()
@@ -878,7 +878,33 @@ async def _upsert_slack_user_mapping(
                             user_id,
                         )
                         return
-                    existing_mapping.user_id = user_id
+                    if existing_mapping.user_id is None:
+                        existing_mapping.user_id = user_id
+                        existing_mapping.revtops_email = resolved_revtops_email
+                        existing_mapping.external_email = slack_email
+                        existing_mapping.source = "slack"
+                        existing_mapping.match_source = match_source
+                        existing_mapping.updated_at = now
+                        await session.commit()
+                        logger.info(
+                            "[slack_conversations] Promoted Slack user mapping org=%s slack_user=%s to user=%s source=%s",
+                            organization_id,
+                            slack_user_id,
+                            user_id,
+                            match_source,
+                        )
+                        return
+
+                    if existing_mapping.user_id != user_id:
+                        logger.info(
+                            "[slack_conversations] Skipping Slack user mapping insert because Slack user already mapped org=%s slack_user=%s existing_user=%s requested_user=%s",
+                            organization_id,
+                            normalized_slack_user_id,
+                            existing_mapping.user_id,
+                            user_id,
+                        )
+                        return
+
                     existing_mapping.revtops_email = resolved_revtops_email
                     existing_mapping.external_email = slack_email
                     existing_mapping.source = "slack"
@@ -886,10 +912,10 @@ async def _upsert_slack_user_mapping(
                     existing_mapping.updated_at = now
                     await session.commit()
                     logger.info(
-                        "[slack_conversations] Promoted Slack user mapping org=%s slack_user=%s to user=%s source=%s",
+                        "[slack_conversations] Refreshed existing Slack user mapping org=%s user=%s slack_user=%s source=%s",
                         organization_id,
-                        slack_user_id,
                         user_id,
+                        normalized_slack_user_id,
                         match_source,
                     )
                     return
