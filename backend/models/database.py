@@ -212,10 +212,10 @@ async def get_session(organization_id: str | None = None) -> AsyncGenerator[Asyn
     finally:
         # Reset role AND org context before returning connection to pool.
         # Without this, a pooled connection could leak one org's RLS context to another.
+        # Must run as separate statements: prepared statements (e.g. Supavisor) allow only one command.
         try:
-            await session.execute(text(
-                "SELECT set_config('app.current_org_id', '', false); RESET ROLE"
-            ))
+            await session.execute(text("SELECT set_config('app.current_org_id', '', false)"))
+            await session.execute(text("RESET ROLE"))
         except Exception:
             pass  # Connection might already be closed
         # This returns the connection to the pool, doesn't close it
