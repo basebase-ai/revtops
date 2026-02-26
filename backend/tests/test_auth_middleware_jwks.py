@@ -52,3 +52,25 @@ async def test_get_jwks_raises_503_without_cache_when_refresh_fails(monkeypatch:
 
     assert exc_info.value.status_code == 503
     assert exc_info.value.detail == "Authentication service temporarily unavailable"
+
+
+@pytest.mark.asyncio
+async def test_get_jwks_raises_incident_after_final_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(am.settings, "SUPABASE_URL", "https://example.supabase.co")
+    monkeypatch.setattr(am.httpx, "AsyncClient", _FailingClient)
+
+    calls: list[tuple[str, str]] = []
+
+    async def _fake_create_pagerduty_incident(*, title: str, details: str) -> bool:
+        calls.append((title, details))
+        return True
+
+    monkeypatch.setattr(am, "create_pagerduty_incident", _fake_create_pagerduty_incident)
+    am._jwks_cache = None
+    am._jwks_cache_fetched_at = None
+
+    with pytest.raises(HTTPException):
+        await am._get_jwks()
+
+    assert len(calls) == 1
+    assert calls[0][0] == "Auth JWKS endpoint unreachable"

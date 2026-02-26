@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from config import EXPECTED_ENV_VARS, settings
+from services import pagerduty
 from workers.tasks import monitoring
 
 
@@ -38,15 +39,16 @@ def test_expected_env_vars_include_pagerduty() -> None:
 
 
 def test_pagerduty_incident_request_shape(monkeypatch: Any) -> None:
-    monkeypatch.setattr(monitoring.httpx, "AsyncClient", _FakeAsyncClient)
+    monkeypatch.setattr(pagerduty.httpx, "AsyncClient", _FakeAsyncClient)
+    monkeypatch.setenv("PAGERDUTY_FROM_EMAIL", "alerts@revtops.com")
+    monkeypatch.setenv("PagerDuty_Key", "pd_test_key")
+    monkeypatch.setenv("PAGERDUTY_SERVICE_ID", "svc_123")
+    monkeypatch.setattr(pagerduty, "settings", settings.__class__())
 
     import asyncio
 
     asyncio.run(
         monitoring._create_pagerduty_incident(
-            from_email="alerts@revtops.com",
-            api_key="pd_test_key",
-            service_id="svc_123",
             check_result=monitoring.CheckResult(
                 name="Redis",
                 healthy=False,
@@ -87,7 +89,7 @@ def test_monitor_dependencies_logs_health_check_outcome(monkeypatch: Any, caplog
     monkeypatch.setenv("PAGERDUTY_FROM_EMAIL", "alerts@revtops.com")
     monkeypatch.setenv("PagerDuty_Key", "pd_test_key")
     monkeypatch.setenv("PAGERDUTY_SERVICE_ID", "svc_123")
-    monkeypatch.setattr(monitoring, "settings", settings.__class__())
+    monkeypatch.setattr(pagerduty, "settings", settings.__class__())
 
     caplog.set_level("INFO")
     result = monitoring.monitor_dependencies.__wrapped__()
