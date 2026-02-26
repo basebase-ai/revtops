@@ -1182,17 +1182,21 @@ export function DataSources(): JSX.Element {
                 </h4>
                 <p className="text-xs leading-relaxed text-surface-400">
                   This integration syncs your Slack messages so Penny can search and reference them.
-                  To <span className="text-surface-300">DM Penny</span> or <span className="text-surface-300">@mention</span> her
-                  directly in channels, add the Penny bot to your Slack workspace.
+                  Add the <span className="font-medium text-purple-300">Penny</span> bot to your workspace to DM her or @mention her in channels.
                 </p>
                 <a
-                  href={organizationId ? `${API_BASE}/auth/slack/add-to-slack?organization_id=${encodeURIComponent(organizationId)}` : 'https://slack.com/apps'}
+                  href={organizationId ? `${API_BASE}/auth/slack/add-to-slack?organization_id=${encodeURIComponent(organizationId)}` : 'https://slack.com/oauth/v2/authorize?client_id=9568538602452.9561224829205&scope=app_mentions:read,channels:history,channels:read,chat:write,chat:write.public,files:read,groups:history,groups:read,im:history,im:write,mpim:history,reactions:read,reactions:write&user_scope=users:read,users:read.email'}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1 text-xs font-medium text-purple-400 hover:text-purple-300 transition-colors"
+                  className="inline-block mt-1"
                 >
-                  Add Penny to Slack
-                  <span aria-hidden="true">&rarr;</span>
+                  <img
+                    alt="Add to Slack"
+                    height={40}
+                    width={139}
+                    src="https://platform.slack-edge.com/img/add_to_slack.png"
+                    srcSet="https://platform.slack-edge.com/img/add_to_slack.png 1x, https://platform.slack-edge.com/img/add_to_slack@2x.png 2x"
+                  />
                 </a>
               </div>
             </div>

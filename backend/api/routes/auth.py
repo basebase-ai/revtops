@@ -2008,7 +2008,9 @@ async def update_integration_sharing(
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid user ID")
 
-    async with get_session() as session:
+    # Use admin session so RLS doesn't hide the row (we only have integration_id, not org_id).
+    # Authorization is enforced below by checking integration.user_id.
+    async with get_admin_session() as session:
         result = await session.execute(
             select(Integration).where(Integration.id == integration_uuid)
         )
@@ -2024,12 +2026,6 @@ async def update_integration_sharing(
                 detail="Only the integration owner can modify sharing settings"
             )
 
-        # Set RLS context
-        await session.execute(
-            text("SELECT set_config('app.current_org_id', :org_id, true)"),
-            {"org_id": str(integration.organization_id)}
-        )
-
         was_pending = integration.pending_sharing_config
 
         integration.share_synced_data = request.share_synced_data
@@ -2041,7 +2037,7 @@ async def update_integration_sharing(
         await session.commit()
 
         org_id_str = str(integration.organization_id)
-        user_id_str = str(integration.user_id)
+        user_id_str = str(integration.user_id) if integration.user_id else ""
         provider = integration.provider
 
     # If this was the initial sharing config, trigger sync now
@@ -2081,7 +2077,9 @@ async def patch_integration_sharing(
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid user ID")
 
-    async with get_session() as session:
+    # Use admin session so RLS doesn't hide the row (we only have integration_id).
+    # Authorization is enforced by checking integration.user_id.
+    async with get_admin_session() as session:
         result = await session.execute(
             select(Integration).where(Integration.id == integration_uuid)
         )
@@ -2095,11 +2093,6 @@ async def patch_integration_sharing(
                 status_code=403,
                 detail="Only the integration owner can modify sharing settings"
             )
-
-        await session.execute(
-            text("SELECT set_config('app.current_org_id', :org_id, true)"),
-            {"org_id": str(integration.organization_id)}
-        )
 
         integration.share_synced_data = request.share_synced_data
         integration.share_query_access = request.share_query_access
