@@ -276,10 +276,11 @@ async def execute_tool(
 
     conversation_id: str | None = (context or {}).get("conversation_id")
     # Deduct credits before running the tool (fail fast if insufficient); import here to avoid circular import
-    from services.credits import credits_for_tool, deduct as deduct_credits
+    from services.credits import credits_for_tool, deduct_with_grace
     cost: int = credits_for_tool(tool_name, tool_input or {}, context)
+    used_grace_credits: bool = False
     if cost > 0:
-        ok = await deduct_credits(
+        ok, used_grace_credits = await deduct_with_grace(
             organization_id,
             cost,
             "tool",
@@ -289,7 +290,8 @@ async def execute_tool(
         )
         if not ok:
             return {
-                "error": "Insufficient credits. Please upgrade your plan or wait for your next billing period."
+                "error": "You're out of credits. Please add a payment method in Revtops to continue.",
+                "_out_of_credits_after_turn": True,
             }
 
     # Check if this tool should bypass approval (for auto-approved workflows)
@@ -325,6 +327,13 @@ async def execute_tool(
         return {"error": f"Unknown tool: {tool_name}"}
 
     result = await handler()
+    if used_grace_credits:
+        result["_out_of_credits_after_turn"] = True
+        logger.info(
+            "[Tools] Grace credits used for tool=%s org_id=%s; forcing out-of-credits closeout",
+            tool_name,
+            organization_id,
+        )
     _log_tool_execution_result(tool_name, tool_name, result)
     return result
 

@@ -1615,6 +1615,7 @@ WHERE scheduled_start >= '2026-01-27'::date AND scheduled_start < '2026-01-28'::
             
             # === EXECUTE TOOLS: Process each tool and update results ===
             tool_results: list[dict[str, Any]] = []
+            forced_out_of_credits_closeout: bool = False
             
             for tool_use in tool_uses:
                 tool_name = tool_use["name"]
@@ -1658,6 +1659,10 @@ WHERE scheduled_start >= '2026-01-27'::date AND scheduled_start < '2026-01-28'::
                 except Exception as exc:
                     logger.exception("[Orchestrator] Tool %s raised: %s", tool_name, exc)
                     tool_result = {"error": f"Tool execution failed: {exc}"}
+
+                forced_out_of_credits_closeout = forced_out_of_credits_closeout or bool(
+                    tool_result.pop("_out_of_credits_after_turn", False)
+                )
 
                 logger.info(
                     "[Orchestrator] Tool result for %s: %s",
@@ -1729,6 +1734,20 @@ WHERE scheduled_start >= '2026-01-27'::date AND scheduled_start < '2026-01-28'::
                     "content": str(tool_result),
                 })
             
+            if forced_out_of_credits_closeout:
+                out_of_credits_message = (
+                    "You're out of credits. I paused here before finishing your last request. "
+                    "Please add a payment method in Revtops to continue."
+                )
+                logger.info(
+                    "[Orchestrator] Ending turn with out-of-credits closeout org_id=%s conversation_id=%s",
+                    self.organization_id,
+                    self.conversation_id,
+                )
+                content_blocks.append({"type": "text", "text": out_of_credits_message})
+                yield out_of_credits_message
+                break
+
             # Add assistant message with all tool uses, then user message with all results
             # Convert content blocks to plain dicts to avoid Pydantic serialization issues
             assistant_content: list[dict[str, Any]] = []
