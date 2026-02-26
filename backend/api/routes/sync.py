@@ -26,6 +26,7 @@ from models.organization import Organization
 from models.agent_task import AgentTask
 from models.conversation import Conversation
 from models.workflow import Workflow, WorkflowRun
+from services.pagerduty import create_incident
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -124,6 +125,14 @@ class AdminRunningJobsResponse(BaseModel):
     jobs: list[AdminRunningJob]
     total: int
 
+
+
+
+class AdminPagerDutyTestResponse(BaseModel):
+    """Response model for firing a PagerDuty test incident."""
+
+    status: str
+    incident_created: bool
 
 class AdminCancelJobRequest(BaseModel):
     """Admin request model for cancelling a job."""
@@ -367,6 +376,28 @@ async def trigger_global_sync(user_id: str) -> GlobalSyncResponse:
         status="queued",
         task_id=task.id,
         integration_count=len(integrations),
+    )
+
+
+
+
+@router.post("/admin/pagerduty/test", response_model=AdminPagerDutyTestResponse)
+async def fire_admin_pagerduty_test_incident(user_id: str) -> AdminPagerDutyTestResponse:
+    """Fire a PagerDuty test incident from admin panel (global admin only)."""
+    await _require_global_admin(user_id)
+
+    incident_created = await create_incident(
+        title="Revtops admin PagerDuty test incident",
+        details=(
+            "This is an intentionally triggered test incident from the Revtops admin panel. "
+            "No production outage is implied."
+        ),
+        source="admin_pagerduty_test",
+    )
+
+    return AdminPagerDutyTestResponse(
+        status="ok",
+        incident_created=incident_created,
     )
 
 

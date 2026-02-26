@@ -52,3 +52,27 @@ async def test_get_jwks_raises_503_without_cache_when_refresh_fails(monkeypatch:
 
     assert exc_info.value.status_code == 503
     assert exc_info.value.detail == "Authentication service temporarily unavailable"
+
+
+@pytest.mark.asyncio
+async def test_get_jwks_raises_incident_after_third_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(am.settings, "SUPABASE_URL", "https://example.supabase.co")
+    monkeypatch.setattr(am.httpx, "AsyncClient", _FailingClient)
+
+    created_payloads: list[dict[str, str]] = []
+
+    async def _fake_create_incident(*, title: str, details: str, source: str) -> bool:
+        created_payloads.append({"title": title, "details": details, "source": source})
+        return True
+
+    monkeypatch.setattr(am, "create_incident", _fake_create_incident)
+
+    am._jwks_cache = None
+    am._jwks_cache_fetched_at = None
+
+    with pytest.raises(HTTPException):
+        await am._get_jwks()
+
+    assert len(created_payloads) == 1
+    assert created_payloads[0]["source"] == "auth_jwks_fetch"
+    assert created_payloads[0]["title"] == "Supabase JWKS fetch failed"

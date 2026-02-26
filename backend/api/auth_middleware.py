@@ -28,6 +28,7 @@ from sqlalchemy import select
 from config import settings
 from models.database import get_session
 from models.user import User
+from services.pagerduty import create_incident
 
 logger = logging.getLogger(__name__)
 
@@ -155,6 +156,24 @@ async def _get_jwks() -> dict:
                 logger.warning("JWKS fetch attempt %d/%d failed: %s", attempt + 1, max_retries, e)
                 if attempt < max_retries - 1:
                     await asyncio.sleep(0.5 * (attempt + 1))  # Backoff
+
+        logger.error(
+            "JWKS fetch failed after %d attempts; triggering PagerDuty incident. last_error=%s",
+            max_retries,
+            last_error,
+        )
+        incident_created = await create_incident(
+            title="Supabase JWKS fetch failed",
+            details=(
+                "Authentication middleware could not fetch Supabase JWKS after 3 attempts. "
+                f"JWKS URL: {jwks_url}. Last error: {last_error!r}"
+            ),
+            source="auth_jwks_fetch",
+        )
+        logger.info(
+            "JWKS failure PagerDuty incident request completed (created=%s)",
+            incident_created,
+        )
 
         if _jwks_cache is not None:
             # Stale-if-error fallback: continue serving existing keys during transient outages.

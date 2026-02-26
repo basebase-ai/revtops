@@ -120,6 +120,8 @@ export function AdminPanel(): JSX.Element {
   // Global sync state
   const [syncing, setSyncing] = useState<boolean>(false);
   const [syncResult, setSyncResult] = useState<{ status: string; taskId: string; count: number } | null>(null);
+  const [incidentTesting, setIncidentTesting] = useState<boolean>(false);
+  const [incidentTestResult, setIncidentTestResult] = useState<{ incidentCreated: boolean } | null>(null);
 
   // Jobs tab state
   const [runningJobs, setRunningJobs] = useState<AdminRunningJob[]>([]);
@@ -466,6 +468,32 @@ export function AdminPanel(): JSX.Element {
       alert('Failed to trigger sync: ' + (err instanceof Error ? err.message : 'Unknown error'));
     } finally {
       setSyncing(false);
+    }
+  };
+
+  const handleFirePagerDutyIncident = async (): Promise<void> => {
+    if (!user) return;
+
+    setIncidentTesting(true);
+    setIncidentTestResult(null);
+
+    try {
+      const response = await fetch(`${API_BASE}/sync/admin/pagerduty/test?user_id=${user.id}`, {
+        method: 'POST',
+      });
+
+      if (!response.ok) {
+        const data = await response.json() as { detail?: string };
+        throw new Error(data.detail ?? 'Failed to fire PagerDuty incident test');
+      }
+
+      const data = await response.json() as { status: string; incident_created: boolean };
+      setIncidentTestResult({ incidentCreated: data.incident_created });
+    } catch (err) {
+      console.error('Failed to fire PagerDuty incident test:', err);
+      alert('Failed to fire PagerDuty incident test: ' + (err instanceof Error ? err.message : 'Unknown error'));
+    } finally {
+      setIncidentTesting(false);
     }
   };
 
@@ -1206,6 +1234,14 @@ export function AdminPanel(): JSX.Element {
                   {syncing ? 'Syncing...' : 'Sync All'}
                 </button>
                 <button
+                  onClick={() => void handleFirePagerDutyIncident()}
+                  disabled={incidentTesting}
+                  className="px-4 py-2 rounded-lg bg-rose-500/20 border border-rose-500/30 text-rose-400 hover:bg-rose-500/30 transition-colors disabled:opacity-50"
+                  title="Fire a PagerDuty test incident"
+                >
+                  {incidentTesting ? 'Firing Incident...' : 'Fire Incident'}
+                </button>
+                <button
                   onClick={() => void fetchIntegrations()}
                   disabled={integrationsLoading}
                   className="px-4 py-2 rounded-lg bg-surface-800 border border-surface-700 text-surface-300 hover:bg-surface-700 transition-colors disabled:opacity-50 flex items-center gap-2"
@@ -1233,6 +1269,27 @@ export function AdminPanel(): JSX.Element {
                 <button
                   onClick={() => setSyncResult(null)}
                   className="text-emerald-400/60 hover:text-emerald-400"
+                >
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+            )}
+
+            {incidentTestResult && (
+              <div className={`p-4 rounded-lg border flex items-center justify-between ${incidentTestResult.incidentCreated ? 'bg-rose-500/10 border-rose-500/20 text-rose-300' : 'bg-amber-500/10 border-amber-500/20 text-amber-300'}`}>
+                <div>
+                  <span className="font-medium">PagerDuty test request sent.</span>
+                  <span className="ml-2 text-sm opacity-90">
+                    {incidentTestResult.incidentCreated
+                      ? 'Incident accepted by PagerDuty.'
+                      : 'PagerDuty config appears incomplete, so no incident was created.'}
+                  </span>
+                </div>
+                <button
+                  onClick={() => setIncidentTestResult(null)}
+                  className="opacity-70 hover:opacity-100"
                 >
                   <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />

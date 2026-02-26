@@ -6,31 +6,6 @@ from config import EXPECTED_ENV_VARS, settings
 from workers.tasks import monitoring
 
 
-class _FakeResponse:
-    def __init__(self, status_code: int = 201, text: str = "ok") -> None:
-        self.status_code = status_code
-        self.text = text
-
-
-class _FakeAsyncClient:
-    def __init__(self, **kwargs: Any) -> None:
-        self.kwargs = kwargs
-
-    async def __aenter__(self) -> "_FakeAsyncClient":
-        return self
-
-    async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
-        return None
-
-    async def post(self, url: str, json: dict[str, Any], headers: dict[str, str]) -> _FakeResponse:
-        _FakeAsyncClient.last_call = {
-            "url": url,
-            "json": json,
-            "headers": headers,
-        }
-        return _FakeResponse()
-
-
 def test_expected_env_vars_include_pagerduty() -> None:
     assert "PAGERDUTY_FROM_EMAIL" in EXPECTED_ENV_VARS
     assert "PagerDuty_Key" in EXPECTED_ENV_VARS
@@ -38,7 +13,13 @@ def test_expected_env_vars_include_pagerduty() -> None:
 
 
 def test_pagerduty_incident_request_shape(monkeypatch: Any) -> None:
-    monkeypatch.setattr(monitoring.httpx, "AsyncClient", _FakeAsyncClient)
+    called: dict[str, Any] = {}
+
+    async def _fake_create_incident(*, title: str, details: str, source: str) -> bool:
+        called.update({"title": title, "details": details, "source": source})
+        return True
+
+    monkeypatch.setattr(monitoring, "create_incident", _fake_create_incident)
 
     import asyncio
 
@@ -55,12 +36,9 @@ def test_pagerduty_incident_request_shape(monkeypatch: Any) -> None:
         )
     )
 
-    last_call = _FakeAsyncClient.last_call
-    assert last_call["url"] == "https://api.pagerduty.com/incidents"
-    assert last_call["headers"]["From"] == "alerts@revtops.com"
-    assert last_call["headers"]["Authorization"] == "Token token=pd_test_key"
-    assert last_call["json"]["incident"]["service"]["id"] == "svc_123"
-    assert last_call["json"]["incident"]["title"] == "Redis is down"
+    assert called["title"] == "Redis is down"
+    assert called["source"] == "dependency_monitor"
+    assert "Dependency: Redis" in called["details"]
 
 
 def test_pagerduty_alias_var_is_loaded(monkeypatch: Any) -> None:
