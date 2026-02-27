@@ -24,6 +24,7 @@ import { AdminWaitlist } from './components/AdminWaitlist';
 import { AppEmbed } from './components/apps/AppEmbed';
 import type { User, AuthChangeEvent, Session } from '@supabase/supabase-js';
 import { queryClient } from './lib/queryClient';
+import { APP_NAME, LOGO_PATH } from './lib/brand';
 
 type Screen = 'auth' | 'blocked-email' | 'not-registered' | 'waitlist' | 'company-setup' | 'welcome-free-tier' | 'payment-setup' | 'app';
 
@@ -495,8 +496,8 @@ function App(): JSX.Element {
     return (
       <div className="min-h-screen flex items-center justify-center">
         <div className="flex flex-col items-center gap-4">
-          <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-primary-500 to-primary-700 flex items-center justify-center animate-pulse">
-            <img src="/logo.svg" alt="Loading" className="w-5 h-5 invert" />
+          <div className="w-10 h-10 rounded-xl bg-surface-800 flex items-center justify-center animate-pulse">
+            <img src={LOGO_PATH} alt="Loading" className="w-5 h-5" />
           </div>
           <p className="text-surface-400">Loading...</p>
         </div>
@@ -527,7 +528,7 @@ function App(): JSX.Element {
             </div>
             <h1 className="text-2xl font-bold text-surface-50 mb-3">Work email required</h1>
             <p className="text-surface-400 mb-6">
-              Revtops is designed for teams. Please sign in with your work email address
+              {APP_NAME} is designed for teams. Please sign in with your work email address
               (not {emailDomain}).
             </p>
             <button onClick={() => void handleLogout()} className="btn-primary">
@@ -603,7 +604,7 @@ function App(): JSX.Element {
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
                 </svg>
               </div>
-              <h1 className="text-2xl font-bold text-white mb-2">Welcome to Revtops!</h1>
+              <h1 className="text-2xl font-bold text-white mb-2">Welcome to {APP_NAME}!</h1>
               <p className="text-surface-400">Your account is ready to go.</p>
             </div>
 

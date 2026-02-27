@@ -48,6 +48,7 @@ import { PendingChangesPage } from './PendingChangesPage';
 import { AppsGallery } from './apps/AppsGallery';
 import { AppFullView } from './apps/AppFullView';
 import { OrganizationPanel } from './OrganizationPanel';
+import { APP_NAME, LOGO_PATH } from '../lib/brand';
 import { ProfilePanel } from './ProfilePanel';
 import { useAppStore, useMasquerade, useIntegrations, type ActiveTask, type ToolCallData, type ChatMessage, type ContentBlock } from '../store';
 import { useTeamMembers, useWebSocket } from '../hooks';
@@ -1005,10 +1006,10 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
             </svg>
           </button>
           <div className="flex items-center gap-2">
-            <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-primary-500 to-primary-700 flex items-center justify-center">
-              <img src="/logo.svg" alt="Revtops" className="w-4 h-4 invert" />
+            <div className="w-7 h-7 rounded-lg bg-surface-800 flex items-center justify-center">
+              <img src={LOGO_PATH} alt={APP_NAME} className="w-4 h-4" />
             </div>
-            <span className="font-semibold text-surface-100">{viewTitles[currentView] || 'Revtops'}</span>
+            <span className="font-semibold text-surface-100">{viewTitles[currentView] || APP_NAME}</span>
           </div>
           <button
             onClick={startNewChat}

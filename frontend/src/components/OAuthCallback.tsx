@@ -7,6 +7,7 @@
 
 import { useEffect, useState } from 'react';
 import { supabase } from '../lib/supabase';
+import { APP_NAME } from '../lib/brand';
 import type { AuthChangeEvent, Session } from '@supabase/supabase-js';
 
 type CallbackState = 'processing' | 'success' | 'error';
@@ -114,7 +115,7 @@ export function OAuthCallback(): JSX.Element {
               </svg>
             </div>
             <h2 className="text-xl font-semibold text-surface-100 mb-2">
-              Welcome to Revtops!
+              Welcome to {APP_NAME}!
             </h2>
             <p className="text-surface-400">Redirecting you to the app...</p>
           </div>

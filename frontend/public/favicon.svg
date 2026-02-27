@@ -1,26 +1,9 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" shape-rendering="geometricPrecision">
+<svg viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
   <defs>
-    <linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" style="stop-color:#10b981;stop-opacity:1" />
-      <stop offset="100%" style="stop-color:#047857;stop-opacity:1" />
+    <linearGradient id="fg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#22c55e" />
+      <stop offset="100%" stop-color="#4ade80" />
     </linearGradient>
   </defs>
-  <rect width="100" height="100" rx="20" fill="url(#grad)"/>
-  <!-- Main growth line - ends at peak -->
-  <path 
-    d="M10 68 L25 52 L40 62 L65 25" 
-    stroke="white" 
-    stroke-width="8" 
-    fill="none" 
-    stroke-linecap="round" 
-    stroke-linejoin="round"
-  />
-  <!-- Mountain right slope -->
-  <path 
-    d="M75 45 L85 62" 
-    stroke="white" 
-    stroke-width="8" 
-    fill="none" 
-    stroke-linecap="round"
-  />
+  <path d="M25 10H75L95 50L75 90H25L5 50L25 10Z" fill="url(#fg)"/>
 </svg>

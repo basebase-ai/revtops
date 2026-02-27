@@ -15,6 +15,7 @@ import { useMemo, useState, useRef, useEffect } from 'react';
 import type { View, ChatSummary, OrganizationInfo } from './AppLayout';
 import { useAppStore, useIsGlobalAdmin, useActiveTasksByConversation, type UserOrganization } from '../store';
 import { Avatar } from './Avatar';
+import { APP_NAME, LOGO_PATH } from '../lib/brand';
 
 /** Organization switcher in the sidebar bottom section. */
 function OrgSwitcherSection({
@@ -212,10 +213,10 @@ export function Sidebar({
         {!collapsed && (
           <>
             <div className="flex items-center gap-2">
-              <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-primary-500 to-primary-700 flex items-center justify-center">
-                <img src="/logo.svg" alt="Revtops" className="w-5 h-5 invert" />
+              <div className="w-8 h-8 rounded-lg bg-surface-800 flex items-center justify-center">
+                <img src={LOGO_PATH} alt={APP_NAME} className="w-5 h-5" />
               </div>
-              <span className="font-semibold text-surface-100">Revtops</span>
+              <span className="font-semibold text-surface-100">{APP_NAME}</span>
               <span className="px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide bg-primary-500/20 text-primary-400 rounded">
                 Beta
               </span>
@@ -245,8 +246,8 @@ export function Sidebar({
         )}
         {collapsed && (
           <div className="flex flex-col items-center gap-2">
-            <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-primary-500 to-primary-700 flex items-center justify-center">
-              <img src="/logo.svg" alt="Revtops" className="w-6 h-6 invert" />
+            <div className="w-10 h-10 rounded-lg bg-surface-800 flex items-center justify-center">
+              <img src={LOGO_PATH} alt={APP_NAME} className="w-6 h-6" />
             </div>
             <button
               onClick={onToggleCollapse}

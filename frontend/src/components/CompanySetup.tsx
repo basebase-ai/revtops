@@ -6,6 +6,7 @@
  */
 
 import { useState } from 'react';
+import { APP_NAME } from '../lib/brand';
 
 interface CompanySetupProps {
   emailDomain: string;
@@ -96,7 +97,7 @@ export function CompanySetup({ emailDomain, onComplete, onBack }: CompanySetupPr
                 autoFocus
               />
               <p className="text-xs text-surface-500 mt-2">
-                This is how your company will appear in Revtops
+                This is how your company will appear in {APP_NAME}
               </p>
             </div>
 

@@ -7,6 +7,7 @@
 
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { APP_NAME, LOGO_PATH } from '../lib/brand';
 
 interface MessageProps {
   message: {
@@ -58,10 +59,9 @@ export function Message({ message, onArtifactClick }: MessageProps): JSX.Element
           </svg>
         ) : (
           <img 
-            src="/logo.svg" 
-            alt="Revtops" 
+            src={LOGO_PATH} 
+            alt={APP_NAME} 
             className="w-3.5 h-3.5" 
-            style={{ filter: 'invert(67%) sepia(51%) saturate(439%) hue-rotate(108deg) brightness(92%) contrast(88%)' }} 
           />
         )}
       </div>

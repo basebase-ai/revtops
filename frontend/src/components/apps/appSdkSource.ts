@@ -217,7 +217,7 @@ export default Plot;
 
 /**
  * CSS injected into every Sandpack app via /src/styles.css.
- * Provides a dark theme baseline that matches Revtops.
+ * Provides a dark theme baseline that matches Basebase.
  */
 export const APP_STYLES: string = `
 * { box-sizing: border-box; margin: 0; padding: 0; }

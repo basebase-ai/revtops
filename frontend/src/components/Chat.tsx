@@ -21,6 +21,7 @@ import { Avatar } from './Avatar';
 import { PendingApprovalCard, type ApprovalResult } from './PendingApprovalCard';
 import { getConversation, uploadChatFile, type UploadResponse } from '../api/client';
 import { crossTab } from '../lib/crossTab';
+import { APP_NAME, LOGO_PATH } from '../lib/brand';
 import { 
   useAppStore,
   useConversationState,
@@ -1572,12 +1573,11 @@ function MessageWithBlocks({
   return (
     <div className="flex gap-2">
       {/* Avatar */}
-      <div className="flex-shrink-0 w-6 h-6 rounded-md bg-gradient-to-br from-surface-700 to-surface-800 flex items-center justify-center">
+      <div className="flex-shrink-0 w-6 h-6 rounded-md bg-surface-800 flex items-center justify-center">
         <img 
-          src="/logo.svg" 
-          alt="Revtops" 
+          src={LOGO_PATH} 
+          alt={APP_NAME} 
           className="w-3.5 h-3.5" 
-          style={{ filter: 'invert(67%) sepia(51%) saturate(439%) hue-rotate(108deg) brightness(92%) contrast(88%)' }} 
         />
       </div>
 
@@ -2061,7 +2061,7 @@ function ThinkingIndicator(): JSX.Element {
     <div className="flex gap-3">
       {/* Avatar */}
       <div className="w-6 h-6 rounded-md bg-gradient-to-br from-surface-700 to-surface-800 flex items-center justify-center flex-shrink-0">
-        <img src="/logo.svg" alt="Revtops" className="w-3.5 h-3.5 opacity-70" style={{ filter: 'invert(67%) sepia(51%) saturate(439%) hue-rotate(108deg) brightness(92%) contrast(88%)' }} />
+        <img src={LOGO_PATH} alt={APP_NAME} className="w-3.5 h-3.5 opacity-90" />
       </div>
 
       {/* Thinking dots */}
@@ -2221,12 +2221,11 @@ function EmptyState({ onSuggestionClick }: EmptyStateProps): JSX.Element {
   return (
     <div className="h-full flex items-center justify-center px-4">
       <div className="text-center max-w-lg">
-        <div className="w-16 h-16 md:w-20 md:h-20 rounded-2xl bg-gradient-to-br from-primary-500/20 to-primary-700/20 flex items-center justify-center mx-auto mb-4 md:mb-6">
+        <div className="w-16 h-16 md:w-20 md:h-20 rounded-2xl bg-primary-500/10 flex items-center justify-center mx-auto mb-4 md:mb-6">
           <img 
-            src="/logo.svg" 
-            alt="Revtops" 
+            src={LOGO_PATH} 
+            alt={APP_NAME} 
             className="w-8 h-8 md:w-10 md:h-10" 
-            style={{ filter: 'invert(67%) sepia(51%) saturate(439%) hue-rotate(108deg) brightness(92%) contrast(88%)' }} 
           />
         </div>
         <h2 className="text-xl md:text-2xl font-bold text-surface-50 mb-2">
