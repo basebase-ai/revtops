@@ -399,20 +399,33 @@ async def trigger_dependency_checks(user_id: str) -> AdminQueueTaskResponse:
 @router.post("/admin/fire-incident", response_model=AdminFireIncidentResponse)
 async def admin_fire_incident(user_id: str) -> AdminFireIncidentResponse:
     """Manually fire a PagerDuty incident to validate alerting (global admin only)."""
-    from services.pagerduty import create_pagerduty_incident
+    from services.pagerduty import create_pagerduty_incident_with_details
 
     await _require_global_admin(user_id)
 
     title = "Admin test incident"
-    created = await create_pagerduty_incident(
+    incident_result = await create_pagerduty_incident_with_details(
         title=title,
         details=(
             "Manual admin-panel trigger to validate PagerDuty wiring and on-call delivery. "
             f"Triggered by global admin user_id={user_id}."
         ),
     )
-    if not created:
-        raise HTTPException(status_code=503, detail="PagerDuty is not configured or request failed")
+    if not incident_result.ok:
+        logger.error(
+            "Admin user %s failed to fire PagerDuty test incident; reason=%s status=%s body=%s",
+            user_id,
+            incident_result.reason,
+            incident_result.status_code,
+            incident_result.response_body,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "PagerDuty request failed "
+                f"(reason={incident_result.reason}, status={incident_result.status_code})"
+            ),
+        )
 
     logger.warning("Admin user %s fired PagerDuty test incident", user_id)
     return AdminFireIncidentResponse(status="sent", title=title)
