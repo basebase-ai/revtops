@@ -2,12 +2,23 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 
 import httpx
 
 from config import settings
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class PagerDutyIncidentResult:
+    """Result metadata for PagerDuty incident creation attempts."""
+
+    ok: bool
+    reason: str
+    status_code: int | None = None
+    response_body: str | None = None
 
 
 def get_pagerduty_config() -> tuple[str, str, str] | None:
@@ -30,9 +41,15 @@ def get_pagerduty_config() -> tuple[str, str, str] | None:
 
 async def create_pagerduty_incident(*, title: str, details: str) -> bool:
     """Create a PagerDuty incident and return True if request was accepted."""
+    result = await create_pagerduty_incident_with_details(title=title, details=details)
+    return result.ok
+
+
+async def create_pagerduty_incident_with_details(*, title: str, details: str) -> PagerDutyIncidentResult:
+    """Create a PagerDuty incident and return structured status details."""
     config = get_pagerduty_config()
     if config is None:
-        return False
+        return PagerDutyIncidentResult(ok=False, reason="missing_config")
 
     from_email, api_key, service_id = config
     payload = {
@@ -58,12 +75,17 @@ async def create_pagerduty_incident(*, title: str, details: str) -> bool:
     }
 
     logger.warning("Creating PagerDuty incident: %s", title)
-    async with httpx.AsyncClient(timeout=20.0) as client:
-        response = await client.post(
-            "https://api.pagerduty.com/incidents",
-            json=payload,
-            headers=headers,
-        )
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            response = await client.post(
+                "https://api.pagerduty.com/incidents",
+                json=payload,
+                headers=headers,
+            )
+    except httpx.HTTPError as exc:
+        logger.exception("PagerDuty incident creation failed for %s: transport error", title)
+        return PagerDutyIncidentResult(ok=False, reason=f"transport_error:{type(exc).__name__}")
+
     if response.status_code >= 300:
         logger.error(
             "PagerDuty incident creation failed for %s: HTTP %s - %s",
@@ -71,7 +93,12 @@ async def create_pagerduty_incident(*, title: str, details: str) -> bool:
             response.status_code,
             response.text,
         )
-        return False
+        return PagerDutyIncidentResult(
+            ok=False,
+            reason="http_error",
+            status_code=response.status_code,
+            response_body=response.text,
+        )
 
     logger.info("PagerDuty incident created for %s with status %s", title, response.status_code)
-    return True
+    return PagerDutyIncidentResult(ok=True, reason="created", status_code=response.status_code)
