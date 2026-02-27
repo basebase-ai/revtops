@@ -580,6 +580,42 @@ export function DataSources(): JSX.Element {
     });
   const allIntegrations: DisplayIntegration[] = [...integrations, ...availableIntegrationsDisplay];
 
+  // Full list of all connectors for the Add Source modal (always show every connector)
+  const allConnectorsForModal: DisplayIntegration[] = Object.keys(INTEGRATION_CONFIG).map(
+    (provider: string): DisplayIntegration => {
+      const config = INTEGRATION_CONFIG[provider]!;
+      const defaults = PROVIDER_SHARING_DEFAULTS[provider] ?? {
+        shareSyncedData: false,
+        shareQueryAccess: false,
+        shareWriteAccess: false,
+      };
+      return {
+        id: provider,
+        provider,
+        userId: null,
+        isActive: false,
+        lastSyncAt: null,
+        lastError: null,
+        connectedAt: null,
+        connectedBy: null,
+        currentUserConnected: false,
+        teamConnections: [],
+        teamTotal: 0,
+        syncStats: null,
+        shareSyncedData: defaults.shareSyncedData,
+        shareQueryAccess: defaults.shareQueryAccess,
+        shareWriteAccess: defaults.shareWriteAccess,
+        pendingSharingConfig: false,
+        isOwner: false,
+        name: config.name,
+        description: config.description,
+        icon: config.icon,
+        color: config.color,
+        connected: false,
+      };
+    }
+  );
+
   const handleConnect = async (provider: string): Promise<void> => {
     if (connectingProvider || !organizationId || !userId) return;
 
@@ -1575,16 +1611,18 @@ export function DataSources(): JSX.Element {
     );
   }
 
-  // Filtered available sources for the connect modal
-  const filteredAvailableIntegrations: DisplayIntegration[] = availableIntegrations.filter((i) => {
-    if (!connectSearch.trim()) return true;
-    const query: string = connectSearch.toLowerCase();
-    return (
-      i.name.toLowerCase().includes(query) ||
-      i.description.toLowerCase().includes(query) ||
-      i.provider.toLowerCase().includes(query)
-    );
-  });
+  // Filtered list for the Add Source modal (always starts from full connector list)
+  const filteredConnectModalIntegrations: DisplayIntegration[] = allConnectorsForModal.filter(
+    (i: DisplayIntegration): boolean => {
+      if (!connectSearch.trim()) return true;
+      const query: string = connectSearch.toLowerCase();
+      return (
+        i.name.toLowerCase().includes(query) ||
+        i.description.toLowerCase().includes(query) ||
+        i.provider.toLowerCase().includes(query)
+      );
+    }
+  );
 
   return (
     <div className="flex-1 overflow-y-auto overflow-x-hidden">
@@ -1641,14 +1679,12 @@ export function DataSources(): JSX.Element {
               />
             </div>
             <ul className="max-h-[50vh] overflow-y-auto p-2">
-              {filteredAvailableIntegrations.length === 0 ? (
+              {filteredConnectModalIntegrations.length === 0 ? (
                 <li className="px-4 py-8 text-center text-sm text-surface-500">
-                  {availableIntegrations.length === 0
-                    ? 'All sources are already connected!'
-                    : 'No sources match your search.'}
+                  No sources match your search.
                 </li>
               ) : (
-                filteredAvailableIntegrations.map((integration) => {
+                filteredConnectModalIntegrations.map((integration) => {
                   const isConnecting: boolean = connectingProvider === integration.provider;
                   return (
                     <li key={integration.provider}>
