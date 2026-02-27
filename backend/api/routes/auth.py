@@ -2295,45 +2295,52 @@ async def slack_oauth_callback(request: Request) -> RedirectResponse:
                 url=f"{settings.FRONTEND_URL}/?integration=slack&status=error&message=config",
                 status_code=302,
             )
-        # Exchange code for token
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(
-                "https://slack.com/api/oauth.v2.access",
-                data={
-                    "code": code,
-                    "client_id": settings.SLACK_CLIENT_ID,
-                    "client_secret": settings.SLACK_CLIENT_SECRET,
-                    "redirect_uri": _slack_oauth_callback_url(),
-                },
-                headers={"Content-Type": "application/x-www-form-urlencoded"},
-                timeout=15.0,
-            )
-        if resp.status_code != 200:
-            logger.warning("[slack_oauth_callback] Slack token exchange HTTP %s: %s", resp.status_code, resp.text)
+        try:
+            # Exchange code for token
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(
+                    "https://slack.com/api/oauth.v2.access",
+                    data={
+                        "code": code,
+                        "client_id": settings.SLACK_CLIENT_ID,
+                        "client_secret": settings.SLACK_CLIENT_SECRET,
+                        "redirect_uri": _slack_oauth_callback_url(),
+                    },
+                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                    timeout=15.0,
+                )
+            if resp.status_code != 200:
+                logger.warning("[slack_oauth_callback] Slack token exchange HTTP %s: %s", resp.status_code, resp.text)
+                return RedirectResponse(
+                    url=f"{settings.FRONTEND_URL}/?integration=slack&status=error&message=exchange_failed",
+                    status_code=302,
+                )
+            data = resp.json()
+            if not data.get("ok"):
+                logger.warning("[slack_oauth_callback] Slack API not ok: %s", data)
+                return RedirectResponse(
+                    url=f"{settings.FRONTEND_URL}/?integration=slack&status=error&message=slack_error",
+                    status_code=302,
+                )
+            team_id_slack: str | None = (data.get("team") or {}).get("id")
+            access_token: str | None = data.get("access_token")
+            if not team_id_slack or not access_token:
+                logger.warning("[slack_oauth_callback] Missing team or access_token in Slack response")
+                return RedirectResponse(
+                    url=f"{settings.FRONTEND_URL}/?integration=slack&status=error&message=no_token",
+                    status_code=302,
+                )
+            await upsert_bot_install(organization_id=org_uuid, team_id=team_id_slack, access_token=access_token)
             return RedirectResponse(
-                url=f"{settings.FRONTEND_URL}/?integration=slack&status=error&message=exchange_failed",
+                url=f"{settings.FRONTEND_URL}/?integration=slack&status=success&source=bot_install",
                 status_code=302,
             )
-        data: dict[str, Any] = resp.json()
-        if not data.get("ok"):
-            logger.warning("[slack_oauth_callback] Slack API not ok: %s", data)
+        except Exception as e:
+            logger.exception("[slack_oauth_callback] Bot install failed: %s", e)
             return RedirectResponse(
-                url=f"{settings.FRONTEND_URL}/?integration=slack&status=error&message=slack_error",
+                url=f"{settings.FRONTEND_URL}/?integration=slack&status=error&message=server_error",
                 status_code=302,
             )
-        team_id_slack: str | None = (data.get("team") or {}).get("id")
-        access_token: str | None = data.get("access_token")
-        if not team_id_slack or not access_token:
-            logger.warning("[slack_oauth_callback] Missing team or access_token in Slack response")
-            return RedirectResponse(
-                url=f"{settings.FRONTEND_URL}/?integration=slack&status=error&message=no_token",
-                status_code=302,
-            )
-        await upsert_bot_install(organization_id=org_uuid, team_id=team_id_slack, access_token=access_token)
-        return RedirectResponse(
-            url=f"{settings.FRONTEND_URL}/?integration=slack&status=success&source=bot_install",
-            status_code=302,
-        )
 
     # Nango Connect flow: forward to Nango
     nango_callback_url = "https://api.nango.dev/oauth/callback"
