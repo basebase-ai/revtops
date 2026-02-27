@@ -59,7 +59,7 @@ async def send_email(
         """
 
     payload: dict[str, Any] = {
-        "from": from_address or settings.EMAIL_FROM or "Revtops <hello@revtops.com>",
+        "from": from_address or settings.EMAIL_FROM or "Basebase <hello@basebase.com>",
         "to": to_list,
         "subject": subject,
         "html": html,
@@ -176,8 +176,8 @@ Needs: {needs or "—"}
                     "Content-Type": "application/json",
                 },
                 json={
-                    "from": settings.EMAIL_FROM or "Revtops <hello@revtops.com>",
-                    "to": ["support@revtops.com"],
+                    "from": settings.EMAIL_FROM or "Basebase <hello@basebase.com>",
+                    "to": ["support@basebase.com"],
                     "subject": f"New waitlist signup: {applicant_name} ({waitlist_data.get('company_name', 'Unknown')})",
                     "html": html_content,
                     "text": text_content,
@@ -227,18 +227,18 @@ async def send_waitlist_confirmation(to_email: str, name: str) -> bool:
         
         <p>Hey {name},</p>
         
-        <p>Thanks for signing up for Revtops! We've added you to our waitlist and will reach out as soon as your spot is ready.</p>
+        <p>Thanks for signing up for Basebase! We've added you to our waitlist and will reach out as soon as your spot is ready.</p>
         
-        <p>We're building Revtops to help revenue teams unlock insights by connecting your CRM, Slack, email, and calendar — all through a simple chat interface.</p>
+        <p>We're building Basebase to help revenue teams unlock insights by connecting your CRM, Slack, email, and calendar — all through a simple chat interface.</p>
         
         <p>We'll be in touch soon with next steps.</p>
         
-        <p>— The Revtops Team</p>
+        <p>— The Basebase Team</p>
         
         <hr style="border: none; border-top: 1px solid #eee; margin: 30px 0;">
         
         <p style="font-size: 12px; color: #666;">
-            You received this email because you signed up for the Revtops waitlist.
+            You received this email because you signed up for the Basebase waitlist.
         </p>
     </body>
     </html>
@@ -246,13 +246,13 @@ async def send_waitlist_confirmation(to_email: str, name: str) -> bool:
 
     text_content = f"""Hey {name},
 
-Thanks for signing up for Revtops! We've added you to our waitlist and will reach out as soon as your spot is ready.
+Thanks for signing up for Basebase! We've added you to our waitlist and will reach out as soon as your spot is ready.
 
-We're building Revtops to help revenue teams unlock insights by connecting your CRM, Slack, email, and calendar — all through a simple chat interface.
+We're building Basebase to help revenue teams unlock insights by connecting your CRM, Slack, email, and calendar — all through a simple chat interface.
 
 We'll be in touch soon with next steps.
 
-— The Revtops Team
+— The Basebase Team
 """
 
     async with httpx.AsyncClient() as client:
@@ -264,9 +264,9 @@ We'll be in touch soon with next steps.
                     "Content-Type": "application/json",
                 },
                 json={
-                    "from": settings.EMAIL_FROM or "Revtops <hello@revtops.com>",
+                    "from": settings.EMAIL_FROM or "Basebase <hello@revtops.com>",
                     "to": [to_email],
-                    "subject": "You're on the Revtops waitlist!",
+                    "subject": "You're on the Basebase waitlist!",
                     "html": html_content,
                     "text": text_content,
                 },
@@ -315,9 +315,9 @@ async def send_invitation_email(to_email: str, name: str) -> bool:
         
         <p>Hey {name},</p>
         
-        <p>Great news — you're off the waitlist! Your spot at Revtops is ready.</p>
+        <p>Great news — you're off the waitlist! Your spot at Basebase is ready.</p>
         
-        <p>Revtops connects your CRM, Slack, email, and calendar so you can chat with your revenue data and build automations that save your team hours every week.</p>
+        <p>Basebase connects your CRM, Slack, email, and calendar so you can chat with your revenue data and build automations that save your team hours every week.</p>
         
         <div style="text-align: center; margin: 30px 0;">
             <a href="{settings.FRONTEND_URL}" style="display: inline-block; background: linear-gradient(135deg, #6366f1, #4f46e5); color: white; text-decoration: none; padding: 14px 28px; border-radius: 8px; font-weight: 600;">Sign In to Get Started</a>
@@ -325,12 +325,12 @@ async def send_invitation_email(to_email: str, name: str) -> bool:
         
         <p>Questions? Just reply to this email.</p>
         
-        <p>— The Revtops Team</p>
+        <p>— The Basebase Team</p>
         
         <hr style="border: none; border-top: 1px solid #eee; margin: 30px 0;">
         
         <p style="font-size: 12px; color: #666;">
-            You received this email because you signed up for the Revtops waitlist.
+            You received this email because you signed up for the Basebase waitlist.
         </p>
     </body>
     </html>
@@ -339,15 +339,15 @@ async def send_invitation_email(to_email: str, name: str) -> bool:
     text_content = f"""
 Hey {name},
 
-Great news — you're off the waitlist! Your spot at Revtops is ready.
+Great news — you're off the waitlist! Your spot at Basebase is ready.
 
-Revtops connects your CRM, Slack, email, and calendar so you can chat with your revenue data and build automations that save your team hours every week.
+Basebase connects your CRM, Slack, email, and calendar so you can chat with your revenue data and build automations that save your team hours every week.
 
 Sign in to get started: {settings.FRONTEND_URL}
 
 Questions? Just reply to this email.
 
-— The Revtops Team
+— The Basebase Team
 """
 
     async with httpx.AsyncClient() as client:
@@ -359,7 +359,7 @@ Questions? Just reply to this email.
                     "Content-Type": "application/json",
                 },
                 json={
-                    "from": settings.EMAIL_FROM or "Revtops <hello@revtops.com>",
+                    "from": settings.EMAIL_FROM or "Basebase <hello@revtops.com>",
                     "to": [to_email],
                     "subject": "You're off the waitlist! 🎉",
                     "html": html_content,
@@ -401,9 +401,9 @@ async def send_org_invitation_email(
         return False
 
     inviter_line: str = (
-        f"{invited_by_name} has invited you to join <strong>{org_name}</strong> on Revtops."
+        f"{invited_by_name} has invited you to join <strong>{org_name}</strong> on Basebase."
         if invited_by_name
-        else f"You've been invited to join <strong>{org_name}</strong> on Revtops."
+        else f"You've been invited to join <strong>{org_name}</strong> on Basebase."
     )
 
     html_content: str = f"""
@@ -412,7 +412,7 @@ async def send_org_invitation_email(
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>You're invited to Revtops</title>
+  <title>You're invited to Basebase</title>
 </head>
 <body style="margin:0;padding:0;background:#0b0f1a;color:#e5e7eb;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
   <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#0b0f1a;padding:24px 12px;">
@@ -422,8 +422,8 @@ async def send_org_invitation_email(
           <tr>
             <td style="padding:36px 32px 12px;text-align:center;">
               <img
-                src="https://app.revtops.com/logo.svg"
-                alt="Revtops"
+                src="{settings.FRONTEND_URL.rstrip("/")}/logo.svg"
+                alt="Basebase"
                 width="52"
                 height="52"
                 style="display:inline-block;height:52px;width:52px;border-radius:14px;"
@@ -454,7 +454,7 @@ async def send_org_invitation_email(
           </tr>
           <tr>
             <td style="padding:20px 32px;border-top:1px solid #1f2937;background:#0b1222;">
-              <p style="margin:0;color:#64748b;font-size:12px;line-height:1.6;">You received this email because someone invited you to {org_name} on Revtops. If this wasn&apos;t expected, you can safely ignore this message.</p>
+              <p style="margin:0;color:#64748b;font-size:12px;line-height:1.6;">You received this email because someone invited you to {org_name} on Basebase. If this wasn&apos;t expected, you can safely ignore this message.</p>
             </td>
           </tr>
         </table>
@@ -466,21 +466,21 @@ async def send_org_invitation_email(
     """
 
     inviter_text: str = (
-        f"{invited_by_name} has invited you to join {org_name} on Revtops."
+        f"{invited_by_name} has invited you to join {org_name} on Basebase."
         if invited_by_name
-        else f"You've been invited to join {org_name} on Revtops."
+        else f"You've been invited to join {org_name} on Basebase."
     )
 
     text_content: str = f"""
 {inviter_text}
 
-Revtops connects your CRM, Slack, email, and calendar so you can chat with your revenue data and build automations.
+Basebase connects your CRM, Slack, email, and calendar so you can chat with your revenue data and build automations.
 
 Accept the invitation: {settings.FRONTEND_URL}
 
 Questions? Just reply to this email.
 
-— The Revtops Team
+— The Basebase Team
 """
 
     async with httpx.AsyncClient() as client:
@@ -492,9 +492,9 @@ Questions? Just reply to this email.
                     "Content-Type": "application/json",
                 },
                 json={
-                    "from": settings.EMAIL_FROM or "Revtops <hello@revtops.com>",
+                    "from": settings.EMAIL_FROM or "Basebase <hello@revtops.com>",
                     "to": [to_email],
-                    "subject": f"You're invited to {org_name} on Revtops",
+                    "subject": f"You're invited to {org_name} on Basebase",
                     "html": html_content,
                     "text": text_content,
                 },

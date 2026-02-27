@@ -7,7 +7,7 @@
  * - Company setup for new organizations
  * - Main app layout routing
  * 
- * Note: Public landing page and blog are now served from www.revtops.com
+ * Note: Public landing page can be served from www.basebase.com (VITE_WWW_URL).
  */
 
 import { useEffect, useState } from 'react';
@@ -29,7 +29,7 @@ import { APP_NAME, LOGO_PATH } from './lib/brand';
 type Screen = 'auth' | 'blocked-email' | 'not-registered' | 'waitlist' | 'company-setup' | 'welcome-free-tier' | 'payment-setup' | 'app';
 
 // URL for public website (landing, blog, waitlist form)
-const WWW_URL = import.meta.env.VITE_WWW_URL ?? 'https://www.revtops.com';
+const WWW_URL = import.meta.env.VITE_WWW_URL ?? 'https://www.basebase.com';
 
 // Simple in-memory store for companies (MVP - in production, use API)
 interface StoredCompany {
