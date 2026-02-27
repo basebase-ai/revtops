@@ -83,6 +83,20 @@ class GlobalSyncResponse(BaseModel):
     integration_count: int
 
 
+class AdminQueueTaskResponse(BaseModel):
+    """Response model for queued admin maintenance tasks."""
+
+    status: str
+    task_id: str
+
+
+class AdminFireIncidentResponse(BaseModel):
+    """Response model for manually triggered PagerDuty incidents."""
+
+    status: str
+    title: str
+
+
 class AdminIntegration(BaseModel):
     """Integration info for admin view."""
 
@@ -368,6 +382,40 @@ async def trigger_global_sync(user_id: str) -> GlobalSyncResponse:
         task_id=task.id,
         integration_count=len(integrations),
     )
+
+
+@router.post("/admin/dependency-checks", response_model=AdminQueueTaskResponse)
+async def trigger_dependency_checks(user_id: str) -> AdminQueueTaskResponse:
+    """Trigger dependency checks immediately (global admin only)."""
+    await _require_global_admin(user_id)
+
+    from workers.tasks.monitoring import monitor_dependencies
+
+    task = monitor_dependencies.delay()
+    logger.warning("Admin user %s queued dependency checks task_id=%s", user_id, task.id)
+    return AdminQueueTaskResponse(status="queued", task_id=task.id)
+
+
+@router.post("/admin/fire-incident", response_model=AdminFireIncidentResponse)
+async def admin_fire_incident(user_id: str) -> AdminFireIncidentResponse:
+    """Manually fire a PagerDuty incident to validate alerting (global admin only)."""
+    from services.pagerduty import create_pagerduty_incident
+
+    await _require_global_admin(user_id)
+
+    title = "Admin test incident"
+    created = await create_pagerduty_incident(
+        title=title,
+        details=(
+            "Manual admin-panel trigger to validate PagerDuty wiring and on-call delivery. "
+            f"Triggered by global admin user_id={user_id}."
+        ),
+    )
+    if not created:
+        raise HTTPException(status_code=503, detail="PagerDuty is not configured or request failed")
+
+    logger.warning("Admin user %s fired PagerDuty test incident", user_id)
+    return AdminFireIncidentResponse(status="sent", title=title)
 
 
 @router.get("/admin/jobs", response_model=AdminRunningJobsResponse)

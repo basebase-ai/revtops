@@ -8,6 +8,7 @@ from typing import Any
 import httpx
 
 from config import get_redis_connection_kwargs, settings
+from services.pagerduty import create_pagerduty_incident, get_pagerduty_config
 from workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
@@ -20,24 +21,6 @@ class CheckResult:
     name: str
     healthy: bool
     details: str
-
-
-def _require_pagerduty_config() -> tuple[str, str, str] | None:
-    """Return PagerDuty settings if complete, else log and skip."""
-    from_email = settings.PAGERDUTY_FROM_EMAIL
-    api_key = settings.PAGERDUTY_KEY
-    service_id = settings.PAGERDUTY_SERVICE_ID
-
-    if not from_email or not api_key or not service_id:
-        logger.warning(
-            "Skipping dependency monitoring alerting: missing PagerDuty configuration "
-            "(PAGERDUTY_FROM_EMAIL=%s, PagerDuty_Key=%s, PAGERDUTY_SERVICE_ID=%s)",
-            bool(from_email),
-            bool(api_key),
-            bool(service_id),
-        )
-        return None
-    return from_email, api_key, service_id
 
 
 async def _check_http_endpoint(name: str, url: str, timeout_s: float = 10.0) -> CheckResult:
@@ -78,59 +61,15 @@ async def _check_redis(timeout_s: float = 10.0) -> CheckResult:
 
 async def _create_pagerduty_incident(
     *,
-    from_email: str,
-    api_key: str,
-    service_id: str,
     check_result: CheckResult,
 ) -> None:
     """Create an incident in PagerDuty v2 REST API."""
-    title = f"{check_result.name} is down"
-    payload: dict[str, Any] = {
-        "incident": {
-            "type": "incident",
-            "title": title,
-            "service": {
-                "id": service_id,
-                "type": "service_reference",
-            },
-            "urgency": "high",
-            "body": {
-                "type": "incident_body",
-                "details": (
-                    "Automated Revtops dependency monitor detected an outage. "
-                    f"Dependency: {check_result.name}. Details: {check_result.details}"
-                ),
-            },
-        }
-    }
-
-    headers = {
-        "Accept": "application/vnd.pagerduty+json;version=2",
-        "Content-Type": "application/json",
-        "Authorization": f"Token token={api_key}",
-        "From": from_email,
-    }
-
-    logger.warning("Creating PagerDuty incident for %s", check_result.name)
-    async with httpx.AsyncClient(timeout=20.0) as client:
-        response = await client.post(
-            "https://api.pagerduty.com/incidents",
-            json=payload,
-            headers=headers,
-        )
-    if response.status_code >= 300:
-        logger.error(
-            "PagerDuty incident creation failed for %s: HTTP %s - %s",
-            check_result.name,
-            response.status_code,
-            response.text,
-        )
-        return
-
-    logger.info(
-        "PagerDuty incident created for %s with status %s",
-        check_result.name,
-        response.status_code,
+    await create_pagerduty_incident(
+        title=f"{check_result.name} is down",
+        details=(
+            "Automated Revtops dependency monitor detected an outage. "
+            f"Dependency: {check_result.name}. Details: {check_result.details}"
+        ),
     )
 
 
@@ -153,14 +92,12 @@ def monitor_dependencies(self: Any) -> dict[str, Any]:
     import asyncio
 
     logger.info("Task %s: Starting dependency monitoring run", self.request.id)
-    pagerduty_config = _require_pagerduty_config()
+    pagerduty_config = get_pagerduty_config()
     if pagerduty_config is None:
         return {
             "status": "skipped",
             "reason": "missing_pagerduty_config",
         }
-
-    from_email, api_key, service_id = pagerduty_config
 
     async def _run() -> dict[str, Any]:
         results = await _run_dependency_checks()
@@ -183,9 +120,6 @@ def monitor_dependencies(self: Any) -> dict[str, Any]:
 
         for result in down:
             await _create_pagerduty_incident(
-                from_email=from_email,
-                api_key=api_key,
-                service_id=service_id,
                 check_result=result,
             )
 
