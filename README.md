@@ -1,18 +1,18 @@
-# Revtops: Agentic Intelligence for Companies
+# Basebase: Agentic Intelligence for Companies
 
-Revtops is an **agentic intelligence framework** that connects to the siloed tools and data sources your company already uses — CRM, email, calendars, Slack, issue trackers, code repos, meeting transcripts, and more — and exposes a unified AI agent that helps employees work faster, smarter, and with full context.
+Basebase is an **agentic intelligence framework** that connects to the siloed tools and data sources your company already uses — CRM, email, calendars, Slack, issue trackers, code repos, meeting transcripts, and more — and exposes a unified AI agent that helps employees work faster, smarter, and with full context.
 
 Instead of switching between a dozen tabs, employees ask **Penny** (our AI agent) questions in natural language — via the **web app** or **Slack** — and get instant, data-backed answers, reports, and actions across every connected system.
 
 ## Architecture
 
-![Revtops System Architecture](docs/architecture.png)
+![Basebase System Architecture](docs/architecture.png)
 
 ## Connector Documentation
 
 - [Zoom Connector Knowledge Base](docs/zoom_connector_kb.md)
 
-### What Can Revtops Do?
+### What Can Basebase Do?
 
 - **Answer questions across all your data** — "What deals closed this quarter?", "Show me all emails with Acme Corp", "What's on my calendar tomorrow?"
 - **Take action on your behalf** — Update CRM records, send emails, post to Slack channels, create issues in Linear — all with an approval workflow for safety
@@ -45,7 +45,7 @@ All integrations connect via OAuth through [Nango](https://nango.dev) — tokens
 
 ### Synchronous and Asynchronous Agent Operation
 
-Revtops supports multiple execution modes:
+Basebase supports multiple execution modes:
 
 - **Synchronous (real-time)** — Users chat with Penny via WebSocket. Tool calls execute inline and results stream back token-by-token.
 - **Asynchronous (background)** — Workflows run on a Celery task queue. Scheduled (cron), event-driven (e.g. "after every data sync"), or manually triggered.
@@ -415,7 +415,7 @@ Users review and approve external writes in the **Pending Changes** panel before
 
 ## Workflows
 
-Revtops workflows automate recurring agent tasks:
+Basebase workflows automate recurring agent tasks:
 
 - **Schedule-based** — Cron expressions (e.g. "every weekday at 9am")
 - **Event-based** — Triggered by system events (e.g. "after data sync completes")
