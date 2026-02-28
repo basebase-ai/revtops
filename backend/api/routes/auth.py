@@ -608,6 +608,26 @@ async def sync_user(request: SyncUserRequest) -> SyncUserResponse:
                 if not existing.organization_id:
                     existing.organization_id = pm.organization_id
                     existing.role = pm.role
+
+            if not existing.organization_id:
+                active_membership_result = await session.execute(
+                    select(OrgMember)
+                    .where(
+                        OrgMember.user_id == existing.id,
+                        OrgMember.status == "active",
+                    )
+                    .order_by(OrgMember.joined_at.asc().nulls_last(), OrgMember.created_at.asc())
+                    .limit(1)
+                )
+                active_membership: Optional[OrgMember] = active_membership_result.scalar_one_or_none()
+                if active_membership:
+                    existing.organization_id = active_membership.organization_id
+                    existing.role = active_membership.role
+                    logger.info(
+                        "Bound user=%s to existing active membership org=%s during sync",
+                        existing.id,
+                        active_membership.organization_id,
+                    )
             
             await session.commit()
             await session.refresh(existing)
@@ -647,91 +667,8 @@ async def sync_user(request: SyncUserRequest) -> SyncUserResponse:
                 roles=existing.roles or [],
             )
 
-        from models.org_member import OrgMember
-
-        # User doesn't exist — check for pending invitation first
-        invite_result = await session.execute(
-            select(OrgMember).where(
-                OrgMember.status == "invited",
-            )
-        )
-        # We need to find invitations that match this email, but the membership
-        # points to a stub user. Look up stub users by email to find invites.
-        invite_user_result = await session.execute(
-            select(User).where(User.email == request.email, User.status == "invited")
-        )
-        invited_stub: Optional[User] = invite_user_result.scalar_one_or_none()
-
-        if invited_stub:
-            # There's a stub user from an invitation — this case is already
-            # handled by the "existing user" path above (found by email).
-            # This branch shouldn't normally be reached because of the earlier
-            # email lookup, but included for safety.
-            pass
-
-        # Check if their email domain has an approved org
-        email_domain = request.email.split("@")[1].lower() if "@" in request.email else None
-        
-        if email_domain:
-            # Check if an organization exists for this domain (means someone from their company is already approved)
-            result = await session.execute(
-                select(Organization).where(Organization.email_domain == email_domain)
-            )
-            existing_org = result.scalar_one_or_none()
-            
-            if existing_org:
-                # Auto-create user as active - they're a colleague of an approved user
-                new_user = User(
-                    id=user_uuid,
-                    email=request.email,
-                    name=request.name,
-                    avatar_url=request.avatar_url,
-                    organization_id=existing_org.id,
-                    status="active",
-                    role="member",
-                    last_login=datetime.utcnow(),
-                )
-                session.add(new_user)
-                await session.flush()
-
-                # Also create membership record
-                new_membership = OrgMember(
-                    user_id=new_user.id,
-                    organization_id=existing_org.id,
-                    role="member",
-                    status="active",
-                    joined_at=datetime.utcnow(),
-                )
-                session.add(new_membership)
-                global_commands = await _set_user_global_commands(session, new_user, request.agent_global_commands)
-                await session.commit()
-                await session.refresh(new_user)
-
-                # Include organization data for new user
-                _sub_ok = (existing_org.subscription_status or "") in ("active", "trialing")
-                org_data = SyncOrganizationData(
-                    id=str(existing_org.id),
-                    name=existing_org.name,
-                    logo_url=existing_org.logo_url,
-                    subscription_required=not _sub_ok,
-                )
-
-                return SyncUserResponse(
-                    id=str(new_user.id),
-                    email=new_user.email,
-                    name=new_user.name,
-                    avatar_url=new_user.avatar_url,
-                    agent_global_commands=global_commands,
-                    phone_number=new_user.phone_number,
-                    job_title=None,
-                    organization_id=str(new_user.organization_id),
-                    organization=org_data,
-                    status=new_user.status,
-                    roles=new_user.roles or [],
-                )
-        
-        # No existing org for their domain - create new user (they'll create org in company setup)
-        # Waitlist is disabled - anyone can sign up directly
+        # Create a new active user with no org. Organization assignment is now
+        # invite/membership-driven and no longer inferred from email domain.
         new_user = User(
             id=user_uuid,
             email=request.email,
@@ -770,10 +707,13 @@ async def get_organization_by_domain(email_domain: str) -> OrganizationResponse:
     """
     async with get_admin_session() as session:
         result = await session.execute(
-            select(Organization).where(Organization.email_domain == email_domain)
+            select(Organization)
+            .where(Organization.email_domain == email_domain)
+            .order_by(Organization.created_at.desc().nulls_last(), Organization.id.desc())
+            .limit(1)
         )
         org = result.scalar_one_or_none()
-        
+
         if not org:
             raise HTTPException(status_code=404, detail="Organization not found")
         
@@ -807,19 +747,6 @@ async def create_organization(request: CreateOrganizationRequest) -> Organizatio
                 logo_url=existing.logo_url,
             )
         
-        # Check if organization exists for this email domain (different browser scenario)
-        result = await session.execute(
-            select(Organization).where(Organization.email_domain == request.email_domain)
-        )
-        existing_by_domain = result.scalar_one_or_none()
-        if existing_by_domain:
-            return OrganizationResponse(
-                id=str(existing_by_domain.id),
-                name=existing_by_domain.name,
-                email_domain=existing_by_domain.email_domain,
-                logo_url=existing_by_domain.logo_url,
-            )
-
         # Create new organization with free tier auto-enrolled
         now = datetime.now(timezone.utc)
         new_org = Organization(

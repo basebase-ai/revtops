@@ -3,7 +3,6 @@
  *
  * Handles:
  * - Authentication flow (auth → app)
- * - Work email validation
  * - Company setup for new organizations
  * - Main app layout routing
  * 
@@ -12,7 +11,7 @@
 
 import { useEffect, useState } from 'react';
 import { supabase } from './lib/supabase';
-import { getEmailDomain, isPersonalEmail } from './lib/email';
+import { getEmailDomain } from './lib/email';
 import { API_BASE } from './lib/api';
 import { useAppStore } from './store';
 import { Auth } from './components/Auth';
@@ -79,10 +78,6 @@ function storeCompany(domain: string, name: string): StoredCompany {
   return company;
 }
 
-function getCompanyByDomain(domain: string): StoredCompany | null {
-  const companies = getStoredCompanies();
-  return companies[domain] || null;
-}
 
 function App(): JSX.Element {
   const [screen, setScreen] = useState<Screen>('auth');
@@ -254,16 +249,6 @@ function App(): JSX.Element {
         }),
       });
 
-      if (syncResponse.status === 403) {
-        // User not registered — block personal emails only
-        if (isPersonalEmail(email)) {
-          setScreen('blocked-email');
-          return;
-        }
-        // Work email - this shouldn't happen anymore since waitlist is disabled
-        // but handle gracefully by proceeding to company setup
-        console.warn('Unexpected 403 for work email, proceeding to company setup');
-      }
 
       if (syncResponse.ok) {
         const userData = await syncResponse.json() as { 
@@ -313,71 +298,25 @@ function App(): JSX.Element {
       console.error('Failed to check user status:', error);
     }
 
-    // Block personal emails for org creation (not for invited users who already passed sync)
-    if (isPersonalEmail(email)) {
-      setScreen('blocked-email');
-      return;
-    }
-
-    // User is allowed in - now check company/organization
-    let existingCompany = getCompanyByDomain(domain);
-
-    // If not in localStorage, check backend (colleague on different machine scenario)
-    if (!existingCompany) {
-      try {
-        const response = await fetch(`${API_BASE}/auth/organizations/by-domain/${encodeURIComponent(domain)}`);
-        if (response.ok) {
-          const backendOrg: { id: string; name: string; email_domain: string } = await response.json();
-          // Store in localStorage for future use
-          existingCompany = {
-            id: backendOrg.id,
-            name: backendOrg.name,
-          };
-          // Update localStorage
-          const companies = getStoredCompanies();
-          companies[domain] = existingCompany;
-          localStorage.setItem('revtops_companies', JSON.stringify(companies));
-        }
-      } catch (error) {
-        console.error('Failed to check backend for organization:', error);
-      }
-    }
-
-    if (!existingCompany) {
-      setScreen('company-setup');
-      return;
-    }
-
-    // Set organization in store
-    setOrganization({
-      id: existingCompany.id,
-      name: existingCompany.name,
-      logoUrl: null,
-    });
-
-    // Sync user with organization to backend
-    await syncUserToBackend();
-
-    // Ensure organization exists in backend (migration for existing localStorage data)
-    try {
-      await fetch(`${API_BASE}/auth/organizations`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          id: existingCompany.id,
-          name: existingCompany.name,
-          email_domain: domain,
-        }),
-      });
-    } catch (error) {
-      console.error('Failed to sync organization to backend:', error);
-    }
-
-    // Fetch the user's org list (for multi-org switcher)
+    // Check if the user already has active org memberships but no active org returned from sync.
     await fetchUserOrganizations();
+    const organizations = useAppStore.getState().organizations;
+    if (organizations.length > 0) {
+      const activeOrg = organizations.find((o) => o.isActive) ?? organizations[0];
+      if (activeOrg) {
+        setOrganization({
+          id: activeOrg.id,
+          name: activeOrg.name,
+          logoUrl: activeOrg.logoUrl ?? null,
+        });
+      }
+      setScreen('app');
+      return;
+    }
 
-    // Go directly to app - orgs are auto-enrolled in free tier
-    setScreen('app');
+    // No memberships yet: continue to create-org onboarding.
+    setScreen('company-setup');
+    return;
   };
 
   const handleCompanySetup = async (companyName: string): Promise<void> => {

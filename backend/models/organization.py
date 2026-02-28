@@ -29,7 +29,7 @@ class Organization(Base):
     )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     email_domain: Mapped[Optional[str]] = mapped_column(
-        String(255), unique=True, nullable=True, index=True
+        String(255), nullable=True, index=True
     )  # e.g., "acmecorp.com" - used to auto-match new users
     logo_url: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
     
