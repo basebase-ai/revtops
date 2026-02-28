@@ -12,26 +12,31 @@
 import { getAdminUserId, getMasqueradeUserId } from "../store";
 import { supabase } from "./supabase";
 
-// Backend URL for production
-const PRODUCTION_BACKEND = "https://api.revtops.com";
-// In dev, hit backend directly so /api isn't dependent on Vite proxy
+// Backend URL for production (override with VITE_API_URL at build time)
+const PRODUCTION_BACKEND = "https://api.basebase.com";
 const DEV_API_BASE = "http://localhost:8000/api";
 
-// Determine if we're in production (Railway)
+const envApiUrl: string | undefined = import.meta.env.VITE_API_URL;
+
 export const isProduction: boolean =
   typeof window !== "undefined" &&
-  (window.location.hostname.includes("railway.app") ||
-    window.location.hostname.includes("revtops"));
+  (window.location.hostname.includes("basebase.com") ||
+    window.location.hostname.includes("railway.app"));
 
-// API base URL
-export const API_BASE: string = isProduction
-  ? `${PRODUCTION_BACKEND}/api`
-  : DEV_API_BASE;
+// API base URL (prefer VITE_API_URL when set at build)
+export const API_BASE: string =
+  envApiUrl
+    ? `${envApiUrl.replace(/\/$/, "")}/api`
+    : isProduction
+      ? `${PRODUCTION_BACKEND}/api`
+      : DEV_API_BASE;
 
-// WebSocket base URL - in dev, connect directly to backend (Vite doesn't proxy WebSocket)
-export const WS_BASE: string = isProduction
-  ? PRODUCTION_BACKEND.replace(/^http/, "ws")
-  : "ws://localhost:8000";
+export const WS_BASE: string =
+  envApiUrl
+    ? envApiUrl.replace(/^http/, "ws").replace(/\/$/, "")
+    : isProduction
+      ? PRODUCTION_BACKEND.replace(/^http/, "ws")
+      : "ws://localhost:8000";
 
 /**
  * Standard API response wrapper

@@ -164,8 +164,11 @@ export function Auth({ onBack, onSuccess }: AuthProps): JSX.Element {
 
         {/* Logo */}
         <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-surface-800 mb-4">
-            <img src={LOGO_PATH} alt={APP_NAME} className="w-8 h-8" />
+          <div className="inline-flex items-center gap-3 mb-4">
+            <div className="flex items-center justify-center w-14 h-14 rounded-2xl bg-surface-800">
+              <img src={LOGO_PATH} alt={APP_NAME} className="w-8 h-8" />
+            </div>
+            <span className="text-2xl font-bold text-surface-50">BaseBase</span>
           </div>
           <h1 className="text-2xl font-bold text-surface-50">
             {mode === 'signin' && 'Welcome back'}

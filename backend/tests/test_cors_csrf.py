@@ -9,7 +9,7 @@ WAITLIST_PAYLOAD = {
     "email": "csrf-check@example.com",
     "name": "CSRF Check",
     "title": "Engineer",
-    "company_name": "Revtops",
+    "company_name": "Basebase",
     "num_employees": "1-10",
     "apps_of_interest": ["salesforce"],
     "core_needs": ["insights"],
@@ -17,16 +17,17 @@ WAITLIST_PAYLOAD = {
 
 
 def test_preflight_allows_known_origin() -> None:
+    origin = "https://app.basebase.com"
     response = client.options(
         "/api/waitlist",
         headers={
-            "Origin": "https://app.revtops.com",
+            "Origin": origin,
             "Access-Control-Request-Method": "POST",
         },
     )
 
     assert response.status_code == 200
-    assert response.headers["access-control-allow-origin"] == "https://app.revtops.com"
+    assert response.headers["access-control-allow-origin"] == origin
 
 
 def test_csrf_middleware_blocks_unknown_origin_with_cookie() -> None:

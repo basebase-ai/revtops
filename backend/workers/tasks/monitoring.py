@@ -79,8 +79,8 @@ async def _run_dependency_checks() -> list[CheckResult]:
         _check_http_endpoint("Supabase", settings.SUPABASE_URL or "https://supabase.com"),
         _check_http_endpoint("Nango", settings.NANGO_HOST),
         _check_redis(),
-        _check_http_endpoint("www.revtops.com", "https://www.revtops.com"),
-        _check_http_endpoint("api.revtops.com", "https://api.revtops.com/health"),
+        _check_http_endpoint("www.basebase.com", "https://www.basebase.com"),
+        _check_http_endpoint("api.basebase.com", "https://api.basebase.com/health"),
     ]
 
     return [await check for check in checks]

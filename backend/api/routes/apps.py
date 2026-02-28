@@ -182,8 +182,8 @@ async def create_app_token(
 
     frontend_url: str = settings.FRONTEND_URL
     api_base: str = (
-        "https://api.revtops.com/api"
-        if "revtops" in frontend_url or "railway" in frontend_url
+        "https://api.basebase.com/api"
+        if "basebase.com" in frontend_url or "railway" in frontend_url
         else "/api"
     )
 
