@@ -37,6 +37,13 @@ interface StoredCompany {
   name: string;
 }
 
+interface DomainOrganization {
+  id: string;
+  name: string;
+  email_domain: string | null;
+  logo_url: string | null;
+}
+
 function generateUUID(): string {
   return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
     const r = (Math.random() * 16) | 0;
@@ -79,15 +86,11 @@ function storeCompany(domain: string, name: string): StoredCompany {
   return company;
 }
 
-function getCompanyByDomain(domain: string): StoredCompany | null {
-  const companies = getStoredCompanies();
-  return companies[domain] || null;
-}
-
 function App(): JSX.Element {
   const [screen, setScreen] = useState<Screen>('auth');
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [emailDomain, setEmailDomain] = useState<string>('');
+  const [domainOrganizations, setDomainOrganizations] = useState<DomainOrganization[]>([]);
   
   // Zustand store
   const { 
@@ -319,65 +322,21 @@ function App(): JSX.Element {
       return;
     }
 
-    // User is allowed in - now check company/organization
-    let existingCompany = getCompanyByDomain(domain);
-
-    // If not in localStorage, check backend (colleague on different machine scenario)
-    if (!existingCompany) {
-      try {
-        const response = await fetch(`${API_BASE}/auth/organizations/by-domain/${encodeURIComponent(domain)}`);
-        if (response.ok) {
-          const backendOrg: { id: string; name: string; email_domain: string } = await response.json();
-          // Store in localStorage for future use
-          existingCompany = {
-            id: backendOrg.id,
-            name: backendOrg.name,
-          };
-          // Update localStorage
-          const companies = getStoredCompanies();
-          companies[domain] = existingCompany;
-          localStorage.setItem('revtops_companies', JSON.stringify(companies));
-        }
-      } catch (error) {
-        console.error('Failed to check backend for organization:', error);
-      }
-    }
-
-    if (!existingCompany) {
-      setScreen('company-setup');
-      return;
-    }
-
-    // Set organization in store
-    setOrganization({
-      id: existingCompany.id,
-      name: existingCompany.name,
-      logoUrl: null,
-    });
-
-    // Sync user with organization to backend
-    await syncUserToBackend();
-
-    // Ensure organization exists in backend (migration for existing localStorage data)
+    // User is allowed in - fetch org options for their domain.
+    // We no longer auto-join by domain; user can pick one or create new.
     try {
-      await fetch(`${API_BASE}/auth/organizations`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          id: existingCompany.id,
-          name: existingCompany.name,
-          email_domain: domain,
-        }),
-      });
+      const response = await fetch(`${API_BASE}/auth/organizations/by-domain/${encodeURIComponent(domain)}`);
+      if (response.ok) {
+        const data = await response.json() as { organizations: DomainOrganization[] };
+        setDomainOrganizations(data.organizations ?? []);
+      } else {
+        setDomainOrganizations([]);
+      }
     } catch (error) {
-      console.error('Failed to sync organization to backend:', error);
+      console.error('Failed to check backend for organizations:', error);
+      setDomainOrganizations([]);
     }
-
-    // Fetch the user's org list (for multi-org switcher)
-    await fetchUserOrganizations();
-
-    // Go directly to app - orgs are auto-enrolled in free tier
-    setScreen('app');
+    setScreen('company-setup');
   };
 
   const handleCompanySetup = async (companyName: string): Promise<void> => {
@@ -420,6 +379,18 @@ function App(): JSX.Element {
 
     // Show welcome screen for new orgs on free tier
     setScreen('welcome-free-tier');
+  };
+
+  const handleJoinOrganization = async (organization: DomainOrganization): Promise<void> => {
+    setOrganization({
+      id: organization.id,
+      name: organization.name,
+      logoUrl: organization.logo_url,
+    });
+
+    await syncUserToBackend();
+    await fetchUserOrganizations();
+    setScreen('app');
   };
 
   const handleLogout = async (): Promise<void> => {
@@ -590,6 +561,8 @@ Sign out
       return (
         <CompanySetup
           emailDomain={emailDomain}
+          existingOrganizations={domainOrganizations}
+          onJoinOrganization={(org) => void handleJoinOrganization(org)}
           onComplete={(name) => void handleCompanySetup(name)}
           onBack={() => void handleLogout()}
         />

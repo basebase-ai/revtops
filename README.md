@@ -297,7 +297,7 @@ We use [Nango](https://nango.dev) to handle all OAuth complexity:
 | `/api/auth/me`                               | GET    | Get current user                           |
 | `/api/auth/users/sync`                       | POST   | Sync Supabase user to backend              |
 | `/api/auth/organizations`                    | POST   | Create organization                        |
-| `/api/auth/organizations/by-domain/{domain}` | GET    | Get organization by email domain           |
+| `/api/auth/organizations/by-domain/{domain}` | GET    | List organizations by email domain           |
 | `/api/auth/available-integrations`           | GET    | List available integrations                |
 | `/api/auth/connect/{provider}`               | GET    | Get Nango connect URL                      |
 | `/api/auth/connect/{provider}/session`       | GET    | Get Nango session token (for frontend SDK) |
