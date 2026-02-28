@@ -100,6 +100,11 @@ def _normalize_slack_user_id(slack_user_id: str | None) -> str:
     return (slack_user_id or "").strip().upper()
 
 
+def _normalize_slack_team_id(team_id: str | None) -> str:
+    """Normalize a Slack workspace/team ID for consistent lookups."""
+    return (team_id or "").strip().upper()
+
+
 async def _post_cannot_action_response(
     connector: SlackConnector,
     channel: str,
@@ -242,7 +247,7 @@ async def find_organization_by_slack_team(team_id: str) -> str | None:
     Returns:
         Organization ID string or None if not found
     """
-    normalized_team_id = (team_id or "").strip()
+    normalized_team_id = _normalize_slack_team_id(team_id)
     if not normalized_team_id:
         logger.warning("[slack_conversations] Missing team_id on Slack event")
         return None
@@ -293,13 +298,22 @@ async def find_organization_by_slack_team(team_id: str) -> str | None:
             await asyncio.sleep(0.2)
 
     # --- Fast path: match on stored team_id in extra_data ---
+    available_team_ids: set[str] = set()
     for integration in integrations:
         extra_data: dict[str, Any] = integration.extra_data or {}
-        if extra_data.get("team_id") == normalized_team_id:
+        raw_team_id = extra_data.get("team_id")
+        normalized_integration_team_id = _normalize_slack_team_id(
+            raw_team_id if isinstance(raw_team_id, str) else None
+        )
+        if normalized_integration_team_id:
+            available_team_ids.add(normalized_integration_team_id)
+
+        if normalized_integration_team_id == normalized_team_id:
             logger.info(
-                "[slack_conversations] Matched Slack team %s to org %s via integration metadata",
+                "[slack_conversations] Matched Slack team %s to org %s via integration metadata (raw_team_id=%r)",
                 normalized_team_id,
                 integration.organization_id,
+                raw_team_id,
             )
             organization_id = str(integration.organization_id)
             async with _slack_team_org_cache_lock:
@@ -365,7 +379,11 @@ async def find_organization_by_slack_team(team_id: str) -> str | None:
             _cache_team_lookup(bot_install_org_id)
         return bot_install_org_id
 
-    logger.warning("[slack_conversations] No Slack integration found for team=%s", normalized_team_id)
+    logger.warning(
+        "[slack_conversations] No Slack integration found for team=%s (active integration team_ids=%s)",
+        normalized_team_id,
+        sorted(available_team_ids),
+    )
     async with _slack_team_org_cache_lock:
         _cache_team_lookup(None)
     return None
