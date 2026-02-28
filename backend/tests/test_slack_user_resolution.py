@@ -143,6 +143,28 @@ def test_find_organization_by_slack_team_uses_cache(monkeypatch):
     assert second == org_id
     assert calls["count"] == 1
 
+
+def test_find_organization_by_slack_team_normalizes_whitespace_and_case(monkeypatch):
+    org_id = "11111111-1111-1111-1111-111111111111"
+    integration = SimpleNamespace(
+        provider="slack",
+        is_active=True,
+        organization_id=org_id,
+        extra_data={"team_id": " t123 "},
+    )
+
+    monkeypatch.setattr(
+        slack_conversations,
+        "get_admin_session",
+        lambda: _FakeAdminSessionContext([[integration]]),
+    )
+
+    resolved = asyncio.run(
+        slack_conversations.find_organization_by_slack_team("T123")
+    )
+
+    assert resolved == org_id
+
 def test_find_organization_by_slack_team_returns_none_when_lookup_fails(monkeypatch):
     monkeypatch.setattr(
         slack_conversations,
