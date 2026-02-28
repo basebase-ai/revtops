@@ -446,6 +446,12 @@ class OrganizationResponse(BaseModel):
     logo_url: Optional[str] = None
 
 
+class DomainOrganizationsResponse(BaseModel):
+    """Organizations available for a given email domain."""
+
+    organizations: list[OrganizationResponse]
+
+
 class SyncUserRequest(BaseModel):
     """Request model for syncing a user from Supabase auth."""
 
@@ -669,69 +675,14 @@ async def sync_user(request: SyncUserRequest) -> SyncUserResponse:
             # email lookup, but included for safety.
             pass
 
-        # Check if their email domain has an approved org
-        email_domain = request.email.split("@")[1].lower() if "@" in request.email else None
-        
-        if email_domain:
-            # Check if an organization exists for this domain (means someone from their company is already approved)
-            result = await session.execute(
-                select(Organization).where(Organization.email_domain == email_domain)
-            )
-            existing_org = result.scalar_one_or_none()
-            
-            if existing_org:
-                # Auto-create user as active - they're a colleague of an approved user
-                new_user = User(
-                    id=user_uuid,
-                    email=request.email,
-                    name=request.name,
-                    avatar_url=request.avatar_url,
-                    organization_id=existing_org.id,
-                    status="active",
-                    role="member",
-                    last_login=datetime.utcnow(),
-                )
-                session.add(new_user)
-                await session.flush()
-
-                # Also create membership record
-                new_membership = OrgMember(
-                    user_id=new_user.id,
-                    organization_id=existing_org.id,
-                    role="member",
-                    status="active",
-                    joined_at=datetime.utcnow(),
-                )
-                session.add(new_membership)
-                global_commands = await _set_user_global_commands(session, new_user, request.agent_global_commands)
-                await session.commit()
-                await session.refresh(new_user)
-
-                # Include organization data for new user
-                _sub_ok = (existing_org.subscription_status or "") in ("active", "trialing")
-                org_data = SyncOrganizationData(
-                    id=str(existing_org.id),
-                    name=existing_org.name,
-                    logo_url=existing_org.logo_url,
-                    subscription_required=not _sub_ok,
-                )
-
-                return SyncUserResponse(
-                    id=str(new_user.id),
-                    email=new_user.email,
-                    name=new_user.name,
-                    avatar_url=new_user.avatar_url,
-                    agent_global_commands=global_commands,
-                    phone_number=new_user.phone_number,
-                    job_title=None,
-                    organization_id=str(new_user.organization_id),
-                    organization=org_data,
-                    status=new_user.status,
-                    roles=new_user.roles or [],
-                )
-        
-        # No existing org for their domain - create new user (they'll create org in company setup)
-        # Waitlist is disabled - anyone can sign up directly
+        # New users are no longer auto-joined by domain.
+        # They can explicitly choose an existing org for their domain
+        # or create a new one in the client flow.
+        logger.info(
+            "Creating active user without default org assignment user_id=%s email=%s",
+            user_uuid,
+            request.email,
+        )
         new_user = User(
             id=user_uuid,
             email=request.email,
@@ -762,26 +713,33 @@ async def sync_user(request: SyncUserRequest) -> SyncUserResponse:
         )
 
 
-@router.get("/organizations/by-domain/{email_domain}", response_model=OrganizationResponse)
-async def get_organization_by_domain(email_domain: str) -> OrganizationResponse:
-    """Get organization by email domain.
-    
-    Used to check if an organization exists for a domain when a new user signs up.
-    """
+@router.get("/organizations/by-domain/{email_domain}", response_model=DomainOrganizationsResponse)
+async def get_organizations_by_domain(email_domain: str) -> DomainOrganizationsResponse:
+    """Get all organizations associated with an email domain."""
     async with get_admin_session() as session:
+        normalized_domain = (email_domain or "").strip().lower()
         result = await session.execute(
-            select(Organization).where(Organization.email_domain == email_domain)
+            select(Organization)
+            .where(Organization.email_domain == normalized_domain)
+            .order_by(Organization.created_at.asc())
         )
-        org = result.scalar_one_or_none()
-        
-        if not org:
-            raise HTTPException(status_code=404, detail="Organization not found")
-        
-        return OrganizationResponse(
-            id=str(org.id),
-            name=org.name,
-            email_domain=org.email_domain,
-            logo_url=org.logo_url,
+        orgs = list(result.scalars().all())
+        logger.info(
+            "Found %d organizations for domain=%s",
+            len(orgs),
+            normalized_domain,
+        )
+
+        return DomainOrganizationsResponse(
+            organizations=[
+                OrganizationResponse(
+                    id=str(org.id),
+                    name=org.name,
+                    email_domain=org.email_domain,
+                    logo_url=org.logo_url,
+                )
+                for org in orgs
+            ]
         )
 
 
@@ -796,6 +754,8 @@ async def create_organization(request: CreateOrganizationRequest) -> Organizatio
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid organization ID")
 
+    normalized_domain = (request.email_domain or "").strip().lower()
+
     async with get_admin_session() as session:
         # Check if organization already exists by ID
         existing = await session.get(Organization, org_uuid)
@@ -807,25 +767,12 @@ async def create_organization(request: CreateOrganizationRequest) -> Organizatio
                 logo_url=existing.logo_url,
             )
         
-        # Check if organization exists for this email domain (different browser scenario)
-        result = await session.execute(
-            select(Organization).where(Organization.email_domain == request.email_domain)
-        )
-        existing_by_domain = result.scalar_one_or_none()
-        if existing_by_domain:
-            return OrganizationResponse(
-                id=str(existing_by_domain.id),
-                name=existing_by_domain.name,
-                email_domain=existing_by_domain.email_domain,
-                logo_url=existing_by_domain.logo_url,
-            )
-
         # Create new organization with free tier auto-enrolled
         now = datetime.now(timezone.utc)
         new_org = Organization(
             id=org_uuid,
             name=request.name,
-            email_domain=request.email_domain,
+            email_domain=normalized_domain,
             subscription_tier="free",
             subscription_status="active",
             credits_balance=100,
