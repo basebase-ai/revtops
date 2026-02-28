@@ -422,7 +422,7 @@ async def send_org_invitation_email(
           <tr>
             <td style="padding:36px 32px 12px;text-align:center;">
               <img
-                src="{settings.FRONTEND_URL.rstrip("/")}/logo.svg"
+                src="{settings.FRONTEND_URL.rstrip("/")}/basebase_logo-256.png"
                 alt="Basebase"
                 width="52"
                 height="52"
