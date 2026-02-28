@@ -37,6 +37,7 @@ export function CompanySetup({
   const [loading, setLoading] = useState(false);
   const [joiningOrgId, setJoiningOrgId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const hasExistingOrganizations = existingOrganizations.length > 0;
 
   // Generate a suggested name from the domain
   const suggestedName = emailDomain
@@ -112,7 +113,11 @@ export function CompanySetup({
           </div>
           <h1 className="text-2xl font-bold text-surface-50">Set up your organization</h1>
           <p className="text-surface-400 mt-2">
-            We found your work email domain <span className="text-primary-400 font-medium">@{emailDomain}</span>
+            {hasExistingOrganizations
+              ? `Welcome from '${emailDomain}'! Glad to have you. Please choose an org from the list below, or create a new org.`
+              : <>
+                  Your teammates from <span className="text-primary-400 font-medium">@{emailDomain}</span> will automatically be offered this workspace
+                </>}
           </p>
         </div>
 

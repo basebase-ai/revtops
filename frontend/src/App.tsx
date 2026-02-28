@@ -311,6 +311,28 @@ function App(): JSX.Element {
           setScreen('app');
           return;
         }
+
+        // If user already has an organization assignment, skip company setup.
+        // This can happen when organization_id exists but the embedded org payload
+        // is not present in this response.
+        if (userData.organization_id) {
+          await fetchUserOrganizations();
+          const organizations = useAppStore.getState().organizations;
+          const activeOrg = organizations.find((org) => org.id === userData.organization_id)
+            ?? organizations.find((org) => org.isActive)
+            ?? organizations[0];
+
+          if (activeOrg) {
+            setOrganization({
+              id: activeOrg.id,
+              name: activeOrg.name,
+              logoUrl: activeOrg.logoUrl,
+            });
+          }
+
+          setScreen('app');
+          return;
+        }
       }
     } catch (error) {
       console.error('Failed to check user status:', error);
