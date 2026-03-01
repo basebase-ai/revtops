@@ -972,6 +972,17 @@ async def _upsert_slack_user_mapping(
     match_source: str,
     revtops_email: str | None = None,
 ) -> None:
+    def _log_no_insert_reason(reason: str, **context: object) -> None:
+        logger.info(
+            "[slack_conversations] Did not insert Slack user mapping row: %s | org=%s user=%s slack_user=%s source=%s context=%s",
+            reason,
+            organization_id,
+            user_id,
+            normalized_slack_user_id,
+            match_source,
+            context,
+        )
+
     now = datetime.utcnow()
     normalized_slack_user_id: str = _normalize_slack_user_id(slack_user_id)
     if not normalized_slack_user_id:
@@ -1012,6 +1023,11 @@ async def _upsert_slack_user_mapping(
                 existing_mapping = existing_result.scalar_one_or_none()
                 if existing_mapping:
                     if existing_mapping.match_source == "manual_unlink":
+                        _log_no_insert_reason(
+                            "existing mapping is manually unlinked",
+                            existing_match_source=existing_mapping.match_source,
+                            existing_user_id=existing_mapping.user_id,
+                        )
                         logger.info(
                             "[slack_conversations] Skipping promotion for manually unlinked Slack mapping org=%s slack_user=%s user=%s",
                             organization_id,
@@ -1020,6 +1036,10 @@ async def _upsert_slack_user_mapping(
                         )
                         return
                     if existing_mapping.user_id is None:
+                        _log_no_insert_reason(
+                            "promoted existing unmapped row instead of inserting",
+                            existing_mapping_id=str(existing_mapping.id),
+                        )
                         existing_mapping.user_id = user_id
                         existing_mapping.revtops_email = resolved_revtops_email
                         existing_mapping.external_email = slack_email
@@ -1037,6 +1057,11 @@ async def _upsert_slack_user_mapping(
                         return
 
                     if existing_mapping.user_id != user_id:
+                        _log_no_insert_reason(
+                            "existing Slack user is mapped to a different user",
+                            existing_user_id=existing_mapping.user_id,
+                            requested_user_id=user_id,
+                        )
                         logger.info(
                             "[slack_conversations] Skipping Slack user mapping insert because Slack user already mapped org=%s slack_user=%s existing_user=%s requested_user=%s",
                             organization_id,
@@ -1046,6 +1071,10 @@ async def _upsert_slack_user_mapping(
                         )
                         return
 
+                    _log_no_insert_reason(
+                        "updated existing mapping for same user",
+                        existing_mapping_id=str(existing_mapping.id),
+                    )
                     existing_mapping.revtops_email = resolved_revtops_email
                     existing_mapping.external_email = slack_email
                     existing_mapping.source = "slack"
@@ -1106,12 +1135,20 @@ async def _upsert_slack_user_mapping(
                 # A row exists — only update if it's still unmapped
                 if any_existing.user_id is None:
                     if any_existing.match_source == "manual_unlink":
+                        _log_no_insert_reason(
+                            "existing unmapped row is manually unlinked",
+                            existing_mapping_id=str(any_existing.id),
+                        )
                         logger.info(
                             "[slack_conversations] Preserving manually unlinked Slack mapping org=%s slack_user=%s",
                             organization_id,
                             normalized_slack_user_id,
                         )
                         return
+                    _log_no_insert_reason(
+                        "updated existing unmapped row",
+                        existing_mapping_id=str(any_existing.id),
+                    )
                     any_existing.external_email = slack_email
                     any_existing.source = "slack"
                     any_existing.match_source = match_source
@@ -1125,6 +1162,11 @@ async def _upsert_slack_user_mapping(
                     )
                 else:
                     # Already mapped to a user — skip, don't create a duplicate
+                    _log_no_insert_reason(
+                        "existing mapped row already present",
+                        existing_mapping_id=str(any_existing.id),
+                        existing_user_id=any_existing.user_id,
+                    )
                     logger.info(
                         "[slack_conversations] Skipping unmapped upsert — Slack user already mapped org=%s slack_user=%s user=%s",
                         organization_id,
