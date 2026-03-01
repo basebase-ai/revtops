@@ -2,16 +2,20 @@
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 from typing import Any
 
 import httpx
 
 from config import get_redis_connection_kwargs, settings
-from services.pagerduty import create_pagerduty_incident, get_pagerduty_config
+from services.pagerduty import create_pagerduty_incident
 from workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
+
+_HEARTBEAT_KEY = "monitoring:dependency_checks:last_completed_at"
+_HEARTBEAT_STALE_AFTER_SECONDS = 30 * 60
 
 
 @dataclass(frozen=True)
@@ -86,21 +90,72 @@ async def _run_dependency_checks() -> list[CheckResult]:
     return [await check for check in checks]
 
 
+async def _record_check_heartbeat() -> None:
+    """Persist the completion timestamp for dependency checks in Redis."""
+    import redis.asyncio as aioredis
+
+    now = int(time.time())
+    redis_client = aioredis.from_url(
+        settings.REDIS_URL,
+        **get_redis_connection_kwargs(),
+    )
+
+    async with redis_client:
+        await redis_client.set(_HEARTBEAT_KEY, now)
+
+    logger.info("Recorded dependency-check heartbeat timestamp=%s", now)
+
+
+async def _heartbeat_age_seconds() -> int | None:
+    """Read heartbeat age in seconds from Redis, or None if unset."""
+    import redis.asyncio as aioredis
+
+    redis_client = aioredis.from_url(
+        settings.REDIS_URL,
+        **get_redis_connection_kwargs(),
+    )
+    now = int(time.time())
+
+    async with redis_client:
+        raw_value = await redis_client.get(_HEARTBEAT_KEY)
+
+    if raw_value is None:
+        return None
+
+    try:
+        last_completed_at = int(raw_value)
+    except (TypeError, ValueError):
+        logger.warning("Invalid monitoring heartbeat payload in Redis: %r", raw_value)
+        return _HEARTBEAT_STALE_AFTER_SECONDS + 1
+
+    return max(0, now - last_completed_at)
+
+
 @celery_app.task(bind=True, name="workers.tasks.monitoring.monitor_dependencies")
 def monitor_dependencies(self: Any) -> dict[str, Any]:
     """Periodic task: monitor key dependencies and open PagerDuty incidents if down."""
     import asyncio
 
     logger.info("Task %s: Starting dependency monitoring run", self.request.id)
-    pagerduty_config = get_pagerduty_config()
-    if pagerduty_config is None:
-        return {
-            "status": "skipped",
-            "reason": "missing_pagerduty_config",
-        }
 
     async def _run() -> dict[str, Any]:
-        results = await _run_dependency_checks()
+        try:
+            results = await _run_dependency_checks()
+            await _record_check_heartbeat()
+        except Exception as exc:
+            logger.exception("Dependency monitoring run failed before checks completed")
+            await create_pagerduty_incident(
+                title="Dependency monitor failed to run",
+                details=(
+                    "Automated dependency checks failed to complete. "
+                    f"Error: {exc}"
+                ),
+            )
+            return {
+                "status": "failed",
+                "error": str(exc),
+            }
+
         down = [result for result in results if not result.healthy]
 
         for result in results:
@@ -129,5 +184,63 @@ def monitor_dependencies(self: Any) -> dict[str, Any]:
             "down_count": len(down),
             "down_services": [result.name for result in down],
         }
+
+    return asyncio.run(_run())
+
+
+@celery_app.task(bind=True, name="workers.tasks.monitoring.monitoring_heartbeat_watchdog")
+def monitoring_heartbeat_watchdog(self: Any) -> dict[str, Any]:
+    """Ensure dependency checks are executing regularly and incident on stale runs."""
+    import asyncio
+
+    logger.info("Task %s: Starting dependency monitor heartbeat watchdog", self.request.id)
+
+    async def _run() -> dict[str, Any]:
+        try:
+            age_seconds = await _heartbeat_age_seconds()
+        except Exception as exc:
+            logger.exception("Failed to read dependency monitor heartbeat")
+            await create_pagerduty_incident(
+                title="Dependency monitor heartbeat unavailable",
+                details=(
+                    "Could not read monitoring heartbeat state from Redis, so regular "
+                    f"health-check execution cannot be verified. Error: {exc}"
+                ),
+            )
+            return {"status": "failed", "error": str(exc)}
+
+        if age_seconds is None:
+            logger.warning("Dependency monitor heartbeat is missing")
+            await create_pagerduty_incident(
+                title="Dependency monitor heartbeat missing",
+                details=(
+                    "No dependency-check heartbeat has been recorded yet. "
+                    "Health checks may not be running."
+                ),
+            )
+            return {"status": "stale", "age_seconds": None}
+
+        if age_seconds >= _HEARTBEAT_STALE_AFTER_SECONDS:
+            logger.warning(
+                "Dependency monitor heartbeat stale age_seconds=%s threshold_seconds=%s",
+                age_seconds,
+                _HEARTBEAT_STALE_AFTER_SECONDS,
+            )
+            await create_pagerduty_incident(
+                title="Dependency monitor heartbeat stale",
+                details=(
+                    "Dependency checks have not completed within the required interval. "
+                    f"Last completion age_seconds={age_seconds}. "
+                    f"Threshold_seconds={_HEARTBEAT_STALE_AFTER_SECONDS}."
+                ),
+            )
+            return {"status": "stale", "age_seconds": age_seconds}
+
+        logger.info(
+            "Dependency monitor heartbeat healthy age_seconds=%s threshold_seconds=%s",
+            age_seconds,
+            _HEARTBEAT_STALE_AFTER_SECONDS,
+        )
+        return {"status": "ok", "age_seconds": age_seconds}
 
     return asyncio.run(_run())

@@ -106,6 +106,12 @@ celery_app.conf.beat_schedule = {
         "task": "workers.tasks.monitoring.monitor_dependencies",
         "schedule": timedelta(minutes=15),
     },
+
+    # Ensure monitor task itself keeps running; incident if no heartbeat for 30m
+    "monitoring-heartbeat-watchdog": {
+        "task": "workers.tasks.monitoring.monitoring_heartbeat_watchdog",
+        "schedule": timedelta(minutes=5),
+    },
 }
 
 

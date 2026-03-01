@@ -80,6 +80,11 @@ def test_monitor_dependencies_logs_health_check_outcome(monkeypatch: Any, caplog
 
     monkeypatch.setattr(monitoring, "_run_dependency_checks", _fake_run_dependency_checks)
 
+    async def _fake_record_check_heartbeat() -> None:
+        return None
+
+    monkeypatch.setattr(monitoring, "_record_check_heartbeat", _fake_record_check_heartbeat)
+
     created_incidents: list[str] = []
 
     async def _fake_create_pagerduty_incident(**kwargs: Any) -> None:
@@ -98,3 +103,42 @@ def test_monitor_dependencies_logs_health_check_outcome(monkeypatch: Any, caplog
     assert created_incidents == ["Redis"]
     assert "PagerDuty health check succeeded for Supabase; incident creation skipped" in caplog.text
     assert "PagerDuty health check failed for Redis; incident will be created" in caplog.text
+
+
+def test_monitor_dependencies_creates_incident_when_checks_fail(monkeypatch: Any) -> None:
+    async def _fake_run_dependency_checks() -> list[monitoring.CheckResult]:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(monitoring, "_run_dependency_checks", _fake_run_dependency_checks)
+
+    incident_titles: list[str] = []
+
+    async def _fake_create_pagerduty_incident(*, title: str, details: str) -> bool:
+        incident_titles.append(title)
+        return True
+
+    monkeypatch.setattr(monitoring, "create_pagerduty_incident", _fake_create_pagerduty_incident)
+
+    result = monitoring.monitor_dependencies.__wrapped__()
+
+    assert result["status"] == "failed"
+    assert incident_titles == ["Dependency monitor failed to run"]
+
+
+def test_monitoring_heartbeat_watchdog_incidents_on_stale_heartbeat(monkeypatch: Any) -> None:
+    async def _fake_heartbeat_age_seconds() -> int | None:
+        return (30 * 60) + 5
+
+    incident_titles: list[str] = []
+
+    async def _fake_create_pagerduty_incident(*, title: str, details: str) -> bool:
+        incident_titles.append(title)
+        return True
+
+    monkeypatch.setattr(monitoring, "_heartbeat_age_seconds", _fake_heartbeat_age_seconds)
+    monkeypatch.setattr(monitoring, "create_pagerduty_incident", _fake_create_pagerduty_incident)
+
+    result = monitoring.monitoring_heartbeat_watchdog.__wrapped__()
+
+    assert result["status"] == "stale"
+    assert incident_titles == ["Dependency monitor heartbeat stale"]
