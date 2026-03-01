@@ -38,6 +38,12 @@ class Settings(BaseSettings):
 
     # Database
     DATABASE_URL: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/revenue_copilot"
+    DB_POOL_SIZE: int = 1
+    DB_MAX_OVERFLOW: int = 2
+    DB_POOL_TIMEOUT_SECONDS: int = 10
+    DB_POOL_RECYCLE_SECONDS: int = 45
+    DB_CONNECT_TIMEOUT_SECONDS: float = 10.0
+    DB_COMMAND_TIMEOUT_SECONDS: float = 30.0
 
     # Redis
     REDIS_URL: str = "redis://localhost:6379"

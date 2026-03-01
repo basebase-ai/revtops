@@ -21,6 +21,8 @@ from contextlib import asynccontextmanager
 from typing import Any, AsyncGenerator, Optional
 from urllib.parse import urlparse
 
+from sqlalchemy import event
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, AsyncEngine, async_sessionmaker
 from sqlalchemy.orm import declarative_base
 from sqlalchemy.pool import NullPool
@@ -50,10 +52,19 @@ _session_factory: Optional[async_sessionmaker[AsyncSession]] = None
 
 def _make_pgbouncer_safe_connect_args() -> dict[str, Any]:
     """Connect args that avoid DuplicatePreparedStatementError with pgbouncer/Supavisor."""
+    base_connect_args: dict[str, Any] = {
+        "timeout": settings.DB_CONNECT_TIMEOUT_SECONDS,
+        "command_timeout": settings.DB_COMMAND_TIMEOUT_SECONDS,
+        "statement_cache_size": 0,
+    }
+
     try:
         from asyncpg import Connection
     except ImportError:
-        return {"statement_cache_size": 0}
+        logger.warning(
+            "asyncpg import failed while building connect args; falling back to defaults without connection_class"
+        )
+        return base_connect_args
 
     class UniquePreparedStatementConnection(Connection):
         """Use a unique name per prepared statement so pgbouncer transaction pooling doesn't collide."""
@@ -61,10 +72,29 @@ def _make_pgbouncer_safe_connect_args() -> dict[str, Any]:
         def _get_unique_id(self, prefix: str) -> str:
             return f"__asyncpg_{prefix}_{uuid.uuid4()}__"
 
-    return {
-        "statement_cache_size": 0,
-        "connection_class": UniquePreparedStatementConnection,
-    }
+    base_connect_args["connection_class"] = UniquePreparedStatementConnection
+    return base_connect_args
+
+
+def _register_pool_event_logging(engine: AsyncEngine) -> None:
+    """Attach debug logging for pool lifecycle and disconnection invalidation events."""
+    sync_engine = engine.sync_engine
+
+    @event.listens_for(sync_engine, "checkout")
+    def _on_checkout(dbapi_connection: Any, connection_record: Any, connection_proxy: Any) -> None:
+        logger.debug("DB pool checkout connection id=%s", id(dbapi_connection))
+
+    @event.listens_for(sync_engine, "checkin")
+    def _on_checkin(dbapi_connection: Any, connection_record: Any) -> None:
+        logger.debug("DB pool checkin connection id=%s", id(dbapi_connection) if dbapi_connection else "none")
+
+    @event.listens_for(sync_engine, "invalidate")
+    def _on_invalidate(dbapi_connection: Any, connection_record: Any, exception: BaseException) -> None:
+        logger.warning(
+            "DB connection invalidated by SQLAlchemy (id=%s, reason=%s)",
+            id(dbapi_connection) if dbapi_connection else "none",
+            exception,
+        )
 
 
 def get_engine() -> AsyncEngine:
@@ -83,6 +113,7 @@ def get_engine() -> AsyncEngine:
                 poolclass=NullPool,
                 connect_args=connect_args,
             )
+            _register_pool_event_logging(_engine)
             logger.info("Database engine created with NullPool (transaction mode, port %d)", _db_port)
         else:
             # Session mode (port 5432): local pool keeps connections open and reusable
@@ -99,17 +130,23 @@ def get_engine() -> AsyncEngine:
                 _db_url,
                 echo=False,
                 future=True,
-                pool_size=1,        # Minimal base connections
-                max_overflow=2,     # Up to 3 total under burst load
-                pool_recycle=60,    # Recycle connections every 1 min (release faster)
-                pool_pre_ping=True, # Verify connection is alive before checkout
-                pool_timeout=10,    # Fail fast if pool exhausted (don't hang)
+                pool_size=settings.DB_POOL_SIZE,
+                max_overflow=settings.DB_MAX_OVERFLOW,
+                pool_recycle=settings.DB_POOL_RECYCLE_SECONDS,
+                pool_pre_ping=True,  # Verify connection is alive before checkout
+                pool_use_lifo=True,  # Reuse hottest connection; reduces stale idle sockets
+                pool_timeout=settings.DB_POOL_TIMEOUT_SECONDS,
+                pool_reset_on_return="rollback",
                 connect_args=connect_args,
             )
+            _register_pool_event_logging(_engine)
             logger.info(
                 "Database engine created with connection pool (session mode, port %d, "
-                "pool_size=1, max_overflow=2)",
+                "pool_size=%d, max_overflow=%d, recycle=%ds, pre_ping=true, lifo=true)",
                 _db_port,
+                settings.DB_POOL_SIZE,
+                settings.DB_MAX_OVERFLOW,
+                settings.DB_POOL_RECYCLE_SECONDS,
             )
     return _engine
 
@@ -193,21 +230,38 @@ async def get_session(organization_id: str | None = None) -> AsyncGenerator[Asyn
         )
     
     factory = get_session_factory()
-    session: AsyncSession = factory()
+    session: AsyncSession | None = None
     try:
-        # CRITICAL: Switch to non-superuser role that respects RLS
-        # The postgres superuser bypasses RLS entirely, so we must switch roles
-        await session.execute(text("SET ROLE revtops_app"))
-        
-        # Set RLS context if organization_id provided
-        if organization_id:
-            await session.execute(
-                text("SELECT set_config('app.current_org_id', :org_id, false)"),
-                {"org_id": str(organization_id)}
-            )
+        for attempt in (1, 2):
+            session = factory()
+            try:
+                # CRITICAL: Switch to non-superuser role that respects RLS
+                # The postgres superuser bypasses RLS entirely, so we must switch roles
+                await session.execute(text("SET ROLE revtops_app"))
+
+                # Set RLS context if organization_id provided
+                if organization_id:
+                    await session.execute(
+                        text("SELECT set_config('app.current_org_id', :org_id, false)"),
+                        {"org_id": str(organization_id)}
+                    )
+                break
+            except DBAPIError as exc:
+                await session.close()
+                if attempt == 1 and exc.connection_invalidated:
+                    logger.warning(
+                        "Detected invalid DB connection during session bootstrap; retrying with a fresh checkout"
+                    )
+                    continue
+                raise
+
+        if session is None:
+            raise RuntimeError("Failed to create database session")
+
         yield session
     except Exception:
-        await session.rollback()
+        if session is not None:
+            await session.rollback()
         raise
     finally:
         # Reset role AND org context before returning connection to pool.
@@ -215,12 +269,14 @@ async def get_session(organization_id: str | None = None) -> AsyncGenerator[Asyn
         # Must run as separate statements: prepared statements (e.g. Supavisor) allow only one command.
         try:
             logger.debug("Session cleanup: resetting RLS context (set_config + RESET ROLE)")
-            await session.execute(text("SELECT set_config('app.current_org_id', '', false)"))
-            await session.execute(text("RESET ROLE"))
+            if session is not None:
+                await session.execute(text("SELECT set_config('app.current_org_id', '', false)"))
+                await session.execute(text("RESET ROLE"))
         except Exception:
             pass  # Connection might already be closed
         # This returns the connection to the pool, doesn't close it
-        await session.close()
+        if session is not None:
+            await session.close()
 
 
 @asynccontextmanager
