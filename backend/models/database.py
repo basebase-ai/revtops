@@ -56,7 +56,19 @@ def _make_pgbouncer_safe_connect_args() -> dict[str, Any]:
         "timeout": settings.DB_CONNECT_TIMEOUT_SECONDS,
         "command_timeout": settings.DB_COMMAND_TIMEOUT_SECONDS,
         "statement_cache_size": 0,
+        "server_settings": {
+            "tcp_keepalives_idle": str(settings.DB_TCP_KEEPALIVES_IDLE_SECONDS),
+            "tcp_keepalives_interval": str(settings.DB_TCP_KEEPALIVES_INTERVAL_SECONDS),
+            "tcp_keepalives_count": str(settings.DB_TCP_KEEPALIVES_COUNT),
+        },
     }
+
+    logger.debug(
+        "DB connect args configured with TCP keepalives (idle=%ss interval=%ss count=%s)",
+        settings.DB_TCP_KEEPALIVES_IDLE_SECONDS,
+        settings.DB_TCP_KEEPALIVES_INTERVAL_SECONDS,
+        settings.DB_TCP_KEEPALIVES_COUNT,
+    )
 
     try:
         from asyncpg import Connection

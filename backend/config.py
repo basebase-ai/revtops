@@ -44,6 +44,9 @@ class Settings(BaseSettings):
     DB_POOL_RECYCLE_SECONDS: int = 45
     DB_CONNECT_TIMEOUT_SECONDS: float = 10.0
     DB_COMMAND_TIMEOUT_SECONDS: float = 30.0
+    DB_TCP_KEEPALIVES_IDLE_SECONDS: int = 60
+    DB_TCP_KEEPALIVES_INTERVAL_SECONDS: int = 30
+    DB_TCP_KEEPALIVES_COUNT: int = 5
 
     # Redis
     REDIS_URL: str = "redis://localhost:6379"
