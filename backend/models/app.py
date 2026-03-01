@@ -58,3 +58,6 @@ class App(Base):
     updated_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=True
     )
+    archived_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime, nullable=True, default=None
+    )

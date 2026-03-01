@@ -19,7 +19,7 @@ from decimal import Decimal
 from typing import Any, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Header, Request
+from fastapi import APIRouter, Depends, HTTPException, Header, Query, Request
 from pydantic import BaseModel
 from sqlalchemy import func, select, text
 
@@ -60,6 +60,7 @@ class AppListItem(BaseModel):
     creator_name: str | None
     creator_email: str | None
     conversation_id: str | None
+    archived_at: str | None = None
 
 
 class AppListResponse(BaseModel):
@@ -308,14 +309,18 @@ async def execute_app_query(
 
 @router.get("", response_model=AppListResponse)
 async def list_apps(
+    archived: bool = Query(False),
     auth: AuthContext = Depends(require_organization),
 ) -> AppListResponse:
     """List all apps for the current organization."""
     assert auth.organization_id_str is not None
     async with get_session(organization_id=auth.organization_id_str) as session:
-        result = await session.execute(
-            select(App).order_by(App.created_at.desc())
-        )
+        stmt = select(App).order_by(App.created_at.desc())
+        if archived:
+            stmt = stmt.where(App.archived_at.isnot(None))
+        else:
+            stmt = stmt.where(App.archived_at.is_(None))
+        result = await session.execute(stmt)
         apps: list[App] = list(result.scalars().all())
 
         user_ids: set[UUID] = {a.user_id for a in apps}
@@ -340,10 +345,62 @@ async def list_apps(
                     creator_name=creator.name if creator else None,
                     creator_email=creator.email if creator else None,
                     conversation_id=str(a.conversation_id) if a.conversation_id else None,
+                    archived_at=f"{a.archived_at.isoformat()}Z" if a.archived_at else None,
                 )
             )
 
         return AppListResponse(apps=items, total=len(items))
+
+
+# ---------------------------------------------------------------------------
+# Archive / Unarchive
+# ---------------------------------------------------------------------------
+
+
+@router.post("/{app_id}/archive")
+async def archive_app(
+    app_id: str,
+    auth: AuthContext = Depends(require_organization),
+) -> dict[str, str]:
+    """Archive an app (soft-hide from gallery)."""
+    try:
+        app_uuid = UUID(app_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid app ID")
+
+    assert auth.organization_id_str is not None
+    async with get_session(organization_id=auth.organization_id_str) as session:
+        result = await session.execute(select(App).where(App.id == app_uuid))
+        app: App | None = result.scalar_one_or_none()
+        if app is None:
+            raise HTTPException(status_code=404, detail="App not found")
+        app.archived_at = datetime.now(timezone.utc)
+        await session.commit()
+
+    return {"status": "ok"}
+
+
+@router.post("/{app_id}/unarchive")
+async def unarchive_app(
+    app_id: str,
+    auth: AuthContext = Depends(require_organization),
+) -> dict[str, str]:
+    """Unarchive an app (restore to gallery)."""
+    try:
+        app_uuid = UUID(app_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid app ID")
+
+    assert auth.organization_id_str is not None
+    async with get_session(organization_id=auth.organization_id_str) as session:
+        result = await session.execute(select(App).where(App.id == app_uuid))
+        app: App | None = result.scalar_one_or_none()
+        if app is None:
+            raise HTTPException(status_code=404, detail="App not found")
+        app.archived_at = None
+        await session.commit()
+
+    return {"status": "ok"}
 
 
 # ---------------------------------------------------------------------------
