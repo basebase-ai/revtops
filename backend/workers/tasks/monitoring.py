@@ -39,6 +39,14 @@ async def _check_http_endpoint(name: str, url: str, timeout_s: float = 10.0) -> 
     try:
         async with httpx.AsyncClient(timeout=timeout_s, follow_redirects=True) as client:
             response = await client.get(url)
+        if name == "Supabase" and response.status_code == 522:
+            return CheckResult(
+                name=name,
+                healthy=False,
+                details=(
+                    f"HTTP 522 from {url} (possible Supabase connection pool outage)"
+                ),
+            )
         if response.status_code >= 500:
             return CheckResult(name=name, healthy=False, details=f"HTTP {response.status_code} from {url}")
         return CheckResult(name=name, healthy=True, details=f"HTTP {response.status_code} from {url}")

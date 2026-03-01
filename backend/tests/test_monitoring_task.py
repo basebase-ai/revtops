@@ -12,6 +12,9 @@ class _FakeResponse:
         self.status_code = status_code
         self.text = text
 
+    def json(self) -> dict[str, Any]:
+        return {}
+
 
 class _FakeAsyncClient:
     def __init__(self, **kwargs: Any) -> None:
@@ -163,3 +166,56 @@ def test_api_healthcheck_url_uses_backend_public_url(monkeypatch: Any) -> None:
     monkeypatch.setattr(monitoring, "settings", settings.__class__())
 
     assert monitoring._api_healthcheck_url() == "https://revtops.example.com/health"
+
+
+def test_check_http_endpoint_marks_supabase_522_as_connection_pool_outage(monkeypatch: Any) -> None:
+    class _FakeHttpClient:
+        def __init__(self, **kwargs: Any) -> None:
+            self.kwargs = kwargs
+
+        async def __aenter__(self) -> "_FakeHttpClient":
+            return self
+
+        async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+            return None
+
+        async def get(self, url: str) -> _FakeResponse:
+            return _FakeResponse(status_code=522)
+
+    monkeypatch.setattr(monitoring.httpx, "AsyncClient", _FakeHttpClient)
+
+    import asyncio
+
+    result = asyncio.run(monitoring._check_http_endpoint("Supabase", "https://example.supabase.co"))
+
+    assert result.name == "Supabase"
+    assert result.healthy is False
+    assert result.details == "HTTP 522 from https://example.supabase.co (possible Supabase connection pool outage)"
+
+
+def test_monitor_dependencies_raises_incident_for_supabase_522(monkeypatch: Any) -> None:
+    async def _fake_run_dependency_checks() -> list[monitoring.CheckResult]:
+        return [
+            monitoring.CheckResult(
+                name="Supabase",
+                healthy=False,
+                details="HTTP 522 from https://example.supabase.co (possible Supabase connection pool outage)",
+            ),
+        ]
+
+    async def _fake_record_check_heartbeat() -> None:
+        return None
+
+    created_incidents: list[str] = []
+
+    async def _fake_create_pagerduty_incident(**kwargs: Any) -> None:
+        created_incidents.append(kwargs["check_result"].name)
+
+    monkeypatch.setattr(monitoring, "_run_dependency_checks", _fake_run_dependency_checks)
+    monkeypatch.setattr(monitoring, "_record_check_heartbeat", _fake_record_check_heartbeat)
+    monkeypatch.setattr(monitoring, "_create_pagerduty_incident", _fake_create_pagerduty_incident)
+
+    result = monitoring.monitor_dependencies.__wrapped__()
+
+    assert result["down_services"] == ["Supabase"]
+    assert created_incidents == ["Supabase"]
