@@ -49,6 +49,10 @@ class Organization(Base):
     token_owner_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", onupdate="CASCADE"), nullable=True
     )
+    guest_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL", onupdate="CASCADE"), nullable=True
+    )
+    guest_user_enabled: Mapped[bool] = mapped_column(default=False, nullable=False)
     created_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime, default=datetime.utcnow, nullable=True
     )
@@ -81,6 +85,9 @@ class Organization(Base):
     )
     token_owner: Mapped[Optional["User"]] = relationship(
         "User", foreign_keys=[token_owner_user_id]
+    )
+    guest_user: Mapped[Optional["User"]] = relationship(
+        "User", foreign_keys=[guest_user_id]
     )
     change_sessions: Mapped[list["ChangeSession"]] = relationship(
         "ChangeSession", back_populates="organization", cascade="all, delete-orphan"

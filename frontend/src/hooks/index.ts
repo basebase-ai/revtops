@@ -8,6 +8,7 @@
 export {
   useTeamMembers,
   useUpdateOrganization,
+  useUpdateGuestUser,
   useLinkIdentity,
   useUnlinkIdentity,
   organizationKeys,

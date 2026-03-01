@@ -514,6 +514,8 @@ async def sync_user(request: SyncUserRequest) -> SyncUserResponse:
             existing = result.scalar_one_or_none()
         
         if existing:
+            if existing.is_guest:
+                raise HTTPException(status_code=403, detail="Guest users cannot sign in")
             # If the user was found by email but has a different DB ID than the
             # Supabase ID, migrate the ID so JWT auth works without fallback.
             # This happens for waitlist/invited users who later sign in via OAuth.
@@ -759,8 +761,34 @@ async def create_organization(request: CreateOrganizationRequest) -> Organizatio
             credits_included=100,
             current_period_start=now,
             current_period_end=now + timedelta(days=30),
+            guest_user_enabled=False,
         )
         session.add(new_org)
+        await session.flush()
+
+        from models.org_member import OrgMember
+
+        guest_user = User(
+            email=f"guest+{org_uuid}@guest.basebase.local",
+            name="Guest user",
+            organization_id=org_uuid,
+            status="active",
+            role="member",
+            is_guest=True,
+        )
+        session.add(guest_user)
+        await session.flush()
+
+        new_org.guest_user_id = guest_user.id
+        session.add(
+            OrgMember(
+                user_id=guest_user.id,
+                organization_id=org_uuid,
+                role="member",
+                status="active",
+                joined_at=datetime.utcnow(),
+            )
+        )
 
         await session.commit()
         await session.refresh(new_org)
@@ -794,6 +822,7 @@ class TeamMemberResponse(BaseModel):
     avatar_url: Optional[str]
     job_title: Optional[str] = None
     status: Optional[str] = None  # 'active', 'crm_only', etc.
+    is_guest: bool = False
     identities: list[IdentityMappingResponse] = []
 
 
@@ -802,6 +831,7 @@ class TeamMembersListResponse(BaseModel):
 
     members: list[TeamMemberResponse]
     unmapped_identities: list[IdentityMappingResponse] = []
+    guest_user_enabled: bool = False
 
 
 class LinkIdentityRequest(BaseModel):
@@ -906,6 +936,7 @@ async def get_organization_members(
                     avatar_url=u.avatar_url,
                     job_title=membership.title if membership else None,
                     status=u.status,
+                    is_guest=u.is_guest,
                     identities=identities,
                 )
             )
@@ -963,9 +994,11 @@ async def get_organization_members(
             for m in filtered_unmapped_mappings
         ]
 
+        org = await session.get(Organization, org_uuid)
         return TeamMembersListResponse(
             members=members,
             unmapped_identities=unmapped_identities,
+            guest_user_enabled=bool(org.guest_user_enabled) if org else False,
         )
 
 
@@ -1464,6 +1497,12 @@ class UpdateOrganizationRequest(BaseModel):
     logo_url: Optional[str] = None
 
 
+class UpdateGuestUserRequest(BaseModel):
+    """Request model for enabling/disabling guest-user fallback."""
+
+    enabled: bool
+
+
 @router.patch("/organizations/{org_id}", response_model=OrganizationResponse)
 async def update_organization(
     org_id: str,
@@ -1509,6 +1548,39 @@ async def update_organization(
             email_domain=org.email_domain,
             logo_url=org.logo_url,
         )
+
+
+@router.patch("/organizations/{org_id}/guest-user")
+async def update_guest_user(
+    org_id: str,
+    request: UpdateGuestUserRequest,
+    user_id: Optional[str] = None,
+) -> dict[str, bool]:
+    """Enable/disable guest user fallback for unmapped Slack identities."""
+    try:
+        org_uuid = UUID(org_id)
+        user_uuid = UUID(user_id) if user_id else None
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid ID format")
+
+    if not user_uuid:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    async with get_session() as session:
+        requesting_user = await session.get(User, user_uuid)
+        if not requesting_user or requesting_user.organization_id != org_uuid:
+            raise HTTPException(status_code=403, detail="Not authorized to update this organization")
+
+        org = await session.get(Organization, org_uuid)
+        if not org:
+            raise HTTPException(status_code=404, detail="Organization not found")
+        if not org.guest_user_id:
+            raise HTTPException(status_code=409, detail="Guest user is not configured for this organization")
+
+        org.guest_user_enabled = request.enabled
+        await session.commit()
+        logger.info("Updated guest user toggle org=%s enabled=%s by_user=%s", org_uuid, request.enabled, user_uuid)
+        return {"enabled": bool(org.guest_user_enabled)}
 
 
 # =============================================================================
@@ -1562,6 +1634,8 @@ async def get_masquerade_user(
         target_user = await session.get(User, target_uuid)
         if not target_user:
             raise HTTPException(status_code=404, detail="Target user not found")
+        if target_user.is_guest:
+            raise HTTPException(status_code=403, detail="Guest users cannot be masqueraded as")
         
         # Fetch target user's organization if they have one
         org_data: Optional[SyncOrganizationData] = None
@@ -1645,6 +1719,8 @@ async def get_connect_url(
             user = await session.get(User, user_uuid)
             if not user or not user.organization_id:
                 raise HTTPException(status_code=404, detail="User not found")
+            if user.is_guest:
+                raise HTTPException(status_code=403, detail="Guest users cannot connect integrations")
             org_id_str = str(user.organization_id)
     else:
         raise HTTPException(status_code=400, detail="Either user_id or organization_id required")
@@ -1704,6 +1780,8 @@ async def get_connect_session(
             user = await db_session.get(User, user_uuid)
             if not user or not user.organization_id:
                 raise HTTPException(status_code=404, detail="User not found")
+            if user.is_guest:
+                raise HTTPException(status_code=403, detail="Guest users cannot connect integrations")
             org_id_str = str(user.organization_id)
 
     if not org_id_str:
@@ -1770,6 +1848,13 @@ async def confirm_integration(
         user_uuid = UUID(request.user_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid user ID")
+
+    async with get_admin_session() as guard_session:
+        requesting_user = await guard_session.get(User, user_uuid)
+        if not requesting_user or requesting_user.organization_id != org_uuid:
+            raise HTTPException(status_code=403, detail="Not authorized for this organization")
+        if requesting_user.is_guest:
+            raise HTTPException(status_code=403, detail="Guest users cannot connect integrations")
 
     # The frontend now passes the actual Nango connection_id from the event callback
     nango_connection_id: str = request.connection_id

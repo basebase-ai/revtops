@@ -14,7 +14,7 @@ import { useState, useRef, useEffect, useMemo } from 'react';
 import type { OrganizationInfo, UserProfile } from './AppLayout';
 import { supabase } from '../lib/supabase';
 import { useAppStore } from '../store';
-import { useTeamMembers, useUpdateOrganization, useLinkIdentity, useUnlinkIdentity } from '../hooks';
+import { useTeamMembers, useUpdateOrganization, useLinkIdentity, useUnlinkIdentity, useUpdateGuestUser } from '../hooks';
 import type { TeamMember, IdentityMapping } from '../hooks';
 import { apiRequest } from '../lib/api';
 import { Avatar } from './Avatar';
@@ -138,12 +138,15 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
 
   const members: TeamMember[] = teamData?.members ?? [];
   const unmappedIdentities: IdentityMapping[] = teamData?.unmappedIdentities ?? [];
+  const guestMember: TeamMember | undefined = members.find((member) => member.isGuest);
+  const guestUserEnabled: boolean = Boolean(teamData?.guestUserEnabled);
   const canLinkIdentityInOrg: boolean = members.some((member) => member.id === currentUser.id);
 
   // React Query: Mutation for updating organization
   const updateOrgMutation = useUpdateOrganization();
   const linkIdentityMutation = useLinkIdentity();
   const unlinkIdentityMutation = useUnlinkIdentity();
+  const updateGuestUserMutation = useUpdateGuestUser();
 
   const sourceLabel = (source: string): string => {
     const labels: Record<string, string> = { slack: 'Slack', hubspot: 'HubSpot', salesforce: 'Salesforce' };
@@ -183,6 +186,27 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
       });
     } catch (error) {
       alert(`Unlink failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  };
+
+
+  const handleToggleGuestUser = async (): Promise<void> => {
+    const nextEnabled = !guestUserEnabled;
+    if (nextEnabled) {
+      const confirmed = window.confirm(
+        "Enabling guest user allows people in connected surfaces (usually Slack) to make queries via your team's tokens and resources."
+      );
+      if (!confirmed) return;
+    }
+
+    try {
+      await updateGuestUserMutation.mutateAsync({
+        orgId: organization.id,
+        userId: currentUser.id,
+        enabled: nextEnabled,
+      });
+    } catch (error) {
+      alert(`Failed to update guest user: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   };
 
@@ -382,6 +406,38 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                 </div>
               </div>
 
+              {guestMember && (
+                <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <h3 className="text-sm font-medium text-amber-200">Guest user</h3>
+                      <p className="text-sm text-amber-100 mt-1">
+                        The guest user is the identity anonymous Slack entities run as when they are not linked yet.
+                      </p>
+                      <p className="text-xs text-amber-300/80 mt-2">
+                        Guest users cannot sign in, connect integrations, or be masqueraded as.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void handleToggleGuestUser()}
+                      disabled={updateGuestUserMutation.isPending}
+                      className={`px-3 py-1.5 text-xs font-medium rounded transition-colors disabled:opacity-50 ${
+                        guestUserEnabled
+                          ? 'bg-amber-500/20 text-amber-100 hover:bg-amber-500/30'
+                          : 'bg-surface-700/40 text-surface-200 hover:bg-surface-700/60'
+                      }`}
+                    >
+                      {updateGuestUserMutation.isPending
+                        ? 'Saving...'
+                        : guestUserEnabled
+                          ? 'Disable guest user'
+                          : 'Enable guest user'}
+                    </button>
+                  </div>
+                </div>
+              )}
+
               {/* Team List */}
               <div>
                 <h3 className="text-sm font-medium text-surface-200 mb-3">
@@ -396,6 +452,7 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                     {members.map((member) => {
                       const displayName: string = member.name ?? member.email.split('@')[0] ?? 'Unknown';
                       const isAdmin: boolean = member.role === 'admin';
+                      const isGuest: boolean = member.isGuest;
                       const isExpanded: boolean = expandedMemberId === member.id;
                       const identities: IdentityMapping[] = [...member.identities].sort((a, b) => {
                         const sourceCompare = sourceLabel(a.source).localeCompare(sourceLabel(b.source));
@@ -422,6 +479,11 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                                 {isAdmin && (
                                   <span className="px-2 py-0.5 text-xs font-medium bg-primary-500/20 text-primary-400 rounded-full">
                                     (admin)
+                                  </span>
+                                )}
+                                {isGuest && (
+                                  <span className="px-2 py-0.5 text-xs font-medium bg-amber-500/20 text-amber-300 rounded-full">
+                                    guest
                                   </span>
                                 )}
                               </div>

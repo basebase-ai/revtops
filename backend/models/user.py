@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Optional
 
-from sqlalchemy import DateTime, ForeignKey, String
+from sqlalchemy import Boolean, DateTime, ForeignKey, String
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -44,6 +44,7 @@ class User(Base):
     phone_number: Mapped[Optional[str]] = mapped_column(
         String(30), nullable=True, unique=True
     )  # E.164 format, e.g. "+14155551234"
+    is_guest: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     # Waitlist fields
     status: Mapped[str] = mapped_column(
@@ -88,5 +89,6 @@ class User(Base):
             "status": self.status,
             "avatar_url": self.avatar_url,
             "phone_number": self.phone_number,
+            "is_guest": self.is_guest,
             "organization_id": str(self.organization_id) if self.organization_id else None,
         }

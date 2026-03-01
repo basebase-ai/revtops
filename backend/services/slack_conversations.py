@@ -29,10 +29,11 @@ from models.conversation import Conversation
 from models.database import get_admin_session, get_session
 from models.integration import Integration
 from models.org_member import OrgMember
+from models.organization import Organization
 from models.slack_user_mapping import SlackUserMapping
 from models.user import User
 from services.nango import extract_connection_metadata, get_nango_client
-from config import get_nango_integration_id
+from config import get_nango_integration_id, settings
 
 logger = logging.getLogger(__name__)
 EMAIL_PATTERN = re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.IGNORECASE)
@@ -84,6 +85,18 @@ def _cannot_action_message() -> str:
     return (
         "I'm sorry, I can't help with that right now. "
         "Try connecting Slack to RevTops for your account."
+    )
+
+
+def _slack_identity_link_url() -> str:
+    return f"{settings.FRONTEND_URL.rstrip('/')}/sources"
+
+
+def _unknown_identity_message() -> str:
+    return (
+        "Hi! We'd love to run that, but we don't know who you are. "
+        f"Can you link your identity in {_slack_identity_link_url()} "
+        "or ask your admin to enable guest users?"
     )
 
 
@@ -1378,6 +1391,28 @@ def _compute_local_time_iso(timezone: str | None) -> str | None:
         return None
 
 
+async def _resolve_guest_user_for_org(organization_id: str) -> User | None:
+    """Return enabled guest user for organization, if configured."""
+    async with get_admin_session() as session:
+        org = await session.get(Organization, UUID(organization_id))
+        if not org or not org.guest_user_enabled or not org.guest_user_id:
+            return None
+        guest_user = await session.get(User, org.guest_user_id)
+        if not guest_user or not guest_user.is_guest:
+            logger.warning(
+                "[slack_conversations] Guest user misconfigured org=%s guest_user_id=%s",
+                organization_id,
+                org.guest_user_id,
+            )
+            return None
+        logger.info(
+            "[slack_conversations] Using enabled guest user org=%s guest_user=%s",
+            organization_id,
+            guest_user.id,
+        )
+        return guest_user
+
+
 async def resolve_revtops_user_for_slack_actor(
     organization_id: str,
     slack_user_id: str,
@@ -1601,6 +1636,9 @@ async def resolve_revtops_user_for_slack_actor(
         normalized_slack_user_id,
         organization_id,
     )
+    guest_user = await _resolve_guest_user_for_org(organization_id)
+    if guest_user:
+        return guest_user
     return None
 
 
@@ -2128,10 +2166,13 @@ async def process_slack_dm(
     slack_user_tz: str | None = _extract_slack_timezone(slack_user)
     if not linked_user:
         logger.info(
-            "[slack_conversations] No linked RevTops user for Slack actor=%s org=%s; proceeding without user context",
+            "[slack_conversations] No linked RevTops user for Slack actor=%s org=%s; refusing to run turn",
             user_id,
             organization_id,
         )
+        await connector.post_message(channel=channel_id, text=_unknown_identity_message(), thread_ts=thread_ts)
+        await connector.remove_reaction(channel=channel_id, timestamp=event_ts)
+        return {"status": "error", "error": "identity_unmapped"}
 
     conversation_key = f"{channel_id}:{thread_ts}" if thread_ts else channel_id
     conversation = await find_or_create_conversation(
@@ -2317,10 +2358,13 @@ async def process_slack_mention(
     slack_user_tz: str | None = _extract_slack_timezone(slack_user)
     if not linked_user:
         logger.info(
-            "[slack_conversations] No linked RevTops user for Slack actor=%s org=%s; proceeding without user context",
+            "[slack_conversations] No linked RevTops user for Slack actor=%s org=%s; refusing to run turn",
             user_id,
             organization_id,
         )
+        await connector.post_message(channel=channel_id, text=_unknown_identity_message(), thread_ts=thread_ts)
+        await connector.remove_reaction(channel=channel_id, timestamp=thread_ts)
+        return {"status": "error", "error": "identity_unmapped"}
     conversation = await find_or_create_conversation(
         organization_id=organization_id,
         slack_channel_id=source_channel_id,
@@ -2514,6 +2558,15 @@ async def process_slack_thread_reply(
         slack_user_id=user_id,
         slack_user=slack_user,
     )
+    if not linked_user:
+        logger.info(
+            "[slack_conversations] No linked RevTops user for Slack actor=%s org=%s; refusing to run turn",
+            user_id,
+            organization_id,
+        )
+        await connector.post_message(channel=channel_id, text=_unknown_identity_message(), thread_ts=thread_ts)
+        await connector.remove_reaction(channel=channel_id, timestamp=event_ts)
+        return {"status": "error", "error": "identity_unmapped"}
 
     current_user_id: str | None = _resolve_thread_active_user_id(
         linked_user=linked_user,
