@@ -1636,6 +1636,8 @@ WHERE scheduled_start >= '2026-01-27'::date AND scheduled_start < '2026-01-28'::
                     tool_context.update(self.workflow_context)
                 if self.conversation_id:
                     tool_context["conversation_id"] = self.conversation_id
+                if self.source_user_id:
+                    tool_context["source_user_id"] = self.source_user_id
                 tool_context["tool_id"] = tool_id
 
                 # Execute tool with hard timeout so we always yield a result and the UI can stop "Running"

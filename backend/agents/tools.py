@@ -5338,18 +5338,54 @@ async def _write_app_create(
 
     message_id: str | None = context.get("message_id") if context else None
     conversation_id: str | None = (context or {}).get("conversation_id")
+    source_user_id: str | None = (context or {}).get("source_user_id")
 
     user_uuid: UUID | None = UUID(user_id) if user_id else None
     if not user_uuid and conversation_id:
         async with get_session(organization_id=organization_id) as session:
             row = await session.execute(
-                select(Conversation.user_id).where(
+                select(
+                    Conversation.user_id,
+                    Conversation.source_user_id,
+                    Conversation.participating_user_ids,
+                ).where(
                     Conversation.id == UUID(conversation_id),
                 )
             )
-            conv_user_id: UUID | None = row.scalar_one_or_none()
-            if conv_user_id is not None:
-                user_uuid = conv_user_id
+            conv_row = row.one_or_none()
+            if conv_row is not None:
+                if conv_row.user_id is not None:
+                    user_uuid = conv_row.user_id
+                elif not source_user_id and conv_row.source_user_id:
+                    source_user_id = conv_row.source_user_id
+
+                # Fallback: use a known participant from this conversation
+                if not user_uuid and conv_row.participating_user_ids:
+                    user_uuid = conv_row.participating_user_ids[0]
+
+    # Fallback: resolve Slack source_user_id to a RevTops user
+    if not user_uuid and source_user_id:
+        try:
+            from services.slack_conversations import resolve_revtops_user_for_slack_actor
+
+            resolved_user = await resolve_revtops_user_for_slack_actor(
+                organization_id=organization_id,
+                slack_user_id=source_user_id,
+            )
+            if resolved_user:
+                user_uuid = resolved_user.id
+                logger.info(
+                    "[Tools._write_app] Resolved source_user_id=%s to user=%s for app creation",
+                    source_user_id,
+                    user_uuid,
+                )
+        except Exception as exc:
+            logger.warning(
+                "[Tools._write_app] Failed to resolve source_user_id=%s: %s",
+                source_user_id,
+                exc,
+            )
+
     if not user_uuid:
         return {
             "error": "App creation requires a user context. This can happen in some automated flows; try creating the app from a normal chat message.",
