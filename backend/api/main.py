@@ -22,6 +22,7 @@ from api.websockets import websocket_endpoint
 from api.routes import apps, artifacts, auth, billing, change_sessions, chat, connectors, data, deals, drive, memories, search, slack_events, slack_user_mappings, sync, tool_settings, twilio_events, waitlist, workflows
 from models.database import init_db, close_db, get_pool_status
 from config import log_missing_env_vars, settings
+from services.celery_health import ensure_celery_workers_available
 
 # Configure logging
 logging.basicConfig(
@@ -160,6 +161,7 @@ async def startup() -> None:
     # Note: init_db() skipped - Alembic handles migrations
     # await init_db()
     log_missing_env_vars(logging.getLogger("config"))
+    await ensure_celery_workers_available()
     logging.info("Database connection pool ready")
 
 
