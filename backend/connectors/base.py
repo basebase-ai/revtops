@@ -6,11 +6,12 @@ on demand and automatically refreshed.
 """
 
 from abc import ABC, abstractmethod
+from datetime import datetime, timedelta
 import logging
 from typing import Any, Optional
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from config import get_nango_integration_id
 from connectors.registry import ConnectorMeta  # noqa: F401 – re-export for convenience
@@ -20,6 +21,8 @@ from services.nango import get_nango_client
 
 
 logger = logging.getLogger(__name__)
+
+PENDING_SHARING_CONFIG_TIMEOUT = timedelta(minutes=30)
 
 
 class SyncCancelledError(RuntimeError):
@@ -59,6 +62,13 @@ class BaseConnector(ABC):
         """Stop in-flight syncs when integration has been disconnected or pending config."""
         async with get_session(organization_id=self.organization_id) as session:
             integration = await self._select_integration(session)
+
+            if integration and integration.pending_sharing_config:
+                integration = await self._resolve_stale_pending_sharing_config(
+                    session=session,
+                    integration=integration,
+                    stage=stage,
+                )
 
         if not integration:
             logger.info(
@@ -105,6 +115,86 @@ class BaseConnector(ABC):
             )
 
         self._integration = integration
+
+    async def _resolve_stale_pending_sharing_config(
+        self,
+        session: Any,
+        integration: Integration,
+        stage: str,
+    ) -> Integration:
+        """Auto-resolve stale pending sharing config after timeout.
+
+        If the integration has been stuck in ``pending_sharing_config`` for longer
+        than ``PENDING_SHARING_CONFIG_TIMEOUT``, force-enable the connection by
+        clearing the pending flag so syncs can proceed with existing sharing defaults.
+        """
+        reference_ts = integration.updated_at or integration.created_at
+        if not reference_ts:
+            logger.warning(
+                "Integration %s has pending sharing config with no timestamps; leaving pending",
+                integration.id,
+                extra={
+                    "organization_id": self.organization_id,
+                    "provider": self.source_system,
+                    "integration_id": str(integration.id),
+                    "user_id": self.user_id,
+                    "stage": stage,
+                },
+            )
+            return integration
+
+        age = datetime.utcnow() - reference_ts
+        if age < PENDING_SHARING_CONFIG_TIMEOUT:
+            return integration
+
+        logger.warning(
+            "Auto-resolving stale pending sharing config after timeout",
+            extra={
+                "organization_id": self.organization_id,
+                "provider": self.source_system,
+                "integration_id": str(integration.id),
+                "user_id": self.user_id,
+                "stage": stage,
+                "pending_age_seconds": int(age.total_seconds()),
+                "timeout_seconds": int(PENDING_SHARING_CONFIG_TIMEOUT.total_seconds()),
+            },
+        )
+
+        result = await session.execute(
+            update(Integration)
+            .where(
+                Integration.id == integration.id,
+                Integration.pending_sharing_config == True,  # noqa: E712
+            )
+            .values(
+                pending_sharing_config=False,
+                updated_at=datetime.utcnow(),
+                last_error=None,
+            )
+            .returning(Integration)
+        )
+        resolved_integration = result.scalar_one_or_none()
+
+        await session.commit()
+
+        if resolved_integration:
+            logger.info(
+                "Cleared stale pending sharing config and continuing sync",
+                extra={
+                    "organization_id": self.organization_id,
+                    "provider": self.source_system,
+                    "integration_id": str(integration.id),
+                    "user_id": self.user_id,
+                    "stage": stage,
+                },
+            )
+            return resolved_integration
+
+        refreshed_integration = await self._select_integration(session)
+        if refreshed_integration:
+            return refreshed_integration
+
+        return integration
 
     async def check_access(
         self, operation: str, requesting_user_id: str | None
