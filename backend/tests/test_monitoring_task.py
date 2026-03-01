@@ -125,6 +125,41 @@ def test_monitor_dependencies_creates_incident_when_checks_fail(monkeypatch: Any
     assert incident_titles == ["Dependency monitor failed to run"]
 
 
+def test_monitor_dependencies_creates_incident_on_supabase_522(monkeypatch: Any) -> None:
+    async def _fake_run_dependency_checks() -> list[monitoring.CheckResult]:
+        return [
+            monitoring.CheckResult(
+                name="Supabase",
+                healthy=False,
+                details="HTTP 522 from https://example.supabase.co",
+            ),
+            monitoring.CheckResult(name="Redis", healthy=True, details="PING returned true"),
+        ]
+
+    monkeypatch.setattr(monitoring, "_run_dependency_checks", _fake_run_dependency_checks)
+
+    async def _fake_record_check_heartbeat() -> None:
+        return None
+
+    monkeypatch.setattr(monitoring, "_record_check_heartbeat", _fake_record_check_heartbeat)
+
+    incident_checks: list[monitoring.CheckResult] = []
+
+    async def _fake_create_pagerduty_incident(**kwargs: Any) -> None:
+        incident_checks.append(kwargs["check_result"])
+
+    monkeypatch.setattr(monitoring, "_create_pagerduty_incident", _fake_create_pagerduty_incident)
+
+    result = monitoring.monitor_dependencies.__wrapped__()
+
+    assert result["status"] == "ok"
+    assert result["down_count"] == 1
+    assert result["down_services"] == ["Supabase"]
+    assert len(incident_checks) == 1
+    assert incident_checks[0].name == "Supabase"
+    assert "522" in incident_checks[0].details
+
+
 def test_monitoring_heartbeat_watchdog_incidents_on_stale_heartbeat(monkeypatch: Any) -> None:
     async def _fake_heartbeat_age_seconds() -> int | None:
         return (30 * 60) + 5
