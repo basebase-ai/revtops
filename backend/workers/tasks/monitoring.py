@@ -27,6 +27,12 @@ class CheckResult:
     details: str
 
 
+def _api_healthcheck_url() -> str:
+    """Resolve API health endpoint URL for ASGI process monitoring."""
+    base_url = settings.BACKEND_PUBLIC_URL or "https://api.basebase.com"
+    return f"{base_url.rstrip('/')}/health"
+
+
 async def _check_http_endpoint(name: str, url: str, timeout_s: float = 10.0) -> CheckResult:
     """Check if an HTTP endpoint is reachable and returns a non-5xx response."""
     logger.info("Checking endpoint %s (%s)", name, url)
@@ -39,6 +45,35 @@ async def _check_http_endpoint(name: str, url: str, timeout_s: float = 10.0) -> 
     except Exception as exc:
         logger.exception("Endpoint check failed for %s (%s)", name, url)
         return CheckResult(name=name, healthy=False, details=f"Request failed for {url}: {exc}")
+
+
+async def _check_jwks_endpoint(timeout_s: float = 10.0) -> CheckResult:
+    """Check if Supabase JWKS endpoint is reachable and returns signing keys."""
+    supabase_url = settings.SUPABASE_URL
+    if not supabase_url:
+        return CheckResult(
+            name="Auth JWKS",
+            healthy=False,
+            details="SUPABASE_URL is not configured",
+        )
+
+    jwks_url = f"{supabase_url.rstrip('/')}/auth/v1/.well-known/jwks.json"
+    logger.info("Checking JWKS endpoint (%s)", jwks_url)
+    try:
+        async with httpx.AsyncClient(timeout=timeout_s, follow_redirects=True) as client:
+            response = await client.get(jwks_url)
+        if response.status_code >= 500:
+            return CheckResult(name="Auth JWKS", healthy=False, details=f"HTTP {response.status_code} from {jwks_url}")
+
+        payload = response.json()
+        keys = payload.get("keys") if isinstance(payload, dict) else None
+        if not isinstance(keys, list):
+            return CheckResult(name="Auth JWKS", healthy=False, details=f"Invalid JWKS payload from {jwks_url}")
+
+        return CheckResult(name="Auth JWKS", healthy=True, details=f"JWKS reachable with {len(keys)} key(s)")
+    except Exception as exc:
+        logger.exception("JWKS endpoint check failed (%s)", jwks_url)
+        return CheckResult(name="Auth JWKS", healthy=False, details=f"Request failed for {jwks_url}: {exc}")
 
 
 async def _check_redis(timeout_s: float = 10.0) -> CheckResult:
@@ -81,10 +116,11 @@ async def _run_dependency_checks() -> list[CheckResult]:
     """Run all dependency checks and return results."""
     checks = [
         _check_http_endpoint("Supabase", settings.SUPABASE_URL or "https://supabase.com"),
+        _check_jwks_endpoint(),
         _check_http_endpoint("Nango", settings.NANGO_HOST),
         _check_redis(),
         _check_http_endpoint("www.basebase.com", "https://www.basebase.com"),
-        _check_http_endpoint("api.basebase.com", "https://api.basebase.com/health"),
+        _check_http_endpoint("API ASGI", _api_healthcheck_url()),
     ]
 
     return [await check for check in checks]

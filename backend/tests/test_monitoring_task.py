@@ -142,3 +142,24 @@ def test_monitoring_heartbeat_watchdog_incidents_on_stale_heartbeat(monkeypatch:
 
     assert result["status"] == "stale"
     assert incident_titles == ["Dependency monitor heartbeat stale"]
+
+
+
+def test_check_jwks_endpoint_unhealthy_when_supabase_url_missing(monkeypatch: Any) -> None:
+    monkeypatch.setenv("SUPABASE_URL", "")
+    monkeypatch.setattr(monitoring, "settings", settings.__class__())
+
+    import asyncio
+
+    result = asyncio.run(monitoring._check_jwks_endpoint())
+
+    assert result.name == "Auth JWKS"
+    assert result.healthy is False
+    assert result.details == "SUPABASE_URL is not configured"
+
+
+def test_api_healthcheck_url_uses_backend_public_url(monkeypatch: Any) -> None:
+    monkeypatch.setenv("BACKEND_PUBLIC_URL", "https://revtops.example.com/")
+    monkeypatch.setattr(monitoring, "settings", settings.__class__())
+
+    assert monitoring._api_healthcheck_url() == "https://revtops.example.com/health"
