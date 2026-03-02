@@ -288,9 +288,9 @@ export function DataSources(): JSX.Element {
   const [slackEmailInput, setSlackEmailInput] = useState('');
   const [slackCodeInput, setSlackCodeInput] = useState('');
   const [slackMappingStatus, setSlackMappingStatus] = useState<string | null>(null);
-  const [slackShowAddForm, setSlackShowAddForm] = useState(false);
   const [slackSendCodeLoading, setSlackSendCodeLoading] = useState<boolean>(false);
   const [slackVerifyCodeLoading, setSlackVerifyCodeLoading] = useState<boolean>(false);
+  const [showSlackVerificationModal, setShowSlackVerificationModal] = useState(false);
   const [showConnectModal, setShowConnectModal] = useState(false);
   const [connectSearch, setConnectSearch] = useState('');
   const [pennyBotCtaDismissed, setPennyBotCtaDismissed] = useState<boolean>(
@@ -976,7 +976,6 @@ export function DataSources(): JSX.Element {
       setSlackMappingStatus('Slack account connected.');
       setSlackCodeInput('');
       setSlackEmailInput('');
-      setSlackShowAddForm(false);
       void fetchSlackMappings();
     } catch (error) {
       console.error('[DataSources] Failed to verify Slack code:', error);
@@ -1204,127 +1203,23 @@ export function DataSources(): JSX.Element {
     const renderSlackMapping = (): JSX.Element | null => {
       if (integration.provider !== 'slack' || state !== 'connected') return null;
 
-      const hasExistingMappings: boolean = slackMappings.length > 0;
-      const showForm: boolean = !hasExistingMappings || slackShowAddForm;
-
       return (
-        <div className="mt-4 pt-4 border-t border-surface-700/50 space-y-3">
-          {showForm && (
-            <>
-              <div>
-                <h4 className="text-sm font-semibold text-surface-100">
-                  Connect your Slack email (it&apos;s on your profile in Slack!)
-                </h4>
-                <p className="text-xs text-surface-400 mt-1">
-                  Add your Slack email to link your RevTops account. We&apos;ll DM a 6-digit code to confirm.
-                </p>
-              </div>
-
-              <div className="grid gap-2 sm:grid-cols-[1fr_auto]">
-                <input
-                  type="email"
-                  value={slackEmailInput}
-                  onChange={(event) => setSlackEmailInput(event.target.value)}
-                  placeholder="you@company.com"
-                  className="w-full rounded-lg bg-surface-900 border border-surface-700 px-3 py-2 text-sm text-surface-100 placeholder:text-surface-500 focus:border-primary-500 focus:outline-none"
-                />
-                <button
-                  onClick={() => void handleSlackRequestCode()}
-                  disabled={!slackEmailInput.trim() || slackSendCodeLoading}
-                  className="px-4 py-2 text-sm font-medium text-primary-300 border border-primary-500/30 hover:bg-primary-500/10 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-colors"
-                >
-                  {slackSendCodeLoading ? (
-                    <span className="inline-flex items-center justify-center gap-2">
-                      <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
-                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                      </svg>
-                      Sending…
-                    </span>
-                  ) : (
-                    'Send code'
-                  )}
-                </button>
-              </div>
-
-              <div className="grid gap-2 sm:grid-cols-[1fr_auto]">
-                <input
-                  type="text"
-                  value={slackCodeInput}
-                  onChange={(event) => setSlackCodeInput(event.target.value)}
-                  placeholder="Enter 6-digit code"
-                  className="w-full rounded-lg bg-surface-900 border border-surface-700 px-3 py-2 text-sm text-surface-100 placeholder:text-surface-500 focus:border-primary-500 focus:outline-none"
-                />
-                <button
-                  onClick={() => void handleSlackVerifyCode()}
-                  disabled={!slackEmailInput.trim() || !slackCodeInput.trim() || slackVerifyCodeLoading}
-                  className="px-4 py-2 text-sm font-medium text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/10 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-colors"
-                >
-                  {slackVerifyCodeLoading ? (
-                    <span className="inline-flex items-center justify-center gap-2">
-                      <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
-                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                      </svg>
-                      Verifying…
-                    </span>
-                  ) : (
-                    'Verify'
-                  )}
-                </button>
-              </div>
-
-              {slackMappingStatus && (
-                <p className="text-xs text-surface-300">{slackMappingStatus}</p>
-              )}
-              {slackMappingsError && (
-                <p className="text-xs text-red-400">{slackMappingsError}</p>
-              )}
-            </>
-          )}
-
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <h5 className="text-xs font-semibold uppercase tracking-wide text-surface-400">
-                Linked Slack emails
-              </h5>
-              {slackMappingsLoading && (
-                <span className="text-xs text-surface-500">Loading...</span>
-              )}
+        <div className="mt-4 pt-4 border-t border-surface-700/50">
+          <div className="flex items-center justify-between">
+            <div>
+              <h4 className="text-sm font-semibold text-surface-100">Slack Identity</h4>
+              <p className="text-xs text-surface-400 mt-0.5">
+                {slackMappings.length > 0
+                  ? `${slackMappings.length} linked email${slackMappings.length !== 1 ? 's' : ''}`
+                  : 'Link your Slack email to connect your account'}
+              </p>
             </div>
-            {slackMappings.length === 0 && !showForm ? (
-              <p className="text-xs text-surface-500">No linked Slack emails yet.</p>
-            ) : (
-              <ul className="space-y-2">
-                {slackMappings.map((mapping) => (
-                  <li
-                    key={mapping.id}
-                    className="flex items-center justify-between rounded-lg border border-surface-700/60 px-3 py-2 text-xs text-surface-200"
-                  >
-                    <div className="min-w-0">
-                      <div className="truncate">{mapping.external_email ?? 'Unknown email'}</div>
-                      <div className="text-[11px] text-surface-500">
-                        {mapping.external_userid} · {mapping.match_source}
-                      </div>
-                    </div>
-                    <button
-                      onClick={() => void handleSlackDeleteMapping(mapping.id)}
-                      className="ml-3 text-red-400 hover:text-red-300 text-xs"
-                    >
-                      Remove
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-            {hasExistingMappings && !slackShowAddForm && (
-              <button
-                onClick={() => setSlackShowAddForm(true)}
-                className="text-xs text-primary-400 hover:text-primary-300 transition-colors"
-              >
-                + Add another Slack email
-              </button>
-            )}
+            <button
+              onClick={() => setShowSlackVerificationModal(true)}
+              className="px-3 py-1.5 text-xs font-medium text-primary-300 border border-primary-500/30 hover:bg-primary-500/10 rounded-lg transition-colors"
+            >
+              {slackMappings.length > 0 ? 'Manage' : 'Link Account'}
+            </button>
           </div>
         </div>
       );
@@ -1908,6 +1803,139 @@ export function DataSources(): JSX.Element {
                   </div>
                 </>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Slack Identity Verification Modal */}
+      {showSlackVerificationModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => setShowSlackVerificationModal(false)}>
+          <div className="bg-surface-900 border border-surface-700 rounded-xl shadow-xl w-full max-w-md mx-4" onClick={(e) => e.stopPropagation()}>
+            <div className="p-6">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-lg font-semibold text-surface-100">Link Slack Account</h2>
+                <button
+                  onClick={() => setShowSlackVerificationModal(false)}
+                  className="p-1 text-surface-400 hover:text-surface-200 rounded"
+                >
+                  <HiX className="w-5 h-5" />
+                </button>
+              </div>
+
+              <p className="text-sm text-surface-400 mb-4">
+                Enter your Slack email to link your account. We&apos;ll DM you a 6-digit code to confirm.
+              </p>
+
+              {/* Email + Send Code */}
+              <div className="grid gap-2 sm:grid-cols-[1fr_auto] mb-3">
+                <input
+                  type="email"
+                  value={slackEmailInput}
+                  onChange={(event) => setSlackEmailInput(event.target.value)}
+                  placeholder="you@company.com"
+                  className="w-full rounded-lg bg-surface-800 border border-surface-700 px-3 py-2 text-sm text-surface-100 placeholder:text-surface-500 focus:border-primary-500 focus:outline-none"
+                />
+                <button
+                  onClick={() => void handleSlackRequestCode()}
+                  disabled={!slackEmailInput.trim() || slackSendCodeLoading}
+                  className="px-4 py-2 text-sm font-medium text-primary-300 border border-primary-500/30 hover:bg-primary-500/10 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-colors"
+                >
+                  {slackSendCodeLoading ? (
+                    <span className="inline-flex items-center justify-center gap-2">
+                      <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                      </svg>
+                      Sending…
+                    </span>
+                  ) : (
+                    'Send code'
+                  )}
+                </button>
+              </div>
+
+              {/* Code + Verify */}
+              <div className="grid gap-2 sm:grid-cols-[1fr_auto] mb-3">
+                <input
+                  type="text"
+                  value={slackCodeInput}
+                  onChange={(event) => setSlackCodeInput(event.target.value)}
+                  placeholder="Enter 6-digit code"
+                  className="w-full rounded-lg bg-surface-800 border border-surface-700 px-3 py-2 text-sm text-surface-100 placeholder:text-surface-500 focus:border-primary-500 focus:outline-none"
+                />
+                <button
+                  onClick={() => void handleSlackVerifyCode()}
+                  disabled={!slackEmailInput.trim() || !slackCodeInput.trim() || slackVerifyCodeLoading}
+                  className="px-4 py-2 text-sm font-medium text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/10 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-colors"
+                >
+                  {slackVerifyCodeLoading ? (
+                    <span className="inline-flex items-center justify-center gap-2">
+                      <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                      </svg>
+                      Verifying…
+                    </span>
+                  ) : (
+                    'Verify'
+                  )}
+                </button>
+              </div>
+
+              {slackMappingStatus && (
+                <p className="text-xs text-surface-300 mb-2">{slackMappingStatus}</p>
+              )}
+              {slackMappingsError && (
+                <p className="text-xs text-red-400 mb-2">{slackMappingsError}</p>
+              )}
+
+              {/* Linked accounts */}
+              <div className="mt-4 pt-4 border-t border-surface-700 space-y-2">
+                <div className="flex items-center justify-between">
+                  <h5 className="text-xs font-semibold uppercase tracking-wide text-surface-400">
+                    Linked Slack emails
+                  </h5>
+                  {slackMappingsLoading && (
+                    <span className="text-xs text-surface-500">Loading...</span>
+                  )}
+                </div>
+                {slackMappings.length === 0 ? (
+                  <p className="text-xs text-surface-500">No linked Slack emails yet.</p>
+                ) : (
+                  <ul className="space-y-2">
+                    {slackMappings.map((mapping) => (
+                      <li
+                        key={mapping.id}
+                        className="flex items-center justify-between rounded-lg border border-surface-700/60 px-3 py-2 text-xs text-surface-200"
+                      >
+                        <div className="min-w-0">
+                          <div className="truncate">{mapping.external_email ?? 'Unknown email'}</div>
+                          <div className="text-[11px] text-surface-500">
+                            {mapping.external_userid} · {mapping.match_source}
+                          </div>
+                        </div>
+                        <button
+                          onClick={() => void handleSlackDeleteMapping(mapping.id)}
+                          className="ml-3 text-red-400 hover:text-red-300 text-xs"
+                        >
+                          Remove
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+
+              {/* Close button */}
+              <div className="flex justify-end mt-4 pt-4 border-t border-surface-700">
+                <button
+                  onClick={() => setShowSlackVerificationModal(false)}
+                  className="px-4 py-2 text-sm font-medium text-surface-300 hover:text-surface-100 transition-colors"
+                >
+                  Close
+                </button>
+              </div>
             </div>
           </div>
         </div>
