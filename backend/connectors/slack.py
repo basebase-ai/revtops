@@ -191,6 +191,34 @@ class SlackConnector(BaseConnector):
                 self._token = bot_token
                 return self._token, ""
 
+        # If team_id was not provided at initialization, infer it from the
+        # selected integration so action calls can still use Add-to-Slack
+        # bot tokens that include chat:write scope.
+        if not self.team_id:
+            if not self._integration:
+                await self._load_integration()
+            inferred_team_id = (
+                (self._integration.extra_data or {}).get("team_id")
+                if self._integration
+                else None
+            )
+            inferred_team_id = str(inferred_team_id or "").strip() or None
+            if inferred_team_id:
+                from services.slack_bot_install import get_slack_bot_token
+
+                bot_token = await get_slack_bot_token(
+                    self.organization_id,
+                    inferred_team_id,
+                )
+                if bot_token:
+                    logger.info(
+                        "[SlackConnector] Using bot-install token inferred from integration team_id=%s",
+                        inferred_team_id,
+                    )
+                    self.team_id = inferred_team_id
+                    self._token = bot_token
+                    return self._token, ""
+
         return await super().get_oauth_token()
 
     async def _get_headers(self) -> dict[str, str]:
