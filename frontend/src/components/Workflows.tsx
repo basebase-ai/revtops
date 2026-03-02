@@ -1195,9 +1195,25 @@ export function Workflows(): JSX.Element {
   const archiveMutation = useMutation({
     mutationFn: ({ workflowId }: { workflowId: string }) =>
       archiveWorkflow(organization?.id ?? '', workflowId),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['workflows'] });
-      void queryClient.invalidateQueries({ queryKey: ['workflows', organization?.id, 'archived'] });
+    onSuccess: (_data, { workflowId }) => {
+      const now = new Date().toISOString();
+      let archivedWorkflow: Workflow | null = null;
+
+      queryClient.setQueryData<Workflow[]>(['workflows', organization?.id], (prev = []) => {
+        const match = prev.find((workflow) => workflow.id === workflowId) ?? null;
+        if (match) {
+          archivedWorkflow = { ...match, archived_at: now };
+        }
+        return prev.filter((workflow) => workflow.id !== workflowId);
+      });
+
+      if (archivedWorkflow) {
+        queryClient.setQueryData<Workflow[]>(['workflows', organization?.id, 'archived'], (prev = []) => [
+          archivedWorkflow as Workflow,
+          ...prev.filter((workflow) => workflow.id !== workflowId),
+        ]);
+      }
+
       setSelectedWorkflow(null);
     },
   });
@@ -1205,9 +1221,23 @@ export function Workflows(): JSX.Element {
   const unarchiveMutation = useMutation({
     mutationFn: ({ workflowId }: { workflowId: string }) =>
       unarchiveWorkflow(organization?.id ?? '', workflowId),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['workflows'] });
-      void queryClient.invalidateQueries({ queryKey: ['workflows', organization?.id, 'archived'] });
+    onSuccess: (_data, { workflowId }) => {
+      let restoredWorkflow: Workflow | null = null;
+
+      queryClient.setQueryData<Workflow[]>(['workflows', organization?.id, 'archived'], (prev = []) => {
+        const match = prev.find((workflow) => workflow.id === workflowId) ?? null;
+        if (match) {
+          restoredWorkflow = { ...match, archived_at: null };
+        }
+        return prev.filter((workflow) => workflow.id !== workflowId);
+      });
+
+      if (restoredWorkflow) {
+        queryClient.setQueryData<Workflow[]>(['workflows', organization?.id], (prev = []) => [
+          restoredWorkflow as Workflow,
+          ...prev.filter((workflow) => workflow.id !== workflowId),
+        ]);
+      }
     },
   });
 

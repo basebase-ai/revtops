@@ -97,9 +97,6 @@ export function AppsGallery(): JSX.Element {
       setArchivedFetched(false);
     }
 
-    if (showArchived) {
-      void fetchArchivedApps();
-    }
   };
 
   const handleUnarchive = async (appId: string): Promise<void> => {
@@ -109,8 +106,21 @@ export function AppsGallery(): JSX.Element {
       return;
     }
 
-    setArchivedApps((prev) => prev.filter((a) => a.id !== appId));
-    void fetchApps();
+    let restoredApp: AppItem | null = null;
+    setArchivedApps((prev) => {
+      const match = prev.find((a) => a.id === appId) ?? null;
+      if (match) {
+        restoredApp = {
+          ...match,
+          archived_at: null,
+        };
+      }
+      return prev.filter((a) => a.id !== appId);
+    });
+
+    if (restoredApp) {
+      setApps((prev) => [restoredApp as AppItem, ...prev.filter((a) => a.id !== appId)]);
+    }
   };
 
   const toggleArchived = (): void => {
