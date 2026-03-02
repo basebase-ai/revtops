@@ -197,7 +197,7 @@ export function AppsGallery(): JSX.Element {
                   </svg>
                 </div>
                 <div className="min-w-0 flex-1">
-                  <h3 className="text-sm font-medium text-surface-100 group-hover:text-primary-300 transition-colors truncate">
+                  <h3 className="text-sm font-medium text-surface-100 group-hover:text-primary-300 transition-colors truncate max-w-[35ch]">
                     {app.title ?? "Untitled App"}
                   </h3>
                   {app.description && (
@@ -298,7 +298,7 @@ export function AppsGallery(): JSX.Element {
                         </svg>
                       </div>
                       <div className="min-w-0 flex-1">
-                        <h3 className="text-sm font-medium text-surface-300 group-hover:text-surface-100 transition-colors truncate">
+                        <h3 className="text-sm font-medium text-surface-300 group-hover:text-surface-100 transition-colors truncate max-w-[35ch]">
                           {app.title ?? "Untitled App"}
                         </h3>
                         {app.description && (
