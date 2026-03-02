@@ -34,6 +34,7 @@ export function AppsGallery(): JSX.Element {
   const [showArchived, setShowArchived] = useState<boolean>(false);
   const [archivedLoading, setArchivedLoading] = useState<boolean>(false);
   const [archivedFetched, setArchivedFetched] = useState<boolean>(false);
+  const [archiveError, setArchiveError] = useState<string | null>(null);
 
   const setCurrentView = useAppStore((s) => s.setCurrentView);
   const setCurrentAppId = useAppStore((s) => s.setCurrentAppId);
@@ -71,14 +72,17 @@ export function AppsGallery(): JSX.Element {
   };
 
   const handleArchive = async (appId: string): Promise<void> => {
+    setArchiveError(null);
     const resp = await apiRequest<{ status: string }>(`/apps/${appId}/archive`, { method: "POST" });
-    if (!resp.error) {
-      setApps((prev) => prev.filter((a) => a.id !== appId));
-      // Reset archived cache so next expand re-fetches
-      setArchivedFetched(false);
-      if (showArchived) {
-        void fetchArchivedApps();
-      }
+    if (resp.error) {
+      setArchiveError(resp.error);
+      return;
+    }
+    setApps((prev) => prev.filter((a) => a.id !== appId));
+    // Reset archived cache so next expand re-fetches
+    setArchivedFetched(false);
+    if (showArchived) {
+      void fetchArchivedApps();
     }
   };
 
@@ -130,6 +134,20 @@ export function AppsGallery(): JSX.Element {
         </span>
       </div>
 
+      {archiveError && (
+        <div className="mb-4 p-3 rounded-lg bg-amber-900/20 border border-amber-700 text-amber-300 text-sm flex items-center justify-between">
+          <span>{archiveError}</span>
+          <button
+            onClick={() => setArchiveError(null)}
+            className="ml-3 text-amber-400 hover:text-amber-200"
+          >
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+      )}
+
       {apps.length === 0 ? (
         <div className="text-center py-16">
           <svg
@@ -168,7 +186,7 @@ export function AppsGallery(): JSX.Element {
                   void handleArchive(app.id);
                 }}
                 title="Archive app"
-                className="absolute top-2 right-2 p-1.5 rounded-md text-surface-500 opacity-0 group-hover:opacity-100 hover:text-surface-200 hover:bg-surface-700 transition-all"
+                className="absolute top-2 right-2 z-10 p-1.5 rounded-md text-surface-500 opacity-0 group-hover:opacity-100 hover:text-surface-200 hover:bg-surface-700 transition-all"
               >
                 <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path
@@ -269,7 +287,7 @@ export function AppsGallery(): JSX.Element {
                         void handleUnarchive(app.id);
                       }}
                       title="Unarchive app"
-                      className="absolute top-2 right-2 p-1.5 rounded-md text-surface-500 opacity-0 group-hover:opacity-100 hover:text-surface-200 hover:bg-surface-700 transition-all"
+                      className="absolute top-2 right-2 z-10 p-1.5 rounded-md text-surface-500 opacity-0 group-hover:opacity-100 hover:text-surface-200 hover:bg-surface-700 transition-all"
                     >
                       <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                         <path

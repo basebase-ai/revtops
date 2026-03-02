@@ -27,9 +27,11 @@ from access_control import RightsContext, check_sql
 from api.auth_middleware import AuthContext, require_organization
 from config import settings
 from models.app import App
+from models.conversation import Conversation
 from models.database import get_session, get_admin_session
 from models.organization import Organization
 from models.user import User
+from models.workflow import Workflow
 
 logger = logging.getLogger(__name__)
 
@@ -374,6 +376,24 @@ async def archive_app(
         app: App | None = result.scalar_one_or_none()
         if app is None:
             raise HTTPException(status_code=404, detail="App not found")
+
+        # Block archiving if the app is tied to an active workflow
+        if app.conversation_id:
+            conv_result = await session.execute(
+                select(Conversation).where(Conversation.id == app.conversation_id)
+            )
+            conv: Conversation | None = conv_result.scalar_one_or_none()
+            if conv and conv.workflow_id:
+                wf_result = await session.execute(
+                    select(Workflow).where(Workflow.id == conv.workflow_id)
+                )
+                wf: Workflow | None = wf_result.scalar_one_or_none()
+                if wf and wf.is_enabled:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"This app is tied to an active workflow \"{wf.name}\". Disable the workflow before archiving.",
+                    )
+
         app.archived_at = datetime.now(timezone.utc)
         await session.commit()
 
