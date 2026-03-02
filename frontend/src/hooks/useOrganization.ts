@@ -33,6 +33,7 @@ export interface TeamMember {
   avatarUrl: string | null;
   jobTitle: string | null;
   status: string | null;
+  canLoginAsAdmin: boolean;
   identities: IdentityMapping[];
 }
 
@@ -61,6 +62,7 @@ interface TeamMembersApiResponse {
     avatar_url: string | null;
     job_title: string | null;
     status: string | null;
+    can_login_as_admin?: boolean;
     identities: IdentityMappingApiResponse[];
   }>;
   unmapped_identities: IdentityMappingApiResponse[];
@@ -113,6 +115,7 @@ async function fetchTeamMembers(orgId: string, userId: string): Promise<TeamMemb
       avatarUrl: m.avatar_url,
       jobTitle: m.job_title ?? null,
       status: m.status ?? null,
+      canLoginAsAdmin: Boolean(m.can_login_as_admin),
       identities: (m.identities ?? []).map(mapIdentity),
     })),
     unmappedIdentities: (data.unmapped_identities ?? []).map(mapIdentity),

@@ -852,6 +852,7 @@ class TeamMemberResponse(BaseModel):
     avatar_url: Optional[str]
     job_title: Optional[str] = None
     status: Optional[str] = None  # 'active', 'crm_only', etc.
+    can_login_as_admin: bool = False
     identities: list[IdentityMappingResponse] = []
 
 
@@ -964,6 +965,7 @@ async def get_organization_members(
                     avatar_url=u.avatar_url,
                     job_title=membership.title if membership else None,
                     status=u.status,
+                    can_login_as_admin=u.role == "admin",
                     identities=identities,
                 )
             )
