@@ -1400,10 +1400,18 @@ async def _action_send_slack(
                     "error": "No active Slack integration found for organization",
                 }
         
+        slack_team_id = (integration.extra_data or {}).get("team_id")
+        logger.info(
+            "[workflow.send_slack] Posting message org_id=%s channel=%s team_id=%s",
+            org_id,
+            channel,
+            slack_team_id,
+        )
+
         # Create connector and post message
         connector = SlackConnector(
             organization_id=org_id,
-            nango_connection_id=integration.nango_connection_id,
+            team_id=slack_team_id,
         )
         
         result = await connector.post_message(
