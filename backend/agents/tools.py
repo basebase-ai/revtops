@@ -860,15 +860,12 @@ WRITABLE_TABLES: set[str] = {
     "deals",
     "accounts",
     "org_members",
-    "users",
     "temp_data",
 }
 
 # Per-table column restrictions: only these columns may appear in SET clauses.
 # Tables not listed here have no column restrictions.
-WRITABLE_COLUMNS: dict[str, set[str]] = {
-    "users": {"phone_number"},
-}
+WRITABLE_COLUMNS: dict[str, set[str]] = {}
 
 # CRM tables that go through pending operations (review before commit)
 CRM_TABLES: set[str] = {

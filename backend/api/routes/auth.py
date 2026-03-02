@@ -1099,6 +1099,15 @@ async def link_identity(
         target_user: User | None = await session.get(User, target_uuid)
         if not target_user or target_user.organization_id != org_uuid:
             raise HTTPException(status_code=404, detail="Target user not found in this organization")
+        if getattr(target_user, "is_guest", False):
+            logger.warning(
+                "Blocked manual identity link to guest user org=%s target_user=%s mapping=%s by_user=%s",
+                org_uuid,
+                target_uuid,
+                mapping_uuid,
+                user_id,
+            )
+            raise HTTPException(status_code=403, detail="Guest user identities cannot be manually linked")
 
         # Fetch the mapping
         mapping: SlackUserMapping | None = await session.get(SlackUserMapping, mapping_uuid)
@@ -1196,6 +1205,17 @@ async def unlink_identity(
         mapping: SlackUserMapping | None = await session.get(SlackUserMapping, mapping_uuid)
         if not mapping or mapping.organization_id != org_uuid:
             raise HTTPException(status_code=404, detail="Identity mapping not found")
+
+        if mapping.user_id:
+            linked_user: User | None = await session.get(User, mapping.user_id)
+            if linked_user and getattr(linked_user, "is_guest", False):
+                logger.warning(
+                    "Blocked unlink attempt for guest identity mapping id=%s org=%s by_user=%s",
+                    mapping_uuid,
+                    org_uuid,
+                    requester_uuid,
+                )
+                raise HTTPException(status_code=403, detail="Guest user identities cannot be unlinked")
 
         is_unlinking_own_identity = mapping.user_id == requester_uuid
         can_link_identities_in_org = True  # Mirrors current link-identity access for org members.
@@ -1713,7 +1733,7 @@ async def get_masquerade_user(
         target_user = await session.get(User, target_uuid)
         if not target_user:
             raise HTTPException(status_code=404, detail="Target user not found")
-        if target_user.is_guest:
+        if getattr(target_user, "is_guest", False):
             raise HTTPException(status_code=403, detail="Guest users cannot be masqueraded as")
         
         # Fetch target user's organization if they have one
