@@ -418,22 +418,6 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                         Guest users cannot sign in, connect integrations, or be masqueraded as.
                       </p>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => void handleToggleGuestUser()}
-                      disabled={updateGuestUserMutation.isPending}
-                      className={`px-3 py-1.5 text-xs font-medium rounded transition-colors disabled:opacity-50 ${
-                        guestUserEnabled
-                          ? 'bg-amber-500/20 text-amber-100 hover:bg-amber-500/30'
-                          : 'bg-surface-700/40 text-surface-200 hover:bg-surface-700/60'
-                      }`}
-                    >
-                      {updateGuestUserMutation.isPending
-                        ? 'Saving...'
-                        : guestUserEnabled
-                          ? 'Disable guest user'
-                          : 'Enable guest user'}
-                    </button>
                   </div>
                 </div>
               )}
@@ -493,7 +477,28 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                               <p className="text-sm text-surface-400 truncate">{member.email}</p>
                             </div>
                             {/* Identity count badges */}
-                            <div className="flex items-center gap-1">
+                            <div className="flex items-center gap-2">
+                              {isGuest && (
+                                <button
+                                  type="button"
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    void handleToggleGuestUser();
+                                  }}
+                                  disabled={updateGuestUserMutation.isPending}
+                                  className={`px-2 py-1 text-[10px] font-medium rounded transition-colors disabled:opacity-50 ${
+                                    guestUserEnabled
+                                      ? 'bg-amber-500/20 text-amber-100 hover:bg-amber-500/30'
+                                      : 'bg-surface-700/40 text-surface-200 hover:bg-surface-700/60'
+                                  }`}
+                                >
+                                  {updateGuestUserMutation.isPending
+                                    ? 'Saving...'
+                                    : guestUserEnabled
+                                      ? 'Enabled'
+                                      : 'Disabled'}
+                                </button>
+                              )}
                               {identities.length > 0 ? (
                                 [...new Set(identities.map((i) => i.source))].map((src) => (
                                   <span
