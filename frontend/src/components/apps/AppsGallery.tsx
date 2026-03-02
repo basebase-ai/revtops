@@ -153,10 +153,13 @@ export function AppsGallery(): JSX.Element {
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {apps.map((app) => (
-            <button
+            <div
               key={app.id}
+              role="button"
+              tabIndex={0}
               onClick={() => openApp(app.id)}
-              className="relative text-left p-4 rounded-lg bg-surface-800 border border-surface-700 hover:border-primary-500/50 hover:bg-surface-800/80 transition-all group"
+              onKeyDown={(e) => { if (e.key === "Enter") openApp(app.id); }}
+              className="relative text-left p-4 rounded-lg bg-surface-800 border border-surface-700 hover:border-primary-500/50 hover:bg-surface-800/80 transition-all group cursor-pointer"
             >
               {/* Archive button */}
               <button
@@ -215,7 +218,7 @@ export function AppsGallery(): JSX.Element {
                   </div>
                 </div>
               </div>
-            </button>
+            </div>
           ))}
         </div>
       )}
@@ -251,10 +254,13 @@ export function AppsGallery(): JSX.Element {
             ) : (
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                 {archivedApps.map((app) => (
-                  <button
+                  <div
                     key={app.id}
+                    role="button"
+                    tabIndex={0}
                     onClick={() => openApp(app.id)}
-                    className="relative text-left p-4 rounded-lg bg-surface-800/50 border border-surface-700/50 hover:border-surface-600 hover:bg-surface-800/70 transition-all group opacity-60 hover:opacity-90"
+                    onKeyDown={(e) => { if (e.key === "Enter") openApp(app.id); }}
+                    className="relative text-left p-4 rounded-lg bg-surface-800/50 border border-surface-700/50 hover:border-surface-600 hover:bg-surface-800/70 transition-all group opacity-60 hover:opacity-90 cursor-pointer"
                   >
                     {/* Unarchive button */}
                     <button
@@ -313,7 +319,7 @@ export function AppsGallery(): JSX.Element {
                         </div>
                       </div>
                     </div>
-                  </button>
+                  </div>
                 ))}
               </div>
             )}
