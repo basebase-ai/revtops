@@ -138,7 +138,6 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
 
   const members: TeamMember[] = teamData?.members ?? [];
   const unmappedIdentities: IdentityMapping[] = teamData?.unmappedIdentities ?? [];
-  const guestMember: TeamMember | undefined = members.find((member) => member.isGuest);
   const guestUserEnabled: boolean = Boolean(teamData?.guestUserEnabled);
   const canLinkIdentityInOrg: boolean = members.some((member) => member.id === currentUser.id);
 
@@ -406,22 +405,6 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                 </div>
               </div>
 
-              {guestMember && (
-                <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-4">
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <h3 className="text-sm font-medium text-amber-200">Guest user</h3>
-                      <p className="text-sm text-amber-100 mt-1">
-                        The guest user is the identity anonymous Slack entities run as when they are not linked yet.
-                      </p>
-                      <p className="text-xs text-amber-300/80 mt-2">
-                        Guest users cannot sign in, connect integrations, or be masqueraded as.
-                      </p>
-                    </div>
-                  </div>
-                </div>
-              )}
-
               {/* Team List */}
               <div>
                 <h3 className="text-sm font-medium text-surface-200 mb-3">
@@ -560,6 +543,18 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                                 <p className="text-xs text-surface-500 italic">
                                   No external accounts linked yet.
                                 </p>
+                              )}
+
+                              {isGuest && (
+                                <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3 mt-3">
+                                  <h4 className="text-xs font-medium text-amber-200">Guest user</h4>
+                                  <p className="text-xs text-amber-100 mt-1">
+                                    The guest user is the identity anonymous Slack entities run as when they are not linked yet.
+                                  </p>
+                                  <p className="text-[11px] text-amber-300/80 mt-2">
+                                    Guest users cannot sign in, connect integrations, or be masqueraded as.
+                                  </p>
+                                </div>
                               )}
 
                               {/* Show unmapped identities that could be linked to this user */}
