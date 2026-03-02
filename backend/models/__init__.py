@@ -24,6 +24,7 @@ from models.shared_file import SharedFile
 from models.memory import Memory
 from models.org_member import OrgMember
 from models.goal import Goal
+from models.credit_transaction import CreditTransaction
 from models.tracker_team import TrackerTeam
 from models.tracker_project import TrackerProject
 from models.tracker_issue import TrackerIssue
@@ -59,6 +60,7 @@ __all__ = [
     "Memory",
     "OrgMember",
     "Goal",
+    "CreditTransaction",
     "TrackerTeam",
     "TrackerProject",
     "TrackerIssue",
