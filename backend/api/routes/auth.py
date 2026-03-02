@@ -1637,6 +1637,15 @@ async def update_guest_user(
         if not org.guest_user_id:
             raise HTTPException(status_code=409, detail="Guest user is not configured for this organization")
 
+        guest_user = await session.get(User, org.guest_user_id)
+        if not guest_user or guest_user.organization_id != org_uuid or not guest_user.is_guest:
+            logger.warning(
+                "Refusing to toggle guest user for org=%s because configured guest_user_id=%s is invalid",
+                org_uuid,
+                org.guest_user_id,
+            )
+            raise HTTPException(status_code=409, detail="Guest user configuration is invalid")
+
         org.guest_user_enabled = request.enabled
         await session.commit()
         logger.info("Updated guest user toggle org=%s enabled=%s by_user=%s", org_uuid, request.enabled, user_uuid)
