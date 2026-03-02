@@ -36,6 +36,7 @@ export interface AvatarUser {
   name?: string | null;
   email?: string | null;
   avatarUrl?: string | null;
+  isGuest?: boolean;
 }
 
 export type AvatarSize = 'xs' | 'sm' | 'md' | 'lg';
@@ -67,6 +68,40 @@ export function Avatar({
   const { container, text } = SIZE_CONFIG[size];
   const displayName = user.name ?? user.email ?? 'Unknown';
   const borderClass = bordered ? 'border border-surface-800' : '';
+
+  if (user.isGuest) {
+    return (
+      <div
+        className={`${container} rounded-full flex items-center justify-center ${borderClass} ${className}`}
+        style={{
+          background: 'linear-gradient(135deg, #334155 0%, #475569 100%)',
+          color: '#e2e8f0',
+          ...style,
+        }}
+        title={`${displayName} (Guest user)`}
+      >
+        <svg
+          viewBox="0 0 24 24"
+          className="w-[70%] h-[70%]"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.5"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden="true"
+        >
+          <rect x="7" y="2.5" width="10" height="4" rx="2" />
+          <rect x="5" y="6.5" width="14" height="10" rx="4" />
+          <circle cx="9.5" cy="11.5" r="1" fill="currentColor" stroke="none" />
+          <circle cx="14.5" cy="11.5" r="1" fill="currentColor" stroke="none" />
+          <path d="M9.5 14.5h5" />
+          <path d="M8.5 16.5c.5 2.8 2 5 3.5 5s3-2.2 3.5-5" />
+          <path d="M8.5 16.5a3.5 3.5 0 0 0-3 3.4" />
+          <path d="M15.5 16.5a3.5 3.5 0 0 1 3 3.4" />
+        </svg>
+      </div>
+    );
+  }
 
   if (user.avatarUrl && !imgError) {
     return (
