@@ -8,7 +8,7 @@ Endpoints:
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 import ast
 import logging
 from typing import Any, Optional
@@ -244,6 +244,35 @@ def _is_trackable_admin_task(task_name: str) -> bool:
     if ".tasks.sync." in task_name or task_name.startswith("workers.tasks.sync"):
         return True
     return _is_workflow_task(task_name)
+
+
+def _normalize_task_started_at(raw_started_at: Any, task_id: str) -> str | None:
+    """Normalize Celery active-task ``time_start`` into an ISO8601 string."""
+    if raw_started_at is None:
+        return None
+
+    if isinstance(raw_started_at, datetime):
+        return raw_started_at.isoformat()
+
+    if isinstance(raw_started_at, (int, float)):
+        return datetime.fromtimestamp(raw_started_at, tz=timezone.utc).isoformat()
+
+    if isinstance(raw_started_at, str):
+        normalized_value = raw_started_at.strip()
+        if not normalized_value:
+            return None
+        try:
+            parsed_epoch = float(normalized_value)
+        except ValueError:
+            return normalized_value
+        return datetime.fromtimestamp(parsed_epoch, tz=timezone.utc).isoformat()
+
+    logger.debug(
+        "Unable to normalize Celery task started_at for task %s (type=%s)",
+        task_id,
+        type(raw_started_at).__name__,
+    )
+    return None
 
 
 def _extract_workflow_task_org_id(args: list[Any], kwargs: dict[str, Any]) -> str | None:
@@ -544,7 +573,7 @@ async def list_admin_running_jobs(user_id: str) -> AdminRunningJobsResponse:
                     status="running",
                     organization_id=org_id,
                     organization_name=org_name,
-                    started_at=task.get("time_start"),
+                    started_at=_normalize_task_started_at(task.get("time_start"), task_id),
                     title=title,
                     description=description,
                     metadata={

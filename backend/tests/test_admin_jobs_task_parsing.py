@@ -5,6 +5,7 @@ from api.routes.sync import (
     _extract_workflow_task_org_id,
     _is_active_workflow_run_status,
     _is_trackable_admin_task,
+    _normalize_task_started_at,
     _parse_celery_kwargs,
 )
 
@@ -37,6 +38,15 @@ def test_get_celery_task_args_supports_argsrepr_fallback() -> None:
 def test_get_celery_task_kwargs_supports_kwargsrepr_fallback() -> None:
     task = {"kwargs": "", "kwargsrepr": "{'organization_id': 'org-2', 'trigger': 'manual'}"}
     assert _get_celery_task_kwargs(task) == {"organization_id": "org-2", "trigger": "manual"}
+
+
+def test_normalize_task_started_at_supports_epoch_numeric_values() -> None:
+    assert _normalize_task_started_at(1772421597.0613391, "task-1") == "2026-03-02T03:19:57.061339+00:00"
+    assert _normalize_task_started_at("1772421597.0613391", "task-2") == "2026-03-02T03:19:57.061339+00:00"
+
+
+def test_normalize_task_started_at_preserves_non_numeric_strings() -> None:
+    assert _normalize_task_started_at("2026-03-02T03:23:14Z", "task-3") == "2026-03-02T03:23:14Z"
 
 
 def test_is_active_workflow_run_status_only_matches_in_progress_statuses() -> None:

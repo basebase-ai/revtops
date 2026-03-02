@@ -12,7 +12,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import select, and_, func
+from sqlalchemy import select, and_, func, or_
 
 from models.database import get_session
 from models.workflow import Workflow, WorkflowRun
@@ -104,6 +104,7 @@ class WorkflowResponse(BaseModel):
     output_schema: Optional[dict[str, Any]]  # JSON Schema for typed outputs
     child_workflows: list[str]  # IDs of workflows this can call
     output_config: Optional[dict[str, Any]]
+    archived_at: Optional[str]
     is_enabled: bool
     last_run_at: Optional[str]
     last_error: Optional[str]
@@ -151,6 +152,7 @@ class TriggerWorkflowResponse(BaseModel):
 async def list_workflows(
     organization_id: str,
     enabled_only: bool = False,
+    archived: bool = False,
 ) -> WorkflowListResponse:
     """List all workflows for an organization."""
     try:
@@ -160,6 +162,10 @@ async def list_workflows(
 
     async with get_session(organization_id=organization_id) as session:
         query = select(Workflow).where(Workflow.organization_id == org_uuid)
+        if archived:
+            query = query.where(Workflow.archived_at.isnot(None))
+        else:
+            query = query.where(Workflow.archived_at.is_(None))
         if enabled_only:
             query = query.where(Workflow.is_enabled == True)
         query = query.order_by(Workflow.created_at.desc())
@@ -230,6 +236,98 @@ async def get_workflow(organization_id: str, workflow_id: str) -> WorkflowRespon
             raise HTTPException(status_code=404, detail="Workflow not found")
 
         return WorkflowResponse(**workflow.to_dict())
+
+
+@router.post("/{organization_id}/{workflow_id}/archive")
+async def archive_workflow(organization_id: str, workflow_id: str) -> dict[str, str]:
+    """Archive a workflow (hide from default list)."""
+    try:
+        org_uuid = UUID(organization_id)
+        wf_uuid = UUID(workflow_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid ID format")
+
+    async with get_session(organization_id=organization_id) as session:
+        result = await session.execute(
+            select(Workflow).where(
+                and_(
+                    Workflow.id == wf_uuid,
+                    Workflow.organization_id == org_uuid,
+                )
+            )
+        )
+        workflow = result.scalar_one_or_none()
+
+        if not workflow:
+            raise HTTPException(status_code=404, detail="Workflow not found")
+
+        has_active_schedule = workflow.is_enabled and workflow.trigger_type == "schedule"
+        active_run_result = await session.execute(
+            select(WorkflowRun.id)
+            .where(
+                and_(
+                    WorkflowRun.workflow_id == workflow.id,
+                    WorkflowRun.organization_id == org_uuid,
+                    WorkflowRun.status.in_(["pending", "running"]),
+                    or_(
+                        WorkflowRun.triggered_by == "schedule",
+                        WorkflowRun.triggered_by == "manual",
+                    ),
+                )
+            )
+            .limit(1)
+        )
+        has_active_run = active_run_result.scalar_one_or_none() is not None
+
+        if has_active_schedule or has_active_run:
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot archive an active scheduled workflow or a workflow with running/pending scheduled/manual runs",
+            )
+
+        # workflows.archived_at is stored as a timestamp without timezone in Postgres.
+        # Use a naive UTC datetime to avoid asyncpg offset-naive/offset-aware coercion errors.
+        workflow.archived_at = datetime.utcnow()
+        workflow.updated_at = datetime.utcnow()
+        logger.info(
+            "[Workflows API] Archived workflow %s at %s",
+            workflow.id,
+            workflow.archived_at.isoformat(),
+        )
+        await session.commit()
+
+    return {"status": "ok"}
+
+
+@router.post("/{organization_id}/{workflow_id}/unarchive")
+async def unarchive_workflow(organization_id: str, workflow_id: str) -> dict[str, str]:
+    """Unarchive a workflow."""
+    try:
+        org_uuid = UUID(organization_id)
+        wf_uuid = UUID(workflow_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid ID format")
+
+    async with get_session(organization_id=organization_id) as session:
+        result = await session.execute(
+            select(Workflow).where(
+                and_(
+                    Workflow.id == wf_uuid,
+                    Workflow.organization_id == org_uuid,
+                )
+            )
+        )
+        workflow = result.scalar_one_or_none()
+
+        if not workflow:
+            raise HTTPException(status_code=404, detail="Workflow not found")
+
+        workflow.archived_at = None
+        workflow.updated_at = datetime.utcnow()
+        logger.info("[Workflows API] Unarchived workflow %s", workflow.id)
+        await session.commit()
+
+    return {"status": "ok"}
 
 
 @router.post("/{organization_id}", response_model=WorkflowResponse)
@@ -400,6 +498,7 @@ class TriggerWorkflowResponseV2(BaseModel):
 async def trigger_workflow(
     organization_id: str,
     workflow_id: str,
+    user_id: str | None = None,
 ) -> TriggerWorkflowResponseV2:
     """Manually trigger a workflow execution."""
     from models.conversation import Conversation
@@ -407,6 +506,7 @@ async def trigger_workflow(
     try:
         org_uuid = UUID(organization_id)
         wf_uuid = UUID(workflow_id)
+        trigger_user_uuid: UUID | None = UUID(user_id) if user_id else None
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid ID format")
 
@@ -424,6 +524,9 @@ async def trigger_workflow(
         if not workflow:
             raise HTTPException(status_code=404, detail="Workflow not found")
 
+        if workflow.archived_at is not None:
+            raise HTTPException(status_code=400, detail="Archived workflows cannot be triggered")
+
         if not workflow.is_enabled:
             raise HTTPException(status_code=400, detail="Workflow is disabled")
         
@@ -431,7 +534,7 @@ async def trigger_workflow(
         conversation_id: str | None = None
         if workflow.prompt and workflow.prompt.strip():
             conversation = Conversation(
-                user_id=workflow.created_by_user_id,
+                user_id=trigger_user_uuid or workflow.created_by_user_id,
                 organization_id=workflow.organization_id,
                 type="workflow",
                 workflow_id=workflow.id,
@@ -444,7 +547,22 @@ async def trigger_workflow(
 
     # Queue execution via Celery
     from workers.tasks.workflows import execute_workflow
-    task = execute_workflow.delay(workflow_id, "manual", None, conversation_id, organization_id)
+    logger.info(
+        "[Workflows API] Queueing manual workflow run",
+        extra={
+            "workflow_id": workflow_id,
+            "organization_id": organization_id,
+            "has_conversation": bool(conversation_id),
+        },
+    )
+    task = execute_workflow.delay(
+        workflow_id=workflow_id,
+        triggered_by="manual",
+        trigger_data=None,
+        conversation_id=conversation_id,
+        organization_id=organization_id,
+        triggered_by_user_id=str(trigger_user_uuid) if trigger_user_uuid else None,
+    )
 
     return TriggerWorkflowResponseV2(
         status="queued",

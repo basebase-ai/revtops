@@ -116,6 +116,7 @@ class Workflow(Base):
     )
 
     # Status
+    archived_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     is_enabled: Mapped[bool] = mapped_column(default=True, nullable=False)
     last_run_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
@@ -154,6 +155,7 @@ class Workflow(Base):
             "output_schema": self.output_schema,
             "child_workflows": self.child_workflows,
             "output_config": self.output_config,
+            "archived_at": f"{self.archived_at.isoformat()}Z" if self.archived_at else None,
             "is_enabled": self.is_enabled,
             "last_run_at": f"{self.last_run_at.isoformat()}Z" if self.last_run_at else None,
             "last_error": self.last_error,

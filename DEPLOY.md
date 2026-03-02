@@ -1,6 +1,6 @@
-# Deploying Revtops to Railway
+# Deploying Basebase to Railway
 
-This guide walks you through deploying the Revtops application to Railway.
+This guide walks you through deploying the Basebase application to Railway.
 
 ## Prerequisites
 

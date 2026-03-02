@@ -75,7 +75,7 @@ class User(Base):
         "ChangeSession", back_populates="user", foreign_keys="ChangeSession.user_id"
     )
     credit_transactions: Mapped[list["CreditTransaction"]] = relationship(
-        "CreditTransaction", back_populates="user", foreign_keys="CreditTransaction.user_id"
+        "CreditTransaction", back_populates="user"
     )
 
     def to_dict(self) -> dict[str, Any]:

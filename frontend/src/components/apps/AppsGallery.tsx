@@ -4,7 +4,7 @@
  * Accessible via the "Apps" nav item in the sidebar.
  */
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { apiRequest } from "../../lib/api";
 import { useAppStore } from "../../store";
 
@@ -34,6 +34,7 @@ export function AppsGallery(): JSX.Element {
   const [showArchived, setShowArchived] = useState<boolean>(false);
   const [archivedLoading, setArchivedLoading] = useState<boolean>(false);
   const [archivedFetched, setArchivedFetched] = useState<boolean>(false);
+  const syncPollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const setCurrentView = useAppStore((s) => s.setCurrentView);
   const setCurrentAppId = useAppStore((s) => s.setCurrentAppId);
@@ -64,6 +65,45 @@ export function AppsGallery(): JSX.Element {
     void fetchApps();
   }, [fetchApps]);
 
+  useEffect(() => () => {
+    if (syncPollTimeoutRef.current) {
+      clearTimeout(syncPollTimeoutRef.current);
+    }
+  }, []);
+
+  const scheduleBackendSync = useCallback((): void => {
+    if (syncPollTimeoutRef.current) {
+      clearTimeout(syncPollTimeoutRef.current);
+    }
+
+    let remainingPolls = 3;
+    const poll = async (): Promise<void> => {
+      const [activeResp, archivedResp] = await Promise.all([
+        apiRequest<AppsListResponse>("/apps"),
+        apiRequest<AppsListResponse>("/apps?archived=true"),
+      ]);
+
+      if (!activeResp.error && activeResp.data) {
+        setApps(activeResp.data.apps);
+      }
+      if (!archivedResp.error && archivedResp.data) {
+        setArchivedApps(archivedResp.data.apps);
+        setArchivedFetched(true);
+      }
+
+      remainingPolls -= 1;
+      if (remainingPolls > 0) {
+        syncPollTimeoutRef.current = setTimeout(() => {
+          void poll();
+        }, 3000);
+      }
+    };
+
+    syncPollTimeoutRef.current = setTimeout(() => {
+      void poll();
+    }, 1500);
+  }, []);
+
   const openApp = (appId: string): void => {
     setCurrentAppId(appId);
     setCurrentView("app-view" as never);
@@ -72,22 +112,59 @@ export function AppsGallery(): JSX.Element {
 
   const handleArchive = async (appId: string): Promise<void> => {
     const resp = await apiRequest<{ status: string }>(`/apps/${appId}/archive`, { method: "POST" });
-    if (!resp.error) {
-      setApps((prev) => prev.filter((a) => a.id !== appId));
-      // Reset archived cache so next expand re-fetches
-      setArchivedFetched(false);
-      if (showArchived) {
-        void fetchArchivedApps();
-      }
+    if (resp.error) {
+      setError(resp.error);
+      return;
     }
+
+    let archivedApp: AppItem | null = null;
+    setApps((prev) => {
+      const match = prev.find((a) => a.id === appId) ?? null;
+      if (match) {
+        archivedApp = {
+          ...match,
+          archived_at: new Date().toISOString(),
+        };
+      }
+      return prev.filter((a) => a.id !== appId);
+    });
+
+    if (archivedApp) {
+      setArchivedApps((prev) => [archivedApp as AppItem, ...prev.filter((a) => a.id !== appId)]);
+      setArchivedFetched(true);
+    } else {
+      // Fallback when app was not in local state
+      setArchivedFetched(false);
+    }
+
+    scheduleBackendSync();
+
   };
 
   const handleUnarchive = async (appId: string): Promise<void> => {
     const resp = await apiRequest<{ status: string }>(`/apps/${appId}/unarchive`, { method: "POST" });
-    if (!resp.error) {
-      setArchivedApps((prev) => prev.filter((a) => a.id !== appId));
-      void fetchApps();
+    if (resp.error) {
+      setError(resp.error);
+      return;
     }
+
+    let restoredApp: AppItem | null = null;
+    setArchivedApps((prev) => {
+      const match = prev.find((a) => a.id === appId) ?? null;
+      if (match) {
+        restoredApp = {
+          ...match,
+          archived_at: null,
+        };
+      }
+      return prev.filter((a) => a.id !== appId);
+    });
+
+    if (restoredApp) {
+      setApps((prev) => [restoredApp as AppItem, ...prev.filter((a) => a.id !== appId)]);
+    }
+
+    scheduleBackendSync();
   };
 
   const toggleArchived = (): void => {
@@ -153,10 +230,13 @@ export function AppsGallery(): JSX.Element {
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {apps.map((app) => (
-            <button
+            <div
               key={app.id}
+              role="button"
+              tabIndex={0}
               onClick={() => openApp(app.id)}
-              className="relative text-left p-4 rounded-lg bg-surface-800 border border-surface-700 hover:border-primary-500/50 hover:bg-surface-800/80 transition-all group"
+              onKeyDown={(e) => { if (e.key === "Enter") openApp(app.id); }}
+              className="relative text-left p-4 rounded-lg bg-surface-800 border border-surface-700 hover:border-primary-500/50 hover:bg-surface-800/80 transition-all group cursor-pointer"
             >
               {/* Archive button */}
               <button
@@ -194,7 +274,7 @@ export function AppsGallery(): JSX.Element {
                   </svg>
                 </div>
                 <div className="min-w-0 flex-1">
-                  <h3 className="text-sm font-medium text-surface-100 group-hover:text-primary-300 transition-colors truncate">
+                  <h3 className="text-sm font-medium text-surface-100 group-hover:text-primary-300 transition-colors truncate max-w-[35ch]">
                     {app.title ?? "Untitled App"}
                   </h3>
                   {app.description && (
@@ -215,7 +295,7 @@ export function AppsGallery(): JSX.Element {
                   </div>
                 </div>
               </div>
-            </button>
+            </div>
           ))}
         </div>
       )}
@@ -251,10 +331,13 @@ export function AppsGallery(): JSX.Element {
             ) : (
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                 {archivedApps.map((app) => (
-                  <button
+                  <div
                     key={app.id}
+                    role="button"
+                    tabIndex={0}
                     onClick={() => openApp(app.id)}
-                    className="relative text-left p-4 rounded-lg bg-surface-800/50 border border-surface-700/50 hover:border-surface-600 hover:bg-surface-800/70 transition-all group opacity-60 hover:opacity-90"
+                    onKeyDown={(e) => { if (e.key === "Enter") openApp(app.id); }}
+                    className="relative text-left p-4 rounded-lg bg-surface-800/50 border border-surface-700/50 hover:border-surface-600 hover:bg-surface-800/70 transition-all group opacity-60 hover:opacity-90 cursor-pointer"
                   >
                     {/* Unarchive button */}
                     <button
@@ -292,7 +375,7 @@ export function AppsGallery(): JSX.Element {
                         </svg>
                       </div>
                       <div className="min-w-0 flex-1">
-                        <h3 className="text-sm font-medium text-surface-300 group-hover:text-surface-100 transition-colors truncate">
+                        <h3 className="text-sm font-medium text-surface-300 group-hover:text-surface-100 transition-colors truncate max-w-[35ch]">
                           {app.title ?? "Untitled App"}
                         </h3>
                         {app.description && (
@@ -313,7 +396,7 @@ export function AppsGallery(): JSX.Element {
                         </div>
                       </div>
                     </div>
-                  </button>
+                  </div>
                 ))}
               </div>
             )}

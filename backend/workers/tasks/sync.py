@@ -16,13 +16,20 @@ if str(_backend_dir) not in sys.path:
 
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 from uuid import UUID
 
 from workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
+
+# Provider-specific sync cadence for periodic global sync runs.
+# Default cadence remains hourly unless explicitly overridden.
+PROVIDER_SYNC_INTERVALS: dict[str, timedelta] = {
+    "google_drive": timedelta(minutes=30),
+}
+DEFAULT_SYNC_INTERVAL: timedelta = timedelta(hours=1)
 
 
 def run_async(coro: Any) -> Any:
@@ -188,9 +195,51 @@ async def _get_all_active_integrations() -> list[dict[str, str | None]]:
                 "organization_id": str(i.organization_id),
                 "provider": i.provider,
                 "user_id": str(i.user_id) if i.user_id else None,
+                "last_sync_at": i.last_sync_at.isoformat() if i.last_sync_at else None,
             }
             for i in integrations
         ]
+
+
+def _should_sync_in_periodic_run(integration: dict[str, str | None], now: datetime) -> bool:
+    """Return whether an integration is due for sync in the periodic global run."""
+    provider: str = integration["provider"]  # type: ignore[assignment]
+    cadence: timedelta = PROVIDER_SYNC_INTERVALS.get(provider, DEFAULT_SYNC_INTERVAL)
+    raw_last_sync_at: str | None = integration.get("last_sync_at")
+
+    if not raw_last_sync_at:
+        logger.info(
+            "Periodic sync due provider=%s org=%s user=%s reason=never_synced",
+            provider,
+            integration.get("organization_id"),
+            integration.get("user_id"),
+        )
+        return True
+
+    try:
+        last_sync_at = datetime.fromisoformat(raw_last_sync_at)
+    except ValueError:
+        logger.warning(
+            "Periodic sync forced provider=%s org=%s user=%s reason=invalid_last_sync_at value=%s",
+            provider,
+            integration.get("organization_id"),
+            integration.get("user_id"),
+            raw_last_sync_at,
+        )
+        return True
+
+    elapsed: timedelta = now - last_sync_at
+    due: bool = elapsed >= cadence
+    if not due:
+        logger.info(
+            "Skipping periodic sync provider=%s org=%s user=%s elapsed_seconds=%s min_interval_seconds=%s",
+            provider,
+            integration.get("organization_id"),
+            integration.get("user_id"),
+            int(elapsed.total_seconds()),
+            int(cadence.total_seconds()),
+        )
+    return due
 
 
 async def _get_org_integrations(organization_id: str) -> list[dict[str, str | None]]:
@@ -284,6 +333,7 @@ def sync_all_organizations(self: Any) -> dict[str, Any]:
     logger.info(f"Task {self.request.id}: Starting hourly sync for all organizations")
     
     async def _sync_all() -> dict[str, Any]:
+        now = datetime.utcnow()
         all_integrations: list[dict[str, str | None]] = await _get_all_active_integrations()
         
         # Group by organization
@@ -301,6 +351,8 @@ def sync_all_organizations(self: Any) -> dict[str, Any]:
         for org_id, entries in orgs.items():
             results[org_id] = {}
             for entry in entries:
+                if not _should_sync_in_periodic_run(entry, now):
+                    continue
                 provider: str = entry["provider"]  # type: ignore[assignment]
                 uid: str | None = entry["user_id"]
                 key: str = f"{provider}:{uid}" if uid else provider

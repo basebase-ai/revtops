@@ -9,7 +9,7 @@
  * - Delete workflows
  */
 
-import { useState, useEffect, type KeyboardEvent } from 'react';
+import { useState, useEffect, useRef, useCallback, type KeyboardEvent } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAppStore } from '../store';
 import { apiRequest } from '../lib/api';
@@ -39,6 +39,7 @@ interface Workflow {
   input_schema: Record<string, unknown> | null;  // JSON Schema for typed inputs
   output_schema: Record<string, unknown> | null;  // JSON Schema for typed outputs
   child_workflows: string[];  // IDs of workflows this can call
+  archived_at: string | null;
   is_enabled: boolean;
   last_run_at: string | null;
   last_error: string | null;
@@ -74,9 +75,9 @@ interface WorkflowListResponse {
 }
 
 // Fetch workflows for the organization
-async function fetchWorkflows(orgId: string): Promise<Workflow[]> {
-  console.debug('[Workflows] Fetching workflows', { orgId });
-  const { data, error } = await apiRequest<WorkflowListResponse>(`/workflows/${orgId}`);
+async function fetchWorkflows(orgId: string, archived = false): Promise<Workflow[]> {
+  console.debug('[Workflows] Fetching workflows', { orgId, archived });
+  const { data, error } = await apiRequest<WorkflowListResponse>(`/workflows/${orgId}?archived=${archived}`);
   if (error || !data) throw new Error(error ?? 'Failed to fetch workflows');
   return data.workflows;
 }
@@ -95,12 +96,28 @@ interface TriggerResponse {
   conversation_id?: string;
 }
 
-async function triggerWorkflow(orgId: string, workflowId: string): Promise<TriggerResponse> {
-  const { data, error } = await apiRequest<TriggerResponse>(`/workflows/${orgId}/${workflowId}/trigger`, {
+async function triggerWorkflow(orgId: string, workflowId: string, userId?: string): Promise<TriggerResponse> {
+  const triggerQuery = userId ? `?user_id=${encodeURIComponent(userId)}` : '';
+  const { data, error } = await apiRequest<TriggerResponse>(`/workflows/${orgId}/${workflowId}/trigger${triggerQuery}`, {
     method: 'POST',
   });
   if (error || !data) throw new Error(error ?? 'Failed to trigger workflow');
   return data;
+}
+
+
+async function archiveWorkflow(orgId: string, workflowId: string): Promise<void> {
+  const { error } = await apiRequest<{ status: string }>(`/workflows/${orgId}/${workflowId}/archive`, {
+    method: 'POST',
+  });
+  if (error) throw new Error(error);
+}
+
+async function unarchiveWorkflow(orgId: string, workflowId: string): Promise<void> {
+  const { error } = await apiRequest<{ status: string }>(`/workflows/${orgId}/${workflowId}/unarchive`, {
+    method: 'POST',
+  });
+  if (error) throw new Error(error);
 }
 
 // Delete a workflow
@@ -304,6 +321,7 @@ function WorkflowDetail({
   onDelete,
   onToggle,
   onEdit,
+  onArchive,
   isToggling,
   isTriggering,
 }: {
@@ -313,6 +331,7 @@ function WorkflowDetail({
   onDelete: () => void;
   onToggle: (enabled: boolean) => void;
   onEdit: () => void;
+  onArchive: () => void;
   isToggling: boolean;
   isTriggering: boolean;
 }): JSX.Element {
@@ -598,12 +617,20 @@ function WorkflowDetail({
                 </button>
               </div>
             ) : (
-              <button
-                onClick={() => setShowDeleteConfirm(true)}
-                className="text-sm text-red-400 hover:text-red-300"
-              >
-                Delete workflow
-              </button>
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={onArchive}
+                  className="text-sm text-surface-300 hover:text-surface-100"
+                >
+                  Archive workflow
+                </button>
+                <button
+                  onClick={() => setShowDeleteConfirm(true)}
+                  className="text-sm text-red-400 hover:text-red-300"
+                >
+                  Delete workflow
+                </button>
+              </div>
             )}
           </div>
           <div className="flex items-center gap-2">
@@ -712,7 +739,7 @@ function WorkflowModal({
   // Get all workflows for child workflow selection (exclude current workflow)
   const { data: allWorkflows = [] } = useQuery({
     queryKey: ['workflows', organization?.id],
-    queryFn: () => fetchWorkflows(organization?.id ?? ''),
+    queryFn: () => fetchWorkflows(organization?.id ?? '', false),
     enabled: !!organization?.id,
   });
   
@@ -1086,11 +1113,12 @@ export function Workflows(): JSX.Element {
   const [selectedWorkflow, setSelectedWorkflow] = useState<Workflow | null>(null);
   const [showModal, setShowModal] = useState(false);
   const [editingWorkflow, setEditingWorkflow] = useState<Workflow | null>(null);
+  const archiveSyncTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Fetch workflows — poll every 5s when any workflow is running/pending
   const { data: workflows = [], isLoading, error, refetch } = useQuery({
     queryKey: ['workflows', organization?.id],
-    queryFn: () => fetchWorkflows(organization?.id ?? ''),
+    queryFn: () => fetchWorkflows(organization?.id ?? '', false),
     enabled: !!organization?.id,
     refetchInterval: (query) => {
       const wfs = query.state.data;
@@ -1100,6 +1128,54 @@ export function Workflows(): JSX.Element {
       return hasActive ? 5000 : false;
     },
   });
+
+  const [showArchived, setShowArchived] = useState(false);
+  const { data: archivedWorkflows = [] } = useQuery({
+    queryKey: ['workflows', organization?.id, 'archived'],
+    queryFn: () => fetchWorkflows(organization?.id ?? '', true),
+    enabled: !!organization?.id && showArchived,
+  });
+
+  useEffect(() => () => {
+    if (archiveSyncTimeoutRef.current) {
+      clearTimeout(archiveSyncTimeoutRef.current);
+    }
+  }, []);
+
+  const scheduleArchiveSync = useCallback((): void => {
+    if (!organization?.id) {
+      return;
+    }
+
+    if (archiveSyncTimeoutRef.current) {
+      clearTimeout(archiveSyncTimeoutRef.current);
+    }
+
+    let remainingPolls = 3;
+    const poll = async (): Promise<void> => {
+      await Promise.all([
+        queryClient.fetchQuery({
+          queryKey: ['workflows', organization.id],
+          queryFn: () => fetchWorkflows(organization.id, false),
+        }),
+        queryClient.fetchQuery({
+          queryKey: ['workflows', organization.id, 'archived'],
+          queryFn: () => fetchWorkflows(organization.id, true),
+        }),
+      ]);
+
+      remainingPolls -= 1;
+      if (remainingPolls > 0) {
+        archiveSyncTimeoutRef.current = setTimeout(() => {
+          void poll();
+        }, 3000);
+      }
+    };
+
+    archiveSyncTimeoutRef.current = setTimeout(() => {
+      void poll();
+    }, 1500);
+  }, [organization?.id, queryClient]);
 
   const { data: teamMembersData } = useTeamMembers(organization?.id ?? null, user?.id ?? null);
 
@@ -1136,7 +1212,7 @@ export function Workflows(): JSX.Element {
   // Mutations
   const triggerMutation = useMutation({
     mutationFn: ({ workflowId }: { workflowId: string }) =>
-      triggerWorkflow(organization?.id ?? '', workflowId),
+      triggerWorkflow(organization?.id ?? '', workflowId, user?.id),
     onSuccess: (data) => {
       void queryClient.invalidateQueries({ queryKey: ['workflow-runs'] });
       
@@ -1155,6 +1231,59 @@ export function Workflows(): JSX.Element {
       deleteWorkflow(organization?.id ?? '', workflowId),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['workflows'] });
+    },
+  });
+
+
+  const archiveMutation = useMutation({
+    mutationFn: ({ workflowId }: { workflowId: string }) =>
+      archiveWorkflow(organization?.id ?? '', workflowId),
+    onSuccess: (_data, { workflowId }) => {
+      const now = new Date().toISOString();
+      let archivedWorkflow: Workflow | null = null;
+
+      queryClient.setQueryData<Workflow[]>(['workflows', organization?.id], (prev = []) => {
+        const match = prev.find((workflow) => workflow.id === workflowId) ?? null;
+        if (match) {
+          archivedWorkflow = { ...match, archived_at: now };
+        }
+        return prev.filter((workflow) => workflow.id !== workflowId);
+      });
+
+      if (archivedWorkflow) {
+        queryClient.setQueryData<Workflow[]>(['workflows', organization?.id, 'archived'], (prev = []) => [
+          archivedWorkflow as Workflow,
+          ...prev.filter((workflow) => workflow.id !== workflowId),
+        ]);
+      }
+
+      setSelectedWorkflow(null);
+      scheduleArchiveSync();
+    },
+  });
+
+  const unarchiveMutation = useMutation({
+    mutationFn: ({ workflowId }: { workflowId: string }) =>
+      unarchiveWorkflow(organization?.id ?? '', workflowId),
+    onSuccess: (_data, { workflowId }) => {
+      let restoredWorkflow: Workflow | null = null;
+
+      queryClient.setQueryData<Workflow[]>(['workflows', organization?.id, 'archived'], (prev = []) => {
+        const match = prev.find((workflow) => workflow.id === workflowId) ?? null;
+        if (match) {
+          restoredWorkflow = { ...match, archived_at: null };
+        }
+        return prev.filter((workflow) => workflow.id !== workflowId);
+      });
+
+      if (restoredWorkflow) {
+        queryClient.setQueryData<Workflow[]>(['workflows', organization?.id], (prev = []) => [
+          restoredWorkflow as Workflow,
+          ...prev.filter((workflow) => workflow.id !== workflowId),
+        ]);
+      }
+
+      scheduleArchiveSync();
     },
   });
 
@@ -1264,7 +1393,7 @@ export function Workflows(): JSX.Element {
 
       {/* Content */}
       <div className="flex-1 overflow-y-auto p-6">
-        {workflows.length === 0 ? (
+        {workflows.length === 0 && archivedWorkflows.length === 0 ? (
           <div className="text-center py-12">
             <div className="w-16 h-16 rounded-full bg-surface-800 flex items-center justify-center mx-auto mb-4">
               <svg className="w-8 h-8 text-surface-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -1321,6 +1450,32 @@ export function Workflows(): JSX.Element {
                 </div>
               </div>
             )}
+
+            <div>
+              <button
+                onClick={() => setShowArchived((prev) => !prev)}
+                className="text-sm text-surface-400 hover:text-surface-200"
+              >
+                {showArchived ? 'Hide' : 'Show'} archived workflows {showArchived ? `(${archivedWorkflows.length})` : ''}
+              </button>
+              {showArchived && (
+                <div className="mt-4 space-y-2">
+                  {archivedWorkflows.length === 0 ? (
+                    <p className="text-sm text-surface-500">No archived workflows</p>
+                  ) : archivedWorkflows.map((workflow) => (
+                    <div key={workflow.id} className="flex items-center justify-between rounded-lg border border-surface-800 px-3 py-2">
+                      <span className="text-sm text-surface-300">{workflow.name}</span>
+                      <button
+                        onClick={() => unarchiveMutation.mutate({ workflowId: workflow.id })}
+                        className="text-xs px-2 py-1 rounded bg-surface-700 hover:bg-surface-600 text-surface-200"
+                      >
+                        Unarchive
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         )}
       </div>
@@ -1338,6 +1493,11 @@ export function Workflows(): JSX.Element {
             toggleMutation.mutate({ workflowId: selectedWorkflow.id, enabled });
           }}
           onEdit={() => openEditModal(selectedWorkflow)}
+          onArchive={() => {
+            const workflowId = selectedWorkflow.id;
+            setSelectedWorkflow(null);
+            archiveMutation.mutate({ workflowId });
+          }}
           isToggling={toggleMutation.isPending}
           isTriggering={triggerMutation.isPending}
         />

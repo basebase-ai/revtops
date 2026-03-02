@@ -31,8 +31,8 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run backend tests
-        run: pytest -q
+      - name: Run all backend tests
+        run: pytest -q tests
 
   frontend-tests:
     name: Frontend conformance
@@ -53,6 +53,14 @@ jobs:
 
       - name: Install frontend dependencies
         run: npm ci
+
+      - name: Run frontend tests (if configured)
+        run: |
+          if npm run | rg -q "^\s*test\b"; then
+            npm test
+          else
+            echo "No frontend test script configured; skipping frontend unit tests."
+          fi
 
       - name: Lint frontend
         run: npm run lint

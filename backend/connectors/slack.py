@@ -191,6 +191,34 @@ class SlackConnector(BaseConnector):
                 self._token = bot_token
                 return self._token, ""
 
+        # If team_id was not provided at initialization, infer it from the
+        # selected integration so action calls can still use Add-to-Slack
+        # bot tokens that include chat:write scope.
+        if not self.team_id:
+            if not self._integration:
+                await self._load_integration()
+            inferred_team_id = (
+                (self._integration.extra_data or {}).get("team_id")
+                if self._integration
+                else None
+            )
+            inferred_team_id = str(inferred_team_id or "").strip() or None
+            if inferred_team_id:
+                from services.slack_bot_install import get_slack_bot_token
+
+                bot_token = await get_slack_bot_token(
+                    self.organization_id,
+                    inferred_team_id,
+                )
+                if bot_token:
+                    logger.info(
+                        "[SlackConnector] Using bot-install token inferred from integration team_id=%s",
+                        inferred_team_id,
+                    )
+                    self.team_id = inferred_team_id
+                    self._token = bot_token
+                    return self._token, ""
+
         return await super().get_oauth_token()
 
     async def _get_headers(self) -> dict[str, str]:
@@ -883,6 +911,8 @@ class SlackConnector(BaseConnector):
         Returns:
             Response with channel, ts (timestamp), and message details
         """
+        channel = await self._resolve_channel_for_post(channel)
+
         # Auto-convert any Markdown to Slack mrkdwn format
         formatted_text = markdown_to_mrkdwn(text)
         
@@ -897,7 +927,19 @@ class SlackConnector(BaseConnector):
         if blocks:
             payload["blocks"] = blocks
         
-        data = await self._make_request("POST", "chat.postMessage", json_data=payload)
+        try:
+            data = await self._make_request("POST", "chat.postMessage", json_data=payload)
+        except ValueError as exc:
+            error_message = str(exc)
+            if "channel_not_found" not in error_message:
+                raise
+
+            logger.warning(
+                "[SlackConnector] chat.postMessage returned channel_not_found for channel=%s user_id=%s; retrying with org-level credentials",
+                channel,
+                self.user_id,
+            )
+            data = await self._retry_post_message_with_org_credentials(payload, original_error=exc)
         
         return {
             "ok": data.get("ok"),
@@ -905,6 +947,71 @@ class SlackConnector(BaseConnector):
             "ts": data.get("ts"),
             "message": data.get("message"),
         }
+
+    async def _retry_post_message_with_org_credentials(
+        self,
+        payload: dict[str, Any],
+        *,
+        original_error: ValueError,
+    ) -> dict[str, Any]:
+        """Retry chat.postMessage with non-user-scoped credentials for this org."""
+        original_user_id = self.user_id
+        original_token = self._token
+        original_integration = self._integration
+
+        try:
+            self.user_id = None
+            self._token = None
+            self._integration = None
+            return await self._make_request("POST", "chat.postMessage", json_data=payload)
+        except Exception:
+            logger.warning(
+                "[SlackConnector] Org-level credential retry failed for channel=%s after channel_not_found",
+                payload.get("channel"),
+                exc_info=True,
+            )
+            raise original_error
+        finally:
+            self.user_id = original_user_id
+            self._token = original_token
+            self._integration = original_integration
+
+    async def _resolve_channel_for_post(self, channel: str) -> str:
+        """Resolve a human channel name (e.g. #general) to a channel ID when possible."""
+        normalized_channel = str(channel).strip()
+        if not normalized_channel.startswith("#"):
+            return normalized_channel
+
+        target_name = normalized_channel[1:]
+        try:
+            channels = await self.get_channels()
+        except Exception as exc:
+            logger.warning(
+                "[SlackConnector] Could not resolve channel name=%s before posting: %s",
+                normalized_channel,
+                exc,
+            )
+            return normalized_channel
+
+        for candidate in channels:
+            candidate_names = {
+                str(candidate.get("name") or ""),
+                str(candidate.get("name_normalized") or ""),
+            }
+            if target_name in candidate_names and candidate.get("id"):
+                resolved = str(candidate["id"])
+                logger.info(
+                    "[SlackConnector] Resolved channel name=%s to channel_id=%s",
+                    normalized_channel,
+                    resolved,
+                )
+                return resolved
+
+        logger.warning(
+            "[SlackConnector] Could not resolve channel name=%s to an ID; posting as-is",
+            normalized_channel,
+        )
+        return normalized_channel
 
     async def download_file(self, url_private: str) -> bytes:
         """
@@ -946,11 +1053,22 @@ class SlackConnector(BaseConnector):
     ) -> dict[str, Any]:
         """Open a DM channel and send a direct message."""
         logger.info("[SlackConnector] Opening DM for slack_user_id=%s", slack_user_id)
-        open_data = await self._make_request(
-            "POST",
-            "conversations.open",
-            json_data={"users": slack_user_id},
-        )
+        try:
+            open_data = await self._make_request(
+                "POST",
+                "conversations.open",
+                json_data={"users": slack_user_id},
+            )
+        except ValueError as exc:
+            if "missing_scope" not in str(exc):
+                raise
+            logger.warning(
+                "[SlackConnector] conversations.open missing_scope for slack_user_id=%s; "
+                "falling back to chat.postMessage(channel=user_id)",
+                slack_user_id,
+            )
+            return await self.post_message(channel=slack_user_id, text=text)
+
         channel_id = (open_data.get("channel") or {}).get("id")
         if not channel_id:
             raise ValueError("Slack API error: missing DM channel id")

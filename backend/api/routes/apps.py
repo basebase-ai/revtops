@@ -374,7 +374,10 @@ async def archive_app(
         app: App | None = result.scalar_one_or_none()
         if app is None:
             raise HTTPException(status_code=404, detail="App not found")
-        app.archived_at = datetime.now(timezone.utc)
+        # apps.archived_at is stored as a timestamp without timezone in Postgres.
+        # Persist a naive UTC datetime to avoid asyncpg offset-aware/naive errors.
+        app.archived_at = datetime.utcnow()
+        logger.info("Archived app %s at %s", app_id, app.archived_at.isoformat())
         await session.commit()
 
     return {"status": "ok"}
@@ -398,6 +401,7 @@ async def unarchive_app(
         if app is None:
             raise HTTPException(status_code=404, detail="App not found")
         app.archived_at = None
+        logger.info("Unarchived app %s", app_id)
         await session.commit()
 
     return {"status": "ok"}

@@ -543,11 +543,11 @@ async def _check_scheduled_workflows() -> dict[str, Any]:
                 if next_run <= now:
                     # Queue workflow for execution
                     execute_workflow.delay(
-                        str(workflow.id), 
-                        "schedule", 
-                        None, 
-                        None, 
-                        str(workflow.organization_id)
+                        workflow_id=str(workflow.id),
+                        triggered_by="schedule",
+                        trigger_data=None,
+                        conversation_id=None,
+                        organization_id=str(workflow.organization_id),
                     )
                     triggered.append(str(workflow.id))
                     
@@ -604,11 +604,11 @@ async def _process_pending_events() -> dict[str, Any]:
                 if trigger_event == event_type:
                     # Queue workflow for execution with event data
                     execute_workflow.delay(
-                        str(workflow.id),
-                        f"event:{event_type}",
-                        event["data"],
-                        None,  # conversation_id
-                        org_id,  # organization_id for RLS
+                        workflow_id=str(workflow.id),
+                        triggered_by=f"event:{event_type}",
+                        trigger_data=event["data"],
+                        conversation_id=None,
+                        organization_id=org_id,
                     )
                     triggered.append({
                         "workflow_id": str(workflow.id),
@@ -627,6 +627,7 @@ async def _execute_workflow(
     trigger_data: dict[str, Any] | None = None,
     conversation_id: str | None = None,
     organization_id: str | None = None,
+    triggered_by_user_id: str | None = None,
 ) -> dict[str, Any]:
     """
     Execute a workflow by creating a conversation and sending the prompt to the agent.
@@ -704,6 +705,7 @@ async def _execute_workflow(
                     trigger_data=trigger_data,
                     session=session,
                     existing_conversation_id=conversation_id,
+                    triggered_by_user_id=triggered_by_user_id,
                 )
                 return result
             except Exception as e:
@@ -733,6 +735,7 @@ async def _execute_workflow_via_agent(
     trigger_data: dict[str, Any] | None,
     session: Any,
     existing_conversation_id: str | None = None,
+    triggered_by_user_id: str | None = None,
 ) -> dict[str, Any]:
     """
     Execute a workflow by sending its prompt to the agent.
@@ -755,6 +758,17 @@ async def _execute_workflow_via_agent(
             except ValueError:
                 logger.warning(f"Invalid parent_conversation_id: {parent_conv_id_str}")
     
+    conversation_user_id = workflow.created_by_user_id
+    if triggered_by_user_id:
+        try:
+            conversation_user_id = UUID(triggered_by_user_id)
+        except ValueError:
+            logger.warning(
+                "[Workflow] Invalid triggered_by_user_id for workflow %s: %s",
+                workflow.id,
+                triggered_by_user_id,
+            )
+
     # Use existing conversation or create a new one
     if existing_conversation_id:
         # Load the pre-created conversation
@@ -765,7 +779,7 @@ async def _execute_workflow_via_agent(
         if not conversation:
             # Fallback to creating new if not found
             conversation = Conversation(
-                user_id=workflow.created_by_user_id,
+                user_id=conversation_user_id,
                 organization_id=workflow.organization_id,
                 type="workflow",
                 workflow_id=workflow.id,
@@ -777,7 +791,7 @@ async def _execute_workflow_via_agent(
     else:
         # Create a new workflow conversation
         conversation = Conversation(
-            user_id=workflow.created_by_user_id,
+            user_id=conversation_user_id,
             organization_id=workflow.organization_id,
             type="workflow",
             workflow_id=workflow.id,
@@ -1386,10 +1400,18 @@ async def _action_send_slack(
                     "error": "No active Slack integration found for organization",
                 }
         
+        slack_team_id = (integration.extra_data or {}).get("team_id")
+        logger.info(
+            "[workflow.send_slack] Posting message org_id=%s channel=%s team_id=%s",
+            org_id,
+            channel,
+            slack_team_id,
+        )
+
         # Create connector and post message
         connector = SlackConnector(
             organization_id=org_id,
-            nango_connection_id=integration.nango_connection_id,
+            team_id=slack_team_id,
         )
         
         result = await connector.post_message(
@@ -1702,6 +1724,7 @@ def execute_workflow(
     trigger_data: dict[str, Any] | None = None,
     conversation_id: str | None = None,
     organization_id: str | None = None,
+    triggered_by_user_id: str | None = None,
 ) -> dict[str, Any]:
     """
     Celery task to execute a workflow.
@@ -1717,4 +1740,13 @@ def execute_workflow(
         Execution result with status and any errors
     """
     logger.info(f"Task {self.request.id}: Executing workflow {workflow_id}")
-    return run_async(_execute_workflow(workflow_id, triggered_by, trigger_data, conversation_id, organization_id))
+    return run_async(
+        _execute_workflow(
+            workflow_id,
+            triggered_by,
+            trigger_data,
+            conversation_id,
+            organization_id,
+            triggered_by_user_id,
+        )
+    )
