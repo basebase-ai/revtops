@@ -543,11 +543,11 @@ async def _check_scheduled_workflows() -> dict[str, Any]:
                 if next_run <= now:
                     # Queue workflow for execution
                     execute_workflow.delay(
-                        str(workflow.id), 
-                        "schedule", 
-                        None, 
-                        None, 
-                        str(workflow.organization_id)
+                        workflow_id=str(workflow.id),
+                        triggered_by="schedule",
+                        trigger_data=None,
+                        conversation_id=None,
+                        organization_id=str(workflow.organization_id),
                     )
                     triggered.append(str(workflow.id))
                     
@@ -604,11 +604,11 @@ async def _process_pending_events() -> dict[str, Any]:
                 if trigger_event == event_type:
                     # Queue workflow for execution with event data
                     execute_workflow.delay(
-                        str(workflow.id),
-                        f"event:{event_type}",
-                        event["data"],
-                        None,  # conversation_id
-                        org_id,  # organization_id for RLS
+                        workflow_id=str(workflow.id),
+                        triggered_by=f"event:{event_type}",
+                        trigger_data=event["data"],
+                        conversation_id=None,
+                        organization_id=org_id,
                     )
                     triggered.append({
                         "workflow_id": str(workflow.id),

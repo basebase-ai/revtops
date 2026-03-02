@@ -5025,14 +5025,14 @@ async def _run_workflow(
             # Fire and forget - queue via Celery
             from workers.tasks.workflows import execute_workflow
             task = execute_workflow.delay(
-                workflow_id,
-                "run_workflow",
-                {
+                workflow_id=workflow_id,
+                triggered_by="run_workflow",
+                trigger_data={
                     **input_data,
                     "_parent_context": parent_context,
                 },
-                None,
-                organization_id
+                conversation_id=None,
+                organization_id=organization_id,
             )
             
             return {
