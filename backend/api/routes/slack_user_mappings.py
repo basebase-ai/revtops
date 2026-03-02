@@ -183,17 +183,26 @@ async def request_slack_user_mapping_code(
             .where(SlackUserMapping.external_email == email)
             .order_by(SlackUserMapping.updated_at.desc())
         )
-        matched_mapping = result.scalars().first()
+        matched_mappings = result.scalars().all()
+
+    slack_user_candidates: list[str] = []
+    seen_candidates: set[str] = set()
+    for mapping in matched_mappings:
+        candidate = (mapping.external_userid or "").strip()
+        if not candidate or candidate in seen_candidates:
+            continue
+        seen_candidates.add(candidate)
+        slack_user_candidates.append(candidate)
 
     logger.info(
         "[user_mappings_for_identity] Lookup Slack mapping for org=%s user=%s email=%s matched=%s",
         org_uuid,
         user_uuid,
         email,
-        bool(matched_mapping),
+        bool(slack_user_candidates),
     )
 
-    if not matched_mapping or not matched_mapping.external_userid:
+    if not slack_user_candidates:
         logger.warning(
             "[user_mappings_for_identity] No Slack mapping found for org=%s user=%s email=%s",
             org_uuid,
@@ -226,42 +235,81 @@ async def request_slack_user_mapping_code(
             status_code=429,
             detail="Please wait at least one minute before requesting another code.",
         )
-    matched_user = {
-        "id": matched_mapping.external_userid,
-        "email": matched_mapping.external_email or email,
-    }
-
     code = f"{secrets.randbelow(1000000):06d}"
-    payload = json.dumps(
-        {
-            "slack_user_id": matched_user["id"],
-            "email": matched_user["email"],
-            "code": code,
-        }
-    )
-    code_key = f"revtops:slack-email-verify:{org_uuid}:{user_uuid}:{email}"
-    await redis_client.set(code_key, payload, ex=int(_CODE_TTL.total_seconds()))
-
     logger.info(
-        "[user_mappings_for_identity] Sending Slack verification code org=%s user=%s slack_user=%s",
+        "[user_mappings_for_identity] Sending Slack verification code org=%s user=%s candidate_count=%d",
         org_uuid,
         user_uuid,
-        matched_user["id"],
+        len(slack_user_candidates),
     )
     message_text = (
         "Your RevTops verification code is: "
         f"{code}\n\nIf you didn't request this, you can ignore it."
     )
     connector = SlackConnector(organization_id=str(org_uuid))
-    action_response = await connector.send_direct_message(
-        slack_user_id=matched_user["id"],
-        text=message_text,
+
+    last_send_error: Exception | None = None
+    sent_slack_user_id: str | None = None
+    action_response: dict[str, object] | None = None
+    for idx, slack_user_id in enumerate(slack_user_candidates, start=1):
+        try:
+            logger.info(
+                "[user_mappings_for_identity] Attempting Slack verification DM org=%s user=%s slack_user=%s attempt=%d/%d",
+                org_uuid,
+                user_uuid,
+                slack_user_id,
+                idx,
+                len(slack_user_candidates),
+            )
+            action_response = await connector.send_direct_message(
+                slack_user_id=slack_user_id,
+                text=message_text,
+            )
+            sent_slack_user_id = slack_user_id
+            logger.info(
+                "[user_mappings_for_identity] Slack verification DM succeeded org=%s user=%s slack_user=%s attempt=%d/%d",
+                org_uuid,
+                user_uuid,
+                slack_user_id,
+                idx,
+                len(slack_user_candidates),
+            )
+            break
+        except Exception as exc:
+            last_send_error = exc
+            logger.warning(
+                "[user_mappings_for_identity] Slack verification DM failed org=%s user=%s slack_user=%s attempt=%d/%d error=%s",
+                org_uuid,
+                user_uuid,
+                slack_user_id,
+                idx,
+                len(slack_user_candidates),
+                exc,
+                exc_info=True,
+            )
+
+    if not sent_slack_user_id:
+        await redis_client.delete(cooldown_key)
+        raise HTTPException(
+            status_code=502,
+            detail="Unable to deliver verification code via Slack DM. Please try again.",
+        ) from last_send_error
+
+    code_key = f"revtops:slack-email-verify:{org_uuid}:{user_uuid}:{email}"
+    payload = json.dumps(
+        {
+            "slack_user_id": sent_slack_user_id,
+            "email": email,
+            "code": code,
+        }
     )
+    await redis_client.set(code_key, payload, ex=int(_CODE_TTL.total_seconds()))
+
     logger.info(
         "[user_mappings_for_identity] Slack DM send response org=%s user=%s slack_user=%s keys=%s",
         org_uuid,
         user_uuid,
-        matched_user["id"],
+        sent_slack_user_id,
         sorted(action_response.keys()) if isinstance(action_response, dict) else "n/a",
     )
 
