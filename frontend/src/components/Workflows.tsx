@@ -9,7 +9,7 @@
  * - Delete workflows
  */
 
-import { useState, useEffect, type KeyboardEvent } from 'react';
+import { useState, useEffect, useRef, useCallback, type KeyboardEvent } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAppStore } from '../store';
 import { apiRequest } from '../lib/api';
@@ -1112,6 +1112,7 @@ export function Workflows(): JSX.Element {
   const [selectedWorkflow, setSelectedWorkflow] = useState<Workflow | null>(null);
   const [showModal, setShowModal] = useState(false);
   const [editingWorkflow, setEditingWorkflow] = useState<Workflow | null>(null);
+  const archiveSyncTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Fetch workflows — poll every 5s when any workflow is running/pending
   const { data: workflows = [], isLoading, error, refetch } = useQuery({
@@ -1133,6 +1134,47 @@ export function Workflows(): JSX.Element {
     queryFn: () => fetchWorkflows(organization?.id ?? '', true),
     enabled: !!organization?.id && showArchived,
   });
+
+  useEffect(() => () => {
+    if (archiveSyncTimeoutRef.current) {
+      clearTimeout(archiveSyncTimeoutRef.current);
+    }
+  }, []);
+
+  const scheduleArchiveSync = useCallback((): void => {
+    if (!organization?.id) {
+      return;
+    }
+
+    if (archiveSyncTimeoutRef.current) {
+      clearTimeout(archiveSyncTimeoutRef.current);
+    }
+
+    let remainingPolls = 3;
+    const poll = async (): Promise<void> => {
+      await Promise.all([
+        queryClient.fetchQuery({
+          queryKey: ['workflows', organization.id],
+          queryFn: () => fetchWorkflows(organization.id, false),
+        }),
+        queryClient.fetchQuery({
+          queryKey: ['workflows', organization.id, 'archived'],
+          queryFn: () => fetchWorkflows(organization.id, true),
+        }),
+      ]);
+
+      remainingPolls -= 1;
+      if (remainingPolls > 0) {
+        archiveSyncTimeoutRef.current = setTimeout(() => {
+          void poll();
+        }, 3000);
+      }
+    };
+
+    archiveSyncTimeoutRef.current = setTimeout(() => {
+      void poll();
+    }, 1500);
+  }, [organization?.id, queryClient]);
 
   const { data: teamMembersData } = useTeamMembers(organization?.id ?? null, user?.id ?? null);
 
@@ -1215,6 +1257,7 @@ export function Workflows(): JSX.Element {
       }
 
       setSelectedWorkflow(null);
+      scheduleArchiveSync();
     },
   });
 
@@ -1238,6 +1281,8 @@ export function Workflows(): JSX.Element {
           ...prev.filter((workflow) => workflow.id !== workflowId),
         ]);
       }
+
+      scheduleArchiveSync();
     },
   });
 

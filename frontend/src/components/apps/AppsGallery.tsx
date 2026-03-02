@@ -4,7 +4,7 @@
  * Accessible via the "Apps" nav item in the sidebar.
  */
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { apiRequest } from "../../lib/api";
 import { useAppStore } from "../../store";
 
@@ -34,6 +34,7 @@ export function AppsGallery(): JSX.Element {
   const [showArchived, setShowArchived] = useState<boolean>(false);
   const [archivedLoading, setArchivedLoading] = useState<boolean>(false);
   const [archivedFetched, setArchivedFetched] = useState<boolean>(false);
+  const syncPollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const setCurrentView = useAppStore((s) => s.setCurrentView);
   const setCurrentAppId = useAppStore((s) => s.setCurrentAppId);
@@ -63,6 +64,45 @@ export function AppsGallery(): JSX.Element {
   useEffect(() => {
     void fetchApps();
   }, [fetchApps]);
+
+  useEffect(() => () => {
+    if (syncPollTimeoutRef.current) {
+      clearTimeout(syncPollTimeoutRef.current);
+    }
+  }, []);
+
+  const scheduleBackendSync = useCallback((): void => {
+    if (syncPollTimeoutRef.current) {
+      clearTimeout(syncPollTimeoutRef.current);
+    }
+
+    let remainingPolls = 3;
+    const poll = async (): Promise<void> => {
+      const [activeResp, archivedResp] = await Promise.all([
+        apiRequest<AppsListResponse>("/apps"),
+        apiRequest<AppsListResponse>("/apps?archived=true"),
+      ]);
+
+      if (!activeResp.error && activeResp.data) {
+        setApps(activeResp.data.apps);
+      }
+      if (!archivedResp.error && archivedResp.data) {
+        setArchivedApps(archivedResp.data.apps);
+        setArchivedFetched(true);
+      }
+
+      remainingPolls -= 1;
+      if (remainingPolls > 0) {
+        syncPollTimeoutRef.current = setTimeout(() => {
+          void poll();
+        }, 3000);
+      }
+    };
+
+    syncPollTimeoutRef.current = setTimeout(() => {
+      void poll();
+    }, 1500);
+  }, []);
 
   const openApp = (appId: string): void => {
     setCurrentAppId(appId);
@@ -97,6 +137,8 @@ export function AppsGallery(): JSX.Element {
       setArchivedFetched(false);
     }
 
+    scheduleBackendSync();
+
   };
 
   const handleUnarchive = async (appId: string): Promise<void> => {
@@ -121,6 +163,8 @@ export function AppsGallery(): JSX.Element {
     if (restoredApp) {
       setApps((prev) => [restoredApp as AppItem, ...prev.filter((a) => a.id !== appId)]);
     }
+
+    scheduleBackendSync();
   };
 
   const toggleArchived = (): void => {
