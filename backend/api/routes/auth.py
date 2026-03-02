@@ -1001,6 +1001,16 @@ async def get_organization_members(
                 )
             )
 
+        # Keep guest user pinned to the top of team lists, then sort remaining
+        # members alphabetically so all consumers (including sidebar/panels)
+        # get a consistent order without duplicating sort rules in clients.
+        members.sort(
+            key=lambda member: (
+                not member.is_guest,
+                (member.name or member.email).lower(),
+            )
+        )
+
         # Collect unmapped identity rows (user_id is NULL)
         unmapped_mappings: list[SlackUserMapping] = mappings_by_user.get(None, [])
 
