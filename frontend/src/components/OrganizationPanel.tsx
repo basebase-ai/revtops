@@ -137,6 +137,15 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
   } = useTeamMembers(organization.id, currentUser.id);
 
   const members: TeamMember[] = teamData?.members ?? [];
+  const sortedMembers: TeamMember[] = [...members].sort((a, b) => {
+    if (a.isGuest !== b.isGuest) {
+      return a.isGuest ? -1 : 1;
+    }
+
+    const aName = (a.name ?? a.email).toLowerCase();
+    const bName = (b.name ?? b.email).toLowerCase();
+    return aName.localeCompare(bName);
+  });
   const unmappedIdentities: IdentityMapping[] = teamData?.unmappedIdentities ?? [];
   const guestUserEnabled: boolean = Boolean(teamData?.guestUserEnabled);
   const canLinkIdentityInOrg: boolean = members.some((member) => member.id === currentUser.id);
@@ -416,7 +425,7 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                   </div>
                 ) : (
                   <div className="space-y-2">
-                    {members.map((member) => {
+                    {sortedMembers.map((member) => {
                       const displayName: string = member.name ?? member.email.split('@')[0] ?? 'Unknown';
                       const isGuest: boolean = member.isGuest;
                       const isAdmin: boolean = member.role === 'admin' || member.canLoginAsAdmin;
