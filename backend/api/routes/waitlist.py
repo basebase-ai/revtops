@@ -359,6 +359,7 @@ class AdminUserResponse(BaseModel):
     organization_id: Optional[str]
     organization_name: Optional[str]
     organizations: list[str] = Field(default_factory=list)
+    is_guest: bool = False
 
 
 class AdminUsersListResponse(BaseModel):
@@ -441,6 +442,7 @@ async def list_admin_users(
                     organization_id=str(u.organization_id) if u.organization_id else None,
                     organization_name=org_name,
                     organizations=organizations,
+                    is_guest=bool(u.is_guest),
                 )
             )
 

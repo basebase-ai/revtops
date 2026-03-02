@@ -40,6 +40,7 @@ interface AdminUser {
   organization_id: string | null;
   organization_name: string | null;
   organizations: string[];
+  is_guest: boolean;
 }
 
 interface AdminOrganization {
@@ -92,6 +93,7 @@ export function AdminPanel(): JSX.Element {
   const [usersLoading, setUsersLoading] = useState<boolean>(true);
   const [usersError, setUsersError] = useState<string | null>(null);
   const [userSearch, setUserSearch] = useState<string>('');
+  const [showGuestUsers, setShowGuestUsers] = useState<boolean>(false);
 
   // Organizations tab state
   const [adminOrgs, setAdminOrgs] = useState<AdminOrganization[]>([]);
@@ -581,6 +583,9 @@ export function AdminPanel(): JSX.Element {
     );
   });
 
+  const filteredGuestUsers = filteredUsers.filter((u) => u.is_guest);
+  const filteredNonGuestUsers = filteredUsers.filter((u) => !u.is_guest);
+
   // Filter organizations by search term (in-memory)
   const filteredOrgs = adminOrgs.filter((o) => {
     if (!orgSearch.trim()) return true;
@@ -873,7 +878,7 @@ export function AdminPanel(): JSX.Element {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-surface-800">
-                    {filteredUsers.map((u) => (
+                    {filteredNonGuestUsers.map((u) => (
                       <tr key={u.id} className="hover:bg-surface-800/50">
                         <td className="px-4 py-3">
                           <div>
@@ -909,7 +914,7 @@ export function AdminPanel(): JSX.Element {
                           {formatDate(u.created_at)}
                         </td>
                         <td className="px-4 py-3">
-                          {u.id !== user?.id && u.status === 'active' && (
+                          {u.id !== user?.id && u.status === 'active' && !u.is_guest && (
                             <button
                               onClick={() => void handleMasquerade(u.id)}
                               disabled={masquerading === u.id}
@@ -920,6 +925,36 @@ export function AdminPanel(): JSX.Element {
                             </button>
                           )}
                         </td>
+                      </tr>
+                    ))}
+                    {filteredGuestUsers.length > 0 && (
+                      <tr className="bg-surface-800/30">
+                        <td colSpan={6} className="px-4 py-2.5 text-sm">
+                          <button
+                            onClick={() => setShowGuestUsers((prev) => !prev)}
+                            className="flex items-center gap-2 text-surface-300 hover:text-surface-100 transition-colors"
+                          >
+                            <span className="text-xs text-surface-500">{showGuestUsers ? '▼' : '▶'}</span>
+                            <span>
+                              {filteredGuestUsers.length} guest {filteredGuestUsers.length === 1 ? 'user' : 'users'}
+                            </span>
+                          </button>
+                        </td>
+                      </tr>
+                    )}
+                    {showGuestUsers && filteredGuestUsers.map((u) => (
+                      <tr key={u.id} className="hover:bg-surface-800/40">
+                        <td className="px-4 py-2.5">
+                          <div>
+                            <div className="font-medium text-surface-200">Guest user</div>
+                            <div className="text-xs text-surface-500">{u.email}</div>
+                          </div>
+                        </td>
+                        <td className="px-4 py-2.5 text-xs text-surface-400">{u.organization_name ?? '—'}</td>
+                        <td className="px-4 py-2.5">{getStatusBadge(u.status)}</td>
+                        <td className="px-4 py-2.5 text-xs text-surface-500">{u.last_login ? formatDate(u.last_login) : 'Never'}</td>
+                        <td className="px-4 py-2.5 text-xs text-surface-500">{formatDate(u.created_at)}</td>
+                        <td className="px-4 py-2.5 text-xs text-surface-500">—</td>
                       </tr>
                     ))}
                   </tbody>
