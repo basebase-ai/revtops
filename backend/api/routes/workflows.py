@@ -545,7 +545,21 @@ async def trigger_workflow(
 
     # Queue execution via Celery
     from workers.tasks.workflows import execute_workflow
-    task = execute_workflow.delay(workflow_id, "manual", None, conversation_id, organization_id)
+    logger.info(
+        "[Workflows API] Queueing manual workflow run",
+        extra={
+            "workflow_id": workflow_id,
+            "organization_id": organization_id,
+            "has_conversation": bool(conversation_id),
+        },
+    )
+    task = execute_workflow.delay(
+        workflow_id=workflow_id,
+        triggered_by="manual",
+        trigger_data=None,
+        conversation_id=conversation_id,
+        organization_id=organization_id,
+    )
 
     return TriggerWorkflowResponseV2(
         status="queued",
