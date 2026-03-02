@@ -911,6 +911,8 @@ class SlackConnector(BaseConnector):
         Returns:
             Response with channel, ts (timestamp), and message details
         """
+        channel = await self._resolve_channel_for_post(channel)
+
         # Auto-convert any Markdown to Slack mrkdwn format
         formatted_text = markdown_to_mrkdwn(text)
         
@@ -933,6 +935,43 @@ class SlackConnector(BaseConnector):
             "ts": data.get("ts"),
             "message": data.get("message"),
         }
+
+    async def _resolve_channel_for_post(self, channel: str) -> str:
+        """Resolve a human channel name (e.g. #general) to a channel ID when possible."""
+        normalized_channel = str(channel).strip()
+        if not normalized_channel.startswith("#"):
+            return normalized_channel
+
+        target_name = normalized_channel[1:]
+        try:
+            channels = await self.get_channels()
+        except Exception as exc:
+            logger.warning(
+                "[SlackConnector] Could not resolve channel name=%s before posting: %s",
+                normalized_channel,
+                exc,
+            )
+            return normalized_channel
+
+        for candidate in channels:
+            candidate_names = {
+                str(candidate.get("name") or ""),
+                str(candidate.get("name_normalized") or ""),
+            }
+            if target_name in candidate_names and candidate.get("id"):
+                resolved = str(candidate["id"])
+                logger.info(
+                    "[SlackConnector] Resolved channel name=%s to channel_id=%s",
+                    normalized_channel,
+                    resolved,
+                )
+                return resolved
+
+        logger.warning(
+            "[SlackConnector] Could not resolve channel name=%s to an ID; posting as-is",
+            normalized_channel,
+        )
+        return normalized_channel
 
     async def download_file(self, url_private: str) -> bytes:
         """
@@ -974,11 +1013,22 @@ class SlackConnector(BaseConnector):
     ) -> dict[str, Any]:
         """Open a DM channel and send a direct message."""
         logger.info("[SlackConnector] Opening DM for slack_user_id=%s", slack_user_id)
-        open_data = await self._make_request(
-            "POST",
-            "conversations.open",
-            json_data={"users": slack_user_id},
-        )
+        try:
+            open_data = await self._make_request(
+                "POST",
+                "conversations.open",
+                json_data={"users": slack_user_id},
+            )
+        except ValueError as exc:
+            if "missing_scope" not in str(exc):
+                raise
+            logger.warning(
+                "[SlackConnector] conversations.open missing_scope for slack_user_id=%s; "
+                "falling back to chat.postMessage(channel=user_id)",
+                slack_user_id,
+            )
+            return await self.post_message(channel=slack_user_id, text=text)
+
         channel_id = (open_data.get("channel") or {}).get("id")
         if not channel_id:
             raise ValueError("Slack API error: missing DM channel id")
