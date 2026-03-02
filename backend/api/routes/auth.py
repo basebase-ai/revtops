@@ -42,6 +42,46 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
+_DRIVE_LOGIN_SYNC_MIN_INTERVAL = timedelta(minutes=5)
+
+
+def _should_trigger_drive_sync_on_login(last_sync_at: Optional[datetime]) -> bool:
+    """Throttle login-triggered Drive syncs to at most once every 5 minutes."""
+    if last_sync_at is None:
+        return True
+    return (datetime.utcnow() - last_sync_at) >= _DRIVE_LOGIN_SYNC_MIN_INTERVAL
+
+
+def _enqueue_google_drive_login_sync(organization_id: UUID, user_id: UUID, integration: Integration) -> None:
+    """Queue a Google Drive sync for the logging-in user when throttling allows."""
+    if not _should_trigger_drive_sync_on_login(integration.last_sync_at):
+        logger.info(
+            "Skipping login-triggered Google Drive sync org=%s user=%s last_sync_at=%s",
+            organization_id,
+            user_id,
+            integration.last_sync_at.isoformat() if integration.last_sync_at else None,
+        )
+        return
+
+    try:
+        from workers.tasks.sync import sync_integration
+
+        task = sync_integration.delay(str(organization_id), "google_drive", str(user_id))
+        logger.info(
+            "Queued login-triggered Google Drive sync org=%s user=%s task_id=%s",
+            organization_id,
+            user_id,
+            task.id,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Failed to queue login-triggered Google Drive sync org=%s user=%s error=%s",
+            organization_id,
+            user_id,
+            exc,
+        )
+
+
 _AGENT_GLOBAL_COMMANDS_CATEGORY = "global_commands"
 
 
@@ -631,7 +671,25 @@ async def sync_user(request: SyncUserRequest) -> SyncUserResponse:
             
             await session.commit()
             await session.refresh(existing)
-            
+
+            # Trigger a user-scoped Google Drive sync on login (throttled to >=5 min).
+            if existing.organization_id:
+                drive_integration_result = await session.execute(
+                    select(Integration).where(
+                        Integration.organization_id == existing.organization_id,
+                        Integration.provider == "google_drive",
+                        Integration.user_id == existing.id,
+                        Integration.is_active == True,
+                    )
+                )
+                drive_integration = drive_integration_result.scalar_one_or_none()
+                if drive_integration:
+                    _enqueue_google_drive_login_sync(
+                        existing.organization_id,
+                        existing.id,
+                        drive_integration,
+                    )
+
             # Load organization data and job title if user has an org
             org_data: Optional[SyncOrganizationData] = None
             sync_job_title: Optional[str] = None
