@@ -1995,6 +1995,43 @@ async def confirm_integration(
                         "[Confirm] Could not extract Slack team_id from Nango connection for connection_id=%s",
                         nango_connection_id,
                     )
+        # For Slack, extract the bot token from Nango and upsert into
+        # slack_bot_installs so event-handling paths can look it up by team_id.
+        # With bot scopes configured in Nango, the top-level access_token is
+        # the xoxb- bot token, and completing OAuth installs the app.
+        if request.provider == "slack":
+            _slack_team_id: str | None = (connection_metadata or {}).get("team_id")
+            _slack_credentials: dict[str, Any] = connection.get("credentials") or {}
+            _slack_access_token: str | None = _slack_credentials.get("access_token")
+            if _slack_team_id and _slack_access_token:
+                from services.slack_bot_install import upsert_bot_install as _upsert_bot_install
+
+                try:
+                    await _upsert_bot_install(
+                        organization_id=org_uuid,
+                        team_id=_slack_team_id,
+                        access_token=_slack_access_token,
+                    )
+                    logger.info(
+                        "[Confirm] Upserted slack_bot_install for team_id=%s org=%s via Nango confirm",
+                        _slack_team_id,
+                        org_uuid,
+                    )
+                except Exception as bot_exc:
+                    logger.warning(
+                        "[Confirm] Failed to upsert slack_bot_install for team_id=%s org=%s: %s",
+                        _slack_team_id,
+                        org_uuid,
+                        bot_exc,
+                    )
+            else:
+                logger.warning(
+                    "[Confirm] Cannot upsert slack_bot_install: team_id=%s has_token=%s connection_id=%s",
+                    _slack_team_id,
+                    bool(_slack_access_token),
+                    nango_connection_id,
+                )
+
         if connection_metadata:
             print(
                 f"[Confirm] Retrieved Nango metadata for provider={request.provider}, "
@@ -2348,7 +2385,7 @@ async def nango_oauth_callback_redirect(request: Request) -> RedirectResponse:
     return RedirectResponse(url=redirect_url, status_code=302)
 
 
-# --- Slack: single OAuth callback for both Nango (Connect) and Add-to-Slack (bot install) ---
+# --- Slack OAuth callback (Nango Connect flow) ---
 
 def _slack_oauth_callback_url() -> str:
     """Absolute URL for Slack OAuth redirect_uri (must match Slack app config)."""
@@ -2361,140 +2398,17 @@ def _slack_oauth_callback_url() -> str:
 @router.get("/slack/oauth-callback")
 async def slack_oauth_callback(request: Request) -> RedirectResponse:
     """
-    Single Slack OAuth callback: Nango Connect flow vs Add-to-Slack (bot install).
+    Slack OAuth callback — forwards to Nango.
 
-    Configure this URL as the only Redirect URL in your Slack app (and in Nango
-    as the Slack integration callback). Dispatches by state:
-    - state starts with "revtops_bot_<org_id>": exchange code, store bot token, redirect to frontend.
-    - else: forward to Nango (Connect flow).
+    Configure this URL as the Redirect URL in your Slack app and in Nango's
+    Slack integration callback. Nango handles the code exchange and token
+    storage; the bot token is then extracted and stored in slack_bot_installs
+    by confirm_integration.
     """
-    from services.slack_bot_install import (
-        SLACK_BOT_INSTALL_STATE_PREFIX,
-        upsert_bot_install,
-    )
-
-    code: str | None = request.query_params.get("code")
-    state: str | None = request.query_params.get("state") or ""
-
-    if not code:
-        logger.warning("[slack_oauth_callback] Missing code")
-        return RedirectResponse(
-            url=f"{settings.FRONTEND_URL}/?integration=slack&status=error&message=missing_code",
-            status_code=302,
-        )
-
-    # Add-to-Slack (bot install) flow: we handle the code exchange
-    if state.startswith(SLACK_BOT_INSTALL_STATE_PREFIX):
-        org_id_str: str = state[len(SLACK_BOT_INSTALL_STATE_PREFIX) :].strip()
-        if not org_id_str:
-            logger.warning("[slack_oauth_callback] Bot install state missing org_id")
-            return RedirectResponse(
-                url=f"{settings.FRONTEND_URL}/?integration=slack&status=error&message=invalid_state",
-                status_code=302,
-            )
-        try:
-            org_uuid = UUID(org_id_str)
-        except ValueError:
-            logger.warning("[slack_oauth_callback] Invalid org_id in state: %s", org_id_str)
-            return RedirectResponse(
-                url=f"{settings.FRONTEND_URL}/?integration=slack&status=error&message=invalid_org",
-                status_code=302,
-            )
-        if not settings.SLACK_CLIENT_ID or not settings.SLACK_CLIENT_SECRET:
-            logger.error("[slack_oauth_callback] SLACK_CLIENT_ID/SLACK_CLIENT_SECRET not set")
-            return RedirectResponse(
-                url=f"{settings.FRONTEND_URL}/?integration=slack&status=error&message=config",
-                status_code=302,
-            )
-        try:
-            # Exchange code for token
-            async with httpx.AsyncClient() as client:
-                resp = await client.post(
-                    "https://slack.com/api/oauth.v2.access",
-                    data={
-                        "code": code,
-                        "client_id": settings.SLACK_CLIENT_ID,
-                        "client_secret": settings.SLACK_CLIENT_SECRET,
-                        "redirect_uri": _slack_oauth_callback_url(),
-                    },
-                    headers={"Content-Type": "application/x-www-form-urlencoded"},
-                    timeout=15.0,
-                )
-            if resp.status_code != 200:
-                logger.warning("[slack_oauth_callback] Slack token exchange HTTP %s: %s", resp.status_code, resp.text)
-                return RedirectResponse(
-                    url=f"{settings.FRONTEND_URL}/?integration=slack&status=error&message=exchange_failed",
-                    status_code=302,
-                )
-            data = resp.json()
-            if not data.get("ok"):
-                logger.warning("[slack_oauth_callback] Slack API not ok: %s", data)
-                return RedirectResponse(
-                    url=f"{settings.FRONTEND_URL}/?integration=slack&status=error&message=slack_error",
-                    status_code=302,
-                )
-            team_id_slack: str | None = (data.get("team") or {}).get("id")
-            access_token: str | None = data.get("access_token")
-            if not team_id_slack or not access_token:
-                logger.warning("[slack_oauth_callback] Missing team or access_token in Slack response")
-                return RedirectResponse(
-                    url=f"{settings.FRONTEND_URL}/?integration=slack&status=error&message=no_token",
-                    status_code=302,
-                )
-            await upsert_bot_install(organization_id=org_uuid, team_id=team_id_slack, access_token=access_token)
-            return RedirectResponse(
-                url=f"{settings.FRONTEND_URL}/?integration=slack&status=success&source=bot_install",
-                status_code=302,
-            )
-        except Exception as e:
-            logger.exception("[slack_oauth_callback] Bot install failed: %s", e)
-            return RedirectResponse(
-                url=f"{settings.FRONTEND_URL}/?integration=slack&status=error&message=server_error",
-                status_code=302,
-            )
-
-    # Nango Connect flow: forward to Nango
     nango_callback_url = "https://api.nango.dev/oauth/callback"
-    query_string = request.url.query
-    redirect_url = f"{nango_callback_url}?{query_string}" if query_string else nango_callback_url
+    query_string: str = request.url.query
+    redirect_url: str = f"{nango_callback_url}?{query_string}" if query_string else nango_callback_url
     return RedirectResponse(url=redirect_url, status_code=302)
-
-
-@router.get("/slack/add-to-slack")
-async def slack_add_to_slack(
-    organization_id: str,
-) -> RedirectResponse:
-    """
-    Redirect to Slack OAuth for "Add Penny to Slack" (bot install).
-    Call with organization_id so we can associate the new workspace with the correct org.
-    """
-    from urllib.parse import urlencode
-
-    from services.slack_bot_install import SLACK_BOT_INSTALL_STATE_PREFIX
-
-    try:
-        UUID(organization_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid organization_id")
-    if not settings.SLACK_CLIENT_ID:
-        raise HTTPException(
-            status_code=503,
-            detail="Slack Add-to-Slack not configured (SLACK_CLIENT_ID)",
-        )
-    callback_url: str = _slack_oauth_callback_url()
-    scope: str = (
-        "app_mentions:read,channels:history,channels:read,chat:write,commands,"
-        "groups:history,groups:read,im:history,im:read,im:write,mpim:history,mpim:read,mpim:write,users:read"
-    )
-    state_val: str = f"{SLACK_BOT_INSTALL_STATE_PREFIX}{organization_id}"
-    params: dict[str, str] = {
-        "client_id": settings.SLACK_CLIENT_ID,
-        "scope": scope,
-        "redirect_uri": callback_url,
-        "state": state_val,
-    }
-    slack_authorize_url: str = "https://slack.com/oauth/v2/authorize?" + urlencode(params)
-    return RedirectResponse(url=slack_authorize_url, status_code=302)
 
 
 @router.post("/callback")

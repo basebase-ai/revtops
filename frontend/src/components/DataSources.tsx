@@ -293,9 +293,7 @@ export function DataSources(): JSX.Element {
   const [showSlackVerificationModal, setShowSlackVerificationModal] = useState(false);
   const [showConnectModal, setShowConnectModal] = useState(false);
   const [connectSearch, setConnectSearch] = useState('');
-  const [pennyBotCtaDismissed, setPennyBotCtaDismissed] = useState<boolean>(
-    () => localStorage.getItem('penny_bot_cta_dismissed') === '1',
-  );
+
 
   // GitHub: available repos (from token), tracked repo ids, selection, loading
   interface GitHubRepo {
@@ -1148,58 +1146,6 @@ export function DataSources(): JSX.Element {
       );
     };
 
-    const renderPennyBotCta = (): JSX.Element | null => {
-      if (integration.provider !== 'slack' || state !== 'connected' || pennyBotCtaDismissed) return null;
-
-      const handleDismiss = (): void => {
-        setPennyBotCtaDismissed(true);
-        localStorage.setItem('penny_bot_cta_dismissed', '1');
-      };
-
-      return (
-        <div className="mt-4 pt-4 border-t border-surface-700/50">
-          <div className="relative rounded-lg border border-purple-500/20 bg-purple-500/5 p-3.5">
-            <button
-              type="button"
-              onClick={handleDismiss}
-              className="absolute top-2 right-2 text-surface-500 hover:text-surface-300 transition-colors"
-              aria-label="Dismiss"
-            >
-              <HiX className="w-4 h-4" />
-            </button>
-            <div className="flex items-start gap-3 pr-4">
-              <div className="mt-0.5 flex-shrink-0 rounded-lg bg-purple-500/15 p-1.5">
-                <HiLightningBolt className="w-4 h-4 text-purple-400" />
-              </div>
-              <div className="space-y-1.5">
-                <h4 className="text-sm font-semibold text-surface-100">
-                  Add the Penny bot to Slack
-                </h4>
-                <p className="text-xs leading-relaxed text-surface-400">
-                  This integration syncs your Slack messages so Penny can search and reference them.
-                  Add the <span className="font-medium text-purple-300">Penny</span> bot to your workspace to DM her or @mention her in channels.
-                </p>
-                <a
-                  href={organizationId ? `${API_BASE}/auth/slack/add-to-slack?organization_id=${encodeURIComponent(organizationId)}` : 'https://slack.com/oauth/v2/authorize?client_id=9568538602452.9561224829205&scope=app_mentions:read,channels:history,channels:read,chat:write,chat:write.public,files:read,groups:history,groups:read,im:history,im:write,mpim:history,reactions:read,reactions:write&user_scope=users:read,users:read.email'}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-block mt-1"
-                >
-                  <img
-                    alt="Add to Slack"
-                    height={40}
-                    width={139}
-                    src="https://platform.slack-edge.com/img/add_to_slack.png"
-                    srcSet="https://platform.slack-edge.com/img/add_to_slack.png 1x, https://platform.slack-edge.com/img/add_to_slack@2x.png 2x"
-                  />
-                </a>
-              </div>
-            </div>
-          </div>
-        </div>
-      );
-    };
-
     const renderSlackMapping = (): JSX.Element | null => {
       if (integration.provider !== 'slack' || state !== 'connected') return null;
 
@@ -1467,7 +1413,6 @@ export function DataSources(): JSX.Element {
 
         {/* Team connections footer */}
         {renderTeamInfo()}
-        {renderPennyBotCta()}
         {renderSlackMapping()}
         {renderGitHubRepos()}
       </div>
