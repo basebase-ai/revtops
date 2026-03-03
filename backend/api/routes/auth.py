@@ -106,6 +106,17 @@ async def _get_org_membership(session: Any, user_id: UUID, org_id: UUID) -> Opti
     return result.scalar_one_or_none()
 
 
+async def _get_user_role_for_active_org(session: Any, user: Optional[User]) -> Optional[str]:
+    """Resolve the user's org-scoped role for their active organization."""
+    if not user or not user.organization_id:
+        return None
+
+    membership = await _get_org_membership(session, user.id, user.organization_id)
+    if membership:
+        return membership.role
+    return None
+
+
 async def _can_administer_org(session: Any, user: Optional[User], org_id: UUID) -> bool:
     """Org-admin check: org-scoped admin for this org OR global_admin."""
     if _is_global_admin(user):
@@ -150,9 +161,6 @@ async def _ensure_org_has_admin(session: Any, org_id: UUID) -> None:
         return
 
     first_member.role = "admin"
-    first_user = await session.get(User, first_member.user_id)
-    if first_user and first_user.organization_id == org_id:
-        first_user.role = "admin"
 
     logger.info(
         "Promoted first active org member to admin org=%s user=%s",
@@ -453,7 +461,7 @@ async def get_current_user(user_id: Optional[str] = None) -> UserResponse:
             id=str(user.id),
             email=user.email,
             name=user.name,
-            role=user.role,
+            role=await _get_user_role_for_active_org(session, user),
             avatar_url=user.avatar_url,
             agent_global_commands=agent_global_commands,
             phone_number=user.phone_number,
@@ -530,7 +538,7 @@ async def update_profile(
             id=str(user.id),
             email=user.email,
             name=user.name,
-            role=user.role,
+            role=await _get_user_role_for_active_org(session, user),
             avatar_url=user.avatar_url,
             agent_global_commands=agent_global_commands,
             phone_number=user.phone_number,
@@ -1076,7 +1084,7 @@ async def get_organization_members(
                     id=str(u.id),
                     name=u.name,
                     email=u.email,
-                    role=membership.role if membership else u.role,
+                    role=membership.role if membership else "member",
                     avatar_url=u.avatar_url,
                     job_title=membership.title if membership else None,
                     status=u.status,
@@ -1579,8 +1587,6 @@ async def switch_active_organization(
 
         # Update active org
         user.organization_id = target_org_uuid
-        # Sync the role from the membership for this org
-        user.role = membership.role
         await session.commit()
         await session.refresh(user)
 
@@ -1661,10 +1667,6 @@ async def update_organization_member_role(
             raise HTTPException(status_code=404, detail="Active member not found")
 
         target_membership.role = request.role
-
-        target_user: Optional[User] = await session.get(User, target_uuid)
-        if target_user and target_user.organization_id == org_uuid:
-            target_user.role = request.role
 
         await _ensure_org_has_admin(session, org_uuid)
         await session.commit()
@@ -3314,7 +3316,7 @@ async def register_user(request: CreateUserRequest) -> CreateUserResponse:
             email=request.email,
             name=request.name,
             organization_id=organization.id,
-            role="admin",
+            role="member",
         )
         session.add(user)
         await session.flush()
