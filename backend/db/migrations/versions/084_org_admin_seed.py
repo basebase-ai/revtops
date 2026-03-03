@@ -1,7 +1,7 @@
 """Seed org admins from first joined member.
 
 Revision ID: 084_org_admin_seed
-Revises: 083_guest_locks
+Revises: 084_app_archived_at_index
 Create Date: 2026-03-02
 """
 from __future__ import annotations
@@ -13,7 +13,7 @@ from alembic import op
 
 
 revision: str = "084_org_admin_seed"
-down_revision: Union[str, None] = "083_guest_locks"
+down_revision: Union[str, None] = "084_app_archived_at_index"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
