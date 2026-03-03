@@ -775,8 +775,12 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
           console.log('[AppLayout] Conversation created:', parsed.conversation_id, 'title:', title);
           addConversation(parsed.conversation_id, title);
           if (source === 'ws') {
-            // Update currentChatId so Chat component knows about the new conversation
-            setCurrentChatId(parsed.conversation_id);
+            // Only update currentChatId when on new chat (null) - we're waiting for the backend
+            // to assign an ID. Don't overwrite when user has selected an existing conversation.
+            const currentId = useAppStore.getState().currentChatId;
+            if (currentId === null) {
+              setCurrentChatId(parsed.conversation_id);
+            }
           }
           break;
         }

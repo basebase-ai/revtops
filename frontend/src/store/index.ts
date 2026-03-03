@@ -13,6 +13,7 @@
  */
 
 import { create } from "zustand";
+import { useShallow } from "zustand/react/shallow";
 import { persist } from "zustand/middleware";
 import { API_BASE, apiRequest } from "../lib/api";
 
@@ -1644,4 +1645,4 @@ export const useIntegration = (provider: string) =>
     (state) => state.integrations.find((i) => i.provider === provider) ?? null,
   );
 export const useConnectedIntegrations = () =>
-  useAppStore((state) => state.integrations.filter((i) => i.isActive));
+  useAppStore(useShallow((state) => state.integrations.filter((i) => i.isActive)));
