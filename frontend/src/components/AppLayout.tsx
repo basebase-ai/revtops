@@ -13,7 +13,7 @@
  * Tasks continue running server-side even when browser tabs are closed.
  */
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, lazy, Suspense, useRef } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import Nango from '@nangohq/frontend';
 import { API_BASE } from '../lib/api';
@@ -29,9 +29,11 @@ import { Workflows } from './Workflows';
 import { Memories } from './Memories';
 import { AdminPanel } from './AdminPanel';
 import { PendingChangesPage } from './PendingChangesPage';
-import { AppsGallery } from './apps/AppsGallery';
-import { AppFullView } from './apps/AppFullView';
 import { OrganizationPanel } from './OrganizationPanel';
+
+// Lazy-load app components (heavy due to Sandpack/Plotly deps)
+const AppsGallery = lazy(() => import('./apps/AppsGallery').then(m => ({ default: m.AppsGallery })));
+const AppFullView = lazy(() => import('./apps/AppFullView').then(m => ({ default: m.AppFullView })));
 import { APP_NAME, LOGO_PATH } from '../lib/brand';
 import { ProfilePanel } from './ProfilePanel';
 import { useAppStore, useMasquerade, useIntegrations, type ActiveTask, type ToolCallData, type ChatMessage, type ContentBlock } from '../store';
@@ -255,6 +257,37 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
   // Mobile responsive state
   const isMobile = useIsMobile();
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+
+  // Sidebar resize drag
+  const sidebarWidth = useAppStore((state) => state.sidebarWidth);
+  const setSidebarWidth = useAppStore((state) => state.setSidebarWidth);
+  const isDraggingRef = useRef(false);
+  const startXRef = useRef(0);
+  const startWidthRef = useRef(0);
+
+  const handleDividerMouseDown = useCallback((e: React.MouseEvent): void => {
+    e.preventDefault();
+    isDraggingRef.current = true;
+    startXRef.current = e.clientX;
+    startWidthRef.current = sidebarWidth;
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+
+    const onMouseMove = (ev: MouseEvent): void => {
+      if (!isDraggingRef.current) return;
+      const newWidth = Math.min(400, Math.max(200, startWidthRef.current + ev.clientX - startXRef.current));
+      setSidebarWidth(newWidth);
+    };
+    const onMouseUp = (): void => {
+      isDraggingRef.current = false;
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+    };
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mouseup', onMouseUp);
+  }, [sidebarWidth, setSidebarWidth]);
   
   // Close mobile sidebar when view changes
   useEffect(() => {
@@ -929,6 +962,14 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
     setCurrentChatId(null);
   }, [setCurrentChatId]);
 
+  const isGlobalAdmin: boolean = user?.roles.includes('global_admin') ?? false;
+
+  useEffect(() => {
+    if (currentView === 'admin' && !isGlobalAdmin) {
+      setCurrentView('home');
+    }
+  }, [currentView, isGlobalAdmin, setCurrentView]);
+
   // Guard against missing user/org (shouldn't happen, but be safe)
   if (!user || !organization) {
     return (
@@ -945,7 +986,7 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
     'data-sources': 'Connectors',
     workflows: 'Workflows',
     memory: 'Memory',
-    admin: 'Admin',
+    admin: 'Global Admin',
     'pending-changes': 'Pending Changes',
   };
 
@@ -1045,6 +1086,15 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
         />
       </div>
 
+      {/* Resize divider (desktop only, expanded sidebar only) */}
+      {!isMobile && !sidebarCollapsed && (
+        <div
+          onMouseDown={handleDividerMouseDown}
+          onDoubleClick={() => setSidebarWidth(256)}
+          className="w-1 cursor-col-resize hover:bg-primary-500/40 active:bg-primary-500/60 transition-colors flex-shrink-0"
+        />
+      )}
+
       {/* Main Content */}
       <main className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden">
         {currentView === 'home' && (
@@ -1075,12 +1125,16 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
           <Memories />
         )}
         {currentView === 'apps' && (
-          <AppsGallery />
+          <Suspense fallback={<div className="flex items-center justify-center h-64"><div className="animate-spin w-8 h-8 border-2 border-surface-500 border-t-primary-500 rounded-full" /></div>}>
+            <AppsGallery />
+          </Suspense>
         )}
         {currentView === 'app-view' && currentAppId && (
-          <AppFullView appId={currentAppId} />
+          <Suspense fallback={<div className="flex items-center justify-center h-64"><div className="animate-spin w-8 h-8 border-2 border-surface-500 border-t-primary-500 rounded-full" /></div>}>
+            <AppFullView appId={currentAppId} />
+          </Suspense>
         )}
-        {currentView === 'admin' && (
+        {currentView === 'admin' && isGlobalAdmin && (
           <AdminPanel />
         )}
         {currentView === 'pending-changes' && (

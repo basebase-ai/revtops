@@ -280,6 +280,21 @@ class SlackConnector(BaseConnector):
 
         return channels
 
+    async def join_channel(self, channel_id: str) -> bool:
+        """Join a public channel. Returns True if joined or already a member. Requires channels:join scope."""
+        try:
+            data = await self._make_request(
+                "POST", "conversations.join", json_data={"channel": channel_id}
+            )
+            return bool(data.get("ok"))
+        except Exception as exc:
+            logger.debug(
+                "[Slack Sync] conversations.join failed for channel=%s: %s",
+                channel_id,
+                exc,
+            )
+            return False
+
     async def get_channel_messages(
         self,
         channel_id: str,
@@ -338,11 +353,6 @@ class SlackConnector(BaseConnector):
             params={"user": slack_user_id},
         )
         return data.get("user", {})
-
-    async def get_current_user_profile(self) -> dict[str, Any]:
-        """Get the authenticated user's profile via users.profile.get."""
-        data = await self._make_request("GET", "users.profile.get")
-        return data.get("profile", {})
 
     async def _fetch_current_user_id_for_mapping(self) -> Optional[str]:
         """Fetch the current RevTops user ID for Slack mapping."""
@@ -433,12 +443,12 @@ class SlackConnector(BaseConnector):
         """Slack doesn't have contacts in the traditional sense - return 0."""
         return 0
 
-    async def sync_activities(self) -> int:
+    async def sync_activities(self) -> tuple[int, int]:
         """
         Sync Slack messages as activities.
 
-        This captures communication activity that can be correlated
-        with deals and accounts.
+        Returns:
+            Tuple of (activities_count, channels_with_messages_count).
         """
         logger.info("[Slack Sync] Starting Slack activity sync for org=%s", self.organization_id)
         # Broadcast that we're starting
@@ -461,6 +471,7 @@ class SlackConnector(BaseConnector):
         oldest = (datetime.utcnow().timestamp()) - (7 * 24 * 60 * 60)
 
         count = 0
+        channels_with_messages = 0
         user_info_cache: dict[str, dict[str, Any]] = {}
         async with get_session(organization_id=self.organization_id) as session:
             for channel in channels:
@@ -473,9 +484,15 @@ class SlackConnector(BaseConnector):
                 )
 
                 try:
+                    # Join public channels so we can read history (requires channels:join scope)
+                    is_private: bool = bool(channel.get("is_private", True))
+                    if not is_private:
+                        await self.join_channel(channel_id)
                     messages = await self.get_channel_messages(
                         channel_id, oldest=oldest, limit=100
                     )
+                    if messages:
+                        channels_with_messages += 1
 
                     for msg in messages:
                         user_id = msg.get("user")
@@ -560,7 +577,7 @@ class SlackConnector(BaseConnector):
 
             await session.commit()
 
-        return count
+        return count, channels_with_messages
 
     def _extract_sender_fields(self, slack_msg: dict[str, Any]) -> dict[str, Any]:
         user_id = slack_msg.get("user")
@@ -652,7 +669,6 @@ class SlackConnector(BaseConnector):
             refresh_slack_user_mappings_from_directory,
             refresh_slack_user_mappings_for_org,
             upsert_slack_user_mapping_from_nango_action,
-            upsert_slack_user_mapping_from_current_profile,
         )
         from services.nango import get_nango_client
         from config import get_nango_integration_id
@@ -729,29 +745,6 @@ class SlackConnector(BaseConnector):
 
         try:
             logger.info(
-                "[Slack Sync] Fetching current Slack user profile for org=%s",
-                self.organization_id,
-            )
-            mapped_count = await upsert_slack_user_mapping_from_current_profile(
-                organization_id=self.organization_id,
-                connector=self,
-                integration=self._integration,
-            )
-            logger.info(
-                "[Slack Sync] Upserted %d Slack user mappings from current profile for org=%s",
-                mapped_count,
-                self.organization_id,
-            )
-        except Exception as exc:
-            logger.warning(
-                "[Slack Sync] Failed to map current Slack user profile for org=%s: %s",
-                self.organization_id,
-                exc,
-                exc_info=True,
-            )
-
-        try:
-            logger.info(
                 "[Slack Sync] Refreshing Slack user mappings before activity sync for org=%s",
                 self.organization_id,
             )
@@ -782,7 +775,7 @@ class SlackConnector(BaseConnector):
                 exc_info=True,
             )
 
-        activities_count = await self.sync_activities()
+        activities_count, channels_count = await self.sync_activities()
 
         # Broadcast completion
         await broadcast_sync_progress(
@@ -797,27 +790,12 @@ class SlackConnector(BaseConnector):
             "deals": 0,
             "contacts": 0,
             "activities": activities_count,
+            "channels": channels_count,
         }
 
     async def fetch_deal(self, deal_id: str) -> dict[str, Any]:
         """Slack doesn't have deals."""
         return {"error": "Slack does not support deals"}
-
-    async def search_messages(
-        self,
-        query: str,
-        count: int = 20,
-    ) -> list[dict[str, Any]]:
-        """Search for messages matching a query."""
-        params = {
-            "query": query,
-            "count": count,
-            "sort": "timestamp",
-            "sort_dir": "desc",
-        }
-
-        data = await self._make_request("GET", "search.messages", params=params)
-        return data.get("messages", {}).get("matches", [])
 
     async def get_user_presence(self, user_id: str) -> dict[str, Any]:
         """Get a user's presence status."""

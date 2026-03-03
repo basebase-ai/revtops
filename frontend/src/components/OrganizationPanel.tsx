@@ -14,7 +14,7 @@ import { useState, useRef, useEffect, useMemo } from 'react';
 import type { OrganizationInfo, UserProfile } from './AppLayout';
 import { supabase } from '../lib/supabase';
 import { useAppStore } from '../store';
-import { useTeamMembers, useUpdateOrganization, useLinkIdentity, useUnlinkIdentity, useUpdateGuestUser, useDeleteOrganization } from '../hooks';
+import { useTeamMembers, useUpdateOrganization, useLinkIdentity, useUnlinkIdentity, useUpdateGuestUser, useUpdateMemberRole, useDeleteOrganization } from '../hooks';
 import type { TeamMember, IdentityMapping } from '../hooks';
 import { apiRequest } from '../lib/api';
 import { Avatar } from './Avatar';
@@ -149,12 +149,17 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
   const unmappedIdentities: IdentityMapping[] = teamData?.unmappedIdentities ?? [];
   const guestUserEnabled: boolean = Boolean(teamData?.guestUserEnabled);
   const canLinkIdentityInOrg: boolean = members.some((member) => member.id === currentUser.id);
+  const isGlobalAdmin: boolean = currentUser.roles.includes('global_admin');
+  const myMembership = members.find((member) => member.id === currentUser.id);
+  const isOrgAdminForCurrentOrg: boolean = Boolean(myMembership?.role === 'admin');
+  const canAdministerOrg: boolean = isGlobalAdmin || isOrgAdminForCurrentOrg;
 
   // React Query: Mutation for updating organization
   const updateOrgMutation = useUpdateOrganization();
   const linkIdentityMutation = useLinkIdentity();
   const unlinkIdentityMutation = useUnlinkIdentity();
   const updateGuestUserMutation = useUpdateGuestUser();
+  const updateMemberRoleMutation = useUpdateMemberRole();
   const deleteOrganizationMutation = useDeleteOrganization();
 
   const sourceLabel = (source: string): string => {
@@ -198,6 +203,20 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
     }
   };
 
+
+
+  const handleUpdateMemberRole = async (targetUserId: string, role: 'admin' | 'member'): Promise<void> => {
+    try {
+      await updateMemberRoleMutation.mutateAsync({
+        orgId: organization.id,
+        userId: currentUser.id,
+        targetUserId,
+        role,
+      });
+    } catch (error) {
+      alert(`Failed to update role: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  };
 
   const handleToggleGuestUser = async (): Promise<void> => {
     const nextEnabled = !guestUserEnabled;
@@ -455,7 +474,9 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                     {sortedMembers.map((member) => {
                       const displayName: string = member.name ?? member.email.split('@')[0] ?? 'Unknown';
                       const isGuest: boolean = member.isGuest;
-                      const isAdmin: boolean = member.role === 'admin' || member.canLoginAsAdmin;
+                      const isAdmin: boolean = member.role === 'admin'
+                        || member.role === 'global_admin'
+                        || member.canLoginAsAdmin;
                       const isExpanded: boolean = expandedMemberId === member.id;
                       const identities: IdentityMapping[] = [...member.identities].sort((a, b) => {
                         const sourceCompare = sourceLabel(a.source).localeCompare(sourceLabel(b.source));
@@ -485,7 +506,7 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                                   </span>
                                 )}
                                 {isGuest && (
-                                  <span className="px-2 py-0.5 text-xs font-medium bg-amber-500/20 text-amber-300 rounded-full">
+                                  <span className="px-2 py-0.5 text-xs font-medium bg-sky-500/20 text-sky-200 rounded-full">
                                     guest
                                   </span>
                                 )}
@@ -655,6 +676,36 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                   </div>
                 </div>
               )}
+
+              <div className="pt-4 border-t border-surface-800">
+                <h3 className="text-sm font-medium text-red-400 mb-3">Danger zone — admin access</h3>
+                <p className="text-xs text-surface-400 mb-3">Requires org admin for this org, or global_admin.</p>
+                {!canAdministerOrg ? (
+                  <p className="text-xs text-surface-500">You do not have org-admin/global-admin access for role changes.</p>
+                ) : (
+                  <div className="space-y-2">
+                    {sortedMembers.filter((member) => !member.isGuest && member.status === 'active').map((member) => {
+                      const memberIsAdmin = member.role === 'admin';
+                      const nextRole: 'admin' | 'member' = memberIsAdmin ? 'member' : 'admin';
+                      return (
+                        <div key={`role-${member.id}`} className="flex items-center justify-between rounded-lg bg-surface-800/50 p-3">
+                          <div>
+                            <p className="text-sm text-surface-100">{member.name ?? member.email}</p>
+                            <p className="text-xs text-surface-400">{member.email} • {member.role ?? 'member'}</p>
+                          </div>
+                          <button
+                            onClick={() => void handleUpdateMemberRole(member.id, nextRole)}
+                            disabled={updateMemberRoleMutation.isPending}
+                            className="px-3 py-1.5 text-xs font-medium rounded border border-red-500/40 text-red-300 hover:bg-red-500/10 disabled:opacity-50"
+                          >
+                            {memberIsAdmin ? 'Demote from admin' : 'Promote to admin'}
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
             </div>
           )}
 

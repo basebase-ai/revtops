@@ -81,10 +81,18 @@ def _collapse_list_marker_breaks(text: str) -> str:
 SLOW_REPLY_MESSAGE = "Still working on this..."
 
 
-def _cannot_action_message() -> str:
+def _error_message(error: Exception | None = None) -> str:
+    detail = ""
+    if error:
+        brief = str(error)
+        # Keep it short — truncate long tracebacks
+        if len(brief) > 200:
+            brief = brief[:200] + "…"
+        detail = f"\n> `{brief}`"
     return (
-        "I'm sorry, I can't help with that right now. "
-        "Try connecting Slack to RevTops for your account."
+        "Sorry, something went wrong while processing your request. "
+        "Please try again — if this keeps happening, let the team know."
+        f"{detail}"
     )
 
 
@@ -118,14 +126,15 @@ def _normalize_slack_team_id(team_id: str | None) -> str:
     return (team_id or "").strip().upper()
 
 
-async def _post_cannot_action_response(
+async def _post_error_response(
     connector: SlackConnector,
     channel: str,
     thread_ts: str | None = None,
+    error: Exception | None = None,
 ) -> None:
     await connector.post_message(
         channel=channel,
-        text=_cannot_action_message(),
+        text=_error_message(error),
         thread_ts=thread_ts,
     )
 
@@ -723,68 +732,6 @@ async def refresh_slack_user_mappings_from_directory(
     return mapped_count
 
 
-async def upsert_slack_user_mapping_from_current_profile(
-    organization_id: str,
-    connector: SlackConnector,
-    integration: Integration | None,
-) -> int:
-    """Upsert Slack user mappings using the authenticated user's profile."""
-    if not integration:
-        logger.warning(
-            "[slack_conversations] Missing Slack integration when mapping current profile for org=%s",
-            organization_id,
-        )
-        return 0
-
-    if not connector.user_id:
-        logger.warning(
-            "[slack_conversations] Slack integration %s missing current user id for profile mapping",
-            integration.id,
-        )
-        return 0
-    target_user_id = UUID(connector.user_id)
-
-    slack_user_ids = _extract_slack_user_ids(integration.extra_data or {})
-    if not slack_user_ids:
-        logger.warning(
-            "[slack_conversations] Slack integration %s missing Slack user IDs for current profile mapping",
-            integration.id,
-        )
-        return 0
-
-    logger.info(
-        "[slack_conversations] Fetching current Slack user profile for integration=%s org=%s",
-        integration.id,
-        organization_id,
-    )
-    profile = await connector.get_current_user_profile()
-    if not profile:
-        logger.warning(
-            "[slack_conversations] Slack profile lookup returned empty profile for integration=%s",
-            integration.id,
-        )
-        return 0
-
-    slack_email = (profile.get("email") or "").strip().lower() or None
-    created_count = 0
-    for slack_user_id in sorted(slack_user_ids):
-        await _upsert_slack_user_mapping(
-            organization_id=organization_id,
-            user_id=target_user_id,
-            slack_user_id=slack_user_id,
-            slack_email=slack_email,
-            match_source="slack_current_user_profile",
-        )
-        created_count += 1
-
-    logger.info(
-        "[slack_conversations] Upserted %d Slack user mappings from current profile for integration=%s",
-        created_count,
-        integration.id,
-    )
-    return created_count
-
-
 async def _hydrate_slack_integration_metadata(integration: Integration) -> None:
     extra_data = integration.extra_data or {}
     slack_user_ids = _extract_slack_user_ids(extra_data)
@@ -996,7 +943,7 @@ async def _upsert_slack_user_mapping(
             context,
         )
 
-    now = datetime.now(UTC)
+    now = datetime.now(UTC).replace(tzinfo=None)
     normalized_slack_user_id: str = _normalize_slack_user_id(slack_user_id)
     if not normalized_slack_user_id:
         logger.warning(
@@ -2151,7 +2098,7 @@ async def _stream_and_post_responses(
         logger.error(
             "[slack_conversations] Error during streaming: %s", e, exc_info=True,
         )
-        current_text += f"\n{_cannot_action_message()}"
+        current_text += f"\n{_error_message(e)}"
 
     # Post any remaining text after the stream ends
     await _flush_current_text(reason="stream_end", force=True)
@@ -2306,6 +2253,7 @@ async def process_slack_mention(
     user_id: str,
     message_text: str,
     thread_ts: str,
+    event_ts: str,
     files: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """
@@ -2318,7 +2266,8 @@ async def process_slack_mention(
         channel_id: Slack channel ID where mention occurred
         user_id: Slack user ID who mentioned the bot
         message_text: Message text (with @mention stripped)
-        thread_ts: Thread timestamp to reply in
+        thread_ts: Thread timestamp to reply in (parent message ts for thread replies)
+        event_ts: Timestamp of the user's message (for reactions)
         files: Optional list of Slack file objects attached to the message
         
     Returns:
@@ -2340,8 +2289,8 @@ async def process_slack_mention(
     
     connector = SlackConnector(organization_id=organization_id, team_id=team_id)
 
-    # Show a reaction so the user knows the bot is working
-    await connector.add_reaction(channel=channel_id, timestamp=thread_ts)
+    # Show a reaction so the user knows the bot is working (on their message, not the thread parent)
+    await connector.add_reaction(channel=channel_id, timestamp=event_ts)
     slack_user = await _fetch_slack_user_info(
         organization_id=organization_id,
         slack_user_id=user_id,
@@ -2398,7 +2347,7 @@ async def process_slack_mention(
             organization_id,
         )
         await connector.post_message(channel=channel_id, text=_unknown_identity_message(), thread_ts=thread_ts)
-        await connector.remove_reaction(channel=channel_id, timestamp=thread_ts)
+        await connector.remove_reaction(channel=channel_id, timestamp=event_ts)
         return {"status": "error", "error": "identity_unmapped"}
     conversation = await find_or_create_conversation(
         organization_id=organization_id,
@@ -2426,7 +2375,7 @@ async def process_slack_mention(
             text="You're out of credits or don't have an active subscription. Please add a payment method in Revtops to continue.",
             thread_ts=thread_ts,
         )
-        await connector.remove_reaction(channel=channel_id, timestamp=thread_ts)
+        await connector.remove_reaction(channel=channel_id, timestamp=event_ts)
         return {"status": "error", "error": "insufficient_credits"}
 
     # Process message through orchestrator
@@ -2465,7 +2414,7 @@ async def process_slack_mention(
             thread_ts,
             total_length,
         )
-        await connector.remove_reaction(channel=channel_id, timestamp=thread_ts)
+        await connector.remove_reaction(channel=channel_id, timestamp=event_ts)
         return {
             "status": "success",
             "conversation_id": str(conversation.id),
@@ -2494,7 +2443,7 @@ async def process_slack_mention(
                 e,
             )
         finally:
-            await connector.remove_reaction(channel=channel_id, timestamp=thread_ts)
+            await connector.remove_reaction(channel=channel_id, timestamp=event_ts)
 
     asyncio.create_task(_finish_slow_response())
     return {"status": "timeout_continuing", "conversation_id": str(conversation.id)}

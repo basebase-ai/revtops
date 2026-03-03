@@ -389,6 +389,7 @@ async def _process_event_callback_impl(payload: dict[str, Any]) -> None:
                         user_id=user_id,
                         message_text=normalized_text,
                         thread_ts=thread_ts,
+                        event_ts=message_ts,
                         files=files,
                     )
                 return
@@ -451,6 +452,7 @@ async def _process_event_callback_impl(payload: dict[str, Any]) -> None:
                 user_id=user_id,
                 message_text=text,
                 thread_ts=lock_thread_ts,
+                event_ts=message_ts,
                 files=files,
             )
 

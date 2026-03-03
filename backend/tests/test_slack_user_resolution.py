@@ -612,6 +612,7 @@ def test_process_slack_mention_returns_identity_unmapped_for_unresolved_speaker_
             user_id="U_NEW",
             message_text="hello",
             thread_ts="111.222",
+            event_ts="111.333",
             files=None,
         )
     )

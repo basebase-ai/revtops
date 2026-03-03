@@ -8,6 +8,26 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { apiRequest } from "../../lib/api";
 import { useAppStore } from "../../store";
 
+/** Preload CDN libraries used by SandpackAppRenderer so they're browser-cached before user opens an app. */
+const CDN_PRELOADS = [
+  "https://unpkg.com/react@18/umd/react.production.min.js",
+  "https://unpkg.com/react-dom@18/umd/react-dom.production.min.js",
+  "https://cdn.plot.ly/plotly-2.35.3.min.js",
+  "https://unpkg.com/@babel/standalone@7/babel.min.js",
+];
+let _preloaded = false;
+function preloadAppCdnLibs(): void {
+  if (_preloaded) return;
+  _preloaded = true;
+  for (const url of CDN_PRELOADS) {
+    const link = document.createElement("link");
+    link.rel = "prefetch";
+    link.href = url;
+    link.as = "script";
+    document.head.appendChild(link);
+  }
+}
+
 interface AppItem {
   id: string;
   title: string | null;
@@ -36,8 +56,7 @@ export function AppsGallery(): JSX.Element {
   const [archivedFetched, setArchivedFetched] = useState<boolean>(false);
   const syncPollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const setCurrentView = useAppStore((s) => s.setCurrentView);
-  const setCurrentAppId = useAppStore((s) => s.setCurrentAppId);
+  const storeOpenApp = useAppStore((s) => s.openApp);
 
   const fetchApps = useCallback(async (): Promise<void> => {
     setLoading(true);
@@ -63,6 +82,7 @@ export function AppsGallery(): JSX.Element {
 
   useEffect(() => {
     void fetchApps();
+    preloadAppCdnLibs();
   }, [fetchApps]);
 
   useEffect(() => () => {
@@ -105,8 +125,7 @@ export function AppsGallery(): JSX.Element {
   }, []);
 
   const openApp = (appId: string): void => {
-    setCurrentAppId(appId);
-    setCurrentView("app-view" as never);
+    storeOpenApp(appId);
     window.history.pushState(null, "", `/apps/${appId}`);
   };
 

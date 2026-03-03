@@ -52,7 +52,7 @@ async def upsert_bot_install(
     """Insert or update a Slack bot install for (org, team_id)."""
     normalized_team_id: str = team_id.strip()
     encrypted: str = encrypt_token(access_token)
-    now: datetime = datetime.now(timezone.utc)
+    now: datetime = datetime.now(timezone.utc).replace(tzinfo=None)
     async with get_admin_session() as session:
         result = await session.execute(
             select(SlackBotInstall).where(SlackBotInstall.team_id == normalized_team_id)

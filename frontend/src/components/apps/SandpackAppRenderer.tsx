@@ -192,6 +192,21 @@ export function SandpackAppRenderer({
       return;
     }
 
+    // Check sessionStorage cache first
+    const cacheKey = `app_token_${appId}`;
+    try {
+      const cached = sessionStorage.getItem(cacheKey);
+      if (cached) {
+        const parsed = JSON.parse(cached) as AppTokenData & { _cachedAt: number };
+        // Reuse if less than 50 minutes old (tokens last 60 min)
+        if (Date.now() - parsed._cachedAt < 50 * 60 * 1000) {
+          setTokenData(parsed);
+          return;
+        }
+        sessionStorage.removeItem(cacheKey);
+      }
+    } catch { /* ignore parse errors */ }
+
     const resp = await apiRequest<AppTokenData>(`/apps/${appId}/token`, {
       method: "POST",
     });
@@ -200,6 +215,10 @@ export function SandpackAppRenderer({
       setError(resp.error ?? "Failed to get app token");
       return;
     }
+    // Cache for reuse
+    try {
+      sessionStorage.setItem(cacheKey, JSON.stringify({ ...resp.data, _cachedAt: Date.now() }));
+    } catch { /* storage full — ignore */ }
     setTokenData(resp.data);
   }, [appId, embedToken]);
 

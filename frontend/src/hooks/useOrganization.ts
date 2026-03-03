@@ -90,6 +90,12 @@ interface UpdateGuestUserParams {
   enabled: boolean;
 }
 
+interface UpdateMemberRoleParams {
+  orgId: string;
+  userId: string;
+  targetUserId: string;
+  role: 'admin' | 'member';
+}
 interface DeleteOrganizationParams {
   orgId: string;
   userId: string;
@@ -163,6 +169,18 @@ async function updateOrganization(params: UpdateOrganizationParams): Promise<Org
 }
 
 
+
+
+async function updateMemberRole(params: UpdateMemberRoleParams): Promise<{ status: string; role: string }> {
+  const { data, error } = await apiRequest<{ status: string; role: string }>(
+    `/auth/organizations/${encodeURIComponent(params.orgId)}/members/${encodeURIComponent(params.targetUserId)}/role?user_id=${encodeURIComponent(params.userId)}`,
+    { method: 'PATCH', body: JSON.stringify({ role: params.role }) }
+  );
+  if (error || !data) {
+    throw new Error(error ?? 'Failed to update member role');
+  }
+  return data;
+}
 
 async function updateGuestUser(params: UpdateGuestUserParams): Promise<{ enabled: boolean }> {
   const { data, error } = await apiRequest<{ enabled: boolean }>(
@@ -268,6 +286,16 @@ export function useUpdateGuestUser() {
   });
 }
 
+
+export function useUpdateMemberRole() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: updateMemberRole,
+    onSuccess: (_data, variables) => {
+      void queryClient.invalidateQueries({
+        queryKey: organizationKeys.members(variables.orgId),
+      });
 export function useDeleteOrganization() {
   const queryClient = useQueryClient();
 

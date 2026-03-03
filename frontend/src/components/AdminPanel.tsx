@@ -635,8 +635,8 @@ export function AdminPanel(): JSX.Element {
             </svg>
           </div>
           <div>
-            <h1 className="text-2xl font-bold text-surface-50">Admin Panel</h1>
-            <p className="text-surface-400 mt-0.5">Manage Basebase platform</p>
+            <h1 className="text-2xl font-bold text-surface-50">Global Admin</h1>
+            <p className="text-surface-400 mt-0.5">Manage Basebase globally</p>
           </div>
         </div>
       </header>

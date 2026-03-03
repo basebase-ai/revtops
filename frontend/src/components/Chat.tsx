@@ -22,11 +22,13 @@ import { PendingApprovalCard, type ApprovalResult } from './PendingApprovalCard'
 import { getConversation, uploadChatFile, type UploadResponse } from '../api/client';
 import { crossTab } from '../lib/crossTab';
 import { APP_NAME, LOGO_PATH } from '../lib/brand';
-import { 
+import {
   useAppStore,
   useConversationState,
+  useConnectedIntegrations,
   type AppBlock,
   type ChatMessage,
+  type Integration,
   type ToolCallData,
   type ToolUseBlock,
   type ErrorBlock,
@@ -2236,18 +2238,34 @@ function AttachmentCard({
   );
 }
 
+function buildSuggestions(connected: Integration[]): string[] {
+  const providers = new Set(connected.map((i) => i.provider));
+  const suggestions: string[] = [];
+
+  if (providers.has('hubspot') || providers.has('salesforce'))
+    suggestions.push('What deals are closing this month?', 'Show me my pipeline by stage');
+  if (providers.has('gmail') || providers.has('microsoft_mail'))
+    suggestions.push('Summarize my unread emails from today');
+  if (providers.has('google_calendar') || providers.has('microsoft_calendar') || providers.has('zoom'))
+    suggestions.push('What meetings do I have this week?');
+  if (providers.has('github') || providers.has('linear') || providers.has('jira') || providers.has('asana'))
+    suggestions.push('Show me open issues assigned to me');
+  if (providers.has('slack'))
+    suggestions.push('What are the latest messages in my Slack channels?');
+
+  if (suggestions.length < 3)
+    return ['What can you help me with?', 'What data sources can I connect?', 'Show me what you can do'];
+
+  return suggestions.slice(0, 5);
+}
+
 interface EmptyStateProps {
   onSuggestionClick: (text: string) => void;
 }
 
 function EmptyState({ onSuggestionClick }: EmptyStateProps): JSX.Element {
-  const suggestions = [
-    'What deals are closing this month?',
-    'Show me my pipeline by stage',
-    'Which accounts need attention?',
-    'Compare rep performance this quarter',
-    'What meetings do I have this week?',
-  ];
+  const connected = useConnectedIntegrations();
+  const suggestions = buildSuggestions(connected);
 
   return (
     <div className="h-full flex items-center justify-center px-4">

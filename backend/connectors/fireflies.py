@@ -15,6 +15,7 @@ from datetime import datetime, timedelta
 from typing import Any, Optional
 
 import httpx
+from sqlalchemy import select
 
 from api.websockets import broadcast_sync_progress
 from connectors.base import BaseConnector
@@ -223,28 +224,40 @@ class FirefliesConnector(BaseConnector):
                         status="completed",  # Transcripts are for completed meetings
                     )
                     
-                    # Create the Activity record linked to the Meeting
-                    activity = Activity(
-                        id=uuid.uuid4(),
-                        organization_id=uuid.UUID(self.organization_id),
-                        source_system=self.source_system,
-                        source_id=parsed["transcript_id"],
-                        meeting_id=meeting.id,
-                        type="meeting_transcript",
-                        subject=parsed["title"],
-                        description=parsed["description"],
-                        activity_date=parsed["activity_date"],
-                        custom_fields={
-                            "duration_minutes": parsed["duration_minutes"],
-                            "participant_count": parsed["participant_count"],
-                            "participants": parsed["participants_raw"],
-                            "organizer_email": parsed["organizer_email"],
-                            "keywords": parsed["keywords"],
-                            "has_action_items": parsed["has_action_items"],
-                        },
+                    org_uuid = uuid.UUID(self.organization_id)
+
+                    existing_result = await session.execute(
+                        select(Activity).where(
+                            Activity.organization_id == org_uuid,
+                            Activity.source_system == self.source_system,
+                            Activity.source_id == parsed["transcript_id"],
+                        )
                     )
-                    
-                    await session.merge(activity)
+                    activity: Activity | None = existing_result.scalar_one_or_none()
+
+                    if activity is None:
+                        activity = Activity(
+                            id=uuid.uuid4(),
+                            organization_id=org_uuid,
+                            source_system=self.source_system,
+                            source_id=parsed["transcript_id"],
+                        )
+                        session.add(activity)
+
+                    activity.meeting_id = meeting.id
+                    activity.type = "meeting_transcript"
+                    activity.subject = parsed["title"]
+                    activity.description = parsed["description"]
+                    activity.activity_date = parsed["activity_date"]
+                    activity.custom_fields = {
+                        "duration_minutes": parsed["duration_minutes"],
+                        "participant_count": parsed["participant_count"],
+                        "participants": parsed["participants_raw"],
+                        "organizer_email": parsed["organizer_email"],
+                        "keywords": parsed["keywords"],
+                        "has_action_items": parsed["has_action_items"],
+                    }
+                    activity.synced_at = datetime.utcnow()
                     count += 1
                     
                     # Broadcast progress
@@ -379,9 +392,17 @@ class FirefliesConnector(BaseConnector):
 
     async def sync_all(self) -> dict[str, int]:
         """Run all sync operations."""
-        activities_count = await self.sync_activities()
+        try:
+            activities_count: int = await self.sync_activities()
+        except Exception:
+            await broadcast_sync_progress(
+                organization_id=self.organization_id,
+                provider=self.source_system,
+                count=0,
+                status="failed",
+            )
+            raise
 
-        # Broadcast completion
         await broadcast_sync_progress(
             organization_id=self.organization_id,
             provider=self.source_system,

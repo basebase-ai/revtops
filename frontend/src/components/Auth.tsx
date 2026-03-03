@@ -159,7 +159,7 @@ export function Auth({ onBack, onSuccess }: AuthProps): JSX.Element {
             <div className="flex items-center justify-center w-14 h-14 rounded-2xl bg-surface-800">
               <img src={LOGO_PATH} alt={APP_NAME} className="w-8 h-8" />
             </div>
-            <span className="text-2xl font-bold text-surface-50">BaseBase</span>
+            <span className="text-2xl font-bold text-surface-50">{APP_NAME}</span>
           </div>
           <h1 className="text-2xl font-bold text-surface-50">
             {mode === 'signin' && 'Welcome back'}
