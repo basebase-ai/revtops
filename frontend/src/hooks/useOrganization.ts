@@ -96,6 +96,10 @@ interface UpdateMemberRoleParams {
   targetUserId: string;
   role: 'admin' | 'member';
 }
+interface DeleteOrganizationParams {
+  orgId: string;
+  userId: string;
+}
 
 // Query keys - centralized for easy invalidation
 export const organizationKeys = {
@@ -185,6 +189,17 @@ async function updateGuestUser(params: UpdateGuestUserParams): Promise<{ enabled
   );
   if (error || !data) {
     throw new Error(error ?? 'Failed to update guest user setting');
+  }
+  return data;
+}
+
+async function deleteOrganization(params: DeleteOrganizationParams): Promise<{ status: string }> {
+  const { data, error } = await apiRequest<{ status: string }>(
+    `/auth/organizations/${encodeURIComponent(params.orgId)}?user_id=${encodeURIComponent(params.userId)}`,
+    { method: 'DELETE' }
+  );
+  if (error || !data) {
+    throw new Error(error ?? 'Failed to delete organization');
   }
   return data;
 }
@@ -281,6 +296,13 @@ export function useUpdateMemberRole() {
       void queryClient.invalidateQueries({
         queryKey: organizationKeys.members(variables.orgId),
       });
+export function useDeleteOrganization() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: deleteOrganization,
+    onSuccess: (_data, variables) => {
+      void queryClient.invalidateQueries({ queryKey: organizationKeys.members(variables.orgId) });
     },
   });
 }

@@ -1795,6 +1795,100 @@ async def update_organization(
         )
 
 
+@router.delete("/organizations/{org_id}")
+async def delete_organization(
+    org_id: str,
+    user_id: Optional[str] = None,
+) -> dict[str, str]:
+    """Delete an organization and all org-scoped records.
+
+    Only organization admins may perform this action.
+    """
+    from models.org_member import OrgMember
+
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        org_uuid = UUID(org_id)
+        user_uuid = UUID(user_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid ID format")
+
+    async with get_admin_session() as session:
+        requester_membership_result = await session.execute(
+            select(OrgMember).where(
+                OrgMember.user_id == user_uuid,
+                OrgMember.organization_id == org_uuid,
+                OrgMember.status == "active",
+            )
+        )
+        requester_membership: Optional[OrgMember] = requester_membership_result.scalar_one_or_none()
+        if not requester_membership:
+            raise HTTPException(status_code=403, detail="Not authorized")
+        if requester_membership.role != "admin":
+            raise HTTPException(status_code=403, detail="You can't do that. Only organization admins can delete organizations.")
+
+        org: Optional[Organization] = await session.get(Organization, org_uuid)
+        if not org:
+            raise HTTPException(status_code=404, detail="Organization not found")
+
+        logger.warning("Deleting organization org=%s requested_by=%s", org_uuid, user_uuid)
+
+        # Remove org links from users first so organization FK deletion succeeds.
+        await session.execute(
+            text("UPDATE users SET organization_id = NULL WHERE organization_id = :org_id"),
+            {"org_id": org_uuid},
+        )
+
+        # Delete org-scoped records in a deterministic order to avoid lock contention.
+        org_scoped_tables: tuple[str, ...] = (
+            "user_mappings_for_identity",
+            "slack_bot_installs",
+            "shared_files",
+            "credit_transactions",
+            "change_sessions",
+            "chat_messages",
+            "conversations",
+            "activities",
+            "crm_operations",
+            "accounts",
+            "contacts",
+            "deals",
+            "goals",
+            "pipelines",
+            "integrations",
+            "github_pull_requests",
+            "github_commits",
+            "github_repositories",
+            "tracker_issues",
+            "tracker_projects",
+            "tracker_teams",
+            "meetings",
+            "workflows",
+            "workflow_runs",
+            "pending_operations",
+            "agent_tasks",
+            "bulk_operations",
+            "apps",
+            "artifacts",
+            "memories",
+            "temp_data",
+            "org_members",
+        )
+        for table_name in org_scoped_tables:
+            await session.execute(
+                text(f"DELETE FROM {table_name} WHERE organization_id = :org_id"),
+                {"org_id": org_uuid},
+            )
+
+        await session.delete(org)
+        await session.commit()
+
+        logger.warning("Deleted organization org=%s requested_by=%s", org_uuid, user_uuid)
+        return {"status": "deleted"}
+
+
 @router.patch("/organizations/{org_id}/guest-user")
 async def update_guest_user(
     org_id: str,

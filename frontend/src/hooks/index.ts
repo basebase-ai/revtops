@@ -12,6 +12,7 @@ export {
   useUpdateMemberRole,
   useLinkIdentity,
   useUnlinkIdentity,
+  useDeleteOrganization,
   organizationKeys,
   type Organization,
   type TeamMember,
