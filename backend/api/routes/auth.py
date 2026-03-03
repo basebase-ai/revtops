@@ -996,7 +996,7 @@ async def get_organization_members(
                     job_title=membership.title if membership else None,
                     status=u.status,
                     is_guest=u.is_guest,
-                    can_login_as_admin=u.role == "admin",
+                    can_login_as_admin=(u.role == "admin" or "global_admin" in (u.roles or [])),
                     identities=identities,
                 )
             )
