@@ -1857,10 +1857,26 @@ async def delete_organization(
 
         logger.warning("Deleting organization org=%s requested_by=%s", org_uuid, user_uuid)
 
-        # Remove org links from users first so organization FK deletion succeeds.
-        await session.execute(
-            text("UPDATE users SET organization_id = NULL WHERE organization_id = :org_id"),
+        # Delete guest users first: guest rows forbid organization_id updates.
+        deleted_guest_users = await session.execute(
+            text("DELETE FROM users WHERE organization_id = :org_id AND is_guest IS TRUE"),
             {"org_id": org_uuid},
+        )
+        logger.info(
+            "Deleted guest users for organization org=%s count=%s",
+            org_uuid,
+            deleted_guest_users.rowcount,
+        )
+
+        # Remove org links from non-guest users so organization FK deletion succeeds.
+        detached_users = await session.execute(
+            text("UPDATE users SET organization_id = NULL WHERE organization_id = :org_id AND is_guest IS NOT TRUE"),
+            {"org_id": org_uuid},
+        )
+        logger.info(
+            "Detached non-guest users from organization org=%s count=%s",
+            org_uuid,
+            detached_users.rowcount,
         )
 
         # Delete org-scoped records in a deterministic order to avoid lock contention.
