@@ -1250,7 +1250,7 @@ async def _action_llm(
     from config import settings
 
     prompt = params.get("prompt", "")
-    model = params.get("model", "claude-sonnet-4-20250514")
+    model = params.get("model", "claude-opus-4-6")
 
     # Substitute context variables in prompt
     for key, value in context.items():

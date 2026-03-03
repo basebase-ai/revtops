@@ -5208,6 +5208,7 @@ async def _create_artifact(
     
     # Return metadata for frontend (content excluded to keep response small)
     # Use camelCase for frontend compatibility
+    view_url: str = f"{settings.FRONTEND_URL.rstrip('/')}/artifacts/{artifact_id_str}"
     return {
         "status": "success",
         "artifact_id": artifact_id_str,
@@ -5217,7 +5218,9 @@ async def _create_artifact(
             "filename": filename,
             "contentType": content_type,  # camelCase for frontend
             "mimeType": CONTENT_TYPE_TO_MIME.get(content_type, "application/octet-stream"),  # camelCase
+            "viewUrl": view_url,
         },
+        "view_url": view_url,
         "message": f"Created {content_type} artifact: {title}",
     }
 

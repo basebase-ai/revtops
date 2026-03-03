@@ -2080,12 +2080,56 @@ async def _stream_and_post_responses(
         )
         last_flush_at = time.monotonic()
 
+    def _artifact_app_link_text(payload: dict[str, Any]) -> str | None:
+        """Build Slack message for artifact or app link. Returns None if not applicable."""
+        chunk_type: str | None = payload.get("type")
+        if chunk_type == "artifact":
+            artifact: dict[str, Any] | None = payload.get("artifact")
+            if not artifact:
+                return None
+            artifact_id: str | None = artifact.get("id")
+            title: str = str(artifact.get("title") or "Artifact")
+            view_url: str = artifact.get("viewUrl") or (
+                f"{settings.FRONTEND_URL.rstrip('/')}/artifacts/{artifact_id}" if artifact_id else ""
+            )
+            if view_url:
+                return f"📎 Created: *{title}* — <{view_url}|View in Revtops>"
+        elif chunk_type == "app":
+            app: dict[str, Any] | None = payload.get("app")
+            if not app:
+                return None
+            app_id: str | None = app.get("id")
+            app_title: str = str(app.get("title") or "App")
+            app_url: str = app.get("url") or (
+                f"{settings.FRONTEND_URL.rstrip('/')}/apps/{app_id}" if app_id else ""
+            )
+            if app_url:
+                return f"📎 Created app: *{app_title}* — <{app_url}|View in Revtops>"
+        return None
+
     try:
         async for chunk in orchestrator.process_message(
             cleaned_message, attachment_ids=attachment_ids,
         ):
             if chunk.startswith("{"):
                 await _flush_current_text(reason="tool_boundary", force=True)
+                try:
+                    parsed: dict[str, Any] = json.loads(chunk)
+                    link_text: str | None = _artifact_app_link_text(parsed)
+                    if link_text:
+                        await connector.post_message(
+                            channel=channel,
+                            text=link_text,
+                            thread_ts=thread_ts,
+                        )
+                        total_length += len(link_text)
+                        logger.info(
+                            "[slack_conversations] Posted artifact/app link to Slack channel=%s thread_ts=%s",
+                            channel,
+                            thread_ts,
+                        )
+                except json.JSONDecodeError:
+                    pass
             else:
                 current_text += chunk
                 should_flush_for_size = len(current_text) >= SLACK_STREAM_FLUSH_CHAR_THRESHOLD

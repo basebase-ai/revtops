@@ -174,19 +174,9 @@ async def update_tool_result(
         logger.error(f"[update_tool_result] Error: {e}")
         return False
 
-SYSTEM_PROMPT = """You are Penny, an AI assistant that helps business teams work across their siloed tools and data sources using Revtops.
+SYSTEM_PROMPT = """You are Penny, an AI assistant created by Basebase that helps business teams to work across their siloed tools and data sources.
 
-Your purpose is business operations — sales deal tracking, CRM management, team productivity, and related workflows. Stay focused on this mission.
-
-## Scope Guardrails
-
-You must politely decline requests that fall outside business operations, including but not limited to:
-- Cryptocurrency mining, trading bots, or blockchain projects
-- Personal coding projects unrelated to the user's business data
-- Gaming, entertainment, or social media automation
-- Anything illegal, unethical, or that violates terms of service
-
-When declining, briefly explain that you're designed for business operations and offer to help with something relevant instead. Do not provide partial assistance, workarounds, or "educational" help for out-of-scope requests.
+You help team members quickly gather and summarize information and also complete tasks using the tools from the Basebase platform.
 
 ## Communication Style
 
@@ -253,7 +243,7 @@ Before creating deals, ALWAYS:
 If the query returns 0 rows, do NOT proceed — tell the user no pipelines are synced yet.
 
 ### IMPORTANT: Deal Owner Assignment (hubspot_owner_id)
-The `hubspot_owner_id` field requires a **HubSpot numeric owner ID** — NOT a local Revtops user UUID.
+The `hubspot_owner_id` field requires a **HubSpot numeric owner ID** — NOT a local Basebase user UUID.
 Look up the HubSpot owner ID from the `user_mappings_for_identity` table:
 ```sql
 SELECT u.id, u.name, u.email, m.external_userid AS hubspot_owner_id
@@ -312,7 +302,7 @@ Examples of what users might ask:
    - `run_query`: SQL query with :org_id parameter for org filtering
    - `llm`: AI processing with {step_N_output} variable substitution
    - `send_slack`: Post to a Slack channel
-   - `send_system_email`: Email from Revtops
+   - `send_system_email`: Email from Basebase
    - `send_system_sms`: SMS via Twilio
    - `send_email_from`: Email from user's Gmail/Outlook
 
@@ -409,7 +399,7 @@ id, organization_id, account_id, name, email, title, phone, custom_fields
 ```
 
 ### users
-**Internal** team members - your colleagues and teammates who use Revtops.
+**Internal** team members - your colleagues and teammates who use Basebase.
 Use this table when the user asks about "my teammates", "our team", "sales reps", "AEs", or members of their organization.
 ```
 id, organization_id, email, name, role, avatar_url, phone_number, created_at, last_login
@@ -453,7 +443,7 @@ UPDATE org_members SET reports_to_membership_id = '{manager_membership_id}' WHER
 ### user_mappings_for_identity
 **Identity links** between internal users and external service users (Slack, HubSpot, Salesforce, etc.).
 The `source` column indicates the service: `'slack'`, `'hubspot'`, `'salesforce'`, etc.
-Use this table when mapping external user IDs/emails to RevTops users — including HubSpot owner IDs for deal assignment.
+Use this table when mapping external user IDs/emails to Basebase users — including HubSpot owner IDs for deal assignment.
 ```
 id, organization_id, user_id, external_userid, external_email, match_source, created_at, updated_at
 ```
@@ -464,7 +454,7 @@ id, organization_id, user_id, external_userid, external_email, match_source, cre
 
 Example queries for slack user mappings:
 ```sql
--- Map a Slack user ID to a RevTops user
+-- Map a Slack user ID to a Basebase user
 SELECT u.id, u.name, u.email, m.external_userid, m.external_email
 FROM user_mappings_for_identity m
 JOIN users u ON u.id = m.user_id
@@ -478,7 +468,7 @@ WHERE u.email = 'jane@example.com'
 ```
 
 ### organizations
-Companies/tenants using the Revtops platform - the user's own company.
+Companies/tenants using the Basebase platform - the user's own company.
 ```
 id, name, email_domain, logo_url, created_at, last_sync_at
 ```
@@ -715,7 +705,7 @@ class ChatOrchestrator:
         self._current_message_id: UUID | None = None
 
     def _resolve_current_user_uuid(self) -> UUID | None:
-        """Return the current turn's RevTops user UUID.
+        """Return the current turn's Basebase user UUID.
 
         The current speaker/user context must always be driven by this turn's
         resolved `self.user_id` (it is derived from the latest source identity
@@ -1216,7 +1206,7 @@ class ChatOrchestrator:
             system_prompt += user_context
         elif not self.user_id:
             # Slack thread or unlinked conversation — no specific user context
-            system_prompt += "\n\n## Current User\nThe specific user is not identified in Revtops."
+            system_prompt += "\n\n## Current User\nThe specific user is not identified in Basebase."
 
         if self.agent_global_commands:
             system_prompt += "\n\n## User Global Commands\nThe user configured these standing instructions for every prompt. Follow them unless they conflict with higher-priority system/developer constraints:\n"
@@ -1451,7 +1441,7 @@ WHERE scheduled_start >= '2026-01-27'::date AND scheduled_start < '2026-01-28'::
                     
                     # Stream the response
                     async with self.client.messages.stream(
-                        model="claude-sonnet-4-20250514",
+                        model="claude-opus-4-6",
                         max_tokens=16384,
                         system=system_prompt,
                         tools=get_tools(self.workflow_context),
@@ -1737,7 +1727,7 @@ WHERE scheduled_start >= '2026-01-27'::date AND scheduled_start < '2026-01-28'::
             if forced_out_of_credits_closeout:
                 out_of_credits_message = (
                     "You're out of credits. I paused here before finishing your last request. "
-                    "Please add a payment method in Revtops to continue."
+                    "Please add a payment method in Basebase to continue."
                 )
                 logger.info(
                     "[Orchestrator] Ending turn with out-of-credits closeout org_id=%s conversation_id=%s",
