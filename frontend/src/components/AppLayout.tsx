@@ -13,7 +13,7 @@
  * Tasks continue running server-side even when browser tabs are closed.
  */
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, lazy, Suspense } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import Nango from '@nangohq/frontend';
 import { API_BASE } from '../lib/api';
@@ -29,9 +29,11 @@ import { Workflows } from './Workflows';
 import { Memories } from './Memories';
 import { AdminPanel } from './AdminPanel';
 import { PendingChangesPage } from './PendingChangesPage';
-import { AppsGallery } from './apps/AppsGallery';
-import { AppFullView } from './apps/AppFullView';
 import { OrganizationPanel } from './OrganizationPanel';
+
+// Lazy-load app components (heavy due to Sandpack/Plotly deps)
+const AppsGallery = lazy(() => import('./apps/AppsGallery').then(m => ({ default: m.AppsGallery })));
+const AppFullView = lazy(() => import('./apps/AppFullView').then(m => ({ default: m.AppFullView })));
 import { APP_NAME, LOGO_PATH } from '../lib/brand';
 import { ProfilePanel } from './ProfilePanel';
 import { useAppStore, useMasquerade, useIntegrations, type ActiveTask, type ToolCallData, type ChatMessage, type ContentBlock } from '../store';
@@ -1075,10 +1077,14 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
           <Memories />
         )}
         {currentView === 'apps' && (
-          <AppsGallery />
+          <Suspense fallback={<div className="flex items-center justify-center h-64"><div className="animate-spin w-8 h-8 border-2 border-surface-500 border-t-primary-500 rounded-full" /></div>}>
+            <AppsGallery />
+          </Suspense>
         )}
         {currentView === 'app-view' && currentAppId && (
-          <AppFullView appId={currentAppId} />
+          <Suspense fallback={<div className="flex items-center justify-center h-64"><div className="animate-spin w-8 h-8 border-2 border-surface-500 border-t-primary-500 rounded-full" /></div>}>
+            <AppFullView appId={currentAppId} />
+          </Suspense>
         )}
         {currentView === 'admin' && (
           <AdminPanel />

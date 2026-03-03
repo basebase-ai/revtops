@@ -300,6 +300,7 @@ interface AppState {
   setCurrentView: (view: View) => void;
   setCurrentChatId: (id: string | null) => void;
   setCurrentAppId: (id: string | null) => void;
+  openApp: (appId: string) => void;
   startNewChat: () => void;
   setPendingChatInput: (input: string | null) => void;
   setPendingChatAutoSend: (autoSend: boolean) => void;
@@ -682,6 +683,7 @@ export const useAppStore = create<AppState>()(
         }),
       setCurrentChatId: (currentChatId) => set({ currentChatId }),
       setCurrentAppId: (currentAppId) => set({ currentAppId }),
+      openApp: (appId) => set({ currentAppId: appId, currentView: "app-view" as View }),
       startNewChat: () => set({ currentChatId: null, currentView: "chat" }),
       setPendingChatInput: (pendingChatInput) => set({ pendingChatInput }),
       setPendingChatAutoSend: (pendingChatAutoSend) =>
