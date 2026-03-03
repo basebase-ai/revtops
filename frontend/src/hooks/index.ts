@@ -10,6 +10,7 @@ export {
   useUpdateOrganization,
   useUpdateGuestUser,
   useUpdateMemberRole,
+  useDeleteMember,
   useLinkIdentity,
   useUnlinkIdentity,
   useDeleteOrganization,

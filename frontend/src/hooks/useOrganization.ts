@@ -96,9 +96,16 @@ interface UpdateMemberRoleParams {
   targetUserId: string;
   role: 'admin' | 'member';
 }
+
 interface DeleteOrganizationParams {
   orgId: string;
   userId: string;
+}
+
+interface DeleteMemberParams {
+  orgId: string;
+  userId: string;
+  targetUserId: string;
 }
 
 // Query keys - centralized for easy invalidation
@@ -168,9 +175,6 @@ async function updateOrganization(params: UpdateOrganizationParams): Promise<Org
   };
 }
 
-
-
-
 async function updateMemberRole(params: UpdateMemberRoleParams): Promise<{ status: string; role: string }> {
   const { data, error } = await apiRequest<{ status: string; role: string }>(
     `/auth/organizations/${encodeURIComponent(params.orgId)}/members/${encodeURIComponent(params.targetUserId)}/role?user_id=${encodeURIComponent(params.userId)}`,
@@ -203,6 +207,18 @@ async function deleteOrganization(params: DeleteOrganizationParams): Promise<{ s
   }
   return data;
 }
+
+async function deleteMember(params: DeleteMemberParams): Promise<{ status: string }> {
+  const { data, error } = await apiRequest<{ status: string }>(
+    `/auth/organizations/${encodeURIComponent(params.orgId)}/members/${encodeURIComponent(params.targetUserId)}?user_id=${encodeURIComponent(params.userId)}`,
+    { method: 'DELETE' }
+  );
+  if (error || !data) {
+    throw new Error(error ?? 'Failed to delete user');
+  }
+  return data;
+}
+
 /**
  * Hook to fetch team members for an organization.
  * Automatically caches and refetches on window focus.
@@ -286,7 +302,6 @@ export function useUpdateGuestUser() {
   });
 }
 
-
 export function useUpdateMemberRole() {
   const queryClient = useQueryClient();
 
@@ -296,6 +311,17 @@ export function useUpdateMemberRole() {
       void queryClient.invalidateQueries({
         queryKey: organizationKeys.members(variables.orgId),
       });
+    },
+  });
+}
+
+export function useDeleteMember() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: deleteMember,
+    onSuccess: (_data, variables) => {
+      void queryClient.invalidateQueries({ queryKey: organizationKeys.members(variables.orgId) });
     },
   });
 }

@@ -14,7 +14,7 @@ import { useState, useRef, useEffect, useMemo } from 'react';
 import type { OrganizationInfo, UserProfile } from './AppLayout';
 import { supabase } from '../lib/supabase';
 import { useAppStore } from '../store';
-import { useTeamMembers, useUpdateOrganization, useLinkIdentity, useUnlinkIdentity, useUpdateGuestUser, useUpdateMemberRole, useDeleteOrganization } from '../hooks';
+import { useTeamMembers, useUpdateOrganization, useLinkIdentity, useUnlinkIdentity, useUpdateGuestUser, useUpdateMemberRole, useDeleteMember, useDeleteOrganization } from '../hooks';
 import type { TeamMember, IdentityMapping } from '../hooks';
 import { apiRequest } from '../lib/api';
 import { Avatar } from './Avatar';
@@ -160,6 +160,7 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
   const unlinkIdentityMutation = useUnlinkIdentity();
   const updateGuestUserMutation = useUpdateGuestUser();
   const updateMemberRoleMutation = useUpdateMemberRole();
+  const deleteMemberMutation = useDeleteMember();
   const deleteOrganizationMutation = useDeleteOrganization();
 
   const sourceLabel = (source: string): string => {
@@ -215,6 +216,26 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
       });
     } catch (error) {
       alert(`Failed to update role: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  };
+
+  const handleDeleteMember = async (targetUserId: string): Promise<void> => {
+    const confirmed = window.confirm(
+      'Delete this user from the organization? This will unlink all identities and remove organization access.'
+    );
+    if (!confirmed) return;
+
+    try {
+      await deleteMemberMutation.mutateAsync({
+        orgId: organization.id,
+        userId: currentUser.id,
+        targetUserId,
+      });
+      if (expandedMemberId === targetUserId) {
+        setExpandedMemberId(null);
+      }
+    } catch (error) {
+      alert(`Failed to delete user: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   };
 
@@ -486,6 +507,7 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                         return aTarget.localeCompare(bTarget);
                       });
                       const canUnlinkForMember: boolean = member.id === currentUser.id || canLinkIdentityInOrg;
+                      const canDeleteMember: boolean = canAdministerOrg && !isGuest;
 
                       return (
                         <div key={member.id} className="rounded-lg bg-surface-800/50 overflow-hidden">
@@ -636,6 +658,19 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                                       </button>
                                     ))}
                                   </div>
+                                </div>
+                              )}
+
+                              {canDeleteMember && (
+                                <div className="mt-3 border-t border-surface-700/60 pt-3">
+                                  <button
+                                    type="button"
+                                    onClick={() => void handleDeleteMember(member.id)}
+                                    disabled={deleteMemberMutation.isPending}
+                                    className="text-xs text-red-300 hover:text-red-200 disabled:opacity-50"
+                                  >
+                                    {deleteMemberMutation.isPending ? 'Deleting user...' : 'Delete user'}
+                                  </button>
                                 </div>
                               )}
                             </div>
