@@ -247,7 +247,8 @@ export function Sidebar({
   const togglePinChat = useAppStore((state) => state.togglePinChat);
   const isGlobalAdmin = useIsGlobalAdmin();
   const activeTasksByConversation = useActiveTasksByConversation();
-  const sidebarWidth = collapsed ? 'w-16' : 'w-64';
+  const storedWidth = useAppStore((state) => state.sidebarWidth);
+  const widthPx = collapsed ? 64 : storedWidth;
   const orderedChats = useMemo(() => {
     if (pinnedChatIds.length === 0) {
       return recentChats;
@@ -260,7 +261,8 @@ export function Sidebar({
 
   return (
     <aside
-      className={`${sidebarWidth} h-full bg-surface-900 border-r border-surface-800 flex flex-col transition-all duration-200 ease-in-out`}
+      style={{ width: widthPx }}
+      className="h-full bg-surface-900 border-r border-surface-800 flex flex-col transition-all duration-200 ease-in-out flex-shrink-0"
     >
       {/* Header with logo and collapse toggle */}
       <div className={`border-b border-surface-800 ${collapsed ? 'py-3' : 'h-14 flex items-center justify-between px-3'}`}>

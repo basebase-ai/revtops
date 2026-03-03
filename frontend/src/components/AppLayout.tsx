@@ -13,7 +13,7 @@
  * Tasks continue running server-side even when browser tabs are closed.
  */
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import Nango from '@nangohq/frontend';
 import { API_BASE } from '../lib/api';
@@ -255,6 +255,37 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
   // Mobile responsive state
   const isMobile = useIsMobile();
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+
+  // Sidebar resize drag
+  const sidebarWidth = useAppStore((state) => state.sidebarWidth);
+  const setSidebarWidth = useAppStore((state) => state.setSidebarWidth);
+  const isDraggingRef = useRef(false);
+  const startXRef = useRef(0);
+  const startWidthRef = useRef(0);
+
+  const handleDividerMouseDown = useCallback((e: React.MouseEvent): void => {
+    e.preventDefault();
+    isDraggingRef.current = true;
+    startXRef.current = e.clientX;
+    startWidthRef.current = sidebarWidth;
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+
+    const onMouseMove = (ev: MouseEvent): void => {
+      if (!isDraggingRef.current) return;
+      const newWidth = Math.min(400, Math.max(200, startWidthRef.current + ev.clientX - startXRef.current));
+      setSidebarWidth(newWidth);
+    };
+    const onMouseUp = (): void => {
+      isDraggingRef.current = false;
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+    };
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mouseup', onMouseUp);
+  }, [sidebarWidth, setSidebarWidth]);
   
   // Close mobile sidebar when view changes
   useEffect(() => {
@@ -1044,6 +1075,15 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
           onCloseMobile={() => setMobileSidebarOpen(false)}
         />
       </div>
+
+      {/* Resize divider (desktop only, expanded sidebar only) */}
+      {!isMobile && !sidebarCollapsed && (
+        <div
+          onMouseDown={handleDividerMouseDown}
+          onDoubleClick={() => setSidebarWidth(256)}
+          className="w-1 cursor-col-resize hover:bg-primary-500/40 active:bg-primary-500/60 transition-colors flex-shrink-0"
+        />
+      )}
 
       {/* Main Content */}
       <main className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden">
