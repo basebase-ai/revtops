@@ -447,7 +447,9 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                     {sortedMembers.map((member) => {
                       const displayName: string = member.name ?? member.email.split('@')[0] ?? 'Unknown';
                       const isGuest: boolean = member.isGuest;
-                      const isAdmin: boolean = member.role === 'admin' || member.canLoginAsAdmin;
+                      const isAdmin: boolean = member.role === 'admin'
+                        || member.role === 'global_admin'
+                        || member.canLoginAsAdmin;
                       const isExpanded: boolean = expandedMemberId === member.id;
                       const identities: IdentityMapping[] = [...member.identities].sort((a, b) => {
                         const sourceCompare = sourceLabel(a.source).localeCompare(sourceLabel(b.source));
@@ -477,7 +479,7 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                                   </span>
                                 )}
                                 {isGuest && (
-                                  <span className="px-2 py-0.5 text-xs font-medium bg-amber-500/20 text-amber-300 rounded-full">
+                                  <span className="px-2 py-0.5 text-xs font-medium bg-sky-500/20 text-sky-200 rounded-full">
                                     guest
                                   </span>
                                 )}

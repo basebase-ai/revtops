@@ -4,19 +4,19 @@ export default {
   theme: {
     extend: {
       colors: {
-        // Brand colors from logo.svg (#22c55e → #4ade80)
+        // Brand colors from logo.svg (#FF9F1C -> #FFB347)
         primary: {
-          50: '#f0fdf4',
-          100: '#dcfce7',
-          200: '#bbf7d0',
-          300: '#86efac',
-          400: '#4ade80',
-          500: '#22c55e',
-          600: '#16a34a',
-          700: '#15803d',
-          800: '#166534',
-          900: '#14532d',
-          950: '#052e16',
+          50: '#fff8ed',
+          100: '#ffefd3',
+          200: '#ffd9a5',
+          300: '#ffc072',
+          400: '#ffb347',
+          500: '#ff9f1c',
+          600: '#e68000',
+          700: '#bf6500',
+          800: '#994f00',
+          900: '#7a3f00',
+          950: '#3f1f00',
         },
         surface: {
           50: '#fafafa',

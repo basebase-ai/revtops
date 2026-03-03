@@ -4,12 +4,12 @@
  */
 
 export const BRAND = {
-  name: 'Basebase',
-  logoPath: '/logo.svg',
+  name: "Basebase",
+  logoPath: "/basebase_logo.svg",
   /** Primary gradient colors from logo (green) */
   colors: {
-    primary: '#22c55e',
-    primaryLight: '#4ade80',
+    primary: "#FF9F1C",
+    primaryLight: "#FFB347",
   },
 } as const;
 
