@@ -10,7 +10,7 @@ from datetime import datetime
 from typing import Any, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Body, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select, and_, func, or_
 
@@ -486,6 +486,13 @@ async def delete_workflow(organization_id: str, workflow_id: str) -> dict[str, s
         return {"status": "deleted", "workflow_id": workflow_id}
 
 
+class TriggerWorkflowRequest(BaseModel):
+    """Optional request body for triggering a workflow."""
+
+    user_id: Optional[str] = None
+    trigger_data: Optional[dict[str, Any]] = None
+
+
 class TriggerWorkflowResponseV2(BaseModel):
     """Response model for triggering a workflow (v2 with conversation)."""
     status: str
@@ -498,15 +505,21 @@ class TriggerWorkflowResponseV2(BaseModel):
 async def trigger_workflow(
     organization_id: str,
     workflow_id: str,
+    body: TriggerWorkflowRequest | None = Body(default=None),
     user_id: str | None = None,
 ) -> TriggerWorkflowResponseV2:
     """Manually trigger a workflow execution."""
     from models.conversation import Conversation
-    
+
+    req = body or TriggerWorkflowRequest()
+    trigger_user_uuid: UUID | None = (
+        UUID(req.user_id) if req.user_id else (UUID(user_id) if user_id else None)
+    )
+    trigger_data: dict[str, Any] | None = req.trigger_data
+
     try:
         org_uuid = UUID(organization_id)
         wf_uuid = UUID(workflow_id)
-        trigger_user_uuid: UUID | None = UUID(user_id) if user_id else None
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid ID format")
 
@@ -558,7 +571,7 @@ async def trigger_workflow(
     task = execute_workflow.delay(
         workflow_id=workflow_id,
         triggered_by="manual",
-        trigger_data=None,
+        trigger_data=trigger_data,
         conversation_id=conversation_id,
         organization_id=organization_id,
         triggered_by_user_id=str(trigger_user_uuid) if trigger_user_uuid else None,

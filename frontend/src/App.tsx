@@ -15,7 +15,7 @@ import { getEmailDomain } from './lib/email';
 import { API_BASE } from './lib/api';
 import { useAppStore } from './store';
 import { Auth } from './components/Auth';
-import { CompanySetup } from './components/CompanySetup';
+import { OnboardingWizard } from './components/OnboardingWizard';
 import { SubscriptionSetup } from './components/SubscriptionSetup';
 import { AppLayout } from './components/AppLayout';
 import { OAuthCallback } from './components/OAuthCallback';
@@ -25,59 +25,10 @@ import type { User, AuthChangeEvent, Session } from '@supabase/supabase-js';
 import { queryClient } from './lib/queryClient';
 import { APP_NAME, LOGO_PATH } from './lib/brand';
 
-type Screen = 'auth' | 'blocked-email' | 'not-registered' | 'waitlist' | 'company-setup' | 'welcome-free-tier' | 'payment-setup' | 'app';
+type Screen = 'auth' | 'blocked-email' | 'not-registered' | 'waitlist' | 'onboarding-wizard' | 'payment-setup' | 'app';
 
 // URL for public website (landing, blog, waitlist form)
 const WWW_URL = import.meta.env.VITE_WWW_URL ?? 'https://www.basebase.com';
-
-// Simple in-memory store for companies (MVP - in production, use API)
-interface StoredCompany {
-  id: string; // UUID
-  name: string;
-}
-
-function generateUUID(): string {
-  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
-    const r = (Math.random() * 16) | 0;
-    const v = c === 'x' ? r : (r & 0x3) | 0x8;
-    return v.toString(16);
-  });
-}
-
-function getStoredCompanies(): Record<string, StoredCompany> {
-  const stored = localStorage.getItem('revtops_companies');
-  if (!stored) return {};
-  
-  const companies = JSON.parse(stored) as Record<string, Partial<StoredCompany> & { name: string }>;
-  let needsMigration = false;
-  
-  // Migrate old company format (without UUID) to new format
-  for (const domain of Object.keys(companies)) {
-    const company = companies[domain];
-    if (company && !company.id) {
-      company.id = generateUUID();
-      needsMigration = true;
-    }
-  }
-  
-  if (needsMigration) {
-    localStorage.setItem('revtops_companies', JSON.stringify(companies));
-  }
-  
-  return companies as Record<string, StoredCompany>;
-}
-
-function storeCompany(domain: string, name: string): StoredCompany {
-  const companies = getStoredCompanies();
-  const company: StoredCompany = {
-    id: generateUUID(),
-    name,
-  };
-  companies[domain] = company;
-  localStorage.setItem('revtops_companies', JSON.stringify(companies));
-  return company;
-}
-
 
 function App(): JSX.Element {
   const [screen, setScreen] = useState<Screen>('auth');
@@ -91,7 +42,6 @@ function App(): JSX.Element {
     setUser, 
     setOrganization, 
     logout: storeLogout,
-    syncUserToBackend,
     fetchUserOrganizations,
   } = useAppStore();
 
@@ -314,51 +264,9 @@ function App(): JSX.Element {
       return;
     }
 
-    // No memberships yet: continue to create-org onboarding.
-    setScreen('company-setup');
+    // No memberships yet: continue to onboarding wizard.
+    setScreen('onboarding-wizard');
     return;
-  };
-
-  const handleCompanySetup = async (companyName: string): Promise<void> => {
-    if (!user) return;
-
-    // Store in localStorage first
-    const company = storeCompany(emailDomain, companyName);
-
-    // Set organization in store
-    setOrganization({
-      id: company.id,
-      name: company.name,
-      logoUrl: null,
-    });
-
-    // Create organization in backend database
-    try {
-      const response = await fetch(`${API_BASE}/auth/organizations`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          id: company.id,
-          name: companyName,
-          email_domain: emailDomain,
-        }),
-      });
-
-      if (!response.ok) {
-        console.error('Failed to create organization in backend:', await response.text());
-      }
-    } catch (error) {
-      console.error('Failed to create organization:', error);
-    }
-
-    // Sync user to backend now that we have an org
-    await syncUserToBackend();
-
-    // Fetch the user's org list (for multi-org switcher)
-    await fetchUserOrganizations();
-
-    // Show welcome screen for new orgs on free tier
-    setScreen('welcome-free-tier');
   };
 
   const handleLogout = async (): Promise<void> => {
@@ -524,65 +432,13 @@ function App(): JSX.Element {
         </div>
       );
 
-    case 'company-setup':
+    case 'onboarding-wizard':
       return (
-        <CompanySetup
+        <OnboardingWizard
           emailDomain={emailDomain}
-          onComplete={(name) => void handleCompanySetup(name)}
+          onComplete={() => setScreen('app')}
           onBack={() => void handleLogout()}
         />
-      );
-
-    case 'welcome-free-tier':
-      return (
-        <div className="min-h-screen bg-surface-900 flex items-center justify-center p-4">
-          <div className="max-w-md w-full">
-            <div className="text-center mb-8">
-              <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-gradient-to-br from-primary-500 to-primary-700 mb-6">
-                <svg className="w-8 h-8 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                </svg>
-              </div>
-              <h1 className="text-2xl font-bold text-white mb-2">Welcome to {APP_NAME}!</h1>
-              <p className="text-surface-400">Your account is ready to go.</p>
-            </div>
-
-            <div className="card p-6 mb-6">
-              <div className="text-center mb-5 pb-5 border-b border-surface-700">
-                <p className="text-xs text-surface-400 uppercase tracking-wide mb-1">Your Plan</p>
-                <h2 className="text-3xl font-bold text-white">Free</h2>
-                <p className="text-surface-400 text-sm mt-1">100 credits/month</p>
-              </div>
-              <div className="space-y-3">
-                <div className="flex items-center gap-3 text-surface-300">
-                  <svg className="w-5 h-5 text-primary-500 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                  </svg>
-                  <span>Connect your CRM and Slack</span>
-                </div>
-                <div className="flex items-center gap-3 text-surface-300">
-                  <svg className="w-5 h-5 text-primary-500 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                  </svg>
-                  <span>Invite your team</span>
-                </div>
-                <div className="flex items-center gap-3 text-surface-300">
-                  <svg className="w-5 h-5 text-primary-500 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                  </svg>
-                  <span>Upgrade anytime for more credits</span>
-                </div>
-              </div>
-            </div>
-
-            <button
-              onClick={() => setScreen('app')}
-              className="w-full btn-primary py-3 text-base font-medium"
-            >
-              Get started
-            </button>
-          </div>
-        </div>
       );
 
     case 'payment-setup':

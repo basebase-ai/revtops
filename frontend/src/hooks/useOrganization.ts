@@ -99,7 +99,6 @@ interface UpdateMemberRoleParams {
 
 interface DeleteOrganizationParams {
   orgId: string;
-  userId: string;
 }
 
 interface DeleteMemberParams {
@@ -199,7 +198,7 @@ async function updateGuestUser(params: UpdateGuestUserParams): Promise<{ enabled
 
 async function deleteOrganization(params: DeleteOrganizationParams): Promise<{ status: string }> {
   const { data, error } = await apiRequest<{ status: string }>(
-    `/auth/organizations/${encodeURIComponent(params.orgId)}?user_id=${encodeURIComponent(params.userId)}`,
+    `/auth/organizations/${encodeURIComponent(params.orgId)}`,
     { method: 'DELETE' }
   );
   if (error || !data) {

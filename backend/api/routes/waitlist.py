@@ -449,6 +449,29 @@ async def list_admin_users(
         return AdminUsersListResponse(users=user_responses, total=len(user_responses))
 
 
+@router.delete("/admin/users/{user_id}")
+async def delete_admin_user(
+    user_id: str,
+    auth: AuthContext = Depends(require_global_admin),
+) -> dict[str, str]:
+    """
+    Permanently delete a user and all their data.
+
+    Requires global_admin role. Use for resetting test accounts or GDPR-style removal.
+    """
+    from services.user_merge import delete_user
+
+    logger.info("Admin delete user requested by user_id=%s target_user_id=%s", auth.user_id, user_id)
+
+    result = await delete_user(user_id)
+    if not result.success:
+        if "not found" in (result.error or "").lower():
+            raise HTTPException(status_code=404, detail=result.error)
+        raise HTTPException(status_code=400, detail=result.error or "Failed to delete user")
+
+    return {"status": "deleted", "email": result.email}
+
+
 # =============================================================================
 # Admin Organizations List Endpoint
 # =============================================================================

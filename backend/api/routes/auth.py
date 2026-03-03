@@ -559,6 +559,7 @@ class CreateOrganizationRequest(BaseModel):
     id: str  # UUID from frontend
     name: str
     email_domain: str
+    website_url: Optional[str] = None
 
 
 class OrganizationResponse(BaseModel):
@@ -568,6 +569,7 @@ class OrganizationResponse(BaseModel):
     name: str
     email_domain: Optional[str]
     logo_url: Optional[str] = None
+    company_summary: Optional[str] = None
 
 
 class SyncUserRequest(BaseModel):
@@ -875,19 +877,26 @@ async def get_organization_by_domain(email_domain: str) -> OrganizationResponse:
             name=org.name,
             email_domain=org.email_domain,
             logo_url=org.logo_url,
+            company_summary=org.company_summary,
         )
 
 
 @router.post("/organizations", response_model=OrganizationResponse)
-async def create_organization(request: CreateOrganizationRequest) -> OrganizationResponse:
+async def create_organization(
+    request: CreateOrganizationRequest,
+    auth: AuthContext = Depends(get_current_auth),
+) -> OrganizationResponse:
     """Create a new organization.
-    
+
     Called when the first user from a company domain signs up.
+    Adds the creating user as an org member so they can access workflows etc.
     """
     try:
         org_uuid = UUID(request.id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid organization ID")
+
+    creator_user_id: UUID | None = auth.user_id
 
     async with get_admin_session() as session:
         # Check if organization already exists by ID
@@ -898,14 +907,16 @@ async def create_organization(request: CreateOrganizationRequest) -> Organizatio
                 name=existing.name,
                 email_domain=existing.email_domain,
                 logo_url=existing.logo_url,
+                company_summary=existing.company_summary,
             )
-        
+
         # Create new organization with free tier auto-enrolled
         now = datetime.now(timezone.utc)
         new_org = Organization(
             id=org_uuid,
             name=request.name,
             email_domain=request.email_domain,
+            website_url=(request.website_url or "").strip() or None,
             subscription_tier="free",
             subscription_status="active",
             credits_balance=100,
@@ -940,15 +951,77 @@ async def create_organization(request: CreateOrganizationRequest) -> Organizatio
                 joined_at=datetime.utcnow(),
             )
         )
+        # Add the creating user as org member so they can access workflows, etc.
+        if creator_user_id and creator_user_id != guest_user.id:
+            session.add(
+                OrgMember(
+                    user_id=creator_user_id,
+                    organization_id=org_uuid,
+                    role="admin",
+                    status="active",
+                    joined_at=datetime.utcnow(),
+                )
+            )
+            # Auto-enable web_search so the Company Research workflow can run
+            sharing_defaults = get_provider_sharing_defaults("web_search")
+            session.add(
+                Integration(
+                    organization_id=org_uuid,
+                    provider="web_search",
+                    user_id=creator_user_id,
+                    nango_connection_id="builtin",
+                    connected_by_user_id=creator_user_id,
+                    is_active=True,
+                    share_synced_data=sharing_defaults.share_synced_data,
+                    share_query_access=sharing_defaults.share_query_access,
+                    share_write_access=sharing_defaults.share_write_access,
+                    pending_sharing_config=False,
+                )
+            )
 
         await session.commit()
         await session.refresh(new_org)
+
+        # Create onboarding Company Research workflow (trigger_data: website_url, organization_id, organization_name)
+        from models.workflow import Workflow
+
+        research_workflow = Workflow(
+            organization_id=org_uuid,
+            created_by_user_id=guest_user.id,
+            name="Company Research",
+            description="Onboarding: fetch website and web search to summarize the company.",
+            trigger_type="manual",
+            trigger_config={},
+            steps=[],
+            prompt=(
+                "You are researching a company for onboarding. Use the provided input parameters.\n\n"
+                "1. If website_url is provided: call run_action with provider='web_search', action='fetch_url', "
+                "params={url: website_url, render_js: true} to read the site content.\n"
+                "2. Call query_system with system='web_search' to search for the company (use organization_name in the query).\n"
+                "3. Write a concise 2–3 sentence summary of what the company does, its industry, and notable aspects.\n"
+                "4. Call save_company_research with organization_id and summary to persist it."
+            ),
+            auto_approve_tools=["run_action", "query_system", "save_company_research"],
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "website_url": {"type": "string", "description": "Company website URL to fetch"},
+                    "organization_id": {"type": "string", "format": "uuid", "description": "Organization UUID"},
+                    "organization_name": {"type": "string", "description": "Company name for web search"},
+                },
+                "required": ["organization_id", "organization_name"],
+            },
+            is_enabled=True,
+        )
+        session.add(research_workflow)
+        await session.commit()
 
         return OrganizationResponse(
             id=str(new_org.id),
             name=new_org.name,
             email_domain=new_org.email_domain,
             logo_url=new_org.logo_url,
+            company_summary=new_org.company_summary,
         )
 
 
@@ -1814,48 +1887,78 @@ async def update_organization(
             name=org.name,
             email_domain=org.email_domain,
             logo_url=org.logo_url,
+            company_summary=org.company_summary,
+        )
+
+
+@router.get("/organizations/{org_id}", response_model=OrganizationResponse)
+async def get_organization(
+    org_id: str,
+    auth: AuthContext = Depends(get_current_auth),
+    user_id: Optional[str] = None,
+) -> OrganizationResponse:
+    """Get organization details. Requires org membership."""
+    from models.org_member import OrgMember
+
+    uid = user_id or (str(auth.user_id) if auth.user_id else None)
+    if not uid:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        org_uuid = UUID(org_id)
+        user_uuid = UUID(uid)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid ID format")
+
+    async with get_admin_session() as session:
+        # Verify user is member of this org
+        membership = await session.execute(
+            select(OrgMember).where(
+                OrgMember.organization_id == org_uuid,
+                OrgMember.user_id == user_uuid,
+                OrgMember.status == "active",
+            )
+        )
+        if not membership.scalar_one_or_none():
+            raise HTTPException(status_code=403, detail="Not a member of this organization")
+
+        org = await session.get(Organization, org_uuid)
+        if not org:
+            raise HTTPException(status_code=404, detail="Organization not found")
+
+        return OrganizationResponse(
+            id=str(org.id),
+            name=org.name,
+            email_domain=org.email_domain,
+            logo_url=org.logo_url,
+            company_summary=org.company_summary,
         )
 
 
 @router.delete("/organizations/{org_id}")
 async def delete_organization(
     org_id: str,
-    user_id: Optional[str] = None,
+    auth: AuthContext = Depends(get_current_auth),
 ) -> dict[str, str]:
     """Delete an organization and all org-scoped records.
 
-    Only organization admins may perform this action.
+    Only organization admins (or global admins) may perform this action.
     """
-    from models.org_member import OrgMember
-
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-
     try:
         org_uuid = UUID(org_id)
-        user_uuid = UUID(user_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid ID format")
 
     async with get_admin_session() as session:
-        requester_membership_result = await session.execute(
-            select(OrgMember).where(
-                OrgMember.user_id == user_uuid,
-                OrgMember.organization_id == org_uuid,
-                OrgMember.status == "active",
-            )
-        )
-        requester_membership: Optional[OrgMember] = requester_membership_result.scalar_one_or_none()
-        if not requester_membership:
-            raise HTTPException(status_code=403, detail="Not authorized")
-        if requester_membership.role != "admin":
+        requesting_user: Optional[User] = await session.get(User, auth.user_id)
+        if not await _can_administer_org(session, requesting_user, org_uuid):
             raise HTTPException(status_code=403, detail="You can't do that. Only organization admins can delete organizations.")
 
         org: Optional[Organization] = await session.get(Organization, org_uuid)
         if not org:
             raise HTTPException(status_code=404, detail="Organization not found")
 
-        logger.warning("Deleting organization org=%s requested_by=%s", org_uuid, user_uuid)
+        logger.warning("Deleting organization org=%s requested_by=%s", org_uuid, auth.user_id)
 
         # Delete guest users first: guest rows forbid organization_id updates.
         deleted_guest_users = await session.execute(
@@ -1935,7 +2038,7 @@ async def delete_organization(
         await session.delete(org)
         await session.commit()
 
-        logger.warning("Deleted organization org=%s requested_by=%s", org_uuid, user_uuid)
+        logger.warning("Deleted organization org=%s requested_by=%s", org_uuid, auth.user_id)
         return {"status": "deleted"}
 
 

@@ -6,8 +6,10 @@
  * - Future: User management, org management, data source debugging
  */
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { API_BASE, apiRequest } from '../lib/api';
+import { useDeleteOrganization } from '../hooks';
 import { useAppStore, type UserProfile, type OrganizationInfo } from '../store';
 
 type AdminTab = 'waitlist' | 'users' | 'organizations' | 'sources' | 'jobs';
@@ -76,10 +78,189 @@ interface AdminRunningJob {
   metadata: Record<string, unknown> | null;
 }
 
+function ThreeDotsIcon(): JSX.Element {
+  return (
+    <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24" aria-hidden>
+      <path d="M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z" />
+    </svg>
+  );
+}
+
+function OrgRowActions({
+  org,
+  orgMenuOpenId,
+  setOrgMenuOpenId,
+  menuRef,
+  onInvite,
+  onDeleteOrg,
+}: {
+  org: AdminOrganization;
+  orgMenuOpenId: string | null;
+  setOrgMenuOpenId: (id: string | null) => void;
+  menuRef: React.RefObject<HTMLDivElement | null>;
+  onInvite: () => void;
+  onDeleteOrg: (orgId: string, orgName: string) => void;
+}): JSX.Element {
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const [menuRect, setMenuRect] = useState<{ top: number; right: number } | null>(null);
+  const isOpen = orgMenuOpenId === org.id;
+
+  useEffect(() => {
+    if (isOpen && buttonRef.current) {
+      const rect = buttonRef.current.getBoundingClientRect();
+      setMenuRect({ top: rect.top, right: rect.right });
+    } else {
+      setMenuRect(null);
+    }
+  }, [isOpen]);
+
+  const menuContent =
+    isOpen &&
+    menuRect &&
+    createPortal(
+      <div
+        ref={menuRef as React.RefObject<HTMLDivElement>}
+        className="fixed z-[9999] py-1 min-w-[120px] bg-surface-800 border border-surface-700 rounded-lg shadow-xl"
+        style={{
+          bottom: window.innerHeight - menuRect.top + 4,
+          right: window.innerWidth - menuRect.right,
+        }}
+      >
+        <button
+          type="button"
+          onClick={() => {
+            setOrgMenuOpenId(null);
+            onInvite();
+          }}
+          className="w-full px-3 py-2 text-left text-sm text-surface-200 hover:bg-surface-700"
+        >
+          Invite
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setOrgMenuOpenId(null);
+            onDeleteOrg(org.id, org.name);
+          }}
+          className="w-full px-3 py-2 text-left text-sm text-red-400 hover:bg-surface-700"
+        >
+          Delete
+        </button>
+      </div>,
+      document.body
+    );
+
+  return (
+    <div className="relative flex justify-end">
+      <button
+        ref={buttonRef}
+        type="button"
+        onClick={() => setOrgMenuOpenId(isOpen ? null : org.id)}
+        className="p-1.5 rounded-lg text-surface-400 hover:text-surface-200 hover:bg-surface-700 transition-colors"
+        aria-label="Organization options"
+      >
+        <ThreeDotsIcon />
+      </button>
+      {menuContent}
+    </div>
+  );
+}
+
+function UserRowActions({
+  u,
+  currentUserId,
+  userMenuOpenId,
+  setUserMenuOpenId,
+  menuRef,
+  onMasquerade,
+  onDeleteUser,
+  masquerading,
+}: {
+  u: AdminUser;
+  currentUserId: string | undefined;
+  userMenuOpenId: string | null;
+  setUserMenuOpenId: (id: string | null) => void;
+  menuRef: React.RefObject<HTMLDivElement | null>;
+  onMasquerade: (userId: string) => void;
+  onDeleteUser: (userId: string, userName: string) => void;
+  masquerading: string | null;
+}): JSX.Element {
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const [menuRect, setMenuRect] = useState<{ top: number; right: number } | null>(null);
+  const isOpen = userMenuOpenId === u.id;
+  const canMasquerade = u.id !== currentUserId && u.status === 'active' && !u.is_guest;
+
+  useEffect(() => {
+    if (isOpen && buttonRef.current) {
+      const rect = buttonRef.current.getBoundingClientRect();
+      setMenuRect({ top: rect.top, right: rect.right });
+    } else {
+      setMenuRect(null);
+    }
+  }, [isOpen]);
+
+  const menuContent =
+    isOpen &&
+    menuRect &&
+    createPortal(
+      <div
+        ref={menuRef as React.RefObject<HTMLDivElement>}
+        className="fixed z-[9999] py-1 min-w-[140px] bg-surface-800 border border-surface-700 rounded-lg shadow-xl"
+        style={{
+          bottom: window.innerHeight - menuRect.top + 4,
+          right: window.innerWidth - menuRect.right,
+        }}
+      >
+        {canMasquerade && (
+          <button
+            type="button"
+            onClick={() => {
+              setUserMenuOpenId(null);
+              onMasquerade(u.id);
+            }}
+            disabled={masquerading === u.id}
+            className="w-full px-3 py-2 text-left text-sm text-amber-400 hover:bg-surface-700 disabled:opacity-50"
+          >
+            {masquerading === u.id ? 'Loading...' : 'Masquerade'}
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={() => {
+            setUserMenuOpenId(null);
+            onDeleteUser(u.id, u.email);
+          }}
+          className="w-full px-3 py-2 text-left text-sm text-red-400 hover:bg-surface-700"
+        >
+          Delete
+        </button>
+      </div>,
+      document.body
+    );
+
+  return (
+    <div className="relative flex justify-end">
+      <button
+        ref={buttonRef}
+        type="button"
+        onClick={() => setUserMenuOpenId(isOpen ? null : u.id)}
+        className="p-1.5 rounded-lg text-surface-400 hover:text-surface-200 hover:bg-surface-700 transition-colors"
+        aria-label="User options"
+      >
+        <ThreeDotsIcon />
+      </button>
+      {menuContent}
+    </div>
+  );
+}
+
 export function AdminPanel(): JSX.Element {
   const user = useAppStore((state) => state.user);
   const startMasquerade = useAppStore((state) => state.startMasquerade);
   const setCurrentView = useAppStore((state) => state.setCurrentView);
+  const fetchUserOrganizations = useAppStore((state) => state.fetchUserOrganizations);
+  const switchActiveOrganization = useAppStore((state) => state.switchActiveOrganization);
+  const deleteOrganizationMutation = useDeleteOrganization();
   const [activeTab, setActiveTab] = useState<AdminTab>('waitlist');
   const [masquerading, setMasquerading] = useState<string | null>(null);
   const [entries, setEntries] = useState<WaitlistEntry[]>([]);
@@ -112,6 +293,10 @@ export function AdminPanel(): JSX.Element {
   const [createOrgSubmitting, setCreateOrgSubmitting] = useState<boolean>(false);
   const [createOrgError, setCreateOrgError] = useState<string | null>(null);
   const [inviteModalOrg, setInviteModalOrg] = useState<{ id: string; name: string } | null>(null);
+  const [orgMenuOpenId, setOrgMenuOpenId] = useState<string | null>(null);
+  const [userMenuOpenId, setUserMenuOpenId] = useState<string | null>(null);
+  const orgMenuRef = useRef<HTMLDivElement>(null);
+  const userMenuRef = useRef<HTMLDivElement>(null);
 
   // Sources tab state
   const [adminIntegrations, setAdminIntegrations] = useState<AdminIntegration[]>([]);
@@ -443,6 +628,59 @@ export function AdminPanel(): JSX.Element {
       setMasquerading(null);
     }
   };
+
+  const handleDeleteOrg = async (orgId: string, orgName: string): Promise<void> => {
+    if (!window.confirm(`Delete ${orgName}? This permanently removes the organization and its data.`)) return;
+    try {
+      await deleteOrganizationMutation.mutateAsync({ orgId });
+      await fetchOrganizations();
+      await fetchUserOrganizations();
+      const remainingOrgs: { id: string }[] = useAppStore.getState().organizations;
+      if (remainingOrgs.length > 0) {
+        await switchActiveOrganization(remainingOrgs[0].id);
+      } else {
+        await import('../lib/supabase').then((m) => m.supabase.auth.signOut());
+        useAppStore.getState().logout();
+        localStorage.clear();
+        sessionStorage.clear();
+        window.location.href = '/auth';
+      }
+      alert('Organization deleted.');
+    } catch (err) {
+      alert(`Failed to delete organization: ${err instanceof Error ? err.message : 'Unknown error'}`);
+    }
+  };
+
+  const handleDeleteUser = async (userId: string, userEmail: string): Promise<void> => {
+    if (!window.confirm(`Delete ${userEmail}? This permanently removes the user and all their data.`)) return;
+    try {
+      const { error } = await apiRequest<{ status: string }>(
+        `/waitlist/admin/users/${encodeURIComponent(userId)}`,
+        { method: 'DELETE' }
+      );
+      if (error) throw new Error(error);
+      await fetchUsers();
+      alert('User deleted.');
+    } catch (err) {
+      alert(`Failed to delete user: ${err instanceof Error ? err.message : 'Unknown error'}`);
+    }
+  };
+
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent): void => {
+      const target = e.target as Node;
+      if (orgMenuOpenId !== null && orgMenuRef.current && !orgMenuRef.current.contains(target)) {
+        setOrgMenuOpenId(null);
+      }
+      if (userMenuOpenId !== null && userMenuRef.current && !userMenuRef.current.contains(target)) {
+        setUserMenuOpenId(null);
+      }
+    };
+    if (orgMenuOpenId !== null || userMenuOpenId !== null) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [orgMenuOpenId, userMenuOpenId]);
 
   const handleGlobalSync = async (): Promise<void> => {
     if (!user) return;
@@ -874,7 +1112,7 @@ export function AdminPanel(): JSX.Element {
                       <th className="px-4 py-3 text-sm font-medium text-surface-400">Status</th>
                       <th className="px-4 py-3 text-sm font-medium text-surface-400">Last Login</th>
                       <th className="px-4 py-3 text-sm font-medium text-surface-400">Joined</th>
-                      <th className="px-4 py-3 text-sm font-medium text-surface-400">Action</th>
+                      <th className="px-4 py-3 text-sm font-medium text-surface-400 w-12"></th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-surface-800">
@@ -913,17 +1151,17 @@ export function AdminPanel(): JSX.Element {
                         <td className="px-4 py-3 text-sm text-surface-400">
                           {formatDate(u.created_at)}
                         </td>
-                        <td className="px-4 py-3">
-                          {u.id !== user?.id && u.status === 'active' && !u.is_guest && (
-                            <button
-                              onClick={() => void handleMasquerade(u.id)}
-                              disabled={masquerading === u.id}
-                              className="px-3 py-1.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-400 border border-amber-500/30 text-sm font-medium transition-colors disabled:opacity-50"
-                              title="View as this user"
-                            >
-                              {masquerading === u.id ? 'Loading...' : 'Masquerade'}
-                            </button>
-                          )}
+                        <td className="px-4 py-3 text-right">
+                          <UserRowActions
+                            u={u}
+                            currentUserId={user?.id}
+                            userMenuOpenId={userMenuOpenId}
+                            setUserMenuOpenId={setUserMenuOpenId}
+                            menuRef={userMenuRef}
+                            onMasquerade={handleMasquerade}
+                            onDeleteUser={handleDeleteUser}
+                            masquerading={masquerading}
+                          />
                         </td>
                       </tr>
                     ))}
@@ -1062,7 +1300,7 @@ export function AdminPanel(): JSX.Element {
                       <th className="px-4 py-3 text-sm font-medium text-surface-400">Users</th>
                       <th className="px-4 py-3 text-sm font-medium text-surface-400">Last Sync</th>
                       <th className="px-4 py-3 text-sm font-medium text-surface-400">Created</th>
-                      <th className="px-4 py-3 text-sm font-medium text-surface-400">Action</th>
+                      <th className="px-4 py-3 text-sm font-medium text-surface-400 w-12"></th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-surface-800">
@@ -1085,20 +1323,21 @@ export function AdminPanel(): JSX.Element {
                         <td className="px-4 py-3 text-sm text-surface-400">
                           {formatDate(o.created_at)}
                         </td>
-                        <td className="px-4 py-3">
-                          <button
-                            type="button"
-                            onClick={() => {
+                        <td className="px-4 py-3 text-right">
+                          <OrgRowActions
+                            org={o}
+                            orgMenuOpenId={orgMenuOpenId}
+                            setOrgMenuOpenId={setOrgMenuOpenId}
+                            menuRef={orgMenuRef}
+                            onInvite={() => {
                               setInviteModalOrg({ id: o.id, name: o.name });
                               setCreateOrgStep(2);
                               setCreateOrgInvitees([{ email: '', name: '' }]);
                               setCreateOrgError(null);
                               setShowCreateOrgModal(true);
                             }}
-                            className="px-3 py-1.5 rounded-lg bg-primary-500/20 border border-primary-500/30 text-primary-400 hover:bg-primary-500/30 text-sm font-medium transition-colors"
-                          >
-                            Invite
-                          </button>
+                            onDeleteOrg={handleDeleteOrg}
+                          />
                         </td>
                       </tr>
                     ))}
