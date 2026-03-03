@@ -46,9 +46,11 @@ export function AppViewer({ app, onAppError }: AppViewerProps): JSX.Element {
     <div className="h-full flex flex-col">
       {/* Header */}
       <div className="flex items-center justify-between mb-4 pb-3 border-b border-surface-700">
-        <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-primary-900/40 text-primary-300">
-          Interactive App
-        </span>
+        <div className="flex items-center gap-2 min-w-0">
+          <h2 className="text-sm font-medium text-surface-100 truncate">
+            {app.title ?? "Untitled App"}
+          </h2>
+        </div>
         <div className="flex items-center gap-1.5">
           <button
             onClick={() => void handleCopyLink()}
