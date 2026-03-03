@@ -186,7 +186,7 @@ function formatSyncStats(stats: SyncStats | null, provider: string): string | nu
     if (channels > 0) {
       parts.push(`${messages.toLocaleString()} messages from ${channels} channel${channels !== 1 ? 's' : ''}`);
     } else {
-      parts.push(`${messages.toLocaleString()} messages`);
+      parts.push(`${messages.toLocaleString()} messages from 0 channels`);
     }
   } else {
   // CRM providers always show contact/account/deal counts (even if 0)

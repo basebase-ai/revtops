@@ -56,6 +56,7 @@ export interface SyncStats {
   deals?: number;
   contacts?: number;
   activities?: number;
+  channels?: number;
   pipelines?: number;
   goals?: number;
   repositories?: number;
