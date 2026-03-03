@@ -180,6 +180,14 @@ function formatSyncStats(stats: SyncStats | null, provider: string): string | nu
     if (docs > 0) parts.push(`${docs} docs`);
     if (sheets > 0) parts.push(`${sheets} sheets`);
     if (slides > 0) parts.push(`${slides} slides`);
+  } else if (provider === 'slack') {
+    const messages = stats.activities ?? 0;
+    const channels = stats.channels ?? 0;
+    if (channels > 0) {
+      parts.push(`${messages.toLocaleString()} messages from ${channels} channel${channels !== 1 ? 's' : ''}`);
+    } else {
+      parts.push(`${messages.toLocaleString()} messages`);
+    }
   } else {
   // CRM providers always show contact/account/deal counts (even if 0)
   const isCrmProvider = provider === 'hubspot' || provider === 'salesforce';
@@ -208,8 +216,8 @@ function formatSyncStats(stats: SyncStats | null, provider: string): string | nu
   }
   }
 
-  // Activity-based connectors (email, calendar, meetings)
-  if (stats.activities !== undefined) {
+  // Activity-based connectors (email, calendar, meetings) — Slack handled above
+  if (provider !== 'slack' && stats.activities !== undefined) {
     const activityLabel = getActivityLabel(provider, stats.activities);
     parts.push(activityLabel);
   }
@@ -1148,7 +1156,10 @@ export function DataSources(): JSX.Element {
       if (integration.provider !== 'slack' || state !== 'connected') return null;
 
       return (
-        <div className="mt-4 pt-4 border-t border-surface-700/50">
+        <div className="mt-4 pt-4 border-t border-surface-700/50 space-y-3">
+          <p className="text-xs text-surface-400">
+            Invite @Penny to more channels in Slack to sync more messages to Basebase.
+          </p>
           <div className="flex items-center justify-between">
             <div>
               <h4 className="text-sm font-semibold text-surface-100">Slack Identity</h4>

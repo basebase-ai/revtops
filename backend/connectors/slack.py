@@ -280,6 +280,21 @@ class SlackConnector(BaseConnector):
 
         return channels
 
+    async def join_channel(self, channel_id: str) -> bool:
+        """Join a public channel. Returns True if joined or already a member. Requires channels:join scope."""
+        try:
+            data = await self._make_request(
+                "POST", "conversations.join", params={"channel": channel_id}
+            )
+            return bool(data.get("ok"))
+        except Exception as exc:
+            logger.debug(
+                "[Slack Sync] conversations.join failed for channel=%s: %s",
+                channel_id,
+                exc,
+            )
+            return False
+
     async def get_channel_messages(
         self,
         channel_id: str,
@@ -428,12 +443,12 @@ class SlackConnector(BaseConnector):
         """Slack doesn't have contacts in the traditional sense - return 0."""
         return 0
 
-    async def sync_activities(self) -> int:
+    async def sync_activities(self) -> tuple[int, int]:
         """
         Sync Slack messages as activities.
 
-        This captures communication activity that can be correlated
-        with deals and accounts.
+        Returns:
+            Tuple of (activities_count, channels_with_messages_count).
         """
         logger.info("[Slack Sync] Starting Slack activity sync for org=%s", self.organization_id)
         # Broadcast that we're starting
@@ -456,6 +471,7 @@ class SlackConnector(BaseConnector):
         oldest = (datetime.utcnow().timestamp()) - (7 * 24 * 60 * 60)
 
         count = 0
+        channels_with_messages = 0
         user_info_cache: dict[str, dict[str, Any]] = {}
         async with get_session(organization_id=self.organization_id) as session:
             for channel in channels:
@@ -468,9 +484,15 @@ class SlackConnector(BaseConnector):
                 )
 
                 try:
+                    # Join public channels so we can read history (requires channels:join scope)
+                    is_private: bool = bool(channel.get("is_private", True))
+                    if not is_private:
+                        await self.join_channel(channel_id)
                     messages = await self.get_channel_messages(
                         channel_id, oldest=oldest, limit=100
                     )
+                    if messages:
+                        channels_with_messages += 1
 
                     for msg in messages:
                         user_id = msg.get("user")
@@ -555,7 +577,7 @@ class SlackConnector(BaseConnector):
 
             await session.commit()
 
-        return count
+        return count, channels_with_messages
 
     def _extract_sender_fields(self, slack_msg: dict[str, Any]) -> dict[str, Any]:
         user_id = slack_msg.get("user")
@@ -753,7 +775,7 @@ class SlackConnector(BaseConnector):
                 exc_info=True,
             )
 
-        activities_count = await self.sync_activities()
+        activities_count, channels_count = await self.sync_activities()
 
         # Broadcast completion
         await broadcast_sync_progress(
@@ -768,6 +790,7 @@ class SlackConnector(BaseConnector):
             "deals": 0,
             "contacts": 0,
             "activities": activities_count,
+            "channels": channels_count,
         }
 
     async def fetch_deal(self, deal_id: str) -> dict[str, Any]:
