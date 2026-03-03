@@ -85,6 +85,82 @@ def _enqueue_google_drive_login_sync(organization_id: UUID, user_id: UUID, integ
 _AGENT_GLOBAL_COMMANDS_CATEGORY = "global_commands"
 
 
+def _is_global_admin(user: Optional[User]) -> bool:
+    """Return True when the user has the global admin role."""
+    if not user:
+        return False
+    return user.role == "global_admin" or "global_admin" in (user.roles or [])
+
+
+async def _get_org_membership(session: Any, user_id: UUID, org_id: UUID) -> Optional[Any]:
+    """Load a user's membership in an organization."""
+    from models.org_member import OrgMember
+
+    result = await session.execute(
+        select(OrgMember).where(
+            OrgMember.user_id == user_id,
+            OrgMember.organization_id == org_id,
+            OrgMember.status == "active",
+        )
+    )
+    return result.scalar_one_or_none()
+
+
+async def _can_administer_org(session: Any, user: Optional[User], org_id: UUID) -> bool:
+    """Org-admin check: org-scoped admin for this org OR global_admin."""
+    if _is_global_admin(user):
+        return True
+    if not user:
+        return False
+    membership = await _get_org_membership(session, user.id, org_id)
+    return bool(membership and membership.role == "admin")
+
+
+async def _ensure_org_has_admin(session: Any, org_id: UUID) -> None:
+    """Ensure each org has at least one non-guest active admin membership."""
+    from models.org_member import OrgMember
+
+    admin_result = await session.execute(
+        select(OrgMember.id)
+        .join(User, User.id == OrgMember.user_id)
+        .where(
+            OrgMember.organization_id == org_id,
+            OrgMember.status == "active",
+            OrgMember.role == "admin",
+            User.is_guest.is_(False),
+        )
+        .limit(1)
+    )
+    if admin_result.scalar_one_or_none():
+        return
+
+    first_member_result = await session.execute(
+        select(OrgMember)
+        .join(User, User.id == OrgMember.user_id)
+        .where(
+            OrgMember.organization_id == org_id,
+            OrgMember.status == "active",
+            User.is_guest.is_(False),
+        )
+        .order_by(OrgMember.joined_at.asc().nulls_last(), OrgMember.created_at.asc().nulls_last())
+        .limit(1)
+    )
+    first_member = first_member_result.scalar_one_or_none()
+    if not first_member:
+        return
+
+    first_member.role = "admin"
+    first_user = await session.get(User, first_member.user_id)
+    if first_user and first_user.organization_id == org_id:
+        first_user.role = "admin"
+
+    logger.info(
+        "Promoted first active org member to admin org=%s user=%s",
+        org_id,
+        first_member.user_id,
+    )
+
+
 async def _get_user_global_commands(session: Any, user: User) -> Optional[str]:
     if not user.organization_id:
         return None
@@ -651,6 +727,15 @@ async def sync_user(request: SyncUserRequest) -> SyncUserResponse:
                     existing.organization_id = pm.organization_id
                     existing.role = pm.role
 
+            org_ids_to_validate: set[UUID] = set()
+            if org_uuid:
+                org_ids_to_validate.add(org_uuid)
+            org_ids_to_validate.update(pm.organization_id for pm in pending_memberships)
+            if existing.organization_id:
+                org_ids_to_validate.add(existing.organization_id)
+            for candidate_org_id in org_ids_to_validate:
+                await _ensure_org_has_admin(session, candidate_org_id)
+
             if not existing.organization_id:
                 active_membership_result = await session.execute(
                     select(OrgMember)
@@ -881,7 +966,7 @@ class TeamMemberResponse(BaseModel):
     job_title: Optional[str] = None
     status: Optional[str] = None  # 'active', 'crm_only', etc.
     is_guest: bool = False
-    can_login_as_admin: bool = False
+    can_login_as_admin: bool = False  # True when user is org admin for this org, or global_admin
     identities: list[IdentityMappingResponse] = []
 
 
@@ -996,7 +1081,10 @@ async def get_organization_members(
                     job_title=membership.title if membership else None,
                     status=u.status,
                     is_guest=u.is_guest,
-                    can_login_as_admin=(u.role == "admin" or "global_admin" in (u.roles or [])),
+                    can_login_as_admin=(
+                        bool(membership and membership.role == "admin")
+                        or _is_global_admin(u)
+                    ),
                     identities=identities,
                 )
             )
@@ -1525,6 +1613,72 @@ async def switch_active_organization(
         )
 
 
+
+
+class UpdateMemberRoleRequest(BaseModel):
+    """Update a member's org-scoped role."""
+
+    role: str
+
+
+@router.patch("/organizations/{org_id}/members/{target_user_id}/role")
+async def update_organization_member_role(
+    org_id: str,
+    target_user_id: str,
+    request: UpdateMemberRoleRequest,
+    user_id: Optional[str] = None,
+) -> dict[str, str]:
+    """Promote or demote a member. Requires org admin for this org, or global_admin."""
+    from models.org_member import OrgMember
+
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    if request.role not in {"admin", "member"}:
+        raise HTTPException(status_code=400, detail="Role must be 'admin' or 'member'")
+
+    try:
+        org_uuid = UUID(org_id)
+        target_uuid = UUID(target_user_id)
+        requester_uuid = UUID(user_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid ID format")
+
+    async with get_admin_session() as session:
+        requester: Optional[User] = await session.get(User, requester_uuid)
+        if not await _can_administer_org(session, requester, org_uuid):
+            raise HTTPException(status_code=403, detail="Org admin or global_admin required for this organization")
+
+        membership_result = await session.execute(
+            select(OrgMember).where(
+                OrgMember.user_id == target_uuid,
+                OrgMember.organization_id == org_uuid,
+                OrgMember.status == "active",
+            )
+        )
+        target_membership: Optional[OrgMember] = membership_result.scalar_one_or_none()
+        if not target_membership:
+            raise HTTPException(status_code=404, detail="Active member not found")
+
+        target_membership.role = request.role
+
+        target_user: Optional[User] = await session.get(User, target_uuid)
+        if target_user and target_user.organization_id == org_uuid:
+            target_user.role = request.role
+
+        await _ensure_org_has_admin(session, org_uuid)
+        await session.commit()
+
+        logger.info(
+            "Updated org member role org=%s target_user=%s new_role=%s by_user=%s",
+            org_uuid,
+            target_uuid,
+            request.role,
+            requester_uuid,
+        )
+
+    return {"status": "updated", "role": request.role}
+
 @router.delete("/organizations/{org_id}/members/{target_user_id}")
 async def remove_organization_member(
     org_id: str,
@@ -1600,8 +1754,8 @@ async def update_organization(
     user_id: Optional[str] = None,
 ) -> OrganizationResponse:
     """Update organization settings.
-    
-    Only accessible by admin members of that organization.
+
+    Requires org admin for this organization, or global_admin.
     """
     if not user_id:
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -1613,10 +1767,9 @@ async def update_organization(
         raise HTTPException(status_code=400, detail="Invalid ID format")
 
     async with get_session() as session:
-        # Verify requesting user belongs to this organization
         requesting_user = await session.get(User, user_uuid)
-        if not requesting_user or requesting_user.organization_id != org_uuid:
-            raise HTTPException(status_code=403, detail="Not authorized to update this organization")
+        if not await _can_administer_org(session, requesting_user, org_uuid):
+            raise HTTPException(status_code=403, detail="Org admin or global_admin required for this organization")
 
         # Fetch and update organization
         org = await session.get(Organization, org_uuid)
@@ -1658,8 +1811,8 @@ async def update_guest_user(
 
     async with get_session() as session:
         requesting_user = await session.get(User, user_uuid)
-        if not requesting_user or requesting_user.organization_id != org_uuid:
-            raise HTTPException(status_code=403, detail="Not authorized to update this organization")
+        if not await _can_administer_org(session, requesting_user, org_uuid):
+            raise HTTPException(status_code=403, detail="Org admin or global_admin required for this organization")
 
         org = await session.get(Organization, org_uuid)
         if not org:
@@ -3078,16 +3231,14 @@ async def merge_users_endpoint(
     if not auth.organization_id:
         raise HTTPException(status_code=400, detail="Organization context required")
     
-    # Check admin permissions
-    is_admin = False
-    if auth.user:
-        is_admin = (
-            auth.user.role == "admin"
-            or "global_admin" in (auth.user.roles or [])
-        )
-    
-    if not is_admin:
-        raise HTTPException(status_code=403, detail="Admin role required to merge users")
+    # Check admin permissions (org admin for current org, or global_admin).
+    async with get_admin_session() as session:
+        requester: Optional[User] = await session.get(User, auth.user_id)
+        if not await _can_administer_org(session, requester, auth.organization_id):
+            raise HTTPException(
+                status_code=403,
+                detail="Org admin for this organization or global_admin role required",
+            )
     
     result = await merge_users(
         target_user_id=request.target_user_id,
