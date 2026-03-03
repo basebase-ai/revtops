@@ -1056,7 +1056,13 @@ export function DataSources(): JSX.Element {
     state: TileState
   ): JSX.Element => {
     const isConnecting = connectingProvider === integration.provider;
-    const isSyncing = syncingProviders.has(integration.provider);
+    const isStartingSync =
+      state === 'connected' &&
+      integration.isOwner &&
+      integration.provider !== 'apollo' &&
+      !integration.lastSyncAt &&
+      !syncingProviders.has(integration.provider);
+    const isSyncing = syncingProviders.has(integration.provider) || isStartingSync;
     const isDisconnecting = disconnectingProviders.has(integration.provider);
 
     // State-specific styling - no amber for team-only
@@ -1339,9 +1345,11 @@ export function DataSources(): JSX.Element {
                   Last synced: {new Date(integration.lastSyncAt).toLocaleString()}
                 </p>
               )}
-              {state === 'connected' && (syncProgress[integration.provider] !== undefined || integration.syncStats) && (
+              {state === 'connected' && (isStartingSync || syncProgress[integration.provider] !== undefined || integration.syncStats) && (
                 <p className="text-xs text-surface-400 mt-1 hidden sm:block">
-                  {syncProgress[integration.provider] !== undefined ? (
+                  {isStartingSync ? (
+                    <span className="text-primary-400">Starting sync…</span>
+                  ) : syncProgress[integration.provider] !== undefined ? (
                     <span className="text-primary-400">
                       Syncing{syncStep[integration.provider] ? ` ${syncStep[integration.provider]}` : ''}... {getActivityLabel(integration.provider, syncProgress[integration.provider] ?? 0, syncStep[integration.provider])}
                     </span>

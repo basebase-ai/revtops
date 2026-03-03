@@ -943,7 +943,7 @@ async def _upsert_slack_user_mapping(
             context,
         )
 
-    now = datetime.now(UTC)
+    now = datetime.now(UTC).replace(tzinfo=None)
     normalized_slack_user_id: str = _normalize_slack_user_id(slack_user_id)
     if not normalized_slack_user_id:
         logger.warning(

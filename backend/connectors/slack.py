@@ -284,7 +284,7 @@ class SlackConnector(BaseConnector):
         """Join a public channel. Returns True if joined or already a member. Requires channels:join scope."""
         try:
             data = await self._make_request(
-                "POST", "conversations.join", params={"channel": channel_id}
+                "POST", "conversations.join", json_data={"channel": channel_id}
             )
             return bool(data.get("ok"))
         except Exception as exc:
