@@ -81,10 +81,18 @@ def _collapse_list_marker_breaks(text: str) -> str:
 SLOW_REPLY_MESSAGE = "Still working on this..."
 
 
-def _cannot_action_message() -> str:
+def _error_message(error: Exception | None = None) -> str:
+    detail = ""
+    if error:
+        brief = str(error)
+        # Keep it short — truncate long tracebacks
+        if len(brief) > 200:
+            brief = brief[:200] + "…"
+        detail = f"\n> `{brief}`"
     return (
-        "I'm sorry, I can't help with that right now. "
-        "Try connecting Slack to RevTops for your account."
+        "Sorry, something went wrong while processing your request. "
+        "Please try again — if this keeps happening, let the team know."
+        f"{detail}"
     )
 
 
@@ -118,14 +126,15 @@ def _normalize_slack_team_id(team_id: str | None) -> str:
     return (team_id or "").strip().upper()
 
 
-async def _post_cannot_action_response(
+async def _post_error_response(
     connector: SlackConnector,
     channel: str,
     thread_ts: str | None = None,
+    error: Exception | None = None,
 ) -> None:
     await connector.post_message(
         channel=channel,
-        text=_cannot_action_message(),
+        text=_error_message(error),
         thread_ts=thread_ts,
     )
 
@@ -2151,7 +2160,7 @@ async def _stream_and_post_responses(
         logger.error(
             "[slack_conversations] Error during streaming: %s", e, exc_info=True,
         )
-        current_text += f"\n{_cannot_action_message()}"
+        current_text += f"\n{_error_message(e)}"
 
     # Post any remaining text after the stream ends
     await _flush_current_text(reason="stream_end", force=True)

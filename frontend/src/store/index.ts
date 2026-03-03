@@ -249,6 +249,7 @@ interface AppState {
 
   // UI State
   sidebarCollapsed: boolean;
+  sidebarWidth: number;
   currentView: View;
   currentChatId: string | null;
   currentAppId: string | null;
@@ -297,6 +298,7 @@ interface AppState {
 
   // Actions - UI
   setSidebarCollapsed: (collapsed: boolean) => void;
+  setSidebarWidth: (width: number) => void;
   setCurrentView: (view: View) => void;
   setCurrentChatId: (id: string | null) => void;
   setCurrentAppId: (id: string | null) => void;
@@ -402,6 +404,7 @@ export const useAppStore = create<AppState>()(
       isAuthenticated: false,
       masquerade: null,
       sidebarCollapsed: false,
+      sidebarWidth: 256,
       currentView: "home",
       currentChatId: null,
       currentAppId: null,
@@ -675,6 +678,7 @@ export const useAppStore = create<AppState>()(
 
       // UI actions
       setSidebarCollapsed: (sidebarCollapsed) => set({ sidebarCollapsed }),
+      setSidebarWidth: (sidebarWidth) => set({ sidebarWidth }),
       setCurrentView: (currentView) =>
         set({
           currentView,
@@ -1568,6 +1572,7 @@ export const useAppStore = create<AppState>()(
         organizations: state.organizations,
         isAuthenticated: state.isAuthenticated,
         sidebarCollapsed: state.sidebarCollapsed,
+        sidebarWidth: state.sidebarWidth,
         pinnedChatIds: state.pinnedChatIds,
         masquerade: state.masquerade, // Persist masquerade state so admin can exit after reload
       }),
