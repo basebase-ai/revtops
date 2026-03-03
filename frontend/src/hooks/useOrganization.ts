@@ -296,6 +296,10 @@ export function useUpdateMemberRole() {
       void queryClient.invalidateQueries({
         queryKey: organizationKeys.members(variables.orgId),
       });
+    },
+  });
+}
+
 export function useDeleteOrganization() {
   const queryClient = useQueryClient();
 
