@@ -723,68 +723,6 @@ async def refresh_slack_user_mappings_from_directory(
     return mapped_count
 
 
-async def upsert_slack_user_mapping_from_current_profile(
-    organization_id: str,
-    connector: SlackConnector,
-    integration: Integration | None,
-) -> int:
-    """Upsert Slack user mappings using the authenticated user's profile."""
-    if not integration:
-        logger.warning(
-            "[slack_conversations] Missing Slack integration when mapping current profile for org=%s",
-            organization_id,
-        )
-        return 0
-
-    if not connector.user_id:
-        logger.warning(
-            "[slack_conversations] Slack integration %s missing current user id for profile mapping",
-            integration.id,
-        )
-        return 0
-    target_user_id = UUID(connector.user_id)
-
-    slack_user_ids = _extract_slack_user_ids(integration.extra_data or {})
-    if not slack_user_ids:
-        logger.warning(
-            "[slack_conversations] Slack integration %s missing Slack user IDs for current profile mapping",
-            integration.id,
-        )
-        return 0
-
-    logger.info(
-        "[slack_conversations] Fetching current Slack user profile for integration=%s org=%s",
-        integration.id,
-        organization_id,
-    )
-    profile = await connector.get_current_user_profile()
-    if not profile:
-        logger.warning(
-            "[slack_conversations] Slack profile lookup returned empty profile for integration=%s",
-            integration.id,
-        )
-        return 0
-
-    slack_email = (profile.get("email") or "").strip().lower() or None
-    created_count = 0
-    for slack_user_id in sorted(slack_user_ids):
-        await _upsert_slack_user_mapping(
-            organization_id=organization_id,
-            user_id=target_user_id,
-            slack_user_id=slack_user_id,
-            slack_email=slack_email,
-            match_source="slack_current_user_profile",
-        )
-        created_count += 1
-
-    logger.info(
-        "[slack_conversations] Upserted %d Slack user mappings from current profile for integration=%s",
-        created_count,
-        integration.id,
-    )
-    return created_count
-
-
 async def _hydrate_slack_integration_metadata(integration: Integration) -> None:
     extra_data = integration.extra_data or {}
     slack_user_ids = _extract_slack_user_ids(extra_data)

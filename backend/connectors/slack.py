@@ -339,11 +339,6 @@ class SlackConnector(BaseConnector):
         )
         return data.get("user", {})
 
-    async def get_current_user_profile(self) -> dict[str, Any]:
-        """Get the authenticated user's profile via users.profile.get."""
-        data = await self._make_request("GET", "users.profile.get")
-        return data.get("profile", {})
-
     async def _fetch_current_user_id_for_mapping(self) -> Optional[str]:
         """Fetch the current RevTops user ID for Slack mapping."""
         if not self._integration:
@@ -652,7 +647,6 @@ class SlackConnector(BaseConnector):
             refresh_slack_user_mappings_from_directory,
             refresh_slack_user_mappings_for_org,
             upsert_slack_user_mapping_from_nango_action,
-            upsert_slack_user_mapping_from_current_profile,
         )
         from services.nango import get_nango_client
         from config import get_nango_integration_id
@@ -729,29 +723,6 @@ class SlackConnector(BaseConnector):
 
         try:
             logger.info(
-                "[Slack Sync] Fetching current Slack user profile for org=%s",
-                self.organization_id,
-            )
-            mapped_count = await upsert_slack_user_mapping_from_current_profile(
-                organization_id=self.organization_id,
-                connector=self,
-                integration=self._integration,
-            )
-            logger.info(
-                "[Slack Sync] Upserted %d Slack user mappings from current profile for org=%s",
-                mapped_count,
-                self.organization_id,
-            )
-        except Exception as exc:
-            logger.warning(
-                "[Slack Sync] Failed to map current Slack user profile for org=%s: %s",
-                self.organization_id,
-                exc,
-                exc_info=True,
-            )
-
-        try:
-            logger.info(
                 "[Slack Sync] Refreshing Slack user mappings before activity sync for org=%s",
                 self.organization_id,
             )
@@ -802,22 +773,6 @@ class SlackConnector(BaseConnector):
     async def fetch_deal(self, deal_id: str) -> dict[str, Any]:
         """Slack doesn't have deals."""
         return {"error": "Slack does not support deals"}
-
-    async def search_messages(
-        self,
-        query: str,
-        count: int = 20,
-    ) -> list[dict[str, Any]]:
-        """Search for messages matching a query."""
-        params = {
-            "query": query,
-            "count": count,
-            "sort": "timestamp",
-            "sort_dir": "desc",
-        }
-
-        data = await self._make_request("GET", "search.messages", params=params)
-        return data.get("messages", {}).get("matches", [])
 
     async def get_user_presence(self, user_id: str) -> dict[str, Any]:
         """Get a user's presence status."""
