@@ -137,9 +137,6 @@ export function CompanySetup({ emailDomain, onComplete, onBack }: CompanySetupPr
             </button>
           </form>
 
-          <p className="text-center text-surface-500 text-xs mt-6">
-            Your teammates from @{emailDomain} will automatically join this workspace
-          </p>
         </div>
       </div>
     </div>
