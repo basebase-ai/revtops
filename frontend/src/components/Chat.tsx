@@ -16,7 +16,7 @@ import remarkGfm from 'remark-gfm';
 import { ArtifactViewer, type FileArtifact } from './ArtifactViewer';
 import { ArtifactTile } from './ArtifactTile';
 import { AppTile } from './apps/AppTile';
-import { AppViewer } from './apps/AppViewer';
+import { AppPreviewPanel } from './apps/AppPreviewPanel';
 import { Avatar } from './Avatar';
 import { PendingApprovalCard, type ApprovalResult } from './PendingApprovalCard';
 import { getConversation, uploadChatFile, type UploadResponse } from '../api/client';
@@ -153,8 +153,13 @@ export function Chat({
   // Local state
   const [input, setInput] = useState<string>('');
   const [currentArtifact, setCurrentArtifact] = useState<AnyArtifact | null>(null);
-  const [currentApp, setCurrentApp] = useState<AppBlock["app"] | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(false);
+
+  // App preview panel state
+  const [previewAppId, setPreviewAppId] = useState<string | null>(null);
+  const [previewCollapsed, setPreviewCollapsed] = useState(false);
+  const [previewDismissed, setPreviewDismissed] = useState(false);
+  const [previewHeight, setPreviewHeight] = useState(300);
   const [selectedToolCall, setSelectedToolCall] = useState<ToolCallData | null>(null);
   const [toolApprovals, setToolApprovals] = useState<Map<string, ToolApprovalState>>(new Map());
   const [localConversationId, setLocalConversationId] = useState<string | null>(chatId ?? null);
@@ -192,6 +197,8 @@ export function Chat({
   const messagesRef = useRef<ChatMessage[]>([]); // Track current messages for polling comparison
   const workflowDoneRef = useRef<boolean>(false); // Prevents polling restart after workflow completes
   const loadInFlightChatIdRef = useRef<string | null>(null); // Dedupe load requests for same chatId
+  const prevAppCountRef = useRef(0); // Track app count for auto-switching preview
+  const dragContainerRef = useRef<HTMLDivElement>(null); // Container for drag-resize
 
   // Keep ref in sync with state
   pendingMessagesRef.current = pendingMessages;
@@ -238,6 +245,41 @@ export function Chat({
   
   // Agent is running if there's an active task OR we're in a thinking/pending state
   const agentRunning = activeTaskId !== null || isThinking;
+
+  // Extract all apps from conversation messages (for preview panel)
+  const conversationApps = useMemo((): AppBlock["app"][] => {
+    const apps: AppBlock["app"][] = [];
+    const seen = new Set<string>();
+    for (const msg of messages) {
+      for (const block of msg.contentBlocks) {
+        if (block.type === "app" && !seen.has((block as AppBlock).app.id)) {
+          seen.add((block as AppBlock).app.id);
+          apps.push((block as AppBlock).app);
+        }
+      }
+    }
+    return apps;
+  }, [messages]);
+
+  // Auto-switch to latest app when a new one appears
+  useEffect(() => {
+    if (conversationApps.length > prevAppCountRef.current && conversationApps.length > 0) {
+      const latestApp = conversationApps[conversationApps.length - 1];
+      if (latestApp) {
+        setPreviewAppId(latestApp.id);
+        setPreviewCollapsed(false);
+        setPreviewDismissed(false);
+      }
+    }
+    // Default to latest app if no selection yet
+    if (conversationApps.length > 0 && previewAppId === null) {
+      const latestApp = conversationApps[conversationApps.length - 1];
+      if (latestApp) {
+        setPreviewAppId(latestApp.id);
+      }
+    }
+    prevAppCountRef.current = conversationApps.length;
+  }, [conversationApps, previewAppId]);
 
   // Track if this conversation has uncommitted changes (write tools completed)
   const hasUncommittedChanges = useMemo(() => {
@@ -322,7 +364,11 @@ export function Chat({
   useEffect(() => {
     setLocalConversationId(chatId ?? null);
     setCurrentArtifact(null);
-    setCurrentApp(null);
+    // Reset preview state for new conversation
+    setPreviewDismissed(false);
+    setPreviewAppId(null);
+    setPreviewCollapsed(false);
+    prevAppCountRef.current = 0;
     // Reset conversation type and scope when starting a new chat
     if (!chatId) {
       setConversationType(null);
@@ -948,6 +994,29 @@ export function Chat({
     }
   }, [activeTaskId, sendMessage, localConversationId, chatId, setConversationThinking]);
 
+  // Drag handle for resizing preview panel
+  const handlePreviewDragStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    const container = dragContainerRef.current;
+    if (!container) return;
+    const containerRect = container.getBoundingClientRect();
+    const startY = e.clientY;
+    const startHeight = previewHeight;
+
+    const onMouseMove = (ev: MouseEvent): void => {
+      const delta = ev.clientY - startY;
+      const maxH = containerRect.height * 0.7;
+      const newHeight = Math.min(maxH, Math.max(150, startHeight + delta));
+      setPreviewHeight(newHeight);
+    };
+    const onMouseUp = (): void => {
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+    };
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+  }, [previewHeight]);
+
   const handleSuggestionClick = (text: string): void => {
     console.log('[Chat] Suggestion clicked - sending immediately');
     setInput(text);
@@ -1140,89 +1209,123 @@ export function Chat({
 
       {/* Content area with messages and optional artifact sidebar */}
       <div className="flex-1 flex overflow-hidden">
-        {/* Messages */}
-        <div className={`relative md:transition-all md:duration-300 md:ease-in-out ${currentArtifact || currentApp ? 'md:w-1/2' : ''} flex-1`}>
-          <div ref={messagesContainerRef} className="absolute inset-0 overflow-y-auto overflow-x-hidden p-3 md:p-6">
-          {conversationState?.summary && <SummaryCard summary={conversationState.summary} />}
-          {!userId && (
-            <div className="mb-3 rounded-lg border border-amber-600/50 bg-amber-900/20 px-3 py-2 text-sm text-amber-200">
-              User context is missing — artifacts and apps may not save correctly. Please refresh or re-sign in.
-            </div>
-          )}
-          {messages.length === 0 && !isThinking ? (
-            conversationType === 'workflow' ? (
-              // Show loading state for workflow conversations waiting for agent to start
-              <div className="flex-1 flex flex-col items-center justify-center py-20">
-                <div className="relative mb-6">
-                  {/* Spinning ring */}
-                  <div className="w-16 h-16 rounded-full border-4 border-surface-700 border-t-primary-500 animate-spin" />
-                  {/* Center icon */}
-                  <div className="absolute inset-0 flex items-center justify-center">
-                    <svg className="w-6 h-6 text-primary-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                    </svg>
-                  </div>
-                </div>
-                <h3 className="text-lg font-medium text-surface-200 mb-2">Running Workflow</h3>
-                <p className="text-surface-400 text-center max-w-md">
-                  The agent is processing your workflow. Results will appear here momentarily...
-                </p>
-              </div>
-            ) : (
-              <EmptyState onSuggestionClick={handleSuggestionClick} />
-            )
-          ) : (
-            <div className="max-w-3xl mx-auto space-y-3">
-              {messages.map((msg) => (
-                <MessageWithBlocks
-                  key={msg.id}
-                  message={msg}
-                  toolApprovals={toolApprovals}
-                  onArtifactClick={setCurrentArtifact}
-                  onAppClick={(app: AppBlock["app"]) => { setCurrentApp(app); setCurrentArtifact(null); }}
-                  onToolApprove={handleToolApprove}
-                  onToolCancel={handleToolCancel}
-                  onToolClick={(block) => setSelectedToolCall({
-                    toolName: block.name,
-                    toolId: block.id,
-                    input: block.input,
-                    result: block.result,
-                    status: block.status === 'complete' ? 'complete' : 'running',
-                  })}
-                  onRetry={handleRetry}
-                  conversationScope={conversationScope}
-                  currentUserId={userId}
-                />
-              ))}
-
-              {/* Thinking indicator */}
-              {isThinking && <ThinkingIndicator />}
-
-              {/* Workflow polling spinner - shows at bottom while workflow is running */}
-              {isWorkflowPolling && messages.length > 0 && !isThinking && (
-                <div className="flex items-center justify-center gap-2 py-4 text-surface-400">
-                  <div className="w-4 h-4 border-2 border-surface-600 border-t-primary-500 rounded-full animate-spin" />
-                  <span className="text-sm">Workflow running...</span>
+        {/* Messages column (vertical flex with optional app preview above) */}
+        <div ref={dragContainerRef} className={`flex flex-col md:transition-all md:duration-300 md:ease-in-out ${currentArtifact ? 'md:w-1/2' : ''} flex-1 min-h-0`}>
+          {/* App preview panel (above messages) */}
+          {conversationApps.length > 0 && !previewDismissed && (
+            <>
+              <AppPreviewPanel
+                apps={conversationApps}
+                activeAppId={previewAppId}
+                onActiveAppChange={setPreviewAppId}
+                collapsed={previewCollapsed}
+                onCollapsedChange={setPreviewCollapsed}
+                onClose={() => setPreviewDismissed(true)}
+                onAppError={(errorMsg: string) => {
+                  const activeApp = conversationApps.find((a) => a.id === previewAppId) ?? conversationApps[conversationApps.length - 1];
+                  if (activeApp) {
+                    const fixPrompt = `The app "${activeApp.title}" has a compile/runtime error. Please fix it and create an updated version.\n\nError:\n\`\`\`\n${errorMsg}\n\`\`\``;
+                    sendChatMessage(fixPrompt, 'input');
+                  }
+                }}
+                height={previewHeight}
+              />
+              {/* Drag handle for resizing */}
+              {!previewCollapsed && (
+                <div
+                  className="h-1 flex-shrink-0 cursor-row-resize bg-surface-800 hover:bg-primary-600 transition-colors group flex items-center justify-center"
+                  onMouseDown={handlePreviewDragStart}
+                >
+                  <div className="w-8 h-0.5 rounded-full bg-surface-600 group-hover:bg-primary-400 transition-colors" />
                 </div>
               )}
+            </>
+          )}
 
-              <div ref={messagesEndRef} />
+          {/* Messages scroll area */}
+          <div className="relative flex-1 min-h-0">
+            <div ref={messagesContainerRef} className="absolute inset-0 overflow-y-auto overflow-x-hidden p-3 md:p-6">
+            {conversationState?.summary && <SummaryCard summary={conversationState.summary} />}
+            {!userId && (
+              <div className="mb-3 rounded-lg border border-amber-600/50 bg-amber-900/20 px-3 py-2 text-sm text-amber-200">
+                User context is missing — artifacts and apps may not save correctly. Please refresh or re-sign in.
+              </div>
+            )}
+            {messages.length === 0 && !isThinking ? (
+              conversationType === 'workflow' ? (
+                // Show loading state for workflow conversations waiting for agent to start
+                <div className="flex-1 flex flex-col items-center justify-center py-20">
+                  <div className="relative mb-6">
+                    {/* Spinning ring */}
+                    <div className="w-16 h-16 rounded-full border-4 border-surface-700 border-t-primary-500 animate-spin" />
+                    {/* Center icon */}
+                    <div className="absolute inset-0 flex items-center justify-center">
+                      <svg className="w-6 h-6 text-primary-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                      </svg>
+                    </div>
+                  </div>
+                  <h3 className="text-lg font-medium text-surface-200 mb-2">Running Workflow</h3>
+                  <p className="text-surface-400 text-center max-w-md">
+                    The agent is processing your workflow. Results will appear here momentarily...
+                  </p>
+                </div>
+              ) : (
+                <EmptyState onSuggestionClick={handleSuggestionClick} />
+              )
+            ) : (
+              <div className="max-w-3xl mx-auto space-y-3">
+                {messages.map((msg) => (
+                  <MessageWithBlocks
+                    key={msg.id}
+                    message={msg}
+                    toolApprovals={toolApprovals}
+                    onArtifactClick={setCurrentArtifact}
+                    onAppClick={(app: AppBlock["app"]) => { setPreviewAppId(app.id); setPreviewCollapsed(false); setPreviewDismissed(false); setCurrentArtifact(null); }}
+                    onToolApprove={handleToolApprove}
+                    onToolCancel={handleToolCancel}
+                    onToolClick={(block) => setSelectedToolCall({
+                      toolName: block.name,
+                      toolId: block.id,
+                      input: block.input,
+                      result: block.result,
+                      status: block.status === 'complete' ? 'complete' : 'running',
+                    })}
+                    onRetry={handleRetry}
+                    conversationScope={conversationScope}
+                    currentUserId={userId}
+                  />
+                ))}
+
+                {/* Thinking indicator */}
+                {isThinking && <ThinkingIndicator />}
+
+                {/* Workflow polling spinner - shows at bottom while workflow is running */}
+                {isWorkflowPolling && messages.length > 0 && !isThinking && (
+                  <div className="flex items-center justify-center gap-2 py-4 text-surface-400">
+                    <div className="w-4 h-4 border-2 border-surface-600 border-t-primary-500 rounded-full animate-spin" />
+                    <span className="text-sm">Workflow running...</span>
+                  </div>
+                )}
+
+                <div ref={messagesEndRef} />
+              </div>
+            )}
             </div>
-          )}
+
+            {/* Scroll to bottom button */}
+            {showScrollToBottom && (
+              <button
+                onClick={scrollToBottom}
+                className="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-surface-800 border border-surface-700 text-surface-300 hover:text-surface-100 hover:bg-surface-700 shadow-lg transition-all text-xs font-medium z-10"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 14l-7 7m0 0l-7-7m7 7V3" />
+                </svg>
+                Scroll to bottom
+              </button>
+            )}
           </div>
-          
-          {/* Scroll to bottom button */}
-          {showScrollToBottom && (
-            <button
-              onClick={scrollToBottom}
-              className="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-surface-800 border border-surface-700 text-surface-300 hover:text-surface-100 hover:bg-surface-700 shadow-lg transition-all text-xs font-medium z-10"
-            >
-              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 14l-7 7m0 0l-7-7m7 7V3" />
-              </svg>
-              Scroll to bottom
-            </button>
-          )}
         </div>
 
         {/* Artifact sidebar - overlay on mobile, sidebar on desktop */}
@@ -1248,39 +1351,6 @@ export function Chat({
                 </button>
               </div>
               <ArtifactViewer artifact={currentArtifact} />
-            </div>
-          </>
-        )}
-
-        {/* App sidebar - overlay on mobile, sidebar on desktop */}
-        {currentApp && (
-          <>
-            <div
-              className="fixed inset-0 bg-black/50 z-40 md:hidden animate-fade-in"
-              onClick={() => setCurrentApp(null)}
-            />
-            <div className="fixed inset-y-0 right-0 w-full max-w-md z-50 animate-slide-in-right md:relative md:w-1/2 md:z-auto md:animate-none md:transition-all md:duration-300 md:ease-in-out border-l border-surface-800 bg-surface-900 p-4 overflow-y-auto">
-              <div className="flex items-center justify-between mb-2">
-                <h2 className="text-lg font-semibold text-surface-100 truncate">
-                  {currentApp.title}
-                </h2>
-                <button
-                  onClick={() => setCurrentApp(null)}
-                  className="text-surface-400 hover:text-surface-200 p-1 -mr-1"
-                >
-                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                  </svg>
-                </button>
-              </div>
-              <AppViewer
-                app={currentApp}
-                onAppError={(errorMsg: string) => {
-                  const fixPrompt: string = `The app "${currentApp.title}" has a compile/runtime error. Please fix it and create an updated version.\n\nError:\n\`\`\`\n${errorMsg}\n\`\`\``;
-                  sendChatMessage(fixPrompt, 'input');
-                  setCurrentApp(null);
-                }}
-              />
             </div>
           </>
         )}
