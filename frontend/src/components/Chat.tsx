@@ -345,6 +345,8 @@ export function Chat({
     // Use ref to avoid re-running effect when pendingMessages changes
     if (pendingMessagesRef.current.length > 0) {
       console.log('[Chat] Skipping load - have pending messages to move');
+      // New conversation created by this user — set creator to self
+      setConversationCreatorId(userId ?? null);
       setIsLoading(false);
       return;
     }
@@ -354,6 +356,12 @@ export function Chat({
     const existingState = useAppStore.getState().conversations[chatId];
     if (existingState && existingState.messages.length > 0) {
       console.log('[Chat] Using existing state for conversation:', chatId);
+      // Still set conversation metadata from recentChats (skipping API fetch skips this otherwise)
+      const chatInfo = useAppStore.getState().recentChats.find(c => c.id === chatId);
+      if (chatInfo) {
+        setConversationScope(chatInfo.scope);
+        setConversationCreatorId(chatInfo.userId ?? null);
+      }
       setIsLoading(false);
       return;
     }
