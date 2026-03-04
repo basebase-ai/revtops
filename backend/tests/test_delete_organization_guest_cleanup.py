@@ -19,9 +19,10 @@ class _ExecResult:
 
 
 class _FakeSession:
-    def __init__(self, *, membership, org):
+    def __init__(self, *, membership, org, user):
         self._membership = membership
         self._org = org
+        self._user = user
         self.committed = False
         self.deleted = []
         self.statements = []
@@ -44,7 +45,10 @@ class _FakeSession:
             return _ExecResult(rowcount=3)
         return _ExecResult(rowcount=0)
 
-    async def get(self, _model, _id):
+    async def get(self, model, _id):
+        model_name = model.__name__ if hasattr(model, '__name__') else str(model)
+        if model_name == 'User':
+            return self._user
         return self._org
 
     async def delete(self, obj):
@@ -71,8 +75,9 @@ def test_delete_organization_deletes_guest_users_before_detach(monkeypatch):
 
     membership = SimpleNamespace(user_id=requester_id, organization_id=org_id, status="active", role="admin")
     org = SimpleNamespace(id=org_id)
+    user = SimpleNamespace(id=requester_id, role="global_admin", roles=["global_admin"])
 
-    fake_session = _FakeSession(membership=membership, org=org)
+    fake_session = _FakeSession(membership=membership, org=org, user=user)
     monkeypatch.setattr(auth, "get_admin_session", lambda: _FakeSessionContext(fake_session))
 
     fake_auth = SimpleNamespace(user_id=requester_id, organization_id=org_id, email="admin@test.com", role="admin", is_global_admin=True)
