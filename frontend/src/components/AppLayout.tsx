@@ -1260,6 +1260,7 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
       {/* Organization Panel */}
       {showOrgPanel && (
         <OrganizationPanel
+          key={`org-panel-${organization.id}`}
           organization={organization}
           currentUser={user}
           initialTab={orgPanelTab}

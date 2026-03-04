@@ -133,6 +133,13 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
 
   const [expandedMemberId, setExpandedMemberId] = useState<string | null>(null);
 
+  useEffect(() => {
+    setOrgName(organization.name);
+    setLogoUrl(organization.logoUrl);
+    setSettingsSaved(false);
+    setExpandedMemberId(null);
+  }, [organization.id, organization.name, organization.logoUrl]);
+
   // React Query: Fetch team members with automatic caching and refetch
   const { 
     data: teamData,
