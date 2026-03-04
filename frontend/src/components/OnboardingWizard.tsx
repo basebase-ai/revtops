@@ -185,7 +185,7 @@ export function OnboardingWizard({ emailDomain, onComplete: rawOnComplete, onBac
         throw new Error(text || `Failed to create organization: ${response.status}`);
       }
       const data = (await response.json()) as { id: string; name: string; logo_url: string | null };
-      setOrganization({ id: data.id, name: data.name, logoUrl: data.logo_url ?? null });
+      setOrganization({ id: data.id, name: data.name, logoUrl: data.logo_url ?? null, handle: null });
       await syncUserToBackend();
       await fetchUserOrganizations();
       // Fire-and-forget: trigger company research workflow if website URL provided

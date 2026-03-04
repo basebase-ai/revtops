@@ -44,6 +44,7 @@ export interface OrganizationInfo {
   id: string;
   name: string;
   logoUrl: string | null;
+  handle?: string | null;  // Optional for backwards compat with persisted state
 }
 
 // Integration types (data sources)
@@ -201,6 +202,7 @@ export type View =
   | "memory"
   | "apps"
   | "app-view"
+  | "artifact-view"
   | "admin"
   | "pending-changes";
 
@@ -242,6 +244,7 @@ export interface UserOrganization {
   id: string;
   name: string;
   logoUrl: string | null;
+  handle: string | null;
   role: string;
   isActive: boolean;
 }
@@ -262,6 +265,7 @@ interface AppState {
   currentView: View;
   currentChatId: string | null;
   currentAppId: string | null;
+  currentArtifactId: string | null;
   recentChats: ChatSummary[];
   pinnedChatIds: string[];
   pendingChatInput: string | null; // Pre-filled input for new chats
@@ -311,7 +315,9 @@ interface AppState {
   setCurrentView: (view: View) => void;
   setCurrentChatId: (id: string | null) => void;
   setCurrentAppId: (id: string | null) => void;
+  setCurrentArtifactId: (id: string | null) => void;
   openApp: (appId: string) => void;
+  openArtifact: (artifactId: string) => void;
   startNewChat: () => void;
   setPendingChatInput: (input: string | null) => void;
   setPendingChatAutoSend: (autoSend: boolean) => void;
@@ -421,6 +427,7 @@ export const useAppStore = create<AppState>()(
       currentView: "home",
       currentChatId: null,
       currentAppId: null,
+      currentArtifactId: null,
       recentChats: [],
       pinnedChatIds: [],
       pendingChatInput: null,
@@ -461,6 +468,7 @@ export const useAppStore = create<AppState>()(
           id: string;
           name: string;
           logo_url: string | null;
+          handle: string | null;
           role: string;
           is_active: boolean;
         }
@@ -482,6 +490,7 @@ export const useAppStore = create<AppState>()(
             id: o.id,
             name: o.name,
             logoUrl: o.logo_url,
+            handle: o.handle ?? null,
             role: o.role,
             isActive: o.is_active,
           }),
@@ -504,6 +513,7 @@ export const useAppStore = create<AppState>()(
             id: string;
             name: string;
             logo_url: string | null;
+            handle?: string | null;
           } | null;
         }>("/auth/users/me/active-organization", {
           method: "PATCH",
@@ -517,11 +527,16 @@ export const useAppStore = create<AppState>()(
         }
 
         if (data?.organization) {
+          const orgHandle: string | null =
+            data.organization.handle ??
+            organizations.find((o) => o.id === orgId)?.handle ??
+            null;
           set({
             organization: {
               id: data.organization.id,
               name: data.organization.name,
               logoUrl: data.organization.logo_url,
+              handle: orgHandle,
             },
             organizations: organizations.map((o) => ({
               ...o,
@@ -710,11 +725,19 @@ export const useAppStore = create<AppState>()(
           currentView,
           // Clear chat selection when navigating away from chat view
           ...(currentView !== "chat" ? { currentChatId: null } : {}),
+          ...(currentView !== "artifact-view" ? { currentArtifactId: null } : {}),
         }),
       setCurrentChatId: (currentChatId) => set({ currentChatId }),
       setCurrentAppId: (currentAppId) => set({ currentAppId }),
+      setCurrentArtifactId: (currentArtifactId) =>
+        set({ currentArtifactId: currentArtifactId }),
       openApp: (appId) =>
         set({ currentAppId: appId, currentView: "app-view" as View }),
+      openArtifact: (artifactId: string) =>
+        set({
+          currentArtifactId: artifactId,
+          currentView: "artifact-view" as View,
+        }),
       startNewChat: () => set({ currentChatId: null, currentView: "chat" }),
       setPendingChatInput: (pendingChatInput) => set({ pendingChatInput }),
       setPendingChatAutoSend: (pendingChatAutoSend) =>
@@ -1605,6 +1628,7 @@ export const useAppStore = create<AppState>()(
               id: data.organization.id,
               name: data.organization.name,
               logoUrl: data.organization.logo_url,
+              handle: (data.organization as { handle?: string | null }).handle ?? null,
             });
           }
 

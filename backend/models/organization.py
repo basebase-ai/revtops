@@ -28,6 +28,9 @@ class Organization(Base):
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
+    handle: Mapped[Optional[str]] = mapped_column(
+        String(64), nullable=True
+    )  # URL-safe handle for org-prefixed routes (e.g. "joinable", "cro-metrics"). Unique when set (migration).
     email_domain: Mapped[Optional[str]] = mapped_column(
         String(255), nullable=True, index=True
     )  # e.g., "acmecorp.com" - used to auto-match new users

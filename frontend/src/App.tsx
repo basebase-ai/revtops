@@ -92,6 +92,7 @@ function App(): JSX.Element {
               id: 'example.com',
               name: 'Example Company',
               logoUrl: null,
+              handle: null,
             });
             setScreen('app');
           }
@@ -211,7 +212,7 @@ function App(): JSX.Element {
           phone_number: string | null;
           job_title: string | null;
           organization_id: string | null;
-          organization: { id: string; name: string; logo_url: string | null } | null;
+          organization: { id: string; name: string; logo_url: string | null; handle?: string | null } | null;
         };
         
         // Update user with data from backend (authoritative source)
@@ -233,11 +234,12 @@ function App(): JSX.Element {
         // If sync returned an organization (e.g. invited user who auto-activated),
         // set it and go directly to app (orgs are auto-enrolled in free tier)
         if (userData.organization) {
-          const org = userData.organization as { id: string; name: string; logo_url: string | null };
+          const org = userData.organization as { id: string; name: string; logo_url: string | null; handle?: string | null };
           setOrganization({
             id: org.id,
             name: org.name,
             logoUrl: org.logo_url ?? null,
+            handle: org.handle ?? null,
           });
           await fetchUserOrganizations();
           setScreen('app');
@@ -263,6 +265,7 @@ function App(): JSX.Element {
           id: activeOrg.id,
           name: activeOrg.name,
           logoUrl: activeOrg.logoUrl ?? null,
+          handle: activeOrg.handle ?? null,
         });
       }
       setScreen('app');
@@ -441,7 +444,16 @@ function App(): JSX.Element {
       return (
         <OnboardingWizard
           emailDomain={emailDomain}
-          onComplete={() => { useAppStore.getState().startNewChat(); window.history.replaceState({}, '', '/chat'); setScreen('app'); }}
+          onComplete={() => {
+            const state = useAppStore.getState();
+            state.startNewChat();
+            const org = state.organization;
+            const orgs = state.organizations;
+            const handle = org?.handle ?? (org?.id ? orgs.find((o) => o.id === org.id)?.handle ?? null : null) ?? null;
+            const prefix = handle ? `/${handle}` : "";
+            window.history.replaceState({}, "", `${prefix}/chat`);
+            setScreen("app");
+          }}
           onBack={() => void handleLogout()}
         />
       );

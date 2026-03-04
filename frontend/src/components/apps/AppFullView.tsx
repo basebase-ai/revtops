@@ -59,8 +59,16 @@ export function AppFullView({ appId }: AppFullViewProps): JSX.Element {
     void fetchApp();
   }, [fetchApp]);
 
+  const organization = useAppStore((s) => s.organization);
+  const organizations = useAppStore((s) => s.organizations);
+  const orgHandle: string | null =
+    organization?.handle ??
+    (organization?.id ? organizations.find((o) => o.id === organization.id)?.handle ?? null : null) ??
+    null;
+  const prefix: string = orgHandle ? `/${orgHandle}` : "";
+
   const handleCopyLink = async (): Promise<void> => {
-    const url: string = `${window.location.origin}/apps/${appId}`;
+    const url: string = `${window.location.origin}${prefix}/apps/${appId}`;
     await navigator.clipboard.writeText(url);
     setLinkCopied(true);
     setTimeout(() => setLinkCopied(false), 2000);
@@ -90,7 +98,7 @@ export function AppFullView({ appId }: AppFullViewProps): JSX.Element {
 
   const goBack = (): void => {
     setCurrentView("apps" as never);
-    window.history.pushState(null, "", "/apps");
+    window.history.pushState(null, "", `${prefix}/apps`);
   };
 
   if (loading) {

@@ -124,9 +124,17 @@ export function AppsGallery(): JSX.Element {
     }, 1500);
   }, []);
 
+  const organization = useAppStore((s) => s.organization);
+  const organizations = useAppStore((s) => s.organizations);
+  const orgHandle: string | null =
+    organization?.handle ??
+    (organization?.id ? organizations.find((o) => o.id === organization.id)?.handle ?? null : null) ??
+    null;
+  const pathPrefix: string = orgHandle ? `/${orgHandle}` : "";
+
   const openApp = (appId: string): void => {
     storeOpenApp(appId);
-    window.history.pushState(null, "", `/apps/${appId}`);
+    window.history.pushState(null, "", `${pathPrefix}/apps/${appId}`);
   };
 
   const handleArchive = async (appId: string): Promise<void> => {

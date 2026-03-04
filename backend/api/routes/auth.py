@@ -590,6 +590,7 @@ class SyncOrganizationData(BaseModel):
     id: str
     name: str
     logo_url: Optional[str] = None
+    handle: Optional[str] = None
     subscription_required: bool = True
 
 
@@ -799,6 +800,7 @@ async def sync_user(request: SyncUserRequest) -> SyncUserResponse:
                         id=str(org.id),
                         name=org.name,
                         logo_url=org.logo_url,
+                        handle=org.handle,
                         subscription_required=not _sub_ok,
                     )
                 title_result = await session.execute(
@@ -860,6 +862,7 @@ async def sync_user(request: SyncUserRequest) -> SyncUserResponse:
                             id=str(org_retry.id),
                             name=org_retry.name,
                             logo_url=org_retry.logo_url,
+                            handle=org_retry.handle,
                             subscription_required=not _sub_ok,
                         )
                 return SyncUserResponse(
@@ -890,6 +893,52 @@ async def sync_user(request: SyncUserRequest) -> SyncUserResponse:
             organization=None,
             status=new_user.status,
             roles=new_user.roles or [],
+        )
+
+
+class OrgByHandleResponse(BaseModel):
+    """Organization info when resolving by handle (user must have access)."""
+
+    id: str
+    name: str
+    logo_url: Optional[str] = None
+    handle: Optional[str] = None
+
+
+@router.get("/organizations/by-handle/{handle}", response_model=OrgByHandleResponse)
+async def get_organization_by_handle(
+    handle: str,
+    auth: AuthContext = Depends(get_current_auth),
+) -> OrgByHandleResponse:
+    """Get organization by handle. Returns 404 if not found or user lacks access."""
+    from models.org_member import OrgMember
+
+    user_uuid = auth.user_id
+
+    async with get_admin_session() as session:
+        result = await session.execute(
+            select(Organization, OrgMember)
+            .join(OrgMember, OrgMember.organization_id == Organization.id)
+            .where(
+                Organization.handle == handle,
+                OrgMember.user_id == user_uuid,
+                OrgMember.status == "active",
+            )
+        )
+        row = result.one_or_none()
+
+        if not row:
+            raise HTTPException(
+                status_code=404,
+                detail="Organization not found or you don't have access",
+            )
+
+        org = row[0]
+        return OrgByHandleResponse(
+            id=str(org.id),
+            name=org.name,
+            logo_url=org.logo_url,
+            handle=org.handle,
         )
 
 
@@ -1628,6 +1677,7 @@ class UserOrganizationResponse(BaseModel):
     id: str
     name: str
     logo_url: Optional[str] = None
+    handle: Optional[str] = None
     role: str
     is_active: bool
 
@@ -1668,6 +1718,7 @@ async def list_user_organizations(
                 id=str(org.id),
                 name=org.name,
                 logo_url=org.logo_url,
+                handle=org.handle,
                 role=membership.role,
                 is_active=(user.organization_id == org.id),
             )
@@ -1735,6 +1786,7 @@ async def switch_active_organization(
                 id=str(org.id),
                 name=org.name,
                 logo_url=org.logo_url,
+                handle=org.handle,
                 subscription_required=not _sub_ok,
             )
 
@@ -2209,6 +2261,7 @@ async def get_masquerade_user(
                     id=str(org.id),
                     name=org.name,
                     logo_url=org.logo_url,
+                    handle=org.handle,
                     subscription_required=not _sub_ok,
                 )
         

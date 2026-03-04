@@ -10,6 +10,7 @@
 import { useState, useCallback } from "react";
 import { SandpackAppRenderer } from "./SandpackAppRenderer";
 import { apiRequest } from "../../lib/api";
+import { useAppStore } from "../../store";
 import type { AppBlock } from "../../store";
 
 interface AppViewerProps {
@@ -22,12 +23,20 @@ export function AppViewer({ app, onAppError }: AppViewerProps): JSX.Element {
   const [linkCopied, setLinkCopied] = useState<boolean>(false);
   const [embedCopied, setEmbedCopied] = useState<boolean>(false);
 
+  const organization = useAppStore((s) => s.organization);
+  const organizations = useAppStore((s) => s.organizations);
+  const orgHandle: string | null =
+    organization?.handle ??
+    (organization?.id ? organizations.find((o) => o.id === organization.id)?.handle ?? null : null) ??
+    null;
+  const prefix: string = orgHandle ? `/${orgHandle}` : "";
+
   const handleCopyLink = useCallback(async (): Promise<void> => {
-    const url: string = `${window.location.origin}/apps/${app.id}`;
+    const url: string = `${window.location.origin}${prefix}/apps/${app.id}`;
     await navigator.clipboard.writeText(url);
     setLinkCopied(true);
     setTimeout(() => setLinkCopied(false), 2000);
-  }, [app.id]);
+  }, [app.id, prefix]);
 
   const handleEmbed = useCallback(async (): Promise<void> => {
     const resp = await apiRequest<{ embed_url: string }>(

@@ -34,6 +34,7 @@ import { OrganizationPanel } from './OrganizationPanel';
 // Lazy-load app components (heavy due to Sandpack/Plotly deps)
 const AppsGallery = lazy(() => import('./apps/AppsGallery').then(m => ({ default: m.AppsGallery })));
 const AppFullView = lazy(() => import('./apps/AppFullView').then(m => ({ default: m.AppFullView })));
+const ArtifactFullView = lazy(() => import('./ArtifactFullView').then(m => ({ default: m.ArtifactFullView })));
 import { APP_NAME, LOGO_PATH } from '../lib/brand';
 import { ProfilePanel } from './ProfilePanel';
 import { useAppStore, useMasquerade, useIntegrations, type ActiveTask, type ToolCallData, type ChatMessage, type ContentBlock } from '../store';
@@ -146,19 +147,23 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
   const {
     user,
     organization,
+    organizations,
     sidebarCollapsed,
     currentView,
     currentChatId,
     currentAppId,
+    currentArtifactId,
     recentChats,
   } = useAppStore(
     useShallow((state) => ({
       user: state.user,
       organization: state.organization,
+      organizations: state.organizations,
       sidebarCollapsed: state.sidebarCollapsed,
       currentView: state.currentView,
       currentChatId: state.currentChatId,
       currentAppId: state.currentAppId,
+      currentArtifactId: state.currentArtifactId,
       recentChats: state.recentChats,
     }))
   );
@@ -301,95 +306,177 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
 
   // Parse URL and update state
   const setCurrentAppId = useAppStore((state) => state.setCurrentAppId);
+  const openArtifact = useAppStore((state) => state.openArtifact);
+  const fetchUserOrganizations = useAppStore((state) => state.fetchUserOrganizations);
+  const switchActiveOrganization = useAppStore((state) => state.switchActiveOrganization);
+  const setOrganization = useAppStore((state) => state.setOrganization);
 
-  const syncStateFromUrl = useCallback(() => {
+  const syncStateFromUrl = useCallback(async (): Promise<void> => {
     const path = window.location.pathname;
-    
-    // Match /chat/:id
+
+    const orgPrefixMatch = path.match(/^\/([a-z0-9-]+)(?:\/(.*))?$/);
+    const orgHandleFromPath: string | null =
+      orgPrefixMatch && orgPrefixMatch[1] && !/^(auth|admin|embed|chat|apps|artifacts|sources|data|workflows|memory|changes)$/i.test(orgPrefixMatch[1])
+        ? orgPrefixMatch[1]
+        : null;
+
+    if (orgHandleFromPath) {
+      let orgs = useAppStore.getState().organizations;
+      if (orgs.length === 0) {
+        await fetchUserOrganizations();
+        orgs = useAppStore.getState().organizations;
+      }
+      const targetOrg = orgs.find((o) => (o.handle ?? "").toLowerCase() === orgHandleFromPath.toLowerCase());
+      if (!targetOrg) {
+        return;
+      }
+      const currentOrg = useAppStore.getState().organization;
+      if (!currentOrg || currentOrg.id !== targetOrg.id) {
+        await switchActiveOrganization(targetOrg.id);
+      }
+
+      const subPath: string = orgPrefixMatch[2] ?? "";
+      if (subPath === "" || subPath === "chat") {
+        setCurrentChatId(null);
+        setCurrentView("chat");
+        return;
+      }
+      const chatIdMatch = subPath.match(/^chat\/([a-f0-9-]+)$/i);
+      if (chatIdMatch) {
+        setCurrentChatId(chatIdMatch[1]);
+        setCurrentView("chat");
+        return;
+      }
+      const artifactMatch = subPath.match(/^artifacts\/([a-f0-9-]+)$/i);
+      if (artifactMatch) {
+        openArtifact(artifactMatch[1]);
+        return;
+      }
+      const appMatch = subPath.match(/^apps\/([a-f0-9-]+)$/i);
+      if (appMatch) {
+        setCurrentAppId(appMatch[1]);
+        setCurrentView("app-view");
+        return;
+      }
+      const viewMap: Record<string, typeof currentView> = {
+        sources: "data-sources",
+        data: "data",
+        workflows: "workflows",
+        memory: "memory",
+        apps: "apps",
+        admin: "admin",
+        changes: "pending-changes",
+      };
+      const view = viewMap[subPath];
+      if (view) {
+        setCurrentChatId(null);
+        setCurrentView(view);
+      }
+      return;
+    }
+
+    // Legacy paths (no org handle)
     const chatMatch = path.match(/^\/chat\/([a-f0-9-]+)$/i);
     if (chatMatch && chatMatch[1]) {
       setCurrentChatId(chatMatch[1]);
-      setCurrentView('chat');
+      setCurrentView("chat");
       return;
     }
-
-    // Match /apps/:id (full-screen app view)
     const appMatch = path.match(/^\/apps\/([a-f0-9-]+)$/i);
     if (appMatch && appMatch[1]) {
       setCurrentAppId(appMatch[1]);
-      setCurrentView('app-view');
+      setCurrentView("app-view");
       return;
     }
-    
-    // Match view paths
+    const artifactMatch = path.match(/^\/artifacts\/([a-f0-9-]+)$/i);
+    if (artifactMatch && artifactMatch[1]) {
+      openArtifact(artifactMatch[1]);
+      return;
+    }
+
     const viewPaths: Record<string, typeof currentView> = {
-      '/': 'home',
-      '/chat': 'chat',
-      '/sources': 'data-sources',
-      '/data': 'data',
-      '/workflows': 'workflows',
-      '/memory': 'memory',
-      '/apps': 'apps',
-      '/admin': 'admin',
-      '/changes': 'pending-changes',
+      "/": "home",
+      "/chat": "chat",
+      "/sources": "data-sources",
+      "/data": "data",
+      "/workflows": "workflows",
+      "/memory": "memory",
+      "/apps": "apps",
+      "/admin": "admin",
+      "/changes": "pending-changes",
     };
-    
     const matchedView = viewPaths[path];
     if (matchedView) {
-      if (matchedView !== 'chat') {
-        setCurrentChatId(null);
-      }
+      if (matchedView !== "chat") setCurrentChatId(null);
       setCurrentView(matchedView);
     }
-  }, [setCurrentChatId, setCurrentAppId, setCurrentView]);
+  }, [
+    setCurrentChatId,
+    setCurrentAppId,
+    setCurrentView,
+    openArtifact,
+    fetchUserOrganizations,
+    switchActiveOrganization,
+  ]);
 
   // Sync URL with app state - restore state on page load (runs FIRST)
   useEffect(() => {
-    syncStateFromUrl();
-    setUrlInitialized(true);
+    let cancelled = false;
+    void syncStateFromUrl().then(() => {
+      if (!cancelled) setUrlInitialized(true);
+    });
+    return () => { cancelled = true; };
   }, [syncStateFromUrl]);
 
   // Handle browser back/forward buttons
   useEffect(() => {
     const handlePopState = (): void => {
-      syncStateFromUrl();
+      void syncStateFromUrl();
     };
-    
-    window.addEventListener('popstate', handlePopState);
-    return () => window.removeEventListener('popstate', handlePopState);
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
   }, [syncStateFromUrl]);
 
   // Update URL when app state changes (only after initial sync)
+  // Always use org handle when available (from org or organizations list) so copied URLs are shareable
+  const orgHandle: string | null =
+    organization?.handle ??
+    (organization?.id ? organizations.find((o) => o.id === organization.id)?.handle ?? null : null) ??
+    null;
   useEffect(() => {
-    // Don't update URL until we've read the initial URL
     if (!urlInitialized) return;
-    
+
+    const prefix = orgHandle ? `/${orgHandle}` : "";
     let newPath: string;
-    
+
     if (currentChatId) {
-      newPath = `/chat/${currentChatId}`;
-    } else if (currentView === 'app-view' && currentAppId) {
-      newPath = `/apps/${currentAppId}`;
+      newPath = `${prefix}/chat/${currentChatId}`;
+    } else if (currentView === "app-view" && currentAppId) {
+      newPath = `${prefix}/apps/${currentAppId}`;
+    } else if (currentView === "artifact-view" && currentArtifactId) {
+      newPath = `${prefix}/artifacts/${currentArtifactId}`;
     } else {
       const viewPaths: Record<typeof currentView, string> = {
-        'home': '/',
-        'chat': '/chat',
-        'data-sources': '/sources',
-        'data': '/data',
-        'workflows': '/workflows',
-        'apps': '/apps',
-        'app-view': '/apps',
-        'admin': '/admin',
-        'memory': '/memory',
-        'pending-changes': '/changes',
+        home: "/",
+        chat: "/chat",
+        "data-sources": "/sources",
+        data: "/data",
+        workflows: "/workflows",
+        apps: "/apps",
+        "app-view": "/apps",
+        "artifact-view": "/chat",
+        admin: "/admin",
+        memory: "/memory",
+        "pending-changes": "/changes",
       };
-      newPath = viewPaths[currentView] || '/';
+      const base = viewPaths[currentView] || "/";
+      newPath = prefix ? `${prefix}${base === "/" ? "" : base}` : base;
     }
-    
+
     if (window.location.pathname !== newPath) {
-      window.history.pushState({}, '', newPath);
+      window.history.pushState({}, "", newPath);
     }
-  }, [currentChatId, currentAppId, currentView, urlInitialized]);
+  }, [currentChatId, currentAppId, currentArtifactId, currentView, urlInitialized, orgHandle, organization?.id, organization?.handle, organizations]);
   
   // Panels
   const [showOrgPanel, setShowOrgPanel] = useState(false);
@@ -990,6 +1077,9 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
     'data-sources': 'Connectors',
     workflows: 'Workflows',
     memory: 'Memory',
+    apps: 'Apps',
+    'app-view': 'App',
+    'artifact-view': 'Artifact',
     admin: 'Global Admin',
     'pending-changes': 'Pending Changes',
   };
@@ -1136,6 +1226,11 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
         {currentView === 'app-view' && currentAppId && (
           <Suspense fallback={<div className="flex items-center justify-center h-64"><div className="animate-spin w-8 h-8 border-2 border-surface-500 border-t-primary-500 rounded-full" /></div>}>
             <AppFullView appId={currentAppId} />
+          </Suspense>
+        )}
+        {currentView === 'artifact-view' && currentArtifactId && (
+          <Suspense fallback={<div className="flex items-center justify-center h-64"><div className="animate-spin w-8 h-8 border-2 border-surface-500 border-t-primary-500 rounded-full" /></div>}>
+            <ArtifactFullView artifactId={currentArtifactId} />
           </Suspense>
         )}
         {currentView === 'admin' && isGlobalAdmin && (

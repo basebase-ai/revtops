@@ -26,6 +26,7 @@ from connectors.slack import SlackConnector
 from services.credits import can_use_credits
 from models.activity import Activity
 from models.conversation import Conversation
+from models.organization import Organization
 from models.database import get_admin_session, get_session
 from models.integration import Integration
 from models.org_member import OrgMember
@@ -1990,6 +1991,7 @@ async def _stream_and_post_responses(
     channel: str,
     thread_ts: str | None = None,
     attachment_ids: list[str] | None = None,
+    organization_id: str | None = None,
 ) -> int:
     """
     Stream orchestrator output and post text segments to Slack incrementally.
@@ -2080,31 +2082,39 @@ async def _stream_and_post_responses(
         )
         last_flush_at = time.monotonic()
 
-    def _artifact_app_link_text(payload: dict[str, Any]) -> str | None:
+    org_handle_cache: str | None = None
+    if organization_id:
+        async with get_admin_session() as session:
+            result = await session.execute(
+                select(Organization.handle).where(Organization.id == UUID(organization_id))
+            )
+            org_handle_cache = result.scalar_one_or_none()
+
+    def _artifact_app_link_text(payload: dict[str, Any], org_handle: str | None) -> str | None:
         """Build Slack message for artifact or app link. Returns None if not applicable."""
         chunk_type: str | None = payload.get("type")
+        base: str = settings.FRONTEND_URL.rstrip("/")
+        prefix: str = f"/{org_handle}" if org_handle else ""
         if chunk_type == "artifact":
             artifact: dict[str, Any] | None = payload.get("artifact")
             if not artifact:
                 return None
             artifact_id: str | None = artifact.get("id")
             title: str = str(artifact.get("title") or "Artifact")
-            view_url: str = artifact.get("viewUrl") or (
-                f"{settings.FRONTEND_URL.rstrip('/')}/artifacts/{artifact_id}" if artifact_id else ""
+            view_url: str = (
+                f"{base}{prefix}/artifacts/{artifact_id}" if artifact_id else ""
             )
             if view_url:
-                return f"📎 Created: *{title}* — <{view_url}|View on Basebase>"
+                return f"📎 Created: *{title}* — <{view_url}|View in Revtops>"
         elif chunk_type == "app":
             app: dict[str, Any] | None = payload.get("app")
             if not app:
                 return None
             app_id: str | None = app.get("id")
             app_title: str = str(app.get("title") or "App")
-            app_url: str = app.get("url") or (
-                f"{settings.FRONTEND_URL.rstrip('/')}/apps/{app_id}" if app_id else ""
-            )
+            app_url: str = f"{base}{prefix}/apps/{app_id}" if app_id else ""
             if app_url:
-                return f"📎 Created app: *{app_title}* — <{app_url}|View on Basebase>"
+                return f"📎 Created app: *{app_title}* — <{app_url}|View in Revtops>"
         return None
 
     try:
@@ -2115,7 +2125,7 @@ async def _stream_and_post_responses(
                 await _flush_current_text(reason="tool_boundary", force=True)
                 try:
                     parsed: dict[str, Any] = json.loads(chunk)
-                    link_text: str | None = _artifact_app_link_text(parsed)
+                    link_text: str | None = _artifact_app_link_text(parsed, org_handle_cache)
                     if link_text:
                         await connector.post_message(
                             channel=channel,
@@ -2246,6 +2256,7 @@ async def process_slack_dm(
             channel=channel_id,
             thread_ts=thread_ts,
             attachment_ids=attachment_ids or None,
+            organization_id=organization_id,
         )
     )
 
@@ -2445,6 +2456,7 @@ async def process_slack_mention(
             channel=channel_id,
             thread_ts=thread_ts,
             attachment_ids=attachment_ids or None,
+            organization_id=organization_id,
         )
     )
 
@@ -2662,6 +2674,7 @@ async def process_slack_thread_reply(
             channel=channel_id,
             thread_ts=thread_ts,
             attachment_ids=attachment_ids or None,
+            organization_id=organization_id,
         )
     )
 
