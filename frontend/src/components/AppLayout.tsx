@@ -303,6 +303,8 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
 
   // Track if initial URL sync is done (prevent URL update effect from running first)
   const [urlInitialized, setUrlInitialized] = useState(false);
+  // Prevent URL effect from overwriting URL while we're syncing state from URL (e.g. /:handle/artifacts/:id)
+  const isSyncingFromUrlRef = useRef(false);
 
   // Parse URL and update state
   const setCurrentAppId = useAppStore((state) => state.setCurrentAppId);
@@ -312,11 +314,13 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
   const setOrganization = useAppStore((state) => state.setOrganization);
 
   const syncStateFromUrl = useCallback(async (): Promise<void> => {
-    const path = window.location.pathname;
+    isSyncingFromUrlRef.current = true;
+    try {
+      const path = window.location.pathname;
 
-    const orgPrefixMatch = path.match(/^\/([a-z0-9-]+)(?:\/(.*))?$/);
+      const orgPrefixMatch = path.match(/^\/([a-z0-9-]+)(?:\/(.*))?$/);
     const orgHandleFromPath: string | null =
-      orgPrefixMatch && orgPrefixMatch[1] && !/^(auth|admin|embed|chat|apps|artifacts|sources|data|workflows|memory|changes)$/i.test(orgPrefixMatch[1])
+      orgPrefixMatch && orgPrefixMatch[1] && !/^(auth|admin|embed|chat|apps|artifact|artifacts|sources|data|workflows|memory|changes)$/i.test(orgPrefixMatch[1])
         ? orgPrefixMatch[1]
         : null;
 
@@ -326,7 +330,17 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
         await fetchUserOrganizations();
         orgs = useAppStore.getState().organizations;
       }
-      const targetOrg = orgs.find((o) => (o.handle ?? "").toLowerCase() === orgHandleFromPath.toLowerCase());
+      let targetOrg = orgs.find((o) => (o.handle ?? "").toLowerCase() === orgHandleFromPath.toLowerCase());
+      if (!targetOrg) {
+        const { data: orgByHandle } = await apiRequest<{ id: string; name: string; logo_url: string | null; handle: string | null }>(
+          `/auth/organizations/by-handle/${encodeURIComponent(orgHandleFromPath)}`,
+          { method: "GET" },
+        );
+        if (orgByHandle) {
+          targetOrg = { id: orgByHandle.id, name: orgByHandle.name, logoUrl: orgByHandle.logo_url, handle: orgByHandle.handle, role: "member", isActive: false };
+          await fetchUserOrganizations();
+        }
+      }
       if (!targetOrg) {
         return;
       }
@@ -347,7 +361,7 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
         setCurrentView("chat");
         return;
       }
-      const artifactMatch = subPath.match(/^artifacts\/([a-f0-9-]+)$/i);
+      const artifactMatch = subPath.match(/^artifacts?\/([a-f0-9-]+)$/i);
       if (artifactMatch) {
         openArtifact(artifactMatch[1]);
         return;
@@ -388,7 +402,7 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
       setCurrentView("app-view");
       return;
     }
-    const artifactMatch = path.match(/^\/artifacts\/([a-f0-9-]+)$/i);
+    const artifactMatch = path.match(/^\/artifacts?\/([a-f0-9-]+)$/i);
     if (artifactMatch && artifactMatch[1]) {
       openArtifact(artifactMatch[1]);
       return;
@@ -409,6 +423,9 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
     if (matchedView) {
       if (matchedView !== "chat") setCurrentChatId(null);
       setCurrentView(matchedView);
+    }
+    } finally {
+      isSyncingFromUrlRef.current = false;
     }
   }, [
     setCurrentChatId,
@@ -444,7 +461,7 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
     (organization?.id ? organizations.find((o) => o.id === organization.id)?.handle ?? null : null) ??
     null;
   useEffect(() => {
-    if (!urlInitialized) return;
+    if (!urlInitialized || isSyncingFromUrlRef.current) return;
 
     const prefix = orgHandle ? `/${orgHandle}` : "";
     let newPath: string;

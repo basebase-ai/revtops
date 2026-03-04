@@ -920,7 +920,7 @@ async def get_organization_by_handle(
             select(Organization, OrgMember)
             .join(OrgMember, OrgMember.organization_id == Organization.id)
             .where(
-                Organization.handle == handle,
+                func.lower(Organization.handle) == handle.lower(),
                 OrgMember.user_id == user_uuid,
                 OrgMember.status == "active",
             )
