@@ -311,7 +311,6 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
   const openArtifact = useAppStore((state) => state.openArtifact);
   const fetchUserOrganizations = useAppStore((state) => state.fetchUserOrganizations);
   const switchActiveOrganization = useAppStore((state) => state.switchActiveOrganization);
-  const setOrganization = useAppStore((state) => state.setOrganization);
 
   const syncStateFromUrl = useCallback(async (): Promise<void> => {
     isSyncingFromUrlRef.current = true;
@@ -349,25 +348,25 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
         await switchActiveOrganization(targetOrg.id);
       }
 
-      const subPath: string = orgPrefixMatch[2] ?? "";
+      const subPath: string = orgPrefixMatch?.[2] ?? "";
       if (subPath === "" || subPath === "chat") {
         setCurrentChatId(null);
         setCurrentView("chat");
         return;
       }
       const chatIdMatch = subPath.match(/^chat\/([a-f0-9-]+)$/i);
-      if (chatIdMatch) {
+      if (chatIdMatch && chatIdMatch[1]) {
         setCurrentChatId(chatIdMatch[1]);
         setCurrentView("chat");
         return;
       }
       const artifactMatch = subPath.match(/^artifacts?\/([a-f0-9-]+)$/i);
-      if (artifactMatch) {
+      if (artifactMatch && artifactMatch[1]) {
         openArtifact(artifactMatch[1]);
         return;
       }
       const appMatch = subPath.match(/^apps\/([a-f0-9-]+)$/i);
-      if (appMatch) {
+      if (appMatch && appMatch[1]) {
         setCurrentAppId(appMatch[1]);
         setCurrentView("app-view");
         return;
