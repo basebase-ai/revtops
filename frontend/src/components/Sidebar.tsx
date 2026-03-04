@@ -275,7 +275,7 @@ export function Sidebar({
               </div>
               <span className="font-semibold text-surface-100">{APP_NAME}</span>
               <span className="px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide bg-primary-500/20 text-primary-400 rounded">
-                Beta
+                Alpha
               </span>
             </div>
             {isMobile ? (

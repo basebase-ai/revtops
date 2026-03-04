@@ -1,5 +1,5 @@
 """
-Waitlist routes for managing early access signups.
+Waitlist routes for managing Alpha signups.
 
 Endpoints:
 - POST /api/waitlist - Submit waitlist form
