@@ -1,7 +1,7 @@
 """Add handle to organizations for org-prefixed URLs.
 
-Revision ID: 089_add_org_handle
-Revises: 088_add_org_company_summary
+Revision ID: 090_add_org_handle
+Revises: 089_gin_index_participating_user_ids
 Create Date: 2026-03-03
 
 Human-readable, URL-safe identifier (e.g. "joinable", "cro-metrics").
@@ -15,8 +15,8 @@ from typing import Sequence, Union
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "089_add_org_handle"
-down_revision: Union[str, None] = "088_add_org_company_summary"
+revision: str = "090_add_org_handle"
+down_revision: Union[str, None] = "089_gin_index_participating_user_ids"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
