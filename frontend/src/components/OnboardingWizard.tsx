@@ -1,0 +1,705 @@
+/**
+ * Multi-step onboarding wizard for new users with no organization.
+ * Steps: Welcome (name + website) → Slack → Data sources → Invite teammates → Free plan → Success
+ */
+
+import { useState, useEffect } from 'react';
+import Nango from '@nangohq/frontend';
+import type { IconType } from 'react-icons';
+import { SiSlack, SiHubspot, SiSalesforce, SiGmail, SiGooglecalendar, SiZoom } from 'react-icons/si';
+import { HiGlobeAlt, HiUserGroup, HiDeviceMobile, HiLightningBolt } from 'react-icons/hi';
+
+import { API_BASE } from '../lib/api';
+import { supabase } from '../lib/supabase';
+import { useAppStore, useIntegrations } from '../store';
+import { useIsMobile } from '../hooks';
+
+const TOTAL_STEPS = 6;
+
+interface OnboardingWizardProps {
+  emailDomain: string;
+  onComplete: () => void;
+  onBack: () => void;
+}
+
+const INTEGRATION_KEYS_STEP3: ReadonlyArray<string> = [
+  'hubspot',
+  'salesforce',
+  'slack',
+  'gmail',
+  'google_calendar',
+  'zoom',
+  'web_search',
+  'code_sandbox',
+  'twilio',
+];
+
+const INTEGRATION_CONFIG: Record<string, { name: string; description: string; icon: string; color: string }> = {
+  hubspot: { name: 'HubSpot', description: 'CRM data', icon: 'hubspot', color: 'from-orange-500 to-orange-600' },
+  salesforce: { name: 'Salesforce', description: 'CRM', icon: 'salesforce', color: 'from-blue-500 to-blue-600' },
+  slack: { name: 'Slack', description: 'Team messages', icon: 'slack', color: 'from-purple-500 to-purple-600' },
+  gmail: { name: 'Gmail', description: 'Email', icon: 'gmail', color: 'from-red-500 to-red-600' },
+  google_calendar: { name: 'Google Calendar', description: 'Meetings', icon: 'google_calendar', color: 'from-green-500 to-green-600' },
+  zoom: { name: 'Zoom', description: 'Meetings', icon: 'zoom', color: 'from-blue-400 to-blue-500' },
+  web_search: { name: 'Web Search', description: 'Search the web', icon: 'globe', color: 'from-emerald-500 to-teal-600' },
+  code_sandbox: { name: 'Code Sandbox', description: 'Run scripts', icon: 'terminal', color: 'from-amber-500 to-orange-600' },
+  twilio: { name: 'Twilio', description: 'Send SMS', icon: 'sms', color: 'from-red-500 to-pink-600' },
+};
+
+const BUILTIN_CONNECTORS = new Set<string>(['web_search', 'code_sandbox', 'twilio']);
+
+const ICON_MAP: Record<string, IconType> = {
+  hubspot: SiHubspot,
+  salesforce: SiSalesforce,
+  slack: SiSlack,
+  gmail: SiGmail,
+  google_calendar: SiGooglecalendar,
+  zoom: SiZoom,
+  globe: HiGlobeAlt,
+  terminal: HiLightningBolt,
+  sms: HiDeviceMobile,
+};
+
+function generateUUID(): string {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
+
+const SKIP_MESSAGES: Record<number, string> = {
+  2: "Without Slack, Penny won't respond in your workspace. You can connect Slack later from Connectors. Skip for now?",
+  3: "Fewer connections mean Penny has less context. You can add sources anytime from Connectors. Skip?",
+  4: "You can invite teammates later from Organization settings. Skip?",
+};
+
+export function OnboardingWizard({ emailDomain, onComplete: rawOnComplete, onBack }: OnboardingWizardProps): JSX.Element {
+  const onComplete = (): void => {
+    localStorage.removeItem('onboarding_incomplete');
+    localStorage.removeItem('onboarding_step');
+    rawOnComplete();
+  };
+  const [step, setStep] = useState<number>(() => {
+    const saved: string | null = localStorage.getItem('onboarding_step');
+    const parsed: number = saved ? parseInt(saved, 10) : 1;
+    return parsed >= 1 && parsed <= TOTAL_STEPS ? parsed : 1;
+  });
+  const [orgName, setOrgName] = useState<string>('');
+  const [websiteUrl, setWebsiteUrl] = useState<string>('');
+  const [loading, setLoading] = useState<boolean>(false);
+  const [error, setError] = useState<string | null>(null);
+  const [connectingProvider, setConnectingProvider] = useState<string | null>(null);
+  const [inviteEmail, setInviteEmail] = useState<string>('');
+  const [isInviting, setIsInviting] = useState<boolean>(false);
+  const [invitedEmails, setInvitedEmails] = useState<ReadonlyArray<string>>([]);
+  const [companySummary, setCompanySummary] = useState<string | null>(null);
+  const [companySummaryLoading, setCompanySummaryLoading] = useState<boolean>(false);
+
+  const { user, organization, setOrganization, syncUserToBackend, fetchUserOrganizations, fetchIntegrations } =
+    useAppStore();
+  const integrations = useIntegrations();
+  const isMobile = useIsMobile();
+
+  const orgId: string | null = organization?.id ?? null;
+  const userId: string | null = user?.id ?? null;
+
+  useEffect(() => {
+    localStorage.setItem('onboarding_incomplete', '1');
+    localStorage.setItem('onboarding_step', String(step));
+  }, [step]);
+
+  useEffect(() => {
+    if (orgId && userId && step >= 2) {
+      void fetchIntegrations();
+    }
+  }, [orgId, userId, step, fetchIntegrations]);
+
+  useEffect(() => {
+    if (step !== 6 || !orgId || !userId) return;
+    let cancelled = false;
+    let retryTid: ReturnType<typeof setTimeout> | null = null;
+    const loadOrg = async (): Promise<void> => {
+      setCompanySummaryLoading(true);
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+        if (session?.access_token) headers['Authorization'] = `Bearer ${session.access_token}`;
+        const res = await fetch(`${API_BASE}/auth/organizations/${orgId}?user_id=${encodeURIComponent(userId)}`, {
+          headers,
+        });
+        if (!res.ok || cancelled) return;
+        const data = (await res.json()) as { company_summary?: string | null };
+        if (data.company_summary) {
+          setCompanySummary(data.company_summary);
+          setCompanySummaryLoading(false);
+          return;
+        }
+        if (websiteUrl.trim() && !cancelled) {
+          retryTid = setTimeout(() => void loadOrg(), 3000);
+          return;
+        }
+      } catch {
+        // Ignore
+      }
+      if (!cancelled) setCompanySummaryLoading(false);
+    };
+    void loadOrg();
+    return () => {
+      cancelled = true;
+      if (retryTid) clearTimeout(retryTid);
+    };
+  }, [step, orgId, userId, websiteUrl]);
+
+  const slackConnected: boolean =
+    integrations.some((i) => i.provider === 'slack' && i.currentUserConnected) ?? false;
+
+  const suggestedName: string = emailDomain
+    .replace(/\.(com|co|io|org|net|ai|app|dev|xyz)(\.[a-z]{2})?$/i, '')
+    .split(/[.-]/)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ');
+
+  const handleStep1Submit = async (e: React.FormEvent): Promise<void> => {
+    e.preventDefault();
+    if (!orgName.trim() || !user) return;
+    setLoading(true);
+    setError(null);
+    const companyId: string = generateUUID();
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (session?.access_token) headers['Authorization'] = `Bearer ${session.access_token}`;
+      const response = await fetch(`${API_BASE}/auth/organizations`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          id: companyId,
+          name: orgName.trim(),
+          email_domain: emailDomain,
+          website_url: websiteUrl.trim() || undefined,
+        }),
+      });
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Error(text || `Failed to create organization: ${response.status}`);
+      }
+      const data = (await response.json()) as { id: string; name: string; logo_url: string | null };
+      setOrganization({ id: data.id, name: data.name, logoUrl: data.logo_url ?? null });
+      await syncUserToBackend();
+      await fetchUserOrganizations();
+      // Fire-and-forget: trigger company research workflow if website URL provided
+      const urlTrimmed: string = websiteUrl.trim();
+      if (urlTrimmed && user?.id) {
+        void (async (): Promise<void> => {
+          try {
+            const { data: { session } } = await supabase.auth.getSession();
+            const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+            if (session?.access_token) headers['Authorization'] = `Bearer ${session.access_token}`;
+            const wfRes = await fetch(`${API_BASE}/workflows/${data.id}?enabled_only=true`, { headers });
+            if (!wfRes.ok) return;
+            const wfData = (await wfRes.json()) as { workflows: Array<{ id: string; name: string }> };
+            const researchWf = wfData.workflows?.find((w) => w.name === 'Company Research');
+            if (!researchWf) return;
+            await fetch(`${API_BASE}/workflows/${data.id}/${researchWf.id}/trigger`, {
+              method: 'POST',
+              headers,
+              body: JSON.stringify({
+                user_id: user.id,
+                trigger_data: {
+                  website_url: urlTrimmed,
+                  organization_id: data.id,
+                  organization_name: orgName.trim(),
+                },
+              }),
+            });
+          } catch {
+            // Ignore - fire-and-forget
+          }
+        })();
+      }
+      setStep(2);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'An error occurred');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleConnect = async (provider: string): Promise<void> => {
+    if (connectingProvider || !orgId || !userId) return;
+    setConnectingProvider(provider);
+    try {
+      if (BUILTIN_CONNECTORS.has(provider)) {
+        const { data: { session } } = await supabase.auth.getSession();
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+        if (session?.access_token) headers['Authorization'] = `Bearer ${session.access_token}`;
+        const res = await fetch(`${API_BASE}/auth/integrations/connect-builtin`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            organization_id: orgId,
+            provider,
+            user_id: userId,
+          }),
+        });
+        if (!res.ok) {
+          const err = (await res.json().catch(() => ({}))) as { detail?: string };
+          throw new Error(err.detail ?? 'Failed to connect');
+        }
+        void fetchIntegrations();
+        setConnectingProvider(null);
+        return;
+      }
+      const params = new URLSearchParams({ organization_id: orgId, user_id: userId });
+      const response = await fetch(`${API_BASE}/auth/connect/${provider}/session?${params.toString()}`);
+      if (!response.ok) throw new Error('Failed to get session token');
+      const sessionData = (await response.json()) as { session_token: string; connection_id: string };
+      const { session_token, connection_id } = sessionData;
+
+      const nango = new Nango();
+      nango.openConnectUI({
+        sessionToken: session_token,
+        onEvent: async (event) => {
+          const eventType = (event as { type?: string }).type as string;
+          if (eventType === 'connect' || eventType === 'connection-created' || eventType === 'success') {
+            const eventData = event as { connectionId?: string; connection_id?: string; payload?: { connectionId?: string } };
+            const nangoConnectionId =
+              eventData.connectionId ?? eventData.connection_id ?? eventData.payload?.connectionId ?? connection_id;
+            try {
+              const { data: { session } } = await supabase.auth.getSession();
+              const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+              if (session?.access_token) headers['Authorization'] = `Bearer ${session.access_token}`;
+              await fetch(`${API_BASE}/auth/integrations/confirm`, {
+                method: 'POST',
+                headers,
+                body: JSON.stringify({
+                  provider,
+                  connection_id: nangoConnectionId,
+                  organization_id: orgId,
+                  user_id: userId,
+                }),
+              });
+              void fetchIntegrations();
+            } catch {
+              // ignore
+            }
+            setConnectingProvider(null);
+          }
+          if (eventType === 'close' || eventType === 'closed') {
+            setConnectingProvider(null);
+          }
+        },
+      });
+    } catch {
+      setConnectingProvider(null);
+    }
+  };
+
+  const handleInvite = async (): Promise<void> => {
+    const email: string = inviteEmail.trim().toLowerCase();
+    if (!email || !orgId || !userId) return;
+    setIsInviting(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (session?.access_token) headers['Authorization'] = `Bearer ${session.access_token}`;
+      const response = await fetch(
+        `${API_BASE}/auth/organizations/${orgId}/invitations?user_id=${userId}`,
+        {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ email }),
+        }
+      );
+      if (!response.ok) {
+        const errData = (await response.json().catch(() => ({}))) as { detail?: string };
+        alert(errData.detail ?? `Failed to invite: ${response.status}`);
+        return;
+      }
+      setInvitedEmails((prev) => [...prev, email]);
+      setInviteEmail('');
+    } catch (err) {
+      alert(`Failed to invite: ${err instanceof Error ? err.message : 'Unknown error'}`);
+    } finally {
+      setIsInviting(false);
+    }
+  };
+
+  const handleSkip = (): void => {
+    const msg: string | undefined = SKIP_MESSAGES[step];
+    if (msg && window.confirm(msg)) {
+      setStep((prev) => Math.min(prev + 1, TOTAL_STEPS));
+    }
+  };
+
+  const handleNext = (): void => {
+    if (step < TOTAL_STEPS) setStep((prev) => prev + 1);
+    else onComplete();
+  };
+
+  const renderFooter = (nextLabel?: string): JSX.Element => (
+    <div className="mt-8 space-y-3">
+      {SKIP_MESSAGES[step] !== undefined && (
+        <button
+          type="button"
+          onClick={handleSkip}
+          className="text-sm text-surface-500 hover:text-surface-300 transition-colors"
+        >
+          I&apos;ll do this later
+        </button>
+      )}
+      {step >= 2 && step <= 5 && (
+        <button
+          type="button"
+          onClick={handleNext}
+          className="w-full btn-primary py-3.5 text-base font-semibold"
+        >
+          {nextLabel ?? 'Continue'}
+        </button>
+      )}
+      <div className="flex justify-center gap-1.5 pt-2">
+        {Array.from({ length: TOTAL_STEPS }, (_, i) => (
+          <div
+            key={i}
+            className={`h-1.5 rounded-full transition-all duration-300 ${
+              i + 1 <= step
+                ? 'w-6 bg-primary-500'
+                : 'w-1.5 bg-surface-700'
+            }`}
+          />
+        ))}
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="min-h-screen flex items-center justify-center p-4">
+      <div className="fixed inset-0 overflow-hidden pointer-events-none">
+        <div className="absolute -top-1/3 -right-1/4 w-[900px] h-[900px] rounded-full bg-gradient-to-br from-primary-600/15 via-primary-500/10 to-transparent blur-3xl" />
+        <div className="absolute -bottom-1/4 -left-1/4 w-[700px] h-[700px] rounded-full bg-gradient-to-tr from-purple-600/10 to-transparent blur-3xl" />
+        <div className="absolute top-1/3 left-1/2 -translate-x-1/2 w-[500px] h-[500px] rounded-full bg-gradient-to-b from-emerald-500/5 to-transparent blur-3xl" />
+      </div>
+
+      <div className="relative z-10 w-full max-w-md">
+        <button
+          onClick={onBack}
+          className="flex items-center gap-2 text-surface-500 hover:text-surface-300 transition-colors mb-6 text-sm"
+        >
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+          </svg>
+          Sign out
+        </button>
+
+        <div className="bg-surface-900/80 backdrop-blur-sm border border-surface-800 rounded-2xl p-8">
+          {/* Step 1: Welcome */}
+          {step === 1 && (
+            <>
+              <div className="text-center mb-8">
+                <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-gradient-to-br from-primary-500 to-primary-700 mb-5 shadow-lg shadow-primary-500/20">
+                  <span className="text-3xl">&#x1F44B;</span>
+                </div>
+                <h1 className="text-2xl font-bold text-white leading-tight">
+                  Meet Penny, your new<br />AI teammate
+                </h1>
+                <p className="text-surface-300 mt-3 text-[15px] leading-relaxed max-w-sm mx-auto">
+                  She finds data across all your tools, manages tasks, runs workflows,
+                  and keeps your whole team in the loop — so nobody has to sign into
+                  five different apps to get one answer.
+                </p>
+              </div>
+              <form onSubmit={(e) => void handleStep1Submit(e)} className="space-y-4">
+                <div>
+                  <label htmlFor="orgName" className="block text-sm font-medium text-surface-300 mb-1.5">
+                    What&apos;s your company called?
+                  </label>
+                  <input
+                    id="orgName"
+                    type="text"
+                    value={orgName}
+                    onChange={(e) => setOrgName(e.target.value)}
+                    className="input"
+                    placeholder={suggestedName || 'Acme Corporation'}
+                    autoFocus
+                  />
+                </div>
+                <div>
+                  <label htmlFor="websiteUrl" className="block text-sm font-medium text-surface-300 mb-1.5">
+                    Company website
+                    <span className="text-surface-500 font-normal ml-1">(so Penny can learn about you)</span>
+                  </label>
+                  <input
+                    id="websiteUrl"
+                    type="url"
+                    value={websiteUrl}
+                    onChange={(e) => setWebsiteUrl(e.target.value)}
+                    className="input"
+                    placeholder="https://company.com"
+                  />
+                </div>
+                {error && (
+                  <div className="p-3 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400 text-sm">
+                    {error}
+                  </div>
+                )}
+                <button
+                  type="submit"
+                  disabled={loading || !orgName.trim()}
+                  className="btn-primary w-full py-3.5 text-base font-semibold disabled:opacity-50"
+                >
+                  {loading ? (
+                    <span className="inline-flex items-center justify-center gap-2">
+                      <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                      Getting things ready...
+                    </span>
+                  ) : (
+                    "Let\u2019s go"
+                  )}
+                </button>
+              </form>
+              <div className="flex justify-center gap-1.5 pt-6">
+                {Array.from({ length: TOTAL_STEPS }, (_, i) => (
+                  <div
+                    key={i}
+                    className={`h-1.5 rounded-full transition-all duration-300 ${
+                      i === 0 ? 'w-6 bg-primary-500' : 'w-1.5 bg-surface-700'
+                    }`}
+                  />
+                ))}
+              </div>
+            </>
+          )}
+
+          {/* Step 2: Connect Slack */}
+          {step === 2 && (
+            <>
+              <div className="text-center mb-6">
+                <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-gradient-to-br from-purple-500 to-purple-700 mb-4 shadow-lg shadow-purple-500/20">
+                  <SiSlack className="w-7 h-7 text-white" />
+                </div>
+                <h2 className="text-xl font-bold text-white">Bring Penny where your team already works</h2>
+                <p className="text-surface-300 mt-3 text-sm leading-relaxed">
+                  Connect Slack and your team can ask Penny anything right from the channels they&apos;re
+                  already in &mdash; deal updates, meeting prep, customer research &mdash; no tab-switching required.
+                </p>
+              </div>
+              {slackConnected ? (
+                <div className="flex items-center gap-3 p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400">
+                  <svg className="w-5 h-5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                  </svg>
+                  <span className="font-medium">Slack connected &mdash; Penny is in your workspace!</span>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => void handleConnect('slack')}
+                  disabled={connectingProvider !== null || isMobile}
+                  className="w-full flex items-center justify-center gap-3 p-4 rounded-xl border border-surface-700 bg-surface-800 hover:bg-surface-700 disabled:opacity-50 transition-colors"
+                >
+                  {connectingProvider === 'slack' ? (
+                    <div className="w-5 h-5 border-2 border-primary-400 border-t-transparent rounded-full animate-spin" />
+                  ) : (
+                    <SiSlack className="w-6 h-6 text-white" />
+                  )}
+                  {isMobile ? 'Use desktop to connect' : connectingProvider === 'slack' ? 'Connecting...' : 'Connect Slack'}
+                </button>
+              )}
+              {renderFooter()}
+            </>
+          )}
+
+          {/* Step 3: Data sources */}
+          {step === 3 && (
+            <>
+              <div className="mb-6">
+                <h2 className="text-xl font-bold text-white">Give Penny superpowers</h2>
+                <p className="text-surface-300 mt-2 text-sm leading-relaxed">
+                  Every connection means fewer logins for your team. Penny pulls data across
+                  all your tools so anyone can get a complete picture with a single question.
+                </p>
+              </div>
+              <div className="grid grid-cols-2 gap-3 max-h-64 overflow-y-auto">
+                {INTEGRATION_KEYS_STEP3.map((key) => {
+                  const config = INTEGRATION_CONFIG[key];
+                  if (!config) return null;
+                  const Icon = ICON_MAP[config.icon] ?? HiGlobeAlt;
+                  const connected = integrations.some((i) => i.provider === key && i.currentUserConnected);
+                  const isConnecting = connectingProvider === key;
+                  return (
+                    <button
+                      key={key}
+                      type="button"
+                      onClick={() => void handleConnect(key)}
+                      disabled={isConnecting || isMobile}
+                      className={`flex items-center gap-3 p-3 rounded-xl border text-left transition-colors ${
+                        connected
+                          ? 'border-emerald-500/30 bg-emerald-500/10'
+                          : 'border-surface-700 bg-surface-800 hover:bg-surface-700'
+                      } disabled:opacity-50`}
+                    >
+                      <div
+                        className={`p-2 rounded-lg bg-gradient-to-br ${config.color} text-white flex-shrink-0`}
+                      >
+                        <Icon className="w-4 h-4" />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="font-medium text-surface-100 truncate">{config.name}</div>
+                        <div className="text-xs text-surface-500 truncate">{config.description}</div>
+                      </div>
+                      {connected && (
+                        <svg className="w-4 h-4 text-emerald-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                        </svg>
+                      )}
+                      {isConnecting && (
+                        <div className="w-4 h-4 border-2 border-primary-400 border-t-transparent rounded-full animate-spin flex-shrink-0" />
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+              {renderFooter()}
+            </>
+          )}
+
+          {/* Step 4: Invite teammates */}
+          {step === 4 && (
+            <>
+              <div className="text-center mb-6">
+                <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-gradient-to-br from-blue-500 to-indigo-600 mb-4 shadow-lg shadow-blue-500/20">
+                  <HiUserGroup className="w-7 h-7 text-white" />
+                </div>
+                <h2 className="text-xl font-bold text-white">Better together</h2>
+                <p className="text-surface-300 mt-3 text-sm leading-relaxed">
+                  When your teammates join, everyone benefits from shared context. Penny
+                  can prep meeting briefs, surface relevant deals, and keep the whole team
+                  aligned &mdash; without anyone chasing down info manually.
+                </p>
+              </div>
+              <div className="flex gap-2 mb-4">
+                <input
+                  type="email"
+                  placeholder="colleague@company.com"
+                  value={inviteEmail}
+                  onChange={(e) => setInviteEmail(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), void handleInvite())}
+                  className="input flex-1"
+                />
+                <button
+                  type="button"
+                  onClick={() => void handleInvite()}
+                  disabled={isInviting || !inviteEmail.trim()}
+                  className="btn-primary px-4 disabled:opacity-50"
+                >
+                  {isInviting ? 'Sending...' : 'Invite'}
+                </button>
+              </div>
+              {invitedEmails.length > 0 && (
+                <div className="space-y-2 mb-4">
+                  {invitedEmails.map((email) => (
+                    <div key={email} className="flex items-center gap-2 text-sm text-surface-300">
+                      <svg className="w-4 h-4 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                      </svg>
+                      Invited {email}
+                    </div>
+                  ))}
+                </div>
+              )}
+              {renderFooter()}
+            </>
+          )}
+
+          {/* Step 5: Free plan */}
+          {step === 5 && (
+            <>
+              <div className="text-center mb-6">
+                <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-gradient-to-br from-primary-500 to-primary-700 mb-5 shadow-lg shadow-primary-500/20">
+                  <span className="text-3xl">&#x1F389;</span>
+                </div>
+                <h2 className="text-2xl font-bold text-white">You&apos;re ready to roll</h2>
+                <p className="text-surface-300 mt-3 text-sm leading-relaxed max-w-sm mx-auto">
+                  Your free plan includes <span className="text-white font-semibold">100 credits/month</span> &mdash;
+                  enough to explore everything Penny can do. Upgrade anytime if you want more.
+                </p>
+              </div>
+              <div className="space-y-3 mb-2 p-4 rounded-xl bg-surface-800/50 border border-surface-700/50">
+                <div className="flex items-start gap-3 text-surface-300">
+                  <svg className="w-5 h-5 text-primary-500 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                  </svg>
+                  <span className="text-sm">Ask Penny anything across your CRM, email, calendar, and Slack</span>
+                </div>
+                <div className="flex items-start gap-3 text-surface-300">
+                  <svg className="w-5 h-5 text-primary-500 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                  </svg>
+                  <span className="text-sm">Automate recurring tasks with workflows that run on autopilot</span>
+                </div>
+                <div className="flex items-start gap-3 text-surface-300">
+                  <svg className="w-5 h-5 text-primary-500 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" />
+                  </svg>
+                  <span className="text-sm">Your whole team can use Penny &mdash; in Slack, on the web, or both</span>
+                </div>
+              </div>
+              {renderFooter()}
+            </>
+          )}
+
+          {/* Step 6: Success — Penny's research + launch */}
+          {step === 6 && (
+            <>
+              <div className="text-center mb-6">
+                <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-gradient-to-br from-emerald-500 to-emerald-700 mb-5 shadow-lg shadow-emerald-500/20">
+                  <span className="text-3xl">&#x1F680;</span>
+                </div>
+                <h2 className="text-2xl font-bold text-white">Setup complete!</h2>
+                <p className="text-surface-300 mt-2 text-sm">
+                  While you were setting up, Penny got a head start.
+                </p>
+              </div>
+              {companySummary ? (
+                <div className="mb-6 p-5 rounded-xl bg-primary-500/10 border border-primary-500/20">
+                  <p className="text-surface-200 text-[15px] leading-relaxed">
+                    {companySummary}
+                  </p>
+                </div>
+              ) : companySummaryLoading ? (
+                <div className="mb-6 p-5 rounded-xl bg-surface-800/50 border border-surface-700 animate-pulse">
+                  <p className="text-surface-400 text-sm">
+                    Penny is researching your company&hellip;
+                  </p>
+                </div>
+              ) : (
+                <div className="mb-6 p-5 rounded-xl bg-surface-800/50 border border-surface-700">
+                  <p className="text-surface-300 text-sm">
+                    Penny is ready to learn about your business. Start a conversation and she&apos;ll
+                    get up to speed fast.
+                  </p>
+                </div>
+              )}
+              <button
+                type="button"
+                onClick={onComplete}
+                className="w-full btn-primary py-3.5 text-base font-semibold"
+              >
+                Start chatting with Penny
+              </button>
+              <div className="flex justify-center gap-1.5 pt-6">
+                {Array.from({ length: TOTAL_STEPS }, (_, i) => (
+                  <div
+                    key={i}
+                    className="h-1.5 w-6 rounded-full bg-primary-500 transition-all duration-300"
+                  />
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}

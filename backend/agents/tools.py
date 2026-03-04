@@ -306,6 +306,7 @@ async def execute_tool(
     tool_handlers: dict[str, Callable[[], Awaitable[dict[str, Any]]]] = {
         "run_sql_query": lambda: _run_sql_query(tool_input, organization_id, user_id),
         "run_sql_write": lambda: _run_sql_write(tool_input, organization_id, user_id, context),
+        "save_company_research": lambda: _save_company_research(tool_input, organization_id, context),
         "run_workflow": lambda: _run_workflow(tool_input, organization_id, user_id, context),
         "create_artifact": lambda: _create_artifact(tool_input, organization_id, user_id, context),
         "write_app": lambda: _write_app(tool_input, organization_id, user_id, context),
@@ -1248,6 +1249,57 @@ def _parse_update_values(query: str) -> tuple[dict[str, Any], str] | None:
                 updates[col] = val
     
     return updates, where_clause.strip()
+
+
+async def _save_company_research(
+    params: dict[str, Any],
+    organization_id: str,
+    context: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """
+    Persist company research summary to organizations.company_summary.
+
+    Only available during workflow execution. organization_id in params must
+    match the workflow's organization_id.
+    """
+    if not context or not context.get("is_workflow"):
+        return {"error": "save_company_research is only available in workflow executions."}
+
+    org_id_param: str | None = (params or {}).get("organization_id")
+    summary: str | None = (params or {}).get("summary")
+
+    if not org_id_param or not isinstance(org_id_param, str):
+        return {"error": "organization_id is required."}
+    if not summary or not isinstance(summary, str):
+        return {"error": "summary is required."}
+
+    summary_clean: str = summary.strip()
+    if not summary_clean:
+        return {"error": "summary cannot be empty."}
+
+    try:
+        org_uuid = UUID(org_id_param)
+    except ValueError:
+        return {"error": "Invalid organization_id format."}
+
+    if str(org_uuid) != organization_id:
+        return {"error": "organization_id must match the workflow's organization."}
+
+    try:
+        async with get_session(organization_id=organization_id) as session:
+            await session.execute(
+                text(
+                    "UPDATE organizations SET company_summary = :summary WHERE id = :org_id"
+                ),
+                {"summary": summary_clean, "org_id": org_uuid},
+            )
+            await session.commit()
+    except Exception as e:
+        logger.error("[Tools._save_company_research] Failed: %s", str(e))
+        return {"error": f"Failed to save: {str(e)}"}
+
+    logger.info("[Tools._save_company_research] Saved summary for org %s", organization_id)
+    return {"status": "saved", "organization_id": organization_id}
 
 
 async def _run_sql_write(

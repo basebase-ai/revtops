@@ -28,7 +28,7 @@ if env_file.exists():
 
 from celery import Celery
 from celery.schedules import crontab
-from celery.signals import worker_process_shutdown
+from celery.signals import worker_process_init, worker_process_shutdown
 
 # Get Redis URL from environment
 REDIS_URL: str = os.environ.get("REDIS_URL", "redis://localhost:6379")
@@ -113,6 +113,14 @@ celery_app.conf.beat_schedule = {
         "schedule": timedelta(minutes=5),
     },
 }
+
+
+@worker_process_init.connect
+def setup_backend_path(**kwargs) -> None:
+    """Ensure backend/ is on sys.path in every forked worker process."""
+    _dir = str(Path(__file__).resolve().parent.parent)
+    if _dir not in sys.path:
+        sys.path.insert(0, _dir)
 
 
 @worker_process_shutdown.connect

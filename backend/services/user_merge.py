@@ -206,3 +206,64 @@ async def merge_users(
             source_email=source_email,
             tables_updated=tables_updated,
         )
+
+
+@dataclass
+class DeleteUserResult:
+    """Result of a user delete operation."""
+
+    success: bool
+    user_id: str
+    email: str
+    tables_updated: dict[str, int] = field(default_factory=dict)
+    error: str | None = None
+
+
+async def delete_user(user_id: str) -> DeleteUserResult:
+    """
+    Permanently delete a user and all their data.
+
+    Relies on PostgreSQL ON DELETE CASCADE/SET NULL (migration 087) for all
+    FK references to users.id. A single DELETE FROM users triggers the cascade.
+    """
+    user_uuid: UUID
+    try:
+        user_uuid = UUID(user_id)
+    except ValueError:
+        return DeleteUserResult(
+            success=False,
+            user_id=user_id,
+            email="",
+            error="Invalid user ID format",
+        )
+
+    params = {"user_id": str(user_uuid)}
+
+    async with get_admin_session() as session:
+        user_result = await session.execute(
+            text("SELECT id, email FROM users WHERE id = :user_id"),
+            params,
+        )
+        user_row = user_result.fetchone()
+        if not user_row:
+            return DeleteUserResult(
+                success=False,
+                user_id=user_id,
+                email="",
+                error=f"User {user_id} not found",
+            )
+        user_email: str = user_row[1]
+
+        logger.info("[user_merge] Deleting user user_id=%s email=%s", user_id, user_email)
+
+        result = await session.execute(text("DELETE FROM users WHERE id = :user_id"), params)
+        await session.commit()
+
+        tables_updated: dict[str, int] = {"users": result.rowcount}
+
+        return DeleteUserResult(
+            success=True,
+            user_id=user_id,
+            email=user_email,
+            tables_updated=tables_updated,
+        )

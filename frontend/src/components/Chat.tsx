@@ -2277,7 +2277,7 @@ function EmptyState({ onSuggestionClick }: EmptyStateProps): JSX.Element {
           />
         </div>
         <h2 className="text-xl md:text-2xl font-bold text-surface-50 mb-2">
-          Ask anything about your revenue
+          Ask me anything
         </h2>
         <p className="text-surface-400 mb-6 md:mb-8 text-sm md:text-base">
           Get instant insights from your connected data sources

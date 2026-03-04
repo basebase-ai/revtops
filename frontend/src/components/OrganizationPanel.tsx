@@ -71,6 +71,8 @@ interface OrganizationPanelProps {
 export function OrganizationPanel({ organization, currentUser, initialTab = 'team', onClose }: OrganizationPanelProps): JSX.Element {
   const setOrganization = useAppStore((state) => state.setOrganization);
   const logout = useAppStore((state) => state.logout);
+  const fetchUserOrganizations = useAppStore((state) => state.fetchUserOrganizations);
+  const switchActiveOrganization = useAppStore((state) => state.switchActiveOrganization);
   const [activeTab, setActiveTab] = useState<'team' | 'billing' | 'settings'>(initialTab);
 
   useEffect(() => {
@@ -343,27 +345,50 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
       });
       await deleteOrganizationMutation.mutateAsync({
         orgId: organization.id,
-        userId: currentUser.id,
       });
 
-      console.info('[OrganizationPanel] Organization deleted; signing out user', {
-        organizationId: organization.id,
-        userId: currentUser.id,
-      });
-      await supabase.auth.signOut();
-      logout();
-      localStorage.clear();
-      sessionStorage.clear();
-
-      alert('Organization deleted. You will be signed out.');
-      window.location.href = '/auth';
+      onClose();
+      await fetchUserOrganizations();
+      const remainingOrgs: { id: string; name: string; logoUrl: string | null }[] =
+        useAppStore.getState().organizations;
+      const nextOrg: { id: string } | undefined = remainingOrgs[0];
+      if (nextOrg) {
+        await switchActiveOrganization(nextOrg.id);
+        alert('Organization deleted.');
+      } else {
+        await supabase.auth.signOut();
+        logout();
+        localStorage.clear();
+        sessionStorage.clear();
+        alert('Organization deleted. You will be signed out.');
+        window.location.href = '/auth';
+      }
     } catch (error) {
+      const message: string = error instanceof Error ? error.message : 'Unknown error';
+      const isNotFound: boolean = message.toLowerCase().includes('not found');
+      if (isNotFound) {
+        onClose();
+        await fetchUserOrganizations();
+        const remainingOrgs: { id: string }[] = useAppStore.getState().organizations;
+        const nextOrg: { id: string } | undefined = remainingOrgs[0];
+        if (nextOrg) {
+          await switchActiveOrganization(nextOrg.id);
+          alert('Organization was already removed.');
+        } else {
+          await supabase.auth.signOut();
+          logout();
+          localStorage.clear();
+          sessionStorage.clear();
+          window.location.href = '/auth';
+        }
+        return;
+      }
       console.error('[OrganizationPanel] Failed to delete organization', {
         organizationId: organization.id,
         userId: currentUser.id,
         error,
       });
-      alert(`Failed to delete organization: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      alert(`Failed to delete organization: ${message}`);
     }
   };
 

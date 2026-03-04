@@ -32,7 +32,9 @@ class Organization(Base):
         String(255), nullable=True, index=True
     )  # e.g., "acmecorp.com" - used to auto-match new users
     logo_url: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
-    
+    website_url: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    company_summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
     # Legacy Salesforce fields (kept for backwards compatibility)
     salesforce_instance_url: Mapped[Optional[str]] = mapped_column(
         String(255), nullable=True

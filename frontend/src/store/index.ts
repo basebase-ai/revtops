@@ -162,7 +162,13 @@ export interface AttachmentBlock {
   size: number;
 }
 
-export type ContentBlock = TextBlock | ToolUseBlock | ErrorBlock | ArtifactBlock | AppBlock | AttachmentBlock;
+export type ContentBlock =
+  | TextBlock
+  | ToolUseBlock
+  | ErrorBlock
+  | ArtifactBlock
+  | AppBlock
+  | AttachmentBlock;
 
 // Legacy type for streaming compatibility
 export interface ToolCallData {
@@ -311,7 +317,11 @@ interface AppState {
   togglePinChat: (id: string) => void;
 
   // Actions - Conversations
-  addConversation: (id: string, title: string, scope?: "private" | "shared") => void;
+  addConversation: (
+    id: string,
+    title: string,
+    scope?: "private" | "shared",
+  ) => void;
   fetchConversations: () => Promise<void>;
   deleteConversation: (id: string) => Promise<void>;
 
@@ -454,24 +464,33 @@ export const useAppStore = create<AppState>()(
           is_active: boolean;
         }
 
-        const { data, error } = await apiRequest<{ organizations: OrgApiResponse[] }>(
-          "/auth/users/me/organizations",
-        );
+        const { data, error } = await apiRequest<{
+          organizations: OrgApiResponse[];
+        }>("/auth/users/me/organizations");
 
         if (error || !data) {
-          console.error("[Store] Failed to fetch user organizations:", error ?? "unknown");
+          console.error(
+            "[Store] Failed to fetch user organizations:",
+            error ?? "unknown",
+          );
           return;
         }
 
-        const organizations: UserOrganization[] = data.organizations.map((o) => ({
-          id: o.id,
-          name: o.name,
-          logoUrl: o.logo_url,
-          role: o.role,
-          isActive: o.is_active,
-        }));
+        const organizations: UserOrganization[] = data.organizations.map(
+          (o) => ({
+            id: o.id,
+            name: o.name,
+            logoUrl: o.logo_url,
+            role: o.role,
+            isActive: o.is_active,
+          }),
+        );
 
-        console.log("[Store] Fetched", organizations.length, "user organizations");
+        console.log(
+          "[Store] Fetched",
+          organizations.length,
+          "user organizations",
+        );
         set({ organizations });
       },
 
@@ -480,7 +499,11 @@ export const useAppStore = create<AppState>()(
         if (!user) return;
 
         const { data, error } = await apiRequest<{
-          organization: { id: string; name: string; logo_url: string | null } | null;
+          organization: {
+            id: string;
+            name: string;
+            logo_url: string | null;
+          } | null;
         }>("/auth/users/me/active-organization", {
           method: "PATCH",
           body: JSON.stringify({ organization_id: orgId }),
@@ -493,26 +516,26 @@ export const useAppStore = create<AppState>()(
         }
 
         if (data?.organization) {
-            set({
-              organization: {
-                id: data.organization.id,
-                name: data.organization.name,
-                logoUrl: data.organization.logo_url,
-              },
-              organizations: organizations.map((o) => ({
-                ...o,
-                isActive: o.id === orgId,
-              })),
-              // Clear org-scoped state when switching
-              currentChatId: null,
-              recentChats: [],
-              conversations: {},
-              activeTasksByConversation: {},
-              integrations: [],
-            });
-          }
+          set({
+            organization: {
+              id: data.organization.id,
+              name: data.organization.name,
+              logoUrl: data.organization.logo_url,
+            },
+            organizations: organizations.map((o) => ({
+              ...o,
+              isActive: o.id === orgId,
+            })),
+            // Clear org-scoped state when switching
+            currentChatId: null,
+            recentChats: [],
+            conversations: {},
+            activeTasksByConversation: {},
+            integrations: [],
+          });
+        }
 
-          console.log("[Store] Switched active organization to:", orgId);
+        console.log("[Store] Switched active organization to:", orgId);
       },
 
       logout: () =>
@@ -689,7 +712,8 @@ export const useAppStore = create<AppState>()(
         }),
       setCurrentChatId: (currentChatId) => set({ currentChatId }),
       setCurrentAppId: (currentAppId) => set({ currentAppId }),
-      openApp: (appId) => set({ currentAppId: appId, currentView: "app-view" as View }),
+      openApp: (appId) =>
+        set({ currentAppId: appId, currentView: "app-view" as View }),
       startNewChat: () => set({ currentChatId: null, currentView: "chat" }),
       setPendingChatInput: (pendingChatInput) => set({ pendingChatInput }),
       setPendingChatAutoSend: (pendingChatAutoSend) =>
@@ -700,12 +724,7 @@ export const useAppStore = create<AppState>()(
         const updated = isPinned
           ? pinnedChatIds.filter((chatId) => chatId !== id)
           : [id, ...pinnedChatIds];
-        console.log(
-          "[Store] Toggling chat pin:",
-          id,
-          "Pinned:",
-          !isPinned,
-        );
+        console.log("[Store] Toggling chat pin:", id, "Pinned:", !isPinned);
         set({ pinnedChatIds: updated });
       },
 
@@ -719,7 +738,13 @@ export const useAppStore = create<AppState>()(
         console.log("[Store] Adding conversation:", id, title, scope);
         set({
           recentChats: [
-            { id, title, lastMessageAt: new Date(), previewText: "", scope: scope ?? "shared" },
+            {
+              id,
+              title,
+              lastMessageAt: new Date(),
+              previewText: "",
+              scope: scope ?? "shared",
+            },
             ...recentChats.slice(0, 9),
           ],
         });
@@ -734,7 +759,7 @@ export const useAppStore = create<AppState>()(
 
         try {
           console.log("[Store] Fetching conversations for user:", user.id);
-          
+
           type ConversationApiResponse = {
             conversations: Array<{
               id: string;
@@ -765,7 +790,7 @@ export const useAppStore = create<AppState>()(
             return;
           }
           const conversations = data?.conversations ?? [];
-          
+
           console.log(
             "[Store] Conversations fetched:",
             conversations.length,
@@ -774,7 +799,9 @@ export const useAppStore = create<AppState>()(
             "ms",
           );
 
-          const mapConversation = (conv: ConversationApiResponse["conversations"][0]): ChatSummary => ({
+          const mapConversation = (
+            conv: ConversationApiResponse["conversations"][0],
+          ): ChatSummary => ({
             id: conv.id,
             title: conv.title ?? "New Chat",
             lastMessageAt: new Date(conv.updated_at),
@@ -793,7 +820,9 @@ export const useAppStore = create<AppState>()(
           // Ensure most-recent-first ordering.
           const recentChats: ChatSummary[] = conversations
             .map(mapConversation)
-            .sort((a, b) => b.lastMessageAt.getTime() - a.lastMessageAt.getTime());
+            .sort(
+              (a, b) => b.lastMessageAt.getTime() - a.lastMessageAt.getTime(),
+            );
 
           set({ recentChats });
         } catch (error) {
@@ -1156,9 +1185,7 @@ export const useAppStore = create<AppState>()(
               ...current,
               activeTaskId: taskId,
               // Reset chunk tracking when a new task starts
-              ...(taskId
-                ? { lastChunkIndex: -1, pendingChunks: [] }
-                : {}),
+              ...(taskId ? { lastChunkIndex: -1, pendingChunks: [] } : {}),
             },
           },
           activeTasksByConversation: updatedActiveTasks,
@@ -1174,7 +1201,12 @@ export const useAppStore = create<AppState>()(
           name: updates.toolName ?? "workflow_tool",
           input: updates.input ?? {},
           result: (updates.result as Record<string, unknown>) ?? {},
-          status: (updates.status as "pending" | "running" | "complete" | undefined) ?? "running",
+          status:
+            (updates.status as
+              | "pending"
+              | "running"
+              | "complete"
+              | undefined) ?? "running",
         };
 
         if (!current) {
@@ -1209,15 +1241,18 @@ export const useAppStore = create<AppState>()(
           const updatedBlocks = blocks.map((block) => {
             if (block.type === "tool_use" && block.id === toolId) {
               // Merge result updates instead of replacing entirely (for progress updates)
-              const currentResult = (block.result as Record<string, unknown>) || {};
-              const newResult = updates.result 
+              const currentResult =
+                (block.result as Record<string, unknown>) || {};
+              const newResult = updates.result
                 ? { ...currentResult, ...updates.result }
                 : currentResult;
               // If payload includes input and block has none, fill it (e.g. from tool_result so modal shows params)
               const newInput =
-                updates.input != null && Object.keys(updates.input).length > 0 && Object.keys(block.input ?? {}).length === 0
+                updates.input != null &&
+                Object.keys(updates.input).length > 0 &&
+                Object.keys(block.input ?? {}).length === 0
                   ? updates.input
-                  : block.input ?? {};
+                  : (block.input ?? {});
               return {
                 ...block,
                 input: newInput,
@@ -1240,7 +1275,10 @@ export const useAppStore = create<AppState>()(
           if (lastMsg && lastMsg.role === "assistant") {
             updated[updated.length - 1] = {
               ...lastMsg,
-              contentBlocks: [...(lastMsg.contentBlocks ?? []), defaultToolBlock],
+              contentBlocks: [
+                ...(lastMsg.contentBlocks ?? []),
+                defaultToolBlock,
+              ],
             };
           } else {
             updated.push({
@@ -1276,7 +1314,10 @@ export const useAppStore = create<AppState>()(
             const blocks = msg.contentBlocks ?? [];
             return {
               ...msg,
-              contentBlocks: [...blocks, { type: "artifact" as const, artifact }],
+              contentBlocks: [
+                ...blocks,
+                { type: "artifact" as const, artifact },
+              ],
             };
           }
           return msg;
@@ -1292,7 +1333,8 @@ export const useAppStore = create<AppState>()(
 
       addConversationAppBlock: (conversationId, app) => {
         const { conversations } = get();
-        const current: ConversationState | undefined = conversations[conversationId];
+        const current: ConversationState | undefined =
+          conversations[conversationId];
         if (!current) return;
 
         const updated: ChatMessage[] = current.messages.map((msg, idx, arr) => {
@@ -1543,7 +1585,8 @@ export const useAppStore = create<AppState>()(
               id: data.id,
               name: data.name ?? user.name,
               avatarUrl: data.avatar_url ?? user.avatarUrl,
-              agentGlobalCommands: data.agent_global_commands ?? user.agentGlobalCommands,
+              agentGlobalCommands:
+                data.agent_global_commands ?? user.agentGlobalCommands,
               phoneNumber: data.phone_number ?? user.phoneNumber,
               jobTitle: data.job_title ?? user.jobTitle,
               roles: newRoles,
@@ -1588,7 +1631,8 @@ export const useAppStore = create<AppState>()(
 
 export const useUser = () => useAppStore((state) => state.user);
 export const useOrganization = () => useAppStore((state) => state.organization);
-export const useOrganizations = () => useAppStore((state) => state.organizations);
+export const useOrganizations = () =>
+  useAppStore((state) => state.organizations);
 export const useIsAuthenticated = () =>
   useAppStore((state) => state.isAuthenticated);
 export const useSidebarCollapsed = () =>
@@ -1621,11 +1665,11 @@ export const useConversationId = () =>
 // Per-conversation selectors
 export const useConversationState = (conversationId: string | null) =>
   useAppStore((state) =>
-    conversationId ? state.conversations[conversationId] ?? null : null,
+    conversationId ? (state.conversations[conversationId] ?? null) : null,
   );
 export const useConversationMessages = (conversationId: string | null) =>
   useAppStore((state) =>
-    conversationId ? state.conversations[conversationId]?.messages ?? [] : [],
+    conversationId ? (state.conversations[conversationId]?.messages ?? []) : [],
   );
 export const useActiveTasksByConversation = () =>
   useAppStore((state) => state.activeTasksByConversation);
@@ -1645,4 +1689,6 @@ export const useIntegration = (provider: string) =>
     (state) => state.integrations.find((i) => i.provider === provider) ?? null,
   );
 export const useConnectedIntegrations = () =>
-  useAppStore(useShallow((state) => state.integrations.filter((i) => i.isActive)));
+  useAppStore(
+    useShallow((state) => state.integrations.filter((i) => i.isActive)),
+  );
