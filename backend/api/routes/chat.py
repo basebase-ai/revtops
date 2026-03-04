@@ -451,6 +451,14 @@ async def update_conversation(
         if not conversation:
             raise HTTPException(status_code=404, detail="Conversation not found")
 
+        # Only the creator can rename shared conversations
+        if request.title is not None and conversation.scope == "shared":
+            if str(conversation.user_id) != str(auth.user_id):
+                raise HTTPException(
+                    status_code=403,
+                    detail="Only the chat creator can rename shared conversations",
+                )
+
         # Update fields
         if request.title is not None:
             conversation.title = request.title
@@ -681,7 +689,7 @@ async def remove_participant(
 
 class UpdateScopeRequest(BaseModel):
     """Request model for updating conversation scope."""
-    scope: str  # Only "shared" is allowed (one-way conversion)
+    scope: str  # "shared" or "private"
 
 
 @router.patch("/conversations/{conversation_id}/scope", response_model=ConversationResponse)
@@ -690,14 +698,14 @@ async def update_scope(
     request: UpdateScopeRequest,
     auth: AuthContext = Depends(get_current_auth),
 ) -> ConversationResponse:
-    """Convert a private conversation to shared (one-way)."""
+    """Toggle conversation scope between private and shared."""
     try:
         conv_uuid = UUID(conversation_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid conversation ID format")
 
-    if request.scope != "shared":
-        raise HTTPException(status_code=400, detail="Can only convert to 'shared' scope")
+    if request.scope not in ("shared", "private"):
+        raise HTTPException(status_code=400, detail="Scope must be 'shared' or 'private'")
 
     org_id = auth.organization_id_str
 
@@ -713,12 +721,16 @@ async def update_scope(
         if not conversation:
             raise HTTPException(status_code=404, detail="Conversation not found")
 
-        if conversation.scope == "shared":
-            # Already shared, just return current state
+        # Only the creator can make a shared conversation private
+        if request.scope == "private" and conversation.scope == "shared":
+            if str(conversation.user_id) != str(auth.user_id):
+                raise HTTPException(status_code=403, detail="Only the chat creator can make a shared conversation private")
+
+        if conversation.scope == request.scope:
+            # Already in the requested state, just return current state
             pass
         else:
-            # Convert to shared
-            conversation.scope = "shared"
+            conversation.scope = request.scope
             conversation.updated_at = datetime.utcnow()
 
         # Capture values before commit

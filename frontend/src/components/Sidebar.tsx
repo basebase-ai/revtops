@@ -11,9 +11,10 @@
  * - Profile section
  */
 
-import { useMemo, useState, useRef, useEffect } from 'react';
+import { useMemo, useState, useRef, useEffect, useCallback } from 'react';
 import type { View, ChatSummary, OrganizationInfo } from './AppLayout';
 import { useAppStore, useIsGlobalAdmin, useActiveTasksByConversation, type UserOrganization } from '../store';
+import { updateConversation } from '../api/client';
 import { Avatar } from './Avatar';
 import { APP_NAME, LOGO_PATH } from '../lib/brand';
 
@@ -394,6 +395,7 @@ export function Sidebar({
         currentChatId={currentChatId}
         activeTasksByConversation={activeTasksByConversation}
         pinnedChatIds={pinnedChatIds}
+        currentUserId={user?.id ?? null}
         onSelectChat={onSelectChat}
         onDeleteChat={onDeleteChat}
         togglePinChat={togglePinChat}
@@ -455,6 +457,7 @@ function ChatAccordion({
   currentChatId,
   activeTasksByConversation,
   pinnedChatIds,
+  currentUserId,
   onSelectChat,
   onDeleteChat,
   togglePinChat,
@@ -464,21 +467,63 @@ function ChatAccordion({
   currentChatId: string | null;
   activeTasksByConversation: Record<string, string>;
   pinnedChatIds: string[];
+  currentUserId: string | null;
   onSelectChat: (id: string) => void;
   onDeleteChat: (id: string) => void;
   togglePinChat: (id: string) => void;
 }): JSX.Element | null {
   const [expandedSection, setExpandedSection] = useState<'shared' | 'private'>('shared');
-  
+  const [editingChatId, setEditingChatId] = useState<string | null>(null);
+  const [editingTitle, setEditingTitle] = useState('');
+  const editInputRef = useRef<HTMLInputElement>(null);
+  const setConversationTitle = useAppStore((s) => s.setConversationTitle);
+
+  const canRename = useCallback((chat: ChatSummary): boolean => {
+    if (chat.scope === 'private') return true;
+    return chat.userId === currentUserId;
+  }, [currentUserId]);
+
+  const startEditing = useCallback((chat: ChatSummary) => {
+    if (!canRename(chat)) return;
+    setEditingChatId(chat.id);
+    setEditingTitle(chat.title);
+  }, [canRename]);
+
+  const saveTitle = useCallback(async (chatId: string) => {
+    const trimmed = editingTitle.trim();
+    setEditingChatId(null);
+    if (!trimmed || trimmed === orderedChats.find(c => c.id === chatId)?.title) return;
+    setConversationTitle(chatId, trimmed);
+    const { error } = await updateConversation(chatId, trimmed);
+    if (error) {
+      const original = orderedChats.find(c => c.id === chatId)?.title ?? 'New Chat';
+      setConversationTitle(chatId, original);
+    }
+  }, [editingTitle, orderedChats, setConversationTitle]);
+
+  const cancelEditing = useCallback(() => {
+    setEditingChatId(null);
+  }, []);
+
+  // Auto-focus and select-all when entering edit mode
+  useEffect(() => {
+    if (editingChatId && editInputRef.current) {
+      editInputRef.current.focus();
+      editInputRef.current.select();
+    }
+  }, [editingChatId]);
+
   if (collapsed) return null;
-  
+
   const sharedChats = orderedChats.filter(c => c.scope === 'shared').slice(0, 20);
   const privateChats = orderedChats.filter(c => c.scope === 'private').slice(0, 20);
-  
+
   const renderChatItem = (chat: ChatSummary, showLockIcon: boolean) => {
     const hasActiveTask = chat.id in activeTasksByConversation;
     const isPinned = pinnedChatIds.includes(chat.id);
-    
+    const isEditing = editingChatId === chat.id;
+    const isRenamable = canRename(chat);
+
     return (
       <div
         key={chat.id}
@@ -487,9 +532,9 @@ function ChatAccordion({
             ? 'bg-surface-800 text-surface-100'
             : 'text-surface-400 hover:text-surface-200 hover:bg-surface-800/50'
         }`}
-        onClick={() => onSelectChat(chat.id)}
+        onClick={() => { if (!isEditing) onSelectChat(chat.id); }}
       >
-        <div className="flex items-center gap-1.5 pr-10">
+        <div className="flex items-center gap-1.5 pr-14">
           {showLockIcon && (
             <svg className="w-3 h-3 text-surface-500 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
@@ -500,7 +545,29 @@ function ChatAccordion({
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
             </svg>
           )}
-          <div className="truncate text-sm flex-1">{chat.title}</div>
+          {isEditing ? (
+            <input
+              ref={editInputRef}
+              type="text"
+              value={editingTitle}
+              onChange={(e) => setEditingTitle(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') void saveTitle(chat.id);
+                if (e.key === 'Escape') cancelEditing();
+              }}
+              onBlur={() => void saveTitle(chat.id)}
+              onClick={(e) => e.stopPropagation()}
+              className="truncate text-sm flex-1 bg-transparent border-b border-primary-500 outline-none text-surface-100 py-0 px-0"
+              maxLength={100}
+            />
+          ) : (
+            <div
+              className="truncate text-sm flex-1"
+              onDoubleClick={(e) => { e.stopPropagation(); startEditing(chat); }}
+            >
+              {chat.title}
+            </div>
+          )}
           {hasActiveTask && (
             <svg className="w-3 h-3 text-primary-400 flex-shrink-0 animate-spin" fill="none" viewBox="0 0 24 24">
               <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
@@ -534,6 +601,21 @@ function ChatAccordion({
             {formatRelativeTime(chat.lastMessageAt)}
           </span>
         </div>
+        {/* Rename button */}
+        {isRenamable && !isEditing && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              startEditing(chat);
+            }}
+            className="absolute right-12 top-1/2 -translate-y-1/2 p-1 rounded opacity-0 group-hover:opacity-100 hover:bg-surface-700 text-surface-500 hover:text-surface-300 transition-all"
+            title="Rename conversation"
+          >
+            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+            </svg>
+          </button>
+        )}
         <button
           onClick={(e) => {
             e.stopPropagation();

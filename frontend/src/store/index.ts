@@ -111,6 +111,7 @@ export interface ChatSummary {
   type?: "agent" | "workflow"; // 'agent' for interactive, 'workflow' for automated
   workflowId?: string; // ID of the workflow that triggered this conversation
   scope: "private" | "shared";
+  userId?: string; // Creator's user ID
   participants?: Participant[];
 }
 
@@ -763,6 +764,7 @@ export const useAppStore = create<AppState>()(
           type ConversationApiResponse = {
             conversations: Array<{
               id: string;
+              user_id?: string;
               title: string | null;
               updated_at: string;
               last_message_preview: string | null;
@@ -809,6 +811,7 @@ export const useAppStore = create<AppState>()(
             type: (conv.type ?? "agent") as "agent" | "workflow",
             workflowId: conv.workflow_id,
             scope: (conv.scope ?? "shared") as "private" | "shared",
+            userId: conv.user_id,
             participants: conv.participants?.map((p) => ({
               id: p.id,
               name: p.name,
@@ -1140,7 +1143,7 @@ export const useAppStore = create<AppState>()(
       },
 
       setConversationTitle: (conversationId, title) => {
-        const { conversations } = get();
+        const { conversations, recentChats } = get();
         const current = conversations[conversationId] ?? {
           ...defaultConversationState,
         };
@@ -1149,6 +1152,9 @@ export const useAppStore = create<AppState>()(
             ...conversations,
             [conversationId]: { ...current, title },
           },
+          recentChats: recentChats.map((c) =>
+            c.id === conversationId ? { ...c, title } : c,
+          ),
         });
       },
 

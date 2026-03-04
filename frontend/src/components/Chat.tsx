@@ -19,7 +19,7 @@ import { AppTile } from './apps/AppTile';
 import { AppViewer } from './apps/AppViewer';
 import { Avatar } from './Avatar';
 import { PendingApprovalCard, type ApprovalResult } from './PendingApprovalCard';
-import { getConversation, uploadChatFile, type UploadResponse } from '../api/client';
+import { getConversation, updateConversation, uploadChatFile, type UploadResponse } from '../api/client';
 import { crossTab } from '../lib/crossTab';
 import { APP_NAME, LOGO_PATH } from '../lib/brand';
 import {
@@ -119,6 +119,10 @@ export function Chat({
   const [pendingThinking, setPendingThinking] = useState<boolean>(false);
   const [conversationType, setConversationType] = useState<string | null>(null);
   const [conversationScope, setConversationScope] = useState<'private' | 'shared'>('shared');
+  const [conversationCreatorId, setConversationCreatorId] = useState<string | null>(null);
+  const [isEditingHeaderTitle, setIsEditingHeaderTitle] = useState(false);
+  const [headerTitleDraft, setHeaderTitleDraft] = useState('');
+  const headerTitleInputRef = useRef<HTMLInputElement>(null);
   const [conversationParticipants, setConversationParticipants] = useState<Array<{
     id: string;
     name: string | null;
@@ -284,7 +288,9 @@ export function Chat({
       setConversationType(null);
       setIsWorkflowPolling(false);
       setNewConversationScope('shared'); // Default to shared for new conversations
+      setConversationCreatorId(null);
     }
+    setIsEditingHeaderTitle(false);
     // Reset workflow-done flag whenever the conversation changes
     workflowDoneRef.current = false;
     // Only clear pending messages if we're switching to an EXISTING chat
@@ -390,6 +396,7 @@ export function Chat({
           setConversationTitle(chatId, data.title ?? 'New Chat');
           setConversationType(data.type ?? null);
           setConversationScope((data.scope ?? 'shared') as 'private' | 'shared');
+          setConversationCreatorId(data.user_id ?? null);
           setConversationParticipants(
             (data.participants ?? []).map((p: { id: string; name: string | null; email: string; avatar_url?: string | null }) => ({
               id: p.id,
@@ -939,6 +946,36 @@ export function Chat({
     }
   }, [messages]);
 
+  // Check if the current user can rename this conversation
+  const canRenameHeader = chatId && (
+    conversationScope === 'private' || conversationCreatorId === userId
+  );
+
+  const startEditingHeaderTitle = useCallback(() => {
+    if (!canRenameHeader) return;
+    setHeaderTitleDraft(chatTitle);
+    setIsEditingHeaderTitle(true);
+    setTimeout(() => {
+      headerTitleInputRef.current?.focus();
+      headerTitleInputRef.current?.select();
+    }, 0);
+  }, [canRenameHeader, chatTitle]);
+
+  const saveHeaderTitle = useCallback(async () => {
+    setIsEditingHeaderTitle(false);
+    const trimmed = headerTitleDraft.trim();
+    if (!trimmed || !chatId || trimmed === chatTitle) return;
+    setConversationTitle(chatId, trimmed);
+    const { error } = await updateConversation(chatId, trimmed);
+    if (error) {
+      setConversationTitle(chatId, chatTitle);
+    }
+  }, [headerTitleDraft, chatId, chatTitle, setConversationTitle]);
+
+  const cancelEditingHeaderTitle = useCallback(() => {
+    setIsEditingHeaderTitle(false);
+  }, []);
+
   // Convert private conversation to shared
   const handleMakeShared = useCallback(async () => {
     if (!chatId) return;
@@ -972,6 +1009,31 @@ export function Chat({
     }
   }, [chatId]);
 
+  // Convert shared conversation to private (creator only)
+  const handleMakePrivate = useCallback(async () => {
+    if (!chatId) return;
+
+    try {
+      const response = await fetch(`/api/chat/conversations/${chatId}/scope`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ scope: 'private' }),
+        credentials: 'include',
+      });
+
+      if (!response.ok) {
+        const data = await response.json();
+        console.error('Failed to make private:', data.detail);
+        return;
+      }
+
+      setConversationScope('private');
+      setConversationParticipants([]);
+    } catch (err) {
+      console.error('Failed to make private:', err);
+    }
+  }, [chatId]);
+
   if (isLoading) {
     return (
       <div className="flex-1 flex items-center justify-center min-h-0 overflow-hidden">
@@ -988,19 +1050,64 @@ export function Chat({
       {/* Header - hidden on mobile since AppLayout has mobile header */}
       <header className="hidden md:flex h-14 border-b border-surface-800 items-center justify-between px-4 md:px-6 flex-shrink-0">
         <div className="flex items-center gap-3 min-w-0">
-          <h1 className="text-lg font-semibold text-surface-100 truncate max-w-[200px] md:max-w-md">
-            {chatTitle}
-          </h1>
-          {/* Scope badge */}
-          {chatId && (
-            <span className={`px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide rounded ${
-              conversationScope === 'shared' 
-                ? 'bg-primary-500/20 text-primary-400' 
-                : 'bg-surface-700 text-surface-400'
-            }`}>
-              {conversationScope}
-            </span>
+          {isEditingHeaderTitle ? (
+            <input
+              ref={headerTitleInputRef}
+              type="text"
+              value={headerTitleDraft}
+              onChange={(e) => setHeaderTitleDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') void saveHeaderTitle();
+                if (e.key === 'Escape') cancelEditingHeaderTitle();
+              }}
+              onBlur={() => void saveHeaderTitle()}
+              className="text-lg font-semibold text-surface-100 bg-transparent border-b border-primary-500 outline-none max-w-[200px] md:max-w-md"
+              maxLength={100}
+            />
+          ) : (
+            <div
+              className={`flex items-center gap-1.5 group/title min-w-0 ${canRenameHeader ? 'cursor-pointer' : ''}`}
+              onClick={canRenameHeader ? startEditingHeaderTitle : undefined}
+              title={canRenameHeader ? 'Click to rename' : undefined}
+            >
+              <h1 className="text-lg font-semibold text-surface-100 truncate max-w-[200px] md:max-w-md">
+                {chatTitle}
+              </h1>
+              {canRenameHeader && (
+                <svg className="w-3.5 h-3.5 text-surface-500 opacity-0 group-hover/title:opacity-100 transition-opacity flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                </svg>
+              )}
+            </div>
           )}
+          {/* Scope badge / toggle */}
+          {chatId && (() => {
+            const canToggleScope = conversationScope === 'private' || conversationCreatorId === userId;
+            if (canToggleScope) {
+              return (
+                <button
+                  onClick={() => void (conversationScope === 'private' ? handleMakeShared() : handleMakePrivate())}
+                  className={`px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide rounded transition-colors cursor-pointer ${
+                    conversationScope === 'shared'
+                      ? 'bg-primary-500/20 text-primary-400 hover:bg-primary-500/30'
+                      : 'bg-surface-700 text-surface-400 hover:bg-surface-600'
+                  }`}
+                  title={conversationScope === 'shared' ? 'Click to make private' : 'Click to share with team'}
+                >
+                  {conversationScope}
+                </button>
+              );
+            }
+            return (
+              <span className={`px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide rounded ${
+                conversationScope === 'shared'
+                  ? 'bg-primary-500/20 text-primary-400'
+                  : 'bg-surface-700 text-surface-400'
+              }`}>
+                {conversationScope}
+              </span>
+            );
+          })()}
           {/* Uncommitted changes indicator */}
           {hasUncommittedChanges && (
             <span 
@@ -1034,19 +1141,6 @@ export function Chat({
           )}
         </div>
         <div className="flex items-center gap-3">
-          {/* Make Shared button for private conversations */}
-          {conversationScope === 'private' && chatId && (
-            <button
-              onClick={() => void handleMakeShared()}
-              className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-surface-300 hover:text-surface-100 bg-surface-800 hover:bg-surface-700 rounded-lg transition-colors"
-              title="Convert to shared conversation so teammates can participate"
-            >
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
-              </svg>
-              Make Shared
-            </button>
-          )}
           {/* Participant avatars for shared conversations */}
           {conversationScope === 'shared' && conversationParticipants.length > 0 && (
             <div className="flex items-center gap-2">
