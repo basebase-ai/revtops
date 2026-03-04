@@ -15,18 +15,21 @@ Endpoints:
 - POST /api/chat/upload - Upload a file attachment for chat context
 """
 
+import json
 from datetime import datetime
 from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 import logging
+import redis.asyncio as aioredis
 
 
 from pydantic import BaseModel
 from sqlalchemy import and_, func, or_, select
 
 from api.auth_middleware import AuthContext, get_current_auth
+from config import get_redis_connection_kwargs, settings
 from models.database import get_session
 from models.chat_message import ChatMessage
 from models.conversation import Conversation
@@ -38,12 +41,40 @@ from services.slack_conversations import get_slack_user_ids_for_revtops_user
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
+_redis_client: aioredis.Redis | None = None
+_SLACK_USER_IDS_TTL = 300  # 5 minutes
+
+
+async def _get_redis() -> aioredis.Redis:
+    """Lazy-initialize a module-level async Redis client."""
+    global _redis_client
+    if _redis_client is None:
+        _redis_client = aioredis.from_url(
+            settings.REDIS_URL, **get_redis_connection_kwargs(decode_responses=True)
+        )
+    return _redis_client
+
+
 async def _get_slack_user_ids(auth: AuthContext) -> set[str]:
     org_id = auth.organization_id_str
     if not org_id:
         return set()
+
+    cache_key = f"slack_user_ids:{org_id}:{auth.user_id_str}"
+
+    # Try Redis cache first
     try:
-        return await get_slack_user_ids_for_revtops_user(org_id, auth.user_id_str)
+        r = await _get_redis()
+        cached = await r.get(cache_key)
+        if cached is not None:
+            return set(json.loads(cached))
+    except Exception:
+        # Redis unavailable — fall through to direct call
+        pass
+
+    # Cache miss (or Redis error): resolve from connector layer
+    try:
+        result = await get_slack_user_ids_for_revtops_user(org_id, auth.user_id_str)
     except Exception as exc:
         logger.warning(
             "[chat] Failed to resolve Slack user IDs for org=%s user=%s: %s",
@@ -52,7 +83,16 @@ async def _get_slack_user_ids(auth: AuthContext) -> set[str]:
             exc,
             exc_info=True,
         )
-    return set()
+        return set()
+
+    # Store in Redis (best-effort; don't break the request if Redis is down)
+    try:
+        r = await _get_redis()
+        await r.set(cache_key, json.dumps(sorted(result)), ex=_SLACK_USER_IDS_TTL)
+    except Exception:
+        pass
+
+    return result
 
 
 def _build_conversation_access_filter(
