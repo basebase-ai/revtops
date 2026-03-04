@@ -28,6 +28,7 @@ import {
   useConnectedIntegrations,
   type AppBlock,
   type ChatMessage,
+  type ConversationSummaryData,
   type Integration,
   type ToolCallData,
   type ToolUseBlock,
@@ -79,6 +80,48 @@ interface ToolApprovalState {
   result: WsToolApprovalResult | null;
 }
 
+function SummaryCard({ summary }: { summary: ConversationSummaryData }): JSX.Element {
+  const [expanded, setExpanded] = useState(false);
+
+  return (
+    <div className="mx-auto max-w-3xl mb-3">
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        className="w-full text-left rounded-lg border border-surface-700 bg-surface-850 px-4 py-3 transition-colors hover:bg-surface-800"
+      >
+        <div className="flex items-center gap-2">
+          <svg className="w-4 h-4 text-primary-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+          </svg>
+          <span className="text-sm font-medium text-surface-300">Conversation Summary</span>
+          <svg
+            className={`w-4 h-4 text-surface-400 ml-auto transition-transform ${expanded ? 'rotate-180' : ''}`}
+            fill="none" viewBox="0 0 24 24" stroke="currentColor"
+          >
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+          </svg>
+        </div>
+        {!expanded && (
+          <p className="mt-1 text-sm text-surface-400 truncate">{summary.overall}</p>
+        )}
+      </button>
+      {expanded && (
+        <div className="mt-0 rounded-b-lg border border-t-0 border-surface-700 bg-surface-850 px-4 py-3 space-y-3">
+          <div>
+            <h4 className="text-xs font-semibold uppercase tracking-wider text-surface-400 mb-1">Overall</h4>
+            <p className="text-sm text-surface-200">{summary.overall}</p>
+          </div>
+          <div>
+            <h4 className="text-xs font-semibold uppercase tracking-wider text-surface-400 mb-1">Recent Updates</h4>
+            <p className="text-sm text-surface-200">{summary.recent}</p>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function Chat({
   userId,
   organizationId: _organizationId,
@@ -100,6 +143,7 @@ export function Chat({
   const addConversationMessage = useAppStore((s) => s.addConversationMessage);
   const setConversationMessages = useAppStore((s) => s.setConversationMessages);
   const setConversationTitle = useAppStore((s) => s.setConversationTitle);
+  const setConversationSummary = useAppStore((s) => s.setConversationSummary);
   const setConversationThinking = useAppStore((s) => s.setConversationThinking);
   const pendingChatInput = useAppStore((s) => s.pendingChatInput);
   const setPendingChatInput = useAppStore((s) => s.setPendingChatInput);
@@ -388,6 +432,14 @@ export function Chat({
           // Set conversation state
           setConversationMessages(chatId, loadedMessages);
           setConversationTitle(chatId, data.title ?? 'New Chat');
+          if (data.summary) {
+            try {
+              const parsed = JSON.parse(data.summary) as ConversationSummaryData;
+              setConversationSummary(chatId, parsed);
+            } catch {
+              // Invalid summary JSON, ignore
+            }
+          }
           setConversationType(data.type ?? null);
           setConversationScope((data.scope ?? 'shared') as 'private' | 'shared');
           setConversationParticipants(
@@ -433,7 +485,7 @@ export function Chat({
       loadInFlightChatIdRef.current = null; // Allow re-run to start load (e.g. Strict Mode)
       setIsLoading(false);
     };
-  }, [chatId, userId, setConversationMessages, setConversationTitle, onConversationNotFound]);
+  }, [chatId, userId, setConversationMessages, setConversationTitle, setConversationSummary, onConversationNotFound]);
 
   // Keep messagesRef in sync for polling comparison (avoids stale closure)
   useEffect(() => {
@@ -1091,6 +1143,7 @@ export function Chat({
         {/* Messages */}
         <div className={`relative md:transition-all md:duration-300 md:ease-in-out ${currentArtifact || currentApp ? 'md:w-1/2' : ''} flex-1`}>
           <div ref={messagesContainerRef} className="absolute inset-0 overflow-y-auto overflow-x-hidden p-3 md:p-6">
+          {conversationState?.summary && <SummaryCard summary={conversationState.summary} />}
           {!userId && (
             <div className="mb-3 rounded-lg border border-amber-600/50 bg-amber-900/20 px-3 py-2 text-sm text-amber-200">
               User context is missing — artifacts and apps may not save correctly. Please refresh or re-sign in.

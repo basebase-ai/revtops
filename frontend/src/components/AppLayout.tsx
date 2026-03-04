@@ -132,7 +132,13 @@ interface WsNewMessage {
   sender_user_id: string;
 }
 
-type WsMessage = WsActiveTasks | WsTaskStarted | WsTaskChunk | WsTaskComplete | WsConversationCreated | WsCatchup | WsCrmApprovalResult | WsToolApprovalResult | WsToolProgress | WsError | WsNewMessage;
+interface WsSummaryUpdated {
+  type: 'summary_updated';
+  conversation_id: string;
+  summary: { overall: string; recent: string; message_count_at_generation: number; updated_at: string };
+}
+
+type WsMessage = WsActiveTasks | WsTaskStarted | WsTaskChunk | WsTaskComplete | WsConversationCreated | WsCatchup | WsCrmApprovalResult | WsToolApprovalResult | WsToolProgress | WsError | WsNewMessage | WsSummaryUpdated;
 
 // Props
 interface AppLayoutProps {
@@ -412,6 +418,7 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
       'crm_approval_result',
       'tool_approval_result',
       'new_message',
+      'summary_updated',
     ].includes(type);
   }, []);
 
@@ -865,6 +872,14 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
               senderEmail: message.sender_email ?? undefined,
             };
             addConversationMessage(conversation_id, chatMessage);
+          }
+          break;
+        }
+
+        case 'summary_updated': {
+          const { conversation_id, summary } = parsed;
+          if (conversation_id && summary) {
+            useAppStore.getState().setConversationSummary(conversation_id, summary);
           }
           break;
         }

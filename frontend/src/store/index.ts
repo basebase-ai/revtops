@@ -210,6 +210,13 @@ export interface PendingChunk {
 }
 
 // Per-conversation state
+export interface ConversationSummaryData {
+  overall: string;
+  recent: string;
+  message_count_at_generation: number;
+  updated_at: string;
+}
+
 export interface ConversationState {
   messages: ChatMessage[];
   title: string;
@@ -218,6 +225,7 @@ export interface ConversationState {
   activeTaskId: string | null;
   lastChunkIndex: number;
   pendingChunks: PendingChunk[]; // Buffer for out-of-order chunks
+  summary: ConversationSummaryData | null;
 }
 
 // Task state from backend
@@ -348,6 +356,7 @@ interface AppState {
   ) => void;
   markConversationMessageComplete: (conversationId: string) => void;
   setConversationTitle: (conversationId: string, title: string) => void;
+  setConversationSummary: (conversationId: string, summary: ConversationSummaryData) => void;
   setConversationThinking: (conversationId: string, thinking: boolean) => void;
   setConversationActiveTask: (
     conversationId: string,
@@ -400,6 +409,7 @@ const defaultConversationState: ConversationState = {
   activeTaskId: null,
   lastChunkIndex: -1, // -1 means no chunks received yet, first chunk should be 0
   pendingChunks: [],
+  summary: null,
 };
 
 // =============================================================================
@@ -1148,6 +1158,19 @@ export const useAppStore = create<AppState>()(
           conversations: {
             ...conversations,
             [conversationId]: { ...current, title },
+          },
+        });
+      },
+
+      setConversationSummary: (conversationId, summary) => {
+        const { conversations } = get();
+        const current = conversations[conversationId] ?? {
+          ...defaultConversationState,
+        };
+        set({
+          conversations: {
+            ...conversations,
+            [conversationId]: { ...current, summary },
           },
         });
       },

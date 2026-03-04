@@ -272,7 +272,12 @@ class TaskManager:
             })
             
             logger.info("Task %s completed successfully", task_id)
-            
+
+            # Fire-and-forget: generate conversation summary in background
+            asyncio.create_task(
+                self._generate_and_broadcast_summary(conversation_id, organization_id)
+            )
+
         except asyncio.CancelledError:
             logger.info("Task %s was cancelled", task_id)
             await self._complete_task(task_id, "cancelled")
@@ -346,6 +351,33 @@ class TaskManager:
             )
             await session.commit()
     
+    async def _generate_and_broadcast_summary(
+        self,
+        conversation_id: str,
+        organization_id: str,
+    ) -> None:
+        """Fire-and-forget: generate summary and broadcast via WebSocket."""
+        try:
+            from services.conversation_summary import generate_conversation_summary
+            from api.websockets import sync_broadcaster
+
+            summary = await generate_conversation_summary(conversation_id, organization_id)
+            if summary:
+                await sync_broadcaster.broadcast(
+                    organization_id,
+                    "summary_updated",
+                    {
+                        "conversation_id": conversation_id,
+                        "summary": summary,
+                    },
+                )
+        except Exception:
+            logger.warning(
+                "Background summary generation failed for conversation %s",
+                conversation_id,
+                exc_info=True,
+            )
+
     async def _broadcast(self, task_id: str, message: dict[str, Any]) -> None:
         """Broadcast a message to all WebSockets subscribed to a task."""
         async with self._lock:
