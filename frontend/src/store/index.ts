@@ -541,6 +541,7 @@ export const useAppStore = create<AppState>()(
             data.organization.handle ??
             organizations.find((o) => o.id === orgId)?.handle ??
             null;
+          console.log("[Store] Resetting view to home for switched organization");
           set({
             organization: {
               id: data.organization.id,
@@ -552,8 +553,11 @@ export const useAppStore = create<AppState>()(
               ...o,
               isActive: o.id === orgId,
             })),
+            currentView: "home",
             // Clear org-scoped state when switching
             currentChatId: null,
+            currentAppId: null,
+            currentArtifactId: null,
             recentChats: [],
             conversations: {},
             activeTasksByConversation: {},
