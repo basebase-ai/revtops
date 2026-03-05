@@ -10,6 +10,26 @@ import { validateGoodPassword } from '../lib/password';
 import { API_BASE } from '../lib/api';
 import { APP_NAME, LOGO_PATH } from '../lib/brand';
 
+interface InviteContext {
+  orgName: string;
+  orgLogo: string | null;
+  inviterName: string | null;
+  inviterAvatar: string | null;
+}
+
+function parseInviteParams(): InviteContext | null {
+  const params = new URLSearchParams(window.location.search);
+  if (params.get('invite') !== '1') return null;
+  const orgName: string | null = params.get('org_name');
+  if (!orgName) return null;
+  return {
+    orgName,
+    orgLogo: params.get('org_logo') || null,
+    inviterName: params.get('inviter_name') || null,
+    inviterAvatar: params.get('inviter_avatar') || null,
+  };
+}
+
 interface AuthProps {
   onBack: () => void;
   onSuccess: () => void;
@@ -25,6 +45,14 @@ export function Auth({ onBack, onSuccess }: AuthProps): JSX.Element {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [inviteContext] = useState<InviteContext | null>(() => parseInviteParams());
+
+  // Persist invite_mode so post-auth flow can detect it
+  useEffect(() => {
+    if (inviteContext) {
+      localStorage.setItem('invite_mode', '1');
+    }
+  }, [inviteContext]);
 
   // Check if this is a password reset callback
   useEffect(() => {
@@ -153,23 +181,61 @@ export function Auth({ onBack, onSuccess }: AuthProps): JSX.Element {
           Back to home
         </button>
 
+        {/* Invite banner */}
+        {inviteContext && (mode === 'signin' || mode === 'signup') && (
+          <div className="mb-6 p-5 rounded-2xl bg-surface-900/80 backdrop-blur-sm border border-surface-800">
+            <div className="flex flex-col items-center gap-3 text-center">
+              {inviteContext.inviterAvatar ? (
+                <img
+                  src={inviteContext.inviterAvatar}
+                  alt={inviteContext.inviterName ?? 'Inviter'}
+                  className="w-12 h-12 rounded-full ring-2 ring-primary-500/30"
+                />
+              ) : inviteContext.inviterName ? (
+                <div className="w-12 h-12 rounded-full bg-primary-500/20 flex items-center justify-center text-primary-300 text-lg font-semibold">
+                  {inviteContext.inviterName.charAt(0).toUpperCase()}
+                </div>
+              ) : null}
+              <p className="text-surface-300 text-sm leading-relaxed">
+                {inviteContext.inviterName ? (
+                  <><span className="text-surface-100 font-medium">{inviteContext.inviterName}</span> invited you to join</>
+                ) : (
+                  <>You've been invited to join</>
+                )}
+              </p>
+              <div className="flex items-center gap-2.5">
+                {inviteContext.orgLogo && (
+                  <img
+                    src={inviteContext.orgLogo}
+                    alt={inviteContext.orgName}
+                    className="w-8 h-8 rounded-lg object-cover"
+                  />
+                )}
+                <span className="text-xl font-bold text-surface-50">{inviteContext.orgName}</span>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Logo */}
         <div className="text-center mb-8">
-          <div className="inline-flex items-center gap-3 mb-4">
-            <div className="flex items-center justify-center w-14 h-14 rounded-2xl bg-surface-800">
-              <img src={LOGO_PATH} alt={APP_NAME} className="w-8 h-8" />
+          {!inviteContext && (
+            <div className="inline-flex items-center gap-3 mb-4">
+              <div className="flex items-center justify-center w-14 h-14 rounded-2xl bg-surface-800">
+                <img src={LOGO_PATH} alt={APP_NAME} className="w-8 h-8" />
+              </div>
+              <span className="text-2xl font-bold text-surface-50">{APP_NAME}</span>
             </div>
-            <span className="text-2xl font-bold text-surface-50">{APP_NAME}</span>
-          </div>
+          )}
           <h1 className="text-2xl font-bold text-surface-50">
-            {mode === 'signin' && 'Welcome back'}
-            {mode === 'signup' && 'Create your account'}
+            {mode === 'signin' && (inviteContext ? `Join ${inviteContext.orgName}` : 'Welcome back')}
+            {mode === 'signup' && (inviteContext ? `Join ${inviteContext.orgName}` : 'Create your account')}
             {mode === 'forgot' && 'Reset your password'}
             {mode === 'reset' && 'Set new password'}
           </h1>
           <p className="text-surface-400 mt-2">
-            {mode === 'signin' && 'Sign in to access your revenue insights'}
-            {mode === 'signup' && 'Start your free trial today'}
+            {mode === 'signin' && (inviteContext ? 'Sign in to accept your invitation' : 'Sign in to access your revenue insights')}
+            {mode === 'signup' && (inviteContext ? 'Create an account to accept your invitation' : 'Start your free trial today')}
             {mode === 'forgot' && "Enter your email and we'll send you a reset link"}
             {mode === 'reset' && 'Choose a new password for your account'}
           </p>

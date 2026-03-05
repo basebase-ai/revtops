@@ -247,7 +247,7 @@ function App(): JSX.Element {
         // Waitlist status is no longer used - all users are auto-activated
 
         // If sync returned an organization (e.g. invited user who auto-activated),
-        // set it and go directly to app (orgs are auto-enrolled in free tier)
+        // set it and go to app — or to onboarding in invited mode if they came via invite link
         if (userData.organization) {
           const org = userData.organization as { id: string; name: string; logo_url: string | null; handle?: string | null };
           setOrganization({
@@ -257,6 +257,12 @@ function App(): JSX.Element {
             handle: org.handle ?? null,
           });
           await fetchUserOrganizations();
+          if (localStorage.getItem('invite_mode') === '1') {
+            localStorage.setItem('onboarding_invited', '1');
+            localStorage.removeItem('invite_mode');
+            setScreen('onboarding-wizard');
+            return;
+          }
           setScreen('app');
           return;
         }

@@ -1264,6 +1264,7 @@ async def get_organization_members(
                 for m in user_mappings
             ]
             membership: OrgMember | None = membership_by_user.get(u.id)
+            member_status: str = membership.status if membership else (u.status or "active")
             members.append(
                 TeamMemberResponse(
                     id=str(u.id),
@@ -1272,7 +1273,7 @@ async def get_organization_members(
                     role=membership.role if membership else "member",
                     avatar_url=u.avatar_url,
                     job_title=membership.title if membership else None,
-                    status=u.status,
+                    status=member_status,
                     is_guest=u.is_guest,
                     can_login_as_admin=(
                         bool(membership and membership.role == "admin")
@@ -1630,9 +1631,24 @@ async def invite_to_organization(
                     detail="User is already a member of this organization",
                 )
             if existing_membership.status == "invited":
-                raise HTTPException(
-                    status_code=409,
-                    detail="User has already been invited to this organization",
+                existing_membership.invited_by_user_id = inviter_uuid
+                existing_membership.invited_at = datetime.utcnow()
+                await session.commit()
+                membership_id_str = str(existing_membership.id)
+                inviter_name = inviter.name or inviter.email
+                background_tasks.add_task(
+                    send_org_invitation_email,
+                    invite_email,
+                    org.name,
+                    inviter_name,
+                    org_logo_url=org.logo_url,
+                    inviter_avatar_url=inviter.avatar_url,
+                )
+                return InviteToOrgResponse(
+                    membership_id=membership_id_str,
+                    user_id=str(target_user.id),
+                    email=invite_email,
+                    status="invited",
                 )
             # Re-invite a deactivated member
             existing_membership.status = "invited"
@@ -1661,6 +1677,8 @@ async def invite_to_organization(
             invite_email,
             org.name,
             inviter_name,
+            org_logo_url=org.logo_url,
+            inviter_avatar_url=inviter.avatar_url,
         )
 
         return InviteToOrgResponse(

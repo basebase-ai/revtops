@@ -14,7 +14,17 @@ import { supabase } from '../lib/supabase';
 import { useAppStore, useIntegrations } from '../store';
 import { useIsMobile } from '../hooks';
 
-const TOTAL_STEPS = 6;
+const TOTAL_STEPS_NORMAL = 6;
+const TOTAL_STEPS_INVITED = 5;
+
+interface TeamMember {
+  id: string;
+  name: string | null;
+  email: string;
+  avatar_url: string | null;
+  role: string | null;
+  status: string | null;
+}
 
 interface OnboardingWizardProps {
   emailDomain: string;
@@ -82,9 +92,14 @@ const SKIP_MESSAGES: Record<number, string> = {
 };
 
 export function OnboardingWizard({ emailDomain, onComplete: rawOnComplete, onBack }: OnboardingWizardProps): JSX.Element {
+  const [isInvitedMode] = useState<boolean>(() => localStorage.getItem('onboarding_invited') === '1');
+  const TOTAL_STEPS: number = isInvitedMode ? TOTAL_STEPS_INVITED : TOTAL_STEPS_NORMAL;
+
   const onComplete = (): void => {
     localStorage.removeItem('onboarding_incomplete');
     localStorage.removeItem('onboarding_step');
+    localStorage.removeItem('onboarding_invited');
+    localStorage.removeItem('invite_mode');
     rawOnComplete();
   };
   const [step, setStep] = useState<number>(() => {
@@ -102,6 +117,7 @@ export function OnboardingWizard({ emailDomain, onComplete: rawOnComplete, onBac
   const [invitedEmails, setInvitedEmails] = useState<ReadonlyArray<string>>([]);
   const [companySummary, setCompanySummary] = useState<string | null>(null);
   const [companySummaryLoading, setCompanySummaryLoading] = useState<boolean>(false);
+  const [teamMembers, setTeamMembers] = useState<ReadonlyArray<TeamMember>>([]);
 
   const { user, organization, setOrganization, syncUserToBackend, fetchUserOrganizations, fetchIntegrations } =
     useAppStore();
@@ -116,14 +132,40 @@ export function OnboardingWizard({ emailDomain, onComplete: rawOnComplete, onBac
     localStorage.setItem('onboarding_step', String(step));
   }, [step]);
 
+  // Fetch team members for invited mode step 1
   useEffect(() => {
-    if (orgId && userId && step >= 2) {
-      void fetchIntegrations();
-    }
-  }, [orgId, userId, step, fetchIntegrations]);
+    if (!isInvitedMode || !orgId || !userId) return;
+    let cancelled = false;
+    const loadMembers = async (): Promise<void> => {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        const headers: Record<string, string> = {};
+        if (session?.access_token) headers['Authorization'] = `Bearer ${session.access_token}`;
+        const res = await fetch(
+          `${API_BASE}/auth/organizations/${orgId}/members?user_id=${encodeURIComponent(userId)}`,
+          { headers },
+        );
+        if (!res.ok || cancelled) return;
+        const data = (await res.json()) as { members: TeamMember[] };
+        if (!cancelled) {
+          setTeamMembers(data.members.filter((m) => m.id !== userId && m.status === 'active'));
+        }
+      } catch {
+        // ignore
+      }
+    };
+    void loadMembers();
+    return () => { cancelled = true; };
+  }, [isInvitedMode, orgId, userId]);
 
   useEffect(() => {
-    if (step !== 6 || !orgId || !userId) return;
+    if (orgId && userId && (isInvitedMode ? step >= 1 : step >= 2)) {
+      void fetchIntegrations();
+    }
+  }, [orgId, userId, step, fetchIntegrations, isInvitedMode]);
+
+  useEffect(() => {
+    if (contentStep !== 6 || !orgId || !userId) return;
     let cancelled = false;
     let retryTid: ReturnType<typeof setTimeout> | null = null;
     const loadOrg = async (): Promise<void> => {
@@ -156,6 +198,7 @@ export function OnboardingWizard({ emailDomain, onComplete: rawOnComplete, onBac
       cancelled = true;
       if (retryTid) clearTimeout(retryTid);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step, orgId, userId, websiteUrl]);
 
   const slackConnected: boolean =
@@ -333,9 +376,15 @@ export function OnboardingWizard({ emailDomain, onComplete: rawOnComplete, onBac
     }
   };
 
+  /**
+   * In invited mode, logical step 4 (invite teammates) is skipped.
+   * Map step numbers to content: steps 1-3 are the same, then 4→5 and 5→6 in normal numbering.
+   */
+  const contentStep: number = isInvitedMode && step >= 4 ? step + 1 : step;
+
+  const skipMessageForStep: string | undefined = SKIP_MESSAGES[contentStep];
   const handleSkip = (): void => {
-    const msg: string | undefined = SKIP_MESSAGES[step];
-    if (msg && window.confirm(msg)) {
+    if (skipMessageForStep && window.confirm(skipMessageForStep)) {
       setStep((prev) => Math.min(prev + 1, TOTAL_STEPS));
     }
   };
@@ -346,15 +395,16 @@ export function OnboardingWizard({ emailDomain, onComplete: rawOnComplete, onBac
   };
 
   const renderFooter = (nextLabel?: string, continueDisabled?: boolean): JSX.Element => {
-    const step3HasConnection = integrations.some((i) =>
+    const step3HasConnection: boolean = integrations.some((i) =>
       INTEGRATION_KEYS_STEP3.includes(i.provider) && i.currentUserConnected
     );
-    const isDisabled: boolean =
-      continueDisabled ??
-      (step === 2 ? !slackConnected : step === 3 ? !step3HasConnection : step === 4 ? invitedEmails.length === 0 : false);
+    const defaultDisabled: boolean =
+      contentStep === 2 ? !slackConnected : contentStep === 3 ? !step3HasConnection : contentStep === 4 ? invitedEmails.length === 0 : false;
+    const isDisabled: boolean = continueDisabled ?? defaultDisabled;
+    const showContinue: boolean = isInvitedMode ? step >= 1 && step <= TOTAL_STEPS - 1 : step >= 2 && step <= 5;
     return (
     <div className="mt-8 space-y-3">
-      {SKIP_MESSAGES[step] !== undefined && (
+      {skipMessageForStep !== undefined && (
         <button
           type="button"
           onClick={handleSkip}
@@ -363,7 +413,7 @@ export function OnboardingWizard({ emailDomain, onComplete: rawOnComplete, onBac
           I&apos;ll do this later
         </button>
       )}
-      {step >= 2 && step <= 5 && (
+      {showContinue && (
         <button
           type="button"
           onClick={handleNext}
@@ -409,8 +459,8 @@ export function OnboardingWizard({ emailDomain, onComplete: rawOnComplete, onBac
         </button>
 
         <div className="bg-surface-900/80 backdrop-blur-sm border border-surface-800 rounded-2xl p-8">
-          {/* Step 1: Welcome */}
-          {step === 1 && (
+          {/* Step 1: Welcome (normal) or Welcome to [Org] (invited) */}
+          {step === 1 && !isInvitedMode && (
             <>
               <div className="text-center mb-8">
                 <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-gradient-to-br from-primary-500 to-primary-700 mb-5 shadow-lg shadow-primary-500/20">
@@ -487,19 +537,126 @@ export function OnboardingWizard({ emailDomain, onComplete: rawOnComplete, onBac
             </>
           )}
 
+          {/* Step 1 (invited): Welcome to [Org] */}
+          {step === 1 && isInvitedMode && (
+            <>
+              <div className="text-center mb-6">
+                {organization?.logoUrl ? (
+                  <img
+                    src={organization.logoUrl}
+                    alt={organization.name}
+                    className="w-16 h-16 rounded-2xl mx-auto mb-5 object-cover shadow-lg"
+                  />
+                ) : (
+                  <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-gradient-to-br from-primary-500 to-primary-700 mb-5 shadow-lg shadow-primary-500/20">
+                    <span className="text-3xl">&#x1F44B;</span>
+                  </div>
+                )}
+                <h1 className="text-2xl font-bold text-white leading-tight">
+                  Welcome to {organization?.name ?? 'your team'}!
+                </h1>
+                <p className="text-surface-300 mt-3 text-[15px] leading-relaxed max-w-sm mx-auto">
+                  You&apos;re all set as a member. Let&apos;s connect your tools so Penny
+                  can help you alongside your team.
+                </p>
+              </div>
+
+              {/* Team members already here */}
+              {teamMembers.length > 0 && (
+                <div className="mb-4 p-4 rounded-xl bg-surface-800/50 border border-surface-700/50">
+                  <p className="text-surface-400 text-xs font-medium mb-3">Your teammates</p>
+                  <div className="space-y-2.5">
+                    {teamMembers.slice(0, 6).map((member) => (
+                      <div key={member.id} className="flex items-center gap-3">
+                        {member.avatar_url ? (
+                          <img
+                            src={member.avatar_url}
+                            alt={member.name ?? member.email}
+                            className="w-8 h-8 rounded-full"
+                          />
+                        ) : (
+                          <div className="w-8 h-8 rounded-full bg-surface-700 flex items-center justify-center text-surface-300 text-sm font-medium">
+                            {(member.name ?? member.email).charAt(0).toUpperCase()}
+                          </div>
+                        )}
+                        <div className="min-w-0 flex-1">
+                          <div className="text-sm text-surface-200 font-medium truncate">
+                            {member.name ?? member.email}
+                          </div>
+                          {member.name && (
+                            <div className="text-xs text-surface-500 truncate">{member.email}</div>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                    {teamMembers.length > 6 && (
+                      <p className="text-xs text-surface-500">
+                        + {teamMembers.length - 6} more
+                      </p>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Integrations already connected by the org */}
+              {(() => {
+                const orgConnectedProviders: ReadonlyArray<string> = integrations
+                  .filter((i) => i.teamConnections.length > 0 || (i.isActive && !i.currentUserConnected))
+                  .map((i) => i.provider);
+                const uniqueProviders: ReadonlyArray<string> = [...new Set(orgConnectedProviders)];
+                if (uniqueProviders.length === 0) return null;
+                return (
+                  <div className="mb-4 p-4 rounded-xl bg-surface-800/50 border border-surface-700/50">
+                    <p className="text-surface-400 text-xs font-medium mb-3">Already connected by your team</p>
+                    <div className="flex flex-wrap gap-2">
+                      {uniqueProviders.map((provider) => {
+                        const config = INTEGRATION_CONFIG[provider];
+                        if (!config) return null;
+                        const Icon = ICON_MAP[config.icon] ?? HiGlobeAlt;
+                        return (
+                          <div key={provider} className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20">
+                            <Icon className="w-4 h-4 text-emerald-400" />
+                            <span className="text-sm text-emerald-300">{config.name}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {renderFooter('Get started', false)}
+            </>
+          )}
+
           {/* Step 2: Connect Slack */}
-          {step === 2 && (
+          {contentStep === 2 && (
             <>
               <div className="text-center mb-6">
                 <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-white mb-4 shadow-lg shadow-surface-900/20">
                   <SlackLogo className="w-8 h-8" />
                 </div>
-                <h2 className="text-xl font-bold text-white">Bring Penny where your team already works</h2>
+                <h2 className="text-xl font-bold text-white">
+                  {isInvitedMode ? 'Connect your Slack account' : 'Bring Penny where your team already works'}
+                </h2>
                 <p className="text-surface-300 mt-3 text-sm leading-relaxed">
-                  Connect Slack and your team can ask Penny anything right from the channels they&apos;re
-                  already in &mdash; deal updates, meeting prep, customer research &mdash; no tab-switching required.
+                  {isInvitedMode && integrations.some((i) => i.provider === 'slack' && i.teamConnections.length > 0)
+                    ? 'Your team already has Slack connected. Add your own account so Penny can help you too.'
+                    : <>Connect Slack and your team can ask Penny anything right from the channels they&apos;re
+                      already in &mdash; deal updates, meeting prep, customer research &mdash; no tab-switching required.</>
+                  }
                 </p>
               </div>
+              {isInvitedMode && integrations.some((i) => i.provider === 'slack' && i.teamConnections.length > 0) && !slackConnected && (
+                <div className="flex items-center gap-3 p-3 rounded-xl bg-surface-800/50 border border-surface-700/50 text-surface-400 text-sm mb-4">
+                  <svg className="w-4 h-4 text-emerald-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                  </svg>
+                  <span>
+                    Connected by {integrations.find((i) => i.provider === 'slack')?.teamConnections.map((tc) => tc.userName).join(', ')}
+                  </span>
+                </div>
+              )}
               {slackConnected ? (
                 <div className="flex items-center gap-3 p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400">
                   <svg className="w-5 h-5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -527,12 +684,17 @@ export function OnboardingWizard({ emailDomain, onComplete: rawOnComplete, onBac
           )}
 
           {/* Step 3: Data sources */}
-          {step === 3 && (
+          {contentStep === 3 && (
             <>
               <div className="mb-6">
-                <h2 className="text-xl font-bold text-white">Give Penny superpowers</h2>
+                <h2 className="text-xl font-bold text-white">
+                  {isInvitedMode ? 'Connect your data sources' : 'Give Penny superpowers'}
+                </h2>
                 <p className="text-surface-300 mt-2 text-sm leading-relaxed">
-                Now that you can ask Penny questions directly in Slack, what data sources do you want her to be able to read/write?
+                  {isInvitedMode
+                    ? 'Your team has some sources connected already. Add your own accounts so Penny has full context.'
+                    : 'Now that you can ask Penny questions directly in Slack, what data sources do you want her to be able to read/write?'
+                  }
                 </p>
               </div>
               <div className="grid grid-cols-2 gap-3 max-h-64 overflow-y-auto">
@@ -540,8 +702,10 @@ export function OnboardingWizard({ emailDomain, onComplete: rawOnComplete, onBac
                   const config = INTEGRATION_CONFIG[key];
                   if (!config) return null;
                   const Icon = ICON_MAP[config.icon] ?? HiGlobeAlt;
-                  const connected = integrations.some((i) => i.provider === key && i.currentUserConnected);
-                  const isConnecting = connectingProvider === key;
+                  const connected: boolean = integrations.some((i) => i.provider === key && i.currentUserConnected);
+                  const isConnecting: boolean = connectingProvider === key;
+                  const matchedIntegration = integrations.find((i) => i.provider === key);
+                  const teamConnected: boolean = isInvitedMode && !!matchedIntegration && matchedIntegration.teamConnections.length > 0 && !connected;
                   return (
                     <button
                       key={key}
@@ -551,7 +715,9 @@ export function OnboardingWizard({ emailDomain, onComplete: rawOnComplete, onBac
                       className={`flex items-center gap-3 p-3 rounded-xl border text-left transition-colors ${
                         connected
                           ? 'border-emerald-500/30 bg-emerald-500/10'
-                          : 'border-surface-700 bg-surface-800 hover:bg-surface-700'
+                          : teamConnected
+                            ? 'border-blue-500/20 bg-blue-500/5'
+                            : 'border-surface-700 bg-surface-800 hover:bg-surface-700'
                       } disabled:opacity-50`}
                     >
                       <div
@@ -561,11 +727,23 @@ export function OnboardingWizard({ emailDomain, onComplete: rawOnComplete, onBac
                       </div>
                       <div className="min-w-0 flex-1">
                         <div className="font-medium text-surface-100 truncate">{config.name}</div>
-                        <div className="text-xs text-surface-500 truncate">{config.description}</div>
+                        <div className="text-xs text-surface-500 truncate">
+                          {connected
+                            ? 'Connected'
+                            : teamConnected
+                              ? `By ${matchedIntegration!.teamConnections[0]?.userName ?? 'team'}`
+                              : config.description
+                          }
+                        </div>
                       </div>
                       {connected && (
                         <svg className="w-4 h-4 text-emerald-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                        </svg>
+                      )}
+                      {teamConnected && (
+                        <svg className="w-4 h-4 text-blue-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" />
                         </svg>
                       )}
                       {isConnecting && (
@@ -579,8 +757,8 @@ export function OnboardingWizard({ emailDomain, onComplete: rawOnComplete, onBac
             </>
           )}
 
-          {/* Step 4: Invite teammates */}
-          {step === 4 && (
+          {/* Step 4: Invite teammates (skipped in invited mode) */}
+          {contentStep === 4 && !isInvitedMode && (
             <>
               <div className="text-center mb-6">
                 <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-gradient-to-br from-blue-500 to-indigo-600 mb-4 shadow-lg shadow-blue-500/20">
@@ -628,7 +806,7 @@ export function OnboardingWizard({ emailDomain, onComplete: rawOnComplete, onBac
           )}
 
           {/* Step 5: Free plan */}
-          {step === 5 && (
+          {contentStep === 5 && (
             <>
               <div className="text-center mb-6">
                 <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-gradient-to-br from-primary-500 to-primary-700 mb-5 shadow-lg shadow-primary-500/20">
@@ -662,7 +840,7 @@ export function OnboardingWizard({ emailDomain, onComplete: rawOnComplete, onBac
           )}
 
           {/* Step 6: Success — Penny's research + launch */}
-          {step === 6 && (
+          {contentStep === 6 && (
             <>
               <div className="text-center mb-6">
                 <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-gradient-to-br from-emerald-500 to-emerald-700 mb-5 shadow-lg shadow-emerald-500/20">
