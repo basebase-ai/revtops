@@ -1,16 +1,14 @@
 # Basebase: Agentic Intelligence for Companies
 
-Basebase is an **agentic intelligence framework** that connects to the siloed tools and data sources your company already uses — CRM, email, calendars, Slack, issue trackers, code repos, meeting transcripts, and more — and exposes a unified AI agent that helps employees work faster, smarter, and with full context.
+Basebase is an **agentic intelligence framework** that connects to the siloed tools and data sources your business already uses — CRM, email, calendars, Slack, issue trackers, code repos, meeting transcripts, and more — and exposes a unified AI agent (called "**Penny**") in Slack and in a web app that helps team members work faster, smarter, and with full context.
 
-Instead of switching between a dozen tabs, employees ask **Penny** (our AI agent) questions in natural language — via the **web app** or **Slack** — and get instant, data-backed answers, reports, and actions across every connected system.
+Instead of switching between a dozen tabs, employees ask **Penny** questions in natural language — via the **web app** or **Slack** — and get instant, data-backed answers, reports, and actions across every connected system.
 
 ## Architecture
 
 ![Basebase System Architecture](docs/architecture.png)
 
 ## Connector Documentation
-
-- [Zoom Connector Knowledge Base](docs/zoom_connector_kb.md)
 
 ### What Can Basebase Do?
 
@@ -359,31 +357,31 @@ Tools are organized by category based on their risk profile:
 
 **Local Read** (always safe, no approval):
 
-| Tool                    | Description                                                              |
-| ----------------------- | ------------------------------------------------------------------------ |
-| `run_sql_query`         | Execute read-only SQL SELECT with org scoping and `semantic_embed()` for vector search |
-| `list_connected_systems`| Get capabilities manifest for all connected integrations                 |
-| `query_system`          | Query any connected system (web search, Apollo enrichment, Google Drive) |
+| Tool                     | Description                                                                            |
+| ------------------------ | -------------------------------------------------------------------------------------- |
+| `run_sql_query`          | Execute read-only SQL SELECT with org scoping and `semantic_embed()` for vector search |
+| `list_connected_systems` | Get capabilities manifest for all connected integrations                               |
+| `query_system`           | Query any connected system (web search, Apollo enrichment, Google Drive)               |
 
 **Local Write** (tracked, reversible):
 
-| Tool              | Description                                                        |
-| ----------------- | ------------------------------------------------------------------ |
+| Tool              | Description                                                              |
+| ----------------- | ------------------------------------------------------------------------ |
 | `run_sql_write`   | INSERT/UPDATE/DELETE for internal tables (CRM changes go through review) |
-| `create_artifact` | Generate text, markdown, PDF, or interactive chart files           |
-| `create_app`      | Create interactive mini-apps with React + SQL queries              |
-| `run_workflow`    | Execute a workflow (manual trigger or workflow composition)        |
-| `foreach`         | Batch operations — run a tool or workflow for each item in a list  |
-| `manage_memory`   | Save, update, or delete persistent memories across conversations   |
-| `keep_notes`      | Workflow-scoped notes shared across runs (workflow-only)           |
+| `create_artifact` | Generate text, markdown, PDF, or interactive chart files                 |
+| `create_app`      | Create interactive mini-apps with React + SQL queries                    |
+| `run_workflow`    | Execute a workflow (manual trigger or workflow composition)              |
+| `foreach`         | Batch operations — run a tool or workflow for each item in a list        |
+| `manage_memory`   | Save, update, or delete persistent memories across conversations         |
+| `keep_notes`      | Workflow-scoped notes shared across runs (workflow-only)                 |
 
 **External Write** (permanent external actions):
 
-| Tool             | Description                                                         |
-| ---------------- | ------------------------------------------------------------------- |
-| `write_to_system`| Create/update records in CRMs, issue trackers, code repos           |
-| `run_action`     | Execute actions: send Slack/email/SMS, fetch URLs, run sandbox code |
-| `trigger_sync`   | Trigger a data sync for any connected integration                   |
+| Tool              | Description                                                         |
+| ----------------- | ------------------------------------------------------------------- |
+| `write_to_system` | Create/update records in CRMs, issue trackers, code repos           |
+| `run_action`      | Execute actions: send Slack/email/SMS, fetch URLs, run sandbox code |
+| `trigger_sync`    | Trigger a data sync for any connected integration                   |
 
 ### Tool Execution Flow
 

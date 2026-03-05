@@ -85,6 +85,7 @@ interface WsConversationCreated {
 interface WsCatchup {
   type: 'catchup';
   task_id: string;
+  conversation_id?: string | null;
   chunks: Array<{ index: number; type: string; data: unknown; timestamp: string }>;
   task_status: string;
 }
@@ -265,6 +266,9 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
   const addConversationArtifactBlock = useAppStore((state) => state.addConversationArtifactBlock);
   const addConversationAppBlock = useAppStore((state) => state.addConversationAppBlock);
   
+  // Ref for sendJson so active_tasks handler can request catchup (handler runs before useWebSocket)
+  const sendJsonRef = useRef<((data: Record<string, unknown>) => void) | null>(null);
+
   // Mobile responsive state
   const isMobile = useIsMobile();
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
@@ -542,7 +546,27 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
       switch (parsed.type) {
         case 'active_tasks': {
           console.log('[AppLayout] Received active tasks:', parsed.tasks.length);
+          // Reconcile: clear any local active tasks the server no longer reports as running
+          // (task completed while client was disconnected)
+          const localActive = useAppStore.getState().activeTasksByConversation;
+          const serverConvIds = new Set(
+            (parsed.tasks as ActiveTask[]).map((t: ActiveTask) => t.conversation_id),
+          );
+          for (const convId of Object.keys(localActive)) {
+            if (!serverConvIds.has(convId)) {
+              setConversationActiveTask(convId, null);
+              setConversationThinking(convId, false);
+              markConversationMessageComplete(convId);
+            }
+          }
           setActiveTasks(parsed.tasks);
+          // Request catchup for still-running tasks (missed chunks while disconnected)
+          const tasks = parsed.tasks as ActiveTask[];
+          for (const task of tasks) {
+            const convState = useAppStore.getState().conversations[task.conversation_id];
+            const sinceIndex = (convState?.lastChunkIndex ?? -1) + 1;
+            sendJsonRef.current?.({ type: 'subscribe', task_id: task.id, since_index: sinceIndex });
+          }
           break;
         }
         
@@ -896,11 +920,99 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
         }
         
         case 'catchup': {
-          console.log('[AppLayout] Catchup for task:', parsed.task_id, 'chunks:', parsed.chunks.length);
-          // Process catchup chunks - they're already ordered by index
-          // For now, just mark task as complete if it's done
-          if (parsed.task_status !== 'running') {
-            // Task is complete, no need to process chunks
+          const catchup = parsed as WsCatchup;
+          console.log('[AppLayout] Catchup for task:', catchup.task_id, 'chunks:', catchup.chunks.length);
+          const conversationId: string | null =
+            catchup.conversation_id ??
+            Object.entries(useAppStore.getState().activeTasksByConversation).find(
+              ([, tid]) => tid === catchup.task_id,
+            )?.[0] ??
+            null;
+          if (conversationId) {
+            for (const chunk of catchup.chunks) {
+              const chunkData = chunk.data;
+              const chunkIndex = chunk.index;
+              if (chunk.type === 'text_delta' && typeof chunkData === 'string') {
+                const state = useAppStore.getState();
+                const convState = state.conversations[conversationId];
+                if (convState?.streamingMessageId) {
+                  appendToConversationStreaming(conversationId, chunkData, chunkIndex);
+                } else {
+                  const msgId = `assistant-${Date.now()}`;
+                  startConversationStreaming(conversationId, msgId, chunkData, chunkIndex);
+                }
+              } else if (typeof chunkData === 'object' && chunkData !== null) {
+                const data = chunkData as Record<string, unknown>;
+                if (data.type === 'tool_call_start') {
+                  const toolBlock = {
+                    type: 'tool_use' as const,
+                    id: data.tool_id as string,
+                    name: data.tool_name as string,
+                    input: {} as Record<string, unknown>,
+                    status: 'streaming' as const,
+                  };
+                  const state = useAppStore.getState();
+                  const convState = state.conversations[conversationId];
+                  if (convState?.streamingMessageId) {
+                    const updated = convState.messages.map((msg) =>
+                      msg.id === convState.streamingMessageId
+                        ? { ...msg, contentBlocks: [...msg.contentBlocks, toolBlock] }
+                        : msg,
+                    );
+                    useAppStore.setState({
+                      conversations: {
+                        ...state.conversations,
+                        [conversationId]: { ...convState, messages: updated },
+                      },
+                    });
+                  } else {
+                    addConversationMessage(conversationId, {
+                      id: `assistant-${Date.now()}`,
+                      role: 'assistant',
+                      contentBlocks: [toolBlock],
+                      timestamp: new Date(),
+                    });
+                  }
+                } else if (data.type === 'tool_call') {
+                  updateConversationToolMessage(conversationId, data.tool_id as string, {
+                    toolName: data.tool_name as string,
+                    input: data.tool_input as Record<string, unknown>,
+                    status: 'running',
+                  });
+                } else if (data.type === 'tool_result') {
+                  const updates: Partial<ToolCallData> = {
+                    result: data.result as Record<string, unknown>,
+                    status: 'complete',
+                  };
+                  if (data.tool_input != null && typeof data.tool_input === 'object') {
+                    updates.input = data.tool_input as Record<string, unknown>;
+                  }
+                  updateConversationToolMessage(conversationId, data.tool_id as string, updates);
+                } else if (data.type === 'artifact') {
+                  const artifact = data.artifact as {
+                    id: string;
+                    title: string;
+                    filename: string;
+                    contentType: 'text' | 'markdown' | 'pdf' | 'chart';
+                    mimeType: string;
+                  } | undefined;
+                  if (artifact) addConversationArtifactBlock(conversationId, artifact);
+                } else if (data.type === 'app') {
+                  const app = data.app as {
+                    id: string;
+                    title: string;
+                    description: string | null;
+                    frontendCode: string;
+                  } | undefined;
+                  if (app) addConversationAppBlock(conversationId, app);
+                }
+              }
+            }
+            if (catchup.task_status !== 'running') {
+              setConversationActiveTask(conversationId, null);
+              setConversationThinking(conversationId, false);
+              markConversationMessageComplete(conversationId);
+            }
           }
           break;
         }
@@ -1050,6 +1162,11 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
     },
     organization?.id ?? '',
   );
+
+  useEffect(() => {
+    sendJsonRef.current = sendJson;
+    return () => { sendJsonRef.current = null; };
+  }, [sendJson]);
 
   // Fetch conversations on mount (only once per user)
   const userId = user?.id;

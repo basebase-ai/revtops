@@ -3,10 +3,10 @@
  * Steps: Welcome (name + website) → Slack → Data sources → Invite teammates → Free plan → Success
  */
 
-import { useState, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import Nango from '@nangohq/frontend';
 import type { IconType } from 'react-icons';
-import { SiSlack, SiHubspot, SiSalesforce, SiGmail, SiGooglecalendar, SiZoom } from 'react-icons/si';
+import { SiHubspot, SiSalesforce, SiGmail, SiGooglecalendar, SiZoom } from 'react-icons/si';
 import { HiGlobeAlt, HiUserGroup, HiDeviceMobile, HiLightningBolt } from 'react-icons/hi';
 
 import { API_BASE } from '../lib/api';
@@ -48,10 +48,17 @@ const INTEGRATION_CONFIG: Record<string, { name: string; description: string; ic
 
 const BUILTIN_CONNECTORS = new Set<string>(['web_search', 'code_sandbox', 'twilio']);
 
-const ICON_MAP: Record<string, IconType> = {
+/** Official Slack multi-color logo */
+const SLACK_LOGO_PATH = '/slack-logo.png';
+
+const SlackLogo = ({ className }: { className?: string }): JSX.Element => (
+  <img src={SLACK_LOGO_PATH} alt="Slack" className={className} />
+);
+
+const ICON_MAP: Record<string, IconType | React.ComponentType<{ className?: string }>> = {
   hubspot: SiHubspot,
   salesforce: SiSalesforce,
-  slack: SiSlack,
+  slack: SlackLogo,
   gmail: SiGmail,
   google_calendar: SiGooglecalendar,
   zoom: SiZoom,
@@ -475,8 +482,8 @@ export function OnboardingWizard({ emailDomain, onComplete: rawOnComplete, onBac
           {step === 2 && (
             <>
               <div className="text-center mb-6">
-                <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-gradient-to-br from-purple-500 to-purple-700 mb-4 shadow-lg shadow-purple-500/20">
-                  <SiSlack className="w-7 h-7 text-white" />
+                <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-white mb-4 shadow-lg shadow-surface-900/20">
+                  <SlackLogo className="w-8 h-8" />
                 </div>
                 <h2 className="text-xl font-bold text-white">Bring Penny where your team already works</h2>
                 <p className="text-surface-300 mt-3 text-sm leading-relaxed">
@@ -501,7 +508,7 @@ export function OnboardingWizard({ emailDomain, onComplete: rawOnComplete, onBac
                   {connectingProvider === 'slack' ? (
                     <div className="w-5 h-5 border-2 border-primary-400 border-t-transparent rounded-full animate-spin" />
                   ) : (
-                    <SiSlack className="w-6 h-6 text-white" />
+                    <SlackLogo className="w-6 h-6" />
                   )}
                   {isMobile ? 'Use desktop to connect' : connectingProvider === 'slack' ? 'Connecting...' : 'Connect Slack'}
                 </button>
@@ -516,8 +523,7 @@ export function OnboardingWizard({ emailDomain, onComplete: rawOnComplete, onBac
               <div className="mb-6">
                 <h2 className="text-xl font-bold text-white">Give Penny superpowers</h2>
                 <p className="text-surface-300 mt-2 text-sm leading-relaxed">
-                  Every connection means fewer logins for your team. Penny pulls data across
-                  all your tools so anyone can get a complete picture with a single question.
+                Now that you can ask Penny questions directly in Slack, what data sources do you want her to be able to read/write?
                 </p>
               </div>
               <div className="grid grid-cols-2 gap-3 max-h-64 overflow-y-auto">
@@ -573,9 +579,9 @@ export function OnboardingWizard({ emailDomain, onComplete: rawOnComplete, onBac
                 </div>
                 <h2 className="text-xl font-bold text-white">Better together</h2>
                 <p className="text-surface-300 mt-3 text-sm leading-relaxed">
-                  When your teammates join, everyone benefits from shared context. Penny
-                  can prep meeting briefs, surface relevant deals, and keep the whole team
-                  aligned &mdash; without anyone chasing down info manually.
+                  Invite your teammates and watch the magic happen! Penny gets smarter with
+                  every person who joins. Meeting briefs, deal updates, customer insights
+                  &mdash; all synced and accessible. Less chasing, more celebrating together.
                 </p>
               </div>
               <div className="flex gap-2 mb-4">
@@ -625,24 +631,21 @@ export function OnboardingWizard({ emailDomain, onComplete: rawOnComplete, onBac
                   enough to explore everything Penny can do. Upgrade anytime if you want more.
                 </p>
               </div>
-              <div className="space-y-3 mb-2 p-4 rounded-xl bg-surface-800/50 border border-surface-700/50">
-                <div className="flex items-start gap-3 text-surface-300">
-                  <svg className="w-5 h-5 text-primary-500 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-                  </svg>
-                  <span className="text-sm">Ask Penny anything across your CRM, email, calendar, and Slack</span>
-                </div>
-                <div className="flex items-start gap-3 text-surface-300">
-                  <svg className="w-5 h-5 text-primary-500 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                  </svg>
-                  <span className="text-sm">Automate recurring tasks with workflows that run on autopilot</span>
-                </div>
-                <div className="flex items-start gap-3 text-surface-300">
-                  <svg className="w-5 h-5 text-primary-500 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" />
-                  </svg>
-                  <span className="text-sm">Your whole team can use Penny &mdash; in Slack, on the web, or both</span>
+              <div className="space-y-2 mb-2 p-4 rounded-xl bg-surface-800/50 border border-surface-700/50">
+                <p className="text-surface-400 text-xs font-medium mb-3">Try asking Penny:</p>
+                <div className="flex flex-col gap-2">
+                  <div className="self-start rounded-2xl rounded-bl-sm px-4 py-2.5 bg-primary-500/15 border border-primary-500/25 text-sm text-surface-100 max-w-[92%]">
+                    &ldquo;Catch me up on what I missed this week&rdquo;
+                  </div>
+                  <div className="self-start rounded-2xl rounded-bl-sm px-4 py-2.5 bg-primary-500/15 border border-primary-500/25 text-sm text-surface-100 max-w-[92%]">
+                    &ldquo;Which deals have gone dormant?&rdquo;
+                  </div>
+                  <div className="self-start rounded-2xl rounded-bl-sm px-4 py-2.5 bg-primary-500/15 border border-primary-500/25 text-sm text-surface-100 max-w-[92%]">
+                    &ldquo;Create a task in Asana for&hellip;&rdquo;
+                  </div>
+                  <div className="self-start rounded-2xl rounded-bl-sm px-4 py-2.5 bg-primary-500/15 border border-primary-500/25 text-sm text-surface-100 max-w-[92%]">
+                    &ldquo;Research competitors to [Acme]&rdquo;
+                  </div>
                 </div>
               </div>
               {renderFooter()}

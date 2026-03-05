@@ -11,7 +11,7 @@ Manages agent tasks that run independently of WebSocket connections:
 import asyncio
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from contextlib import asynccontextmanager
 from typing import Any, Callable, Coroutine
 from uuid import UUID, uuid4
@@ -21,7 +21,7 @@ from sqlalchemy import select, update
 
 from agents.orchestrator import ChatOrchestrator
 from models.agent_task import AgentTask
-from models.database import get_session
+from models.database import get_admin_session, get_session
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +67,11 @@ class TaskManager:
         self._conversation_locks: dict[str, asyncio.Lock] = {}
         self._conversation_lock_refs: dict[str, int] = {}
         self._conversation_manager_lock = asyncio.Lock()
+
+        # Stale task reaper - marks DB rows stuck in "running" as failed
+        self._reaper_task: asyncio.Task[None] | None = None
+        self._reaper_stale_minutes: int = 10
+        self._reaper_interval_seconds: int = 60
         
         self._initialized = True
         logger.info("TaskManager initialized")
@@ -537,6 +542,84 @@ class TaskManager:
         """Check if a task is currently running in memory."""
         task = self._running_tasks.get(task_id)
         return task is not None and not task.done()
+
+    async def _reap_stale_tasks(self) -> None:
+        """Mark DB tasks stuck in 'running' with no recent activity as failed."""
+        try:
+            cutoff = datetime.utcnow() - timedelta(minutes=self._reaper_stale_minutes)
+            async with get_admin_session() as session:
+                result = await session.execute(
+                    select(AgentTask)
+                    .where(AgentTask.status == "running")
+                    .where(AgentTask.last_activity_at < cutoff)
+                )
+                stale = result.scalars().all()
+                for task in stale:
+                    task_id_str = str(task.id)
+                    error_msg = f"Task timed out (no activity for {self._reaper_stale_minutes} minutes)"
+                    await session.execute(
+                        update(AgentTask)
+                        .where(AgentTask.id == task.id)
+                        .values(
+                            status="failed",
+                            completed_at=datetime.utcnow(),
+                            last_activity_at=datetime.utcnow(),
+                            error_message=error_msg,
+                        )
+                    )
+                    logger.warning(
+                        "Reaped stale task %s (conversation %s)",
+                        task_id_str,
+                        task.conversation_id,
+                    )
+                    asyncio_task = self._running_tasks.get(task_id_str)
+                    if asyncio_task and not asyncio_task.done():
+                        asyncio_task.cancel()
+                    self._running_tasks.pop(task_id_str, None)
+                    self._task_org_ids.pop(task_id_str, None)
+                    await self._broadcast(
+                        task_id_str,
+                        {
+                            "type": "task_complete",
+                            "task_id": task_id_str,
+                            "conversation_id": str(task.conversation_id),
+                            "status": "failed",
+                            "error": error_msg,
+                        },
+                    )
+                if stale:
+                    await session.commit()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.exception("Stale task reaper failed: %s", exc)
+
+    def _start_reaper(self) -> None:
+        """Start the background stale task reaper."""
+        if self._reaper_task is not None:
+            return
+
+        async def _run_reaper() -> None:
+            while True:
+                try:
+                    await asyncio.sleep(self._reaper_interval_seconds)
+                    await self._reap_stale_tasks()
+                except asyncio.CancelledError:
+                    break
+
+        self._reaper_task = asyncio.create_task(_run_reaper())
+        logger.info(
+            "Stale task reaper started (interval=%ds, stale=%dm)",
+            self._reaper_interval_seconds,
+            self._reaper_stale_minutes,
+        )
+
+    def _stop_reaper(self) -> None:
+        """Stop the background stale task reaper."""
+        if self._reaper_task is not None:
+            self._reaper_task.cancel()
+            self._reaper_task = None
+            logger.info("Stale task reaper stopped")
 
 
 # Global singleton instance

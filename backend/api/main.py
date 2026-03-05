@@ -21,6 +21,7 @@ from fastapi.responses import JSONResponse
 from api.websockets import websocket_endpoint
 from api.routes import apps, artifacts, auth, billing, change_sessions, chat, connectors, data, deals, drive, memories, search, slack_events, slack_user_mappings, sync, tool_settings, twilio_events, waitlist, workflows
 from models.database import init_db, close_db, get_pool_status
+from services.task_manager import task_manager
 from config import log_missing_env_vars, settings
 from services.celery_health import ensure_celery_workers_available
 
@@ -162,6 +163,7 @@ async def startup() -> None:
     # await init_db()
     log_missing_env_vars(logging.getLogger("config"))
     await ensure_celery_workers_available()
+    task_manager._start_reaper()
     logging.info("Database connection pool ready")
 
 
@@ -169,6 +171,7 @@ async def startup() -> None:
 async def shutdown() -> None:
     """Clean up database connections and sandboxes on shutdown."""
     logging.info("Shutting down, closing database connections...")
+    task_manager._stop_reaper()
     from connectors.code_sandbox import cleanup_all_sandboxes
     await cleanup_all_sandboxes()
     await close_db()

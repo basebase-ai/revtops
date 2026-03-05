@@ -699,6 +699,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 await websocket.send_text(json.dumps({
                     "type": "catchup",
                     "task_id": task_id,
+                    "conversation_id": task.get("conversation_id") if task else None,
                     "chunks": chunks,
                     "task_status": task.get("status") if task else "unknown",
                 }))

@@ -25,6 +25,7 @@ import { APP_NAME, LOGO_PATH } from '../lib/brand';
 import {
   useAppStore,
   useConversationState,
+  useActiveTasksByConversation,
   useConnectedIntegrations,
   type AppBlock,
   type ChatMessage,
@@ -135,9 +136,9 @@ export function Chat({
   void _organizationId; // kept for API compatibility
   // Get per-conversation state from Zustand
   const conversationState = useConversationState(chatId ?? null);
+  const activeTasksByConversation = useActiveTasksByConversation();
   const chatTitle = conversationState?.title ?? 'New Chat';
   const conversationThinking = conversationState?.isThinking ?? false;
-  const activeTaskId = conversationState?.activeTaskId ?? null;
   
   // Get actions from Zustand (stable references)
   const addConversationMessage = useAppStore((s) => s.addConversationMessage);
@@ -158,6 +159,10 @@ export function Chat({
   const [selectedToolCall, setSelectedToolCall] = useState<ToolCallData | null>(null);
   const [toolApprovals, setToolApprovals] = useState<Map<string, ToolApprovalState>>(new Map());
   const [localConversationId, setLocalConversationId] = useState<string | null>(chatId ?? null);
+  // Use activeTasksByConversation as fallback when chatId doesn't match (e.g. new chat before URL update, post-WS reconnect)
+  const currentConvIdForTask: string | null = localConversationId ?? chatId ?? null;
+  const taskIdFromMap: string | undefined = currentConvIdForTask ? activeTasksByConversation[currentConvIdForTask] : undefined;
+  const activeTaskId: string | null = (conversationState?.activeTaskId ?? taskIdFromMap) ?? null;
   // Pending messages for new conversations (before we have an ID)
   const [pendingMessages, setPendingMessages] = useState<ChatMessage[]>([]);
   const [pendingThinking, setPendingThinking] = useState<boolean>(false);

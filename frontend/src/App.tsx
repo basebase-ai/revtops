@@ -45,6 +45,21 @@ function App(): JSX.Element {
     fetchUserOrganizations,
   } = useAppStore();
 
+  // Easter egg: Cmd/Ctrl+Shift+O opens onboarding for testing (when in app)
+  useEffect(() => {
+    if (screen !== 'app') return;
+    const onKeyDown = (e: KeyboardEvent): void => {
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'o') {
+        e.preventDefault();
+        localStorage.setItem('onboarding_incomplete', '1');
+        localStorage.setItem('onboarding_step', '1');
+        setScreen('onboarding-wizard');
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [screen]);
+
   // Check auth status on mount
   useEffect(() => {
     const checkAuth = async (): Promise<void> => {
