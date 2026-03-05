@@ -301,53 +301,77 @@ async def send_invitation_email(to_email: str, name: str) -> bool:
         return False
 
     html_content = f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset="utf-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    </head>
-    <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
-        <div style="text-align: center; margin-bottom: 30px;">
-            <div style="display: inline-block; width: 48px; height: 48px; background: linear-gradient(135deg, #6366f1, #4f46e5); border-radius: 12px; margin-bottom: 16px;"></div>
-            <h1 style="margin: 0; font-size: 24px; color: #111;">You're In!</h1>
-        </div>
-        
-        <p>Hey {name},</p>
-        
-        <p>Great news — you're off the waitlist! Your spot at Basebase is ready.</p>
-        
-        <p>Basebase connects your CRM, Slack, email, and calendar so you can chat with your revenue data and build automations that save your team hours every week.</p>
-        
-        <div style="text-align: center; margin: 30px 0;">
-            <a href="{settings.FRONTEND_URL}" style="display: inline-block; background: linear-gradient(135deg, #6366f1, #4f46e5); color: white; text-decoration: none; padding: 14px 28px; border-radius: 8px; font-weight: 600;">Sign In to Get Started</a>
-        </div>
-        
-        <p>Questions? Just reply to this email.</p>
-        
-        <p>— The Basebase Team</p>
-        
-        <hr style="border: none; border-top: 1px solid #eee; margin: 30px 0;">
-        
-        <p style="font-size: 12px; color: #666;">
-            You received this email because you signed up for the Basebase waitlist.
-        </p>
-    </body>
-    </html>
+<!DOCTYPE html>
+<html lang="en" xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>You're off the waitlist!</title>
+</head>
+<body style="margin:0;padding:0;background:#f8f9fa;color:#1a1a1a;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f8f9fa;padding:32px 12px;">
+    <tr>
+      <td align="center">
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:560px;background:#ffffff;border:1px solid #e5e7eb;border-radius:16px;overflow:hidden;">
+          <tr>
+            <td style="padding:40px 36px 0;text-align:center;">
+              <img
+                src="https://www.basebase.com/basebase_logo-512.png"
+                alt="Basebase"
+                width="48"
+                height="48"
+                style="display:inline-block;height:48px;width:48px;border-radius:12px;"
+              />
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:24px 36px 0;text-align:center;">
+              <h1 style="margin:0 0 12px;font-size:24px;line-height:1.3;color:#111;font-weight:700;">You&apos;re in, {name}!</h1>
+              <p style="margin:0;color:#6b7280;font-size:15px;line-height:1.6;">Your spot at Basebase is ready. Sign in and get your team AI-powered in 10 minutes.</p>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:28px 36px 0;text-align:center;">
+              <a href="{settings.FRONTEND_URL}" style="display:inline-block;background:#FF9F1C;color:#111111;text-decoration:none;font-size:16px;font-weight:600;padding:14px 32px;border-radius:10px;">Sign in to get started</a>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:32px 36px 0;">
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f9fafb;border:1px solid #f3f4f6;border-radius:10px;">
+                <tr>
+                  <td style="padding:20px 24px;">
+                    <p style="margin:0 0 12px;font-size:14px;font-weight:600;color:#111;">One AI for your whole team</p>
+                    <p style="margin:0;color:#6b7280;font-size:13px;line-height:1.6;">Connect your CRM, Slack, email, and calendar &mdash; then ask Penny anything right from Slack. When one person learns something, the whole team benefits.</p>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:28px 36px;text-align:center;">
+              <p style="margin:0;color:#9ca3af;font-size:12px;line-height:1.6;">You received this email because you signed up for the Basebase waitlist.</p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
     """
 
     text_content = f"""
 Hey {name},
 
-Great news — you're off the waitlist! Your spot at Basebase is ready.
+Your spot at Basebase is ready. Sign in and get your team AI-powered in 10 minutes.
 
-Basebase connects your CRM, Slack, email, and calendar so you can chat with your revenue data and build automations that save your team hours every week.
+One AI for your whole team -- connect your CRM, Slack, email, and calendar, then ask Penny anything right from Slack. When one person learns something, the whole team benefits.
 
 Sign in to get started: {settings.FRONTEND_URL}
 
 Questions? Just reply to this email.
 
-— The Basebase Team
+-- The Basebase Team
 """
 
     async with httpx.AsyncClient() as client:
@@ -384,6 +408,8 @@ async def send_org_invitation_email(
     to_email: str,
     org_name: str,
     invited_by_name: Optional[str] = None,
+    org_logo_url: Optional[str] = None,
+    inviter_avatar_url: Optional[str] = None,
 ) -> bool:
     """
     Send an invitation email to join an organization.
@@ -392,13 +418,26 @@ async def send_org_invitation_email(
         to_email: Recipient email address
         org_name: Name of the organization they're being invited to
         invited_by_name: Name of the person who sent the invite
+        org_logo_url: URL of the organization's logo (passed to frontend via query params)
+        inviter_avatar_url: URL of the inviter's avatar (passed to frontend via query params)
 
     Returns:
         True if email sent successfully, False otherwise
     """
+    from urllib.parse import quote
+
     if not settings.RESEND_API_KEY:
         print(f"[Email] RESEND_API_KEY not set, skipping org invite to {to_email}")
         return False
+
+    params: list[str] = [f"invite=1", f"org_name={quote(org_name)}"]
+    if org_logo_url:
+        params.append(f"org_logo={quote(org_logo_url)}")
+    if invited_by_name:
+        params.append(f"inviter_name={quote(invited_by_name)}")
+    if inviter_avatar_url:
+        params.append(f"inviter_avatar={quote(inviter_avatar_url)}")
+    invite_url: str = f"{settings.FRONTEND_URL}?{'&'.join(params)}"
 
     inviter_line: str = (
         f"{invited_by_name} has invited you to join <strong>{org_name}</strong> on Basebase."
@@ -412,49 +451,51 @@ async def send_org_invitation_email(
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>You're invited to Basebase</title>
+  <title>You're invited to {org_name} on Basebase</title>
 </head>
-<body style="margin:0;padding:0;background:#0b0f1a;color:#e5e7eb;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
-  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#0b0f1a;padding:24px 12px;">
+<body style="margin:0;padding:0;background:#f8f9fa;color:#1a1a1a;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f8f9fa;padding:32px 12px;">
     <tr>
       <td align="center">
-        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:640px;background:linear-gradient(160deg,#111827,#0f172a);border:1px solid #1f2937;border-radius:20px;overflow:hidden;">
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:560px;background:#ffffff;border:1px solid #e5e7eb;border-radius:16px;overflow:hidden;">
           <tr>
-            <td style="padding:36px 32px 12px;text-align:center;">
+            <td style="padding:40px 36px 0;text-align:center;">
               <img
                 src="https://www.basebase.com/basebase_logo-512.png"
                 alt="Basebase"
-                width="52"
-                height="52"
-                style="display:inline-block;height:52px;width:52px;border-radius:14px;"
+                width="48"
+                height="48"
+                style="display:inline-block;height:48px;width:48px;border-radius:12px;"
               />
-              <h1 style="margin:18px 0 8px;font-size:30px;line-height:1.2;color:#f8fafc;font-weight:700;">You're invited</h1>
-              <p style="margin:0;color:#94a3b8;font-size:15px;line-height:1.6;">{inviter_line}</p>
             </td>
           </tr>
           <tr>
-            <td style="padding:20px 32px 0;">
-              <div style="background:#0b1222;border:1px solid #1e293b;border-radius:14px;padding:18px;">
-                <p style="margin:0 0 8px;color:#cbd5e1;font-size:14px;line-height:1.5;">Invitation sent to:</p>
-                <p style="margin:0;color:#f8fafc;font-size:16px;line-height:1.5;font-weight:600;">{to_email}</p>
-                <p style="margin:10px 0 0;color:#94a3b8;font-size:13px;line-height:1.6;">Organization: <strong style="color:#f8fafc;">{org_name}</strong></p>
-              </div>
+            <td style="padding:24px 36px 0;text-align:center;">
+              <h1 style="margin:0 0 12px;font-size:24px;line-height:1.3;color:#111;font-weight:700;">Join {org_name} on Basebase</h1>
+              <p style="margin:0;color:#6b7280;font-size:15px;line-height:1.6;">{inviter_line}</p>
             </td>
           </tr>
           <tr>
-            <td style="padding:28px 32px 8px;text-align:center;">
-              <a href="{settings.FRONTEND_URL}" style="display:inline-block;background:linear-gradient(135deg,#6366f1,#4f46e5);color:#ffffff;text-decoration:none;font-size:16px;font-weight:700;padding:14px 28px;border-radius:12px;">Accept invitation</a>
+            <td style="padding:28px 36px 0;text-align:center;">
+              <a href="{invite_url}" style="display:inline-block;background:#FF9F1C;color:#111111;text-decoration:none;font-size:16px;font-weight:600;padding:14px 32px;border-radius:10px;">Accept invitation</a>
             </td>
           </tr>
           <tr>
-            <td style="padding:8px 32px 30px;text-align:center;">
-              <p style="margin:0;color:#64748b;font-size:13px;line-height:1.6;">If the button doesn&apos;t work, copy and paste this link into your browser:</p>
-              <p style="margin:8px 0 0;color:#94a3b8;font-size:12px;line-height:1.6;word-break:break-all;">{settings.FRONTEND_URL}</p>
+            <td style="padding:32px 36px 0;">
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f9fafb;border:1px solid #f3f4f6;border-radius:10px;">
+                <tr>
+                  <td style="padding:20px 24px;">
+                    <p style="margin:0 0 12px;font-size:14px;font-weight:600;color:#111;">One AI for your whole team</p>
+                    <p style="margin:0 0 6px;color:#6b7280;font-size:13px;line-height:1.6;">See what&apos;s happening across every tool. Know what matters most. Act on it &mdash; right from Slack.</p>
+                    <p style="margin:10px 0 0;color:#6b7280;font-size:13px;line-height:1.6;">When one person learns something, the whole team benefits. Shared context. Shared memory. Shared momentum.</p>
+                  </td>
+                </tr>
+              </table>
             </td>
           </tr>
           <tr>
-            <td style="padding:20px 32px;border-top:1px solid #1f2937;background:#0b1222;">
-              <p style="margin:0;color:#64748b;font-size:12px;line-height:1.6;">You received this email because someone invited you to {org_name} on Basebase. If this wasn&apos;t expected, you can safely ignore this message.</p>
+            <td style="padding:28px 36px;text-align:center;">
+              <p style="margin:0;color:#9ca3af;font-size:12px;line-height:1.6;">You received this email because someone invited you to {org_name} on Basebase.<br/>If this wasn&apos;t expected, you can safely ignore it.</p>
             </td>
           </tr>
         </table>
@@ -474,13 +515,15 @@ async def send_org_invitation_email(
     text_content: str = f"""
 {inviter_text}
 
-Basebase connects your CRM, Slack, email, and calendar so you can chat with your revenue data and build automations.
+Join {org_name} on Basebase -- one AI for your whole team.
 
-Accept the invitation: {settings.FRONTEND_URL}
+See what's happening across every tool. Know what matters most. Act on it -- right from Slack. When one person learns something, the whole team benefits.
+
+Accept the invitation: {invite_url}
 
 Questions? Just reply to this email.
 
-— The Basebase Team
+-- The Basebase Team
 """
 
     async with httpx.AsyncClient() as client:

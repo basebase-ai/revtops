@@ -132,6 +132,7 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [expandedMemberId, setExpandedMemberId] = useState<string | null>(null);
+  const [resendingMemberId, setResendingMemberId] = useState<string | null>(null);
 
   useEffect(() => {
     setOrgName(organization.name);
@@ -298,6 +299,32 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
       alert(`Failed to invite: ${error instanceof Error ? error.message : 'Unknown error'}`);
     } finally {
       setIsInviting(false);
+    }
+  };
+
+  const handleResendInvite = async (email: string, memberId: string): Promise<void> => {
+    setResendingMemberId(memberId);
+    try {
+      const { API_BASE } = await import('../lib/api');
+      const response = await fetch(
+        `${API_BASE}/auth/organizations/${organization.id}/invitations?user_id=${currentUser.id}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email }),
+        },
+      );
+      if (!response.ok) {
+        const errData = (await response.json().catch(() => ({}))) as { detail?: string };
+        alert(errData.detail ?? `Failed to resend: ${response.status}`);
+        return;
+      }
+      alert('Invitation resent!');
+    } catch (error) {
+      console.error('Failed to resend invite:', error);
+      alert(`Failed to resend: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    } finally {
+      setResendingMemberId(null);
     }
   };
 
@@ -558,6 +585,7 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                     {sortedMembers.map((member) => {
                       const displayName: string = member.name ?? member.email.split('@')[0] ?? 'Unknown';
                       const isGuest: boolean = member.isGuest;
+                      const isInvited: boolean = member.status === 'invited';
                       const isAdmin: boolean = member.role === 'admin'
                         || member.role === 'global_admin'
                         || member.canLoginAsAdmin;
@@ -571,6 +599,31 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                       });
                       const canUnlinkForMember: boolean = member.id === currentUser.id || canLinkIdentityInOrg;
                       const canDeleteMember: boolean = canAdministerOrg && !isGuest;
+
+                      if (isInvited) {
+                        return (
+                          <div key={member.id} className="rounded-lg bg-surface-800/50 overflow-hidden">
+                            <div className="flex items-center gap-3 p-3">
+                              <Avatar user={member} size="lg" />
+                              <div className="flex-1 min-w-0">
+                                <span className="font-medium text-surface-100 truncate block">
+                                  {displayName}
+                                </span>
+                                <p className="text-sm text-surface-400 truncate">{member.email}</p>
+                                <p className="text-xs text-amber-400/80 mt-0.5 italic">Invitation pending</p>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => void handleResendInvite(member.email, member.id)}
+                                disabled={resendingMemberId === member.id}
+                                className="px-3 py-1.5 text-sm font-medium rounded-lg border border-surface-600 text-surface-300 hover:text-surface-100 hover:border-surface-500 hover:bg-surface-700/50 transition-colors disabled:opacity-50 flex-shrink-0"
+                              >
+                                {resendingMemberId === member.id ? 'Sending...' : 'Resend'}
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      }
 
                       return (
                         <div key={member.id} className="rounded-lg bg-surface-800/50 overflow-hidden">
