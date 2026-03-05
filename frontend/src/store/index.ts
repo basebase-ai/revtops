@@ -538,7 +538,9 @@ export const useAppStore = create<AppState>()(
               isActive: o.id === orgId,
             })),
             // Clear org-scoped state when switching
+            currentView: "home",
             currentChatId: null,
+            currentAppId: null,
             recentChats: [],
             conversations: {},
             activeTasksByConversation: {},
