@@ -33,10 +33,11 @@ class TwilioConnector(BaseConnector):
         actions=[
             ConnectorAction(
                 name="send_sms",
-                description="Send an SMS text message to a phone number.",
+                description="Send an SMS or MMS message to a phone number. Include media_url to send an image/file via MMS.",
                 parameters=[
                     {"name": "to", "type": "string", "required": True, "description": "Phone number in E.164 format (e.g. +14155551234)"},
                     {"name": "body", "type": "string", "required": True, "description": "Message text (max 1600 characters)"},
+                    {"name": "media_url", "type": "string", "required": False, "description": "Public URL of an image or file to attach as MMS"},
                 ],
             ),
         ],
@@ -73,6 +74,7 @@ class TwilioConnector(BaseConnector):
 
         to: str = (params.get("to") or "").strip()
         body: str = (params.get("body") or "").strip()
+        media_url: str | None = (params.get("media_url") or "").strip() or None
 
         if not to:
             return {"error": "to is required (E.164 phone number, e.g. +14155551234)."}
@@ -88,7 +90,8 @@ class TwilioConnector(BaseConnector):
         if len(digits_only) < 7 or len(digits_only) > 15:
             return {"error": f"Invalid phone number '{to}'. Expected E.164 format, e.g. +14155551234."}
 
-        result: dict[str, str | bool] = await send_sms(to=to, body=body)
+        media_urls: list[str] | None = [media_url] if media_url else None
+        result: dict[str, str | bool] = await send_sms(to=to, body=body, media_urls=media_urls)
 
         if result.get("success"):
             return {"status": "sent", "to": to, "message_sid": result.get("message_sid")}

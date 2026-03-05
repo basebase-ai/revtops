@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import base64
 import csv
+import hashlib
+import hmac
 import io
 import logging
 import mimetypes
@@ -136,6 +138,68 @@ def _cleanup_expired() -> None:
         del _store[uid]
     if expired:
         logger.info("Cleaned up %d expired upload(s)", len(expired))
+
+
+# ---------------------------------------------------------------------------
+# Signed media tokens — for public (unauthenticated) media access by Twilio
+# ---------------------------------------------------------------------------
+
+def generate_media_token(upload_id: str, ttl_seconds: int = 300) -> str:
+    """
+    Create an HMAC-SHA256 signed token encoding ``upload_id`` + expiry.
+
+    Twilio needs to fetch media via a public URL (no JWT).  The token is
+    self-contained — verification requires no database lookup.
+
+    Args:
+        upload_id: The file's upload_id in the in-memory store.
+        ttl_seconds: How long the token is valid (default 5 minutes).
+
+    Returns:
+        URL-safe base64 token string.
+    """
+    from config import settings
+
+    expiry: int = int(time.time()) + ttl_seconds
+    payload: str = f"{upload_id}|{expiry}"
+    sig: str = hmac.new(
+        settings.SECRET_KEY.encode(),
+        payload.encode(),
+        hashlib.sha256,
+    ).hexdigest()
+    raw: str = f"{payload}|{sig}"
+    return base64.urlsafe_b64encode(raw.encode()).decode()
+
+
+def verify_media_token(token: str) -> str | None:
+    """
+    Verify a signed media token and return the ``upload_id`` if valid.
+
+    Returns:
+        The ``upload_id`` string, or ``None`` if the token is invalid or expired.
+    """
+    from config import settings
+
+    try:
+        raw: str = base64.urlsafe_b64decode(token.encode()).decode()
+        parts: list[str] = raw.split("|", 2)
+        if len(parts) != 3:
+            return None
+        upload_id, expiry_str, sig = parts
+        # Check expiry
+        if int(expiry_str) < int(time.time()):
+            return None
+        # Verify HMAC
+        expected_sig: str = hmac.new(
+            settings.SECRET_KEY.encode(),
+            f"{upload_id}|{expiry_str}".encode(),
+            hashlib.sha256,
+        ).hexdigest()
+        if not hmac.compare_digest(sig, expected_sig):
+            return None
+        return upload_id
+    except Exception:
+        return None
 
 
 # ---------------------------------------------------------------------------

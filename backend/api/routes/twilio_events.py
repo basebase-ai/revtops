@@ -185,12 +185,22 @@ async def handle_twilio_webhook(request: Request) -> Response:
     to_number: str = form.get("To", "")
     body: str = form.get("Body", "")
 
+    # Extract MMS media attachments (Twilio sends NumMedia, MediaUrl0, MediaContentType0, ...)
+    num_media: int = int(form.get("NumMedia", "0"))
+    media_items: list[dict[str, str]] = []
+    for i in range(num_media):
+        media_url: str | None = form.get(f"MediaUrl{i}")
+        media_ct: str | None = form.get(f"MediaContentType{i}")
+        if media_url:
+            media_items.append({"url": media_url, "content_type": media_ct or "application/octet-stream"})
+
     logger.info(
-        "[twilio_events] Inbound SMS from=%s to=%s sid=%s body=%s",
+        "[twilio_events] Inbound SMS from=%s to=%s sid=%s body=%s media=%d",
         from_number,
         to_number,
         message_sid,
         body[:80] if body else "(empty)",
+        len(media_items),
     )
 
     # Dedup by MessageSid
@@ -198,13 +208,13 @@ async def handle_twilio_webhook(request: Request) -> Response:
         logger.info("[twilio_events] Skipping duplicate message: %s", message_sid)
         return Response(content=_EMPTY_TWIML, media_type="application/xml")
 
-    # Ignore empty messages
-    if not body.strip():
+    # Ignore messages with no body AND no media
+    if not body.strip() and not media_items:
         logger.info("[twilio_events] Ignoring empty SMS from %s", from_number)
         return Response(content=_EMPTY_TWIML, media_type="application/xml")
 
     # Process in background — return TwiML immediately
-    asyncio.create_task(_process_inbound_sms(from_number, to_number, body, message_sid))
+    asyncio.create_task(_process_inbound_sms(from_number, to_number, body, message_sid, media_items))
 
     return Response(content=_EMPTY_TWIML, media_type="application/xml")
 
@@ -214,6 +224,7 @@ async def _process_inbound_sms(
     to_number: str,
     body: str,
     message_sid: str,
+    media_items: list[dict[str, str]] | None = None,
 ) -> None:
     """Wrapper for background processing with top-level exception handling."""
     try:
@@ -224,9 +235,48 @@ async def _process_inbound_sms(
             to_number=to_number,
             body=body,
             message_sid=message_sid,
+            media_items=media_items,
         )
     except Exception as e:
         logger.exception("[twilio_events] Background SMS processing failed: %s", e)
+
+
+@router.get("/media/{token}")
+async def serve_media(token: str) -> Response:
+    """
+    Serve a stored file using a signed token — no JWT required.
+
+    Twilio fetches outbound MMS media from a public URL.  The token is
+    HMAC-signed and expires after 5 minutes, so this is safe to expose
+    without authentication.
+    """
+    from services.file_handler import verify_media_token, retrieve_file
+
+    upload_id: str | None = verify_media_token(token)
+    if upload_id is None:
+        raise HTTPException(status_code=403, detail="Invalid or expired media token")
+
+    stored = retrieve_file(upload_id)
+    if stored is None:
+        raise HTTPException(status_code=404, detail="Media not found")
+
+    # Only serve known-safe image MIME types; everything else becomes
+    # application/octet-stream to prevent content-type injection (XSS).
+    from services.file_handler import NATIVE_IMAGE_MIMES
+    safe_type: str = (
+        stored.mime_type if stored.mime_type in NATIVE_IMAGE_MIMES
+        else "application/octet-stream"
+    )
+
+    return Response(
+        content=stored.data,
+        media_type=safe_type,
+        headers={
+            "Cache-Control": "private, max-age=300",
+            "Content-Disposition": "inline",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 @router.get("/webhook/health")

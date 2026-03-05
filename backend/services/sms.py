@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 from typing import Optional
+from urllib.parse import urlencode
 
 import httpx
 
@@ -18,15 +19,17 @@ async def send_sms(
     to: str,
     body: str,
     from_number: Optional[str] = None,
+    media_urls: Optional[list[str]] = None,
 ) -> dict[str, str | bool]:
     """
-    Send an SMS via Twilio.
-    
+    Send an SMS (or MMS with media) via Twilio.
+
     Args:
         to: Recipient phone number (E.164 format, e.g., +14155551234)
         body: Message text (max 1600 characters)
         from_number: Optional from number (defaults to TWILIO_PHONE_NUMBER)
-        
+        media_urls: Optional list of public URLs for MMS media (up to 10)
+
     Returns:
         Dict with status, message_sid on success, or error on failure
     """
@@ -59,17 +62,25 @@ async def send_sms(
     
     async with httpx.AsyncClient() as client:
         try:
+            # Build form params — use list of tuples + urlencode(doseq=True)
+            # so we can repeat the MediaUrl key for multiple MMS attachments
+            params: list[tuple[str, str]] = [
+                ("To", to),
+                ("From", from_phone),
+                ("Body", body),
+            ]
+            # Twilio accepts up to 10 repeated MediaUrl params for MMS
+            if media_urls:
+                for murl in media_urls[:10]:
+                    params.append(("MediaUrl", murl))
+
             response = await client.post(
                 url,
                 headers={
                     "Authorization": f"Basic {credentials}",
                     "Content-Type": "application/x-www-form-urlencoded",
                 },
-                data={
-                    "To": to,
-                    "From": from_phone,
-                    "Body": body,
-                },
+                content=urlencode(params, doseq=True),
                 timeout=10.0,
             )
             

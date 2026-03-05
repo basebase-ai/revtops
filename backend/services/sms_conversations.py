@@ -15,12 +15,15 @@ Flow:
 """
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import re
 from datetime import datetime, timedelta
 from typing import Any
 from uuid import UUID
+
+import httpx
 
 from sqlalchemy import select
 
@@ -130,6 +133,83 @@ async def _clear_pending_org_choice(phone: str) -> None:
         await client.delete(key)
     except Exception as e:
         logger.error("[sms_conversations] Redis error clearing pending org choice: %s", e)
+
+
+# ---------------------------------------------------------------------------
+# MMS media download
+# ---------------------------------------------------------------------------
+
+async def _download_twilio_media(
+    media_items: list[dict[str, str]],
+) -> list[str]:
+    """
+    Download MMS media from Twilio CDN and store in the temp file store.
+
+    Twilio CDN URLs require Basic Auth with ``account_sid:auth_token``.
+
+    Returns:
+        List of ``upload_id`` strings for
+        :meth:`ChatOrchestrator.process_message`.
+    """
+    from services.file_handler import store_file, MAX_FILE_SIZE
+
+    account_sid: str | None = settings.TWILIO_ACCOUNT_SID
+    auth_token: str | None = settings.TWILIO_AUTH_TOKEN
+    if not account_sid or not auth_token:
+        logger.warning("[sms_conversations] Twilio credentials not configured — cannot download MMS media")
+        return []
+
+    attachment_ids: list[str] = []
+
+    async with httpx.AsyncClient() as client:
+        for i, item in enumerate(media_items):
+            url: str = item["url"]
+            content_type: str = item.get("content_type", "application/octet-stream")
+
+            # Validate URL points to Twilio CDN (defense-in-depth against SSRF)
+            from urllib.parse import urlparse
+            parsed_url = urlparse(url)
+            if not parsed_url.hostname or not parsed_url.hostname.endswith(".twilio.com"):
+                logger.warning(
+                    "[sms_conversations] Skipping non-Twilio media URL: %s", url,
+                )
+                continue
+
+            try:
+                # Use auth= so httpx strips credentials on cross-origin redirects
+                resp = await client.get(
+                    url,
+                    auth=(account_sid, auth_token),
+                    follow_redirects=True,
+                    timeout=30.0,
+                )
+                resp.raise_for_status()
+
+                data: bytes = resp.content
+                if len(data) > MAX_FILE_SIZE:
+                    logger.warning(
+                        "[sms_conversations] MMS media %d (%d bytes) exceeds max size — skipping",
+                        i, len(data),
+                    )
+                    continue
+
+                # Derive a filename from content type
+                ext: str = content_type.split("/")[-1].split(";")[0]
+                filename: str = f"mms_media_{i}.{ext}"
+
+                stored = store_file(filename=filename, data=data, content_type=content_type)
+                attachment_ids.append(stored.upload_id)
+                logger.info(
+                    "[sms_conversations] Downloaded MMS media %d (%s, %d bytes) → %s",
+                    i, content_type, len(data), stored.upload_id,
+                )
+            except Exception as e:
+                logger.error(
+                    "[sms_conversations] Failed to download MMS media %d from %s: %s",
+                    i, url, e,
+                )
+
+    return attachment_ids
 
 
 # ---------------------------------------------------------------------------
@@ -243,23 +323,29 @@ async def find_or_create_sms_conversation(
 _SMS_MAX_LENGTH: int = 1600
 
 
-async def _send_sms_reply(to: str, text: str) -> None:
+async def _send_sms_reply(
+    to: str,
+    text: str,
+    media_urls: list[str] | None = None,
+) -> None:
     """
-    Send one or more SMS messages, splitting on segment boundaries if the
+    Send one or more SMS/MMS messages, splitting on segment boundaries if the
     reply exceeds Twilio's 1600-character concatenated limit.
 
     Markdown is stripped before sending since SMS is plain-text only.
+    Media URLs are attached to the first segment only (Twilio MMS).
     """
     text = _strip_markdown(text)
-    if not text:
+    if not text and not media_urls:
         return
 
-    # If it fits in one message, send directly
+    # If it fits in one message, send directly (with media if present)
     if len(text) <= _SMS_MAX_LENGTH:
-        await send_sms(to=to, body=text)
+        await send_sms(to=to, body=text, media_urls=media_urls)
         return
 
     # Split into segments, preferring line-break boundaries
+    # Attach media to the first segment only
     segments: list[str] = _split_text(text, _SMS_MAX_LENGTH)
     for i, segment in enumerate(segments):
         logger.info(
@@ -269,7 +355,73 @@ async def _send_sms_reply(to: str, text: str) -> None:
             len(segment),
             to,
         )
-        await send_sms(to=to, body=segment)
+        await send_sms(
+            to=to,
+            body=segment,
+            media_urls=media_urls if i == 0 else None,
+        )
+
+
+def _build_public_media_url(upload_id: str) -> str | None:
+    """
+    Generate a signed public URL for Twilio to fetch media from.
+
+    Uses ``TWILIO_WEBHOOK_URL`` to derive the base (e.g.
+    ``https://api.basebase.com/api/twilio/webhook`` →
+    ``https://api.basebase.com/api/twilio/media/<token>``).
+    """
+    from services.file_handler import generate_media_token
+
+    base_url: str | None = settings.TWILIO_WEBHOOK_URL
+    if not base_url:
+        logger.warning("[sms_conversations] TWILIO_WEBHOOK_URL not set — cannot generate public media URL")
+        return None
+
+    # Replace /webhook with /media/<token>
+    media_base: str = base_url.rsplit("/webhook", 1)[0]
+    token: str = generate_media_token(upload_id)
+    return f"{media_base}/media/{token}"
+
+
+def _extract_image_artifacts(chunk: str) -> list[str]:
+    """
+    Parse a JSON orchestrator chunk and return public media URLs for any
+    image-type artifacts (charts, images).
+
+    If the artifact content is base64-encoded image data, store it in
+    file_handler and return a signed public URL for Twilio MMS.
+    """
+    from services.file_handler import store_file, NATIVE_IMAGE_MIMES
+
+    try:
+        payload: dict[str, Any] = json.loads(chunk)
+    except (json.JSONDecodeError, ValueError):
+        return []
+
+    if payload.get("type") != "artifact":
+        return []
+
+    artifact: dict[str, Any] | None = payload.get("artifact")
+    if not artifact:
+        return []
+
+    mime_type: str | None = artifact.get("mime_type")
+    content: str | None = artifact.get("content")
+    if not content or not mime_type or mime_type not in NATIVE_IMAGE_MIMES:
+        return []
+
+    try:
+        data: bytes = base64.b64decode(content)
+        ext: str = mime_type.split("/")[-1]
+        filename: str = f"artifact_{artifact.get('id', 'unknown')}.{ext}"
+        stored = store_file(filename=filename, data=data, content_type=mime_type)
+        url: str | None = _build_public_media_url(stored.upload_id)
+        if url:
+            return [url]
+    except Exception as e:
+        logger.error("[sms_conversations] Failed to process image artifact for MMS: %s", e)
+
+    return []
 
 
 def _split_text(text: str, max_len: int) -> list[str]:
@@ -302,21 +454,24 @@ async def process_inbound_sms(
     to_number: str,
     body: str,
     message_sid: str,
+    media_items: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     """
-    Process an incoming SMS message end-to-end.
+    Process an incoming SMS/MMS message end-to-end.
 
     1. Normalise phone, look up user
     2. Resolve organisation (single vs multi-org)
     3. Find/create conversation
-    4. Run through ChatOrchestrator
-    5. Reply via SMS
+    4. Download MMS media (if any)
+    5. Run through ChatOrchestrator
+    6. Reply via SMS/MMS
 
     Args:
         from_number: Sender phone (E.164)
         to_number: Receiving Twilio number (E.164)
         body: SMS body text
         message_sid: Twilio MessageSid for logging
+        media_items: Optional list of MMS media dicts with ``url`` and ``content_type``
 
     Returns:
         Result dict with status and details
@@ -409,7 +564,14 @@ async def process_inbound_sms(
         )
         return {"status": "error", "error": "insufficient_credits"}
 
-    # ── 4. Run through orchestrator ──────────────────────────────────────
+    # ── 4. Download MMS media (if any) ──────────────────────────────────
+    attachment_ids: list[str] = []
+    if media_items:
+        attachment_ids = await _download_twilio_media(media_items)
+
+    message_text: str = body or ("(see attached files)" if attachment_ids else "")
+
+    # ── 5. Run through orchestrator ──────────────────────────────────────
     orchestrator = ChatOrchestrator(
         user_id=user_id,
         organization_id=organization_id,
@@ -423,10 +585,15 @@ async def process_inbound_sms(
 
     # Collect full response (no streaming for SMS)
     full_response: str = ""
+    outbound_media_urls: list[str] = []
     try:
-        async for chunk in orchestrator.process_message(body):
-            # Skip tool-call JSON chunks — only collect text
-            if not chunk.startswith("{"):
+        async for chunk in orchestrator.process_message(
+            message_text, attachment_ids=attachment_ids or None,
+        ):
+            # Check for image artifact chunks that we can send as MMS
+            if chunk.startswith("{"):
+                outbound_media_urls.extend(_extract_image_artifacts(chunk))
+            else:
                 full_response += chunk
     except Exception as e:
         logger.exception("[sms_conversations] Orchestrator error: %s", e)
@@ -435,10 +602,14 @@ async def process_inbound_sms(
             "Please try again."
         )
 
-    # ── 5. Reply via SMS ─────────────────────────────────────────────────
+    # ── 6. Reply via SMS/MMS ─────────────────────────────────────────────
     response_text: str = full_response.strip()
-    if response_text:
-        await _send_sms_reply(to=phone, text=response_text)
+    if response_text or outbound_media_urls:
+        await _send_sms_reply(
+            to=phone,
+            text=response_text or "",
+            media_urls=outbound_media_urls or None,
+        )
     else:
         logger.warning(
             "[sms_conversations] Empty response for conversation=%s",
