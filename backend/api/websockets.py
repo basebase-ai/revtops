@@ -26,6 +26,9 @@ from uuid import UUID, uuid4
 from fastapi import WebSocket, WebSocketDisconnect
 
 
+WEBSOCKET_SEND_TIMEOUT_SECONDS = 0.75
+
+
 # =============================================================================
 # Sync Progress Broadcasting
 # =============================================================================
@@ -68,13 +71,24 @@ class SyncProgressBroadcaster:
             **data,
         })
         
-        # Send to all, collect any dead connections
-        dead: Set[WebSocket] = set()
-        for ws in websockets:
-            try:
-                await ws.send_text(message)
-            except Exception:
-                dead.add(ws)
+        # Send concurrently so one stalled client cannot block org-wide updates.
+        async def _send_with_timeout(ws: WebSocket) -> None:
+            await asyncio.wait_for(
+                ws.send_text(message),
+                timeout=WEBSOCKET_SEND_TIMEOUT_SECONDS,
+            )
+
+        send_tasks = [asyncio.create_task(_send_with_timeout(ws)) for ws in websockets]
+        send_results = await asyncio.gather(*send_tasks, return_exceptions=True)
+        dead: Set[WebSocket] = {
+            ws for ws, result in zip(websockets, send_results) if isinstance(result, Exception)
+        }
+        if dead:
+            logger.warning(
+                "[sync_broadcaster] Removing %d dead/stalled websocket(s) for org=%s",
+                len(dead),
+                organization_id,
+            )
         
         # Clean up dead connections
         for ws in dead:
@@ -192,20 +206,40 @@ class ConversationBroadcaster:
         })
         
         dead_connections: list[tuple[str, WebSocket]] = []
+        send_jobs: list[tuple[str, WebSocket, asyncio.Task[None]]] = []
+
+        async def _send_with_timeout(ws: WebSocket) -> None:
+            await asyncio.wait_for(
+                ws.send_text(message),
+                timeout=WEBSOCKET_SEND_TIMEOUT_SECONDS,
+            )
+
         for user_id in user_ids:
             if exclude_user_id and user_id == exclude_user_id:
                 continue
             
             websockets = self._user_connections.get(user_id, set())
             for ws in websockets:
-                try:
-                    await ws.send_text(message)
-                except Exception:
+                send_jobs.append((user_id, ws, asyncio.create_task(_send_with_timeout(ws))))
+
+        if send_jobs:
+            send_results = await asyncio.gather(
+                *[task for _, _, task in send_jobs],
+                return_exceptions=True,
+            )
+            for (user_id, ws, _), result in zip(send_jobs, send_results):
+                if isinstance(result, Exception):
                     dead_connections.append((user_id, ws))
-        
+
         # Clean up dead connections
         for user_id, ws in dead_connections:
             self._user_connections[user_id].discard(ws)
+
+        if dead_connections:
+            logger.warning(
+                "[conversation_broadcaster] Removed %d dead/stalled websocket(s)",
+                len(dead_connections),
+            )
 
 
 # Global conversation broadcaster instance

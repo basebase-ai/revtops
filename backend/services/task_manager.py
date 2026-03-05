@@ -26,6 +26,10 @@ from models.database import get_session
 logger = logging.getLogger(__name__)
 
 
+# Prevent one stalled socket from slowing every Penny chunk broadcast.
+WEBSOCKET_SEND_TIMEOUT_SECONDS = 0.75
+
+
 # Type alias for broadcast callback
 BroadcastCallback = Callable[[str], Coroutine[Any, Any, None]]
 
@@ -388,19 +392,35 @@ class TaskManager:
         
         message_str = json.dumps(message)
         dead_sockets: list[WebSocket] = []
-        
-        for ws in subscribers:
-            try:
-                await ws.send_text(message_str)
-            except Exception:
-                # WebSocket is dead, mark for removal
+
+        async def _send_with_timeout(ws: WebSocket) -> None:
+            await asyncio.wait_for(
+                ws.send_text(message_str),
+                timeout=WEBSOCKET_SEND_TIMEOUT_SECONDS,
+            )
+
+        send_tasks = [asyncio.create_task(_send_with_timeout(ws)) for ws in subscribers]
+        send_results = await asyncio.gather(*send_tasks, return_exceptions=True)
+
+        for ws, result in zip(subscribers, send_results):
+            if isinstance(result, Exception):
                 dead_sockets.append(ws)
+                logger.warning(
+                    "WebSocket send failed for task=%s; removing subscriber (error=%s)",
+                    task_id,
+                    result,
+                )
         
         # Clean up dead sockets
         if dead_sockets:
             async with self._lock:
                 for ws in dead_sockets:
                     self._subscriptions.get(task_id, set()).discard(ws)
+            logger.info(
+                "Removed %d dead/stalled websocket subscriber(s) for task=%s",
+                len(dead_sockets),
+                task_id,
+            )
     
     async def subscribe(self, task_id: str, websocket: WebSocket) -> None:
         """
