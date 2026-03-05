@@ -948,13 +948,14 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
     organization?.id ?? '',
   );
 
-  // Fetch conversations on mount (only once per user)
+  // Fetch conversations on mount and when org changes
   const userId = user?.id;
+  const orgId = organization?.id;
   useEffect(() => {
     if (userId) {
       void fetchConversations();
     }
-  }, [userId, fetchConversations]);
+  }, [userId, orgId, fetchConversations]);
 
   // Listen for navigation events from child components (e.g., Home banner)
   useEffect(() => {
