@@ -1314,6 +1314,30 @@ export function Chat({
               )}
             </button>
           )}
+          {(() => {
+            const contextPct = (conversationState?.contextTokens ?? 0) / 200_000;
+            return conversationState?.contextTokens != null ? (
+              <div className="flex items-center gap-1.5 ml-2" title={`${Math.round(contextPct * 100)}% context used (${(conversationState.contextTokens / 1000).toFixed(0)}k / 200k tokens)`}>
+                <div className="w-16 h-1.5 bg-surface-700 rounded-full overflow-hidden">
+                  <div
+                    className={`h-full rounded-full transition-all ${
+                      contextPct > 0.85 ? 'bg-red-400' :
+                      contextPct > 0.6 ? 'bg-yellow-400' :
+                      'bg-primary-400'
+                    }`}
+                    style={{ width: `${Math.min(contextPct * 100, 100)}%` }}
+                  />
+                </div>
+                <span className={`text-[10px] tabular-nums ${
+                  contextPct > 0.85 ? 'text-red-400' :
+                  contextPct > 0.6 ? 'text-yellow-400' :
+                  'text-surface-500'
+                }`}>
+                  {Math.round(contextPct * 100)}%
+                </span>
+              </div>
+            ) : null;
+          })()}
         </div>
         <div className="flex items-center gap-3">
           {/* Participant avatars for shared conversations */}

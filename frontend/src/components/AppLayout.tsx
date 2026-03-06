@@ -265,7 +265,8 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
   const updateConversationToolMessage = useAppStore((state) => state.updateConversationToolMessage);
   const addConversationArtifactBlock = useAppStore((state) => state.addConversationArtifactBlock);
   const addConversationAppBlock = useAppStore((state) => state.addConversationAppBlock);
-  
+  const setConversationContextTokens = useAppStore((state) => state.setConversationContextTokens);
+
   // Ref for sendJson so active_tasks handler can request catchup (handler runs before useWebSocket)
   const sendJsonRef = useRef<((data: Record<string, unknown>) => void) | null>(null);
 
@@ -845,11 +846,14 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
                   .then(() => queryClient.invalidateQueries({ queryKey: ['integrations'] }))
                   .catch((err) => console.error('Failed to connect builtin:', err));
               }
+            } else if (data.type === 'context_usage') {
+              const usage = data as { input_tokens: number; output_tokens: number };
+              setConversationContextTokens(conversation_id, usage.input_tokens);
             }
           }
           break;
         }
-        
+
         case 'task_complete': {
           const taskComplete = parsed as WsTaskComplete;
           console.log('[AppLayout] Task complete:', taskComplete.task_id, 'status:', taskComplete.status);
