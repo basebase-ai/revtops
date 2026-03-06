@@ -619,3 +619,131 @@ def test_process_slack_mention_returns_identity_unmapped_for_unresolved_speaker_
 
     assert result == {"status": "error", "error": "identity_unmapped"}
     assert "post_message:111.222" in events
+
+
+def test_process_slack_dm_retries_unknown_identity_with_ingest_before_refusal(monkeypatch):
+    events: list[str] = []
+
+    class _FakeConnector:
+        def __init__(self, organization_id: str, team_id: str | None = None):
+            self.organization_id = organization_id
+
+        async def add_reaction(self, channel: str, timestamp: str):
+            events.append("add_reaction")
+
+        async def remove_reaction(self, channel: str, timestamp: str):
+            events.append("remove_reaction")
+
+        async def post_message(self, channel: str, text: str, thread_ts: str | None = None):
+            events.append("post_message")
+
+    async def _fake_find_org(_team_id: str):
+        return "11111111-1111-1111-1111-111111111111"
+
+    async def _fake_fetch_slack_user_info(**_kwargs):
+        events.append("fetch_slack_user")
+        return {"profile": {"email": "new.user@acme.com"}}
+
+    async def _fake_resolve_user(**_kwargs):
+        events.append("resolve_user")
+        return None
+
+    async def _fake_ingest_retry(**_kwargs):
+        events.append("ingest_retry")
+        return None
+
+    monkeypatch.setattr(slack_conversations, "find_organization_by_slack_team", _fake_find_org)
+    monkeypatch.setattr(slack_conversations, "_fetch_slack_user_info", _fake_fetch_slack_user_info)
+    monkeypatch.setattr(slack_conversations, "resolve_revtops_user_for_slack_actor", _fake_resolve_user)
+    monkeypatch.setattr(slack_conversations, "_ingest_unknown_slack_actor_and_retry_mapping", _fake_ingest_retry)
+    monkeypatch.setattr(slack_conversations, "SlackConnector", _FakeConnector)
+
+    result = asyncio.run(
+        slack_conversations.process_slack_dm(
+            team_id="T123",
+            channel_id="D123",
+            user_id="U_NEW",
+            message_text="hello",
+            event_ts="111.333",
+            thread_ts="111.222",
+            files=None,
+        )
+    )
+
+    assert result == {"status": "error", "error": "identity_unmapped"}
+    assert events.index("resolve_user") < events.index("ingest_retry")
+    assert events.index("ingest_retry") < events.index("post_message")
+
+
+def test_process_slack_dm_unknown_identity_ingest_can_recover_user(monkeypatch):
+    events: list[str] = []
+
+    class _FakeConnector:
+        def __init__(self, organization_id: str, team_id: str | None = None):
+            self.organization_id = organization_id
+
+        async def add_reaction(self, channel: str, timestamp: str):
+            events.append("add_reaction")
+
+        async def remove_reaction(self, channel: str, timestamp: str):
+            events.append("remove_reaction")
+
+        async def post_message(self, channel: str, text: str, thread_ts: str | None = None):
+            events.append("post_message")
+
+    class _FakeOrchestrator:
+        def __init__(self, **kwargs):
+            self.user_id = kwargs.get("user_id")
+            events.append(f"orchestrator_user:{self.user_id}")
+
+    async def _fake_find_org(_team_id: str):
+        return "11111111-1111-1111-1111-111111111111"
+
+    async def _fake_fetch_slack_user_info(**_kwargs):
+        return {"profile": {"email": "new.user@acme.com"}}
+
+    async def _fake_resolve_user(**_kwargs):
+        return None
+
+    async def _fake_ingest_retry(**_kwargs):
+        events.append("ingest_retry")
+        return SimpleNamespace(
+            id=UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+            email="new.user@acme.com",
+        )
+
+    async def _fake_find_or_create_conversation(**_kwargs):
+        return SimpleNamespace(id=UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"))
+
+    async def _fake_stream_and_post_responses(**_kwargs):
+        events.append("stream")
+        return 1
+
+    async def _fake_can_use_credits(_org_id: str) -> bool:
+        return True
+
+    monkeypatch.setattr(slack_conversations, "find_organization_by_slack_team", _fake_find_org)
+    monkeypatch.setattr(slack_conversations, "_fetch_slack_user_info", _fake_fetch_slack_user_info)
+    monkeypatch.setattr(slack_conversations, "resolve_revtops_user_for_slack_actor", _fake_resolve_user)
+    monkeypatch.setattr(slack_conversations, "_ingest_unknown_slack_actor_and_retry_mapping", _fake_ingest_retry)
+    monkeypatch.setattr(slack_conversations, "find_or_create_conversation", _fake_find_or_create_conversation)
+    monkeypatch.setattr(slack_conversations, "_stream_and_post_responses", _fake_stream_and_post_responses)
+    monkeypatch.setattr(slack_conversations, "can_use_credits", _fake_can_use_credits)
+    monkeypatch.setattr(slack_conversations, "ChatOrchestrator", _FakeOrchestrator)
+    monkeypatch.setattr(slack_conversations, "SlackConnector", _FakeConnector)
+
+    result = asyncio.run(
+        slack_conversations.process_slack_dm(
+            team_id="T123",
+            channel_id="D123",
+            user_id="U_NEW",
+            message_text="hello",
+            event_ts="111.333",
+            thread_ts="111.222",
+            files=None,
+        )
+    )
+
+    assert result["status"] == "success"
+    assert "ingest_retry" in events
+    assert "stream" in events

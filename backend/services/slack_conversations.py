@@ -1376,6 +1376,60 @@ async def _resolve_guest_user_after_unmapped_actor(
     return await _resolve_guest_user_for_org(organization_id)
 
 
+async def _ingest_unknown_slack_actor_and_retry_mapping(
+    organization_id: str,
+    team_id: str,
+    slack_user_id: str,
+    slack_user: dict[str, Any] | None,
+) -> User | None:
+    """Ingest latest Slack identity data for an unresolved actor, then retry mapping."""
+    normalized_slack_user_id: str = _normalize_slack_user_id(slack_user_id)
+    logger.info(
+        "[slack_conversations] Ingesting unknown Slack actor before refusal org=%s team=%s user=%s",
+        organization_id,
+        team_id,
+        normalized_slack_user_id,
+    )
+    try:
+        resolved_slack_user = slack_user or await _fetch_slack_user_info(
+            organization_id=organization_id,
+            slack_user_id=slack_user_id,
+        )
+        resolved_email: str | None = _extract_slack_email(resolved_slack_user)
+        await _upsert_slack_user_mapping(
+            organization_id=organization_id,
+            user_id=None,
+            slack_user_id=normalized_slack_user_id,
+            slack_email=resolved_email,
+            match_source="unknown_actor_ingest",
+        )
+
+        await refresh_slack_user_mappings_for_org(organization_id)
+        connector = SlackConnector(organization_id=organization_id, team_id=team_id)
+        await refresh_slack_user_mappings_from_directory(organization_id, connector)
+
+        resolved_user = await resolve_revtops_user_for_slack_actor(
+            organization_id=organization_id,
+            slack_user_id=normalized_slack_user_id,
+            slack_user=resolved_slack_user,
+        )
+        logger.info(
+            "[slack_conversations] Unknown Slack actor ingestion result org=%s user=%s mapped=%s",
+            organization_id,
+            normalized_slack_user_id,
+            bool(resolved_user),
+        )
+        return resolved_user
+    except Exception:
+        logger.exception(
+            "[slack_conversations] Failed ingestion pass for unknown Slack actor org=%s team=%s user=%s",
+            organization_id,
+            team_id,
+            normalized_slack_user_id,
+        )
+        return None
+
+
 async def resolve_revtops_user_for_slack_actor(
     organization_id: str,
     slack_user_id: str,
@@ -2201,6 +2255,14 @@ async def process_slack_dm(
     slack_user_email: str | None = _extract_slack_email(slack_user)
     slack_user_tz: str | None = _extract_slack_timezone(slack_user)
     if not linked_user:
+        linked_user = await _ingest_unknown_slack_actor_and_retry_mapping(
+            organization_id=organization_id,
+            team_id=team_id,
+            slack_user_id=user_id,
+            slack_user=slack_user,
+        )
+
+    if not linked_user:
         logger.info(
             "[slack_conversations] No linked RevTops user for Slack actor=%s org=%s; refusing to run turn",
             user_id,
@@ -2395,6 +2457,14 @@ async def process_slack_mention(
     slack_user_name: str | None = _extract_slack_display_name(slack_user)
     slack_user_email: str | None = _extract_slack_email(slack_user)
     slack_user_tz: str | None = _extract_slack_timezone(slack_user)
+    if not linked_user:
+        linked_user = await _ingest_unknown_slack_actor_and_retry_mapping(
+            organization_id=organization_id,
+            team_id=team_id,
+            slack_user_id=user_id,
+            slack_user=slack_user,
+        )
+
     if not linked_user:
         logger.info(
             "[slack_conversations] No linked RevTops user for Slack actor=%s org=%s; refusing to run turn",
@@ -2598,6 +2668,14 @@ async def process_slack_thread_reply(
         slack_user_id=user_id,
         slack_user=slack_user,
     )
+    if not linked_user:
+        linked_user = await _ingest_unknown_slack_actor_and_retry_mapping(
+            organization_id=organization_id,
+            team_id=team_id,
+            slack_user_id=user_id,
+            slack_user=slack_user,
+        )
+
     if not linked_user:
         logger.info(
             "[slack_conversations] No linked RevTops user for Slack actor=%s org=%s; refusing to run turn",
