@@ -199,6 +199,7 @@ class ConversationDetailResponse(BaseModel):
     scope: str = "shared"
     participants: list[ParticipantResponse] = []
     messages: list[ChatMessageResponse]
+    has_more: bool = False
 
 
 class ChatHistoryResponse(BaseModel):
@@ -404,12 +405,30 @@ async def create_conversation(
 async def get_conversation(
     conversation_id: str,
     auth: AuthContext = Depends(get_current_auth),
+    limit: int = 30,
+    before: Optional[str] = None,
 ) -> ConversationDetailResponse:
-    """Get a conversation with all its messages."""
+    """Get a conversation with its messages (paginated).
+
+    Args:
+        limit: Number of messages to return (default 30).
+        before: ISO timestamp cursor — return messages created before this time
+                (pass the oldest loaded message's ``created_at`` to page backwards).
+    """
     try:
         conv_uuid = UUID(conversation_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid conversation ID format")
+
+    # Parse the cursor timestamp when provided
+    before_dt: Optional[datetime] = None
+    if before is not None:
+        try:
+            # Accept ISO 8601 with or without trailing 'Z', strip tzinfo
+            # since the DB column is TIMESTAMP WITHOUT TIME ZONE
+            before_dt = datetime.fromisoformat(before.replace("Z", "+00:00")).replace(tzinfo=None)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid 'before' timestamp format")
 
     org_id = auth.organization_id_str
 
@@ -425,14 +444,29 @@ async def get_conversation(
         if not conversation:
             raise HTTPException(status_code=404, detail="Conversation not found")
 
-        # Get messages with sender info via left join
-        msg_result = await session.execute(
+        # Build paginated message query
+        msg_query = (
             select(ChatMessage, User.name, User.email, User.avatar_url)
             .outerjoin(User, ChatMessage.user_id == User.id)
             .where(ChatMessage.conversation_id == conv_uuid)
-            .order_by(ChatMessage.created_at.asc())
         )
+
+        if before_dt is not None:
+            msg_query = msg_query.where(ChatMessage.created_at < before_dt)
+
+        # Fetch limit+1 rows so we can detect whether older messages exist
+        msg_query = msg_query.order_by(ChatMessage.created_at.desc()).limit(limit + 1)
+
+        msg_result = await session.execute(msg_query)
         message_rows = msg_result.all()
+
+        # Determine has_more and trim the extra probe row
+        has_more = len(message_rows) > limit
+        if has_more:
+            message_rows = message_rows[:limit]
+
+        # Reverse to chronological order (oldest first)
+        message_rows = list(reversed(message_rows))
 
         # Fetch participants
         participants: list[ParticipantResponse] = []
@@ -462,6 +496,7 @@ async def get_conversation(
                 ChatMessageResponse(**msg.to_dict(sender_name=sender_name, sender_email=sender_email, sender_avatar_url=sender_avatar_url))
                 for msg, sender_name, sender_email, sender_avatar_url in message_rows
             ],
+            has_more=has_more,
         )
 
 

@@ -75,6 +75,7 @@ export interface ConversationDetailResponse {
     avatar_url?: string | null;
   }>;
   messages: ChatMessage[];
+  has_more: boolean;
 }
 
 export interface ChatHistoryResponse {
@@ -134,14 +135,27 @@ export async function listConversations(
 }
 
 /**
- * Get a conversation with all its messages.
+ * Get a conversation with its messages (paginated, most recent first).
  * SECURITY: User is identified from JWT token.
+ *
+ * @param conversationId - The conversation to fetch.
+ * @param options.limit  - Max messages to return (default 30).
+ * @param options.before - ISO timestamp cursor — fetch messages older than this.
  */
 export async function getConversation(
   conversationId: string,
+  options?: { limit?: number; before?: string },
 ): Promise<ApiResponse<ConversationDetailResponse>> {
+  const params = new URLSearchParams();
+  if (options?.limit !== undefined) {
+    params.set("limit", options.limit.toString());
+  }
+  if (options?.before) {
+    params.set("before", options.before);
+  }
+  const qs = params.toString();
   return apiRequest<ConversationDetailResponse>(
-    `/chat/conversations/${conversationId}`,
+    `/chat/conversations/${conversationId}${qs ? `?${qs}` : ""}`,
   );
 }
 

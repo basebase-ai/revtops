@@ -155,6 +155,8 @@ export function Chat({
   const setConversationTitle = useAppStore((s) => s.setConversationTitle);
   const setConversationSummary = useAppStore((s) => s.setConversationSummary);
   const setConversationThinking = useAppStore((s) => s.setConversationThinking);
+  const setConversationHasMore = useAppStore((s) => s.setConversationHasMore);
+  const fetchOlderMessages = useAppStore((s) => s.fetchOlderMessages);
   const pendingChatInput = useAppStore((s) => s.pendingChatInput);
   const setPendingChatInput = useAppStore((s) => s.setPendingChatInput);
   const pendingChatAutoSend = useAppStore((s) => s.pendingChatAutoSend);
@@ -196,6 +198,7 @@ export function Chat({
   const [showInviteModal, setShowInviteModal] = useState(false);
   const [newConversationScope, setNewConversationScope] = useState<'private' | 'shared'>('shared');
   const [showScrollToBottom, setShowScrollToBottom] = useState<boolean>(false);
+  const [isLoadingOlder, setIsLoadingOlder] = useState<boolean>(false);
   
   // Attachment state
   const [pendingAttachments, setPendingAttachments] = useState<UploadResponse[]>([]);
@@ -260,7 +263,8 @@ export function Chat({
       .map(({ message }) => message);
   }, [pendingMessages, conversationState?.messages]);
   const isThinking = pendingThinking || conversationThinking;
-  
+  const hasMoreMessages = conversationState?.hasMore ?? false;
+
   // Agent is running if there's an active task OR we're in a thinking/pending state
   const agentRunning = activeTaskId !== null || isThinking;
 
@@ -505,6 +509,7 @@ export function Chat({
 
           // Set conversation state
           setConversationMessages(chatId, loadedMessages);
+          setConversationHasMore(chatId, data.has_more);
           setConversationTitle(chatId, data.title ?? 'New Chat');
           if (data.summary) {
             try {
@@ -525,7 +530,7 @@ export function Chat({
               avatarUrl: p.avatar_url,
             }))
           );
-          console.log('[Chat] Loaded', loadedMessages.length, 'messages, type:', data.type, 'scope:', data.scope);
+          console.log('[Chat] Loaded', loadedMessages.length, 'messages, has_more:', data.has_more, 'type:', data.type, 'scope:', data.scope);
 
           // Scroll to bottom immediately after loading
           setTimeout(() => {
@@ -560,7 +565,7 @@ export function Chat({
       loadInFlightChatIdRef.current = null; // Allow re-run to start load (e.g. Strict Mode)
       setIsLoading(false);
     };
-  }, [chatId, userId, setConversationMessages, setConversationTitle, setConversationSummary, onConversationNotFound]);
+  }, [chatId, userId, setConversationMessages, setConversationTitle, setConversationSummary, setConversationHasMore, onConversationNotFound]);
 
   // Keep messagesRef in sync for polling comparison (avoids stale closure)
   useEffect(() => {
@@ -706,6 +711,33 @@ export function Chat({
       });
     });
   }, [messages, isThinking]);
+
+  // Load earlier messages handler (pagination)
+  const handleLoadOlderMessages = useCallback(async (): Promise<void> => {
+    if (!chatId || isLoadingOlder || !hasMoreMessages) return;
+
+    const container = messagesContainerRef.current;
+    const previousScrollHeight = container?.scrollHeight ?? 0;
+
+    setIsLoadingOlder(true);
+    try {
+      await fetchOlderMessages(chatId);
+    } finally {
+      setIsLoadingOlder(false);
+    }
+
+    // Preserve scroll position after prepending messages
+    if (container) {
+      requestAnimationFrame(() => {
+        const newScrollHeight = container.scrollHeight;
+        isProgrammaticScrollRef.current = true;
+        container.scrollTop = newScrollHeight - previousScrollHeight;
+        requestAnimationFrame(() => {
+          isProgrammaticScrollRef.current = false;
+        });
+      });
+    }
+  }, [chatId, isLoadingOlder, hasMoreMessages, fetchOlderMessages]);
 
   // Scroll to bottom handler (for the button)
   const scrollToBottom = useCallback(() => {
@@ -1391,6 +1423,18 @@ export function Chat({
               )
             ) : (
               <div className="max-w-3xl mx-auto space-y-3">
+                {hasMoreMessages && (
+                  <div className="flex justify-center py-2">
+                    <button
+                      type="button"
+                      onClick={() => void handleLoadOlderMessages()}
+                      disabled={isLoadingOlder}
+                      className="text-xs text-surface-400 hover:text-surface-200 transition-colors disabled:opacity-50"
+                    >
+                      {isLoadingOlder ? 'Loading...' : 'Load earlier messages'}
+                    </button>
+                  </div>
+                )}
                 {messages.map((msg) => (
                   <MessageWithBlocks
                     key={msg.id}

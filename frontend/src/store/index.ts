@@ -231,6 +231,7 @@ export interface ConversationState {
   lastChunkIndex: number;
   pendingChunks: PendingChunk[]; // Buffer for out-of-order chunks
   summary: ConversationSummaryData | null;
+  hasMore: boolean; // Whether older messages exist (pagination)
 }
 
 // Task state from backend
@@ -385,6 +386,8 @@ interface AppState {
     app: AppBlock["app"],
   ) => void;
   clearConversation: (conversationId: string) => void;
+  setConversationHasMore: (conversationId: string, hasMore: boolean) => void;
+  fetchOlderMessages: (conversationId: string) => Promise<boolean>;
 
   // Actions - Active tasks
   setActiveTasks: (tasks: ActiveTask[]) => void;
@@ -419,6 +422,7 @@ const defaultConversationState: ConversationState = {
   lastChunkIndex: -1, // -1 means no chunks received yet, first chunk should be 0
   pendingChunks: [],
   summary: null,
+  hasMore: false,
 };
 
 // =============================================================================
@@ -1430,6 +1434,74 @@ export const useAppStore = create<AppState>()(
           conversations: remaining,
           activeTasksByConversation: remainingTasks,
         });
+      },
+
+      setConversationHasMore: (conversationId, hasMore) => {
+        const { conversations } = get();
+        const current = conversations[conversationId] ?? {
+          ...defaultConversationState,
+        };
+        set({
+          conversations: {
+            ...conversations,
+            [conversationId]: { ...current, hasMore },
+          },
+        });
+      },
+
+      fetchOlderMessages: async (conversationId) => {
+        const { conversations } = get();
+        const current = conversations[conversationId];
+        if (!current || !current.hasMore || current.messages.length === 0) {
+          return false;
+        }
+
+        // Use the oldest loaded message's timestamp as the cursor
+        const oldestMessage = current.messages[0] as ChatMessage;
+        const before = oldestMessage.timestamp.toISOString();
+
+        try {
+          const { getConversation: getConv } = await import("../api/client");
+          const { data, error } = await getConv(conversationId, { before });
+
+          if (error || !data) {
+            console.error(
+              "[Store] Failed to fetch older messages:",
+              error,
+            );
+            return false;
+          }
+
+          const olderMessages: ChatMessage[] = data.messages.map((msg) => ({
+            id: msg.id,
+            role: msg.role as "user" | "assistant",
+            contentBlocks: msg.content_blocks,
+            timestamp: new Date(msg.created_at),
+            userId: msg.user_id ?? undefined,
+            senderName: msg.sender_name ?? undefined,
+            senderEmail: msg.sender_email ?? undefined,
+            senderAvatarUrl: msg.sender_avatar_url ?? undefined,
+          }));
+
+          // Prepend older messages to the existing list
+          const updatedCurrent =
+            get().conversations[conversationId] ?? current;
+          set({
+            conversations: {
+              ...get().conversations,
+              [conversationId]: {
+                ...updatedCurrent,
+                messages: [...olderMessages, ...updatedCurrent.messages],
+                hasMore: data.has_more,
+              },
+            },
+          });
+
+          return data.has_more;
+        } catch (err) {
+          console.error("[Store] Error fetching older messages:", err);
+          return false;
+        }
       },
 
       // Active tasks actions
