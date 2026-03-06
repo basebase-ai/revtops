@@ -4,7 +4,7 @@ Stores pre-transpiled JS (JSX→JS via esbuild) so the frontend can skip
 loading Babel Standalone at runtime.
 
 Revision ID: 091_add_app_compiled_code
-Revises: 088_add_org_company_summary
+Revises: 090_add_org_handle
 Create Date: 2026-03-04
 
 """
@@ -16,7 +16,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "091_add_app_compiled_code"
-down_revision: Union[str, None] = "088_add_org_company_summary"
+down_revision: Union[str, None] = "090_add_org_handle"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
