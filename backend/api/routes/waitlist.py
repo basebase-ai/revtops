@@ -553,6 +553,7 @@ async def create_admin_organization(
             organization_id=new_org.id,
             provider="web_search",
             user_id=auth.user_id,
+            scope="organization",
             nango_connection_id="builtin",
             connected_by_user_id=auth.user_id,
             is_active=True,
