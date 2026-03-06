@@ -455,6 +455,7 @@ async def get_home_app(
                 "title": app.title,
                 "description": app.description,
                 "frontendCode": app.frontend_code,
+                "frontendCodeCompiled": app.frontend_code_compiled,
             },
             "app_count": app_count,
         }
@@ -530,6 +531,7 @@ async def get_app(
             "title": app.title,
             "description": app.description,
             "frontend_code": app.frontend_code,
+            "frontend_code_compiled": app.frontend_code_compiled,
             "query_names": list((app.queries or {}).keys()),
             "conversation_id": str(app.conversation_id) if app.conversation_id else None,
             "created_at": f"{app.created_at.isoformat()}Z" if app.created_at else None,
@@ -576,6 +578,7 @@ async def get_app_embed_data(
             "id": str(app.id),
             "title": app.title,
             "frontend_code": app.frontend_code,
+            "frontend_code_compiled": app.frontend_code_compiled,
         }
 
 

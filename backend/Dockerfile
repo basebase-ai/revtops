@@ -5,6 +5,7 @@ WORKDIR /app
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
     gcc \
+    curl \
     libpq-dev \
     # WeasyPrint dependencies (for PDF generation)
     libpango-1.0-0 \
@@ -13,6 +14,10 @@ RUN apt-get update && apt-get install -y \
     libffi-dev \
     shared-mime-info \
     && rm -rf /var/lib/apt/lists/*
+
+# Install esbuild for JSX → JS transpilation
+RUN curl -fsSL https://esbuild.github.io/dl/v0.24.2 | sh \
+    && mv esbuild /usr/local/bin/
 
 # Copy requirements first for better caching
 COPY requirements.txt .

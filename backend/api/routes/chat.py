@@ -502,7 +502,6 @@ async def update_conversation(
         # Update fields
         if request.title is not None:
             conversation.title = request.title
-        conversation.updated_at = datetime.utcnow()
         
         # Capture values before commit
         conv_id = str(conversation.id)

@@ -17,6 +17,33 @@ interface InviteContext {
   inviterAvatar: string | null;
 }
 
+function extractTimeoutFromError(message: string): string | null {
+  const timeoutPatterns: RegExp[] = [
+    /(?:try again|retry)\s+in\s+(\d+\s*(?:ms|milliseconds?|s|sec|secs|seconds?|m|min|mins|minutes?))/i,
+    /(?:wait|timeout|timed\s*out)\s*(?:for)?\s*(\d+\s*(?:ms|milliseconds?|s|sec|secs|seconds?|m|min|mins|minutes?))/i,
+  ];
+
+  for (const pattern of timeoutPatterns) {
+    const match = message.match(pattern);
+    if (match?.[1]) {
+      return match[1].trim();
+    }
+  }
+
+  return null;
+}
+
+function mapSupabaseAuthError(message: string): string {
+  const timeout = extractTimeoutFromError(message);
+  if (timeout) {
+    console.info('Parsed Supabase auth timeout error', { timeout, message });
+    return `Either you've done this a lot or our servers are slammed! Sorry, try again in ${timeout}, please.`;
+  }
+
+  console.warn('Unable to parse timeout from Supabase auth error', { message });
+  return 'Backend service error, please try again later.';
+}
+
 function parseInviteParams(): InviteContext | null {
   const params = new URLSearchParams(window.location.search);
   if (params.get('invite') !== '1') return null;
@@ -61,6 +88,7 @@ export function Auth({ onBack, onSuccess }: AuthProps): JSX.Element {
     setLoading(true);
     setError(null);
     setMessage(null);
+    const isSupabaseCredentialFlow = mode === 'signup' || mode === 'signin';
 
     try {
       if (mode === 'signup') {
@@ -125,7 +153,8 @@ export function Auth({ onBack, onSuccess }: AuthProps): JSX.Element {
         onSuccess();
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      const rawMessage = err instanceof Error ? err.message : 'An error occurred';
+      setError(isSupabaseCredentialFlow ? mapSupabaseAuthError(rawMessage) : rawMessage);
     } finally {
       setLoading(false);
     }

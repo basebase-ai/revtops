@@ -26,6 +26,7 @@ interface AppTokenData {
 interface SandpackAppRendererProps {
   appId: string;
   frontendCode: string;
+  frontendCodeCompiled?: string | null;
   embedToken?: string;
   onError?: (message: string) => void;
 }
@@ -90,6 +91,7 @@ function escapeForScript(s: string): string {
 
 function buildSrcdocHtml(opts: {
   frontendCode: string;
+  frontendCodeCompiled?: string | null;
   token: string;
   apiBase: string;
   appId: string;
@@ -97,6 +99,14 @@ function buildSrcdocHtml(opts: {
   const sdkInline: string = stripModuleSyntax(APP_SDK_SOURCE);
   const plotInline: string = stripModuleSyntax(REACT_PLOTLY_SHIM);
   const { transformed, appName } = transformAppCode(opts.frontendCode);
+  const useCompiled: boolean = typeof opts.frontendCodeCompiled === "string" && opts.frontendCodeCompiled.length > 0;
+
+  // When compiled code is available, skip Babel Standalone entirely
+  const babelScript: string = useCompiled
+    ? ""
+    : `<script src="https://unpkg.com/@babel/standalone@7/babel.min.js">${CS}`;
+  const scriptType: string = useCompiled ? "text/javascript" : "text/babel";
+  const appCode: string = useCompiled ? opts.frontendCodeCompiled as string : transformed;
 
   return `<!DOCTYPE html>
 <html>
@@ -105,7 +115,7 @@ function buildSrcdocHtml(opts: {
 <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js">${CS}
 <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js">${CS}
 <script src="https://cdn.plot.ly/plotly-2.35.3.min.js">${CS}
-<script src="https://unpkg.com/@babel/standalone@7/babel.min.js">${CS}
+${babelScript}
 <style>${escapeForScript(APP_STYLES)}</style>
 </head>
 <body>
@@ -128,7 +138,7 @@ window.onerror = function(msg, url, line, col, err) {
 };
 ${CS}
 
-<script type="text/babel">
+<script type="${scriptType}">
 /* ---- React destructured ---- */
 const { useState, useEffect, useCallback, useRef, useMemo, useReducer, useContext, createContext, Fragment } = React;
 
@@ -139,7 +149,7 @@ ${escapeForScript(sdkInline)}
 ${escapeForScript(plotInline)}
 
 /* ---- App code ---- */
-${escapeForScript(transformed)}
+${escapeForScript(appCode)}
 
 /* ---- Boot ---- */
 try {
@@ -162,6 +172,7 @@ ${CS}
 export function SandpackAppRenderer({
   appId,
   frontendCode,
+  frontendCodeCompiled,
   embedToken,
   onError,
 }: SandpackAppRendererProps): JSX.Element {
@@ -251,6 +262,7 @@ export function SandpackAppRenderer({
 
   const srcdoc: string = buildSrcdocHtml({
     frontendCode,
+    frontendCodeCompiled,
     token: tokenData.token,
     apiBase: resolvedApiBase,
     appId,

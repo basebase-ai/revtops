@@ -41,6 +41,9 @@ class App(Base):
     # Client-side: React source code rendered in a sandboxed iframe
     frontend_code: Mapped[str] = mapped_column(Text, nullable=False)
 
+    # Pre-transpiled JS (JSX→JS via esbuild); null means Babel fallback at runtime
+    frontend_code_compiled: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
     # Link to originating conversation
     conversation_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True),

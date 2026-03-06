@@ -18,6 +18,7 @@ interface AppDetail {
   title: string | null;
   description: string | null;
   frontend_code: string;
+  frontend_code_compiled?: string | null;
   query_names: string[];
   conversation_id: string | null;
   created_at: string | null;
@@ -172,6 +173,7 @@ export function AppFullView({ appId }: AppFullViewProps): JSX.Element {
         <SandpackAppRenderer
           appId={appId}
           frontendCode={app.frontend_code}
+          frontendCodeCompiled={app.frontend_code_compiled}
         />
       </div>
     </div>

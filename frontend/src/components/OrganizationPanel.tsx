@@ -11,6 +11,7 @@
  */
 
 import { useState, useRef, useEffect, useMemo } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import type { OrganizationInfo, UserProfile } from './AppLayout';
 import { supabase } from '../lib/supabase';
 import { useAppStore } from '../store';
@@ -70,10 +71,12 @@ interface OrganizationPanelProps {
 }
 
 export function OrganizationPanel({ organization, currentUser, initialTab = 'team', onClose }: OrganizationPanelProps): JSX.Element {
+  const queryClient = useQueryClient();
   const setOrganization = useAppStore((state) => state.setOrganization);
   const logout = useAppStore((state) => state.logout);
   const fetchUserOrganizations = useAppStore((state) => state.fetchUserOrganizations);
   const switchActiveOrganization = useAppStore((state) => state.switchActiveOrganization);
+  const setCurrentView = useAppStore((state) => state.setCurrentView);
   const [activeTab, setActiveTab] = useState<'team' | 'billing' | 'settings'>(initialTab);
 
   useEffect(() => {
@@ -126,6 +129,7 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
 
   const [inviteEmail, setInviteEmail] = useState('');
   const [isInviting, setIsInviting] = useState(false);
+  const [isInvitingMissingFromSlack, setIsInvitingMissingFromSlack] = useState(false);
   const [orgName, setOrgName] = useState(organization.name);
   const [logoUrl, setLogoUrl] = useState(organization.logoUrl);
   const [settingsSaved, setSettingsSaved] = useState(false);
@@ -305,7 +309,8 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
       }
 
       setInviteEmail('');
-      void queryClient.invalidateQueries({ queryKey: organizationKeys.members(organization.id) });
+      await queryClient.invalidateQueries({ queryKey: organizationKeys.members(organization.id) });
+      await queryClient.refetchQueries({ queryKey: organizationKeys.members(organization.id), type: 'active' });
     } catch (error) {
       console.error('Failed to invite:', error);
       alert(`Failed to invite: ${error instanceof Error ? error.message : 'Unknown error'}`);
@@ -337,6 +342,79 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
       alert(`Failed to resend: ${error instanceof Error ? error.message : 'Unknown error'}`);
     } finally {
       setResendingMemberId(null);
+    }
+  };
+
+  interface SlackMissingInviteSummary {
+    total_slack_users_with_email: number;
+    already_in_org: number;
+    missing_users: number;
+    invited_count: number;
+    requires_confirmation: boolean;
+    invited_emails: string[];
+  }
+
+  const handleInviteMissingFromSlack = async (): Promise<void> => {
+    setIsInvitingMissingFromSlack(true);
+    try {
+      const { API_BASE } = await import('../lib/api');
+      const endpoint = `${API_BASE}/auth/organizations/${organization.id}/invitations/slack-missing?user_id=${currentUser.id}`;
+
+      const previewResponse = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dry_run: true }),
+      });
+
+      if (!previewResponse.ok) {
+        const errData = (await previewResponse.json().catch(() => ({}))) as { detail?: string };
+        if (previewResponse.status === 404 && (errData.detail ?? '').toLowerCase().includes('slack integration not connected')) {
+          alert('Slack is not connected for this org. You will be redirected to Connectors to connect Slack.');
+          onClose();
+          setCurrentView('data-sources');
+          return;
+        }
+        alert(errData.detail ?? `Failed to check Slack users: ${previewResponse.status}`);
+        return;
+      }
+
+      const previewData = (await previewResponse.json()) as SlackMissingInviteSummary;
+      if (previewData.missing_users === 0) {
+        alert('No missing Slack users to invite.');
+        return;
+      }
+
+      if (previewData.requires_confirmation) {
+        const confirmed = window.confirm(
+          `This will invite ${previewData.missing_users} users from Slack who are not in this organization. Continue?`
+        );
+        if (!confirmed) return;
+      }
+
+      const inviteResponse = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          dry_run: false,
+          confirm_large_invite: previewData.requires_confirmation,
+        }),
+      });
+
+      if (!inviteResponse.ok) {
+        const errData = (await inviteResponse.json().catch(() => ({}))) as { detail?: string };
+        alert(errData.detail ?? `Failed to invite missing Slack users: ${inviteResponse.status}`);
+        return;
+      }
+
+      const inviteData = (await inviteResponse.json()) as SlackMissingInviteSummary;
+      await queryClient.invalidateQueries({ queryKey: organizationKeys.members(organization.id) });
+      await queryClient.refetchQueries({ queryKey: organizationKeys.members(organization.id), type: 'active' });
+      alert(`Sent ${inviteData.invited_count} invitation${inviteData.invited_count === 1 ? '' : 's'} from Slack users.`);
+    } catch (error) {
+      console.error('Failed to invite missing Slack users:', error);
+      alert(`Failed to invite missing Slack users: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    } finally {
+      setIsInvitingMissingFromSlack(false);
     }
   };
 
@@ -581,6 +659,16 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                     {isInviting ? 'Sending...' : 'Send Invite'}
                   </button>
                 </div>
+                <button
+                  type="button"
+                  onClick={() => void handleInviteMissingFromSlack()}
+                  disabled={isInvitingMissingFromSlack}
+                  className="mt-2 text-sm text-primary-400 hover:text-primary-300 disabled:opacity-50"
+                >
+                  {isInvitingMissingFromSlack
+                    ? 'Checking Slack users...'
+                    : "Invite all Slack users that aren't yet in Basebase"}
+                </button>
               </div>
 
               {/* Team List */}

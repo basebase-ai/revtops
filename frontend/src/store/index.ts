@@ -154,6 +154,7 @@ export interface AppBlock {
     title: string;
     description: string | null;
     frontendCode: string;
+    frontendCodeCompiled?: string | null;
   };
 }
 

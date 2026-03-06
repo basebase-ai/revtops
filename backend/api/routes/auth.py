@@ -1601,6 +1601,24 @@ class InviteToOrgResponse(BaseModel):
     status: str
 
 
+class SlackMissingInviteRequest(BaseModel):
+    """Bulk invite Slack users missing from this org."""
+
+    dry_run: bool = True
+    confirm_large_invite: bool = False
+
+
+class SlackMissingInviteResponse(BaseModel):
+    """Summary of Slack bulk invite attempt/preview."""
+
+    total_slack_users_with_email: int
+    already_in_org: int
+    missing_users: int
+    invited_count: int
+    requires_confirmation: bool
+    invited_emails: list[str]
+
+
 @router.post("/organizations/{org_id}/invitations", response_model=InviteToOrgResponse)
 async def invite_to_organization(
     org_id: str,
@@ -1745,6 +1763,178 @@ async def invite_to_organization(
             user_id=str(target_user.id),
             email=invite_email,
             status="invited",
+        )
+
+
+@router.post(
+    "/organizations/{org_id}/invitations/slack-missing",
+    response_model=SlackMissingInviteResponse,
+)
+async def invite_missing_slack_users_to_organization(
+    org_id: str,
+    request: SlackMissingInviteRequest,
+    background_tasks: BackgroundTasks,
+    user_id: Optional[str] = None,
+) -> SlackMissingInviteResponse:
+    """Invite Slack users (with email) who are not already present in the org."""
+    from models.org_member import OrgMember
+    from models.slack_user_mapping import SlackUserMapping
+    from services.email import send_org_invitation_email
+
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        org_uuid = UUID(org_id)
+        inviter_uuid = UUID(user_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid ID format")
+
+    async with get_admin_session() as session:
+        inviter: Optional[User] = await session.get(User, inviter_uuid)
+        if not inviter:
+            raise HTTPException(status_code=403, detail="Not authorized")
+
+        org: Optional[Organization] = await session.get(Organization, org_uuid)
+        if not org:
+            raise HTTPException(status_code=404, detail="Organization not found")
+
+        if not _is_global_admin(inviter):
+            inviter_membership = await _get_org_membership(session, inviter_uuid, org_uuid)
+            if not inviter_membership:
+                raise HTTPException(status_code=403, detail="Not a member of this organization")
+
+        slack_integration_result = await session.execute(
+            select(Integration.id).where(
+                Integration.organization_id == org_uuid,
+                Integration.provider == "slack",
+                Integration.is_active == True,
+            )
+        )
+        if not slack_integration_result.scalar_one_or_none():
+            raise HTTPException(status_code=404, detail="Slack integration not connected")
+
+        slack_rows = await session.execute(
+            select(SlackUserMapping.external_email)
+            .where(
+                SlackUserMapping.organization_id == org_uuid,
+                SlackUserMapping.source == "slack",
+                SlackUserMapping.external_email.is_not(None),
+            )
+            .distinct()
+        )
+        raw_emails = [row[0] for row in slack_rows.all()]
+        slack_emails: set[str] = {
+            str(email).strip().lower()
+            for email in raw_emails
+            if isinstance(email, str) and "@" in email
+        }
+
+        memberships_result = await session.execute(
+            select(User.email)
+            .join(OrgMember, OrgMember.user_id == User.id)
+            .where(
+                OrgMember.organization_id == org_uuid,
+                User.email.is_not(None),
+            )
+        )
+        existing_org_emails: set[str] = {
+            str(row[0]).strip().lower()
+            for row in memberships_result.all()
+            if isinstance(row[0], str)
+        }
+
+        missing_emails = sorted(slack_emails - existing_org_emails)
+        requires_confirmation = len(missing_emails) > 10
+
+        if request.dry_run:
+            return SlackMissingInviteResponse(
+                total_slack_users_with_email=len(slack_emails),
+                already_in_org=len(slack_emails & existing_org_emails),
+                missing_users=len(missing_emails),
+                invited_count=0,
+                requires_confirmation=requires_confirmation,
+                invited_emails=[],
+            )
+
+        if requires_confirmation and not request.confirm_large_invite:
+            raise HTTPException(
+                status_code=400,
+                detail="Large invite requires explicit confirmation",
+            )
+
+        if not missing_emails:
+            return SlackMissingInviteResponse(
+                total_slack_users_with_email=len(slack_emails),
+                already_in_org=len(slack_emails & existing_org_emails),
+                missing_users=0,
+                invited_count=0,
+                requires_confirmation=False,
+                invited_emails=[],
+            )
+
+        target_users_result = await session.execute(
+            select(User).where(User.email.in_(missing_emails))
+        )
+        target_users = {user.email.lower(): user for user in target_users_result.scalars().all() if user.email}
+
+        invited_emails: list[str] = []
+        for email in missing_emails:
+            target_user = target_users.get(email)
+            if not target_user:
+                target_user = User(
+                    email=email,
+                    name=None,
+                    status="invited",
+                    role="member",
+                    invited_at=datetime.utcnow(),
+                )
+                session.add(target_user)
+                await session.flush()
+                target_users[email] = target_user
+
+            membership_result = await session.execute(
+                select(OrgMember).where(
+                    OrgMember.user_id == target_user.id,
+                    OrgMember.organization_id == org_uuid,
+                )
+            )
+            existing_membership: Optional[OrgMember] = membership_result.scalar_one_or_none()
+            if existing_membership:
+                continue
+
+            session.add(
+                OrgMember(
+                    user_id=target_user.id,
+                    organization_id=org_uuid,
+                    role="member",
+                    status="invited",
+                    invited_by_user_id=inviter_uuid,
+                    invited_at=datetime.utcnow(),
+                )
+            )
+            invited_emails.append(email)
+
+        await session.commit()
+
+        inviter_name: str = inviter.name or inviter.email
+        for email in invited_emails:
+            background_tasks.add_task(
+                send_org_invitation_email,
+                email,
+                org.name,
+                inviter_name,
+                org_logo_url=org.logo_url,
+                inviter_avatar_url=inviter.avatar_url,
+            )
+
+        return SlackMissingInviteResponse(
+            total_slack_users_with_email=len(slack_emails),
+            already_in_org=len(slack_emails & existing_org_emails),
+            missing_users=len(missing_emails),
+            invited_count=len(invited_emails),
+            requires_confirmation=False,
+            invited_emails=invited_emails,
         )
 
 

@@ -644,6 +644,79 @@ Do not use `run_sql_write` against the `users` table for phone updates. Persist 
 - When a user shares a 10-digit US phone number (e.g. "4159028648"), always format as +1XXXXXXXXXX (e.g. "+14159028648") before saving."""
 
 
+def _trim_context(
+    messages: list[dict[str, Any]],
+    trimmable_history: int,
+    retry_number: int,
+) -> dict[str, Any]:
+    """Progressively trim history messages to fit within the context window.
+
+    Strategy (applied in order across retries):
+      1. Strip tool_use/tool_result content from history, replacing with short
+         summaries. This preserves the conversational text while dropping the
+         bulky payloads (SQL results, search results, etc.).
+      2. If still overflowing, drop the oldest half of the history messages.
+
+    Mutates *messages* in-place and returns metadata about what was done.
+    """
+    if retry_number == 0:
+        # First retry: strip tool content from history messages, keep text
+        stripped = 0
+        for i in range(trimmable_history):
+            msg = messages[i]
+            content = msg.get("content")
+            if not isinstance(content, list):
+                continue
+
+            # Assistant messages: replace tool_use blocks with a short note
+            if msg.get("role") == "assistant":
+                new_content = []
+                for block in content:
+                    if block.get("type") == "tool_use":
+                        new_content.append({
+                            "type": "tool_use",
+                            "id": block.get("id", "trimmed"),
+                            "name": block.get("name", "unknown"),
+                            "input": {},  # drop the full input
+                        })
+                        stripped += 1
+                    else:
+                        new_content.append(block)
+                msg["content"] = new_content
+
+            # User messages with tool_result blocks: replace content with summary
+            elif msg.get("role") == "user":
+                has_tool_results = any(
+                    b.get("type") == "tool_result" for b in content
+                )
+                if has_tool_results:
+                    new_content = []
+                    for block in content:
+                        if block.get("type") == "tool_result":
+                            new_content.append({
+                                "type": "tool_result",
+                                "tool_use_id": block.get("tool_use_id", ""),
+                                "content": "[result trimmed to save context space]",
+                            })
+                            stripped += 1
+                        else:
+                            new_content.append(block)
+                    msg["content"] = new_content
+
+        return {
+            "trimmable_history": trimmable_history,  # unchanged — messages not removed
+            "description": f"stripped tool content from {stripped} blocks",
+        }
+    else:
+        # Subsequent retries: drop the oldest half of remaining history
+        trim_count = max(1, trimmable_history // 2)
+        messages[:] = messages[trim_count:]
+        return {
+            "trimmable_history": trimmable_history - trim_count,
+            "description": f"dropped {trim_count} oldest history messages",
+        }
+
+
 class ChatOrchestrator:
     """Orchestrates chat interactions with Claude."""
 
@@ -1421,6 +1494,13 @@ WHERE scheduled_start >= '2026-01-27'::date AND scheduled_start < '2026-01-28'::
         max_retries = 3
         base_delay = 1.0  # seconds
         
+        max_context_retries = 3
+        context_retries = 0
+        # Number of leading messages that are trimmable history (everything before
+        # the current user message).  Messages appended during the tool loop
+        # (assistant + tool_result pairs) are NOT trimmable.
+        trimmable_history = len(messages) - 1  # last element is the current user msg
+
         while True:
             # Track state for this streaming response
             current_text = ""
@@ -1428,7 +1508,8 @@ WHERE scheduled_start >= '2026-01-27'::date AND scheduled_start < '2026-01-28'::
             current_tool: dict[str, Any] | None = None
             current_tool_input_json = ""
             final_message = None
-            
+            context_retry_needed = False
+
             # Retry loop for transient API errors
             last_error: Exception | None = None
             for attempt in range(max_retries):
@@ -1509,10 +1590,38 @@ WHERE scheduled_start >= '2026-01-27'::date AND scheduled_start < '2026-01-28'::
                 except APIStatusError as e:
                     last_error = e
                     error_type = getattr(e, "body", {}).get("error", {}).get("type", "") if isinstance(getattr(e, "body", None), dict) else ""
-                    
+
+                    # Extract error message for context window detection
+                    error_message = ""
+                    if isinstance(getattr(e, "body", None), dict):
+                        error_message = e.body.get("error", {}).get("message", "")
+
+                    # Context window overflow — retry with fewer history messages
+                    is_context_overflow = (
+                        e.status_code == 400
+                        and error_type == "invalid_request_error"
+                        and ("prompt is too long" in error_message.lower()
+                             or "context window" in error_message.lower())
+                    )
+
+                    if is_context_overflow and context_retries < max_context_retries:
+                        if trimmable_history <= 0:
+                            logger.error("[Orchestrator] Context overflow with no history to trim")
+                            raise
+
+                        trimmed = _trim_context(messages, trimmable_history, context_retries)
+                        trimmable_history = trimmed["trimmable_history"]
+                        context_retries += 1
+                        logger.warning(
+                            "[Orchestrator] Context window exceeded — %s, %d messages remaining (retry %d/%d)",
+                            trimmed["description"], len(messages), context_retries, max_context_retries,
+                        )
+                        context_retry_needed = True
+                        break  # break inner retry loop, continue outer while True
+
                     # Check if this is a retryable error (includes 500 Internal Server Error)
                     is_retryable = error_type in ("overloaded_error", "rate_limit_error", "api_error") or e.status_code in (429, 500, 502, 503, 529)
-                    
+
                     if is_retryable and attempt < max_retries - 1:
                         delay = base_delay * (2 ** attempt)  # Exponential backoff: 1s, 2s, 4s
                         logger.warning(
@@ -1526,6 +1635,10 @@ WHERE scheduled_start >= '2026-01-27'::date AND scheduled_start < '2026-01-28'::
                         logger.error("[Orchestrator] API error after %d attempts: %s", attempt + 1, e)
                         raise
             
+            # Context overflow — restart the outer loop with trimmed messages
+            if context_retry_needed:
+                continue
+
             # If we exhausted retries without success, raise the last error
             if final_message is None and last_error is not None:
                 raise last_error

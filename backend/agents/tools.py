@@ -5412,6 +5412,10 @@ async def _write_app_create(
     org_uuid: UUID = UUID(organization_id) if isinstance(organization_id, str) else organization_id
 
     async with get_session(organization_id=organization_id) as session:
+        from utils.transpile_jsx import transpile_jsx
+        transpile_result = transpile_jsx(frontend_code)
+        compiled_code = transpile_result[0] if transpile_result else None
+
         app = App(
             id=app_uuid,
             user_id=user_uuid,
@@ -5420,6 +5424,7 @@ async def _write_app_create(
             description=description,
             queries=queries,
             frontend_code=frontend_code,
+            frontend_code_compiled=compiled_code,
             conversation_id=UUID(conversation_id) if conversation_id else None,
             message_id=message_id,
         )
@@ -5442,6 +5447,7 @@ async def _write_app_create(
             "title": title,
             "description": description,
             "frontendCode": frontend_code,
+            "frontendCodeCompiled": compiled_code,
         },
         "url": app_url,
         "message": f"Created interactive app: {title}. View it at {app_url}",
@@ -5494,6 +5500,9 @@ async def _write_app_update(
             if not new_frontend_code.strip():
                 return {"error": "frontend_code cannot be empty"}
             app.frontend_code = new_frontend_code
+            from utils.transpile_jsx import transpile_jsx
+            transpile_result = transpile_jsx(new_frontend_code)
+            app.frontend_code_compiled = transpile_result[0] if transpile_result else None
 
         if new_title is not None:
             app.title = new_title

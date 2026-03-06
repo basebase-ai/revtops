@@ -21,6 +21,7 @@ interface HomeAppData {
   title: string;
   description: string | null;
   frontendCode: string;
+  frontendCodeCompiled?: string | null;
 }
 
 interface Deal {
@@ -314,6 +315,7 @@ export function Home(): JSX.Element {
           <SandpackAppRenderer
             appId={homeApp.id}
             frontendCode={homeApp.frontendCode}
+            frontendCodeCompiled={homeApp.frontendCodeCompiled}
           />
         </div>
 

@@ -13,6 +13,7 @@ interface AppDetail {
   id: string;
   title: string | null;
   frontend_code: string;
+  frontend_code_compiled?: string | null;
 }
 
 export function AppEmbed(): JSX.Element {
@@ -110,6 +111,7 @@ export function AppEmbed(): JSX.Element {
       <SandpackAppRenderer
         appId={appId}
         frontendCode={app.frontend_code}
+        frontendCodeCompiled={app.frontend_code_compiled}
         embedToken={token}
       />
     </div>

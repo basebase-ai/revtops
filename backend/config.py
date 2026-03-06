@@ -113,6 +113,7 @@ class Settings(BaseSettings):
     TWILIO_AUTH_TOKEN: Optional[str] = None
     TWILIO_PHONE_NUMBER: Optional[str] = None  # E.164 format, e.g., +14155551234
     TWILIO_WEBHOOK_URL: Optional[str] = None  # Exact public URL for signature validation, e.g., https://api.basebase.com/api/twilio/webhook
+    WHATSAPP_WEBHOOK_URL: Optional[str] = None  # Exact public URL for WhatsApp webhook, e.g., https://api.basebase.com/api/whatsapp/webhook
     
     # Slack Events API (for receiving DMs)
     SLACK_SIGNING_SECRET: Optional[str] = None

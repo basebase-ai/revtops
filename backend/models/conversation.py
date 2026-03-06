@@ -26,7 +26,7 @@ from models.database import Base
 ConversationType = Literal["agent", "workflow"]
 
 # Conversation sources
-ConversationSource = Literal["web", "slack", "sms"]
+ConversationSource = Literal["web", "slack", "sms", "whatsapp"]
 
 # Conversation scopes
 ConversationScope = Literal["private", "shared"]
