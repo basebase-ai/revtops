@@ -25,6 +25,42 @@ from uuid import UUID, uuid4
 
 from fastapi import WebSocket, WebSocketDisconnect
 
+logger = logging.getLogger(__name__)
+
+
+FANOUT_SEND_TIMEOUT_SECONDS = 1.5
+
+
+async def _send_with_timeout(websocket: WebSocket, message: str) -> bool:
+    """Send a message to one websocket with timeout protection."""
+    try:
+        await asyncio.wait_for(
+            websocket.send_text(message),
+            timeout=FANOUT_SEND_TIMEOUT_SECONDS,
+        )
+        return True
+    except Exception:
+        return False
+
+
+async def _fanout_message(websockets: Set[WebSocket], message: str) -> Set[WebSocket]:
+    """Fan out a message concurrently and return websockets that failed."""
+    if not websockets:
+        return set()
+
+    send_tasks = [
+        asyncio.create_task(_send_with_timeout(ws, message))
+        for ws in websockets
+    ]
+    results = await asyncio.gather(*send_tasks, return_exceptions=True)
+
+    dead: Set[WebSocket] = set()
+    for ws, result in zip(websockets, results, strict=False):
+        if isinstance(result, Exception) or result is not True:
+            dead.add(ws)
+
+    return dead
+
 
 # =============================================================================
 # Sync Progress Broadcasting
@@ -68,13 +104,14 @@ class SyncProgressBroadcaster:
             **data,
         })
         
-        # Send to all, collect any dead connections
-        dead: Set[WebSocket] = set()
-        for ws in websockets:
-            try:
-                await ws.send_text(message)
-            except Exception:
-                dead.add(ws)
+        # Send to all concurrently so one stalled client can't block fanout.
+        dead = await _fanout_message(websockets, message)
+        if dead:
+            logger.debug(
+                "sync fanout removed %s stale websocket(s) for organization %s",
+                len(dead),
+                organization_id,
+            )
         
         # Clean up dead connections
         for ws in dead:
@@ -197,11 +234,14 @@ class ConversationBroadcaster:
                 continue
             
             websockets = self._user_connections.get(user_id, set())
-            for ws in websockets:
-                try:
-                    await ws.send_text(message)
-                except Exception:
-                    dead_connections.append((user_id, ws))
+            dead_for_user = await _fanout_message(websockets, message)
+            dead_connections.extend((user_id, ws) for ws in dead_for_user)
+            if dead_for_user:
+                logger.debug(
+                    "conversation fanout removed %s stale websocket(s) for user %s",
+                    len(dead_for_user),
+                    user_id,
+                )
         
         # Clean up dead connections
         for user_id, ws in dead_connections:

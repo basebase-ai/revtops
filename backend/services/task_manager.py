@@ -26,6 +26,9 @@ from models.database import get_admin_session, get_session
 logger = logging.getLogger(__name__)
 
 
+FANOUT_SEND_TIMEOUT_SECONDS = 1.5
+
+
 # Type alias for broadcast callback
 BroadcastCallback = Callable[[str], Coroutine[Any, Any, None]]
 
@@ -387,22 +390,34 @@ class TaskManager:
         """Broadcast a message to all WebSockets subscribed to a task."""
         async with self._lock:
             subscribers = self._subscriptions.get(task_id, set()).copy()
-        
+
         if not subscribers:
             return
-        
+
         message_str = json.dumps(message)
-        dead_sockets: list[WebSocket] = []
-        
-        for ws in subscribers:
-            try:
-                await ws.send_text(message_str)
-            except Exception:
-                # WebSocket is dead, mark for removal
-                dead_sockets.append(ws)
-        
+        send_tasks = [
+            asyncio.create_task(
+                asyncio.wait_for(
+                    ws.send_text(message_str),
+                    timeout=FANOUT_SEND_TIMEOUT_SECONDS,
+                )
+            )
+            for ws in subscribers
+        ]
+        results = await asyncio.gather(*send_tasks, return_exceptions=True)
+        dead_sockets = [
+            ws
+            for ws, result in zip(subscribers, results, strict=False)
+            if isinstance(result, Exception)
+        ]
+
         # Clean up dead sockets
         if dead_sockets:
+            logger.debug(
+                "Removed %s stale websocket subscription(s) for task %s",
+                len(dead_sockets),
+                task_id,
+            )
             async with self._lock:
                 for ws in dead_sockets:
                     self._subscriptions.get(task_id, set()).discard(ws)
