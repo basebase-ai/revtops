@@ -27,6 +27,7 @@ import redis.asyncio as aioredis
 
 from pydantic import BaseModel
 from sqlalchemy import and_, func, or_, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.auth_middleware import AuthContext, get_current_auth
 from config import get_redis_connection_kwargs, settings
@@ -55,7 +56,9 @@ async def _get_redis() -> aioredis.Redis:
     return _redis_client
 
 
-async def _get_slack_user_ids(auth: AuthContext) -> set[str]:
+async def _get_slack_user_ids(
+    auth: AuthContext, session: AsyncSession | None = None,
+) -> set[str]:
     org_id = auth.organization_id_str
     if not org_id:
         return set()
@@ -74,7 +77,9 @@ async def _get_slack_user_ids(auth: AuthContext) -> set[str]:
 
     # Cache miss (or Redis error): resolve from connector layer
     try:
-        result = await get_slack_user_ids_for_revtops_user(org_id, auth.user_id_str)
+        result = await get_slack_user_ids_for_revtops_user(
+            org_id, auth.user_id_str, session=session,
+        )
     except Exception as exc:
         logger.warning(
             "[chat] Failed to resolve Slack user IDs for org=%s user=%s: %s",
@@ -240,9 +245,9 @@ async def list_conversations(
         scope: Optional filter - "shared" or "private". If not provided, returns all.
     """
     org_id = auth.organization_id_str
-    slack_user_ids = await _get_slack_user_ids(auth)
 
     async with get_session(organization_id=org_id) as session:
+        slack_user_ids = await _get_slack_user_ids(auth, session=session)
         # Simple query - message_count and last_message_preview are cached on the conversation
         # Filter out workflow conversations - they're accessed via Automations tab, not chat list
         query = (
@@ -432,8 +437,8 @@ async def get_conversation(
 
     org_id = auth.organization_id_str
 
-    slack_user_ids = await _get_slack_user_ids(auth)
     async with get_session(organization_id=org_id) as session:
+        slack_user_ids = await _get_slack_user_ids(auth, session=session)
         result = await session.execute(
             select(Conversation)
             .where(Conversation.id == conv_uuid)
@@ -514,8 +519,8 @@ async def update_conversation(
 
     org_id = auth.organization_id_str
 
-    slack_user_ids = await _get_slack_user_ids(auth)
     async with get_session(organization_id=org_id) as session:
+        slack_user_ids = await _get_slack_user_ids(auth, session=session)
         result = await session.execute(
             select(Conversation)
             .where(Conversation.id == conv_uuid)
@@ -592,8 +597,8 @@ async def delete_conversation(
 
     org_id = auth.organization_id_str
 
-    slack_user_ids = await _get_slack_user_ids(auth)
     async with get_session(organization_id=org_id) as session:
+        slack_user_ids = await _get_slack_user_ids(auth, session=session)
         result = await session.execute(
             select(Conversation)
             .where(Conversation.id == conv_uuid)
@@ -643,8 +648,8 @@ async def add_participant(
 
     org_id = auth.organization_id_str
 
-    slack_user_ids = await _get_slack_user_ids(auth)
     async with get_session(organization_id=org_id) as session:
+        slack_user_ids = await _get_slack_user_ids(auth, session=session)
         # Get conversation
         result = await session.execute(
             select(Conversation)
@@ -728,8 +733,8 @@ async def remove_participant(
 
     org_id = auth.organization_id_str
 
-    slack_user_ids = await _get_slack_user_ids(auth)
     async with get_session(organization_id=org_id) as session:
+        slack_user_ids = await _get_slack_user_ids(auth, session=session)
         result = await session.execute(
             select(Conversation)
             .where(Conversation.id == conv_uuid)
@@ -783,8 +788,8 @@ async def update_scope(
 
     org_id = auth.organization_id_str
 
-    slack_user_ids = await _get_slack_user_ids(auth)
     async with get_session(organization_id=org_id) as session:
+        slack_user_ids = await _get_slack_user_ids(auth, session=session)
         result = await session.execute(
             select(Conversation)
             .where(Conversation.id == conv_uuid)
@@ -866,8 +871,8 @@ async def get_chat_history(
 
     org_id = auth.organization_id_str
 
-    slack_user_ids = await _get_slack_user_ids(auth)
     async with get_session(organization_id=org_id) as session:
+        slack_user_ids = await _get_slack_user_ids(auth, session=session)
         query = (
             select(ChatMessage)
             .join(Conversation, ChatMessage.conversation_id == Conversation.id)

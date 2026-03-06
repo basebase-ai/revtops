@@ -326,12 +326,11 @@ async def list_apps(
         user_ids: set[UUID] = {a.user_id for a in apps}
         users_map: dict[UUID, User] = {}
         if user_ids:
-            async with get_admin_session() as admin_sess:
-                user_result = await admin_sess.execute(
-                    select(User).where(User.id.in_(user_ids))
-                )
-                for u in user_result.scalars().all():
-                    users_map[u.id] = u
+            user_result = await session.execute(
+                select(User).where(User.id.in_(user_ids))
+            )
+            for u in user_result.scalars().all():
+                users_map[u.id] = u
 
         items: list[AppListItem] = []
         for a in apps:

@@ -81,6 +81,9 @@ export interface ChatState {
   fetchConversations: () => Promise<void>;
   deleteConversation: (id: string) => Promise<void>;
 
+  // Actions - Prefetch
+  prefetchConversation: (conversationId: string) => void;
+
   // Actions - Per-conversation state
   getConversationState: (conversationId: string) => ConversationState;
   setConversationMessages: (
@@ -204,6 +207,56 @@ export const useChatStore = create<ChatState>()(
           ...recentChats.slice(0, 9),
         ],
       });
+    },
+
+    prefetchConversation: (conversationId) => {
+      // Skip if already loaded
+      const existing = get().conversations[conversationId];
+      if (existing && existing.messages.length > 0) return;
+
+      void (async () => {
+        try {
+          const { getConversation } = await import("../api/client");
+          const { data, error } = await getConversation(conversationId);
+          if (error || !data) return;
+
+          // Another load may have raced — re-check
+          const latest = get().conversations[conversationId];
+          if (latest && latest.messages.length > 0) return;
+
+          const messages: ChatMessage[] = data.messages.map((msg) => ({
+            id: msg.id,
+            role: msg.role as "user" | "assistant",
+            contentBlocks: msg.content_blocks,
+            timestamp: new Date(msg.created_at),
+            userId: msg.user_id ?? undefined,
+            senderName: msg.sender_name ?? undefined,
+            senderEmail: msg.sender_email ?? undefined,
+            senderAvatarUrl: msg.sender_avatar_url ?? undefined,
+          }));
+
+          const conv = get().conversations[conversationId] ?? {
+            ...defaultConversationState,
+          };
+          set({
+            conversations: {
+              ...get().conversations,
+              [conversationId]: {
+                ...conv,
+                messages,
+                title: data.title ?? "New Chat",
+                hasMore: data.has_more,
+                summary: data.summary ? (() => {
+                  try { return JSON.parse(data.summary!) as ConversationSummaryData; }
+                  catch { return null; }
+                })() : null,
+              },
+            },
+          });
+        } catch {
+          // Prefetch is best-effort; swallow errors
+        }
+      })();
     },
 
     fetchConversations: async () => {

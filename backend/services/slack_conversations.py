@@ -20,6 +20,7 @@ from zoneinfo import ZoneInfo
 
 from sqlalchemy import or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from agents.orchestrator import ChatOrchestrator
 from connectors.slack import SlackConnector
@@ -882,26 +883,37 @@ def _normalize_name(value: str | None) -> str:
 async def get_slack_user_ids_for_revtops_user(
     organization_id: str,
     user_id: str,
+    session: AsyncSession | None = None,
 ) -> set[str]:
-    """Return Slack user IDs associated with a RevTops user in this org."""
+    """Return Slack user IDs associated with a RevTops user in this org.
+
+    If *session* is provided the queries run inside it (no extra pool checkout).
+    Otherwise a fresh admin session is opened for backward compatibility.
+    """
     user_uuid = UUID(user_id)
-    async with get_admin_session() as session:
+
+    async def _query(sess: AsyncSession) -> tuple[list, list]:
         mappings_query = (
             select(SlackUserMapping)
             .where(SlackUserMapping.organization_id == UUID(organization_id))
             .where(_slack_mapping_source_clause())
             .where(SlackUserMapping.user_id == user_uuid)
         )
-        mappings_result = await session.execute(mappings_query)
-        slack_mappings = mappings_result.scalars().all()
+        mappings_result = await sess.execute(mappings_query)
         integrations_query = (
             select(Integration)
             .where(Integration.organization_id == UUID(organization_id))
             .where(Integration.provider == "slack")
             .where(Integration.is_active == True)
         )
-        integrations_result = await session.execute(integrations_query)
-        slack_integrations = integrations_result.scalars().all()
+        integrations_result = await sess.execute(integrations_query)
+        return list(mappings_result.scalars().all()), list(integrations_result.scalars().all())
+
+    if session is not None:
+        slack_mappings, slack_integrations = await _query(session)
+    else:
+        async with get_admin_session() as admin_sess:
+            slack_mappings, slack_integrations = await _query(admin_sess)
 
     slack_user_ids: set[str] = set()
     for mapping in slack_mappings:

@@ -506,7 +506,13 @@ function ChatAccordion({
   const [editingChatId, setEditingChatId] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState('');
   const editInputRef = useRef<HTMLInputElement>(null);
+  const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const setConversationTitle = useAppStore((s) => s.setConversationTitle);
+  const prefetchConversation = useAppStore((s) => s.prefetchConversation);
+
+  useEffect(() => {
+    return () => { if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current); };
+  }, []);
 
   const canRename = useCallback((chat: ChatSummary): boolean => {
     if (chat.scope === 'private') return true;
@@ -563,6 +569,13 @@ function ChatAccordion({
             : 'text-surface-400 hover:text-surface-200 hover:bg-surface-800/50'
         }`}
         onClick={() => { if (!isEditing) onSelectChat(chat.id); }}
+        onMouseEnter={() => {
+          if (currentChatId === chat.id) return;
+          hoverTimerRef.current = setTimeout(() => prefetchConversation(chat.id), 100);
+        }}
+        onMouseLeave={() => {
+          if (hoverTimerRef.current) { clearTimeout(hoverTimerRef.current); hoverTimerRef.current = null; }
+        }}
       >
         <div className="flex items-center gap-1.5 pr-14">
           {showLockIcon && (
