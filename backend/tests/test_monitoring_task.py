@@ -94,6 +94,15 @@ def test_monitor_dependencies_logs_health_check_outcome(monkeypatch: Any, caplog
         created_incidents.append(kwargs["check_result"].name)
 
     monkeypatch.setattr(monitoring, "_create_pagerduty_incident", _fake_create_pagerduty_incident)
+
+    async def _fake_clear_incident_failure(check_name: str) -> None:
+        return None
+
+    async def _fake_evaluate_incident_creation(check_name: str) -> tuple[bool, str]:
+        return True, "new_failure"
+
+    monkeypatch.setattr(monitoring, "clear_incident_failure", _fake_clear_incident_failure)
+    monkeypatch.setattr(monitoring, "evaluate_incident_creation", _fake_evaluate_incident_creation)
     monkeypatch.setenv("PAGERDUTY_FROM_EMAIL", "alerts@revtops.com")
     monkeypatch.setenv("PagerDuty_Key", "pd_test_key")
     monkeypatch.setenv("PAGERDUTY_SERVICE_ID", "svc_123")
@@ -105,7 +114,7 @@ def test_monitor_dependencies_logs_health_check_outcome(monkeypatch: Any, caplog
     assert result["down_services"] == ["Redis"]
     assert created_incidents == ["Redis"]
     assert "PagerDuty health check succeeded for Supabase; incident creation skipped" in caplog.text
-    assert "PagerDuty health check failed for Redis; incident will be created" in caplog.text
+    assert "PagerDuty health check failed for Redis; evaluating incident throttle" in caplog.text
 
 
 def test_monitor_dependencies_creates_incident_when_checks_fail(monkeypatch: Any) -> None:
@@ -215,7 +224,83 @@ def test_monitor_dependencies_raises_incident_for_supabase_522(monkeypatch: Any)
     monkeypatch.setattr(monitoring, "_record_check_heartbeat", _fake_record_check_heartbeat)
     monkeypatch.setattr(monitoring, "_create_pagerduty_incident", _fake_create_pagerduty_incident)
 
+    async def _fake_clear_incident_failure(check_name: str) -> None:
+        return None
+
+    async def _fake_evaluate_incident_creation(check_name: str) -> tuple[bool, str]:
+        return True, "new_failure"
+
+    monkeypatch.setattr(monitoring, "clear_incident_failure", _fake_clear_incident_failure)
+    monkeypatch.setattr(monitoring, "evaluate_incident_creation", _fake_evaluate_incident_creation)
+
     result = monitoring.monitor_dependencies.__wrapped__()
 
     assert result["down_services"] == ["Supabase"]
     assert created_incidents == ["Supabase"]
+
+
+def test_monitor_dependencies_suppresses_repeated_incident_for_same_failure(monkeypatch: Any) -> None:
+    async def _fake_run_dependency_checks() -> list[monitoring.CheckResult]:
+        return [
+            monitoring.CheckResult(name="Redis", healthy=False, details="timeout"),
+        ]
+
+    async def _fake_record_check_heartbeat() -> None:
+        return None
+
+    created_incidents: list[str] = []
+
+    async def _fake_create_pagerduty_incident(**kwargs: Any) -> None:
+        created_incidents.append(kwargs["check_result"].name)
+
+    async def _fake_clear_incident_failure(check_name: str) -> None:
+        return None
+
+    async def _fake_evaluate_incident_creation(check_name: str) -> tuple[bool, str]:
+        return False, "suppressed_for_7200s"
+
+    monkeypatch.setattr(monitoring, "_run_dependency_checks", _fake_run_dependency_checks)
+    monkeypatch.setattr(monitoring, "_record_check_heartbeat", _fake_record_check_heartbeat)
+    monkeypatch.setattr(monitoring, "_create_pagerduty_incident", _fake_create_pagerduty_incident)
+    monkeypatch.setattr(monitoring, "clear_incident_failure", _fake_clear_incident_failure)
+    monkeypatch.setattr(monitoring, "evaluate_incident_creation", _fake_evaluate_incident_creation)
+
+    result = monitoring.monitor_dependencies.__wrapped__()
+
+    assert result["down_services"] == ["Redis"]
+    assert created_incidents == []
+
+
+def test_monitor_dependencies_allows_incident_when_different_check_fails(monkeypatch: Any) -> None:
+    async def _fake_run_dependency_checks() -> list[monitoring.CheckResult]:
+        return [
+            monitoring.CheckResult(name="Redis", healthy=False, details="timeout"),
+            monitoring.CheckResult(name="Nango", healthy=False, details="HTTP 503"),
+        ]
+
+    async def _fake_record_check_heartbeat() -> None:
+        return None
+
+    created_incidents: list[str] = []
+
+    async def _fake_create_pagerduty_incident(**kwargs: Any) -> None:
+        created_incidents.append(kwargs["check_result"].name)
+
+    async def _fake_clear_incident_failure(check_name: str) -> None:
+        return None
+
+    async def _fake_evaluate_incident_creation(check_name: str) -> tuple[bool, str]:
+        if check_name == "Redis":
+            return False, "suppressed_for_100s"
+        return True, "new_failure"
+
+    monkeypatch.setattr(monitoring, "_run_dependency_checks", _fake_run_dependency_checks)
+    monkeypatch.setattr(monitoring, "_record_check_heartbeat", _fake_record_check_heartbeat)
+    monkeypatch.setattr(monitoring, "_create_pagerduty_incident", _fake_create_pagerduty_incident)
+    monkeypatch.setattr(monitoring, "clear_incident_failure", _fake_clear_incident_failure)
+    monkeypatch.setattr(monitoring, "evaluate_incident_creation", _fake_evaluate_incident_creation)
+
+    result = monitoring.monitor_dependencies.__wrapped__()
+
+    assert result["down_services"] == ["Redis", "Nango"]
+    assert created_incidents == ["Nango"]

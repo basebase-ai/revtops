@@ -65,7 +65,12 @@ async def test_get_jwks_raises_incident_after_final_failure(monkeypatch: pytest.
         calls.append((title, details))
         return True
 
+    async def _fake_evaluate_incident_creation(check_name: str) -> tuple[bool, str]:
+        assert check_name == "Auth JWKS"
+        return True, "new_failure"
+
     monkeypatch.setattr(am, "create_pagerduty_incident", _fake_create_pagerduty_incident)
+    monkeypatch.setattr(am, "evaluate_incident_creation", _fake_evaluate_incident_creation)
     am._jwks_cache = None
     am._jwks_cache_fetched_at = None
 
@@ -74,3 +79,29 @@ async def test_get_jwks_raises_incident_after_final_failure(monkeypatch: pytest.
 
     assert len(calls) == 1
     assert calls[0][0] == "Auth JWKS endpoint unreachable"
+
+
+@pytest.mark.asyncio
+async def test_get_jwks_suppresses_incident_when_throttled(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(am.settings, "SUPABASE_URL", "https://example.supabase.co")
+    monkeypatch.setattr(am.httpx, "AsyncClient", _FailingClient)
+
+    calls: list[tuple[str, str]] = []
+
+    async def _fake_create_pagerduty_incident(*, title: str, details: str) -> bool:
+        calls.append((title, details))
+        return True
+
+    async def _fake_evaluate_incident_creation(check_name: str) -> tuple[bool, str]:
+        assert check_name == "Auth JWKS"
+        return False, "suppressed_for_1000s"
+
+    monkeypatch.setattr(am, "create_pagerduty_incident", _fake_create_pagerduty_incident)
+    monkeypatch.setattr(am, "evaluate_incident_creation", _fake_evaluate_incident_creation)
+    am._jwks_cache = None
+    am._jwks_cache_fetched_at = None
+
+    with pytest.raises(HTTPException):
+        await am._get_jwks()
+
+    assert calls == []

@@ -28,6 +28,7 @@ from sqlalchemy import select
 from config import settings
 from models.database import get_session
 from models.user import User
+from services.incident_throttling import evaluate_incident_creation
 from services.pagerduty import create_pagerduty_incident
 
 logger = logging.getLogger(__name__)
@@ -172,13 +173,18 @@ async def _get_jwks() -> dict:
             return _jwks_cache
 
     logger.error("Failed to fetch JWKS from %s after %d attempts: %s", jwks_url, max_retries, last_error)
-    await create_pagerduty_incident(
-        title="Auth JWKS endpoint unreachable",
-        details=(
-            "Auth middleware failed to fetch JWKS after 3 attempts and has no cache fallback. "
-            f"JWKS URL: {jwks_url}. Last error: {last_error}"
-        ),
-    )
+    should_create, reason = await evaluate_incident_creation("Auth JWKS")
+    if should_create:
+        logger.warning("PagerDuty incident allowed for Auth JWKS reason=%s", reason)
+        await create_pagerduty_incident(
+            title="Auth JWKS endpoint unreachable",
+            details=(
+                "Auth middleware failed to fetch JWKS after 3 attempts and has no cache fallback. "
+                f"JWKS URL: {jwks_url}. Last error: {last_error}"
+            ),
+        )
+    else:
+        logger.info("PagerDuty incident suppressed for Auth JWKS reason=%s", reason)
     raise HTTPException(
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
         detail="Authentication service temporarily unavailable",

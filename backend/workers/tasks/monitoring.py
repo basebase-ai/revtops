@@ -9,6 +9,7 @@ from typing import Any
 import httpx
 
 from config import get_redis_connection_kwargs, settings
+from services.incident_throttling import clear_incident_failure, evaluate_incident_creation
 from services.pagerduty import create_pagerduty_incident
 from workers.celery_app import celery_app
 
@@ -211,13 +212,28 @@ def monitor_dependencies(self: Any) -> dict[str, Any]:
                     "PagerDuty health check succeeded for %s; incident creation skipped",
                     result.name,
                 )
+                await clear_incident_failure(result.name)
             else:
                 logger.warning(
-                    "PagerDuty health check failed for %s; incident will be created",
+                    "PagerDuty health check failed for %s; evaluating incident throttle",
                     result.name,
                 )
 
         for result in down:
+            should_create, reason = await evaluate_incident_creation(result.name)
+            if not should_create:
+                logger.info(
+                    "PagerDuty incident suppressed for %s due to throttle reason=%s",
+                    result.name,
+                    reason,
+                )
+                continue
+
+            logger.warning(
+                "PagerDuty incident allowed for %s reason=%s",
+                result.name,
+                reason,
+            )
             await _create_pagerduty_incident(
                 check_result=result,
             )
