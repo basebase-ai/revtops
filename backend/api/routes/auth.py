@@ -1156,9 +1156,9 @@ async def create_organization(
                 "params={url: website_url, render_js: true} to read the site content.\n"
                 "2. Call query_system with system='web_search' to search for the company (use organization_name in the query).\n"
                 "3. Write a concise 2–3 sentence summary of what the company does, its industry, and notable aspects.\n"
-                "4. Call save_company_research with organization_id and summary to persist it."
+                "4. Call run_sql_write with: UPDATE organizations SET company_summary = '<your summary>' WHERE id = '<organization_id>'"
             ),
-            auto_approve_tools=["run_action", "query_system", "save_company_research"],
+            auto_approve_tools=["run_action", "query_system", "run_sql_write"],
             input_schema={
                 "type": "object",
                 "properties": {
@@ -1298,6 +1298,10 @@ async def get_organization_members(
         if not requester_check.scalar_one_or_none():
             raise HTTPException(status_code=403, detail="Not authorized to view this organization's members")
 
+        # Load org to check guest_user_enabled (hide guest from list when disabled)
+        org = await session.get(Organization, org_uuid)
+        guest_user_enabled: bool = bool(org and org.guest_user_enabled)
+
         # Fetch members via memberships (active and invited)
         membership_result = await session.execute(
             select(User, OrgMember)
@@ -1330,6 +1334,9 @@ async def get_organization_members(
         for u in users:
             # Skip crm_only stub users entirely — they shouldn't appear in the team list
             if u.status == "crm_only":
+                continue
+            # Hide guest user until enabled (avoids confusing "Guest user" for new orgs without Slack)
+            if u.is_guest and not guest_user_enabled:
                 continue
 
             user_mappings: list[SlackUserMapping] = mappings_by_user.get(u.id, [])
@@ -1427,11 +1434,10 @@ async def get_organization_members(
             for m in filtered_unmapped_mappings
         ]
 
-        org = await session.get(Organization, org_uuid)
         return TeamMembersListResponse(
             members=members,
             unmapped_identities=unmapped_identities,
-            guest_user_enabled=bool(org.guest_user_enabled) if org else False,
+            guest_user_enabled=guest_user_enabled,
         )
 
 

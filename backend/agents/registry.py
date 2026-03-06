@@ -686,35 +686,6 @@ This is workflow-scoped memory, not user-wide memory.""",
 )
 
 register_tool(
-    name="save_company_research",
-    description="""Persist a company research summary to the organization record.
-
-Use this ONLY at the end of onboarding company research workflows. After you have
-fetched the company website (fetch_url), searched the web (query_system with
-web_search), and written a 2–3 sentence summary of the business, call this tool
-to store it. The summary will be shown as a personalized greeting on the
-onboarding success screen.""",
-    input_schema={
-        "type": "object",
-        "properties": {
-            "organization_id": {
-                "type": "string",
-                "format": "uuid",
-                "description": "UUID of the organization (must match the workflow's organization).",
-            },
-            "summary": {
-                "type": "string",
-                "description": "2–3 sentence summary of the company/business.",
-            },
-        },
-        "required": ["organization_id", "summary"],
-    },
-    category=ToolCategory.LOCAL_WRITE,
-    default_requires_approval=False,
-    workflow_only=True,
-)
-
-register_tool(
     name="manage_memory",
     description="""Save, update, or delete a persistent memory that is recalled at the start of every future conversation.
 

@@ -694,7 +694,7 @@ export function OnboardingWizard({ emailDomain, isInvitedMode = false, onComplet
                   {connectingProvider === 'slack' ? (
                     <div className="w-5 h-5 border-2 border-primary-400 border-t-transparent rounded-full animate-spin" />
                   ) : (
-                    <SiSlack className="w-5 h-5 text-[#E01E5A]" />
+                    <SiSlack className="w-5 h-5 text-[#FFFFFF]" />
                   )}
                   {isMobile ? 'Use desktop to connect' : connectingProvider === 'slack' ? 'Connecting...' : 'Connect Slack'}
                 </button>

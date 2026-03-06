@@ -3,8 +3,9 @@ Waitlist routes for managing Alpha signups.
 
 Endpoints:
 - POST /api/waitlist - Submit waitlist form
-- GET /api/admin/waitlist - List waitlist entries (admin only)
-- POST /api/admin/waitlist/{user_id}/invite - Approve and invite user
+- GET /api/waitlist/admin - List waitlist entries (admin only)
+- POST /api/waitlist/admin/{user_id}/invite - Approve and invite user
+- POST /api/waitlist/admin/{user_id}/resend-invite - Resend invite email (invited only)
 """
 from __future__ import annotations
 
@@ -162,9 +163,16 @@ async def submit_waitlist(request: WaitlistSubmitRequest) -> WaitlistSubmitRespo
 
 
 async def _fetch_waitlist_entries(status: Optional[str]) -> WaitlistListResponse:
-    """Fetch waitlist entries with optional status filter. Uses admin session for global admin list."""
+    """Fetch waitlist entries with optional status filter. Uses admin session for global admin list.
+    Excludes status='active' so that users who have signed up and completed onboarding no longer
+    appear in the waitlist (they've graduated). Keeps 'waitlist' and 'invited' for resend/outreach.
+    """
     async with get_admin_session() as session:
-        query = select(User).where(User.waitlisted_at.isnot(None))
+        query = (
+            select(User)
+            .where(User.waitlisted_at.isnot(None))
+            .where(User.status != "active")
+        )
 
         if status and status != "all":
             query = query.where(User.status == status)
@@ -263,6 +271,61 @@ async def invite_user(
             message=f"Invitation sent to {user.email}",
             user_id=str(user.id),
         )
+
+
+@router.post("/admin/{user_id}/resend-invite", response_model=InviteResponse)
+async def resend_waitlist_invite(
+    user_id: str,
+    auth: AuthContext = Depends(require_global_admin),
+) -> InviteResponse:
+    """
+    Resend invitation email to a user with status='invited'.
+    For follow-up when invitee hasn't responded.
+    """
+    logger.info("Admin waitlist resend-invite requested by user_id=%s target_user_id=%s", auth.user_id, user_id)
+
+    try:
+        user_uuid = UUID(user_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid user ID")
+
+    async with get_admin_session() as session:
+        user = await session.get(User, user_uuid)
+
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        if user.status != "invited":
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot resend invite: user status is '{user.status}', not 'invited'",
+            )
+
+        try:
+            sent: bool = await send_invitation_email(
+                to_email=user.email,
+                name=user.name or "there",
+            )
+            if sent:
+                user.invited_at = datetime.utcnow()
+                await session.commit()
+                return InviteResponse(
+                    success=True,
+                    message=f"Invitation re-sent to {user.email}",
+                    user_id=str(user.id),
+                )
+            return InviteResponse(
+                success=False,
+                message=f"Failed to send email (check RESEND_API_KEY)",
+                user_id=str(user.id),
+            )
+        except Exception as e:
+            print(f"Failed to send resend invitation email: {e}")
+            return InviteResponse(
+                success=False,
+                message=f"Email delivery failed: {e!s}",
+                user_id=str(user.id),
+            )
 
 
 # =============================================================================

@@ -296,9 +296,16 @@ async def send_invitation_email(to_email: str, name: str) -> bool:
     Returns:
         True if email sent successfully, False otherwise
     """
+    from urllib.parse import quote
+
     if not settings.RESEND_API_KEY:
         print(f"[Email] RESEND_API_KEY not set, skipping email to {to_email}")
         return False
+
+    # Link to sign-up with email prepopulated (same pattern as org invitations)
+    invite_params: list[str] = ["invite=1", "org_name=Basebase", f"email={quote(to_email)}"]
+    base: str = settings.FRONTEND_URL.rstrip("/")
+    invite_url = f"{base}?{'&'.join(invite_params)}"
 
     html_content: str = f"""
 <!DOCTYPE html>
@@ -306,7 +313,7 @@ async def send_invitation_email(to_email: str, name: str) -> bool:
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>You&apos;re invited to use Penny</title>
+  <title>You&apos;re off the waitlist!</title>
 </head>
 <body style="margin:0;padding:0;background:#f8f9fa;color:#1a1a1a;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
   <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f8f9fa;padding:32px 12px;">
@@ -326,13 +333,13 @@ async def send_invitation_email(to_email: str, name: str) -> bool:
           </tr>
           <tr>
             <td style="padding:24px 36px 0;text-align:center;">
-              <h1 style="margin:0 0 12px;font-size:24px;line-height:1.3;color:#111;font-weight:700;">{name}, you&apos;re invited to use Penny in your Slack workspace</h1>
+              <h1 style="margin:0 0 12px;font-size:24px;line-height:1.3;color:#111;font-weight:700;">{name}, you&apos;re off the waitlist!</h1>
               <p style="margin:0;color:#6b7280;font-size:15px;line-height:1.6;">Sign up for Basebase to get started.</p>
             </td>
           </tr>
           <tr>
             <td style="padding:28px 36px 0;text-align:center;">
-              <a href="{settings.FRONTEND_URL}" style="display:inline-block;background:#FF9F1C;color:#111111;text-decoration:none;font-size:16px;font-weight:600;padding:14px 32px;border-radius:10px;">Sign Up</a>
+              <a href="{invite_url}" style="display:inline-block;background:#FF9F1C;color:#111111;text-decoration:none;font-size:16px;font-weight:600;padding:14px 32px;border-radius:10px;">Sign Up</a>
             </td>
           </tr>
           <tr>
@@ -367,7 +374,7 @@ Sign up for Basebase to get started.
 
 Penny lives in your Slack workspace. Ask her anything -- deal updates, meeting prep, customer research -- and she answers right in the thread. When one person learns something, the whole team benefits.
 
-Get started: {settings.FRONTEND_URL}
+Get started: {invite_url}
 
 Questions? Just reply to this email.
 
@@ -385,7 +392,7 @@ Questions? Just reply to this email.
                 json={
                     "from": settings.EMAIL_FROM or "Basebase <hello@basebase.com>",
                     "to": [to_email],
-                    "subject": "You're invited to use Penny",
+                    "subject": "You're off the Basebase waitlist!",
                     "html": html_content,
                     "text": text_content,
                 },
