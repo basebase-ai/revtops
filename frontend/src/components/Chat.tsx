@@ -20,6 +20,7 @@ import { AppPreviewPanel } from './apps/AppPreviewPanel';
 import { Avatar } from './Avatar';
 import { PendingApprovalCard, type ApprovalResult } from './PendingApprovalCard';
 import { getConversation, updateConversation, uploadChatFile, type UploadResponse } from '../api/client';
+import { apiRequest } from '../lib/api';
 import { crossTab } from '../lib/crossTab';
 import { APP_NAME, LOGO_PATH } from '../lib/brand';
 import {
@@ -1154,25 +1155,22 @@ export function Chat({
   // Convert private conversation to shared
   const handleMakeShared = useCallback(async () => {
     if (!chatId) return;
-    
+
     try {
-      const response = await fetch(`/api/chat/conversations/${chatId}/scope`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ scope: 'shared' }),
-        credentials: 'include',
-      });
-      
-      if (!response.ok) {
-        const data = await response.json();
-        console.error('Failed to make shared:', data.detail);
+      const { data, error } = await apiRequest<{ scope: string; participants: Array<{ id: string; name: string | null; email: string; avatar_url?: string | null }> }>(
+        `/chat/conversations/${chatId}/scope`,
+        { method: 'PATCH', body: JSON.stringify({ scope: 'shared' }) },
+      );
+
+      if (error || !data) {
+        console.error('Failed to make shared:', error);
         return;
       }
-      
-      const data = await response.json();
+
       setConversationScope('shared');
+      useAppStore.getState().setChatScope(chatId, 'shared');
       setConversationParticipants(
-        (data.participants ?? []).map((p: { id: string; name: string | null; email: string; avatar_url?: string | null }) => ({
+        (data.participants ?? []).map((p) => ({
           id: p.id,
           name: p.name,
           email: p.email,
@@ -1189,20 +1187,18 @@ export function Chat({
     if (!chatId) return;
 
     try {
-      const response = await fetch(`/api/chat/conversations/${chatId}/scope`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ scope: 'private' }),
-        credentials: 'include',
-      });
+      const { error } = await apiRequest(
+        `/chat/conversations/${chatId}/scope`,
+        { method: 'PATCH', body: JSON.stringify({ scope: 'private' }) },
+      );
 
-      if (!response.ok) {
-        const data = await response.json();
-        console.error('Failed to make private:', data.detail);
+      if (error) {
+        console.error('Failed to make private:', error);
         return;
       }
 
       setConversationScope('private');
+      useAppStore.getState().setChatScope(chatId, 'private');
       setConversationParticipants([]);
     } catch (err) {
       console.error('Failed to make private:', err);
