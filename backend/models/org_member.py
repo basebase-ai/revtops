@@ -43,7 +43,7 @@ class OrgMember(Base):
     )  # 'admin', 'member', 'ae', 'sales_manager', 'cro'
     status: Mapped[str] = mapped_column(
         String(20), nullable=False, default="active"
-    )  # 'invited', 'active', 'deactivated'
+    )  # 'invited', 'onboarding', 'active', 'deactivated'
     title: Mapped[Optional[str]] = mapped_column(
         String(255), nullable=True
     )  # Job title, e.g. "VP Sales", "Account Executive Western Region"

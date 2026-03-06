@@ -6,7 +6,7 @@
 import React, { useState, useEffect } from 'react';
 import Nango from '@nangohq/frontend';
 import type { IconType } from 'react-icons';
-import { SiHubspot, SiSalesforce, SiGmail, SiGooglecalendar, SiZoom } from 'react-icons/si';
+import { SiHubspot, SiSalesforce, SiSlack, SiGmail, SiGooglecalendar, SiZoom } from 'react-icons/si';
 import { HiGlobeAlt, HiUserGroup, HiDeviceMobile, HiLightningBolt } from 'react-icons/hi';
 
 import { API_BASE } from '../lib/api';
@@ -24,10 +24,12 @@ interface TeamMember {
   avatar_url: string | null;
   role: string | null;
   status: string | null;
+  is_guest: boolean;
 }
 
 interface OnboardingWizardProps {
   emailDomain: string;
+  isInvitedMode?: boolean;
   onComplete: () => void;
   onBack: () => void;
 }
@@ -62,7 +64,7 @@ const BUILTIN_CONNECTORS = new Set<string>(['web_search', 'code_sandbox', 'twili
 const SLACK_LOGO_PATH = '/slack-logo.png';
 
 const SlackLogo = ({ className }: { className?: string }): JSX.Element => (
-  <img src={SLACK_LOGO_PATH} alt="Slack" className={className} />
+  <img src={SLACK_LOGO_PATH} alt="Slack" className={`${className ?? ''} object-contain`} />
 );
 
 const ICON_MAP: Record<string, IconType | React.ComponentType<{ className?: string }>> = {
@@ -91,15 +93,29 @@ const SKIP_MESSAGES: Record<number, string> = {
   4: "You can invite teammates later from Organization settings. Skip?",
 };
 
-export function OnboardingWizard({ emailDomain, onComplete: rawOnComplete, onBack }: OnboardingWizardProps): JSX.Element {
-  const [isInvitedMode] = useState<boolean>(() => localStorage.getItem('onboarding_invited') === '1');
+export function OnboardingWizard({ emailDomain, isInvitedMode = false, onComplete: rawOnComplete, onBack }: OnboardingWizardProps): JSX.Element {
   const TOTAL_STEPS: number = isInvitedMode ? TOTAL_STEPS_INVITED : TOTAL_STEPS_NORMAL;
 
-  const onComplete = (): void => {
-    localStorage.removeItem('onboarding_incomplete');
+  const { user, organization, setOrganization, syncUserToBackend, fetchUserOrganizations, fetchIntegrations } =
+    useAppStore();
+
+  const orgId: string | null = organization?.id ?? null;
+
+  const onComplete = async (): Promise<void> => {
+    if (orgId) {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+        if (session?.access_token) headers['Authorization'] = `Bearer ${session.access_token}`;
+        await fetch(`${API_BASE}/auth/organizations/${orgId}/complete-onboarding`, {
+          method: 'POST',
+          headers,
+        });
+      } catch (err) {
+        console.error('Failed to complete onboarding:', err);
+      }
+    }
     localStorage.removeItem('onboarding_step');
-    localStorage.removeItem('onboarding_invited');
-    localStorage.removeItem('invite_mode');
     rawOnComplete();
   };
   const [step, setStep] = useState<number>(() => {
@@ -119,16 +135,12 @@ export function OnboardingWizard({ emailDomain, onComplete: rawOnComplete, onBac
   const [companySummaryLoading, setCompanySummaryLoading] = useState<boolean>(false);
   const [teamMembers, setTeamMembers] = useState<ReadonlyArray<TeamMember>>([]);
 
-  const { user, organization, setOrganization, syncUserToBackend, fetchUserOrganizations, fetchIntegrations } =
-    useAppStore();
   const integrations = useIntegrations();
   const isMobile = useIsMobile();
 
-  const orgId: string | null = organization?.id ?? null;
   const userId: string | null = user?.id ?? null;
 
   useEffect(() => {
-    localStorage.setItem('onboarding_incomplete', '1');
     localStorage.setItem('onboarding_step', String(step));
   }, [step]);
 
@@ -148,7 +160,7 @@ export function OnboardingWizard({ emailDomain, onComplete: rawOnComplete, onBac
         if (!res.ok || cancelled) return;
         const data = (await res.json()) as { members: TeamMember[] };
         if (!cancelled) {
-          setTeamMembers(data.members.filter((m) => m.id !== userId && m.status === 'active'));
+          setTeamMembers(data.members.filter((m) => m.id !== userId && m.status === 'active' && !m.is_guest));
         }
       } catch {
         // ignore
@@ -391,7 +403,7 @@ export function OnboardingWizard({ emailDomain, onComplete: rawOnComplete, onBac
 
   const handleNext = (): void => {
     if (step < TOTAL_STEPS) setStep((prev) => prev + 1);
-    else onComplete();
+    else void onComplete();
   };
 
   const renderFooter = (nextLabel?: string, continueDisabled?: boolean): JSX.Element => {
@@ -674,7 +686,7 @@ export function OnboardingWizard({ emailDomain, onComplete: rawOnComplete, onBac
                   {connectingProvider === 'slack' ? (
                     <div className="w-5 h-5 border-2 border-primary-400 border-t-transparent rounded-full animate-spin" />
                   ) : (
-                    <SlackLogo className="w-6 h-6" />
+                    <SiSlack className="w-5 h-5 text-[#E01E5A]" />
                   )}
                   {isMobile ? 'Use desktop to connect' : connectingProvider === 'slack' ? 'Connecting...' : 'Connect Slack'}
                 </button>

@@ -36,7 +36,8 @@ interface AuthProps {
 }
 
 export function Auth({ onBack, onSuccess }: AuthProps): JSX.Element {
-  const [mode, setMode] = useState<'signin' | 'signup' | 'forgot' | 'reset'>('signin');
+  const [inviteContext] = useState<InviteContext | null>(() => parseInviteParams());
+  const [mode, setMode] = useState<'signin' | 'signup' | 'forgot' | 'reset'>(inviteContext ? 'signup' : 'signin');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
@@ -45,14 +46,6 @@ export function Auth({ onBack, onSuccess }: AuthProps): JSX.Element {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
-  const [inviteContext] = useState<InviteContext | null>(() => parseInviteParams());
-
-  // Persist invite_mode so post-auth flow can detect it
-  useEffect(() => {
-    if (inviteContext) {
-      localStorage.setItem('invite_mode', '1');
-    }
-  }, [inviteContext]);
 
   // Check if this is a password reset callback
   useEffect(() => {
@@ -228,14 +221,14 @@ export function Auth({ onBack, onSuccess }: AuthProps): JSX.Element {
             </div>
           )}
           <h1 className="text-2xl font-bold text-surface-50">
-            {mode === 'signin' && (inviteContext ? `Join ${inviteContext.orgName}` : 'Welcome back')}
-            {mode === 'signup' && (inviteContext ? `Join ${inviteContext.orgName}` : 'Create your account')}
+            {mode === 'signin' && (inviteContext ? 'Sign in to get started' : 'Welcome back')}
+            {mode === 'signup' && (inviteContext ? 'Create an account to get started' : 'Create your account')}
             {mode === 'forgot' && 'Reset your password'}
             {mode === 'reset' && 'Set new password'}
           </h1>
           <p className="text-surface-400 mt-2">
-            {mode === 'signin' && (inviteContext ? 'Sign in to accept your invitation' : 'Sign in to access your revenue insights')}
-            {mode === 'signup' && (inviteContext ? 'Create an account to accept your invitation' : 'Start your free trial today')}
+            {mode === 'signin' && !inviteContext && 'Sign in to access your revenue insights'}
+            {mode === 'signup' && !inviteContext && 'Start your free trial today'}
             {mode === 'forgot' && "Enter your email and we'll send you a reset link"}
             {mode === 'reset' && 'Choose a new password for your account'}
           </p>

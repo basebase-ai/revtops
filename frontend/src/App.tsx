@@ -34,6 +34,7 @@ function App(): JSX.Element {
   const [screen, setScreen] = useState<Screen>('auth');
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [emailDomain, setEmailDomain] = useState<string>('');
+  const [onboardingMode, setOnboardingMode] = useState<'new' | 'invited' | null>(null);
   
   // Zustand store
   const { 
@@ -51,8 +52,8 @@ function App(): JSX.Element {
     const onKeyDown = (e: KeyboardEvent): void => {
       if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'o') {
         e.preventDefault();
-        localStorage.setItem('onboarding_incomplete', '1');
         localStorage.setItem('onboarding_step', '1');
+        setOnboardingMode('new');
         setScreen('onboarding-wizard');
       }
     };
@@ -218,7 +219,7 @@ function App(): JSX.Element {
 
       if (syncResponse.ok) {
         const userData = await syncResponse.json() as { 
-          id: string;  // Database user ID (may differ from Supabase ID for waitlist users)
+          id: string;
           status: string; 
           avatar_url: string | null;
           name: string | null;
@@ -228,6 +229,8 @@ function App(): JSX.Element {
           job_title: string | null;
           organization_id: string | null;
           organization: { id: string; name: string; logo_url: string | null; handle?: string | null } | null;
+          needs_onboarding: boolean;
+          onboarding_mode: 'new' | 'invited' | null;
         };
         
         // Update user with data from backend (authoritative source)
@@ -243,11 +246,7 @@ function App(): JSX.Element {
           roles: userData.roles ?? [],
         });
         
-        // If status is 'invited', it gets upgraded to 'active' by the backend
-        // Waitlist status is no longer used - all users are auto-activated
-
-        // If sync returned an organization (e.g. invited user who auto-activated),
-        // set it and go to app — or to onboarding in invited mode if they came via invite link
+        // If sync returned an organization, set it and route based on onboarding status
         if (userData.organization) {
           const org = userData.organization as { id: string; name: string; logo_url: string | null; handle?: string | null };
           setOrganization({
@@ -257,9 +256,8 @@ function App(): JSX.Element {
             handle: org.handle ?? null,
           });
           await fetchUserOrganizations();
-          if (localStorage.getItem('invite_mode') === '1') {
-            localStorage.setItem('onboarding_invited', '1');
-            localStorage.removeItem('invite_mode');
+          if (userData.needs_onboarding) {
+            setOnboardingMode(userData.onboarding_mode);
             setScreen('onboarding-wizard');
             return;
           }
@@ -275,11 +273,6 @@ function App(): JSX.Element {
     await fetchUserOrganizations();
     const organizations = useAppStore.getState().organizations;
     if (organizations.length > 0) {
-      // If onboarding was interrupted mid-flow, resume it instead of dropping into the app.
-      if (localStorage.getItem('onboarding_incomplete') === '1') {
-        setScreen('onboarding-wizard');
-        return;
-      }
       const activeOrg = organizations.find((o) => o.isActive) ?? organizations[0];
       if (activeOrg) {
         setOrganization({
@@ -465,6 +458,7 @@ function App(): JSX.Element {
       return (
         <OnboardingWizard
           emailDomain={emailDomain}
+          isInvitedMode={onboardingMode === 'invited'}
           onComplete={() => {
             const state = useAppStore.getState();
             state.startNewChat();

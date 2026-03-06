@@ -406,7 +406,7 @@ async def list_admin_users(
                 .join(Organization, OrgMember.organization_id == Organization.id)
                 .where(
                     OrgMember.user_id.in_(user_ids),
-                    OrgMember.status.in_(["active", "invited"]),
+                    OrgMember.status.in_(["active", "onboarding", "invited"]),
                 )
                 .order_by(Organization.name.asc())
             )

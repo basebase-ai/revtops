@@ -613,7 +613,7 @@ async def refresh_slack_user_mappings_from_directory(
         membership_subq = (
             select(OrgMember.user_id)
             .where(OrgMember.organization_id == org_uuid)
-            .where(OrgMember.status == "active")
+            .where(OrgMember.status.in_(("active", "onboarding")))
         )
         users_query = select(User).where(
             or_(
@@ -1401,7 +1401,7 @@ async def resolve_revtops_user_for_slack_actor(
         membership_subq = (
             select(OrgMember.user_id)
             .where(OrgMember.organization_id == org_uuid)
-            .where(OrgMember.status == "active")
+            .where(OrgMember.status.in_(("active", "onboarding")))
         )
         users_query = select(User).where(
             or_(

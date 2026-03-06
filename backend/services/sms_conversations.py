@@ -154,7 +154,7 @@ async def _lookup_org_memberships(user_id: UUID) -> list[tuple[UUID, str]]:
             select(OrgMember.organization_id, Organization.name)
             .join(Organization, OrgMember.organization_id == Organization.id)
             .where(OrgMember.user_id == user_id)
-            .where(OrgMember.status == "active")
+            .where(OrgMember.status.in_(("active", "onboarding")))
         )
         return [(row[0], row[1]) for row in result.all()]
 

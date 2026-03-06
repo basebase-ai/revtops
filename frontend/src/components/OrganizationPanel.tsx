@@ -14,9 +14,10 @@ import { useState, useRef, useEffect, useMemo } from 'react';
 import type { OrganizationInfo, UserProfile } from './AppLayout';
 import { supabase } from '../lib/supabase';
 import { useAppStore } from '../store';
-import { useTeamMembers, useUpdateOrganization, useLinkIdentity, useUnlinkIdentity, useUpdateGuestUser, useUpdateMemberRole, useDeleteMember, useDeleteOrganization } from '../hooks';
+import { useTeamMembers, useUpdateOrganization, useLinkIdentity, useUnlinkIdentity, useUpdateGuestUser, useUpdateMemberRole, useDeleteMember, useDeleteOrganization, organizationKeys } from '../hooks';
 import type { TeamMember, IdentityMapping } from '../hooks';
 import { apiRequest } from '../lib/api';
+import { queryClient } from '../lib/queryClient';
 import { Avatar } from './Avatar';
 import { SubscriptionSetup } from './SubscriptionSetup';
 
@@ -133,13 +134,22 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
 
   const [expandedMemberId, setExpandedMemberId] = useState<string | null>(null);
   const [resendingMemberId, setResendingMemberId] = useState<string | null>(null);
+  const [menuOpenMemberId, setMenuOpenMemberId] = useState<string | null>(null);
 
   useEffect(() => {
     setOrgName(organization.name);
     setLogoUrl(organization.logoUrl);
     setSettingsSaved(false);
     setExpandedMemberId(null);
+    setMenuOpenMemberId(null);
   }, [organization.id, organization.name, organization.logoUrl]);
+
+  useEffect(() => {
+    if (!menuOpenMemberId) return;
+    const close = (): void => setMenuOpenMemberId(null);
+    window.addEventListener('click', close);
+    return () => window.removeEventListener('click', close);
+  }, [menuOpenMemberId]);
 
   // React Query: Fetch team members with automatic caching and refetch
   const { 
@@ -149,12 +159,14 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
 
   const members: TeamMember[] = teamData?.members ?? [];
   const sortedMembers: TeamMember[] = [...members].sort((a, b) => {
-    if (a.isGuest !== b.isGuest) {
-      return a.isGuest ? -1 : 1;
-    }
+    const aInvited: boolean = a.status === 'invited';
+    const bInvited: boolean = b.status === 'invited';
+    if (aInvited !== bInvited) return aInvited ? -1 : 1;
 
-    const aName = (a.name ?? a.email).toLowerCase();
-    const bName = (b.name ?? b.email).toLowerCase();
+    if (a.isGuest !== b.isGuest) return a.isGuest ? -1 : 1;
+
+    const aName: string = (a.name ?? a.email).toLowerCase();
+    const bName: string = (b.name ?? b.email).toLowerCase();
     return aName.localeCompare(bName);
   });
   const unmappedIdentities: IdentityMapping[] = teamData?.unmappedIdentities ?? [];
@@ -293,7 +305,7 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
       }
 
       setInviteEmail('');
-      alert('Invitation sent!');
+      void queryClient.invalidateQueries({ queryKey: organizationKeys.members(organization.id) });
     } catch (error) {
       console.error('Failed to invite:', error);
       alert(`Failed to invite: ${error instanceof Error ? error.message : 'Unknown error'}`);
@@ -625,13 +637,12 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                         );
                       }
 
+                      const isMenuOpen: boolean = menuOpenMemberId === member.id;
+
                       return (
-                        <div key={member.id} className="rounded-lg bg-surface-800/50 overflow-hidden">
+                        <div key={member.id} className="rounded-lg bg-surface-800/50">
                           {/* Member row */}
-                          <button
-                            onClick={() => setExpandedMemberId(isExpanded ? null : member.id)}
-                            className="flex items-center gap-3 p-3 w-full text-left hover:bg-surface-800/80 transition-colors"
-                          >
+                          <div className="flex items-center gap-3 p-3">
                             <Avatar user={member} size="lg" />
                             <div className="flex-1 min-w-0">
                               <div className="flex items-center gap-2">
@@ -654,15 +665,12 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                               )}
                               <p className="text-sm text-surface-400 truncate">{member.email}</p>
                             </div>
-                            {/* Identity count badges */}
-                            <div className="flex items-center gap-2">
+                            {/* Identity badges */}
+                            <div className="flex items-center gap-1.5">
                               {isGuest && (
                                 <button
                                   type="button"
-                                  onClick={(event) => {
-                                    event.stopPropagation();
-                                    void handleToggleGuestUser();
-                                  }}
+                                  onClick={() => void handleToggleGuestUser()}
                                   disabled={updateGuestUserMutation.isPending}
                                   className={`px-2 py-1 text-[10px] font-medium rounded transition-colors disabled:opacity-50 ${
                                     guestUserEnabled
@@ -687,18 +695,65 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                                   </span>
                                 ))
                               ) : (
-                                <span className="text-xs text-surface-500">No links</span>
+                                !isGuest && <span className="text-xs text-surface-500">No links</span>
                               )}
                             </div>
-                            <svg
-                              className={`w-4 h-4 text-surface-400 transition-transform ${isExpanded ? 'rotate-180' : ''}`}
-                              fill="none"
-                              viewBox="0 0 24 24"
-                              stroke="currentColor"
-                            >
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                            </svg>
-                          </button>
+                            {/* Three-dots menu */}
+                            {!isGuest && (
+                              <div className="relative flex-shrink-0">
+                                <button
+                                  type="button"
+                                  onClick={(e) => { e.stopPropagation(); setMenuOpenMemberId(isMenuOpen ? null : member.id); }}
+                                  className="p-1 rounded hover:bg-surface-700/60 transition-colors text-surface-400 hover:text-surface-200"
+                                >
+                                  <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+                                    <path d="M10 6a2 2 0 110-4 2 2 0 010 4zm0 6a2 2 0 110-4 2 2 0 010 4zm0 6a2 2 0 110-4 2 2 0 010 4z" />
+                                  </svg>
+                                </button>
+                                {isMenuOpen && (
+                                  <div className="absolute right-0 top-full mt-1 w-40 rounded-lg bg-surface-700 border border-surface-600 shadow-xl z-50 py-1">
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setMenuOpenMemberId(null);
+                                        setExpandedMemberId(isExpanded ? null : member.id);
+                                      }}
+                                      className="w-full text-left px-3 py-2 text-sm text-surface-200 hover:bg-surface-600/60 transition-colors"
+                                    >
+                                      Link accounts
+                                    </button>
+                                    {canAdministerOrg && (
+                                      <>
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            setMenuOpenMemberId(null);
+                                            const nextRole: 'admin' | 'member' = member.role === 'admin' ? 'member' : 'admin';
+                                            void handleUpdateMemberRole(member.id, nextRole);
+                                          }}
+                                          disabled={updateMemberRoleMutation.isPending}
+                                          className="w-full text-left px-3 py-2 text-sm text-surface-200 hover:bg-surface-600/60 transition-colors disabled:opacity-50"
+                                        >
+                                          {member.role === 'admin' ? 'Remove admin' : 'Make admin'}
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            setMenuOpenMemberId(null);
+                                            void handleDeleteMember(member.id);
+                                          }}
+                                          disabled={deleteMemberMutation.isPending}
+                                          className="w-full text-left px-3 py-2 text-sm text-red-400 hover:bg-surface-600/60 transition-colors disabled:opacity-50"
+                                        >
+                                          Remove
+                                        </button>
+                                      </>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </div>
 
                           {/* Expanded identity details */}
                           {isExpanded && (
@@ -828,35 +883,6 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                 </div>
               )}
 
-              <div className="pt-4 border-t border-surface-800">
-                <h3 className="text-sm font-medium text-red-400 mb-3">Danger zone — admin access</h3>
-                <p className="text-xs text-surface-400 mb-3">Requires org admin for this org, or global_admin.</p>
-                {!canAdministerOrg ? (
-                  <p className="text-xs text-surface-500">You do not have org-admin/global-admin access for role changes.</p>
-                ) : (
-                  <div className="space-y-2">
-                    {sortedMembers.filter((member) => !member.isGuest && member.status === 'active').map((member) => {
-                      const memberIsAdmin = member.role === 'admin';
-                      const nextRole: 'admin' | 'member' = memberIsAdmin ? 'member' : 'admin';
-                      return (
-                        <div key={`role-${member.id}`} className="flex items-center justify-between rounded-lg bg-surface-800/50 p-3">
-                          <div>
-                            <p className="text-sm text-surface-100">{member.name ?? member.email}</p>
-                            <p className="text-xs text-surface-400">{member.email} • {member.role ?? 'member'}</p>
-                          </div>
-                          <button
-                            onClick={() => void handleUpdateMemberRole(member.id, nextRole)}
-                            disabled={updateMemberRoleMutation.isPending}
-                            className="px-3 py-1.5 text-xs font-medium rounded border border-red-500/40 text-red-300 hover:bg-red-500/10 disabled:opacity-50"
-                          >
-                            {memberIsAdmin ? 'Demote from admin' : 'Promote to admin'}
-                          </button>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
             </div>
           )}
 

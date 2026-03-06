@@ -42,6 +42,8 @@ from services.slack_conversations import upsert_slack_user_mappings_from_metadat
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
+MEMBER_ACTIVE_STATUSES: tuple[str, ...] = ("active", "onboarding")
+
 
 _DRIVE_LOGIN_SYNC_MIN_INTERVAL = timedelta(minutes=5)
 
@@ -101,7 +103,7 @@ async def _get_org_membership(session: Any, user_id: UUID, org_id: UUID) -> Opti
         select(OrgMember).where(
             OrgMember.user_id == user_id,
             OrgMember.organization_id == org_id,
-            OrgMember.status == "active",
+            OrgMember.status.in_(MEMBER_ACTIVE_STATUSES),
         )
     )
     return result.scalar_one_or_none()
@@ -137,7 +139,7 @@ async def _ensure_org_has_admin(session: Any, org_id: UUID) -> None:
         .join(User, User.id == OrgMember.user_id)
         .where(
             OrgMember.organization_id == org_id,
-            OrgMember.status == "active",
+            OrgMember.status.in_(MEMBER_ACTIVE_STATUSES),
             OrgMember.role == "admin",
             User.is_guest.is_(False),
         )
@@ -151,7 +153,7 @@ async def _ensure_org_has_admin(session: Any, org_id: UUID) -> None:
         .join(User, User.id == OrgMember.user_id)
         .where(
             OrgMember.organization_id == org_id,
-            OrgMember.status == "active",
+            OrgMember.status.in_(MEMBER_ACTIVE_STATUSES),
             User.is_guest.is_(False),
         )
         .order_by(OrgMember.joined_at.asc().nulls_last(), OrgMember.created_at.asc().nulls_last())
@@ -608,6 +610,8 @@ class SyncUserResponse(BaseModel):
     organization: Optional[SyncOrganizationData] = None
     status: str  # 'waitlist', 'invited', 'active'
     roles: list[str]  # Global roles like ['global_admin']
+    needs_onboarding: bool = False
+    onboarding_mode: Optional[str] = None  # "new" | "invited" | None
 
 
 @router.post("/users/sync", response_model=SyncUserResponse)
@@ -727,7 +731,7 @@ async def sync_user(request: SyncUserRequest) -> SyncUserResponse:
                 pending_result.scalars().all()
             )
             for pm in pending_memberships:
-                pm.status = "active"
+                pm.status = "onboarding"
                 pm.joined_at = datetime.utcnow()
                 logger.info(
                     "Auto-activated membership for user=%s org=%s on login",
@@ -753,7 +757,7 @@ async def sync_user(request: SyncUserRequest) -> SyncUserResponse:
                     select(OrgMember)
                     .where(
                         OrgMember.user_id == existing.id,
-                        OrgMember.status == "active",
+                        OrgMember.status.in_(MEMBER_ACTIVE_STATUSES),
                     )
                     .order_by(OrgMember.joined_at.asc().nulls_last(), OrgMember.created_at.asc())
                     .limit(1)
@@ -811,6 +815,23 @@ async def sync_user(request: SyncUserRequest) -> SyncUserResponse:
                 )
                 sync_job_title = title_result.scalar_one_or_none()
             
+            sync_needs_onboarding: bool = False
+            sync_onboarding_mode: Optional[str] = None
+            if existing.organization_id:
+                ob_result = await session.execute(
+                    select(OrgMember).where(
+                        OrgMember.user_id == existing.id,
+                        OrgMember.organization_id == existing.organization_id,
+                        OrgMember.status == "onboarding",
+                    )
+                )
+                ob_membership: Optional[OrgMember] = ob_result.scalar_one_or_none()
+                if ob_membership:
+                    sync_needs_onboarding = True
+                    sync_onboarding_mode = (
+                        "invited" if ob_membership.invited_by_user_id else "new"
+                    )
+
             return SyncUserResponse(
                 id=str(existing.id),
                 email=existing.email,
@@ -823,6 +844,8 @@ async def sync_user(request: SyncUserRequest) -> SyncUserResponse:
                 organization=org_data,
                 status=existing.status,
                 roles=existing.roles or [],
+                needs_onboarding=sync_needs_onboarding,
+                onboarding_mode=sync_onboarding_mode,
             )
 
         # Create a new active user with no org. Organization assignment is now
@@ -922,7 +945,7 @@ async def get_organization_by_handle(
             .where(
                 func.lower(Organization.handle) == handle.lower(),
                 OrgMember.user_id == user_uuid,
-                OrgMember.status == "active",
+                OrgMember.status.in_(MEMBER_ACTIVE_STATUSES),
             )
         )
         row = result.one_or_none()
@@ -1008,7 +1031,7 @@ async def create_organization(
                 .where(
                     Organization.email_domain == request.email_domain,
                     OrgMember.user_id == creator_user_id,
-                    OrgMember.status == "active",
+                    OrgMember.status.in_(MEMBER_ACTIVE_STATUSES),
                 )
                 .limit(1)
             )
@@ -1070,7 +1093,7 @@ async def create_organization(
                     user_id=creator_user_id,
                     organization_id=org_uuid,
                     role="admin",
-                    status="active",
+                    status="onboarding",
                     joined_at=datetime.utcnow(),
                 )
             )
@@ -1135,6 +1158,42 @@ async def create_organization(
             logo_url=new_org.logo_url,
             company_summary=new_org.company_summary,
         )
+
+
+@router.post("/organizations/{org_id}/complete-onboarding")
+async def complete_onboarding(
+    org_id: str,
+    auth: AuthContext = Depends(get_current_auth),
+) -> dict[str, str]:
+    """Flip the caller's membership from 'onboarding' to 'active'."""
+    from models.org_member import OrgMember
+
+    try:
+        org_uuid: UUID = UUID(org_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid organization ID")
+
+    user_uuid: UUID = auth.user_id
+
+    async with get_admin_session() as session:
+        result = await session.execute(
+            select(OrgMember).where(
+                OrgMember.user_id == user_uuid,
+                OrgMember.organization_id == org_uuid,
+                OrgMember.status == "onboarding",
+            )
+        )
+        membership: Optional[OrgMember] = result.scalar_one_or_none()
+        if not membership:
+            raise HTTPException(
+                status_code=404,
+                detail="No onboarding membership found for this organization",
+            )
+
+        membership.status = "active"
+        await session.commit()
+
+    return {"status": "ok"}
 
 
 class IdentityMappingResponse(BaseModel):
@@ -1211,7 +1270,7 @@ async def get_organization_members(
             select(OrgMember).where(
                 OrgMember.user_id == user_uuid,
                 OrgMember.organization_id == org_uuid,
-                OrgMember.status == "active",
+                OrgMember.status.in_(MEMBER_ACTIVE_STATUSES),
             )
         )
         if not requester_check.scalar_one_or_none():
@@ -1223,7 +1282,7 @@ async def get_organization_members(
             .join(OrgMember, User.id == OrgMember.user_id)
             .where(
                 OrgMember.organization_id == org_uuid,
-                OrgMember.status.in_(["active", "invited"]),
+                OrgMember.status.in_(["active", "onboarding", "invited"]),
             )
         )
         member_rows = membership_result.all()
@@ -1589,7 +1648,7 @@ async def invite_to_organization(
                 select(OrgMember).where(
                     OrgMember.user_id == inviter_uuid,
                     OrgMember.organization_id == org_uuid,
-                    OrgMember.status == "active",
+                    OrgMember.status.in_(MEMBER_ACTIVE_STATUSES),
                 )
             )
             inviter_membership: Optional[OrgMember] = result.scalar_one_or_none()
@@ -1726,7 +1785,7 @@ async def list_user_organizations(
             .join(Organization, OrgMember.organization_id == Organization.id)
             .where(
                 OrgMember.user_id == user_uuid,
-                OrgMember.status == "active",
+                OrgMember.status.in_(MEMBER_ACTIVE_STATUSES),
             )
         )
         rows = result.all()
@@ -1780,7 +1839,7 @@ async def switch_active_organization(
             select(OrgMember).where(
                 OrgMember.user_id == user_uuid,
                 OrgMember.organization_id == target_org_uuid,
-                OrgMember.status == "active",
+                OrgMember.status.in_(MEMBER_ACTIVE_STATUSES),
             )
         )
         membership: Optional[OrgMember] = result.scalar_one_or_none()
@@ -1865,7 +1924,7 @@ async def update_organization_member_role(
             select(OrgMember).where(
                 OrgMember.user_id == target_uuid,
                 OrgMember.organization_id == org_uuid,
-                OrgMember.status == "active",
+                OrgMember.status.in_(MEMBER_ACTIVE_STATUSES),
             )
         )
         target_membership: Optional[OrgMember] = membership_result.scalar_one_or_none()
@@ -1916,7 +1975,7 @@ async def remove_organization_member(
             select(OrgMember).where(
                 OrgMember.user_id == target_uuid,
                 OrgMember.organization_id == org_uuid,
-                OrgMember.status.in_(["active", "invited"]),
+                OrgMember.status.in_(["active", "onboarding", "invited"]),
             )
         )
         target_membership: Optional[OrgMember] = result.scalar_one_or_none()
@@ -2049,7 +2108,7 @@ async def get_organization(
             select(OrgMember).where(
                 OrgMember.organization_id == org_uuid,
                 OrgMember.user_id == user_uuid,
-                OrgMember.status == "active",
+                OrgMember.status.in_(MEMBER_ACTIVE_STATUSES),
             )
         )
         if not membership.scalar_one_or_none():
