@@ -565,7 +565,7 @@ export function Chat({
       loadInFlightChatIdRef.current = null; // Allow re-run to start load (e.g. Strict Mode)
       setIsLoading(false);
     };
-  }, [chatId, userId, setConversationMessages, setConversationTitle, setConversationSummary, onConversationNotFound]);
+  }, [chatId, userId, setConversationMessages, setConversationTitle, setConversationSummary, setConversationHasMore, onConversationNotFound]);
 
   // Keep messagesRef in sync for polling comparison (avoids stale closure)
   useEffect(() => {
