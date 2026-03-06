@@ -1583,6 +1583,14 @@ WHERE scheduled_start >= '2026-01-27'::date AND scheduled_start < '2026-01-28'::
                         
                         # Get the final message for conversation history
                         final_message = await stream.get_final_message()
+
+                        # Emit context usage for frontend progress bar
+                        if final_message and hasattr(final_message, 'usage'):
+                            yield json.dumps({
+                                "type": "context_usage",
+                                "input_tokens": final_message.usage.input_tokens,
+                                "output_tokens": final_message.usage.output_tokens,
+                            })
                     
                     # Success - break out of retry loop
                     break

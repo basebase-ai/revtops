@@ -20,6 +20,7 @@ import { AppPreviewPanel } from './apps/AppPreviewPanel';
 import { Avatar } from './Avatar';
 import { PendingApprovalCard, type ApprovalResult } from './PendingApprovalCard';
 import { getConversation, updateConversation, uploadChatFile, type UploadResponse } from '../api/client';
+import { apiRequest } from '../lib/api';
 import { crossTab } from '../lib/crossTab';
 import { APP_NAME, LOGO_PATH } from '../lib/brand';
 import {
@@ -1154,25 +1155,22 @@ export function Chat({
   // Convert private conversation to shared
   const handleMakeShared = useCallback(async () => {
     if (!chatId) return;
-    
+
     try {
-      const response = await fetch(`/api/chat/conversations/${chatId}/scope`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ scope: 'shared' }),
-        credentials: 'include',
-      });
-      
-      if (!response.ok) {
-        const data = await response.json();
-        console.error('Failed to make shared:', data.detail);
+      const { data, error } = await apiRequest<{ scope: string; participants: Array<{ id: string; name: string | null; email: string; avatar_url?: string | null }> }>(
+        `/chat/conversations/${chatId}/scope`,
+        { method: 'PATCH', body: JSON.stringify({ scope: 'shared' }) },
+      );
+
+      if (error || !data) {
+        console.error('Failed to make shared:', error);
         return;
       }
-      
-      const data = await response.json();
+
       setConversationScope('shared');
+      useAppStore.getState().setChatScope(chatId, 'shared');
       setConversationParticipants(
-        (data.participants ?? []).map((p: { id: string; name: string | null; email: string; avatar_url?: string | null }) => ({
+        (data.participants ?? []).map((p) => ({
           id: p.id,
           name: p.name,
           email: p.email,
@@ -1189,20 +1187,18 @@ export function Chat({
     if (!chatId) return;
 
     try {
-      const response = await fetch(`/api/chat/conversations/${chatId}/scope`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ scope: 'private' }),
-        credentials: 'include',
-      });
+      const { error } = await apiRequest(
+        `/chat/conversations/${chatId}/scope`,
+        { method: 'PATCH', body: JSON.stringify({ scope: 'private' }) },
+      );
 
-      if (!response.ok) {
-        const data = await response.json();
-        console.error('Failed to make private:', data.detail);
+      if (error) {
+        console.error('Failed to make private:', error);
         return;
       }
 
       setConversationScope('private');
+      useAppStore.getState().setChatScope(chatId, 'private');
       setConversationParticipants([]);
     } catch (err) {
       console.error('Failed to make private:', err);
@@ -1314,6 +1310,30 @@ export function Chat({
               )}
             </button>
           )}
+          {(() => {
+            const contextPct = (conversationState?.contextTokens ?? 0) / 200_000;
+            return conversationState?.contextTokens != null ? (
+              <div className="flex items-center gap-1.5 ml-2" title={`${Math.round(contextPct * 100)}% context used (${(conversationState.contextTokens / 1000).toFixed(0)}k / 200k tokens)`}>
+                <div className="w-16 h-1.5 bg-surface-700 rounded-full overflow-hidden">
+                  <div
+                    className={`h-full rounded-full transition-all ${
+                      contextPct > 0.85 ? 'bg-red-400' :
+                      contextPct > 0.6 ? 'bg-yellow-400' :
+                      'bg-primary-400'
+                    }`}
+                    style={{ width: `${Math.min(contextPct * 100, 100)}%` }}
+                  />
+                </div>
+                <span className={`text-[10px] tabular-nums ${
+                  contextPct > 0.85 ? 'text-red-400' :
+                  contextPct > 0.6 ? 'text-yellow-400' :
+                  'text-surface-500'
+                }`}>
+                  {Math.round(contextPct * 100)}%
+                </span>
+              </div>
+            ) : null;
+          })()}
         </div>
         <div className="flex items-center gap-3">
           {/* Participant avatars for shared conversations */}

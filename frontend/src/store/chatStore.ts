@@ -107,6 +107,7 @@ export interface ChatState {
   setConversationSummary: (conversationId: string, summary: ConversationSummaryData) => void;
   setConversationContextTokens: (conversationId: string, tokens: number) => void;
   setConversationHasMore: (conversationId: string, hasMore: boolean) => void;
+  setChatScope: (conversationId: string, scope: "private" | "shared") => void;
   fetchOlderMessages: (conversationId: string) => Promise<boolean>;
   setConversationThinking: (
     conversationId: string,
@@ -636,6 +637,15 @@ export const useChatStore = create<ChatState>()(
           ...conversations,
           [conversationId]: { ...current, hasMore },
         },
+      });
+    },
+
+    setChatScope: (conversationId, scope) => {
+      const { recentChats } = get();
+      set({
+        recentChats: recentChats.map((c) =>
+          c.id === conversationId ? { ...c, scope } : c,
+        ),
       });
     },
 
