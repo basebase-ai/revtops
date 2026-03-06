@@ -168,6 +168,7 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
   const myMembership = members.find((member) => member.id === currentUser.id);
   const isOrgAdminForCurrentOrg: boolean = Boolean(myMembership?.role === 'admin');
   const canAdministerOrg: boolean = isGlobalAdmin || isOrgAdminForCurrentOrg;
+  const canInviteOrRevokeInvites: boolean = isGlobalAdmin || Boolean(myMembership?.status === 'active');
 
   // React Query: Mutation for updating organization
   const updateOrgMutation = useUpdateOrganization();
@@ -724,7 +725,7 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                               >
                                 {resendingMemberId === member.id ? 'Sending...' : 'Resend'}
                               </button>
-                              {canAdministerOrg && (
+                              {canInviteOrRevokeInvites && (
                                 <button
                                   type="button"
                                   onClick={() => void handleRevokeInvite(member.id)}

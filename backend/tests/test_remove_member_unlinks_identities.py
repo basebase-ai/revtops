@@ -33,10 +33,9 @@ class _ListResult:
 
 
 class _FakeSession:
-    def __init__(self, *, users, membership, mappings):
+    def __init__(self, *, users, execute_results):
         self._users = users
-        self._membership = membership
-        self._mappings = mappings
+        self._execute_results = list(execute_results)
         self._execute_calls = 0
         self.committed = False
 
@@ -44,12 +43,11 @@ class _FakeSession:
         return self._users.get(model_id)
 
     async def execute(self, _query):
+        if self._execute_calls >= len(self._execute_results):
+            raise AssertionError(f"unexpected execute call {self._execute_calls + 1}")
+        result = self._execute_results[self._execute_calls]
         self._execute_calls += 1
-        if self._execute_calls == 1:
-            return _ScalarResult(self._membership)
-        if self._execute_calls == 2:
-            return _ListResult(self._mappings)
-        raise AssertionError(f"unexpected execute call {self._execute_calls}")
+        return result
 
     async def commit(self):
         self.committed = True
@@ -72,10 +70,13 @@ def test_remove_member_rejects_guest_user(monkeypatch):
     guest_user_id = UUID("33333333-3333-3333-3333-333333333333")
 
     membership = SimpleNamespace(user_id=guest_user_id, organization_id=org_id, status="active")
-    requester = SimpleNamespace(id=requester_id, is_guest=False)
+    requester = SimpleNamespace(id=requester_id, is_guest=False, role="member", roles=[])
     guest_user = SimpleNamespace(id=guest_user_id, is_guest=True, organization_id=org_id)
 
-    fake_session = _FakeSession(users={requester_id: requester, guest_user_id: guest_user}, membership=membership, mappings=[])
+    fake_session = _FakeSession(
+        users={requester_id: requester, guest_user_id: guest_user},
+        execute_results=[_ScalarResult(None), _ScalarResult(membership)],
+    )
     monkeypatch.setattr(auth, "get_admin_session", lambda: _FakeSessionContext(fake_session))
 
     async def _allow_admin(*_args, **_kwargs):
@@ -102,7 +103,7 @@ def test_remove_member_unlinks_all_identities(monkeypatch):
     target_user_id = UUID("cccccccc-cccc-cccc-cccc-cccccccccccc")
 
     membership = SimpleNamespace(user_id=target_user_id, organization_id=org_id, status="active")
-    requester = SimpleNamespace(id=requester_id, is_guest=False)
+    requester = SimpleNamespace(id=requester_id, is_guest=False, role="member", roles=[])
     target_user = SimpleNamespace(id=target_user_id, is_guest=False, organization_id=org_id)
     mappings = [
         SimpleNamespace(user_id=target_user_id, revtops_email="one@example.com", match_source="auto"),
@@ -111,8 +112,7 @@ def test_remove_member_unlinks_all_identities(monkeypatch):
 
     fake_session = _FakeSession(
         users={requester_id: requester, target_user_id: target_user},
-        membership=membership,
-        mappings=mappings,
+        execute_results=[_ScalarResult(None), _ScalarResult(membership), _ListResult(mappings)],
     )
     monkeypatch.setattr(auth, "get_admin_session", lambda: _FakeSessionContext(fake_session))
 
@@ -141,3 +141,41 @@ def test_remove_member_unlinks_all_identities(monkeypatch):
         assert mapping.user_id is None
         assert mapping.revtops_email is None
         assert mapping.match_source == "manual_unlink"
+
+
+def test_remove_invited_member_allows_active_non_admin_requester(monkeypatch):
+    org_id = UUID("dddddddd-dddd-dddd-dddd-dddddddddddd")
+    requester_id = UUID("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee")
+    invited_user_id = UUID("ffffffff-ffff-ffff-ffff-ffffffffffff")
+
+    requester = SimpleNamespace(id=requester_id, is_guest=False, role="member", roles=[])
+    invited_user = SimpleNamespace(id=invited_user_id, is_guest=False, organization_id=org_id)
+    requester_membership = SimpleNamespace(user_id=requester_id, organization_id=org_id, status="active", role="member")
+    invited_membership = SimpleNamespace(user_id=invited_user_id, organization_id=org_id, status="invited", role="member")
+
+    fake_session = _FakeSession(
+        users={requester_id: requester, invited_user_id: invited_user},
+        execute_results=[_ScalarResult(requester_membership), _ScalarResult(invited_membership), _ListResult([])],
+    )
+    monkeypatch.setattr(auth, "get_admin_session", lambda: _FakeSessionContext(fake_session))
+
+    async def _deny_admin(*_args, **_kwargs):
+        return False
+
+    async def _skip_admin_guard(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(auth, "_can_administer_org", _deny_admin)
+    monkeypatch.setattr(auth, "_ensure_org_has_admin", _skip_admin_guard)
+
+    result = asyncio.run(
+        auth.remove_organization_member(
+            org_id=str(org_id),
+            target_user_id=str(invited_user_id),
+            user_id=str(requester_id),
+        )
+    )
+
+    assert result["status"] == "removed"
+    assert invited_membership.status == "deactivated"
+    assert fake_session.committed

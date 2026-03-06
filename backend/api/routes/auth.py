@@ -2099,8 +2099,8 @@ async def remove_organization_member(
 
     async with get_admin_session() as session:
         requester: Optional[User] = await session.get(User, requester_uuid)
-        if not await _can_administer_org(session, requester, org_uuid):
-            raise HTTPException(status_code=403, detail="Org admin or global_admin required for this organization")
+        requester_membership = await _get_org_membership(session, requester_uuid, org_uuid)
+        can_manage_invites: bool = _is_global_admin(requester) or bool(requester_membership)
 
         result = await session.execute(
             select(OrgMember).where(
@@ -2112,6 +2112,12 @@ async def remove_organization_member(
         target_membership: Optional[OrgMember] = result.scalar_one_or_none()
         if not target_membership:
             raise HTTPException(status_code=404, detail="Member not found")
+
+        if target_membership.status == "invited":
+            if not can_manage_invites:
+                raise HTTPException(status_code=403, detail="Not a member of this organization")
+        elif not await _can_administer_org(session, requester, org_uuid):
+            raise HTTPException(status_code=403, detail="Org admin or global_admin required for this organization")
 
         target_user: Optional[User] = await session.get(User, target_uuid)
         if target_user and getattr(target_user, "is_guest", False):
