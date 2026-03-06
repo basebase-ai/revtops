@@ -29,8 +29,9 @@ export function AdminWaitlist(): JSX.Element {
   const [entries, setEntries] = useState<WaitlistEntry[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
-  const [filter, setFilter] = useState<'all' | 'waitlist' | 'invited'>('waitlist');
+  const [filter, setFilter] = useState<'all' | 'waitlist' | 'invited'>('all');
   const [inviting, setInviting] = useState<string | null>(null);
+  const [resendingInviteId, setResendingInviteId] = useState<string | null>(null);
 
   const fetchWaitlist = useCallback(async (): Promise<void> => {
     setLoading(true);
@@ -79,6 +80,30 @@ export function AdminWaitlist(): JSX.Element {
       console.error('Failed to invite:', err);
     } finally {
       setInviting(null);
+    }
+  };
+
+  const handleResendInvite = async (userId: string): Promise<void> => {
+    setResendingInviteId(userId);
+
+    try {
+      const { data, error: requestError } = await apiRequest<{ success: boolean; message: string }>(
+        `/waitlist/admin/${userId}/resend-invite`,
+        { method: 'POST' }
+      );
+
+      if (requestError) {
+        alert(`Failed to resend invite: ${requestError}`);
+        return;
+      }
+
+      await fetchWaitlist();
+      alert(data?.message ?? 'Invitation re-sent.');
+    } catch (err) {
+      console.error('Failed to resend invite:', err);
+      alert('Failed to resend invite: ' + (err instanceof Error ? err.message : 'Unknown error'));
+    } finally {
+      setResendingInviteId(null);
     }
   };
 
@@ -229,7 +254,16 @@ export function AdminWaitlist(): JSX.Element {
                           {inviting === entry.id ? 'Inviting...' : 'Invite'}
                         </button>
                       ) : entry.status === 'invited' ? (
-                        <span className="text-sm text-surface-500">Invited {formatDate(entry.invited_at)}</span>
+                        <div className="flex flex-col gap-1">
+                          <span className="text-sm text-surface-500">Invited {formatDate(entry.invited_at)}</span>
+                          <button
+                            onClick={() => void handleResendInvite(entry.id)}
+                            disabled={resendingInviteId === entry.id}
+                            className="px-3 py-1 rounded-lg bg-surface-700 hover:bg-surface-600 text-surface-300 text-sm font-medium transition-colors disabled:opacity-50 self-start"
+                          >
+                            {resendingInviteId === entry.id ? 'Sending...' : 'Resend'}
+                          </button>
+                        </div>
                       ) : (
                         <span className="text-sm text-emerald-400">Active</span>
                       )}
