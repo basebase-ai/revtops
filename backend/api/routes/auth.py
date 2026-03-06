@@ -45,6 +45,27 @@ logger = logging.getLogger(__name__)
 MEMBER_ACTIVE_STATUSES: tuple[str, ...] = ("active", "onboarding")
 
 
+_scope_by_provider_cache: dict[str, str] | None = None
+
+
+def _get_scope_by_provider() -> dict[str, str]:
+    """Return a cached mapping of provider slug -> scope value."""
+    global _scope_by_provider_cache
+    if _scope_by_provider_cache is None:
+        from connectors.registry import ConnectorScope, discover_connectors
+
+        registry = discover_connectors()
+        _scope_by_provider_cache = {
+            slug: (
+                cls.meta.scope.value  # type: ignore[attr-defined]
+                if hasattr(cls, "meta") and hasattr(cls.meta, "scope")
+                else ConnectorScope.USER.value
+            )
+            for slug, cls in registry.items()
+        }
+    return _scope_by_provider_cache
+
+
 _DRIVE_LOGIN_SYNC_MIN_INTERVAL = timedelta(minutes=5)
 
 
@@ -378,6 +399,7 @@ class IntegrationResponse(BaseModel):
     last_sync_at: Optional[str]
     last_error: Optional[str]
     connected_at: Optional[str]
+    scope: str = "user"
     # Owner info
     user_id: Optional[str] = None
     connected_by: Optional[str] = None  # Display name of owner
@@ -2558,18 +2580,18 @@ async def get_available_integrations() -> AvailableIntegrationsResponse:
     """List all available integrations that can be connected."""
     return AvailableIntegrationsResponse(
         integrations=[
-            {"id": "hubspot", "name": "HubSpot", "description": "CRM - Deals, Contacts, Companies"},
-            {"id": "slack", "name": "Slack", "description": "Team communication and messages"},
-            {"id": "google_calendar", "name": "Google Calendar", "description": "Calendar events and meetings"},
-            {"id": "gmail", "name": "Gmail", "description": "Google email communications"},
-            {"id": "microsoft_calendar", "name": "Microsoft Calendar", "description": "Outlook calendar events and meetings"},
-            {"id": "microsoft_mail", "name": "Microsoft Mail", "description": "Outlook emails and communications"},
-            {"id": "salesforce", "name": "Salesforce", "description": "CRM - Opportunities, Accounts"},
-            {"id": "google_drive", "name": "Google Drive", "description": "Sync files from Google Drive — search and read Docs, Sheets, Slides"},
-            {"id": "apollo", "name": "Apollo.io", "description": "Data enrichment - Update contact job titles, companies, emails"},
-            {"id": "github", "name": "GitHub", "description": "Track repos, commits, and pull requests by team"},
-            {"id": "linear", "name": "Linear", "description": "Issue tracking - sync and manage teams, projects, and issues"},
-            {"id": "asana", "name": "Asana", "description": "Project management - sync and manage teams, projects, and tasks"},
+            {"id": "hubspot", "name": "HubSpot", "description": "CRM - Deals, Contacts, Companies", "scope": "user"},
+            {"id": "slack", "name": "Slack", "description": "Team communication and messages", "scope": "organization"},
+            {"id": "google_calendar", "name": "Google Calendar", "description": "Calendar events and meetings", "scope": "user"},
+            {"id": "gmail", "name": "Gmail", "description": "Google email communications", "scope": "user"},
+            {"id": "microsoft_calendar", "name": "Microsoft Calendar", "description": "Outlook calendar events and meetings", "scope": "user"},
+            {"id": "microsoft_mail", "name": "Microsoft Mail", "description": "Outlook emails and communications", "scope": "user"},
+            {"id": "salesforce", "name": "Salesforce", "description": "CRM - Opportunities, Accounts", "scope": "user"},
+            {"id": "google_drive", "name": "Google Drive", "description": "Sync files from Google Drive — search and read Docs, Sheets, Slides", "scope": "user"},
+            {"id": "apollo", "name": "Apollo.io", "description": "Data enrichment - Update contact job titles, companies, emails", "scope": "user"},
+            {"id": "github", "name": "GitHub", "description": "Track repos, commits, and pull requests by team", "scope": "user"},
+            {"id": "linear", "name": "Linear", "description": "Issue tracking - sync and manage teams, projects, and issues", "scope": "user"},
+            {"id": "asana", "name": "Asana", "description": "Project management - sync and manage teams, projects, and tasks", "scope": "user"},
         ]
     )
 
@@ -2644,7 +2666,7 @@ async def get_connect_session(
     This is the recommended approach - returns a session token that
     the frontend uses with @nangohq/frontend to open a popup OAuth flow.
 
-    All integrations are user-scoped, so user_id is REQUIRED.
+    user_id is REQUIRED (used for connection ID and ownership tracking).
     Connection ID format: "{org_id}:user:{user_id}"
     """
     org_id_str: str = ""
@@ -2675,7 +2697,6 @@ async def get_connect_session(
     if not org_id_str:
         raise HTTPException(status_code=400, detail="Either user_id or organization_id required")
 
-    # All integrations are user-scoped, user_id is required
     if not user_id_str:
         raise HTTPException(
             status_code=400,
@@ -3331,8 +3352,8 @@ async def list_integrations(
 ) -> IntegrationsListResponse:
     """List all integrations for a user's organization.
 
-    All integrations are user-scoped. Returns integrations grouped by provider,
-    showing the current user's integration (if any) and team connections.
+    Returns integrations grouped by provider, showing the current user's
+    integration (if any), team connections, and connector scope.
     """
     org_uuid: UUID | None = None
     current_user_uuid: UUID | None = None
@@ -3357,6 +3378,10 @@ async def list_integrations(
 
     if not org_uuid:
         raise HTTPException(status_code=400, detail="Either user_id or organization_id required")
+
+    from connectors.registry import ConnectorScope
+
+    scope_by_provider: dict[str, str] = _get_scope_by_provider()
 
     async with get_session(organization_id=str(org_uuid)) as db_session:
         result = await db_session.execute(
@@ -3426,6 +3451,7 @@ async def list_integrations(
                     f"{ref_integration.created_at.isoformat()}Z"
                     if ref_integration and ref_integration.created_at else None
                 ),
+                scope=scope_by_provider.get(provider, ConnectorScope.USER.value),
                 user_id=str(ref_integration.user_id) if ref_integration else None,
                 connected_by=connected_by_name,
                 share_synced_data=ref_integration.share_synced_data if ref_integration else False,
@@ -3487,7 +3513,6 @@ async def disconnect_integration(
     if not org_uuid:
         raise HTTPException(status_code=400, detail="Either user_id or organization_id required")
 
-    # All integrations are user-scoped, user_id is required
     if not current_user_uuid:
         raise HTTPException(
             status_code=400,

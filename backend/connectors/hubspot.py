@@ -47,7 +47,7 @@ class HubSpotConnector(BaseConnector):
         name="HubSpot",
         slug="hubspot",
         auth_type=AuthType.OAUTH2,
-        scope=ConnectorScope.ORGANIZATION,
+        scope=ConnectorScope.USER,
         entity_types=["deals", "accounts", "contacts", "activities", "pipelines", "goals"],
         capabilities=[Capability.SYNC, Capability.QUERY, Capability.WRITE],
         write_operations=[

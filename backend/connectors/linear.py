@@ -58,7 +58,7 @@ class LinearConnector(BaseConnector):
         name="Linear",
         slug="linear",
         auth_type=AuthType.OAUTH2,
-        scope=ConnectorScope.ORGANIZATION,
+        scope=ConnectorScope.USER,
         entity_types=["teams", "projects", "issues"],
         capabilities=[Capability.SYNC, Capability.WRITE, Capability.LISTEN],
         write_operations=[

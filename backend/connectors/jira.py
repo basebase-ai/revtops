@@ -52,7 +52,7 @@ class JiraConnector(BaseConnector):
         name="Jira",
         slug="jira",
         auth_type=AuthType.OAUTH2,
-        scope=ConnectorScope.ORGANIZATION,
+        scope=ConnectorScope.USER,
         entity_types=["projects", "issues"],
         capabilities=[Capability.SYNC, Capability.WRITE, Capability.LISTEN],
         write_operations=[

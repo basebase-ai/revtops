@@ -216,6 +216,10 @@ export function OnboardingWizard({ emailDomain, isInvitedMode = false, onComplet
   const slackConnected: boolean =
     integrations.some((i) => i.provider === 'slack' && i.currentUserConnected) ?? false;
 
+  const slackSatisfied: boolean = integrations.some(
+    (i) => i.provider === 'slack' && (i.currentUserConnected || (i.scope === 'organization' && i.isActive))
+  );
+
   const suggestedName: string = emailDomain
     .replace(/\.(com|co|io|org|net|ai|app|dev|xyz)(\.[a-z]{2})?$/i, '')
     .split(/[.-]/)
@@ -411,7 +415,7 @@ export function OnboardingWizard({ emailDomain, isInvitedMode = false, onComplet
       INTEGRATION_KEYS_STEP3.includes(i.provider) && i.currentUserConnected
     );
     const defaultDisabled: boolean =
-      contentStep === 2 ? !slackConnected : contentStep === 3 ? !step3HasConnection : contentStep === 4 ? invitedEmails.length === 0 : false;
+      contentStep === 2 ? !slackSatisfied : contentStep === 3 ? !step3HasConnection : contentStep === 4 ? invitedEmails.length === 0 : false;
     const isDisabled: boolean = continueDisabled ?? defaultDisabled;
     const showContinue: boolean = isInvitedMode ? step >= 1 && step <= TOTAL_STEPS - 1 : step >= 2 && step <= 5;
     return (
@@ -649,27 +653,31 @@ export function OnboardingWizard({ emailDomain, isInvitedMode = false, onComplet
                   <SlackLogo className="w-8 h-8" />
                 </div>
                 <h2 className="text-xl font-bold text-white">
-                  {isInvitedMode ? 'Connect your Slack account' : 'Bring Penny where your team already works'}
+                  {slackSatisfied && !slackConnected
+                    ? 'Slack is ready'
+                    : isInvitedMode ? 'Connect your Slack account' : 'Bring Penny where your team already works'}
                 </h2>
                 <p className="text-surface-300 mt-3 text-sm leading-relaxed">
-                  {isInvitedMode && integrations.some((i) => i.provider === 'slack' && i.teamConnections.length > 0)
-                    ? 'Your team already has Slack connected. Add your own account so Penny can help you too.'
+                  {slackSatisfied && !slackConnected
+                    ? 'Your team already connected Slack for this organization. Penny is available in any channel the bot has been invited to.'
                     : <>Connect Slack and your team can ask Penny anything right from the channels they&apos;re
                       already in &mdash; deal updates, meeting prep, customer research &mdash; no tab-switching required.</>
                   }
                 </p>
               </div>
-              {isInvitedMode && integrations.some((i) => i.provider === 'slack' && i.teamConnections.length > 0) && !slackConnected && (
-                <div className="flex items-center gap-3 p-3 rounded-xl bg-surface-800/50 border border-surface-700/50 text-surface-400 text-sm mb-4">
-                  <svg className="w-4 h-4 text-emerald-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              {slackSatisfied && !slackConnected ? (
+                <div className="flex items-center gap-3 p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400">
+                  <svg className="w-5 h-5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
                   </svg>
-                  <span>
-                    Connected by {integrations.find((i) => i.provider === 'slack')?.teamConnections.map((tc) => tc.userName).join(', ')}
-                  </span>
+                  <div>
+                    <span className="font-medium">Slack connected for your organization</span>
+                    <span className="block text-sm text-emerald-400/70 mt-0.5">
+                      Connected by {integrations.find((i) => i.provider === 'slack')?.teamConnections.map((tc) => tc.userName).join(', ')}
+                    </span>
+                  </div>
                 </div>
-              )}
-              {slackConnected ? (
+              ) : slackConnected ? (
                 <div className="flex items-center gap-3 p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400">
                   <svg className="w-5 h-5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
@@ -704,7 +712,7 @@ export function OnboardingWizard({ emailDomain, isInvitedMode = false, onComplet
                 </h2>
                 <p className="text-surface-300 mt-2 text-sm leading-relaxed">
                   {isInvitedMode
-                    ? 'Your team has some sources connected already. Add your own accounts so Penny has full context.'
+                    ? 'Organization-wide sources are already set up. Connect your personal accounts (email, calendar) so Penny has full context.'
                     : 'Now that you can ask Penny questions directly in Slack, what data sources do you want her to be able to read/write?'
                   }
                 </p>
@@ -713,19 +721,29 @@ export function OnboardingWizard({ emailDomain, isInvitedMode = false, onComplet
                 {INTEGRATION_KEYS_STEP3.map((key) => {
                   const config = INTEGRATION_CONFIG[key];
                   if (!config) return null;
+                  const matchedIntegration = integrations.find((i) => i.provider === key);
+                  if (matchedIntegration?.scope === 'organization' && matchedIntegration.isActive && !matchedIntegration.currentUserConnected) return null;
                   const Icon = ICON_MAP[config.icon] ?? HiGlobeAlt;
                   const connected: boolean = integrations.some((i) => i.provider === key && i.currentUserConnected);
                   const isConnecting: boolean = connectingProvider === key;
-                  const matchedIntegration = integrations.find((i) => i.provider === key);
-                  const teamConnected: boolean = isInvitedMode && !!matchedIntegration && matchedIntegration.teamConnections.length > 0 && !connected;
+                  const orgConnected: boolean = !!matchedIntegration
+                    && matchedIntegration.scope === 'organization'
+                    && matchedIntegration.isActive
+                    && !connected;
+                  const teamConnected: boolean = !orgConnected
+                    && isInvitedMode
+                    && !!matchedIntegration
+                    && matchedIntegration.teamConnections.length > 0
+                    && !connected;
+                  const isClickable: boolean = !connected && !orgConnected;
                   return (
                     <button
                       key={key}
                       type="button"
-                      onClick={() => void handleConnect(key)}
-                      disabled={isConnecting || isMobile}
+                      onClick={isClickable ? () => void handleConnect(key) : undefined}
+                      disabled={!isClickable || isConnecting || isMobile}
                       className={`flex items-center gap-3 p-3 rounded-xl border text-left transition-colors ${
-                        connected
+                        connected || orgConnected
                           ? 'border-emerald-500/30 bg-emerald-500/10'
                           : teamConnected
                             ? 'border-blue-500/20 bg-blue-500/5'
@@ -742,13 +760,15 @@ export function OnboardingWizard({ emailDomain, isInvitedMode = false, onComplet
                         <div className="text-xs text-surface-500 truncate">
                           {connected
                             ? 'Connected'
-                            : teamConnected
-                              ? `By ${matchedIntegration!.teamConnections[0]?.userName ?? 'team'}`
-                              : config.description
+                            : orgConnected
+                              ? `Connected for your org`
+                              : teamConnected
+                                ? `By ${matchedIntegration!.teamConnections[0]?.userName ?? 'team'}`
+                                : config.description
                           }
                         </div>
                       </div>
-                      {connected && (
+                      {(connected || orgConnected) && (
                         <svg className="w-4 h-4 text-emerald-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
                         </svg>

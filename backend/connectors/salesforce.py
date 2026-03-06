@@ -39,7 +39,7 @@ class SalesforceConnector(BaseConnector):
         name="Salesforce",
         slug="salesforce",
         auth_type=AuthType.OAUTH2,
-        scope=ConnectorScope.ORGANIZATION,
+        scope=ConnectorScope.USER,
         entity_types=["deals", "accounts", "contacts", "activities", "pipelines", "goals"],
         capabilities=[Capability.SYNC, Capability.QUERY],
         nango_integration_id="salesforce",

@@ -38,7 +38,7 @@ class ApolloConnector(BaseConnector):
         name="Apollo",
         slug="apollo",
         auth_type=AuthType.API_KEY,
-        scope=ConnectorScope.ORGANIZATION,
+        scope=ConnectorScope.USER,
         entity_types=["contacts", "accounts"],
         capabilities=[Capability.QUERY],
         query_description=(

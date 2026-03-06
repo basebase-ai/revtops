@@ -89,26 +89,34 @@ const PROVIDER_SHARING_DEFAULTS: Record<string, { shareSyncedData: boolean; shar
 };
 
 // Integration display config (colors, icons, descriptions)
-const INTEGRATION_CONFIG: Record<string, { name: string; description: string; icon: string; color: string }> = {
-  hubspot: { name: 'HubSpot', description: 'CRM data including deals, contacts, and companies', icon: 'hubspot', color: 'from-orange-500 to-orange-600' },
-  salesforce: { name: 'Salesforce', description: 'CRM - Opportunities, Accounts', icon: 'salesforce', color: 'from-blue-500 to-blue-600' },
-  slack: { name: 'Slack', description: 'Team messages and communication history', icon: 'slack', color: 'from-purple-500 to-purple-600' },
-  zoom: { name: 'Zoom', description: 'Meeting transcripts and cloud recording insights', icon: 'zoom', color: 'from-blue-400 to-blue-500' },
-  google_calendar: { name: 'Google Calendar', description: 'Meetings, events, and scheduling data', icon: 'google_calendar', color: 'from-green-500 to-green-600' },
-  gmail: { name: 'Gmail', description: 'Google email communications', icon: 'gmail', color: 'from-red-500 to-red-600' },
-  microsoft_calendar: { name: 'Microsoft Calendar', description: 'Outlook calendar events and meetings', icon: 'microsoft_calendar', color: 'from-sky-500 to-sky-600' },
-  microsoft_mail: { name: 'Microsoft Mail', description: 'Outlook emails and communications', icon: 'microsoft_mail', color: 'from-sky-500 to-sky-600' },
-  fireflies: { name: 'Fireflies', description: 'Meeting transcriptions and notes', icon: 'fireflies', color: 'from-violet-500 to-violet-600' },
-  google_drive: { name: 'Google Drive', description: 'Sync files — search and read Docs, Sheets, Slides from Drive', icon: 'google_drive', color: 'from-yellow-500 to-amber-500' },
-  apollo: { name: 'Apollo.io', description: 'Data enrichment - Contact titles, companies, emails', icon: 'apollo', color: 'from-yellow-400 to-yellow-500' },
-  github: { name: 'GitHub', description: 'Track repos, commits, and pull requests by team', icon: 'github', color: 'from-gray-600 to-gray-700' },
-  linear: { name: 'Linear', description: 'Issue tracking - sync and manage teams, projects, and issues', icon: 'linear', color: 'from-indigo-500 to-violet-600' },
-  jira: { name: 'Jira', description: 'Issue tracking - sync projects and issues from Atlassian Jira', icon: 'jira', color: 'from-blue-500 to-blue-600' },
-  asana: { name: 'Asana', description: 'Tasks and projects - sync and manage workspaces, projects, and tasks', icon: 'asana', color: 'from-fuchsia-500 to-pink-600' },
+interface IntegrationConfigEntry {
+  name: string;
+  description: string;
+  icon: string;
+  color: string;
+  scope: "organization" | "user";
+}
+
+const INTEGRATION_CONFIG: Record<string, IntegrationConfigEntry> = {
+  hubspot: { name: 'HubSpot', description: 'CRM data including deals, contacts, and companies', icon: 'hubspot', color: 'from-orange-500 to-orange-600', scope: 'user' },
+  salesforce: { name: 'Salesforce', description: 'CRM - Opportunities, Accounts', icon: 'salesforce', color: 'from-blue-500 to-blue-600', scope: 'user' },
+  slack: { name: 'Slack', description: 'Team messages and communication history', icon: 'slack', color: 'from-purple-500 to-purple-600', scope: 'organization' },
+  zoom: { name: 'Zoom', description: 'Meeting transcripts and cloud recording insights', icon: 'zoom', color: 'from-blue-400 to-blue-500', scope: 'user' },
+  google_calendar: { name: 'Google Calendar', description: 'Meetings, events, and scheduling data', icon: 'google_calendar', color: 'from-green-500 to-green-600', scope: 'user' },
+  gmail: { name: 'Gmail', description: 'Google email communications', icon: 'gmail', color: 'from-red-500 to-red-600', scope: 'user' },
+  microsoft_calendar: { name: 'Microsoft Calendar', description: 'Outlook calendar events and meetings', icon: 'microsoft_calendar', color: 'from-sky-500 to-sky-600', scope: 'user' },
+  microsoft_mail: { name: 'Microsoft Mail', description: 'Outlook emails and communications', icon: 'microsoft_mail', color: 'from-sky-500 to-sky-600', scope: 'user' },
+  fireflies: { name: 'Fireflies', description: 'Meeting transcriptions and notes', icon: 'fireflies', color: 'from-violet-500 to-violet-600', scope: 'user' },
+  google_drive: { name: 'Google Drive', description: 'Sync files — search and read Docs, Sheets, Slides from Drive', icon: 'google_drive', color: 'from-yellow-500 to-amber-500', scope: 'user' },
+  apollo: { name: 'Apollo.io', description: 'Data enrichment - Contact titles, companies, emails', icon: 'apollo', color: 'from-yellow-400 to-yellow-500', scope: 'user' },
+  github: { name: 'GitHub', description: 'Track repos, commits, and pull requests by team', icon: 'github', color: 'from-gray-600 to-gray-700', scope: 'user' },
+  linear: { name: 'Linear', description: 'Issue tracking - sync and manage teams, projects, and issues', icon: 'linear', color: 'from-indigo-500 to-violet-600', scope: 'user' },
+  jira: { name: 'Jira', description: 'Issue tracking - sync projects and issues from Atlassian Jira', icon: 'jira', color: 'from-blue-500 to-blue-600', scope: 'user' },
+  asana: { name: 'Asana', description: 'Tasks and projects - sync and manage workspaces, projects, and tasks', icon: 'asana', color: 'from-fuchsia-500 to-pink-600', scope: 'user' },
   // Built-in connectors (no OAuth — connect with one click)
-  web_search: { name: 'Web Search', description: 'Web search and URL fetching — enable for the agent to search the web or fetch pages', icon: 'globe', color: 'from-emerald-500 to-teal-600' },
-  code_sandbox: { name: 'Code Sandbox', description: 'Run shell commands and scripts in a secure sandbox (Python, Node, bash)', icon: 'terminal', color: 'from-amber-500 to-orange-600' },
-  twilio: { name: 'Twilio', description: 'Send SMS messages to phone numbers', icon: 'sms', color: 'from-red-500 to-pink-600' },
+  web_search: { name: 'Web Search', description: 'Web search and URL fetching — enable for the agent to search the web or fetch pages', icon: 'globe', color: 'from-emerald-500 to-teal-600', scope: 'organization' },
+  code_sandbox: { name: 'Code Sandbox', description: 'Run shell commands and scripts in a secure sandbox (Python, Node, bash)', icon: 'terminal', color: 'from-amber-500 to-orange-600', scope: 'organization' },
+  twilio: { name: 'Twilio', description: 'Send SMS messages to phone numbers', icon: 'sms', color: 'from-red-500 to-pink-600', scope: 'organization' },
 };
 
 const SUPPORTED_PROVIDERS = new Set(Object.keys(INTEGRATION_CONFIG));
@@ -556,6 +564,7 @@ export function DataSources(): JSX.Element {
         lastError: null,
         connectedAt: null,
         connectedBy: null,
+        scope: config.scope,
         currentUserConnected: false,
         teamConnections: [],
         teamTotal: 0,
@@ -592,6 +601,7 @@ export function DataSources(): JSX.Element {
         lastError: null,
         connectedAt: null,
         connectedBy: null,
+        scope: config.scope,
         currentUserConnected: false,
         teamConnections: [],
         teamTotal: 0,
@@ -1012,13 +1022,16 @@ export function DataSources(): JSX.Element {
     }
   };
 
-  // Sections aligned with user-scoped model:
   // 1. My connectors — current user has connected
-  // 2. From your team — teammates have connected, current user has not (show what's shared + Connect)
-  // 3. Available — no one in org has connected yet
+  // 2. Org connectors — org-scoped integrations connected by a teammate (not current user)
+  // 3. From your team — user-scoped integrations connected by teammates (prompt user to add own)
+  // 4. Available — no one in org has connected yet
   const myConnectors = allIntegrations.filter((i) => i.currentUserConnected);
+  const orgConnectors = allIntegrations.filter(
+    (i) => i.connected && !i.currentUserConnected && i.scope === 'organization' && i.teamConnections.length > 0
+  );
   const fromTeamConnectors = allIntegrations.filter(
-    (i) => i.connected && !i.currentUserConnected && i.teamConnections.length > 0
+    (i) => i.connected && !i.currentUserConnected && i.scope === 'user' && i.teamConnections.length > 0
   );
   const availableIntegrations = allIntegrations.filter((i) => !i.connected);
 
@@ -1048,7 +1061,7 @@ export function DataSources(): JSX.Element {
   };
 
   // Tile state type for unified rendering
-  type TileState = 'connected' | 'team-only' | 'available';
+  type TileState = 'connected' | 'org-connected' | 'team-only' | 'available';
 
   // Unified integration tile component
   const renderIntegrationTile = (
@@ -1075,6 +1088,7 @@ export function DataSources(): JSX.Element {
     // Badge config by state
     const badgeConfig: Record<TileState, { text: string; className: string } | null> = {
       'connected': { text: 'Connected', className: 'bg-emerald-500/20 text-emerald-400' },
+      'org-connected': { text: 'Connected for org', className: 'bg-emerald-500/20 text-emerald-400' },
       'team-only': { text: 'From team', className: 'bg-surface-700 text-surface-300' },
       'available': null,
     };
@@ -1082,9 +1096,18 @@ export function DataSources(): JSX.Element {
 
     // Button config by state
     const getButtonConfig = (): { text: string; className: string; action: () => void; disabled: boolean; hidden?: boolean } => {
-      if (state === 'connected') {
+      if (state === 'connected' || state === 'org-connected') {
         // Apollo.io is on-demand enrichment - no regular sync
         if (integration.provider === 'apollo') {
+          return {
+            text: '',
+            className: '',
+            action: () => {},
+            disabled: true,
+            hidden: true,
+          };
+        }
+        if (state === 'org-connected' && !integration.isOwner) {
           return {
             text: '',
             className: '',
@@ -1133,9 +1156,9 @@ export function DataSources(): JSX.Element {
       );
     };
 
-    // Team connections info (for connected tiles; team-only shows "Connected by" in body)
+    // Team connections info (for connected tiles; team-only/org-connected shows "Connected by" in body)
     const renderTeamInfo = (): JSX.Element | null => {
-      if (state === 'team-only' || integration.teamTotal === 0) return null;
+      if (state === 'team-only' || state === 'org-connected' || integration.teamTotal === 0) return null;
 
       const connectedCount = integration.teamConnections.length;
       const names = integration.teamConnections.map((tc) => tc.userName);
@@ -1361,6 +1384,13 @@ export function DataSources(): JSX.Element {
               )}
               {state === 'connected' && integration.lastError && (
                 <p className="text-xs text-red-400 mt-1">Error: {integration.lastError}</p>
+              )}
+              {state === 'org-connected' && (
+                <div className="mt-2 text-xs text-surface-400">
+                  <p>
+                    Connected by {integration.teamConnections.map((tc) => tc.userName).join(', ')}
+                  </p>
+                </div>
               )}
               {state === 'team-only' && (
                 <div className="mt-2 space-y-1 text-xs text-surface-400">
@@ -1675,7 +1705,23 @@ export function DataSources(): JSX.Element {
           )}
         </section>
 
-        {/* From your team — teammates have connected; you haven't. Show what's shared + Connect. */}
+        {/* Organization connectors — org-scoped integrations active for the whole org */}
+        {orgConnectors.length > 0 && (
+          <section>
+            <h2 className="text-lg font-semibold text-surface-100 mb-4 flex items-center gap-2">
+              <span className="w-2 h-2 bg-emerald-500 rounded-full" />
+              Organization ({orgConnectors.length})
+            </h2>
+            <p className="text-sm text-surface-400 mb-4">
+              These are connected for the whole organization. No additional setup needed.
+            </p>
+            <div className="grid gap-4">
+              {orgConnectors.map((integration) => renderIntegrationTile(integration, 'org-connected'))}
+            </div>
+          </section>
+        )}
+
+        {/* From your team — user-scoped integrations connected by teammates; prompt to add own. */}
         {fromTeamConnectors.length > 0 && (
           <section>
             <h2 className="text-lg font-semibold text-surface-100 mb-4 flex items-center gap-2">
@@ -1683,7 +1729,7 @@ export function DataSources(): JSX.Element {
               From your team ({fromTeamConnectors.length})
             </h2>
             <p className="text-sm text-surface-400 mb-4">
-              Teammates have connected these. You can use shared data or connect your own.
+              Teammates have connected these personal integrations. Connect your own for Penny to access your data.
             </p>
             <div className="grid gap-4">
               {fromTeamConnectors.map((integration) => renderIntegrationTile(integration, 'team-only'))}

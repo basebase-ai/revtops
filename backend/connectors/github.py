@@ -43,7 +43,7 @@ class GitHubConnector(BaseConnector):
         name="GitHub",
         slug="github",
         auth_type=AuthType.OAUTH2,
-        scope=ConnectorScope.ORGANIZATION,
+        scope=ConnectorScope.USER,
         entity_types=["repositories", "commits", "pull_requests"],
         capabilities=[Capability.SYNC, Capability.WRITE],
         write_operations=[

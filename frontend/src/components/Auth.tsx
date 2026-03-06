@@ -15,6 +15,7 @@ interface InviteContext {
   orgLogo: string | null;
   inviterName: string | null;
   inviterAvatar: string | null;
+  email: string | null;
 }
 
 function extractTimeoutFromError(message: string): string | null {
@@ -54,6 +55,7 @@ function parseInviteParams(): InviteContext | null {
     orgLogo: params.get('org_logo') || null,
     inviterName: params.get('inviter_name') || null,
     inviterAvatar: params.get('inviter_avatar') || null,
+    email: params.get('email') || null,
   };
 }
 
@@ -65,7 +67,7 @@ interface AuthProps {
 export function Auth({ onBack, onSuccess }: AuthProps): JSX.Element {
   const [inviteContext] = useState<InviteContext | null>(() => parseInviteParams());
   const [mode, setMode] = useState<'signin' | 'signup' | 'forgot' | 'reset'>(inviteContext ? 'signup' : 'signin');
-  const [email, setEmail] = useState('');
+  const [email, setEmail] = useState(inviteContext?.email ?? '');
   const [password, setPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');

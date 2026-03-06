@@ -84,6 +84,7 @@ export interface Integration {
   lastError: string | null;
   connectedAt: string | null;
   connectedBy: string | null;
+  scope: "organization" | "user";
   // Sharing settings
   shareSyncedData: boolean;
   shareQueryAccess: boolean;
@@ -671,6 +672,7 @@ export const useAppStore = create<AppState>()(
             last_error: string | null;
             connected_at: string | null;
             connected_by: string | null;
+            scope: "organization" | "user";
             share_synced_data: boolean;
             share_query_access: boolean;
             share_write_access: boolean;
@@ -695,6 +697,7 @@ export const useAppStore = create<AppState>()(
             lastError: i.last_error,
             connectedAt: i.connected_at,
             connectedBy: i.connected_by,
+            scope: i.scope ?? "user",
             shareSyncedData: i.share_synced_data,
             shareQueryAccess: i.share_query_access,
             shareWriteAccess: i.share_write_access,

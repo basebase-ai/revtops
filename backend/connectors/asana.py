@@ -50,7 +50,7 @@ class AsanaConnector(BaseConnector):
         name="Asana",
         slug="asana",
         auth_type=AuthType.OAUTH2,
-        scope=ConnectorScope.ORGANIZATION,
+        scope=ConnectorScope.USER,
         entity_types=["teams", "projects", "issues"],
         capabilities=[Capability.SYNC, Capability.WRITE],
         write_operations=[

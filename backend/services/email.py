@@ -300,13 +300,13 @@ async def send_invitation_email(to_email: str, name: str) -> bool:
         print(f"[Email] RESEND_API_KEY not set, skipping email to {to_email}")
         return False
 
-    html_content = f"""
+    html_content: str = f"""
 <!DOCTYPE html>
 <html lang="en" xmlns="http://www.w3.org/1999/xhtml">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>You're off the waitlist!</title>
+  <title>You&apos;re invited to use Penny</title>
 </head>
 <body style="margin:0;padding:0;background:#f8f9fa;color:#1a1a1a;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
   <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f8f9fa;padding:32px 12px;">
@@ -326,13 +326,13 @@ async def send_invitation_email(to_email: str, name: str) -> bool:
           </tr>
           <tr>
             <td style="padding:24px 36px 0;text-align:center;">
-              <h1 style="margin:0 0 12px;font-size:24px;line-height:1.3;color:#111;font-weight:700;">You&apos;re in, {name}!</h1>
-              <p style="margin:0;color:#6b7280;font-size:15px;line-height:1.6;">Your spot at Basebase is ready. Sign in and get your team AI-powered in 10 minutes.</p>
+              <h1 style="margin:0 0 12px;font-size:24px;line-height:1.3;color:#111;font-weight:700;">{name}, you&apos;re invited to use Penny in your Slack workspace</h1>
+              <p style="margin:0;color:#6b7280;font-size:15px;line-height:1.6;">Install Basebase to get started.</p>
             </td>
           </tr>
           <tr>
             <td style="padding:28px 36px 0;text-align:center;">
-              <a href="{settings.FRONTEND_URL}" style="display:inline-block;background:#FF9F1C;color:#111111;text-decoration:none;font-size:16px;font-weight:600;padding:14px 32px;border-radius:10px;">Sign in to get started</a>
+              <a href="{settings.FRONTEND_URL}" style="display:inline-block;background:#FF9F1C;color:#111111;text-decoration:none;font-size:16px;font-weight:600;padding:14px 32px;border-radius:10px;">Install Basebase</a>
             </td>
           </tr>
           <tr>
@@ -341,7 +341,7 @@ async def send_invitation_email(to_email: str, name: str) -> bool:
                 <tr>
                   <td style="padding:20px 24px;">
                     <p style="margin:0 0 12px;font-size:14px;font-weight:600;color:#111;">One AI for your whole team</p>
-                    <p style="margin:0;color:#6b7280;font-size:13px;line-height:1.6;">Connect your CRM, Slack, email, and calendar &mdash; then ask Penny anything right from Slack. When one person learns something, the whole team benefits.</p>
+                    <p style="margin:0;color:#6b7280;font-size:13px;line-height:1.6;">Penny lives in your Slack workspace. Ask her anything &mdash; deal updates, meeting prep, customer research &mdash; and she answers right in the thread. When one person learns something, the whole team benefits.</p>
                   </td>
                 </tr>
               </table>
@@ -349,7 +349,7 @@ async def send_invitation_email(to_email: str, name: str) -> bool:
           </tr>
           <tr>
             <td style="padding:28px 36px;text-align:center;">
-              <p style="margin:0;color:#9ca3af;font-size:12px;line-height:1.6;">You received this email because you signed up for the Basebase waitlist.</p>
+              <p style="margin:0;color:#9ca3af;font-size:12px;line-height:1.6;">You received this email because you signed up for the Basebase waitlist.<br/>If this wasn&apos;t expected, you can safely ignore it.</p>
             </td>
           </tr>
         </table>
@@ -360,14 +360,14 @@ async def send_invitation_email(to_email: str, name: str) -> bool:
 </html>
     """
 
-    text_content = f"""
-Hey {name},
+    text_content: str = f"""
+{name}, you're invited to use Penny in your Slack workspace.
 
-Your spot at Basebase is ready. Sign in and get your team AI-powered in 10 minutes.
+Install Basebase to get started.
 
-One AI for your whole team -- connect your CRM, Slack, email, and calendar, then ask Penny anything right from Slack. When one person learns something, the whole team benefits.
+Penny lives in your Slack workspace. Ask her anything -- deal updates, meeting prep, customer research -- and she answers right in the thread. When one person learns something, the whole team benefits.
 
-Sign in to get started: {settings.FRONTEND_URL}
+Get started: {settings.FRONTEND_URL}
 
 Questions? Just reply to this email.
 
@@ -385,7 +385,7 @@ Questions? Just reply to this email.
                 json={
                     "from": settings.EMAIL_FROM or "Basebase <hello@basebase.com>",
                     "to": [to_email],
-                    "subject": "You're off the waitlist! 🎉",
+                    "subject": "You're invited to use Penny",
                     "html": html_content,
                     "text": text_content,
                 },
@@ -430,7 +430,7 @@ async def send_org_invitation_email(
         print(f"[Email] RESEND_API_KEY not set, skipping org invite to {to_email}")
         return False
 
-    params: list[str] = [f"invite=1", f"org_name={quote(org_name)}"]
+    params: list[str] = [f"invite=1", f"org_name={quote(org_name)}", f"email={quote(to_email)}"]
     if org_logo_url:
         params.append(f"org_logo={quote(org_logo_url)}")
     if invited_by_name:
@@ -439,10 +439,16 @@ async def send_org_invitation_email(
         params.append(f"inviter_avatar={quote(inviter_avatar_url)}")
     invite_url: str = f"{settings.FRONTEND_URL}?{'&'.join(params)}"
 
-    inviter_line: str = (
-        f"{invited_by_name} has invited you to join <strong>{org_name}</strong> on Basebase."
+    headline: str = (
+        f"{invited_by_name} invited you to use Penny in {org_name}&apos;s Slack workspace"
         if invited_by_name
-        else f"You've been invited to join <strong>{org_name}</strong> on Basebase."
+        else f"You&apos;ve been invited to use Penny in {org_name}&apos;s Slack workspace"
+    )
+
+    subject: str = (
+        f"{invited_by_name} invited you to use Penny"
+        if invited_by_name
+        else f"You're invited to use Penny in {org_name}'s Slack"
     )
 
     html_content: str = f"""
@@ -451,7 +457,7 @@ async def send_org_invitation_email(
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>You're invited to {org_name} on Basebase</title>
+  <title>{subject}</title>
 </head>
 <body style="margin:0;padding:0;background:#f8f9fa;color:#1a1a1a;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
   <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f8f9fa;padding:32px 12px;">
@@ -471,13 +477,13 @@ async def send_org_invitation_email(
           </tr>
           <tr>
             <td style="padding:24px 36px 0;text-align:center;">
-              <h1 style="margin:0 0 12px;font-size:24px;line-height:1.3;color:#111;font-weight:700;">Join {org_name} on Basebase</h1>
-              <p style="margin:0;color:#6b7280;font-size:15px;line-height:1.6;">{inviter_line}</p>
+              <h1 style="margin:0 0 12px;font-size:24px;line-height:1.3;color:#111;font-weight:700;">{headline}</h1>
+              <p style="margin:0;color:#6b7280;font-size:15px;line-height:1.6;">Install Basebase to accept.</p>
             </td>
           </tr>
           <tr>
             <td style="padding:28px 36px 0;text-align:center;">
-              <a href="{invite_url}" style="display:inline-block;background:#FF9F1C;color:#111111;text-decoration:none;font-size:16px;font-weight:600;padding:14px 32px;border-radius:10px;">Accept invitation</a>
+              <a href="{invite_url}" style="display:inline-block;background:#FF9F1C;color:#111111;text-decoration:none;font-size:16px;font-weight:600;padding:14px 32px;border-radius:10px;">Install Basebase</a>
             </td>
           </tr>
           <tr>
@@ -486,8 +492,7 @@ async def send_org_invitation_email(
                 <tr>
                   <td style="padding:20px 24px;">
                     <p style="margin:0 0 12px;font-size:14px;font-weight:600;color:#111;">One AI for your whole team</p>
-                    <p style="margin:0 0 6px;color:#6b7280;font-size:13px;line-height:1.6;">See what&apos;s happening across every tool. Know what matters most. Act on it &mdash; right from Slack.</p>
-                    <p style="margin:10px 0 0;color:#6b7280;font-size:13px;line-height:1.6;">When one person learns something, the whole team benefits. Shared context. Shared memory. Shared momentum.</p>
+                    <p style="margin:0;color:#6b7280;font-size:13px;line-height:1.6;">Penny lives in your Slack workspace. Ask her anything &mdash; deal updates, meeting prep, customer research &mdash; and she answers right in the thread. When one person learns something, the whole team benefits.</p>
                   </td>
                 </tr>
               </table>
@@ -495,7 +500,7 @@ async def send_org_invitation_email(
           </tr>
           <tr>
             <td style="padding:28px 36px;text-align:center;">
-              <p style="margin:0;color:#9ca3af;font-size:12px;line-height:1.6;">You received this email because someone invited you to {org_name} on Basebase.<br/>If this wasn&apos;t expected, you can safely ignore it.</p>
+              <p style="margin:0;color:#9ca3af;font-size:12px;line-height:1.6;">You received this email because someone at {org_name} invited you to use Penny.<br/>If this wasn&apos;t expected, you can safely ignore it.</p>
             </td>
           </tr>
         </table>
@@ -506,20 +511,20 @@ async def send_org_invitation_email(
 </html>
     """
 
-    inviter_text: str = (
-        f"{invited_by_name} has invited you to join {org_name} on Basebase."
+    headline_text: str = (
+        f"{invited_by_name} invited you to use Penny in {org_name}'s Slack workspace."
         if invited_by_name
-        else f"You've been invited to join {org_name} on Basebase."
+        else f"You've been invited to use Penny in {org_name}'s Slack workspace."
     )
 
     text_content: str = f"""
-{inviter_text}
+{headline_text}
 
-Join {org_name} on Basebase -- one AI for your whole team.
+Install Basebase to accept.
 
-See what's happening across every tool. Know what matters most. Act on it -- right from Slack. When one person learns something, the whole team benefits.
+Penny lives in your Slack workspace. Ask her anything -- deal updates, meeting prep, customer research -- and she answers right in the thread. When one person learns something, the whole team benefits.
 
-Accept the invitation: {invite_url}
+Get started: {invite_url}
 
 Questions? Just reply to this email.
 
@@ -537,7 +542,7 @@ Questions? Just reply to this email.
                 json={
                     "from": settings.EMAIL_FROM or "Basebase <hello@basebase.com>",
                     "to": [to_email],
-                    "subject": f"You're invited to {org_name} on Basebase",
+                    "subject": subject,
                     "html": html_content,
                     "text": text_content,
                 },

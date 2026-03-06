@@ -46,10 +46,8 @@ class AuthType(Enum):
     CUSTOM = "custom"
 
 
-# ConnectorScope is deprecated - all connectors are now user-scoped.
-# Kept for backward compatibility during migration.
 class ConnectorScope(Enum):
-    """DEPRECATED: All connectors are now user-scoped."""
+    """Whether one connection per org suffices or each user needs their own."""
 
     ORGANIZATION = "organization"
     USER = "user"
@@ -114,8 +112,6 @@ class ConnectorMeta:
     name: str
     slug: str
     auth_type: AuthType
-    # DEPRECATED: scope is ignored - all connectors are user-scoped.
-    # Kept for backward compatibility; will be removed in future version.
     scope: ConnectorScope = ConnectorScope.USER
     entity_types: list[str] = field(default_factory=list)
     capabilities: list[Capability] = field(default_factory=lambda: [Capability.SYNC])
