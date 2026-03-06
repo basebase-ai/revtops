@@ -25,12 +25,14 @@ function OrgSwitcherSection({
   memberCount,
   creditsDisplay,
   onOpenOrgPanel,
+  onCreateNewOrg,
 }: {
   collapsed: boolean;
   organization: OrganizationInfo;
   memberCount: number;
   creditsDisplay: { balance: number; included: number } | null;
   onOpenOrgPanel: () => void;
+  onCreateNewOrg: () => void;
 }): JSX.Element {
   const organizations: UserOrganization[] = useAppStore((state) => state.organizations);
   const switchActiveOrganization = useAppStore((state) => state.switchActiveOrganization);
@@ -52,8 +54,6 @@ function OrgSwitcherSection({
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [showDropdown]);
 
-  const hasMultipleOrgs: boolean = organizations.length > 1;
-
   const handleSwitchOrg = async (orgId: string): Promise<void> => {
     setShowDropdown(false);
     await switchActiveOrganization(orgId);
@@ -64,7 +64,7 @@ function OrgSwitcherSection({
   return (
     <div className="relative" ref={dropdownRef}>
       <button
-        onClick={hasMultipleOrgs ? () => setShowDropdown((prev) => !prev) : onOpenOrgPanel}
+        onClick={() => setShowDropdown((prev) => !prev)}
         className={`w-full flex items-center gap-3 px-3 py-3 hover:bg-surface-800/50 transition-colors ${collapsed ? 'justify-center' : ''}`}
       >
         {organization.logoUrl ? (
@@ -112,7 +112,7 @@ function OrgSwitcherSection({
             </div>
           </div>
         )}
-        {!collapsed && hasMultipleOrgs && (
+        {!collapsed && (
           <svg
             className={`w-4 h-4 text-surface-400 transition-transform ${showDropdown ? 'rotate-90' : ''}`}
             fill="none"
@@ -125,7 +125,7 @@ function OrgSwitcherSection({
       </button>
 
       {/* Org switcher dropdown */}
-      {showDropdown && hasMultipleOrgs && !collapsed && (
+      {showDropdown && !collapsed && (
         <div className="absolute bottom-full left-0 right-0 mb-1 mx-2 bg-surface-800 border border-surface-700 rounded-lg shadow-xl overflow-hidden z-50">
           <div className="py-1">
             {organizations.map((org) => (
@@ -168,6 +168,19 @@ function OrgSwitcherSection({
                 )}
               </div>
             ))}
+            <div className="border-t border-surface-700 my-1" />
+            <button
+              type="button"
+              onClick={() => { setShowDropdown(false); onCreateNewOrg(); }}
+              className="w-full flex items-center gap-3 px-3 py-2.5 text-left text-surface-400 hover:bg-surface-700 hover:text-surface-200 transition-colors"
+            >
+              <div className="w-6 h-6 rounded bg-surface-600 flex items-center justify-center text-surface-300 text-xs font-medium flex-shrink-0">
+                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                </svg>
+              </div>
+              <span className="text-sm">Create new organization</span>
+            </button>
           </div>
         </div>
       )}
@@ -192,6 +205,7 @@ interface SidebarProps {
   memberCount: number;
   creditsDisplay: { balance: number; included: number } | null;
   onOpenOrgPanel: () => void;
+  onCreateNewOrg: () => void;
   onOpenProfilePanel: () => void;
   isMobile?: boolean;
   onCloseMobile?: () => void;
@@ -268,6 +282,7 @@ export function Sidebar({
   memberCount,
   creditsDisplay,
   onOpenOrgPanel,
+  onCreateNewOrg,
   onOpenProfilePanel,
   isMobile = false,
   onCloseMobile,
@@ -442,6 +457,7 @@ export function Sidebar({
           memberCount={memberCount}
           creditsDisplay={creditsDisplay}
           onOpenOrgPanel={onOpenOrgPanel}
+          onCreateNewOrg={onCreateNewOrg}
         />
 
         {/* User Profile */}

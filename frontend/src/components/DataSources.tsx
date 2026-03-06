@@ -1188,7 +1188,7 @@ export function DataSources(): JSX.Element {
         <div className="mt-4 pt-4 border-t border-surface-700/50 space-y-3">
           <div className="text-xs text-surface-400 space-y-1">
             <p><strong className="text-surface-300">To sync:</strong> Invite @Penny to channels—type <code className="text-surface-300">/invite @Penny</code> or add her from channel details.</p>
-            <p><strong className="text-surface-300">To chat:</strong> @mention Penny in any channel she’s in; she’ll reply in the thread.</p>
+            <p><strong className="text-surface-300">To chat:</strong> Mention @Penny in any channel she’s in; she’ll reply in the thread.</p>
           </div>
           <div className="flex items-center justify-between">
             <div>

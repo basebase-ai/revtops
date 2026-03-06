@@ -45,6 +45,34 @@ logger = logging.getLogger(__name__)
 MEMBER_ACTIVE_STATUSES: tuple[str, ...] = ("active", "onboarding")
 
 
+def _slugify_domain(domain: str) -> str:
+    """Convert email_domain to URL-safe handle (e.g. orangeco.com → orangeco)."""
+    import re
+    s = (domain or "").strip().lower()
+    # Strip common TLDs
+    s = re.sub(r"\.(com|co|io|org|net|ai|app|dev|xyz|tech)(\.[a-z]{2})?$", "", s)
+    # Keep only alphanumeric and hyphen
+    s = re.sub(r"[^a-z0-9-]", "", s)
+    return s[:64] if s else "org"
+
+
+async def _unique_handle(session: Any, base: str) -> str:
+    """Return base or base-N if base is taken (N=2,3,...)."""
+    handle = base
+    n = 2
+    while True:
+        existing = await session.execute(
+            select(Organization).where(
+                Organization.handle.isnot(None),
+                func.lower(Organization.handle) == handle.lower(),
+            )
+        )
+        if existing.scalar_one_or_none() is None:
+            return handle
+        handle = f"{base}-{n}"
+        n += 1
+
+
 _scope_by_provider_cache: dict[str, str] | None = None
 
 
@@ -585,6 +613,7 @@ class CreateOrganizationRequest(BaseModel):
     name: str
     email_domain: str
     website_url: Optional[str] = None
+    allow_duplicate_domain: bool = False  # When True, create new org even if user has one with same domain (for "create new org" flow)
 
 
 class OrganizationResponse(BaseModel):
@@ -595,6 +624,7 @@ class OrganizationResponse(BaseModel):
     email_domain: Optional[str]
     logo_url: Optional[str] = None
     company_summary: Optional[str] = None
+    handle: Optional[str] = None
 
 
 class SyncUserRequest(BaseModel):
@@ -1041,10 +1071,12 @@ async def create_organization(
                 email_domain=existing.email_domain,
                 logo_url=existing.logo_url,
                 company_summary=existing.company_summary,
+                handle=existing.handle,
             )
 
         # Dedup: if this user already owns an org with the same email_domain, return it
-        if creator_user_id and request.email_domain:
+        # (Skip when allow_duplicate_domain=True — user explicitly wants a second org with same domain)
+        if not request.allow_duplicate_domain and creator_user_id and request.email_domain:
             from models.org_member import OrgMember
 
             existing_by_domain = await session.execute(
@@ -1065,15 +1097,19 @@ async def create_organization(
                     email_domain=dup.email_domain,
                     logo_url=dup.logo_url,
                     company_summary=dup.company_summary,
+                    handle=dup.handle,
                 )
 
         # Create new organization with free tier auto-enrolled
         now = datetime.now(timezone.utc)
+        base_handle: str = _slugify_domain(request.email_domain)
+        org_handle: str = await _unique_handle(session, base_handle)
         new_org = Organization(
             id=org_uuid,
             name=request.name,
             email_domain=request.email_domain,
             website_url=(request.website_url or "").strip() or None,
+            handle=org_handle,
             subscription_tier="free",
             subscription_status="active",
             credits_balance=100,
@@ -1179,6 +1215,7 @@ async def create_organization(
             email_domain=new_org.email_domain,
             logo_url=new_org.logo_url,
             company_summary=new_org.company_summary,
+            handle=new_org.handle,
         )
 
 

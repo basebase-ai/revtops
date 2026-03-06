@@ -10,6 +10,7 @@ import { SiHubspot, SiSalesforce, SiSlack, SiGmail, SiGooglecalendar, SiZoom } f
 import { HiGlobeAlt, HiUserGroup, HiDeviceMobile, HiLightningBolt } from 'react-icons/hi';
 
 import { API_BASE } from '../lib/api';
+import { getDomainFromUrl } from '../lib/email';
 import { supabase } from '../lib/supabase';
 import { useAppStore, useIntegrations } from '../store';
 import { useIsMobile } from '../hooks';
@@ -30,6 +31,7 @@ interface TeamMember {
 interface OnboardingWizardProps {
   emailDomain: string;
   isInvitedMode?: boolean;
+  isCreatingNewOrg?: boolean;
   onComplete: () => void;
   onBack: () => void;
 }
@@ -93,10 +95,10 @@ const SKIP_MESSAGES: Record<number, string> = {
   4: "You can invite teammates later from Organization settings. Skip?",
 };
 
-export function OnboardingWizard({ emailDomain, isInvitedMode = false, onComplete: rawOnComplete, onBack }: OnboardingWizardProps): JSX.Element {
+export function OnboardingWizard({ emailDomain, isInvitedMode = false, isCreatingNewOrg = false, onComplete: rawOnComplete, onBack }: OnboardingWizardProps): JSX.Element {
   const TOTAL_STEPS: number = isInvitedMode ? TOTAL_STEPS_INVITED : TOTAL_STEPS_NORMAL;
 
-  const { user, organization, setOrganization, syncUserToBackend, fetchUserOrganizations, fetchIntegrations } =
+  const { user, organization, setOrganization, setIntegrations, syncUserToBackend, fetchUserOrganizations, fetchIntegrations, switchActiveOrganization } =
     useAppStore();
 
   const orgId: string | null = organization?.id ?? null;
@@ -220,7 +222,7 @@ export function OnboardingWizard({ emailDomain, isInvitedMode = false, onComplet
     (i) => i.provider === 'slack' && (i.currentUserConnected || (i.scope === 'organization' && i.isActive))
   );
 
-  const suggestedName: string = emailDomain
+  const suggestedName: string = (getDomainFromUrl(websiteUrl.trim()) || emailDomain)
     .replace(/\.(com|co|io|org|net|ai|app|dev|xyz)(\.[a-z]{2})?$/i, '')
     .split(/[.-]/)
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
@@ -236,26 +238,39 @@ export function OnboardingWizard({ emailDomain, isInvitedMode = false, onComplet
       const { data: { session } } = await supabase.auth.getSession();
       const headers: Record<string, string> = { 'Content-Type': 'application/json' };
       if (session?.access_token) headers['Authorization'] = `Bearer ${session.access_token}`;
+      const urlTrimmed: string = websiteUrl.trim();
+      const domainFromUrl: string = getDomainFromUrl(urlTrimmed);
+      const effectiveEmailDomain: string = domainFromUrl || emailDomain;
+
       const response = await fetch(`${API_BASE}/auth/organizations`, {
         method: 'POST',
         headers,
         body: JSON.stringify({
           id: companyId,
           name: orgName.trim(),
-          email_domain: emailDomain,
-          website_url: websiteUrl.trim() || undefined,
+          email_domain: effectiveEmailDomain,
+          website_url: urlTrimmed || undefined,
+          allow_duplicate_domain: isCreatingNewOrg,
         }),
       });
       if (!response.ok) {
         const text = await response.text();
         throw new Error(text || `Failed to create organization: ${response.status}`);
       }
-      const data = (await response.json()) as { id: string; name: string; logo_url: string | null };
-      setOrganization({ id: data.id, name: data.name, logoUrl: data.logo_url ?? null, handle: null });
+      const data = (await response.json()) as { id: string; name: string; logo_url: string | null; handle?: string | null };
+      const orgHandle: string | null = data.handle ?? null;
+      setOrganization({ id: data.id, name: data.name, logoUrl: data.logo_url ?? null, handle: orgHandle });
+      // Clear integrations so we don't show the previous org's connections (e.g. Slack) as connected
+      setIntegrations([]);
       await syncUserToBackend();
       await fetchUserOrganizations();
+      // Switch fully to the new org (backend + URL) as if user had selected it from the org dropdown
+      await switchActiveOrganization(data.id);
+      const { organization: updatedOrg } = useAppStore.getState();
+      const handle: string | null = orgHandle ?? updatedOrg?.handle ?? null;
+      const prefix = handle ? `/${handle}` : '';
+      window.history.replaceState({}, '', `${prefix}/chat`);
       // Fire-and-forget: trigger company research workflow if website URL provided
-      const urlTrimmed: string = websiteUrl.trim();
       if (urlTrimmed && user?.id) {
         void (async (): Promise<void> => {
           try {
@@ -471,7 +486,7 @@ export function OnboardingWizard({ emailDomain, isInvitedMode = false, onComplet
           <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
           </svg>
-          Sign out
+          {isCreatingNewOrg ? 'Cancel' : 'Sign out'}
         </button>
 
         <div className="bg-surface-900/80 backdrop-blur-sm border border-surface-800 rounded-2xl p-8">

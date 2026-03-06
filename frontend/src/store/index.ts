@@ -141,6 +141,8 @@ export const useAppStore = Object.assign(useAppStoreHook, {
   setState: setMergedState,
 });
 
+// NOTE: The store implementation lives in authStore.ts, chatStore.ts, uiStore.ts
+
 // =============================================================================
 // Selector Hooks (for convenience)
 // =============================================================================

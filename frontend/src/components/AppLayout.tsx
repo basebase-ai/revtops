@@ -145,9 +145,10 @@ type WsMessage = WsActiveTasks | WsTaskStarted | WsTaskChunk | WsTaskComplete | 
 // Props
 interface AppLayoutProps {
   onLogout: () => void;
+  onCreateNewOrg: () => void;
 }
 
-export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
+export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Element {
   const queryClient = useQueryClient();
   
   // Get state from Zustand store using shallow comparison to prevent unnecessary re-renders
@@ -1326,6 +1327,7 @@ export function AppLayout({ onLogout }: AppLayoutProps): JSX.Element {
           memberCount={teamData?.members.length ?? 0}
           creditsDisplay={billingStatus ? { balance: billingStatus.credits_balance, included: billingStatus.credits_included } : null}
           onOpenOrgPanel={() => { setOrgPanelTab('team'); setShowOrgPanel(true); }}
+          onCreateNewOrg={onCreateNewOrg}
           onOpenProfilePanel={() => setShowProfilePanel(true)}
           isMobile={isMobile}
           onCloseMobile={() => setMobileSidebarOpen(false)}

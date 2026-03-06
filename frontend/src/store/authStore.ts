@@ -140,6 +140,20 @@ export const useAuthStore = create<AuthState>()(
             data.organization.handle ??
             organizations.find((o) => o.id === orgId)?.handle ??
             null;
+          const orgInList = organizations.find((o) => o.id === orgId);
+          const updatedOrgs: UserOrganization[] = orgInList
+            ? organizations.map((o) => ({ ...o, isActive: o.id === orgId }))
+            : [
+                ...organizations.map((o) => ({ ...o, isActive: false })),
+                {
+                  id: data.organization.id,
+                  name: data.organization.name,
+                  logoUrl: data.organization.logo_url,
+                  handle: orgHandle,
+                  role: "admin",
+                  isActive: true,
+                },
+              ];
 
           set({
             organization: {
@@ -148,10 +162,7 @@ export const useAuthStore = create<AuthState>()(
               logoUrl: data.organization.logo_url,
               handle: orgHandle,
             },
-            organizations: organizations.map((o) => ({
-              ...o,
-              isActive: o.id === orgId,
-            })),
+            organizations: updatedOrgs,
           });
 
           // Clear org-scoped state in other stores

@@ -9,7 +9,7 @@
  * Note: Public landing page can be served from www.basebase.com (VITE_WWW_URL).
  */
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { supabase } from './lib/supabase';
 import { getEmailDomain } from './lib/email';
 import { API_BASE } from './lib/api';
@@ -35,16 +35,25 @@ function App(): JSX.Element {
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [emailDomain, setEmailDomain] = useState<string>('');
   const [onboardingMode, setOnboardingMode] = useState<'new' | 'invited' | null>(null);
-  
+  const [isCreatingNewOrg, setIsCreatingNewOrg] = useState<boolean>(false);
+
   // Zustand store
-  const { 
-    user, 
+  const {
+    user,
     organization,
-    setUser, 
-    setOrganization, 
+    setUser,
+    setOrganization,
     logout: storeLogout,
     fetchUserOrganizations,
+    switchActiveOrganization,
   } = useAppStore();
+
+  const handleCreateNewOrg = useCallback((): void => {
+    localStorage.setItem('onboarding_step', '1');
+    setOnboardingMode('new');
+    setIsCreatingNewOrg(true);
+    setScreen('onboarding-wizard');
+  }, []);
 
   // Easter egg: Cmd/Ctrl+Shift+O opens onboarding for testing (when in app)
   useEffect(() => {
@@ -52,14 +61,12 @@ function App(): JSX.Element {
     const onKeyDown = (e: KeyboardEvent): void => {
       if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'o') {
         e.preventDefault();
-        localStorage.setItem('onboarding_step', '1');
-        setOnboardingMode('new');
-        setScreen('onboarding-wizard');
+        handleCreateNewOrg();
       }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [screen]);
+  }, [screen, handleCreateNewOrg]);
 
   // Check auth status on mount
   useEffect(() => {
@@ -459,17 +466,30 @@ function App(): JSX.Element {
         <OnboardingWizard
           emailDomain={emailDomain}
           isInvitedMode={onboardingMode === 'invited'}
-          onComplete={() => {
+          isCreatingNewOrg={isCreatingNewOrg}
+          onComplete={async () => {
             const state = useAppStore.getState();
+            if (isCreatingNewOrg && state.organization?.id) {
+              await fetchUserOrganizations();
+              await switchActiveOrganization(state.organization.id);
+              setIsCreatingNewOrg(false);
+            }
             state.startNewChat();
             const org = state.organization;
             const orgs = state.organizations;
             const handle = org?.handle ?? (org?.id ? orgs.find((o) => o.id === org.id)?.handle ?? null : null) ?? null;
-            const prefix = handle ? `/${handle}` : "";
-            window.history.replaceState({}, "", `${prefix}/chat`);
-            setScreen("app");
+            const prefix = handle ? `/${handle}` : '';
+            window.history.replaceState({}, '', `${prefix}/chat`);
+            setScreen('app');
           }}
-          onBack={() => void handleLogout()}
+          onBack={() => {
+            if (isCreatingNewOrg) {
+              setIsCreatingNewOrg(false);
+              setScreen('app');
+            } else {
+              void handleLogout();
+            }
+          }}
         />
       );
 
@@ -496,6 +516,7 @@ function App(): JSX.Element {
       return (
         <AppLayout
           onLogout={() => void handleLogout()}
+          onCreateNewOrg={handleCreateNewOrg}
         />
       );
     }
