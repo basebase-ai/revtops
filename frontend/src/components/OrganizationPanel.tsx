@@ -18,7 +18,6 @@ import { useAppStore } from '../store';
 import { useTeamMembers, useUpdateOrganization, useLinkIdentity, useUnlinkIdentity, useUpdateGuestUser, useUpdateMemberRole, useDeleteMember, useDeleteOrganization, organizationKeys } from '../hooks';
 import type { TeamMember, IdentityMapping } from '../hooks';
 import { apiRequest } from '../lib/api';
-import { queryClient } from '../lib/queryClient';
 import { Avatar } from './Avatar';
 import { SubscriptionSetup } from './SubscriptionSetup';
 
