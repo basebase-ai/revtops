@@ -696,7 +696,6 @@ Actions:
 
 Memories are scoped via entity_type:
 - "user": Personal facts/preferences (default).
-- "organization": Company-wide facts shared across all members.
 - "organization_member": Facts about the user's specific role.
 
 Use when the user asks you to "remember" or "forget" something, or when a saved memory needs revision.
@@ -720,7 +719,7 @@ Each memory should be a single, self-contained statement. Do NOT save conversati
             },
             "entity_type": {
                 "type": "string",
-                "enum": ["user", "organization", "organization_member"],
+                "enum": ["user", "organization_member"],
                 "description": "Scope level. Defaults to 'user'.",
                 "default": "user",
             },

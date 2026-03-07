@@ -1,4 +1,4 @@
-"""Memory model for persistent agent memories/preferences at user, org, and job levels."""
+"""Memory model for persistent agent memories/preferences at user and job (org membership) levels."""
 from __future__ import annotations
 
 import uuid
@@ -13,7 +13,7 @@ from models.database import Base
 
 
 class Memory(Base):
-    """Stores persistent memories/preferences scoped to a user, organization, or job (org membership)."""
+    """Stores persistent memories/preferences scoped to a user or job (org membership)."""
 
     __tablename__ = "memories"
     __table_args__ = (
@@ -25,7 +25,7 @@ class Memory(Base):
     )
     entity_type: Mapped[str] = mapped_column(
         String(30), nullable=False
-    )  # 'user' | 'organization' | 'organization_member'
+    )  # 'user' | 'organization_member'
     entity_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), nullable=False
     )  # PK of the associated entity

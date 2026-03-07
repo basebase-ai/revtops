@@ -5930,7 +5930,7 @@ async def _save_memory(
     user_id: str | None,
     skip_approval: bool = False,
 ) -> dict[str, Any]:
-    """Save a persistent memory at the user, organization, or job level."""
+    """Save a persistent memory at the user or job level."""
     content: str = params.get("content", "").strip()
     if not content:
         return {"error": "content is required."}
@@ -5938,8 +5938,8 @@ async def _save_memory(
         return {"error": "Cannot save memory without a user context."}
 
     entity_type: str = params.get("entity_type", "user").strip()
-    if entity_type not in ("user", "organization", "organization_member"):
-        return {"error": f"Invalid entity_type '{entity_type}'. Must be 'user', 'organization', or 'organization_member'."}
+    if entity_type not in ("user", "organization_member"):
+        return {"error": f"Invalid entity_type '{entity_type}'. Must be 'user' or 'organization_member'."}
 
     if skip_approval:
         logger.info("[Tools._save_memory] Auto-approved, saving memory immediately")
@@ -5989,8 +5989,6 @@ async def execute_save_memory(
     entity_id: UUID
     if entity_type == "user":
         entity_id = UUID(user_id)
-    elif entity_type == "organization":
-        entity_id = UUID(organization_id)
     elif entity_type == "organization_member":
         # Look up the membership for this user + org
         async with get_session(organization_id=organization_id) as session:
@@ -6053,11 +6051,8 @@ async def _delete_memory(
         if not memory:
             return {"error": f"Memory {memory_id} not found."}
 
-        # User-level and job-level memories can only be deleted by the owner.
-        # Org-level memories can be deleted by any org member.
-        if memory.entity_type != "organization":
-            if memory.created_by_user_id and str(memory.created_by_user_id) != user_id:
-                return {"error": f"Memory {memory_id} does not belong to this user."}
+        if memory.created_by_user_id and str(memory.created_by_user_id) != user_id:
+            return {"error": f"Memory {memory_id} does not belong to this user."}
 
         await session.delete(memory)
         await session.commit()
@@ -6093,10 +6088,8 @@ async def _update_memory(
         if not memory:
             return {"error": f"Memory {memory_id} not found."}
 
-        # Permission check: same rules as delete
-        if memory.entity_type != "organization":
-            if memory.created_by_user_id and str(memory.created_by_user_id) != user_id:
-                return {"error": f"Memory {memory_id} does not belong to this user."}
+        if memory.created_by_user_id and str(memory.created_by_user_id) != user_id:
+            return {"error": f"Memory {memory_id} does not belong to this user."}
 
         memory.content = new_content
         await session.commit()

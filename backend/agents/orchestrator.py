@@ -619,12 +619,10 @@ a channel @mention, thread reply, or automated workflow), **after completing the
 ask 1-2 friendly questions to learn more about them. Prioritize in this order:
 
 1. **Job**: title, general responsibilities, current projects or initiatives
-2. **Organization**: what the company does, approximate size, mission
-3. **Personal**: location, timezone, work-style preferences
+2. **Personal**: location, timezone, work-style preferences
 
 Use `manage_memory` with the appropriate `entity_type` to persist what you learn:
 - `entity_type="user"` for personal facts/preferences
-- `entity_type="organization"` for company-wide facts
 - `entity_type="organization_member"` for role/job-specific facts
 
 **Phone number**: If the user has no phone number on file and has not declined to share one
@@ -973,11 +971,10 @@ class ChatOrchestrator:
             return None
 
     async def _load_context_profile(self) -> dict[str, Any]:
-        """Load the three-tier context profile: user, organization, and job memories + structured fields.
+        """Load the two-tier context profile: user and job memories + structured fields.
 
         Returns a dict with keys:
             user_memories: list of {id, content}
-            org_memories: list of {id, content}
             job_memories: list of {id, content}
             membership_title: str | None
             reports_to_name: str | None
@@ -987,7 +984,6 @@ class ChatOrchestrator:
 
         profile: dict[str, Any] = {
             "user_memories": [],
-            "org_memories": [],
             "job_memories": [],
             "membership_title": None,
             "reports_to_name": None,
@@ -1002,7 +998,7 @@ class ChatOrchestrator:
                     select(Memory)
                     .where(Memory.organization_id == UUID(self.organization_id))  # type: ignore[arg-type]
                     .where(
-                        Memory.entity_type.in_(["user", "organization", "organization_member"])
+                        Memory.entity_type.in_(["user", "organization_member"])
                     )
                     .order_by(Memory.created_at.asc())
                 )
@@ -1062,8 +1058,6 @@ class ChatOrchestrator:
                         if mem.category == _AGENT_GLOBAL_COMMANDS_CATEGORY:
                             continue
                         profile["user_memories"].append(entry)
-                    elif mem.entity_type == "organization" and mem.entity_id == org_uuid:
-                        profile["org_memories"].append(entry)
                     elif (
                         mem.entity_type == "organization_member"
                         and membership_id
@@ -1342,12 +1336,11 @@ WHERE scheduled_start >= '2026-01-27'::date AND scheduled_start < '2026-01-28'::
                 )
                 system_prompt += systems_manifest
 
-        # Load and inject three-tier context profile (user, org, job memories + structured fields)
+        # Load and inject two-tier context profile (user, job memories + structured fields)
         if self.organization_id and (self.user_id or self.conversation_id):
             profile: dict[str, Any] = await self._load_context_profile()
 
             user_memories: list[dict[str, str]] = profile["user_memories"]
-            org_memories: list[dict[str, str]] = profile["org_memories"]
             job_memories: list[dict[str, str]] = profile["job_memories"]
             participant_job_memories: list[dict[str, Any]] = profile.get("participant_job_memories", [])
             membership_title: str | None = profile["membership_title"]
@@ -1355,13 +1348,13 @@ WHERE scheduled_start >= '2026-01-27'::date AND scheduled_start < '2026-01-28'::
             phone_number: str | None = profile["phone_number"]
 
             has_any_context: bool = bool(
-                user_memories or org_memories or job_memories
+                user_memories or job_memories
                 or membership_title or reports_to_name or phone_number
             )
 
             if has_any_context:
                 system_prompt += "\n\n# Context Profile"
-                system_prompt += "\nThese are persisted facts about the user, their organization, and their role."
+                system_prompt += "\nThese are persisted facts about the user and their role."
                 system_prompt += " Follow preferences. Use manage_memory with action=\"update\" or action=\"delete\" and the [memory_id] shown in brackets to manage entries.\n"
 
             # -- User profile section --
@@ -1372,13 +1365,6 @@ WHERE scheduled_start >= '2026-01-27'::date AND scheduled_start < '2026-01-28'::
                 if phone_number:
                     system_prompt += f"- Phone: {phone_number}\n"
                 for mem in user_memories:
-                    system_prompt += f"- [{mem['id']}] {mem['content']}\n"
-
-            # -- Organization profile section --
-            if org_memories:
-                org_label: str = f" ({self.organization_name})" if self.organization_name else ""
-                system_prompt += f"\n## Organization Profile{org_label}\n"
-                for mem in org_memories:
                     system_prompt += f"- [{mem['id']}] {mem['content']}\n"
 
             # -- Job / role profile section --
@@ -1422,10 +1408,6 @@ WHERE scheduled_start >= '2026-01-27'::date AND scheduled_start < '2026-01-28'::
                 if not phone_number and phone_declined:
                     phone_status = "phone number declined"
                 completeness_parts.append(f"User profile: {user_count} memories, {phone_status}")
-
-                org_count: int = len(org_memories)
-                org_status: str = f"{org_count} memories" if org_count else "0 memories (needs attention)"
-                completeness_parts.append(f"Organization profile: {org_status}")
 
                 job_count: int = len(job_memories)
                 title_status: str = "title set" if membership_title else "no title set"
