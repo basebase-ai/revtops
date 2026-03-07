@@ -3751,14 +3751,17 @@ async def disconnect_integration(
             deleted_pipelines = len(result.fetchall())
             print(f"Disconnect: Deleted {deleted_pipelines} pipelines")
             
-            # 8. Clean up orphaned meetings (meetings with no linked activities)
+            # 8. Clean up orphaned meetings (meetings with no linked activities).
+            # Use NOT EXISTS instead of NOT IN to avoid edge cases and ensure
+            # PostgreSQL checks references row-by-row before deletion.
             result = await db_session.execute(
                 text("""
-                    DELETE FROM meetings
-                    WHERE organization_id = :org_id
-                      AND id NOT IN (
-                          SELECT DISTINCT meeting_id FROM activities
-                          WHERE meeting_id IS NOT NULL
+                    DELETE FROM meetings m
+                    WHERE m.organization_id = :org_id
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM activities a
+                          WHERE a.meeting_id = m.id
                       )
                     RETURNING id
                 """),
