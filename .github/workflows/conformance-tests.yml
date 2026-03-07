@@ -56,7 +56,7 @@ jobs:
 
       - name: Run frontend tests (if configured)
         run: |
-          if npm run | rg -q "^\s*test\b"; then
+          if npm run | grep -E -q "^\s*test\b"; then
             npm test
           else
             echo "No frontend test script configured; skipping frontend unit tests."

@@ -17,6 +17,8 @@ class _FakeResponse:
 
 
 class _FakeAsyncClient:
+    last_call: dict[str, Any] | None = None
+
     def __init__(self, **kwargs: Any) -> None:
         self.kwargs = kwargs
 
@@ -61,6 +63,7 @@ def test_pagerduty_incident_request_shape(monkeypatch: Any) -> None:
     )
 
     last_call = _FakeAsyncClient.last_call
+    assert last_call is not None, "Expected post() to be called"
     assert last_call["url"] == "https://api.pagerduty.com/incidents"
     assert last_call["headers"]["From"] == "alerts@revtops.com"
     assert last_call["headers"]["Authorization"] == "Token token=pd_test_key"
