@@ -46,6 +46,8 @@ def test_pagerduty_incident_request_shape(monkeypatch: Any) -> None:
     monkeypatch.setenv("PAGERDUTY_FROM_EMAIL", "alerts@revtops.com")
     monkeypatch.setenv("PagerDuty_Key", "pd_test_key")
     monkeypatch.setenv("PAGERDUTY_SERVICE_ID", "svc_123")
+    monkeypatch.setenv("FRONTEND_URL", "https://app.basebase.com")
+    monkeypatch.delenv("BACKEND_PUBLIC_URL", raising=False)
     monkeypatch.setattr(pagerduty, "settings", settings.__class__())
 
     import asyncio
