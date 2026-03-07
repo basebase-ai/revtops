@@ -684,6 +684,9 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                     ? 'Checking Slack users...'
                     : "Invite all Slack users that aren't yet in Basebase"}
                 </button>
+                <p className="mt-1 text-xs text-surface-500">
+                  Inviting someone grants access to your org&apos;s data and credit usage.
+                </p>
               </div>
 
               {/* Team List */}
