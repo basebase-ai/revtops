@@ -116,6 +116,19 @@ class BaseConnector(ABC):
 
         self._integration = integration
 
+    def _activity_visibility_fields(self) -> dict[str, Any]:
+        """Return integration_id, owner_user_id, visibility for Activity creation.
+
+        Call after ensure_sync_active. Returns empty dict if no integration.
+        """
+        if not self._integration:
+            return {}
+        return {
+            "integration_id": self._integration.id,
+            "owner_user_id": self._integration.user_id,
+            "visibility": "team" if self._integration.share_synced_data else "owner_only",
+        }
+
     async def _resolve_stale_pending_sharing_config(
         self,
         session: Any,
@@ -358,8 +371,15 @@ class BaseConnector(ABC):
         if isinstance(raw, list):
             from connectors.persistence import persist_records
 
+            kwargs: dict[str, Any] = {}
+            if entity == "activities" and self._integration:
+                kwargs["integration_id"] = self._integration.id
+                kwargs["owner_user_id"] = self._integration.user_id
+                kwargs["visibility"] = (
+                    "team" if self._integration.share_synced_data else "owner_only"
+                )
             return await persist_records(
-                self.organization_id, entity, raw, self.source_system,
+                self.organization_id, entity, raw, self.source_system, **kwargs
             )
 
         return 0

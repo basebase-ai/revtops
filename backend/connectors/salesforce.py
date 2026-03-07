@@ -401,7 +401,8 @@ class SalesforceConnector(BaseConnector):
 
     async def sync_activities(self) -> int:
         """Sync Tasks and Events from Salesforce."""
-        count = 0
+        await self.ensure_sync_active("sync_activities:start")
+        count: int = 0
 
         # Sync Tasks
         task_soql = """
@@ -487,6 +488,7 @@ class SalesforceConnector(BaseConnector):
             except (ValueError, TypeError):
                 pass
 
+        vis: dict[str, Any] = self._activity_visibility_fields()
         return Activity(
             id=existing_id or uuid.uuid4(),
             organization_id=uuid.UUID(self.organization_id),
@@ -497,6 +499,7 @@ class SalesforceConnector(BaseConnector):
             description=sf_task.get("Description"),
             activity_date=activity_date,
             created_by_id=created_by_id,
+            **vis,
         )
 
     async def _normalize_event(
@@ -516,6 +519,7 @@ class SalesforceConnector(BaseConnector):
             except (ValueError, TypeError):
                 pass
 
+        vis: dict[str, Any] = self._activity_visibility_fields()
         return Activity(
             id=existing_id or uuid.uuid4(),
             organization_id=uuid.UUID(self.organization_id),
@@ -526,6 +530,7 @@ class SalesforceConnector(BaseConnector):
             description=sf_event.get("Description"),
             activity_date=activity_date,
             created_by_id=created_by_id,
+            **vis,
         )
 
     async def _map_sf_owner_to_user(

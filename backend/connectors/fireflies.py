@@ -189,6 +189,7 @@ class FirefliesConnector(BaseConnector):
         
         This ensures transcripts are properly associated with real-world meetings.
         """
+        await self.ensure_sync_active("sync_activities:start")
         # Broadcast that we're starting
         await broadcast_sync_progress(
             organization_id=self.organization_id,
@@ -236,11 +237,13 @@ class FirefliesConnector(BaseConnector):
                     activity: Activity | None = existing_result.scalar_one_or_none()
 
                     if activity is None:
+                        vis: dict[str, Any] = self._activity_visibility_fields()
                         activity = Activity(
                             id=uuid.uuid4(),
                             organization_id=org_uuid,
                             source_system=self.source_system,
                             source_id=parsed["transcript_id"],
+                            **vis,
                         )
                         session.add(activity)
 

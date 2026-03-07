@@ -184,6 +184,7 @@ class GmailConnector(BaseConnector):
         This captures email activity and resolves email addresses to
         CRM contacts, accounts, and deals using synced HubSpot data.
         """
+        await self.ensure_sync_active("sync_activities:start")
         from connectors.resolution import build_activity_resolver
         from sqlalchemy import select
         from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -349,6 +350,7 @@ class GmailConnector(BaseConnector):
             for part in gmail_msg.get("payload", {}).get("parts", [])
         )
 
+        vis: dict[str, Any] = self._activity_visibility_fields()
         return Activity(
             id=uuid.uuid4(),
             organization_id=uuid.UUID(self.organization_id),
@@ -358,6 +360,7 @@ class GmailConnector(BaseConnector):
             subject=subject,
             description=snippet[:2000] if snippet else None,
             activity_date=activity_date,
+            **vis,
             custom_fields={
                 "from_email": from_email,
                 "from_name": from_name,

@@ -1974,10 +1974,10 @@ export function DataSources(): JSX.Element {
                   />
                   <div>
                     <div className="font-medium text-surface-100 group-hover:text-white">
-                      Share synced data with team
+                      Others can read
                     </div>
                     <div className="text-xs text-surface-500 mt-0.5">
-                      Team members can see deals, contacts, and other synced records
+                      When on: teammates and Penny can see synced records (emails, meetings, etc.). When off: only you can see it.
                     </div>
                   </div>
                 </label>

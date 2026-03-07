@@ -879,6 +879,7 @@ class HubSpotConnector(BaseConnector):
         companies.  We request those associations from the API and resolve them
         to internal FK UUIDs so that activities are properly linked.
         """
+        await self.ensure_sync_active("sync_activities:start")
         total_count: int = 0
         org_uuid: uuid.UUID = uuid.UUID(self.organization_id)
 
@@ -1088,6 +1089,7 @@ class HubSpotConnector(BaseConnector):
             "notes": "note",
         }
 
+        vis: dict[str, Any] = self._activity_visibility_fields()
         return Activity(
             id=existing_id or uuid.uuid4(),
             organization_id=uuid.UUID(self.organization_id),
@@ -1097,6 +1099,7 @@ class HubSpotConnector(BaseConnector):
             subject=subject,
             description=description,
             activity_date=activity_date,
+            **vis,
         )
 
     async def _discover_goal_owner_property(self) -> Optional[str]:

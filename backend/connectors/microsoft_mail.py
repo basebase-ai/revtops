@@ -176,6 +176,7 @@ class MicrosoftMailConnector(BaseConnector):
         This captures email activity that can be correlated
         with deals and accounts.
         """
+        await self.ensure_sync_active("sync_activities:start")
         # Get emails from the last 30 days
         received_after = datetime.utcnow() - timedelta(days=30)
         received_before = datetime.utcnow()
@@ -240,6 +241,7 @@ class MicrosoftMailConnector(BaseConnector):
             if addr:
                 cc_emails.append(addr)
 
+        vis: dict[str, Any] = self._activity_visibility_fields()
         return Activity(
             id=uuid.uuid4(),
             organization_id=uuid.UUID(self.organization_id),
@@ -249,6 +251,7 @@ class MicrosoftMailConnector(BaseConnector):
             subject=subject or "(No Subject)",
             description=body_preview[:2000] if body_preview else None,
             activity_date=activity_date,
+            **vis,
             custom_fields={
                 "from_email": from_email,
                 "from_name": from_name,

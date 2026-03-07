@@ -159,6 +159,7 @@ class ZoomConnector(BaseConnector):
 
     async def sync_activities(self) -> int:
         """Sync Zoom meeting transcripts as activities."""
+        await self.ensure_sync_active("sync_activities:start")
         now = datetime.utcnow()
         start_date = (now - timedelta(days=7)).date()
         end_date = now.date()
@@ -259,6 +260,7 @@ class ZoomConnector(BaseConnector):
                             continue
 
                         source_id = f"{meeting_uuid}:{transcript_file.get('id') or transcript_file.get('file_id')}"
+                        vis: dict[str, Any] = self._activity_visibility_fields()
                         activity = Activity(
                             id=uuid.uuid4(),
                             organization_id=uuid.UUID(self.organization_id),
@@ -269,6 +271,7 @@ class ZoomConnector(BaseConnector):
                             subject=topic,
                             description=transcript_text[:MAX_TRANSCRIPT_LENGTH],
                             activity_date=start_time,
+                            **vis,
                             custom_fields={
                                 "meeting_id": meeting_id,
                                 "meeting_uuid": meeting_uuid,

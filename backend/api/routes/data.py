@@ -73,7 +73,10 @@ async def get_data_summary(
     """Get counts for all synced data tables."""
     org_uuid = auth.organization_id
 
-    async with get_session(organization_id=auth.organization_id_str) as session:
+    async with get_session(
+        organization_id=auth.organization_id_str,
+        user_id=auth.user_id_str,
+    ) as session:
         # Count each table
         contacts_count = await session.scalar(
             select(func.count(Contact.id)).where(Contact.organization_id == org_uuid)
@@ -109,7 +112,10 @@ async def get_activity_types(
     """Get distinct activity types for filtering."""
     org_uuid = auth.organization_id
 
-    async with get_session(organization_id=auth.organization_id_str) as session:
+    async with get_session(
+        organization_id=auth.organization_id_str,
+        user_id=auth.user_id_str,
+    ) as session:
         result = await session.execute(
             select(Activity.type)
             .where(Activity.organization_id == org_uuid)
@@ -142,7 +148,10 @@ async def get_filter_options(
 
     model = table_models[table]
 
-    async with get_session(organization_id=auth.organization_id_str) as session:
+    async with get_session(
+        organization_id=auth.organization_id_str,
+        user_id=auth.user_id_str,
+    ) as session:
         # Get distinct source systems
         result = await session.execute(
             select(model.source_system)
@@ -220,7 +229,10 @@ async def get_data(
     model = config["model"]
     columns: list[str] = config["columns"]
 
-    async with get_session(organization_id=auth.organization_id_str) as session:
+    async with get_session(
+        organization_id=auth.organization_id_str,
+        user_id=auth.user_id_str,
+    ) as session:
         # Base query
         base_query = select(model).where(model.organization_id == org_uuid)
 
