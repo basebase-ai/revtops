@@ -642,7 +642,7 @@ export const useChatStore = create<ChatState>()(
     },
 
     setConversationTitle: (conversationId, title) => {
-      const { conversations } = get();
+      const { conversations, recentChats } = get();
       const current = conversations[conversationId] ?? {
         ...defaultConversationState,
       };
@@ -651,6 +651,9 @@ export const useChatStore = create<ChatState>()(
           ...conversations,
           [conversationId]: { ...current, title },
         },
+        recentChats: recentChats.map((c) =>
+          c.id === conversationId ? { ...c, title } : c,
+        ),
       });
     },
 
