@@ -1033,7 +1033,7 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
                 role: 'assistant' as const,
                 contentBlocks: [{
                   type: 'text' as const,
-                  text: "I wasn't able to complete your request because your organization has run out of credits for this billing period. You can view your usage and upgrade your plan in the **Billing** tab under Organization Settings.",
+                  text: "I wasn't able to complete your request because your team has run out of credits for this billing period. You can view your usage and upgrade your plan in the **Billing** tab under Team Settings.",
                 }],
                 timestamp: new Date(),
               };

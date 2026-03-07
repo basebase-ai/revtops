@@ -248,7 +248,7 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
 
   const handleDeleteMember = async (targetUserId: string): Promise<void> => {
     const confirmed = window.confirm(
-      'Delete this user from the organization? This will unlink all identities and remove organization access.'
+      'Delete this user from the team? This will unlink all identities and remove team access.'
     );
     if (!confirmed) return;
 
@@ -401,7 +401,7 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
 
       if (previewData.requires_confirmation) {
         const confirmed = window.confirm(
-          `This will invite ${previewData.missing_users} users from Slack who are not in this organization. Continue?`
+          `This will invite ${previewData.missing_users} users from Slack who are not in this team. Continue?`
         );
         if (!confirmed) return;
       }
@@ -468,12 +468,12 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
         organizationId: organization.id,
         userId: currentUser.id,
       });
-      alert("You can't do that. Only organization admins can delete organizations.");
+      alert("You can't do that. Only team admins can delete teams.");
       return;
     }
 
     const confirmed = window.confirm(
-      `Delete ${organization.name}? This permanently removes the organization and its data.`
+      `Delete ${organization.name}? This permanently removes the team and its data.`
     );
     if (!confirmed) return;
 
@@ -493,13 +493,13 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
       const nextOrg: { id: string } | undefined = remainingOrgs[0];
       if (nextOrg) {
         await switchActiveOrganization(nextOrg.id);
-        alert('Organization deleted.');
+        alert('Team deleted.');
       } else {
         await supabase.auth.signOut();
         logout();
         localStorage.clear();
         sessionStorage.clear();
-        alert('Organization deleted. You will be signed out.');
+        alert('Team deleted. You will be signed out.');
         window.location.href = '/auth';
       }
     } catch (error) {
@@ -512,7 +512,7 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
         const nextOrg: { id: string } | undefined = remainingOrgs[0];
         if (nextOrg) {
           await switchActiveOrganization(nextOrg.id);
-          alert('Organization was already removed.');
+          alert('Team was already removed.');
         } else {
           await supabase.auth.signOut();
           logout();
@@ -527,7 +527,7 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
         userId: currentUser.id,
         error,
       });
-      alert(`Failed to delete organization: ${message}`);
+      alert(`Failed to delete team: ${message}`);
     }
   };
 
@@ -621,7 +621,7 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
             )}
             <div>
               <h2 className="font-semibold text-surface-100">{organization.name}</h2>
-              <p className="text-xs text-surface-400">Organization settings</p>
+              <p className="text-xs text-surface-400">Team settings</p>
             </div>
           </div>
           <button
@@ -1228,7 +1228,7 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
               {/* Organization Name */}
               <div>
                 <label className="block text-sm font-medium text-surface-200 mb-2">
-                  Organization name
+                  Team name
                 </label>
                 <input
                   type="text"
@@ -1293,7 +1293,7 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
 
               {/* Organization Info */}
               <div className="pt-6 border-t border-surface-800">
-                <h3 className="text-sm font-medium text-surface-200 mb-3">Organization Info</h3>
+                <h3 className="text-sm font-medium text-surface-200 mb-3">Team Info</h3>
                 <div className="card p-4 space-y-3 text-sm">
                   {organization.handle != null && (
                     <div className="flex justify-between items-center gap-2">
@@ -1315,7 +1315,7 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                     </div>
                   )}
                   <div className="flex justify-between items-center gap-2">
-                    <span className="text-surface-400">Organization ID</span>
+                    <span className="text-surface-400">Team ID</span>
                     <div className="flex items-center gap-2 min-w-0">
                       <span className="text-surface-300 font-mono text-xs truncate">
                         {organization.id}
@@ -1342,7 +1342,7 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                   disabled={deleteOrganizationMutation.isPending}
                   className="px-4 py-2 text-sm font-medium text-red-400 border border-red-500/30 hover:bg-red-500/10 rounded-lg transition-colors disabled:opacity-50"
                 >
-                  {deleteOrganizationMutation.isPending ? 'Deleting...' : 'Delete organization'}
+                  {deleteOrganizationMutation.isPending ? 'Deleting...' : 'Delete team'}
                 </button>
               </div>
             </div>

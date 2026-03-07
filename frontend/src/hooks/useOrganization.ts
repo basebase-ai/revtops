@@ -163,7 +163,7 @@ async function updateOrganization(params: UpdateOrganizationParams): Promise<Org
   );
 
   if (error || !data) {
-    throw new Error(error ?? 'Failed to update organization');
+    throw new Error(error ?? 'Failed to update team');
   }
 
   return {
@@ -202,7 +202,7 @@ async function deleteOrganization(params: DeleteOrganizationParams): Promise<{ s
     { method: 'DELETE' }
   );
   if (error || !data) {
-    throw new Error(error ?? 'Failed to delete organization');
+    throw new Error(error ?? 'Failed to delete team');
   }
   return data;
 }
