@@ -21,6 +21,7 @@ from sqlalchemy import select, update
 
 from agents.orchestrator import ChatOrchestrator
 from models.agent_task import AgentTask
+from models.conversation import Conversation
 from models.database import get_admin_session, get_session
 
 logger = logging.getLogger(__name__)
@@ -266,6 +267,14 @@ class TaskManager:
                     if chunk_data["type"] != "text_delta":
                         asyncio.create_task(self._append_chunk_safe(task_id, chunk_data))
 
+                    # Persist context_tokens on the conversation row so it survives page reloads
+                    if chunk_data["type"] == "context_usage" and isinstance(chunk_data.get("data"), dict):
+                        tokens = chunk_data["data"].get("input_tokens")
+                        if isinstance(tokens, int):
+                            asyncio.create_task(
+                                self._update_conversation_context_tokens(conversation_id, tokens)
+                            )
+
                     chunk_index += 1
             
             # Mark task as completed
@@ -319,6 +328,21 @@ class TaskManager:
             await self._append_chunk(task_id, chunk)
         except Exception as e:
             logger.warning("Background chunk persist failed for task %s: %s", task_id, e)
+
+    async def _update_conversation_context_tokens(
+        self, conversation_id: str, tokens: int,
+    ) -> None:
+        """Fire-and-forget: persist last known context token count on the conversation row."""
+        try:
+            async with get_admin_session() as session:
+                await session.execute(
+                    update(Conversation)
+                    .where(Conversation.id == conversation_id)
+                    .values(context_tokens=tokens)
+                )
+                await session.commit()
+        except Exception as e:
+            logger.warning("Failed to persist context_tokens for %s: %s", conversation_id, e)
 
     async def _append_chunk(self, task_id: str, chunk: dict[str, Any]) -> None:
         """Append a chunk to the task's output_chunks in the database."""

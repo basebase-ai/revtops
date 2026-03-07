@@ -205,6 +205,7 @@ class ConversationDetailResponse(BaseModel):
     participants: list[ParticipantResponse] = []
     messages: list[ChatMessageResponse]
     has_more: bool = False
+    context_tokens: Optional[int] = None
 
 
 class ChatHistoryResponse(BaseModel):
@@ -502,6 +503,7 @@ async def get_conversation(
                 for msg, sender_name, sender_email, sender_avatar_url in message_rows
             ],
             has_more=has_more,
+            context_tokens=conversation.context_tokens,
         )
 
 

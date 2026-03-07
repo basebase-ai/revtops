@@ -76,6 +76,7 @@ export interface ConversationDetailResponse {
   }>;
   messages: ChatMessage[];
   has_more: boolean;
+  context_tokens?: number | null;
 }
 
 export interface ChatHistoryResponse {

@@ -1010,6 +1010,9 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
                     frontendCode: string;
                   } | undefined;
                   if (app) addConversationAppBlock(conversationId, app);
+                } else if (data.type === 'context_usage') {
+                  const usage = data as { input_tokens: number; output_tokens: number };
+                  setConversationContextTokens(conversationId, usage.input_tokens);
                 }
               }
             }

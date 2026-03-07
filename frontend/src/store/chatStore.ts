@@ -246,6 +246,7 @@ export const useChatStore = create<ChatState>()(
                 messages,
                 title: data.title ?? "New Chat",
                 hasMore: data.has_more,
+                contextTokens: data.context_tokens ?? null,
                 summary: data.summary ? (() => {
                   try { return JSON.parse(data.summary!) as ConversationSummaryData; }
                   catch { return null; }

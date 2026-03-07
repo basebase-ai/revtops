@@ -119,6 +119,9 @@ class Conversation(Base):
     last_message_preview: Mapped[Optional[str]] = mapped_column(
         String(200), nullable=True
     )
+    context_tokens: Mapped[Optional[int]] = mapped_column(
+        Integer, nullable=True
+    )  # Last known input token count for context window progress
 
     # Relationships
     messages: Mapped[list["ChatMessage"]] = relationship(

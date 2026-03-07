@@ -531,6 +531,9 @@ export function Chat({
               avatarUrl: p.avatar_url,
             }))
           );
+          if (data.context_tokens != null) {
+            useAppStore.getState().setConversationContextTokens(chatId, data.context_tokens);
+          }
           console.log('[Chat] Loaded', loadedMessages.length, 'messages, has_more:', data.has_more, 'type:', data.type, 'scope:', data.scope);
 
           // Scroll to bottom immediately after loading
