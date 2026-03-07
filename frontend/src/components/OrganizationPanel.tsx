@@ -1364,6 +1364,7 @@ interface CreditDetailsModalProps {
 
 function CreditDetailsModal({ details, loading, onClose }: CreditDetailsModalProps): JSX.Element {
   const [PlotComponent, setPlotComponent] = useState<typeof import('react-plotly.js').default | null>(null);
+  const [chartRange, setChartRange] = useState<[string, string] | null>(null);
 
   useEffect(() => {
     import('react-plotly.js')
@@ -1394,6 +1395,20 @@ function CreditDetailsModal({ details, loading, onClose }: CreditDetailsModalPro
     
     return { timestamps, balances };
   }, [details]);
+
+  const fullBillingPeriodRange = useMemo<[string, string] | null>(() => {
+    if (!burndownData || burndownData.timestamps.length === 0) return null;
+
+    const start = details?.period_start || burndownData.timestamps[0];
+    const end = details?.period_end || burndownData.timestamps[burndownData.timestamps.length - 1];
+    if (!start || !end) return null;
+
+    return [start, end];
+  }, [burndownData, details?.period_end, details?.period_start]);
+
+  useEffect(() => {
+    setChartRange(fullBillingPeriodRange);
+  }, [fullBillingPeriodRange]);
 
   const userUsageData = useMemo(() => {
     if (!details?.usage_by_user.length) return null;
@@ -1441,7 +1456,20 @@ function CreditDetailsModal({ details, loading, onClose }: CreditDetailsModalPro
             <>
               {/* Burndown Chart */}
               <div>
-                <h3 className="text-sm font-medium text-surface-200 mb-4">Credit Balance Over Time</h3>
+                <div className="mb-4 flex items-center justify-between gap-3">
+                  <h3 className="text-sm font-medium text-surface-200">Credit Balance Over Time</h3>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      console.debug('[CreditDetails] Resetting credit usage chart range to full billing period');
+                      setChartRange(fullBillingPeriodRange);
+                    }}
+                    disabled={!fullBillingPeriodRange}
+                    className="px-3 py-1.5 rounded-md border border-surface-600 text-xs font-medium text-surface-200 hover:bg-surface-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  >
+                    Reset graph
+                  </button>
+                </div>
                 {burndownData && PlotComponent ? (
                   <div className="bg-surface-800/50 rounded-lg p-4">
                     <PlotComponent
@@ -1468,6 +1496,7 @@ function CreditDetailsModal({ details, loading, onClose }: CreditDetailsModalPro
                         xaxis: {
                           gridcolor: 'rgba(255,255,255,0.05)',
                           tickformat: '%b %d',
+                          range: chartRange ?? undefined,
                         },
                         yaxis: {
                           gridcolor: 'rgba(255,255,255,0.05)',
@@ -1477,6 +1506,18 @@ function CreditDetailsModal({ details, loading, onClose }: CreditDetailsModalPro
                         hovermode: 'x unified',
                       }}
                       config={{ displayModeBar: false, responsive: true }}
+                      onRelayout={(event) => {
+                        const eventWithRange = event as Record<string, unknown>;
+                        const start = eventWithRange['xaxis.range[0]'];
+                        const end = eventWithRange['xaxis.range[1]'];
+                        if (typeof start === 'string' && typeof end === 'string') {
+                          setChartRange([start, end]);
+                          return;
+                        }
+                        if (eventWithRange['xaxis.autorange'] === true) {
+                          setChartRange(fullBillingPeriodRange);
+                        }
+                      }}
                       style={{ width: '100%' }}
                     />
                   </div>
