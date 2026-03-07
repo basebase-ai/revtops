@@ -30,8 +30,6 @@ from models.memory import Memory
 
 logger = logging.getLogger(__name__)
 
-_AGENT_GLOBAL_COMMANDS_CATEGORY = "global_commands"
-
 # Hard timeout for a single tool run so the UI always gets a result (no infinite "Running")
 _TOOL_EXECUTION_TIMEOUT_SECONDS: float = 600.0  # 10 minutes
 
@@ -760,7 +758,6 @@ class ChatOrchestrator:
         self.user_email = user_email
         self.user_name = user_name
         self.organization_name = organization_name
-        self.agent_global_commands: str | None = None
         self.local_time = local_time
         self.timezone = timezone
         self.source_user_id = source_user_id
@@ -799,37 +796,14 @@ class ChatOrchestrator:
             )
             return None
 
-    async def _fetch_global_commands_from_memory(self, session: Any) -> str | None:
-        """Load latest per-user global commands from memory records only."""
-
-        if not self.organization_id or not self.user_id:
-            return None
-
-        result = await session.execute(
-            select(Memory.content)
-            .where(
-                Memory.organization_id == UUID(self.organization_id),  # type: ignore[arg-type]
-                Memory.entity_type == "user",
-                Memory.entity_id == UUID(self.user_id),
-                Memory.category == _AGENT_GLOBAL_COMMANDS_CATEGORY,
-            )
-            .order_by(Memory.updated_at.desc().nullslast(), Memory.created_at.desc().nullslast())
-            .limit(1)
-        )
-        return result.scalar_one_or_none()
-
     async def _resolve_user_context(self) -> None:
-        """Fetch user context fields (name, email, phone, commands) from DB if not already set."""
+        """Fetch user context fields (name, email, phone) from DB if not already set."""
         from models.organization import Organization
         from models.user import User
 
         try:
             async with get_session(organization_id=self.organization_id) as session:
-                if self.user_id and (
-                    not self.user_name
-                    or not self.user_email
-                    or self.agent_global_commands is None
-                ):
+                if self.user_id and (not self.user_name or not self.user_email):
                     result = await session.execute(
                         select(
                             User.name,
@@ -846,8 +820,6 @@ class ChatOrchestrator:
                             self.user_name = fetched_name
                         if not self.user_email and fetched_email:
                             self.user_email = fetched_email
-                        if self.organization_id:
-                            self.agent_global_commands = await self._fetch_global_commands_from_memory(session)
                         self._phone_number = fetched_phone
                     else:
                         self._phone_number = None
@@ -1055,8 +1027,6 @@ class ChatOrchestrator:
                 for mem in all_memories:
                     entry: dict[str, str] = {"id": str(mem.id), "content": mem.content}
                     if mem.entity_type == "user" and user_uuid and mem.entity_id == user_uuid:
-                        if mem.category == _AGENT_GLOBAL_COMMANDS_CATEGORY:
-                            continue
                         profile["user_memories"].append(entry)
                     elif (
                         mem.entity_type == "organization_member"
@@ -1132,8 +1102,6 @@ class ChatOrchestrator:
                             self.conversation_id,
                             missing_members,
                         )
-
-                self.agent_global_commands = await self._fetch_global_commands_from_memory(session)
 
         except Exception:
             logger.warning("Failed to load context profile", exc_info=True)
@@ -1235,7 +1203,7 @@ class ChatOrchestrator:
         system_prompt = SYSTEM_PROMPT
 
         # Resolve user_name, user_email, and organization_name if not already set
-        if self.user_id and (not self.user_name or not self.user_email or not self.organization_name or self.agent_global_commands is None):
+        if self.user_id and (not self.user_name or not self.user_email or not self.organization_name):
             await self._resolve_user_context()
         
         # Add message origination context
@@ -1274,10 +1242,6 @@ class ChatOrchestrator:
         elif not self.user_id:
             # Slack thread or unlinked conversation — no specific user context
             system_prompt += "\n\n## Current User\nThe specific user is not identified in Basebase."
-
-        if self.agent_global_commands:
-            system_prompt += "\n\n## User Global Commands\nThe user configured these standing instructions for every prompt. Follow them unless they conflict with higher-priority system/developer constraints:\n"
-            system_prompt += self.agent_global_commands.strip()
 
         # Add Slack channel/thread context so the agent can scope queries correctly
         slack_channel_id: str | None = (self.workflow_context or {}).get("slack_channel_id")

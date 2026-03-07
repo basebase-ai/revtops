@@ -33,7 +33,6 @@ from sqlalchemy.exc import IntegrityError
 from config import settings, get_nango_integration_id, get_provider_sharing_defaults, PROVIDER_SHARING_DEFAULTS
 from models.database import get_admin_session, get_session
 from models.integration import Integration
-from models.memory import Memory
 from models.user import User
 from models.organization import Organization
 from services.favicon import update_org_logo_from_website
@@ -135,9 +134,6 @@ def _enqueue_google_drive_login_sync(organization_id: UUID, user_id: UUID, integ
         )
 
 
-_AGENT_GLOBAL_COMMANDS_CATEGORY = "global_commands"
-
-
 def _is_global_admin(user: Optional[User]) -> bool:
     """Return True when the user has the global admin role."""
     if not user:
@@ -221,65 +217,6 @@ async def _ensure_org_has_admin(session: Any, org_id: UUID) -> None:
         first_member.user_id,
     )
 
-
-async def _get_user_global_commands(session: Any, user: User) -> Optional[str]:
-    if not user.organization_id:
-        return None
-
-    result = await session.execute(
-        select(Memory.content)
-        .where(
-            Memory.organization_id == user.organization_id,
-            Memory.entity_type == "user",
-            Memory.entity_id == user.id,
-            Memory.category == _AGENT_GLOBAL_COMMANDS_CATEGORY,
-        )
-        .order_by(Memory.updated_at.desc().nullslast(), Memory.created_at.desc().nullslast())
-        .limit(1)
-    )
-    return result.scalar_one_or_none()
-
-
-async def _set_user_global_commands(
-    session: Any,
-    user: User,
-    commands: Optional[str],
-) -> Optional[str]:
-    if not user.organization_id:
-        return None
-
-    result = await session.execute(
-        select(Memory).where(
-            Memory.organization_id == user.organization_id,
-            Memory.entity_type == "user",
-            Memory.entity_id == user.id,
-            Memory.category == _AGENT_GLOBAL_COMMANDS_CATEGORY,
-        )
-    )
-    memory: Optional[Memory] = result.scalar_one_or_none()
-
-    normalized = (commands or "").strip()
-    if not normalized:
-        if memory:
-            await session.delete(memory)
-        return None
-
-    if memory:
-        memory.content = normalized
-        memory.created_by_user_id = user.id
-        return normalized
-
-    session.add(
-        Memory(
-            entity_type="user",
-            entity_id=user.id,
-            organization_id=user.organization_id,
-            category=_AGENT_GLOBAL_COMMANDS_CATEGORY,
-            content=normalized,
-            created_by_user_id=user.id,
-        )
-    )
-    return normalized
 
 _NANGO_SENSITIVE_KEYS = {"credentials", "access_token", "refresh_token", "api_key", "apiKey", "token"}
 _NANGO_HIGHLIGHT_KEYS = {"end_user", "errors", "id", "last_fetched_at", "metadata"}
@@ -406,7 +343,6 @@ class UserResponse(BaseModel):
     name: Optional[str]
     role: Optional[str]
     avatar_url: Optional[str]
-    agent_global_commands: Optional[str]
     phone_number: Optional[str]
     job_title: Optional[str]
     organization_id: Optional[str]
@@ -509,15 +445,12 @@ async def get_current_user(user_id: Optional[str] = None) -> UserResponse:
             )
             job_title = membership_result.scalar_one_or_none()
 
-        agent_global_commands = await _get_user_global_commands(session, user)
-
         return UserResponse(
             id=str(user.id),
             email=user.email,
             name=user.name,
             role=await _get_user_role_for_active_org(session, user),
             avatar_url=user.avatar_url,
-            agent_global_commands=agent_global_commands,
             phone_number=user.phone_number,
             job_title=job_title,
             organization_id=str(user.organization_id) if user.organization_id else None,
@@ -529,7 +462,6 @@ class UpdateProfileRequest(BaseModel):
 
     name: Optional[str] = None
     avatar_url: Optional[str] = None
-    agent_global_commands: Optional[str] = Field(default=None, max_length=500)
     phone_number: Optional[str] = Field(default=None, max_length=30)
     job_title: Optional[str] = Field(default=None, max_length=255)
 
@@ -560,11 +492,6 @@ async def update_profile(
             user.name = request.name
         if request.avatar_url is not None:
             user.avatar_url = request.avatar_url
-        agent_global_commands: Optional[str] = None
-        if request.agent_global_commands is not None:
-            agent_global_commands = await _set_user_global_commands(session, user, request.agent_global_commands)
-        else:
-            agent_global_commands = await _get_user_global_commands(session, user)
         if request.phone_number is not None:
             user.phone_number = request.phone_number or None
 
@@ -586,15 +513,12 @@ async def update_profile(
         await session.commit()
         await session.refresh(user)
 
-        agent_global_commands = await _get_user_global_commands(session, user)
-
         return UserResponse(
             id=str(user.id),
             email=user.email,
             name=user.name,
             role=await _get_user_role_for_active_org(session, user),
             avatar_url=user.avatar_url,
-            agent_global_commands=agent_global_commands,
             phone_number=user.phone_number,
             job_title=job_title,
             organization_id=str(user.organization_id) if user.organization_id else None,
@@ -635,7 +559,6 @@ class SyncUserRequest(BaseModel):
     email: str
     name: Optional[str] = None
     avatar_url: Optional[str] = None
-    agent_global_commands: Optional[str] = None
     organization_id: Optional[str] = None
 
 
@@ -656,7 +579,6 @@ class SyncUserResponse(BaseModel):
     email: str
     name: Optional[str]
     avatar_url: Optional[str]
-    agent_global_commands: Optional[str]
     phone_number: Optional[str] = None
     job_title: Optional[str] = None
     organization_id: Optional[str]
@@ -894,7 +816,6 @@ async def sync_user(request: SyncUserRequest) -> SyncUserResponse:
                 email=existing.email,
                 name=existing.name,
                 avatar_url=existing.avatar_url,
-                agent_global_commands=await _get_user_global_commands(session, existing),
                 phone_number=existing.phone_number,
                 job_title=sync_job_title,
                 organization_id=str(existing.organization_id) if existing.organization_id else None,
@@ -918,7 +839,6 @@ async def sync_user(request: SyncUserRequest) -> SyncUserResponse:
             last_login=datetime.utcnow(),
         )
         session.add(new_user)
-        global_commands = await _set_user_global_commands(session, new_user, request.agent_global_commands)
         try:
             await session.commit()
         except IntegrityError:
@@ -950,7 +870,6 @@ async def sync_user(request: SyncUserRequest) -> SyncUserResponse:
                     email=existing.email,
                     name=existing.name,
                     avatar_url=existing.avatar_url,
-                    agent_global_commands=await _get_user_global_commands(session, existing),
                     phone_number=existing.phone_number,
                     job_title=None,
                     organization_id=str(existing.organization_id) if existing.organization_id else None,
@@ -966,7 +885,6 @@ async def sync_user(request: SyncUserRequest) -> SyncUserResponse:
             email=new_user.email,
             name=new_user.name,
             avatar_url=new_user.avatar_url,
-            agent_global_commands=global_commands,
             phone_number=new_user.phone_number,
             job_title=None,
             organization_id=None,
@@ -2133,14 +2051,11 @@ async def switch_active_organization(
                 subscription_required=not _sub_ok,
             )
 
-        agent_global_commands = await _get_user_global_commands(session, user)
-
         return SyncUserResponse(
             id=str(user.id),
             email=user.email,
             name=user.name,
             avatar_url=user.avatar_url,
-            agent_global_commands=agent_global_commands,
             phone_number=user.phone_number,
             job_title=membership.title if membership else None,
             organization_id=str(user.organization_id) if user.organization_id else None,
@@ -2148,8 +2063,6 @@ async def switch_active_organization(
             status=user.status,
             roles=user.roles or [],
         )
-
-
 
 
 class UpdateMemberRoleRequest(BaseModel):

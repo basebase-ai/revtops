@@ -631,7 +631,6 @@ export function AdminPanel(): JSX.Element {
         email: data.email,
         name: data.name,
         avatarUrl: data.avatar_url,
-        agentGlobalCommands: null,
         phoneNumber: null,
         jobTitle: null,
         roles: data.roles,

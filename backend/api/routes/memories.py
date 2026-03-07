@@ -1,17 +1,15 @@
-"""Memory and workflow-note management endpoints for the UI."""
+"""Memory management endpoints for the UI."""
 from __future__ import annotations
 
 import logging
-from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import and_, select
 
 from models.database import get_session
 from models.memory import Memory
-from models.workflow import Workflow, WorkflowRun
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -27,21 +25,13 @@ class MemoryResponse(BaseModel):
     updated_at: str | None
 
 
-class WorkflowNoteResponse(BaseModel):
-    note_id: str
-    run_id: str
-    workflow_id: str
-    workflow_name: str | None
-    note_index: int
-    content: str
-    created_by_user_id: str | None
-    created_at: str | None
-    run_started_at: str | None
-
-
 class MemoryDashboardResponse(BaseModel):
     memories: list[MemoryResponse]
-    workflow_notes: list[WorkflowNoteResponse]
+
+
+class CreateMemoryRequest(BaseModel):
+    content: str = Field(..., min_length=1)
+    category: str | None = None
 
 
 class UpdateMemoryRequest(BaseModel):
@@ -49,8 +39,8 @@ class UpdateMemoryRequest(BaseModel):
 
 
 @router.get("/{organization_id}", response_model=MemoryDashboardResponse)
-async def list_memories_and_notes(organization_id: str, user_id: str) -> MemoryDashboardResponse:
-    """Return user-stored memories and workflow notes for an org/user pair."""
+async def list_memories(organization_id: str, user_id: str) -> MemoryDashboardResponse:
+    """Return user-stored memories for an org/user pair."""
     try:
         org_uuid = UUID(organization_id)
         user_uuid = UUID(user_id)
@@ -68,37 +58,6 @@ async def list_memories_and_notes(organization_id: str, user_id: str) -> MemoryD
         )
         memories = memory_result.scalars().all()
 
-        workflow_result = await session.execute(
-            select(WorkflowRun, Workflow)
-            .join(Workflow, Workflow.id == WorkflowRun.workflow_id)
-            .where(
-                WorkflowRun.organization_id == org_uuid,
-                Workflow.created_by_user_id == user_uuid,
-            )
-            .order_by(WorkflowRun.started_at.desc())
-        )
-
-        workflow_notes: list[WorkflowNoteResponse] = []
-        for run, workflow in workflow_result.all():
-            notes: list[dict[str, Any]] = list(run.workflow_notes or [])
-            for idx, note in enumerate(notes):
-                content = str(note.get("content", "")).strip()
-                if not content:
-                    continue
-                workflow_notes.append(
-                    WorkflowNoteResponse(
-                        note_id=f"{run.id}:{idx}",
-                        run_id=str(run.id),
-                        workflow_id=str(workflow.id),
-                        workflow_name=workflow.name,
-                        note_index=idx,
-                        content=content,
-                        created_by_user_id=note.get("created_by_user_id"),
-                        created_at=note.get("created_at"),
-                        run_started_at=f"{run.started_at.isoformat()}Z" if run.started_at else None,
-                    )
-                )
-
     return MemoryDashboardResponse(
         memories=[
             MemoryResponse(
@@ -112,7 +71,48 @@ async def list_memories_and_notes(organization_id: str, user_id: str) -> MemoryD
             )
             for memory in memories
         ],
-        workflow_notes=workflow_notes,
+    )
+
+
+@router.post("/{organization_id}/user", response_model=MemoryResponse)
+async def create_user_memory(
+    organization_id: str,
+    user_id: str,
+    request: CreateMemoryRequest,
+) -> MemoryResponse:
+    """Create a user-stored memory."""
+    try:
+        org_uuid = UUID(organization_id)
+        user_uuid = UUID(user_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid ID format")
+
+    content = request.content.strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="content is required")
+
+    async with get_session(organization_id=organization_id) as session:
+        memory = Memory(
+            entity_type="user",
+            entity_id=user_uuid,
+            organization_id=org_uuid,
+            category=(request.category.strip() or None) if request.category else None,
+            content=content,
+            created_by_user_id=user_uuid,
+        )
+        session.add(memory)
+        await session.commit()
+        await session.refresh(memory)
+
+    logger.info("[Memories API] Created memory %s for user %s", memory.id, user_id)
+    return MemoryResponse(
+        id=str(memory.id),
+        entity_type=memory.entity_type,
+        category=memory.category,
+        content=memory.content,
+        created_by_user_id=str(memory.created_by_user_id) if memory.created_by_user_id else None,
+        created_at=f"{memory.created_at.isoformat()}Z" if memory.created_at else None,
+        updated_at=f"{memory.updated_at.isoformat()}Z" if memory.updated_at else None,
     )
 
 
@@ -188,43 +188,3 @@ async def delete_user_memory(organization_id: str, memory_id: str, user_id: str)
 
     logger.info("[Memories API] Deleted memory %s for user %s", memory_id, user_id)
     return {"status": "deleted", "memory_id": memory_id}
-
-
-@router.delete("/{organization_id}/workflow-notes/{run_id}/{note_index}")
-async def delete_workflow_note(organization_id: str, run_id: str, note_index: int, user_id: str) -> dict[str, str]:
-    """Delete one workflow note by run ID and note index."""
-    if note_index < 0:
-        raise HTTPException(status_code=400, detail="note_index must be >= 0")
-
-    try:
-        org_uuid = UUID(organization_id)
-        run_uuid = UUID(run_id)
-        user_uuid = UUID(user_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid ID format")
-
-    async with get_session(organization_id=organization_id) as session:
-        result = await session.execute(
-            select(WorkflowRun, Workflow)
-            .join(Workflow, Workflow.id == WorkflowRun.workflow_id)
-            .where(
-                WorkflowRun.id == run_uuid,
-                WorkflowRun.organization_id == org_uuid,
-                Workflow.created_by_user_id == user_uuid,
-            )
-        )
-        row = result.one_or_none()
-        if not row:
-            raise HTTPException(status_code=404, detail="Workflow run not found")
-
-        run, _workflow = row
-        notes = list(run.workflow_notes or [])
-        if note_index >= len(notes):
-            raise HTTPException(status_code=404, detail="Workflow note not found")
-
-        notes.pop(note_index)
-        run.workflow_notes = notes
-        await session.commit()
-
-    logger.info("[Memories API] Deleted workflow note run=%s index=%s user=%s", run_id, note_index, user_id)
-    return {"status": "deleted", "note_id": f"{run_id}:{note_index}"}

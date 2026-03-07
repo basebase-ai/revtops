@@ -106,7 +106,6 @@ function App(): JSX.Element {
               email: 'user@example.com',
               name: null,
               avatarUrl: null,
-              agentGlobalCommands: null,
               phoneNumber: null,
               jobTitle: null,
               roles: [],
@@ -201,7 +200,6 @@ function App(): JSX.Element {
       email,
       name,
       avatarUrl,
-      agentGlobalCommands: existingUser?.agentGlobalCommands ?? null,
       phoneNumber: existingUser?.phoneNumber ?? null,
       jobTitle: existingUser?.jobTitle ?? null,
       roles: [],
@@ -219,7 +217,6 @@ function App(): JSX.Element {
           email,
           name,
           avatar_url: avatarUrl,
-          agent_global_commands: existingUser?.agentGlobalCommands ?? null,
         }),
       });
 
@@ -231,7 +228,6 @@ function App(): JSX.Element {
           avatar_url: string | null;
           name: string | null;
           roles: string[];
-          agent_global_commands: string | null;
           phone_number: string | null;
           job_title: string | null;
           organization_id: string | null;
@@ -247,7 +243,6 @@ function App(): JSX.Element {
           email,
           name: userData.name ?? name,
           avatarUrl: userData.avatar_url ?? avatarUrl,
-          agentGlobalCommands: userData.agent_global_commands ?? existingUser?.agentGlobalCommands ?? null,
           phoneNumber: userData.phone_number ?? existingUser?.phoneNumber ?? null,
           jobTitle: userData.job_title ?? existingUser?.jobTitle ?? null,
           roles: userData.roles ?? [],

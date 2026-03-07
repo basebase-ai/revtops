@@ -251,7 +251,6 @@ export const useConnectedIntegrations = () =>
       email: string;
       name: string | null;
       avatarUrl: string | null;
-      agentGlobalCommands: string | null;
       phoneNumber: string | null;
       jobTitle: string | null;
       roles: string[];
