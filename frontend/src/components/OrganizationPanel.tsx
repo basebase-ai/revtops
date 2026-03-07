@@ -662,6 +662,9 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
               {/* Invite Section */}
               <div>
                 <h3 className="text-sm font-medium text-surface-200 mb-3">Invite team member</h3>
+                <p className="mb-2 text-xs text-surface-500">
+                  Inviting someone grants access to your org&apos;s data and credit usage.
+                </p>
                 <div className="flex gap-2">
                   <input
                     type="email"
@@ -688,9 +691,6 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                     ? 'Checking Slack users...'
                     : "Invite all Slack users that aren't yet in Basebase"}
                 </button>
-                <p className="mt-1 text-xs text-surface-500">
-                  Inviting someone grants access to your org&apos;s data and credit usage.
-                </p>
               </div>
 
               {/* Team List */}
