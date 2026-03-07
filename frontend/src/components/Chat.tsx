@@ -20,6 +20,7 @@ import { AppPreviewPanel } from './apps/AppPreviewPanel';
 import { Avatar } from './Avatar';
 import { PendingApprovalCard, type ApprovalResult } from './PendingApprovalCard';
 import { getConversation, updateConversation, uploadChatFile, type UploadResponse } from '../api/client';
+import { useTeamMembers } from '../hooks/useOrganization';
 import { apiRequest } from '../lib/api';
 import { crossTab } from '../lib/crossTab';
 import { APP_NAME, LOGO_PATH } from '../lib/brand';
@@ -128,7 +129,7 @@ function SummaryCard({ summary }: { summary: ConversationSummaryData }): JSX.Ele
 
 export function Chat({
   userId,
-  organizationId: _organizationId,
+  organizationId,
   chatId,
   sendMessage,
   isConnected,
@@ -137,8 +138,6 @@ export function Chat({
   onConversationNotFound,
   creditsInfo,
 }: ChatProps): JSX.Element {
-  void _organizationId; // kept for API compatibility
-
   // Credits status
   const creditsPct = creditsInfo && creditsInfo.included > 0 ? creditsInfo.balance / creditsInfo.included : 1;
   const outOfCredits = creditsInfo != null && creditsInfo.balance <= 0;
@@ -200,6 +199,7 @@ export function Chat({
   const [newConversationScope, setNewConversationScope] = useState<'private' | 'shared'>('shared');
   const [showScrollToBottom, setShowScrollToBottom] = useState<boolean>(false);
   const [isLoadingOlder, setIsLoadingOlder] = useState<boolean>(false);
+  const { data: teamMembersData } = useTeamMembers(organizationId ?? null, userId ?? null);
   
   // Attachment state
   const [pendingAttachments, setPendingAttachments] = useState<UploadResponse[]>([]);
@@ -1711,6 +1711,8 @@ export function Chat({
       {showInviteModal && chatId && (
         <InviteParticipantModal
           conversationId={chatId}
+          teamMembers={teamMembersData?.members ?? []}
+          existingParticipantIds={new Set(conversationParticipants.map((p) => p.id))}
           onClose={() => setShowInviteModal(false)}
           onParticipantAdded={(participant) => {
             setConversationParticipants((prev) => [...prev, participant]);
@@ -1727,16 +1729,32 @@ export function Chat({
  */
 function InviteParticipantModal({
   conversationId,
+  teamMembers,
+  existingParticipantIds,
   onClose,
   onParticipantAdded,
 }: {
   conversationId: string;
+  teamMembers: Array<{ id: string; name: string | null; email: string; avatarUrl: string | null }>;
+  existingParticipantIds: Set<string>;
   onClose: () => void;
   onParticipantAdded: (participant: { id: string; name: string | null; email: string; avatarUrl?: string | null }) => void;
 }): JSX.Element {
   const [email, setEmail] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const emailSuggestions = useMemo(() => {
+    const query = email.trim().toLowerCase();
+    return teamMembers
+      .filter((member) => !existingParticipantIds.has(member.id))
+      .filter((member) => {
+        if (!query) return true;
+        const displayName = (member.name ?? '').toLowerCase();
+        return member.email.toLowerCase().includes(query) || displayName.includes(query);
+      })
+      .slice(0, 6);
+  }, [email, existingParticipantIds, teamMembers]);
 
   const handleInvite = async (): Promise<void> => {
     if (!email.trim()) return;
@@ -1745,19 +1763,15 @@ function InviteParticipantModal({
     setError(null);
     
     try {
-      const response = await fetch(`/api/chat/conversations/${conversationId}/participants`, {
+      const { data, error: inviteError } = await apiRequest<{ participant: { id: string; name: string | null; email: string; avatar_url?: string | null } }>(`/chat/conversations/${conversationId}/participants`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: email.trim() }),
-        credentials: 'include',
       });
-      
-      if (!response.ok) {
-        const data = await response.json();
-        throw new Error(data.detail || 'Failed to add participant');
+
+      if (inviteError || !data?.participant) {
+        throw new Error(inviteError || 'Failed to add participant');
       }
-      
-      const data = await response.json();
+
       onParticipantAdded({
         id: data.participant.id,
         name: data.participant.name,
@@ -1801,6 +1815,24 @@ function InviteParticipantModal({
               }
             }}
           />
+          {emailSuggestions.length > 0 && (
+            <div className="mt-2 max-h-44 overflow-y-auto rounded-lg border border-surface-700 bg-surface-850">
+              {emailSuggestions.map((member) => (
+                <button
+                  key={member.id}
+                  type="button"
+                  className="flex w-full items-center justify-between px-3 py-2 text-left text-sm hover:bg-surface-800"
+                  onClick={() => {
+                    setEmail(member.email);
+                    setError(null);
+                  }}
+                >
+                  <span className="truncate text-surface-200">{member.name?.trim() || member.email}</span>
+                  <span className="ml-3 truncate text-xs text-surface-400">{member.email}</span>
+                </button>
+              ))}
+            </div>
+          )}
           {error && (
             <p className="mt-2 text-sm text-red-400">{error}</p>
           )}
