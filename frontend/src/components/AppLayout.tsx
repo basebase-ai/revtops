@@ -35,7 +35,7 @@ import { OrganizationPanel } from './OrganizationPanel';
 const AppsGallery = lazy(() => import('./apps/AppsGallery').then(m => ({ default: m.AppsGallery })));
 const AppFullView = lazy(() => import('./apps/AppFullView').then(m => ({ default: m.AppFullView })));
 const ArtifactFullView = lazy(() => import('./ArtifactFullView').then(m => ({ default: m.ArtifactFullView })));
-import { APP_NAME, LOGO_PATH } from '../lib/brand';
+import { APP_NAME, LOGO_PATH, RELEASE_STAGE } from '../lib/brand';
 import { ProfilePanel } from './ProfilePanel';
 import { useAppStore, useMasquerade, useIntegrations, type ActiveTask, type ToolCallData, type ChatMessage, type ContentBlock } from '../store';
 import { useTeamMembers, useWebSocket } from '../hooks';
@@ -274,6 +274,18 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
   // Mobile responsive state
   const isMobile = useIsMobile();
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+
+  // Release stage banner dismissal (stored in localStorage)
+  const [showReleaseBanner, setShowReleaseBanner] = useState(() => {
+    if (!RELEASE_STAGE.stage) return false;
+    const dismissed = localStorage.getItem('release-banner-dismissed');
+    return dismissed !== 'true';
+  });
+
+  const dismissReleaseBanner = useCallback(() => {
+    localStorage.setItem('release-banner-dismissed', 'true');
+    setShowReleaseBanner(false);
+  }, []);
 
   // Sidebar resize drag
   const sidebarWidth = useAppStore((state) => state.sidebarWidth);
@@ -1346,6 +1358,30 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
 
       {/* Main Content */}
       <main className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden">
+        {/* Release Stage Banner */}
+        {RELEASE_STAGE.stage && showReleaseBanner && (
+          <div className="flex-shrink-0 px-4 md:px-6 py-3 bg-primary-500/10 border-b border-primary-500/20">
+            <div className="flex items-start justify-between gap-3 max-w-7xl mx-auto">
+              <div className="flex items-start gap-2 min-w-0 flex-1">
+                <span className="flex-shrink-0 mt-0.5 text-primary-400 font-semibold text-sm">
+                  {RELEASE_STAGE.message}
+                </span>
+                <p className="text-sm text-surface-300 flex-1">
+                  {RELEASE_STAGE.description}
+                </p>
+              </div>
+              <button
+                onClick={dismissReleaseBanner}
+                className="flex-shrink-0 text-surface-400 hover:text-surface-200 transition-colors px-1"
+                aria-label="Dismiss"
+              >
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+          </div>
+        )}
         {currentView === 'home' && (
           <Home />
         )}

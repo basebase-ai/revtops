@@ -11,6 +11,7 @@ import { formatDateOnly } from '../lib/dates';
 import { useAppStore, useIntegrations } from '../store';
 import { SandpackAppRenderer } from './apps/SandpackAppRenderer';
 import { HomeAppPicker } from './apps/HomeAppPicker';
+import { RELEASE_STAGE } from '../lib/brand';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -371,6 +372,24 @@ export function Home(): JSX.Element {
       </header>
 
       <div className="flex-1 overflow-auto p-4 md:p-6">
+        {/* Release Stage Welcome Banner */}
+        {RELEASE_STAGE.stage && (
+          <div className="mb-4 md:mb-6 bg-primary-500/10 border border-primary-500/20 rounded-xl p-4">
+            <div className="flex items-start gap-3">
+              <div className="flex-shrink-0 mt-0.5">
+                <span className="px-2 py-1 rounded bg-primary-500/20 text-primary-400 font-semibold text-xs">
+                  {RELEASE_STAGE.message}
+                </span>
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-surface-300 text-sm">
+                  {RELEASE_STAGE.description}
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Banner: "Choose App" when org has apps, "Ask Penny" when none */}
         {orgAppCount > 0 ? (
           <div className="mb-4 md:mb-6 bg-surface-800/60 border border-surface-700 rounded-xl p-4">
