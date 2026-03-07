@@ -262,14 +262,31 @@ export function OnboardingWizard({ emailDomain, isInvitedMode = false, isCreatin
       setOrganization({ id: data.id, name: data.name, logoUrl: data.logo_url ?? null, handle: orgHandle });
       // Clear integrations so we don't show the previous org's connections (e.g. Slack) as connected
       setIntegrations([]);
-      await syncUserToBackend();
-      await fetchUserOrganizations();
-      // Switch fully to the new org (backend + URL) as if user had selected it from the org dropdown
-      await switchActiveOrganization(data.id);
+      const ONBOARDING_TIMEOUT_MS: number = 45_000;
+      const timeoutPromise: Promise<never> = new Promise((_, reject) => {
+        setTimeout(
+          () => reject(new Error('Request timed out. Please refresh the page — your team was created.')),
+          ONBOARDING_TIMEOUT_MS,
+        );
+      });
+      await Promise.race([
+        (async (): Promise<void> => {
+          await syncUserToBackend();
+          await fetchUserOrganizations();
+          await switchActiveOrganization(data.id);
+        })(),
+        timeoutPromise,
+      ]);
       const { organization: updatedOrg } = useAppStore.getState();
       const handle: string | null = orgHandle ?? updatedOrg?.handle ?? null;
       const prefix = handle ? `/${handle}` : '';
       window.history.replaceState({}, '', `${prefix}/chat`);
+      // Delayed refetch to pick up logo_url once background favicon task completes
+      if (urlTrimmed) {
+        setTimeout(() => {
+          void fetchUserOrganizations().then(() => switchActiveOrganization(data.id));
+        }, 3000);
+      }
       // Fire-and-forget: trigger company research workflow if website URL provided
       if (urlTrimmed && user?.id) {
         void (async (): Promise<void> => {

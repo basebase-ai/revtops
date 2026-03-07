@@ -93,29 +93,92 @@ function OrgSwitcherSection({
 
   return (
     <div className="relative" ref={dropdownRef}>
-      {/* Org identity row */}
-      <button
-        onClick={() => setShowDropdown((prev) => !prev)}
-        className="w-full flex items-center gap-3 px-3 pt-3 pb-1 hover:bg-surface-800/50 transition-colors"
-      >
-        {organization.logoUrl ? (
-          <img
-            src={organization.logoUrl}
-            alt={organization.name}
-            className="w-9 h-9 rounded-lg object-cover flex-shrink-0"
-          />
-        ) : (
-          <div className="w-9 h-9 rounded-lg bg-surface-800 flex items-center justify-center flex-shrink-0">
-            <img src={LOGO_PATH} alt={APP_NAME} className="w-6 h-6" />
+      {/* Org identity row + dropdown (positioned relative to this row only) */}
+      <div className="relative">
+        <button
+          onClick={() => setShowDropdown((prev) => !prev)}
+          className="w-full flex items-center gap-3 px-3 pt-3 pb-1 hover:bg-surface-800/50 transition-colors"
+        >
+          {organization.logoUrl ? (
+            <img
+              src={organization.logoUrl}
+              alt={organization.name}
+              className="w-9 h-9 rounded-lg object-cover flex-shrink-0"
+            />
+          ) : (
+            <div className="w-9 h-9 rounded-lg bg-surface-800 flex items-center justify-center flex-shrink-0">
+              <img src={LOGO_PATH} alt={APP_NAME} className="w-6 h-6" />
+            </div>
+          )}
+          <span className="text-lg font-semibold text-surface-100 truncate flex-1 text-left leading-tight">
+            {organization.name}
+          </span>
+          <svg className="w-4 h-4 text-surface-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+          </svg>
+        </button>
+
+        {/* Org switcher dropdown — appears directly below the org identity row */}
+        {showDropdown && (
+          <div className="absolute top-full left-0 right-0 mt-1 mx-2 bg-surface-800 border border-surface-700 rounded-lg shadow-xl overflow-hidden z-50">
+            <div className="py-1">
+              {organizations.map((org) => (
+                <div
+                  key={org.id}
+                  className={`flex items-center transition-colors ${
+                    org.isActive
+                      ? 'bg-primary-500/10 text-primary-400'
+                      : 'text-surface-300 hover:bg-surface-700'
+                  }`}
+                >
+                  <button
+                    onClick={() => void handleSwitchOrg(org.id)}
+                    className="flex-1 min-w-0 flex items-center gap-3 px-3 py-2.5 text-left"
+                  >
+                    {org.logoUrl ? (
+                      <img src={org.logoUrl} alt={org.name} className="w-6 h-6 rounded object-cover flex-shrink-0" />
+                    ) : (
+                      <div className="w-6 h-6 rounded bg-surface-700 flex items-center justify-center flex-shrink-0">
+                        <img src={LOGO_PATH} alt={APP_NAME} className="w-4 h-4" />
+                      </div>
+                    )}
+                    <span className="text-sm truncate flex-1">{org.name}</span>
+                    {org.isActive && (
+                      <svg className="w-4 h-4 text-primary-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                      </svg>
+                    )}
+                  </button>
+                  {org.isActive && (
+                    <button
+                      onClick={() => { setShowDropdown(false); onOpenOrgPanel(); }}
+                      className="p-1.5 mr-1 rounded-md hover:bg-surface-700/60 transition-colors flex-shrink-0"
+                      title="Team settings"
+                    >
+                      <svg className="w-4 h-4 text-amber-400" viewBox="0 0 24 24" fill="currentColor">
+                        <path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 00.12-.61l-1.92-3.32a.49.49 0 00-.59-.22l-2.39.96c-.5-.38-1.03-.69-1.62-.89l-.36-2.54a.484.484 0 00-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.2-1.13.52-1.62.89l-2.39-.96a.49.49 0 00-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.07.62-.07.94s.02.64.07.94l-2.03 1.58a.49.49 0 00-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.69 1.62.89l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.2 1.13-.52 1.62-.89l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6A3.6 3.6 0 1115.6 12 3.611 3.611 0 0112 15.6z" />
+                      </svg>
+                    </button>
+                  )}
+                </div>
+              ))}
+              <div className="border-t border-surface-700 my-1" />
+              <button
+                type="button"
+                onClick={() => { setShowDropdown(false); onCreateNewOrg(); }}
+                className="w-full flex items-center gap-3 px-3 py-2.5 text-left text-surface-400 hover:bg-surface-700 hover:text-surface-200 transition-colors"
+              >
+                <div className="w-6 h-6 rounded bg-surface-600 flex items-center justify-center text-surface-300 text-xs font-medium flex-shrink-0">
+                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                  </svg>
+                </div>
+                <span className="text-sm">Create new team</span>
+              </button>
+            </div>
           </div>
         )}
-        <span className="text-lg font-semibold text-surface-100 truncate flex-1 text-left leading-tight">
-          {organization.name}
-        </span>
-        <svg className="w-4 h-4 text-surface-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-        </svg>
-      </button>
+      </div>
 
       {/* Team members row */}
       {members.length > 0 && (
@@ -170,67 +233,6 @@ function OrgSwitcherSection({
 
       {/* Bottom padding for the header block */}
       <div className="pb-1" />
-
-      {/* Org switcher dropdown */}
-      {showDropdown && (
-        <div className="absolute top-full left-0 right-0 mt-1 mx-2 bg-surface-800 border border-surface-700 rounded-lg shadow-xl overflow-hidden z-50">
-          <div className="py-1">
-            {organizations.map((org) => (
-              <div
-                key={org.id}
-                className={`flex items-center transition-colors ${
-                  org.isActive
-                    ? 'bg-primary-500/10 text-primary-400'
-                    : 'text-surface-300 hover:bg-surface-700'
-                }`}
-              >
-                <button
-                  onClick={() => void handleSwitchOrg(org.id)}
-                  className="flex-1 min-w-0 flex items-center gap-3 px-3 py-2.5 text-left"
-                >
-                  {org.logoUrl ? (
-                    <img src={org.logoUrl} alt={org.name} className="w-6 h-6 rounded object-cover flex-shrink-0" />
-                  ) : (
-                    <div className="w-6 h-6 rounded bg-surface-700 flex items-center justify-center flex-shrink-0">
-                      <img src={LOGO_PATH} alt={APP_NAME} className="w-4 h-4" />
-                    </div>
-                  )}
-                  <span className="text-sm truncate flex-1">{org.name}</span>
-                  {org.isActive && (
-                    <svg className="w-4 h-4 text-primary-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                    </svg>
-                  )}
-                </button>
-                {org.isActive && (
-                  <button
-                    onClick={() => { setShowDropdown(false); onOpenOrgPanel(); }}
-                    className="p-1.5 mr-1 rounded-md hover:bg-surface-700/60 transition-colors flex-shrink-0"
-                    title="Team settings"
-                  >
-                    <svg className="w-4 h-4 text-amber-400" viewBox="0 0 24 24" fill="currentColor">
-                      <path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 00.12-.61l-1.92-3.32a.49.49 0 00-.59-.22l-2.39.96c-.5-.38-1.03-.69-1.62-.89l-.36-2.54a.484.484 0 00-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.2-1.13.52-1.62.89l-2.39-.96a.49.49 0 00-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.07.62-.07.94s.02.64.07.94l-2.03 1.58a.49.49 0 00-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.69 1.62.89l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.2 1.13-.52 1.62-.89l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6A3.6 3.6 0 1115.6 12 3.611 3.611 0 0112 15.6z" />
-                    </svg>
-                  </button>
-                )}
-              </div>
-            ))}
-            <div className="border-t border-surface-700 my-1" />
-            <button
-              type="button"
-              onClick={() => { setShowDropdown(false); onCreateNewOrg(); }}
-              className="w-full flex items-center gap-3 px-3 py-2.5 text-left text-surface-400 hover:bg-surface-700 hover:text-surface-200 transition-colors"
-            >
-              <div className="w-6 h-6 rounded bg-surface-600 flex items-center justify-center text-surface-300 text-xs font-medium flex-shrink-0">
-                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-                </svg>
-              </div>
-              <span className="text-sm">Create new team</span>
-            </button>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

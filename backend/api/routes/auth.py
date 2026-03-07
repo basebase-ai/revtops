@@ -36,6 +36,7 @@ from models.integration import Integration
 from models.memory import Memory
 from models.user import User
 from models.organization import Organization
+from services.favicon import update_org_logo_from_website
 from services.nango import extract_connection_metadata, get_nango_client
 from services.slack_conversations import upsert_slack_user_mappings_from_metadata
 
@@ -700,6 +701,8 @@ async def sync_user(request: SyncUserRequest) -> SyncUserResponse:
         if existing:
             if existing.is_guest:
                 raise HTTPException(status_code=403, detail="Guest users cannot sign in")
+            # Capture user's org before we update it — skip Drive sync when switching orgs (e.g. new org creation)
+            user_org_before_sync: Optional[UUID] = existing.organization_id
             # If the user was found by email but has a different DB ID than the
             # Supabase ID, migrate the ID so JWT auth works without fallback.
             # This happens for waitlist/invited users who later sign in via OAuth.
@@ -828,7 +831,9 @@ async def sync_user(request: SyncUserRequest) -> SyncUserResponse:
             await session.refresh(existing)
 
             # Trigger a user-scoped Google Drive sync on login (throttled to >=5 min).
-            if existing.organization_id:
+            # Skip when switching orgs (e.g. new org creation) — avoids flooding Celery and DB during onboarding
+            is_switching_org: bool = org_uuid is not None and user_org_before_sync is not None and org_uuid != user_org_before_sync
+            if existing.organization_id and not is_switching_org:
                 drive_integration_result = await session.execute(
                     select(Integration).where(
                         Integration.organization_id == existing.organization_id,
@@ -1046,6 +1051,7 @@ async def get_organization_by_domain(email_domain: str) -> OrganizationResponse:
 
 @router.post("/organizations", response_model=OrganizationResponse)
 async def create_organization(
+    background_tasks: BackgroundTasks,
     request: CreateOrganizationRequest,
     auth: AuthContext = Depends(get_current_auth),
 ) -> OrganizationResponse:
@@ -1208,6 +1214,11 @@ async def create_organization(
         )
         session.add(research_workflow)
         await session.commit()
+
+        website_url_trimmed: str | None = (request.website_url or "").strip() or None
+        if website_url_trimmed:
+            logger.info("[auth] Queuing favicon fetch for org %s from %s", org_uuid, website_url_trimmed)
+            background_tasks.add_task(update_org_logo_from_website, org_uuid, website_url_trimmed)
 
         return OrganizationResponse(
             id=str(new_org.id),
