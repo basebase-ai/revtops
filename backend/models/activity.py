@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from models.account import Account
     from models.contact import Contact
     from models.deal import Deal
+    from models.integration import Integration
     from models.meeting import Meeting
     from models.user import User
 
@@ -49,6 +50,21 @@ class Activity(Base):
     )
     organization_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False
+    )
+    integration_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("integrations.id", ondelete="SET NULL", onupdate="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    owner_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL", onupdate="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    visibility: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="team", server_default="team"
     )
     source_system: Mapped[str] = mapped_column(
         String(50), default="salesforce", nullable=False
@@ -96,11 +112,15 @@ class Activity(Base):
     )
 
     # Relationships
+    integration: Mapped[Optional["Integration"]] = relationship("Integration")
     deal: Mapped[Optional["Deal"]] = relationship("Deal", back_populates="activities")
     account: Mapped[Optional["Account"]] = relationship("Account")
     contact: Mapped[Optional["Contact"]] = relationship("Contact")
     meeting: Mapped[Optional["Meeting"]] = relationship("Meeting", back_populates="activities")
     created_by: Mapped[Optional["User"]] = relationship("User", foreign_keys=[created_by_id])
+    owner: Mapped[Optional["User"]] = relationship(
+        "User", foreign_keys=[owner_user_id]
+    )
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for API responses."""

@@ -827,7 +827,9 @@ async def _run_sql_query(
     )
 
     try:
-        async with get_session(organization_id=organization_id) as session:
+        async with get_session(
+            organization_id=organization_id, user_id=user_id
+        ) as session:
             result = await session.execute(text(query_to_run))
             rows = result.fetchall()
             columns: list[str] = list(result.keys())

@@ -643,6 +643,7 @@ class SlackConnector(BaseConnector):
         source_id = f"{channel_id}:{msg_ts}"
 
         sender_fields = self._extract_sender_fields(slack_msg)
+        vis: dict[str, Any] = self._activity_visibility_fields()
         return Activity(
             id=uuid.uuid4(),
             organization_id=uuid.UUID(self.organization_id),
@@ -652,6 +653,7 @@ class SlackConnector(BaseConnector):
             subject=f"#{channel_name}",
             description=text[:1000],  # Truncate very long messages
             activity_date=activity_date,
+            **vis,
             custom_fields={
                 "channel_id": channel_id,
                 "channel_name": channel_name,

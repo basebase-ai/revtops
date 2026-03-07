@@ -198,33 +198,39 @@ def dispose_engine() -> None:
 
 
 @asynccontextmanager
-async def get_session(organization_id: str | None = None) -> AsyncGenerator[AsyncSession, None]:
+async def get_session(
+    organization_id: str | None = None,
+    user_id: str | None = None,
+) -> AsyncGenerator[AsyncSession, None]:
     """
     Yield an async database session with Row-Level Security (RLS) context.
-    
+
     IMPORTANT: organization_id SHOULD be provided to ensure RLS is enforced.
-    Calling without it will log a warning. For system-level operations that 
+    Calling without it will log a warning. For system-level operations that
     legitimately need to bypass RLS, use get_admin_session() instead.
-    
+
     How it works:
     - Session checks out a connection from the pool
     - Sets role to non-superuser (revtops_app) that respects RLS
     - If organization_id provided, sets RLS context (app.current_org_id)
-    - All queries are automatically filtered to this organization
+    - If user_id provided, sets app.current_user_id for activity visibility
+    - All queries are automatically filtered per RLS policies
     - When session closes, connection returns to pool (NOT destroyed)
-    
+
     Args:
         organization_id: Organization ID for RLS context. Should always be provided
                         for tenant-scoped operations. If None, a warning is logged.
-    
+        user_id: User ID for activity visibility (owner_only vs team). When set,
+                activities RLS policy filters owner_only rows to this user.
+
     Usage:
-        async with get_session(organization_id="...") as session:
+        async with get_session(organization_id="...", user_id="...") as session:
             result = await session.execute(query)
             await session.commit()  # Explicit commit if needed
-    
+
     The session is automatically closed when the context exits.
     Any uncommitted changes are rolled back on error.
-    
+
     SECURITY: We connect as postgres superuser but immediately SET ROLE to
     revtops_app, which respects RLS policies. This is required because
     superusers bypass RLS entirely.
@@ -257,6 +263,16 @@ async def get_session(organization_id: str | None = None) -> AsyncGenerator[Asyn
                         text("SELECT set_config('app.current_org_id', :org_id, false)"),
                         {"org_id": str(organization_id)}
                     )
+                # Set user context for activity visibility (owner_only vs team)
+                if user_id:
+                    await session.execute(
+                        text("SELECT set_config('app.current_user_id', :uid, false)"),
+                        {"uid": str(user_id)}
+                    )
+                else:
+                    await session.execute(
+                        text("SELECT set_config('app.current_user_id', '', false)")
+                    )
                 break
             except DBAPIError as exc:
                 await session.close()
@@ -283,6 +299,7 @@ async def get_session(organization_id: str | None = None) -> AsyncGenerator[Asyn
             logger.debug("Session cleanup: resetting RLS context (set_config + RESET ROLE)")
             if session is not None:
                 await session.execute(text("SELECT set_config('app.current_org_id', '', false)"))
+                await session.execute(text("SELECT set_config('app.current_user_id', '', false)"))
                 await session.execute(text("RESET ROLE"))
         except Exception:
             pass  # Connection might already be closed

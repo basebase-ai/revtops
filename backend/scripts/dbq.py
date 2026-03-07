@@ -48,15 +48,28 @@ def _serialise(obj: object) -> str:
 
 
 def run_query(sql: str) -> None:
-    """Execute *sql*, pretty-print results (or row count for non-SELECT)."""
+    """Execute *sql*, pretty-print results (or row count for non-SELECT).
+
+    Supports multiple statements separated by semicolons (e.g. SET ...; SELECT ...).
+    psycopg2 executes one statement per call, so we run each in sequence.
+    """
     conn: psycopg2.extensions.connection = psycopg2.connect(DB_URL)
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(sql)
+            statements: list[str] = [
+                s.strip() for s in sql.split(";") if s.strip()
+            ]
+            if not statements:
+                print("No SQL provided.", file=sys.stderr)
+                return
+
+            for stmt in statements:
+                cur.execute(stmt)
+                if cur.description is None:
+                    conn.commit()
+                # Keep going; we'll print the last result set below
 
             if cur.description is None:
-                # DML / DDL — no result set
-                conn.commit()
                 print(f"OK — {cur.rowcount} row(s) affected")
                 return
 

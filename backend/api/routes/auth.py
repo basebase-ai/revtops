@@ -3073,6 +3073,17 @@ async def update_integration_sharing(
         user_id_str = str(integration.user_id) if integration.user_id else ""
         provider = integration.provider
 
+    # Propagate share_synced_data to activity visibility
+    new_visibility: str = "team" if request.share_synced_data else "owner_only"
+    async with get_admin_session() as prop_session:
+        await prop_session.execute(
+            text(
+                "UPDATE activities SET visibility = :vis WHERE integration_id = :iid"
+            ),
+            {"vis": new_visibility, "iid": integration_uuid},
+        )
+        await prop_session.commit()
+
     # If this was the initial sharing config, trigger sync now
     if was_pending:
         background_tasks.add_task(run_initial_sync, org_id_str, provider, user_id_str)
@@ -3133,6 +3144,17 @@ async def patch_integration_sharing(
         integration.updated_at = datetime.utcnow()
 
         await session.commit()
+
+    # Propagate share_synced_data to activity visibility
+    new_visibility: str = "team" if request.share_synced_data else "owner_only"
+    async with get_admin_session() as prop_session:
+        await prop_session.execute(
+            text(
+                "UPDATE activities SET visibility = :vis WHERE integration_id = :iid"
+            ),
+            {"vis": new_visibility, "iid": integration_uuid},
+        )
+        await prop_session.commit()
 
     return {
         "status": "updated",

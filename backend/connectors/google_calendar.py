@@ -152,6 +152,7 @@ class GoogleCalendarConnector(BaseConnector):
         3. Link the Activity to the Meeting
         4. Resolve attendee emails to CRM contact/account/deal FKs
         """
+        await self.ensure_sync_active("sync_activities:start")
         from connectors.resolution import build_activity_resolver
 
         # Get events from primary calendar for the last 30 days and next 30 days
@@ -261,6 +262,7 @@ class GoogleCalendarConnector(BaseConnector):
                         )
                         
                         # Create new Activity record linked to the Meeting
+                        vis: dict[str, Any] = self._activity_visibility_fields()
                         activity: Activity = Activity(
                             id=uuid.uuid4(),
                             organization_id=uuid.UUID(self.organization_id),
@@ -274,6 +276,7 @@ class GoogleCalendarConnector(BaseConnector):
                             subject=parsed["summary"] or "Untitled Event",
                             description=parsed["description"],
                             activity_date=activity_date,
+                            **vis,
                             custom_fields={
                                 "calendar_id": parsed["calendar_id"],
                                 "location": parsed["location"],

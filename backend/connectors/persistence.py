@@ -133,10 +133,17 @@ async def persist_records(
     entity: str,
     records: Sequence[BaseModel],
     source_system: str,
+    *,
+    integration_id: UUID | None = None,
+    owner_user_id: UUID | None = None,
+    visibility: str | None = None,
 ) -> int:
     """Upsert a batch of Pydantic records into the corresponding DB table.
 
     Returns the number of records persisted.
+
+    For entity='activities', pass integration_id, owner_user_id, visibility
+    to set activity visibility (owner_only vs team) per share_synced_data.
     """
     if not records:
         return 0
@@ -162,16 +169,27 @@ async def persist_records(
                 row[db_column] = record_dict[pydantic_field]
         if "source_system" in row and not row["source_system"]:
             row["source_system"] = source_system
+        if entity == "activities":
+            if integration_id is not None:
+                row["integration_id"] = integration_id
+            if owner_user_id is not None:
+                row["owner_user_id"] = owner_user_id
+            if visibility is not None:
+                row["visibility"] = visibility
         rows.append(row)
 
     async with get_session(organization_id=organization_id) as session:
         table = model_cls.__table__
-        update_cols = {
+        update_cols: dict[str, Any] = {
             col: getattr(pg_insert(table).excluded, col)
             for col in field_map.values()
             if col not in conflict_keys
         }
         update_cols["synced_at"] = now
+        if entity == "activities":
+            for col in ("integration_id", "owner_user_id", "visibility"):
+                if col in rows[0]:
+                    update_cols[col] = getattr(pg_insert(table).excluded, col)
 
         stmt = (
             pg_insert(table)

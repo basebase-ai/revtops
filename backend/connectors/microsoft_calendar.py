@@ -170,6 +170,7 @@ class MicrosoftCalendarConnector(BaseConnector):
         2. Create an Activity record for the calendar event
         3. Link the Activity to the Meeting
         """
+        await self.ensure_sync_active("sync_activities:start")
         # Get events from default calendar for the last 30 days and next 30 days
         time_min = datetime.utcnow() - timedelta(days=30)
         time_max = datetime.utcnow() + timedelta(days=30)
@@ -201,6 +202,7 @@ class MicrosoftCalendarConnector(BaseConnector):
                     )
                     
                     # Create the Activity record linked to the Meeting
+                    vis: dict[str, Any] = self._activity_visibility_fields()
                     activity = Activity(
                         id=uuid.uuid4(),
                         organization_id=uuid.UUID(self.organization_id),
@@ -211,6 +213,7 @@ class MicrosoftCalendarConnector(BaseConnector):
                         subject=parsed["subject"] or "Untitled Event",
                         description=parsed["body_preview"],
                         activity_date=parsed["activity_date"],
+                        **vis,
                         custom_fields={
                             "organizer_email": parsed["organizer_email"],
                             "location": parsed["location"],
