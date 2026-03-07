@@ -56,6 +56,9 @@ class Settings(BaseSettings):
 
     # Anthropic
     ANTHROPIC_API_KEY: Optional[str] = None
+    ANTHROPIC_PRIMARY_MODEL: str = "claude-opus-4-6"
+    ANTHROPIC_CHEAP_MODEL: str = "claude-3-5-haiku-20241022"
+    USE_CHEAP_MODELS_FOR_SHORT_PHRASE: bool = True
     
     # OpenAI (for embeddings + research fallback)
     OPENAI_API_KEY: Optional[str] = None

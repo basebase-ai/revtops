@@ -14,6 +14,7 @@ import asyncio
 import json
 import logging
 import re
+import unicodedata
 from datetime import UTC, datetime
 from typing import Any, AsyncGenerator
 from uuid import UUID, uuid4
@@ -34,6 +35,56 @@ _AGENT_GLOBAL_COMMANDS_CATEGORY = "global_commands"
 
 # Hard timeout for a single tool run so the UI always gets a result (no infinite "Running")
 _TOOL_EXECUTION_TIMEOUT_SECONDS: float = 600.0  # 10 minutes
+
+
+
+_SHORT_REPLY_SEMANTIC_PATTERNS: tuple[tuple[str, ...], ...] = (
+    ("yes",),
+    ("yeah",),
+    ("yep",),
+    ("yup",),
+    ("sure",),
+    ("ok",),
+    ("okay",),
+    ("no",),
+    ("nope",),
+    ("nah",),
+    ("thanks",),
+    ("thank", "you"),
+    ("thank", "u"),
+    ("thx",),
+    ("ty",),
+)
+
+
+def _normalize_short_phrase(text: str) -> list[str]:
+    """Normalize short user phrases for semantic yes/no/thanks detection."""
+    normalized = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
+    cleaned = re.sub(r"[^a-zA-Z0-9\s]", " ", normalized.lower())
+    tokens = [tok for tok in cleaned.split() if tok]
+    return tokens
+
+
+def _is_short_yes_no_thanks_phrase(text: str) -> bool:
+    """Return True for 1-2 word variants that semantically mean yes/no/thank you."""
+    tokens = _normalize_short_phrase(text)
+    if not tokens or len(tokens) > 2:
+        return False
+
+    token_tuple = tuple(tokens)
+    return any(token_tuple == pattern for pattern in _SHORT_REPLY_SEMANTIC_PATTERNS)
+
+
+def _select_anthropic_model_for_turn(user_message: str) -> str:
+    """Choose model for current turn based on short-phrase optimization settings."""
+    if settings.USE_CHEAP_MODELS_FOR_SHORT_PHRASE and _is_short_yes_no_thanks_phrase(user_message):
+        logger.info(
+            "[Orchestrator] Short yes/no/thanks phrase detected; using cheap model=%s",
+            settings.ANTHROPIC_CHEAP_MODEL,
+        )
+        return settings.ANTHROPIC_CHEAP_MODEL
+
+    return settings.ANTHROPIC_PRIMARY_MODEL
 
 
 def _format_slack_scope_context(slack_channel_id: str | None, slack_thread_ts: str | None) -> str:
@@ -1457,7 +1508,9 @@ WHERE scheduled_start >= '2026-01-27'::date AND scheduled_start < '2026-01-28'::
 
 
         # Stream responses with tool handling loop
-        async for chunk in self._stream_with_tools(messages, system_prompt, content_blocks):
+        model = _select_anthropic_model_for_turn(user_message)
+
+        async for chunk in self._stream_with_tools(messages, system_prompt, content_blocks, model):
             yield chunk
         
         # Save conversation (user message was already saved at the start)
@@ -1482,6 +1535,7 @@ WHERE scheduled_start >= '2026-01-27'::date AND scheduled_start < '2026-01-28'::
         messages: list[dict[str, Any]],
         system_prompt: str,
         content_blocks: list[dict[str, Any]],
+        model: str,
     ) -> AsyncGenerator[str, None]:
         """
         Stream Claude's response, handling tool calls in a loop.
@@ -1502,6 +1556,7 @@ WHERE scheduled_start >= '2026-01-27'::date AND scheduled_start < '2026-01-28'::
         trimmable_history = len(messages) - 1  # last element is the current user msg
 
         while True:
+            logger.info("[Orchestrator] Starting stream with model=%s", model)
             # Track state for this streaming response
             current_text = ""
             tool_uses: list[dict[str, Any]] = []
@@ -1522,7 +1577,7 @@ WHERE scheduled_start >= '2026-01-27'::date AND scheduled_start < '2026-01-28'::
                     
                     # Stream the response
                     async with self.client.messages.stream(
-                        model="claude-opus-4-6",
+                        model=model,
                         max_tokens=16384,
                         system=system_prompt,
                         tools=get_tools(self.workflow_context),
