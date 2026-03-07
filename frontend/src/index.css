@@ -7,6 +7,10 @@
     @apply border-surface-200;
   }
 
+  html, body {
+    @apply overflow-x-hidden;
+  }
+
   body {
     @apply bg-surface-950 text-surface-100 antialiased;
     font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
