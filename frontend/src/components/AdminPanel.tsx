@@ -157,7 +157,7 @@ function OrgRowActions({
         type="button"
         onClick={() => setOrgMenuOpenId(isOpen ? null : org.id)}
         className="p-1.5 rounded-lg text-surface-400 hover:text-surface-200 hover:bg-surface-700 transition-colors"
-        aria-label="Organization options"
+        aria-label="Team options"
       >
         <ThreeDotsIcon />
       </button>
@@ -283,7 +283,7 @@ export function AdminPanel(): JSX.Element {
   const [orgsError, setOrgsError] = useState<string | null>(null);
   const [orgSearch, setOrgSearch] = useState<string>('');
 
-  // Create organization modal state
+  // Create team modal state
   const [showCreateOrgModal, setShowCreateOrgModal] = useState<boolean>(false);
   const [createOrgStep, setCreateOrgStep] = useState<1 | 2>(1);
   const [createOrgName, setCreateOrgName] = useState<string>('');
@@ -383,7 +383,7 @@ export function AdminPanel(): JSX.Element {
       );
 
       if (requestError || !data) {
-        setOrgsError(requestError ?? 'Failed to fetch organizations');
+        setOrgsError(requestError ?? 'Failed to fetch teams');
         setAdminOrgs([]);
         return;
       }
@@ -561,7 +561,7 @@ export function AdminPanel(): JSX.Element {
         { method: 'POST', body: JSON.stringify({ name, email_domain: domain, logo_url: createOrgLogoUrl.trim() || undefined }) }
       );
       if (reqError || !data) {
-        setCreateOrgError(reqError ?? 'Failed to create organization');
+        setCreateOrgError(reqError ?? 'Failed to create team');
         return;
       }
       setCreatedOrgId(data.id);
@@ -657,7 +657,7 @@ export function AdminPanel(): JSX.Element {
   };
 
   const handleDeleteOrg = async (orgId: string, orgName: string): Promise<void> => {
-    if (!window.confirm(`Delete ${orgName}? This permanently removes the organization and its data.`)) return;
+    if (!window.confirm(`Delete ${orgName}? This permanently removes the team and its data.`)) return;
     try {
       await deleteOrganizationMutation.mutateAsync({ orgId });
       await fetchOrganizations();
@@ -673,9 +673,9 @@ export function AdminPanel(): JSX.Element {
         sessionStorage.clear();
         window.location.href = '/auth';
       }
-      alert('Organization deleted.');
+      alert('Team deleted.');
     } catch (err) {
-      alert(`Failed to delete organization: ${err instanceof Error ? err.message : 'Unknown error'}`);
+      alert(`Failed to delete team: ${err instanceof Error ? err.message : 'Unknown error'}`);
     }
   };
 
@@ -826,7 +826,7 @@ export function AdminPanel(): JSX.Element {
   const tabs: { id: AdminTab; label: string; available: boolean }[] = [
     { id: 'waitlist', label: 'Waitlist', available: true },
     { id: 'users', label: 'Users', available: true },
-    { id: 'organizations', label: 'Organizations', available: true },
+    { id: 'organizations', label: 'Teams', available: true },
     { id: 'sources', label: 'Sources', available: true },
     { id: 'jobs', label: 'Running Jobs', available: true },
   ];
@@ -1091,7 +1091,7 @@ export function AdminPanel(): JSX.Element {
                 </svg>
                 <input
                   type="text"
-                  placeholder="Search by name, email, or organization..."
+                  placeholder="Search by name, email, or team..."
                   value={userSearch}
                   onChange={(e) => setUserSearch(e.target.value)}
                   className="w-full pl-10 pr-4 py-2 rounded-lg bg-surface-800 border border-surface-700 text-surface-100 placeholder-surface-500 focus:outline-none focus:border-primary-500"
@@ -1145,7 +1145,7 @@ export function AdminPanel(): JSX.Element {
                   <thead>
                     <tr className="border-b border-surface-800 text-left">
                       <th className="px-4 py-3 text-sm font-medium text-surface-400">User</th>
-                      <th className="px-4 py-3 text-sm font-medium text-surface-400">Organization</th>
+                      <th className="px-4 py-3 text-sm font-medium text-surface-400">Team</th>
                       <th className="px-4 py-3 text-sm font-medium text-surface-400">Status</th>
                       <th className="px-4 py-3 text-sm font-medium text-surface-400">Last Login</th>
                       <th className="px-4 py-3 text-sm font-medium text-surface-400">Joined</th>
@@ -1282,7 +1282,7 @@ export function AdminPanel(): JSX.Element {
                   <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
                   </svg>
-                  Create organization
+                  Create team
                 </button>
                 <button
                   onClick={() => void fetchOrganizations()}
@@ -1308,7 +1308,7 @@ export function AdminPanel(): JSX.Element {
             {orgsLoading && (
               <div className="text-center py-12 text-surface-400">
                 <div className="w-8 h-8 border-2 border-primary-500 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
-                Loading organizations...
+                Loading teams...
               </div>
             )}
 
@@ -1321,7 +1321,7 @@ export function AdminPanel(): JSX.Element {
                   </svg>
                 </div>
                 <p className="text-surface-400">
-                  {orgSearch ? 'No organizations match your search' : 'No organizations found'}
+                  {orgSearch ? 'No teams match your search' : 'No teams found'}
                 </p>
               </div>
             )}
@@ -1332,7 +1332,7 @@ export function AdminPanel(): JSX.Element {
                 <table className="w-full">
                   <thead>
                     <tr className="border-b border-surface-800 text-left">
-                      <th className="px-4 py-3 text-sm font-medium text-surface-400">Organization</th>
+                      <th className="px-4 py-3 text-sm font-medium text-surface-400">Team</th>
                       <th className="px-4 py-3 text-sm font-medium text-surface-400">Domain</th>
                       <th className="px-4 py-3 text-sm font-medium text-surface-400">Users</th>
                       <th className="px-4 py-3 text-sm font-medium text-surface-400">Last Sync</th>
@@ -1386,19 +1386,19 @@ export function AdminPanel(): JSX.Element {
             {/* Stats */}
             {!orgsLoading && !orgsError && (
               <div className="text-sm text-surface-500 text-center">
-                Showing {filteredOrgs.length} of {adminOrgs.length} organizations
+                Showing {filteredOrgs.length} of {adminOrgs.length} teams
                 {orgSearch && ` matching "${orgSearch}"`}
               </div>
             )}
 
-            {/* Create organization modal */}
+            {/* Create team modal */}
             {showCreateOrgModal && (
               <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={() => { if (!createOrgSubmitting) { setShowCreateOrgModal(false); setInviteModalOrg(null); } }}>
                 <div className="bg-surface-900 border border-surface-700 rounded-xl shadow-xl max-w-lg w-full max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
                   <div className="p-6">
                     <h3 className="text-lg font-semibold text-surface-100 mb-4">
                       {createOrgStep === 1
-                        ? 'Create organization'
+                        ? 'Create team'
                         : inviteModalOrg
                           ? `Invite users to ${inviteModalOrg.name}`
                           : 'Invite users'}
@@ -1412,7 +1412,7 @@ export function AdminPanel(): JSX.Element {
                       <>
                         <div className="space-y-4">
                           <div>
-                            <label className="block text-sm font-medium text-surface-400 mb-1">Organization name</label>
+                            <label className="block text-sm font-medium text-surface-400 mb-1">Team name</label>
                             <input
                               type="text"
                               value={createOrgName}
@@ -1556,7 +1556,7 @@ export function AdminPanel(): JSX.Element {
                 </svg>
                 <input
                   type="text"
-                  placeholder="Search by organization or provider..."
+                  placeholder="Search by team or provider..."
                   value={sourceSearch}
                   onChange={(e) => setSourceSearch(e.target.value)}
                   className="w-full pl-10 pr-4 py-2 rounded-lg bg-surface-800 border border-surface-700 text-surface-100 placeholder-surface-500 focus:outline-none focus:border-primary-500"
@@ -1589,7 +1589,7 @@ export function AdminPanel(): JSX.Element {
                   onClick={() => void handleGlobalSync()}
                   disabled={syncing}
                   className="px-4 py-2 rounded-lg bg-emerald-500/20 border border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/30 transition-colors disabled:opacity-50 flex items-center gap-2"
-                  title="Trigger sync for all organizations (same as hourly scheduled sync)"
+                  title="Trigger sync for all teams (same as hourly scheduled sync)"
                 >
                   <svg className={`w-4 h-4 ${syncing ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
@@ -1701,7 +1701,7 @@ export function AdminPanel(): JSX.Element {
                 <table className="w-full">
                   <thead>
                     <tr className="border-b border-surface-800 text-left">
-                      <th className="px-4 py-3 text-sm font-medium text-surface-400">Organization</th>
+                      <th className="px-4 py-3 text-sm font-medium text-surface-400">Team</th>
                       <th className="px-4 py-3 text-sm font-medium text-surface-400">Provider</th>
                       <th className="px-4 py-3 text-sm font-medium text-surface-400">Status</th>
                       <th className="px-4 py-3 text-sm font-medium text-surface-400">Last Sync</th>
@@ -1794,7 +1794,7 @@ export function AdminPanel(): JSX.Element {
                     <tr className="border-b border-surface-800 text-left">
                       <th className="px-4 py-3 text-sm font-medium text-surface-400">Type</th>
                       <th className="px-4 py-3 text-sm font-medium text-surface-400">Title</th>
-                      <th className="px-4 py-3 text-sm font-medium text-surface-400">Organization</th>
+                      <th className="px-4 py-3 text-sm font-medium text-surface-400">Team</th>
                       <th className="px-4 py-3 text-sm font-medium text-surface-400">Started</th>
                       <th className="px-4 py-3 text-sm font-medium text-surface-400">Action</th>
                     </tr>

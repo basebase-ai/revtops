@@ -1231,7 +1231,7 @@ export function DataSources(): JSX.Element {
               <p className="text-xs text-surface-400 mt-0.5">
                 {showCompact
                   ? `${trackedCount} repo${trackedCount !== 1 ? 's' : ''} tracked`
-                  : 'Select which repositories to sync. Tracking for this organization.'}
+                  : 'Select which repositories to sync. Tracking for this team.'}
               </p>
             </div>
             {showCompact && (

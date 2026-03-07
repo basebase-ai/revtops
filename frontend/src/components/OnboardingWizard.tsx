@@ -92,7 +92,7 @@ function generateUUID(): string {
 const SKIP_MESSAGES: Record<number, string> = {
   2: "Without Slack, Penny won't respond in your workspace. You can connect Slack later from Connectors. Skip for now?",
   3: "Fewer connections mean Penny has less context. You can add sources anytime from Connectors. Skip?",
-  4: "You can invite teammates later from Organization settings. Skip?",
+  4: "You can invite teammates later from Team settings. Skip?",
 };
 
 export function OnboardingWizard({ emailDomain, isInvitedMode = false, isCreatingNewOrg = false, onComplete: rawOnComplete, onBack }: OnboardingWizardProps): JSX.Element {
@@ -255,7 +255,7 @@ export function OnboardingWizard({ emailDomain, isInvitedMode = false, isCreatin
       });
       if (!response.ok) {
         const text = await response.text();
-        throw new Error(text || `Failed to create organization: ${response.status}`);
+        throw new Error(text || `Failed to create team: ${response.status}`);
       }
       const data = (await response.json()) as { id: string; name: string; logo_url: string | null; handle?: string | null };
       const orgHandle: string | null = data.handle ?? null;
@@ -674,7 +674,7 @@ export function OnboardingWizard({ emailDomain, isInvitedMode = false, isCreatin
                 </h2>
                 <p className="text-surface-300 mt-3 text-sm leading-relaxed">
                   {slackSatisfied && !slackConnected
-                    ? 'Your team already connected Slack for this organization. Penny is available in any channel the bot has been invited to.'
+                    ? 'Your team already connected Slack for this team. Penny is available in any channel the bot has been invited to.'
                     : <>Connect Slack and your team can ask Penny anything right from the channels they&apos;re
                       already in &mdash; deal updates, meeting prep, customer research &mdash; no tab-switching required.</>
                   }
@@ -686,7 +686,7 @@ export function OnboardingWizard({ emailDomain, isInvitedMode = false, isCreatin
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
                   </svg>
                   <div>
-                    <span className="font-medium">Slack connected for your organization</span>
+                    <span className="font-medium">Slack connected for your team</span>
                     <span className="block text-sm text-emerald-400/70 mt-0.5">
                       Connected by {integrations.find((i) => i.provider === 'slack')?.teamConnections.map((tc) => tc.userName).join(', ')}
                     </span>
@@ -727,7 +727,7 @@ export function OnboardingWizard({ emailDomain, isInvitedMode = false, isCreatin
                 </h2>
                 <p className="text-surface-300 mt-2 text-sm leading-relaxed">
                   {isInvitedMode
-                    ? 'Organization-wide sources are already set up. Connect your personal accounts (email, calendar) so Penny has full context.'
+                    ? 'Team-wide sources are already set up. Connect your personal accounts (email, calendar) so Penny has full context.'
                     : 'Now that you can ask Penny questions directly in Slack, what data sources do you want her to be able to read/write?'
                   }
                 </p>

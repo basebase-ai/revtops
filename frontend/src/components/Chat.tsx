@@ -1805,7 +1805,7 @@ function InviteParticipantModal({
             <p className="mt-2 text-sm text-red-400">{error}</p>
           )}
           <p className="mt-2 text-xs text-surface-500">
-            The user must be a member of your organization.
+            The user must be a member of your team.
           </p>
         </div>
         <div className="flex justify-end gap-2 px-4 py-3 border-t border-surface-700">
