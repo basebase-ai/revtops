@@ -1022,14 +1022,12 @@ export function DataSources(): JSX.Element {
     }
   };
 
-  // 1. My connectors — current user has connected
-  // 2. Org connectors — org-scoped integrations connected by a teammate (not current user)
+  // 1. My connectors — user-scoped integrations current user has connected (exclude org-scoped)
+  // 2. Team Connectors — org-scoped integrations (Slack, Web Search, etc.); always separate, regardless of who connected
   // 3. From your team — user-scoped integrations connected by teammates (prompt user to add own)
   // 4. Available — no one in org has connected yet
-  const myConnectors = allIntegrations.filter((i) => i.currentUserConnected);
-  const orgConnectors = allIntegrations.filter(
-    (i) => i.connected && !i.currentUserConnected && i.scope === 'organization' && i.teamConnections.length > 0
-  );
+  const myConnectors = allIntegrations.filter((i) => i.currentUserConnected && i.scope === 'user');
+  const orgConnectors = allIntegrations.filter((i) => i.connected && i.scope === 'organization');
   const fromTeamConnectors = allIntegrations.filter(
     (i) => i.connected && !i.currentUserConnected && i.scope === 'user' && i.teamConnections.length > 0
   );
@@ -1070,8 +1068,7 @@ export function DataSources(): JSX.Element {
   ): JSX.Element => {
     const isConnecting = connectingProvider === integration.provider;
     const isStartingSync =
-      state === 'connected' &&
-      integration.isOwner &&
+      (state === 'connected' || state === 'org-connected') &&
       integration.provider !== 'apollo' &&
       !integration.lastSyncAt &&
       !syncingProviders.has(integration.provider);
@@ -1107,15 +1104,7 @@ export function DataSources(): JSX.Element {
             hidden: true,
           };
         }
-        if (state === 'org-connected' && !integration.isOwner) {
-          return {
-            text: '',
-            className: '',
-            action: () => {},
-            disabled: true,
-            hidden: true,
-          };
-        }
+        // Org-connected: anyone can sync (no owner restriction)
         return {
           text: isSyncing ? 'Syncing...' : 'Sync',
           className: 'px-4 py-2 text-sm font-medium text-surface-200 bg-surface-800 hover:bg-surface-700 disabled:opacity-50 rounded-lg transition-colors',
@@ -1364,12 +1353,12 @@ export function DataSources(): JSX.Element {
                   Connected by {integration.connectedBy}
                 </p>
               )}
-              {state === 'connected' && integration.lastSyncAt && (
+              {(state === 'connected' || state === 'org-connected') && integration.lastSyncAt && (
                 <p className="text-xs text-surface-500 mt-1 hidden sm:block">
                   Last synced: {new Date(integration.lastSyncAt).toLocaleString()}
                 </p>
               )}
-              {state === 'connected' && (isStartingSync || syncProgress[integration.provider] !== undefined || integration.syncStats) && (
+              {(state === 'connected' || state === 'org-connected') && (isStartingSync || syncProgress[integration.provider] !== undefined || integration.syncStats) && (
                 <p className="text-xs text-surface-400 mt-1 hidden sm:block">
                   {isStartingSync ? (
                     <span className="text-primary-400">Starting sync…</span>
@@ -1382,7 +1371,7 @@ export function DataSources(): JSX.Element {
                   ) : null}
                 </p>
               )}
-              {state === 'connected' && integration.lastError && (
+              {(state === 'connected' || state === 'org-connected') && integration.lastError && (
                 <p className="text-xs text-red-400 mt-1">Error: {integration.lastError}</p>
               )}
               {state === 'org-connected' && (
@@ -1441,7 +1430,7 @@ export function DataSources(): JSX.Element {
                 {buttonConfig.text}
               </button>
             )}
-            {state === 'connected' && integration.isOwner && (
+            {((state === 'connected' && integration.isOwner) || state === 'org-connected') && (
               <button
                 onClick={() => void handleDisconnect(integration.provider)}
                 disabled={isDisconnecting}
@@ -1705,15 +1694,15 @@ export function DataSources(): JSX.Element {
           )}
         </section>
 
-        {/* Organization connectors — org-scoped integrations active for the whole org */}
+        {/* Team Connectors — org-scoped integrations connected by a teammate */}
         {orgConnectors.length > 0 && (
           <section>
             <h2 className="text-lg font-semibold text-surface-100 mb-4 flex items-center gap-2">
               <span className="w-2 h-2 bg-emerald-500 rounded-full" />
-              Organization ({orgConnectors.length})
+              Team Connectors ({orgConnectors.length})
             </h2>
             <p className="text-sm text-surface-400 mb-4">
-              These are connected for the whole organization. No additional setup needed.
+              Org-scoped connectors connected by a teammate. Anyone can sync or disconnect.
             </p>
             <div className="grid gap-4">
               {orgConnectors.map((integration) => renderIntegrationTile(integration, 'org-connected'))}

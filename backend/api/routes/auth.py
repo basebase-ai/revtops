@@ -3592,6 +3592,18 @@ async def disconnect_integration(
             )
             integration = result.scalar_one_or_none()
 
+        # Fallback for org-scoped integrations: any org member can disconnect
+        if not integration:
+            scope_by_provider = _get_scope_by_provider()
+            if scope_by_provider.get(provider) == "organization":
+                result = await db_session.execute(
+                    select(Integration).where(
+                        Integration.organization_id == org_uuid,
+                        Integration.provider == provider,
+                    )
+                )
+                integration = result.scalar_one_or_none()
+
         if not integration:
             print(f"Disconnect: Integration not found for org={org_uuid}, provider={provider}, user={current_user_uuid}")
             raise HTTPException(status_code=404, detail="Integration not found")
