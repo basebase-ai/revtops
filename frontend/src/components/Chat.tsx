@@ -1378,7 +1378,7 @@ export function Chat({
       {/* Content area with messages and optional artifact sidebar */}
       <div className="flex-1 flex overflow-hidden">
         {/* Messages column (vertical flex with optional app preview above) */}
-        <div ref={dragContainerRef} className={`flex flex-col md:transition-all md:duration-300 md:ease-in-out ${currentArtifact ? 'md:w-1/2' : ''} flex-1 min-h-0`}>
+        <div ref={dragContainerRef} className={`flex flex-col md:transition-all md:duration-300 md:ease-in-out ${currentArtifact ? 'md:w-1/2' : ''} flex-1 min-w-0 min-h-0`}>
           {/* App preview panel (above messages) */}
           {conversationApps.length > 0 && !previewDismissed && (
             <>
@@ -1892,9 +1892,9 @@ function MessageWithBlocks({
           <Avatar user={senderUser} size="sm" className="flex-shrink-0 rounded-md" />
 
           {/* Content */}
-          <div className="flex-1 max-w-[85%]">
+          <div className="flex-1 max-w-[85%] overflow-hidden">
             <div className="text-xs text-surface-400 mb-0.5">{senderName}</div>
-            <div className="inline-block px-3 py-2 rounded-xl rounded-tl-sm bg-surface-700 text-surface-100 text-[13px] leading-relaxed">
+            <div className="inline-block max-w-full px-3 py-2 rounded-xl rounded-tl-sm bg-surface-700 text-surface-100 text-[13px] leading-relaxed">
               <div className="whitespace-pre-wrap break-words">{textContent}</div>
             </div>
             {attachments.length > 0 && (
@@ -1925,8 +1925,8 @@ function MessageWithBlocks({
         </div>
 
         {/* Content: bubble + attachments + timestamp, all right-aligned */}
-        <div className="flex-1 max-w-[85%] text-right">
-          <div className="inline-block px-3 py-2 rounded-xl rounded-tr-sm bg-primary-600 text-white text-[13px] leading-relaxed">
+        <div className="flex-1 max-w-[85%] overflow-hidden text-right">
+          <div className="inline-block max-w-full px-3 py-2 rounded-xl rounded-tr-sm bg-primary-600 text-white text-[13px] leading-relaxed">
             <div className="whitespace-pre-wrap break-words text-left">{textContent}</div>
           </div>
           {attachments.length > 0 && (
@@ -2013,7 +2013,7 @@ function MessageWithBlocks({
       </div>
 
       {/* Content blocks in order */}
-      <div className="flex-1 max-w-[85%]">
+      <div className="flex-1 max-w-[85%] overflow-hidden">
         {blocks.map((block, index) => {
           if (block.type === 'text') {
             const isLast = index === lastTextIndex;
@@ -2096,8 +2096,8 @@ function AssistantTextBlock({
   const displayText: string = isStreaming ? text.trimEnd() : text;
   
   return (
-    <div className="inline-block px-3 py-2 rounded-xl rounded-tl-sm bg-surface-800/80 text-surface-200 text-[13px] leading-relaxed">
-      <div className={`prose prose-sm prose-invert max-w-none prose-p:my-1 prose-headings:my-2 prose-ul:my-1 prose-ol:my-1 prose-li:my-0.5 prose-pre:my-2 prose-code:text-primary-300 prose-code:bg-surface-900/50 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-code:text-xs prose-pre:bg-surface-900/80 prose-pre:text-xs prose-table:text-xs prose-th:bg-surface-700/50 prose-th:px-2 prose-th:py-1 prose-td:px-2 prose-td:py-1 prose-td:border-surface-700 prose-th:border-surface-700 ${isStreaming ? '[&>p:last-of-type]:inline [&>p:last-of-type]:mb-0' : ''}`}>
+    <div className="inline-block max-w-full px-3 py-2 rounded-xl rounded-tl-sm bg-surface-800/80 text-surface-200 text-[13px] leading-relaxed">
+      <div className={`prose prose-sm prose-invert max-w-none overflow-x-auto prose-p:my-1 prose-headings:my-2 prose-ul:my-1 prose-ol:my-1 prose-li:my-0.5 prose-pre:my-2 prose-code:text-primary-300 prose-code:bg-surface-900/50 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-code:text-xs prose-pre:bg-surface-900/80 prose-pre:text-xs prose-table:text-xs prose-th:bg-surface-700/50 prose-th:px-2 prose-th:py-1 prose-td:px-2 prose-td:py-1 prose-td:border-surface-700 prose-th:border-surface-700 ${isStreaming ? '[&>p:last-of-type]:inline [&>p:last-of-type]:mb-0' : ''}`}>
         <ReactMarkdown remarkPlugins={[remarkGfm]}>{displayText}</ReactMarkdown>
         {isStreaming && (
           <span className="inline-block w-1.5 h-3 bg-current animate-pulse ml-0.5 align-middle" />
