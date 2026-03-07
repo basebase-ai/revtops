@@ -720,7 +720,6 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                         return aTarget.localeCompare(bTarget);
                       });
                       const canUnlinkForMember: boolean = member.id === currentUser.id || canLinkIdentityInOrg;
-                      const canDeleteMember: boolean = canAdministerOrg && !isGuest;
 
                       if (isInvited) {
                         return (
@@ -865,7 +864,7 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                                           disabled={deleteMemberMutation.isPending}
                                           className="w-full text-left px-3 py-2 text-sm text-red-400 hover:bg-surface-600/60 transition-colors disabled:opacity-50"
                                         >
-                                          Remove
+                                          Delete User
                                         </button>
                                       </>
                                     )}
@@ -949,19 +948,6 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                                       </button>
                                     ))}
                                   </div>
-                                </div>
-                              )}
-
-                              {canDeleteMember && (
-                                <div className="mt-3 border-t border-surface-700/60 pt-3">
-                                  <button
-                                    type="button"
-                                    onClick={() => void handleDeleteMember(member.id)}
-                                    disabled={deleteMemberMutation.isPending}
-                                    className="text-xs text-red-300 hover:text-red-200 disabled:opacity-50"
-                                  >
-                                    {deleteMemberMutation.isPending ? 'Deleting user...' : 'Delete user'}
-                                  </button>
                                 </div>
                               )}
                             </div>
