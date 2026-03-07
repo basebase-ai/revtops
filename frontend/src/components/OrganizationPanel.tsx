@@ -137,6 +137,7 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
 
   const [expandedMemberId, setExpandedMemberId] = useState<string | null>(null);
   const [resendingMemberId, setResendingMemberId] = useState<string | null>(null);
+  const [revokingInviteMemberId, setRevokingInviteMemberId] = useState<string | null>(null);
   const [menuOpenMemberId, setMenuOpenMemberId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -349,6 +350,7 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
     const confirmed = window.confirm('Revoke this pending invitation? The user will no longer be able to join from this invite.');
     if (!confirmed) return;
 
+    setRevokingInviteMemberId(targetUserId);
     try {
       await deleteMemberMutation.mutateAsync({
         orgId: organization.id,
@@ -357,6 +359,8 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
       });
     } catch (error) {
       alert(`Failed to revoke invite: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    } finally {
+      setRevokingInviteMemberId((currentId) => (currentId === targetUserId ? null : currentId));
     }
   };
 
@@ -742,10 +746,10 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                                 <button
                                   type="button"
                                   onClick={() => void handleRevokeInvite(member.id)}
-                                  disabled={deleteMemberMutation.isPending}
+                                  disabled={revokingInviteMemberId === member.id}
                                   className="px-3 py-1.5 text-sm font-medium rounded-lg border border-rose-700/70 text-rose-300 hover:text-rose-100 hover:border-rose-600 hover:bg-rose-900/30 transition-colors disabled:opacity-50 flex-shrink-0"
                                 >
-                                  {deleteMemberMutation.isPending ? 'Revoking...' : 'Revoke'}
+                                  {revokingInviteMemberId === member.id ? 'Revoking...' : 'Revoke'}
                                 </button>
                               )}
                             </div>
