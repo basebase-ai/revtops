@@ -3752,23 +3752,33 @@ async def disconnect_integration(
             print(f"Disconnect: Deleted {deleted_pipelines} pipelines")
             
             # 8. Clean up orphaned meetings (meetings with no linked activities).
-            # Use NOT EXISTS instead of NOT IN to avoid edge cases and ensure
-            # PostgreSQL checks references row-by-row before deletion.
-            result = await db_session.execute(
-                text("""
-                    DELETE FROM meetings m
-                    WHERE m.organization_id = :org_id
-                      AND NOT EXISTS (
-                          SELECT 1
-                          FROM activities a
-                          WHERE a.meeting_id = m.id
-                      )
-                    RETURNING id
-                """),
-                {"org_id": str(org_uuid)},
-            )
-            deleted_meetings = len(result.fetchall())
-            print(f"Disconnect: Deleted {deleted_meetings} orphaned meetings")
+            # This is best-effort because activity ingestion can happen concurrently
+            # and create a fresh FK reference between orphan selection and deletion.
+            # Use a savepoint so a rare FK violation won't abort the entire disconnect.
+            try:
+                async with db_session.begin_nested():
+                    result = await db_session.execute(
+                        text("""
+                            DELETE FROM meetings m
+                            WHERE m.organization_id = :org_id
+                              AND NOT EXISTS (
+                                  SELECT 1
+                                  FROM activities a
+                                  WHERE a.meeting_id = m.id
+                              )
+                            RETURNING id
+                        """),
+                        {"org_id": str(org_uuid)},
+                    )
+                    deleted_meetings = len(result.fetchall())
+                print(f"Disconnect: Deleted {deleted_meetings} orphaned meetings")
+            except IntegrityError as exc:
+                logger.warning(
+                    "Disconnect: Skipped orphaned meeting cleanup due to FK race org_id=%s provider=%s error=%s",
+                    org_uuid,
+                    provider,
+                    exc,
+                )
 
         print(f"Disconnect: Deleting integration from database")
         await db_session.delete(integration)
