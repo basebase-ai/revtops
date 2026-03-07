@@ -17,6 +17,8 @@ class _FakeResponse:
 
 
 class _FakeAsyncClient:
+    last_call: dict[str, Any] | None = None
+
     def __init__(self, **kwargs: Any) -> None:
         self.kwargs = kwargs
 

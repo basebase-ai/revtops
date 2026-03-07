@@ -52,6 +52,7 @@ function CreditDonut({ balance, total }: { balance: number; total: number }): JS
 
 /** Organization switcher — displayed prominently at the top of the sidebar. */
 function OrgSwitcherSection({
+  collapsed: _collapsed,
   organization,
   members,
   creditsDisplay,
@@ -59,6 +60,7 @@ function OrgSwitcherSection({
   onOpenBilling,
   onCreateNewOrg,
 }: {
+  collapsed: boolean;
   organization: OrganizationInfo;
   members: AvatarUser[];
   creditsDisplay: { balance: number; included: number } | null;
@@ -375,6 +377,7 @@ export function Sidebar({
           </button>
         )}
         <OrgSwitcherSection
+          collapsed={collapsed}
           organization={organization}
           members={members}
           creditsDisplay={creditsDisplay}
@@ -487,6 +490,7 @@ export function Sidebar({
             )}
           </button>
         )}
+
       </div>
     </aside>
   );
