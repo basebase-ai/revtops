@@ -16,7 +16,7 @@ import type { View, ChatSummary, OrganizationInfo } from './AppLayout';
 import { useAppStore, useIsGlobalAdmin, useActiveTasksByConversation, type UserOrganization } from '../store';
 import { updateConversation } from '../api/client';
 import { Avatar, type AvatarUser } from './Avatar';
-import { APP_NAME, LOGO_PATH } from '../lib/brand';
+import { APP_NAME, LOGO_PATH, RELEASE_STAGE } from '../lib/brand';
 
 /** Small SVG donut chart showing remaining credits as a ring. */
 function CreditDonut({ balance, total }: { balance: number; total: number }): JSX.Element {
@@ -486,6 +486,21 @@ export function Sidebar({
               </div>
             )}
           </button>
+        )}
+
+        {/* Release Stage Badge */}
+        {RELEASE_STAGE.stage && (
+          <div className={`px-3 py-2 border-t border-surface-800 ${collapsed ? 'flex justify-center' : ''}`}>
+            {collapsed ? (
+              <div className="w-2 h-2 rounded-full bg-primary-500/60" title={RELEASE_STAGE.message} />
+            ) : (
+              <div className="flex items-center gap-2 text-xs">
+                <span className="px-1.5 py-0.5 rounded bg-primary-500/20 text-primary-400 font-medium">
+                  {RELEASE_STAGE.message}
+                </span>
+              </div>
+            )}
+          </div>
         )}
       </div>
     </aside>

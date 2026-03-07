@@ -23,7 +23,7 @@ import { getConversation, updateConversation, uploadChatFile, type UploadRespons
 import { useTeamMembers } from '../hooks/useOrganization';
 import { apiRequest } from '../lib/api';
 import { crossTab } from '../lib/crossTab';
-import { APP_NAME, LOGO_PATH } from '../lib/brand';
+import { APP_NAME, LOGO_PATH, RELEASE_STAGE } from '../lib/brand';
 import {
   useAppStore,
   useConversationState,
@@ -1244,6 +1244,11 @@ export function Chat({
               <h1 className="text-lg font-semibold text-surface-100 truncate max-w-[200px] md:max-w-md">
                 {chatTitle}
               </h1>
+              {RELEASE_STAGE.stage && (
+                <span className="px-1.5 py-0.5 rounded bg-primary-500/20 text-primary-400 font-medium text-[10px] flex-shrink-0" title={RELEASE_STAGE.description}>
+                  {RELEASE_STAGE.message}
+                </span>
+              )}
               {canRenameHeader && (
                 <svg className="w-3.5 h-3.5 text-surface-500 opacity-0 group-hover/title:opacity-100 transition-opacity flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
