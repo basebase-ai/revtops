@@ -11,7 +11,6 @@ import { formatDateOnly } from '../lib/dates';
 import { useAppStore, useIntegrations } from '../store';
 import { SandpackAppRenderer } from './apps/SandpackAppRenderer';
 import { HomeAppPicker } from './apps/HomeAppPicker';
-import { RELEASE_STAGE } from '../lib/brand';
 
 // ---------------------------------------------------------------------------
 // Types

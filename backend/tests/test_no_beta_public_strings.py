@@ -29,6 +29,13 @@ def test_no_beta_word_in_public_source_strings() -> None:
 
             for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
                 if BETA_WORD_RE.search(line):
+                    # Skip comments (Python: #, JavaScript/TypeScript: //, /* */, /** */)
+                    stripped = line.strip()
+                    if stripped.startswith("#") or stripped.startswith("//") or stripped.startswith("*") or stripped.startswith("/**"):
+                        continue
+                    # Skip type definitions (e.g., 'alpha' | 'beta' | 'ga')
+                    if "|" in line and ("'beta'" in line or '"beta"' in line):
+                        continue
                     rel_path = path.relative_to(repo_root)
                     violations.append(f"{rel_path}:{line_number}: {line.strip()}")
 

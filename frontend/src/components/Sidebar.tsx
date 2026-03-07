@@ -16,7 +16,7 @@ import type { View, ChatSummary, OrganizationInfo } from './AppLayout';
 import { useAppStore, useIsGlobalAdmin, useActiveTasksByConversation, type UserOrganization } from '../store';
 import { updateConversation } from '../api/client';
 import { Avatar, type AvatarUser } from './Avatar';
-import { APP_NAME, LOGO_PATH, RELEASE_STAGE } from '../lib/brand';
+import { APP_NAME, LOGO_PATH } from '../lib/brand';
 
 /** Small SVG donut chart showing remaining credits as a ring. */
 function CreditDonut({ balance, total }: { balance: number; total: number }): JSX.Element {
@@ -52,7 +52,7 @@ function CreditDonut({ balance, total }: { balance: number; total: number }): JS
 
 /** Organization switcher — displayed prominently at the top of the sidebar. */
 function OrgSwitcherSection({
-  collapsed,
+  collapsed: _collapsed,
   organization,
   members,
   creditsDisplay,
