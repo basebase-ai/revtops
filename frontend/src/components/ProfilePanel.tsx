@@ -42,7 +42,6 @@ export function ProfilePanel({ user, onClose, onLogout, onUpdateUser }: ProfileP
         body: JSON.stringify({
           name: name || null,
           avatar_url: avatarPreview,
-          agent_global_commands: user.agentGlobalCommands,
           phone_number: phoneNumber.trim() || null,
           job_title: jobTitle.trim() || null,
         }),
@@ -56,7 +55,6 @@ export function ProfilePanel({ user, onClose, onLogout, onUpdateUser }: ProfileP
       const updatedUser = await response.json() as {
         name: string | null;
         avatar_url: string | null;
-        agent_global_commands: string | null;
         phone_number: string | null;
         job_title: string | null;
       };
@@ -65,7 +63,6 @@ export function ProfilePanel({ user, onClose, onLogout, onUpdateUser }: ProfileP
       onUpdateUser({
         name: updatedUser.name,
         avatarUrl: updatedUser.avatar_url,
-        agentGlobalCommands: updatedUser.agent_global_commands,
         phoneNumber: updatedUser.phone_number,
         jobTitle: updatedUser.job_title,
       });
@@ -124,29 +121,21 @@ export function ProfilePanel({ user, onClose, onLogout, onUpdateUser }: ProfileP
           </button>
         </header>
 
-        <div className="px-6 pt-4 border-b border-surface-800">
-          <div className="flex gap-2">
+        {/* Tabs - matches OrganizationPanel pattern */}
+        <div className="flex border-b border-surface-800">
+          {(['profile', 'memories'] as const).map((tab) => (
             <button
-              onClick={() => setActiveTab('profile')}
-              className={`px-3 py-2 text-sm rounded-t-lg transition-colors ${
-                activeTab === 'profile'
-                  ? 'bg-surface-800 text-surface-100'
-                  : 'text-surface-400 hover:text-surface-200 hover:bg-surface-800/60'
+              key={tab}
+              onClick={() => setActiveTab(tab)}
+              className={`flex-1 px-2 py-3 text-sm font-medium transition-colors ${
+                activeTab === tab
+                  ? 'text-primary-400 border-b-2 border-primary-500'
+                  : 'text-surface-400 hover:text-surface-200'
               }`}
             >
-              Profile
+              {tab.charAt(0).toUpperCase() + tab.slice(1)}
             </button>
-            <button
-              onClick={() => setActiveTab('memories')}
-              className={`px-3 py-2 text-sm rounded-t-lg transition-colors ${
-                activeTab === 'memories'
-                  ? 'bg-surface-800 text-surface-100'
-                  : 'text-surface-400 hover:text-surface-200 hover:bg-surface-800/60'
-              }`}
-            >
-              Memories
-            </button>
-          </div>
+          ))}
         </div>
 
         {/* Content */}
