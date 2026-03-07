@@ -1085,7 +1085,7 @@ export function DataSources(): JSX.Element {
     // Badge config by state
     const badgeConfig: Record<TileState, { text: string; className: string } | null> = {
       'connected': { text: 'Connected', className: 'bg-emerald-500/20 text-emerald-400' },
-      'org-connected': { text: 'Connected for org', className: 'bg-emerald-500/20 text-emerald-400' },
+      'org-connected': { text: 'Connected for team', className: 'bg-emerald-500/20 text-emerald-400' },
       'team-only': { text: 'From team', className: 'bg-surface-700 text-surface-300' },
       'available': null,
     };
@@ -1702,7 +1702,7 @@ export function DataSources(): JSX.Element {
               Team Connectors ({orgConnectors.length})
             </h2>
             <p className="text-sm text-surface-400 mb-4">
-              Org-scoped connectors connected by a teammate. Anyone can sync or disconnect.
+              Team scoped connectors connected by a teammate. Anyone can sync or disconnect.
             </p>
             <div className="grid gap-4">
               {orgConnectors.map((integration) => renderIntegrationTile(integration, 'org-connected'))}

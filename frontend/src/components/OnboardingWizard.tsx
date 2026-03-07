@@ -793,7 +793,7 @@ export function OnboardingWizard({ emailDomain, isInvitedMode = false, isCreatin
                           {connected
                             ? 'Connected'
                             : orgConnected
-                              ? `Connected for your org`
+                              ? `Connected for your team`
                               : teamConnected
                                 ? `By ${matchedIntegration!.teamConnections[0]?.userName ?? 'team'}`
                                 : config.description
