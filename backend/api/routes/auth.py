@@ -1118,7 +1118,7 @@ async def create_organization(
                 "3. Write a concise 2–3 sentence summary of what the company does, its industry, and notable aspects.\n"
                 "4. Call run_sql_write with: UPDATE organizations SET company_summary = '<your summary>' WHERE id = '<organization_id>'"
             ),
-            auto_approve_tools=["run_action", "query_system", "run_sql_write"],
+            auto_approve_tools=["run_on_connector", "query_on_connector", "run_sql_write"],
             input_schema={
                 "type": "object",
                 "properties": {

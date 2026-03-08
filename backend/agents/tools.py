@@ -4,11 +4,11 @@ Tool definitions and execution for Claude.
 Tools are organized by category (see registry.py):
 - LOCAL_READ: run_sql_query
 - LOCAL_WRITE: create_artifact, run_sql_write, run_workflow, write_app, keep_notes, manage_memory, foreach, initiate_connector
-- EXTERNAL_READ: query_system, list_connected_systems
-- EXTERNAL_WRITE: write_to_system, run_action, trigger_sync
+- EXTERNAL_READ: query_on_connector, list_connected_connectors
+- EXTERNAL_WRITE: write_on_connector, run_on_connector, trigger_sync
 
-All external interactions go through generic connector tools (query_system,
-write_to_system, run_action) which dispatch to the appropriate connector.
+All external interactions go through generic connector tools (query_on_connector,
+write_on_connector, run_on_connector) which dispatch to the appropriate connector.
 """
 
 from __future__ import annotations
@@ -315,11 +315,11 @@ async def execute_tool(
         "trigger_sync": lambda: _trigger_sync(tool_input, organization_id),
         "initiate_connector": lambda: _initiate_connector(tool_input, organization_id, user_id),
         # Connector-driven generic tools
-        "list_connected_systems": lambda: _list_connected_systems(organization_id),
-        "get_system_docs": lambda: _get_system_docs(tool_input, organization_id),
-        "query_system": lambda: _query_system(tool_input, organization_id, user_id),
-        "write_to_system": lambda: _write_to_system(tool_input, organization_id, user_id, skip_approval, conversation_id),
-        "run_action": lambda: _run_action(tool_input, organization_id, user_id, skip_approval, context),
+        "list_connected_connectors": lambda: _list_connected_connectors(organization_id),
+        "get_connector_docs": lambda: _get_connector_docs(tool_input, organization_id),
+        "query_on_connector": lambda: _query_on_connector(tool_input, organization_id, user_id),
+        "write_on_connector": lambda: _write_on_connector(tool_input, organization_id, user_id, skip_approval, conversation_id),
+        "run_on_connector": lambda: _run_on_connector(tool_input, organization_id, user_id, skip_approval, context),
     }
 
     handler = tool_handlers.get(tool_name)
@@ -355,10 +355,10 @@ def _log_tool_execution_result(
         )
     elif executed_tool_name == "trigger_sync":
         logger.info("[Tools] trigger_sync completed: %s", result.get("status"))
-    elif executed_tool_name in ("query_system", "write_to_system", "run_action"):
+    elif executed_tool_name in ("query_on_connector", "write_on_connector", "run_on_connector"):
         logger.info("[Tools] %s completed: %s", executed_tool_name, result.get("status", result.get("error", "ok")))
-    elif executed_tool_name == "list_connected_systems":
-        logger.info("[Tools] list_connected_systems returned manifest")
+    elif executed_tool_name == "list_connected_connectors":
+        logger.info("[Tools] list_connected_connectors returned manifest")
     elif executed_tool_name == "search_cloud_files":
         logger.info("[Tools] search_cloud_files returned %d results", len(result.get("files", [])))
     elif executed_tool_name == "read_cloud_file":
@@ -538,14 +538,14 @@ async def _get_connector_instance(
     registry = discover_connectors()
     connector_cls: type[BaseConnector] | None = registry.get(slug)
     if connector_cls is None:
-        return None, f"Unknown connector '{slug}'. Use list_connected_systems to see available connectors."
+        return None, f"Unknown connector '{slug}'. Use list_connected_connectors to see available connectors."
 
     meta: ConnectorMeta = connector_cls.meta  # type: ignore[attr-defined]
 
     if required_capability:
         cap = Capability(required_capability)
         if cap not in meta.capabilities:
-            return None, f"System '{slug}' does not support {required_capability}. Capabilities: {[c.value for c in meta.capabilities]}"
+            return None, f"Connector '{slug}' does not support {required_capability}. Capabilities: {[c.value for c in meta.capabilities]}"
 
     # Find an integration the user can access
     async with get_session(organization_id=organization_id) as session:
@@ -596,7 +596,7 @@ async def _get_connector_instance(
                 return None, f"No {slug} integration with query access. Connect your own or ask a teammate to enable query sharing."
             elif required_capability == "write":
                 return None, f"No {slug} integration with write access. Connect your own or ask a teammate to enable write sharing."
-            return None, f"System '{slug}' is not connected. Ask the user to connect it in the Connectors page."
+            return None, f"Connector '{slug}' is not connected. Ask the user to connect it in the Connectors page."
 
         # Store integration owner's user_id for the connector
         integration_user_id = str(integration.user_id)
@@ -607,7 +607,7 @@ async def _get_connector_instance(
     return instance, None
 
 
-async def _list_connected_systems(organization_id: str) -> dict[str, Any]:
+async def _list_connected_connectors(organization_id: str) -> dict[str, Any]:
     """Return the connectors manifest for all connected connectors."""
     from connectors.registry import Capability, ConnectorMeta, discover_connectors
     from models.integration import Integration
@@ -650,7 +650,7 @@ async def _list_connected_systems(organization_id: str) -> dict[str, Any]:
     return {"connectors": connectors, "count": len(connectors)}
 
 
-async def _get_system_docs(
+async def _get_connector_docs(
     params: dict[str, Any], organization_id: str
 ) -> dict[str, Any]:
     """Return detailed usage documentation for a connected connector.
@@ -661,9 +661,9 @@ async def _get_system_docs(
     from connectors.registry import Capability, ConnectorMeta, discover_connectors
     from models.integration import Integration
 
-    system: str = (params.get("system") or "").strip().lower()
-    if not system:
-        return {"error": "system is required (connector slug, e.g. 'google_drive', 'hubspot')"}
+    slug: str = (params.get("connector") or "").strip().lower()
+    if not slug:
+        return {"error": "connector is required (e.g. 'google_drive', 'hubspot')"}
 
     async with get_session(organization_id=organization_id) as session:
         result = await session.execute(
@@ -674,15 +674,15 @@ async def _get_system_docs(
         )
         active_providers: set[str] = {row[0] for row in result.all()}
 
-    if system not in active_providers:
+    if slug not in active_providers:
         return {
-            "error": f"'{system}' is not connected. Use list_connected_systems to see available connectors.",
+            "error": f"'{slug}' is not connected. Use list_connected_connectors to see available connectors.",
         }
 
     registry = discover_connectors()
-    connector_cls = registry.get(system)
+    connector_cls = registry.get(slug)
     if not connector_cls:
-        return {"error": f"Unknown connector: {system}"}
+        return {"error": f"Unknown connector: {slug}"}
 
     meta: ConnectorMeta = connector_cls.meta  # type: ignore[attr-defined]
     sections: list[str] = []
@@ -690,7 +690,6 @@ async def _get_system_docs(
     if meta.usage_guide:
         sections.append(meta.usage_guide)
 
-    # Auto-generated parameter reference as fallback/supplement
     param_lines: list[str] = []
 
     if Capability.QUERY in meta.capabilities and meta.query_description:
@@ -712,10 +711,10 @@ async def _get_system_docs(
         sections.append("\n\n---\n\n# Parameter reference\n\n" + "\n\n".join(param_lines))
 
     docs: str = "\n\n".join(sections) if sections else f"No documentation available for {meta.name}."
-    return {"system": system, "name": meta.name, "docs": docs}
+    return {"connector": slug, "name": meta.name, "docs": docs}
 
 
-async def _query_system(
+async def _query_on_connector(
     params: dict[str, Any], organization_id: str, user_id: str | None
 ) -> dict[str, Any]:
     """Dispatch a query to a QUERY-capable connector."""
@@ -744,11 +743,11 @@ async def _query_system(
     try:
         return await instance.query(query)
     except Exception as exc:
-        logger.error("[Tools] query_system(%s) failed: %s", connector, exc, exc_info=True)
+        logger.error("[Tools] query_on_connector(%s) failed: %s", connector, exc, exc_info=True)
         return {"error": f"Query to {connector} failed: {exc}"}
 
 
-async def _write_to_system(
+async def _write_on_connector(
     params: dict[str, Any],
     organization_id: str,
     user_id: str | None,
@@ -783,11 +782,11 @@ async def _write_to_system(
     try:
         return await instance.write(operation, data)
     except Exception as exc:
-        logger.error("[Tools] write_to_system(%s, %s) failed: %s", connector, operation, exc, exc_info=True)
+        logger.error("[Tools] write_on_connector(%s, %s) failed: %s", connector, operation, exc, exc_info=True)
         return {"error": f"Write to {connector}.{operation} failed: {exc}"}
 
 
-async def _run_action(
+async def _run_on_connector(
     params: dict[str, Any],
     organization_id: str,
     user_id: str | None,
@@ -828,7 +827,7 @@ async def _run_action(
     try:
         return await instance.execute_action(action, action_params)
     except Exception as exc:
-        logger.error("[Tools] run_action(%s, %s) failed: %s", connector, action, exc, exc_info=True)
+        logger.error("[Tools] run_on_connector(%s, %s) failed: %s", connector, action, exc, exc_info=True)
         return {"error": f"Action {connector}.{action} failed: {exc}"}
 
 

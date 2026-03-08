@@ -277,9 +277,9 @@ class GoogleDriveConnector(BaseConnector):
         description="Google Drive – file metadata sync, search, read, create, and edit",
         usage_guide="""# Google Drive Usage Guide
 
-## Query format (query_system)
+## Query format (query_on_connector)
 
-Use the `query` parameter with one of these prefixes:
+Use `query_on_connector(connector='google_drive', query='...')` with one of these prefixes:
 
 | Prefix | Example | Description |
 |--------|---------|-------------|
@@ -295,7 +295,9 @@ Use the `query` parameter with one of these prefixes:
 
 ---
 
-## create_file action
+## Action: create_file
+
+Call via `run_on_connector(connector='google_drive', action='create_file', params={...})`.
 
 Creates a new Google Doc, Sheet, or Slides presentation.
 
@@ -326,7 +328,9 @@ Each row is an array of cell values. Use `{"data": [[...]]}` as shorthand for a 
 
 ---
 
-## edit_file action
+## Action: edit_file
+
+Call via `run_on_connector(connector='google_drive', action='edit_file', params={...})`.
 
 Edits an existing Google Doc, Sheet, or Slides. Requires edit permission on the file.
 
@@ -346,19 +350,13 @@ Edits an existing Google Doc, Sheet, or Slides. Requires edit permission on the 
 ## Examples
 
 **Create a meeting notes doc:**
-```json
-{"file_type": "document", "title": "Q1 Planning Notes", "content": "# Q1 Planning\\n\\n## Attendees\\n- Alice\\n- Bob\\n\\n## Action items\\n1. Review budget\\n2. Schedule follow-up"}
-```
+`run_on_connector(connector='google_drive', action='create_file', params={"file_type": "document", "title": "Q1 Planning Notes", "content": "# Q1 Planning\\n\\n## Attendees\\n- Alice\\n- Bob\\n\\n## Action items\\n1. Review budget\\n2. Schedule follow-up"})`
 
 **Create a simple spreadsheet:**
-```json
-{"file_type": "spreadsheet", "title": "Sales Pipeline", "content": "{\\\"sheets\\\": [{\\\"title\\\": \\\"Deals\\\", \\\"data\\\": [[\\\"Company\\\", \\\"Amount\\\", \\\"Stage\\\"], [\\\"Acme\\\", 5000, \\\"Proposal\\\"]]}]}"}
-```
+`run_on_connector(connector='google_drive', action='create_file', params={"file_type": "spreadsheet", "title": "Sales Pipeline", "content": "{\\\"sheets\\\": [{\\\"title\\\": \\\"Deals\\\", \\\"data\\\": [[\\\"Company\\\", \\\"Amount\\\", \\\"Stage\\\"], [\\\"Acme\\\", 5000, \\\"Proposal\\\"]]}]}"})`
 
 **Edit a doc (append):**
-```json
-{"external_id": "1abc...", "content": "\\n## Additional notes\\n- New item", "mode": "append"}
-```
+`run_on_connector(connector='google_drive', action='edit_file', params={"external_id": "1abc...", "content": "\\n## Additional notes\\n- New item", "mode": "append"})`
 """,
     )
 

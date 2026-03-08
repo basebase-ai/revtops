@@ -2357,45 +2357,44 @@ function getToolStatusText(
       }
       return `Running ${workflowName}...`;
     }
-    case 'query_system': {
-      const systemSlug = typeof input?.system === 'string' ? input.system : '';
-      const systemLabel = systemSlug
-        ? systemSlug.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
-        : 'connected system';
+    case 'query_on_connector': {
+      const connectorSlug: string = typeof input?.connector === 'string' ? input.connector : '';
+      const connectorLabel: string = connectorSlug
+        ? connectorSlug.replace(/_/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase())
+        : 'connector';
       if (isComplete) {
-        if (result?.error) return `Query to ${systemLabel} failed`;
+        if (result?.error) return `Query to ${connectorLabel} failed`;
         const count = typeof result?.count === 'number' ? result.count : (Array.isArray(result?.files) ? result.files.length : undefined);
-        const isSingleFileRead = systemSlug === 'google_drive' && result?.file_name != null && result?.content != null;
-        if (count !== undefined && systemSlug === 'google_drive') {
-          return count === 1 ? `Read 1 file from ${systemLabel}` : `Read ${count} files from ${systemLabel}`;
+        const isSingleFileRead: boolean = connectorSlug === 'google_drive' && result?.file_name != null && result?.content != null;
+        if (count !== undefined && connectorSlug === 'google_drive') {
+          return count === 1 ? `Read 1 file from ${connectorLabel}` : `Read ${count} files from ${connectorLabel}`;
         }
-        if (isSingleFileRead) return `Read 1 file from ${systemLabel}`;
-        return `Queried ${systemLabel}`;
+        if (isSingleFileRead) return `Read 1 file from ${connectorLabel}`;
+        return `Queried ${connectorLabel}`;
       }
-      return `Querying ${systemLabel}...`;
+      return `Querying ${connectorLabel}...`;
     }
-    case 'write_to_system': {
-      const writeSystem = typeof input?.system === 'string' ? input.system : '';
-      const writeOp = typeof input?.operation === 'string' ? input.operation : 'write';
-      const systemLabel = writeSystem ? writeSystem.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()) : 'system';
-      const opLabel = writeOp.replace(/_/g, ' ');
+    case 'write_on_connector': {
+      const writeConnector: string = typeof input?.connector === 'string' ? input.connector : '';
+      const writeOp: string = typeof input?.operation === 'string' ? input.operation : 'write';
+      const connectorLabel: string = writeConnector ? writeConnector.replace(/_/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase()) : 'connector';
+      const opLabel: string = writeOp.replace(/_/g, ' ');
       if (isComplete) {
-        return result?.error ? `Write to ${systemLabel} failed` : `Wrote to ${systemLabel} (${opLabel})`;
+        return result?.error ? `Write to ${connectorLabel} failed` : `Wrote to ${connectorLabel} (${opLabel})`;
       }
-      return `Writing to ${systemLabel} (${opLabel})...`;
+      return `Writing to ${connectorLabel} (${opLabel})...`;
     }
-    case 'run_action': {
-      const actionSystem: string = typeof input?.system === 'string' ? input.system : '';
+    case 'run_on_connector': {
+      const actionConnector: string = typeof input?.connector === 'string' ? input.connector : '';
       const actionName: string = typeof input?.action === 'string' ? input.action : '';
-      const systemLabel: string = actionSystem ? actionSystem.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()) : '';
+      const connectorLabel: string = actionConnector ? actionConnector.replace(/_/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase()) : '';
       const actionLabel: string = actionName ? actionName.replace(/_/g, ' ') : '';
-      if (systemLabel && actionLabel) {
+      if (connectorLabel && actionLabel) {
         if (isComplete) {
-          return result?.error ? `Action on ${systemLabel} failed` : `Ran ${actionLabel} on ${systemLabel}`;
+          return result?.error ? `Action on ${connectorLabel} failed` : `Ran ${actionLabel} on ${connectorLabel}`;
         }
-        return `Running ${actionLabel} on ${systemLabel}...`;
+        return `Running ${actionLabel} on ${connectorLabel}...`;
       }
-      // No system/action yet (e.g. still streaming) — show tool name so it's clear what's running
       if (isComplete) {
         return result?.error ? 'Connector action failed' : 'Completed connector action';
       }
