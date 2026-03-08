@@ -220,19 +220,19 @@ def credits_for_tool(
     write-back 2, artifact 5-10, bulk ~1 per record, etc.).
     """
     # Simple read-only / list
-    if tool_name in ("run_sql_query", "list_connected_systems"):
+    if tool_name in ("run_sql_query", "list_connected_connectors"):
         return 1
-    # CRM/system write-back
-    if tool_name == "write_to_system":
+    # Connector write-back
+    if tool_name == "write_on_connector":
         return 2
-    # Query system often crosses sources
-    if tool_name == "query_system":
+    # Connector queries often cross sources
+    if tool_name == "query_on_connector":
         return 2
     # Artifacts / reports
     if tool_name == "create_artifact":
         return 5
-    # Run action (enrichment, etc.)
-    if tool_name == "run_action":
+    # Run on connector (enrichment, etc.)
+    if tool_name == "run_on_connector":
         return 3
     # Workflow run
     if tool_name == "run_workflow":

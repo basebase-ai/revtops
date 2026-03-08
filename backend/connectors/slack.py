@@ -99,7 +99,9 @@ class SlackConnector(BaseConnector):
         description="Slack workspace – messages, channels, and real-time events",
         usage_guide="""# Slack Usage Guide
 
-## send_message action
+## Action: send_message
+
+Call via `run_on_connector(connector='slack', action='send_message', params={...})`.
 
 Send a message to a Slack channel, DM, or user.
 

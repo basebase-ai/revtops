@@ -203,13 +203,13 @@ All external connectors (HubSpot, Linear, Gmail, Slack, etc.) are **user-scoped*
 
 ### Reading & Analyzing Data
 - **run_sql_query**: Execute SELECT queries against the database. Use for structured analysis, filtering, joins, aggregations, exact text matching (ILIKE). Always prefer this for questions that can be answered with SQL. **Includes GitHub data**: query github_repositories, github_commits, github_pull_requests for repo activity, who's committing, recent PRs, etc. **Do NOT add organization_id to WHERE clauses** — data is automatically scoped to the user's organization via row-level security. **Semantic search**: Use `semantic_embed('text')` inline to search activities by meaning (e.g. `ORDER BY embedding <=> semantic_embed('pricing discussion') LIMIT 10`).
-- **run_action** with connector=code_sandbox (Code Sandbox): Run shell commands in a persistent Linux sandbox. Use for complex multi-step data analysis, Python/bash/Node scripts, CLI tools, or computation beyond SQL. Only use if **code_sandbox** is listed under Connected Connectors (enabled) below. If not enabled, offer to connect it using `initiate_connector`.
-- **query_system** with connector=web_search (Web Search): Search the web for external information. Only use if **web_search** is listed under Connected Connectors below; if not enabled, offer to connect it using `initiate_connector`.
+- **run_on_connector** with connector=code_sandbox (Code Sandbox): Run shell commands in a persistent Linux sandbox. Use for complex multi-step data analysis, Python/bash/Node scripts, CLI tools, or computation beyond SQL. Only use if **code_sandbox** is listed under Connected Connectors (enabled) below. If not enabled, offer to connect it using `initiate_connector`.
+- **query_on_connector** with connector=web_search (Web Search): Search the web for external information. Only use if **web_search** is listed under Connected Connectors below; if not enabled, offer to connect it using `initiate_connector`.
 
 
 ### Writing & Modifying Data
-- **write_to_system_of_record**: Universal tool for creating or updating records in ANY connected external system — CRMs (HubSpot, Salesforce), issue trackers (Linear, Jira, Asana), code repos (GitHub, GitLab), and more. Accepts target_system, record_type, operation, and records array. Single-record writes execute immediately; bulk CRM writes go through the Pending Changes panel.
-- **run_sql_write**: Execute INSERT/UPDATE/DELETE SQL. Use this for **internal tables** (workflows, artifacts) or **ad-hoc single-record CRM edits**. CRM table writes (contacts, deals, accounts) also go through the Pending Changes review flow. Prefer write_to_system_of_record for external system operations.
+- **write_to_system_of_record**: Universal tool for creating or updating records in ANY connected external connector — CRMs (HubSpot, Salesforce), issue trackers (Linear, Jira, Asana), code repos (GitHub, GitLab), and more. Accepts target_system, record_type, operation, and records array. Single-record writes execute immediately; bulk CRM writes go through the Pending Changes panel.
+- **run_sql_write**: Execute INSERT/UPDATE/DELETE SQL. Use this for **internal tables** (workflows, artifacts) or **ad-hoc single-record CRM edits**. CRM table writes (contacts, deals, accounts) also go through the Pending Changes review flow. Prefer write_to_system_of_record for external connector operations.
 
 ### Creating Outputs
 - **create_artifact**: Save a file the user can view and download — reports (.md/.pdf), charts (.html with Plotly), or data exports (.txt).
@@ -275,11 +275,11 @@ When the user provides a CSV or file for import, include ALL available fields fr
 | File a GitHub issue | **write_to_system_of_record** (target_system="github", record_type="issue") |
 | Create a report or chart | **run_sql_query** → **create_artifact** |
 | Create an interactive dashboard or chart with filters | **run_sql_query** (inspect data) → **write_app** (create) → **write_app** (test_query to verify) |
-| Complex multi-step data analysis, statistical modeling, or ML | **run_action** (connector=code_sandbox, action=execute_command) — only if code_sandbox is enabled in Connected Connectors |
-| Generate a chart programmatically (matplotlib, seaborn) | **run_action** (code_sandbox, execute_command) — only if enabled |
-| Transform or combine data in ways SQL can't handle | **run_action** (code_sandbox, execute_command) — only if enabled |
+| Complex multi-step data analysis, statistical modeling, or ML | **run_on_connector** (connector=code_sandbox, action=execute_command) — only if code_sandbox is enabled in Connected Connectors |
+| Generate a chart programmatically (matplotlib, seaborn) | **run_on_connector** (code_sandbox, execute_command) — only if enabled |
+| Transform or combine data in ways SQL can't handle | **run_on_connector** (code_sandbox, execute_command) — only if enabled |
 | Set up a recurring task | **run_sql_write** (INSERT INTO workflows) |
-| Research a company externally | **query_system** (connector=web_search) — only if web_search is enabled in Connected Connectors |
+| Research a company externally | **query_on_connector** (connector=web_search) — only if web_search is enabled in Connected Connectors |
 
 ### Workflow Automations
 
@@ -842,7 +842,7 @@ class ChatOrchestrator:
     async def _build_systems_manifest(self) -> str | None:
         """Build a compact manifest of connected systems (names, capabilities, action names only).
 
-        Full parameter docs are fetched on demand via get_system_docs(system).
+        Full parameter docs are fetched on demand via get_connector_docs(connector).
         """
         from connectors.registry import ConnectorMeta, discover_connectors
         from models.integration import Integration
@@ -873,7 +873,7 @@ class ChatOrchestrator:
             registry = discover_connectors()
 
             lines: list[str] = [
-                "Call `get_system_docs(system)` to get detailed usage instructions and parameter reference before using a system for the first time.",
+                "Call `get_connector_docs(connector)` to get detailed usage instructions and parameter reference before using a connector for the first time.",
                 "",
             ]
             for slug, connector_cls in sorted(registry.items()):
@@ -918,14 +918,14 @@ class ChatOrchestrator:
                 not_enabled_block = (
                     "\n\n## Connectors not currently enabled\n"
                     + "\n".join(not_enabled_lines)
-                    + "\n\nDo **not** call query_system, write_to_system, or run_action for any of these — they are not connected. "
+                    + "\n\nDo **not** call query_on_connector, write_on_connector, or run_on_connector for any of these — they are not connected. "
                     "If the user asks for something that would need one of them, offer to help them connect it using "
                     "`initiate_connector` which will open the OAuth authorization flow in their browser."
                 )
 
             return (connected_block + not_enabled_block) if (connected_block or not_enabled_block) else None
         except Exception:
-            logger.warning("Failed to build systems manifest", exc_info=True)
+            logger.warning("Failed to build connectors manifest", exc_info=True)
             return None
 
     async def _load_context_profile(self) -> dict[str, Any]:
@@ -1267,14 +1267,14 @@ WHERE scheduled_start >= '2026-01-27'::date AND scheduled_start < '2026-01-28'::
 5. **Displaying Results**: Convert UTC times to the user's timezone when presenting results. Use relative references when helpful (e.g., "in 30 minutes", "3 hours ago")."""
         system_prompt += time_context
 
-        # Inject connected systems manifest (capabilities, operations, parameters)
+        # Inject connected connectors manifest (capabilities, operations, parameters)
         if self.organization_id:
             systems_manifest: str | None = await self._build_systems_manifest()
             if systems_manifest:
                 system_prompt += "\n\n## Connected Connectors\n"
                 system_prompt += (
-                    "Use `query_system`, `write_to_system`, and `run_action` only for connectors listed **above** under the enabled connectors. "
-                    "Use `list_connected_systems` to refresh this list mid-conversation.\n\n"
+                    "Use `query_on_connector`, `write_on_connector`, and `run_on_connector` only for connectors listed **above** under the enabled connectors. "
+                    "Use `list_connected_connectors` to refresh this list mid-conversation.\n\n"
                     "**IMPORTANT**: Before calling any of these tools, check that the target connector (e.g. code_sandbox, web_search, google_drive) "
                     "appears in the **enabled** list above, not under \"Connectors not currently enabled\". "
                     "If the user's request needs a connector that is only in the not-enabled list, do **not** call the tool — "

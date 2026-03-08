@@ -125,9 +125,9 @@ class HubSpotConnector(BaseConnector):
         description="HubSpot CRM – deals, contacts, companies, and activities",
         usage_guide="""# HubSpot Usage Guide
 
-## Write operations (write_to_system)
+## Write operations (write_on_connector)
 
-Use `write_to_system` with `operation` set to one of: `create_deal`, `update_deal`, `create_contact`, `update_contact`, `create_company`, `update_company`.
+Use `write_on_connector(connector='hubspot', operation='...', data={...})` with one of: `create_deal`, `update_deal`, `create_contact`, `update_contact`, `create_company`, `update_company`.
 
 ### Deals
 

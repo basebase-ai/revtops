@@ -118,7 +118,7 @@ Available tables:
 - tracker_teams: Issue tracker teams/workspaces (source_system, source_id, name, key, description). Filter by source_system ('linear', 'jira', 'asana'). Join to issues via team_id.
 - tracker_projects: Issue tracker projects (source_system, source_id, name, description, state, progress, target_date, start_date, lead_name, team_ids JSONB). Filter by source_system.
 - tracker_issues: Issue tracker issues/tasks (source_system, source_id, team_id, identifier e.g. "ENG-123", title, description, state_name, state_type, priority 0-4, priority_label, issue_type, assignee_name, assignee_email, creator_name, project_id, labels JSONB, estimate, url, due_date, created_date, updated_date, completed_date, cancelled_date, user_id). Filter by source_system.
-- shared_files: Synced file metadata from cloud sources like Google Drive (external_id, source, name, mime_type, folder_path, web_view_link, file_size, source_modified_at). Filter by source (e.g. 'google_drive'). Use query_system(system='google_drive', query='search:...') for name-based searches.
+- shared_files: Synced file metadata from cloud sources like Google Drive (external_id, source, name, mime_type, folder_path, web_view_link, file_size, source_modified_at). Filter by source (e.g. 'google_drive'). Use query_on_connector(connector='google_drive', query='search:...') for name-based searches.
 - temp_data: Agent-generated results and computed metrics. Flexible JSONB storage linked to entities. Columns: entity_type, entity_id, namespace, key, value (JSONB), metadata (JSONB), created_by_user_id, created_at, expires_at. Example: SELECT td.value->>'score' as confidence, d.name FROM temp_data td JOIN deals d ON d.id = td.entity_id WHERE td.namespace = 'deal_confidence'
 
 SEMANTIC SEARCH on activities: Use semantic_embed('natural language query') as an inline function to generate an embedding vector. Combine with the <=> cosine distance operator to rank by similarity.
@@ -144,7 +144,7 @@ IMPORTANT: Only SELECT queries are allowed. No INSERT, UPDATE, DELETE, DROP, etc
 
 
 register_tool(
-    name="list_connected_systems",
+    name="list_connected_connectors",
     description="""Refresh and return the capabilities manifest for all connected connectors.
 
 Use this to get an up-to-date list of connected integrations and their capabilities
@@ -162,22 +162,22 @@ need to verify a connector is connected before using it.""",
 
 
 register_tool(
-    name="get_system_docs",
-    description="""Get detailed usage documentation for a connected system (connector).
+    name="get_connector_docs",
+    description="""Get detailed usage documentation for a connected connector.
 
-Call this before using query_system, write_to_system, or run_action for a connector
+Call this before using query_on_connector, write_on_connector, or run_on_connector for a connector
 you haven't used yet. Returns rich usage guides (query formats, action parameters,
-examples) written by the connector author. Use the system slug (e.g. 'google_drive',
+examples) written by the connector author. Use the connector slug (e.g. 'google_drive',
 'hubspot', 'slack') from the Connected Connectors manifest.""",
     input_schema={
         "type": "object",
         "properties": {
-            "system": {
+            "connector": {
                 "type": "string",
                 "description": "Connector slug (e.g. 'google_drive', 'hubspot', 'slack')",
             },
         },
-        "required": ["system"],
+        "required": ["connector"],
     },
     category=ToolCategory.LOCAL_READ,
     default_requires_approval=False,
@@ -185,13 +185,13 @@ examples) written by the connector author. Use the system slug (e.g. 'google_dri
 
 
 register_tool(
-    name="query_system",
+    name="query_on_connector",
     description="""Query a connected connector for on-demand data retrieval.
 
 Use this for any QUERY-capable connector: web search (web_search), Apollo enrichment,
 Google Drive file search/read, or any future connector with query capability.
 
-The query string format depends on the connector. Call `get_system_docs(system)` for
+The query string format depends on the connector. Call `get_connector_docs(connector)` for
 detailed query formats, parameters, and examples before using a connector.""",
     input_schema={
         "type": "object",
@@ -213,7 +213,7 @@ detailed query formats, parameters, and examples before using a connector.""",
 
 
 register_tool(
-    name="write_to_system",
+    name="write_on_connector",
     description="""Create or update records in a connected connector.
 
 Use this for any WRITE-capable connector: HubSpot (deals, contacts, companies),
@@ -244,7 +244,7 @@ Check the Connected Connectors manifest for available operations and their requi
 
 
 register_tool(
-    name="run_action",
+    name="run_on_connector",
     description="""Execute a side-effect action on a connected connector.
 
 Use this for any ACTION-capable connector: sending Slack messages, sending emails
@@ -308,7 +308,7 @@ Workflows are prompts sent to the agent on a schedule. Use these columns:
 - prompt: Natural language instructions for what the agent should do
 - trigger_type: 'schedule', 'event', or 'manual'
 - trigger_config: JSON with cron expression, e.g. '{"cron": "0 9 * * *"}'
-- auto_approve_tools: JSON array of tools that run without approval, e.g. '["run_sql_query", "run_action"]'
+- auto_approve_tools: JSON array of tools that run without approval, e.g. '["run_sql_query", "run_on_connector"]'
 
 DO NOT use the 'steps' column - it's deprecated. Use 'prompt' instead.
 
@@ -319,7 +319,7 @@ VALUES (
   'Query deals to get a summary of open opportunities. Include total count, value by stage, and top 5 deals by amount. Format a nice summary with emojis and post to #sales on Slack.',
   'schedule',
   '{"cron": "0 9 * * *"}',
-  '["run_sql_query", "run_action"]'
+  '["run_sql_query", "run_on_connector"]'
 )
 
 Auto-managed columns (don't include):
@@ -501,7 +501,7 @@ Use this for any batch operation: enriching contacts, researching companies, sen
 Provide EITHER tool (to call a tool per item) OR workflow_id (to run a workflow per item).
 
 **Tool mode** — each item renders params_template ({{field}} placeholders filled from item), then the tool is called. Results stored in bulk_operation_results (queryable via run_sql_query). Uses distributed Celery workers.
-  Example: foreach(tool="query_system", items_query="SELECT id, name FROM contacts", params_template={"connector": "web_search", "query": "Current role of {{name}}?"})
+  Example: foreach(tool="query_on_connector", items_query="SELECT id, name FROM contacts", params_template={"connector": "web_search", "query": "Current role of {{name}}?"})
 
 **Workflow mode** — each item dict is passed as input_data to the workflow. Uses async in-process execution with context propagation.
   Example: foreach(workflow_id="uuid-...", items=[{"email": "a@b.com"}, {"email": "c@d.com"}])
@@ -512,7 +512,7 @@ Set max_concurrent=1 for sequential execution, higher for parallel. Blocks until
         "properties": {
             "tool": {
                 "type": "string",
-                "description": "Name of the tool to run per item (e.g., 'query_system', 'run_action'). Mutually exclusive with workflow_id.",
+                "description": "Name of the tool to run per item (e.g., 'query_on_connector', 'run_on_connector'). Mutually exclusive with workflow_id.",
             },
             "workflow_id": {
                 "type": "string",

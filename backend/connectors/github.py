@@ -65,7 +65,7 @@ class GitHubConnector(BaseConnector):
 
 ## create_issue write operation
 
-Create a new issue in a GitHub repository. Use `write_to_system` with `operation: "create_issue"`.
+Create a new issue in a GitHub repository. Use `write_on_connector(connector='github', operation='create_issue', data={...})`.
 
 | Param | Type | Required | Description |
 |-------|------|----------|-------------|

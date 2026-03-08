@@ -93,9 +93,9 @@ class LinearConnector(BaseConnector):
         webhook_secret_extra_data_key="linear_webhook_secret",
         usage_guide="""# Linear Usage Guide
 
-## Write operations (write_to_system)
+## Write operations (write_on_connector)
 
-Use `write_to_system` with `operation` set to `create_issue` or `update_issue`.
+Use `write_on_connector(connector='linear', operation='...', data={...})` with `create_issue` or `update_issue`.
 
 ### create_issue
 
