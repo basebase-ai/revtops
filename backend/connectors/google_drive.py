@@ -1181,13 +1181,15 @@ Call via `run_on_connector(connector='google_drive', action='edit_file', params=
             flat_text: str = ""
             char_offsets: list[int] = []  # char_offsets[i] = doc index at start of line i+1
             first_content_index: int = 1
+            found_first: bool = False
 
             for element in body_content:
                 start_idx: int = element.get("startIndex", 0)
                 if start_idx == 0:
                     continue  # skip the section break at index 0
-                if not char_offsets:
+                if not found_first:
                     first_content_index = start_idx
+                    found_first = True
                 paragraph: dict[str, Any] | None = element.get("paragraph")
                 if paragraph:
                     for pe in paragraph.get("elements", []):
