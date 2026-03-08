@@ -264,8 +264,35 @@ class GoogleDriveConnector(BaseConnector):
                 ],
             ),
             ConnectorAction(
+                name="insert_text",
+                description="Insert text into a Google Doc at a specific line without replacing existing content. Non-destructive — preserves all existing formatting.",
+                parameters=[
+                    {"name": "external_id", "type": "string", "required": True, "description": "Google Drive file ID of the document"},
+                    {"name": "text", "type": "string", "required": True, "description": "Text to insert (plain text, inserted as-is)"},
+                    {"name": "line", "type": "integer", "required": False, "description": "Line number to insert before (1-indexed, from file read output). Default 1 (top). Use 'end' to append."},
+                ],
+            ),
+            ConnectorAction(
+                name="append_rows",
+                description="Append rows to the end of a Google Sheet. Non-destructive — existing data is untouched.",
+                parameters=[
+                    {"name": "external_id", "type": "string", "required": True, "description": "Google Drive file ID of the spreadsheet"},
+                    {"name": "rows", "type": "array", "required": True, "description": "Array of rows to append, each row is an array of cell values. E.g. [[\"Acme\", 5000, \"Closed\"]]"},
+                    {"name": "sheet", "type": "string", "required": False, "description": "Sheet name (tab) to append to. Default: first sheet."},
+                ],
+            ),
+            ConnectorAction(
+                name="update_cells",
+                description="Update specific cells in a Google Sheet using A1 notation. Non-destructive — only the targeted cells are changed.",
+                parameters=[
+                    {"name": "external_id", "type": "string", "required": True, "description": "Google Drive file ID of the spreadsheet"},
+                    {"name": "range", "type": "string", "required": True, "description": "A1 range to update, e.g. 'Sheet1!A1' for one cell, 'Sheet1!B2:D2' for a range, or just 'A1' for the first sheet."},
+                    {"name": "values", "type": "array", "required": True, "description": "2D array of values to write. E.g. [[\"New Header\"]] for one cell, or [[\"A\",\"B\"],[\"C\",\"D\"]] for a block."},
+                ],
+            ),
+            ConnectorAction(
                 name="edit_file",
-                description="Edit an existing Google Doc, Sheet, or Slides presentation. Requires edit permission on the file.",
+                description="DESTRUCTIVE: Replace ALL content in a Google Doc, Sheet, or Slides. Destroys all existing formatting. For docs use insert_text, for sheets use append_rows/update_cells instead.",
                 parameters=[
                     {"name": "external_id", "type": "string", "required": True, "description": "Google Drive file ID of the file to edit"},
                     {"name": "content", "type": "string", "required": True, "description": "New content. For documents: Markdown. For sheets/slides: JSON. Same format as create_file."},
@@ -328,22 +355,109 @@ Each row is an array of cell values. Use `{"data": [[...]]}` as shorthand for a 
 
 ---
 
-## Action: edit_file
+## Reading Google Docs — line numbers
+
+When you read a Google Doc via `query_on_connector(connector='google_drive', query='file:<id>')`, the content is returned with line numbers:
+
+```
+ 1| Meeting Notes
+ 2| 
+ 3| ## Attendees
+ 4| - Alice
+ 5| - Bob
+```
+
+Use these line numbers with `insert_text` to add content at specific positions.
+
+---
+
+## Action: insert_text (preferred for editing docs)
+
+Call via `run_on_connector(connector='google_drive', action='insert_text', params={...})`.
+
+Inserts text into an existing Google Doc **without replacing or deleting** existing content. All existing formatting is preserved.
+
+| Param | Type | Required | Description |
+|-------|------|---------|-------------|
+| external_id | string | Yes | Google Drive file ID |
+| text | string | Yes | Text to insert (plain text) |
+| line | integer or "end" | No | Line number to insert before (1-indexed from read output). Default: 1 (top of doc). Use `"end"` to append at the bottom. |
+
+**Examples:**
+- Insert at top: `run_on_connector(connector='google_drive', action='insert_text', params={"external_id": "1abc...", "text": "IMPORTANT: Updated 2025-01-15\n"})`
+- Insert before line 5: `run_on_connector(connector='google_drive', action='insert_text', params={"external_id": "1abc...", "text": "- Charlie\n", "line": 5})`
+- Append to end: `run_on_connector(connector='google_drive', action='insert_text', params={"external_id": "1abc...", "text": "\n## Follow-up\n- Review by Friday\n", "line": "end"})`
+
+**When to use insert_text vs edit_file:**
+- **insert_text**: Adding notes, appending items, inserting new sections. Preserves all existing formatting and content.
+- **edit_file**: Only when you need to completely rewrite a file from scratch. Destroys all existing formatting.
+
+---
+
+## Reading Google Sheets — row numbers
+
+When you read a Google Sheet via `query_on_connector(connector='google_drive', query='file:<id>')`, each row is numbered:
+
+```
+=== Sheet: Deals ===
+1| Company,Amount,Stage
+2| Acme,5000,Proposal
+3| Beta,2500,Closed
+```
+
+Row 1 is typically the header row. Use these row numbers to understand the data layout when using `append_rows` or `update_cells`.
+
+---
+
+## Action: append_rows (preferred for adding data to sheets)
+
+Call via `run_on_connector(connector='google_drive', action='append_rows', params={...})`.
+
+Appends rows to the end of a Google Sheet. **Non-destructive** — all existing data is untouched.
+
+| Param | Type | Required | Description |
+|-------|------|---------|-------------|
+| external_id | string | Yes | Google Drive file ID of the spreadsheet |
+| rows | array | Yes | Array of rows, each row is an array of cell values. E.g. `[["Acme", 5000, "Closed"]]` |
+| sheet | string | No | Sheet tab name to append to. Default: first sheet. |
+
+**Examples:**
+- Add one row: `run_on_connector(connector='google_drive', action='append_rows', params={"external_id": "1abc...", "rows": [["NewCo", 3000, "Proposal"]]})`
+- Add multiple rows: `run_on_connector(connector='google_drive', action='append_rows', params={"external_id": "1abc...", "rows": [["Row1", 100], ["Row2", 200]]})`
+- Append to a specific tab: `run_on_connector(connector='google_drive', action='append_rows', params={"external_id": "1abc...", "rows": [["data"]], "sheet": "Q2 Data"})`
+
+---
+
+## Action: update_cells (preferred for changing specific cells in sheets)
+
+Call via `run_on_connector(connector='google_drive', action='update_cells', params={...})`.
+
+Updates specific cells in a Google Sheet using A1 notation. **Non-destructive** — only the targeted cells are changed.
+
+| Param | Type | Required | Description |
+|-------|------|---------|-------------|
+| external_id | string | Yes | Google Drive file ID of the spreadsheet |
+| range | string | Yes | A1 range, e.g. `"Sheet1!A1"` for one cell, `"Sheet1!B2:D2"` for a range, or `"A1"` for the first sheet |
+| values | array | Yes | 2D array of values. E.g. `[["New Header"]]` for one cell, `[["A","B"],["C","D"]]` for a block |
+
+**Examples:**
+- Rename a column header: `run_on_connector(connector='google_drive', action='update_cells', params={"external_id": "1abc...", "range": "Sheet1!B1", "values": [["Revenue"]]})`
+- Update a single cell: `run_on_connector(connector='google_drive', action='update_cells', params={"external_id": "1abc...", "range": "Sheet1!C3", "values": [[7500]]})`
+- Update a row: `run_on_connector(connector='google_drive', action='update_cells', params={"external_id": "1abc...", "range": "Sheet1!A2:C2", "values": [["Acme", 9000, "Closed Won"]]})`
+
+---
+
+## Action: edit_file (destructive — use with caution)
 
 Call via `run_on_connector(connector='google_drive', action='edit_file', params={...})`.
 
-Edits an existing Google Doc, Sheet, or Slides. Requires edit permission on the file.
+**WARNING:** This deletes ALL existing content and formatting, then rewrites from scratch. For Google Docs use `insert_text`, for Sheets use `append_rows`/`update_cells` instead. Only use when rewriting an entire file from scratch.
 
 | Param | Type | Required | Description |
 |-------|------|---------|-------------|
 | external_id | string | Yes | Google Drive file ID (from search results or shared_files table) |
-| content | string | Yes | New content — same format as create_file |
-| mode | string | No | `replace` (default) or `append` — **append is documents only** |
-
-**Mode support:**
-- **Documents**: `replace` (overwrites all) or `append` (adds to end)
-- **Spreadsheets**: `replace` only — append not supported
-- **Presentations**: `replace` only — append not supported
+| content | string | Yes | New content. For documents: Markdown. For sheets/slides: JSON. Same format as create_file. |
+| mode | string | No | `replace` (default) replaces all content, `append` adds to end (documents only) |
 
 ---
 
@@ -355,8 +469,14 @@ Edits an existing Google Doc, Sheet, or Slides. Requires edit permission on the 
 **Create a simple spreadsheet:**
 `run_on_connector(connector='google_drive', action='create_file', params={"file_type": "spreadsheet", "title": "Sales Pipeline", "content": "{\\\"sheets\\\": [{\\\"title\\\": \\\"Deals\\\", \\\"data\\\": [[\\\"Company\\\", \\\"Amount\\\", \\\"Stage\\\"], [\\\"Acme\\\", 5000, \\\"Proposal\\\"]]}]}"})`
 
-**Edit a doc (append):**
-`run_on_connector(connector='google_drive', action='edit_file', params={"external_id": "1abc...", "content": "\\n## Additional notes\\n- New item", "mode": "append"})`
+**Insert text into a doc (non-destructive):**
+`run_on_connector(connector='google_drive', action='insert_text', params={"external_id": "1abc...", "text": "- New action item\n", "line": "end"})`
+
+**Append a row to a sheet:**
+`run_on_connector(connector='google_drive', action='append_rows', params={"external_id": "1abc...", "rows": [["NewCo", 3000, "Proposal"]]})`
+
+**Change a column header:**
+`run_on_connector(connector='google_drive', action='update_cells', params={"external_id": "1abc...", "range": "Sheet1!B1", "values": [["Revenue"]]})`
 """,
     )
 
@@ -709,13 +829,26 @@ Edits an existing Google Doc, Sheet, or Slides. Requires edit permission on the 
             content = content[:MAX_CONTENT_LENGTH]
             truncated = True
 
+        # Add line numbers to Google Docs so the agent can reference
+        # specific lines when using insert_text or edit_file.
+        numbered_content: str = content
+        line_count: int = 0
+        if mime_type == GOOGLE_DOC_MIME:
+            lines: list[str] = content.split("\n")
+            line_count = len(lines)
+            width: int = len(str(line_count))
+            numbered_content = "\n".join(
+                f"{i + 1:>{width}}| {line}" for i, line in enumerate(lines)
+            )
+
         return {
             "file_name": file_name,
             "external_id": external_id,
             "mime_type": mime_type,
             "folder_path": file_record.folder_path or "/",
             "web_view_link": file_record.web_view_link,
-            "content": content,
+            "content": numbered_content,
+            "line_count": line_count or None,
             "truncated": truncated,
             "content_length": len(content),
         }
@@ -788,12 +921,14 @@ Edits an existing Google Doc, Sheet, or Slides. Requires edit permission on the 
             if values_response.status_code == 200:
                 rows: list[list[str]] = values_response.json().get("values", [])
                 if rows:
+                    width: int = len(str(len(rows)))
                     csv_lines: list[str] = []
-                    for row in rows:
-                        csv_lines.append(",".join(
+                    for row_idx, row in enumerate(rows):
+                        cells: str = ",".join(
                             f'"{cell}"' if "," in str(cell) else str(cell)
                             for cell in row
-                        ))
+                        )
+                        csv_lines.append(f"{row_idx + 1:>{width}}| {cells}")
                     parts.append(f"=== Sheet: {title} ===\n" + "\n".join(csv_lines))
 
         return "\n\n".join(parts) if parts else None
@@ -981,6 +1116,268 @@ Edits an existing Google Doc, Sheet, or Slides. Requires edit permission on the 
             "name": file_name,
             "mime_type": mime_type,
             "mode": mode,
+            "web_view_link": web_link,
+        }
+
+    async def insert_text(
+        self,
+        external_id: str,
+        text: str,
+        line: int | str = 1,
+    ) -> dict[str, Any]:
+        """Insert text into a Google Doc at a specific line. Non-destructive.
+
+        Args:
+            external_id: Google Drive file ID.
+            text: Plain text to insert.
+            line: 1-indexed line number to insert before, or "end" to append.
+        """
+        if not text:
+            return {"error": "text is required"}
+
+        await self.get_oauth_token()
+
+        org_uuid: UUID = UUID(self.organization_id)
+        user_uuid: UUID = UUID(self.user_id)
+
+        file_record: Optional[SharedFile] = None
+        async with get_session(organization_id=self.organization_id) as session:
+            result = await session.execute(
+                select(SharedFile).where(
+                    and_(
+                        SharedFile.organization_id == org_uuid,
+                        SharedFile.user_id == user_uuid,
+                        SharedFile.source == "google_drive",
+                        SharedFile.external_id == external_id,
+                    )
+                )
+            )
+            file_record = result.scalar_one_or_none()
+
+        if not file_record:
+            return {"error": f"File not found in synced metadata: {external_id}"}
+
+        mime_type: str = file_record.mime_type or ""
+        if mime_type != GOOGLE_DOC_MIME:
+            return {"error": "insert_text only works on Google Docs, not Sheets or Slides."}
+
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            # Fetch doc structure to map line -> character index
+            doc_resp = await client.get(
+                f"{DOCS_API_BASE}/documents/{external_id}",
+                headers=self._get_headers(),
+                params={"fields": "body.content"},
+            )
+            if doc_resp.status_code == 403:
+                return {"error": "Permission denied: you don't have edit access to this document."}
+            if doc_resp.status_code != 200:
+                return {"error": f"Failed to fetch document: {doc_resp.status_code}"}
+
+            body_content: list[dict[str, Any]] = doc_resp.json().get("body", {}).get("content", [])
+
+            # Build a flat string from structural elements and track character offsets
+            # Each paragraph element has startIndex/endIndex in the doc.
+            # We extract all text to find newline positions, then map line N to a char index.
+            flat_text: str = ""
+            char_offsets: list[int] = []  # char_offsets[i] = doc index at start of line i+1
+            first_content_index: int = 1
+
+            for element in body_content:
+                start_idx: int = element.get("startIndex", 0)
+                if start_idx == 0:
+                    continue  # skip the section break at index 0
+                if not char_offsets:
+                    first_content_index = start_idx
+                paragraph: dict[str, Any] | None = element.get("paragraph")
+                if paragraph:
+                    for pe in paragraph.get("elements", []):
+                        text_run: dict[str, Any] | None = pe.get("textRun")
+                        if text_run:
+                            run_content: str = text_run.get("content", "")
+                            flat_text += run_content
+
+            # Map lines: split flat text by newline and record doc-level index for each
+            lines_list: list[str] = flat_text.split("\n")
+            cumulative_idx: int = first_content_index
+            for i, ln in enumerate(lines_list):
+                char_offsets.append(cumulative_idx)
+                cumulative_idx += len(ln) + 1  # +1 for the newline
+
+            # Resolve target insertion index
+            end_index: int = 1
+            for element in body_content:
+                ei: int = element.get("endIndex", 0)
+                if ei > end_index:
+                    end_index = ei
+
+            insert_index: int
+            if isinstance(line, str) and line.strip().lower() == "end":
+                insert_index = max(end_index - 1, 1)
+            else:
+                target_line: int = int(line) if not isinstance(line, int) else line
+                if target_line < 1:
+                    target_line = 1
+                if target_line > len(char_offsets):
+                    insert_index = max(end_index - 1, 1)
+                else:
+                    insert_index = char_offsets[target_line - 1]
+
+            # Ensure text ends with newline so it becomes its own line
+            insert_content: str = text if text.endswith("\n") else text + "\n"
+
+            ins_resp = await client.post(
+                f"{DOCS_API_BASE}/documents/{external_id}:batchUpdate",
+                headers={**self._get_headers(), "Content-Type": "application/json"},
+                json={"requests": [{"insertText": {"location": {"index": insert_index}, "text": insert_content}}]},
+            )
+            if ins_resp.status_code == 403:
+                return {"error": "Permission denied: you don't have edit access to this document."}
+            if ins_resp.status_code != 200:
+                return {"error": f"Failed to insert text: {ins_resp.status_code} — {ins_resp.text[:200]}"}
+
+        web_link: str = file_record.web_view_link or f"https://docs.google.com/open?id={external_id}"
+        return {
+            "status": "inserted",
+            "external_id": external_id,
+            "name": file_record.name or "",
+            "line": line,
+            "chars_inserted": len(insert_content),
+            "web_view_link": web_link,
+        }
+
+    async def append_rows(
+        self,
+        external_id: str,
+        rows: list[list[Any]],
+        sheet: str | None = None,
+    ) -> dict[str, Any]:
+        """Append rows to a Google Sheet. Non-destructive."""
+        if not rows:
+            return {"error": "rows is required and must be non-empty"}
+
+        await self.get_oauth_token()
+
+        org_uuid: UUID = UUID(self.organization_id)
+        user_uuid: UUID = UUID(self.user_id)
+
+        file_record: Optional[SharedFile] = None
+        async with get_session(organization_id=self.organization_id) as session:
+            result = await session.execute(
+                select(SharedFile).where(
+                    and_(
+                        SharedFile.organization_id == org_uuid,
+                        SharedFile.user_id == user_uuid,
+                        SharedFile.source == "google_drive",
+                        SharedFile.external_id == external_id,
+                    )
+                )
+            )
+            file_record = result.scalar_one_or_none()
+
+        if not file_record:
+            return {"error": f"File not found in synced metadata: {external_id}"}
+
+        mime_type: str = file_record.mime_type or ""
+        if mime_type != GOOGLE_SHEET_MIME:
+            return {"error": "append_rows only works on Google Sheets."}
+
+        # Resolve the target sheet tab
+        range_notation: str = f"'{sheet}'" if sheet else "Sheet1"
+
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            # If no sheet name given, discover the first sheet's actual name
+            if not sheet:
+                meta_resp = await client.get(
+                    f"{SHEETS_API_BASE}/spreadsheets/{external_id}",
+                    headers=self._get_headers(),
+                    params={"fields": "sheets.properties.title"},
+                )
+                if meta_resp.status_code == 200:
+                    sheets_meta: list[dict[str, Any]] = meta_resp.json().get("sheets", [])
+                    if sheets_meta:
+                        first_title: str = sheets_meta[0].get("properties", {}).get("title", "Sheet1")
+                        range_notation = f"'{first_title}'"
+
+            resp = await client.post(
+                f"{SHEETS_API_BASE}/spreadsheets/{external_id}/values/{range_notation}:append",
+                headers={**self._get_headers(), "Content-Type": "application/json"},
+                params={"valueInputOption": "USER_ENTERED", "insertDataOption": "INSERT_ROWS"},
+                json={"range": range_notation, "majorDimension": "ROWS", "values": rows},
+            )
+            if resp.status_code == 403:
+                return {"error": "Permission denied: you don't have edit access to this spreadsheet."}
+            if resp.status_code != 200:
+                return {"error": f"Failed to append rows: {resp.status_code} — {resp.text[:200]}"}
+
+        updates: dict[str, Any] = resp.json().get("updates", {})
+        web_link: str = file_record.web_view_link or f"https://docs.google.com/open?id={external_id}"
+        return {
+            "status": "appended",
+            "external_id": external_id,
+            "name": file_record.name or "",
+            "rows_appended": len(rows),
+            "updated_range": updates.get("updatedRange", ""),
+            "web_view_link": web_link,
+        }
+
+    async def update_cells(
+        self,
+        external_id: str,
+        range_notation: str,
+        values: list[list[Any]],
+    ) -> dict[str, Any]:
+        """Update specific cells in a Google Sheet. Non-destructive."""
+        if not values:
+            return {"error": "values is required and must be non-empty"}
+        if not range_notation:
+            return {"error": "range is required (A1 notation, e.g. 'Sheet1!A1:C1')"}
+
+        await self.get_oauth_token()
+
+        org_uuid: UUID = UUID(self.organization_id)
+        user_uuid: UUID = UUID(self.user_id)
+
+        file_record: Optional[SharedFile] = None
+        async with get_session(organization_id=self.organization_id) as session:
+            result = await session.execute(
+                select(SharedFile).where(
+                    and_(
+                        SharedFile.organization_id == org_uuid,
+                        SharedFile.user_id == user_uuid,
+                        SharedFile.source == "google_drive",
+                        SharedFile.external_id == external_id,
+                    )
+                )
+            )
+            file_record = result.scalar_one_or_none()
+
+        if not file_record:
+            return {"error": f"File not found in synced metadata: {external_id}"}
+
+        mime_type: str = file_record.mime_type or ""
+        if mime_type != GOOGLE_SHEET_MIME:
+            return {"error": "update_cells only works on Google Sheets."}
+
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.put(
+                f"{SHEETS_API_BASE}/spreadsheets/{external_id}/values/{range_notation}",
+                headers={**self._get_headers(), "Content-Type": "application/json"},
+                params={"valueInputOption": "USER_ENTERED"},
+                json={"range": range_notation, "majorDimension": "ROWS", "values": values},
+            )
+            if resp.status_code == 403:
+                return {"error": "Permission denied: you don't have edit access to this spreadsheet."}
+            if resp.status_code != 200:
+                return {"error": f"Failed to update cells: {resp.status_code} — {resp.text[:200]}"}
+
+        web_link: str = file_record.web_view_link or f"https://docs.google.com/open?id={external_id}"
+        return {
+            "status": "updated",
+            "external_id": external_id,
+            "name": file_record.name or "",
+            "updated_range": range_notation,
+            "updated_rows": len(values),
+            "updated_cols": max(len(row) for row in values) if values else 0,
             "web_view_link": web_link,
         }
 
@@ -1587,6 +1984,36 @@ Edits an existing Google Doc, Sheet, or Slides. Requires edit permission on the 
                 title=params.get("title", ""),
                 content=params.get("content", ""),
                 folder_id=params.get("folder_id"),
+            )
+        if action == "insert_text":
+            return await self.insert_text(
+                external_id=params.get("external_id", ""),
+                text=params.get("text", ""),
+                line=params.get("line", 1),
+            )
+        if action == "append_rows":
+            raw_rows: Any = params.get("rows", [])
+            if isinstance(raw_rows, str):
+                try:
+                    raw_rows = json.loads(raw_rows)
+                except (json.JSONDecodeError, TypeError):
+                    return {"error": "rows must be a JSON array of arrays"}
+            return await self.append_rows(
+                external_id=params.get("external_id", ""),
+                rows=raw_rows,
+                sheet=params.get("sheet"),
+            )
+        if action == "update_cells":
+            raw_values: Any = params.get("values", [])
+            if isinstance(raw_values, str):
+                try:
+                    raw_values = json.loads(raw_values)
+                except (json.JSONDecodeError, TypeError):
+                    return {"error": "values must be a JSON array of arrays"}
+            return await self.update_cells(
+                external_id=params.get("external_id", ""),
+                range_notation=params.get("range", ""),
+                values=raw_values,
             )
         if action == "edit_file":
             return await self.edit_file(
