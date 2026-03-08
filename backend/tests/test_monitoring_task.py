@@ -43,6 +43,7 @@ def test_expected_env_vars_include_pagerduty() -> None:
 
 def test_pagerduty_incident_request_shape(monkeypatch: Any) -> None:
     monkeypatch.setattr(pagerduty.httpx, "AsyncClient", _FakeAsyncClient)
+    monkeypatch.setenv("PAGERDUTY_INCIDENTS_ENABLED", "true")
     monkeypatch.setenv("PAGERDUTY_FROM_EMAIL", "alerts@revtops.com")
     monkeypatch.setenv("PagerDuty_Key", "pd_test_key")
     monkeypatch.setenv("PAGERDUTY_SERVICE_ID", "svc_123")
