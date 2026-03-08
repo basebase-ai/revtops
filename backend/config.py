@@ -141,6 +141,7 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("PAGERDUTY_KEY", "PagerDuty_Key"),
     )
     PAGERDUTY_SERVICE_ID: Optional[str] = None
+    PAGERDUTY_INCIDENTS_ENABLED: bool = False
 
     # Credits
     NUM_GRACE_CREDITS: int = 5
@@ -194,6 +195,7 @@ EXPECTED_ENV_VARS: tuple[str, ...] = (
     "PAGERDUTY_FROM_EMAIL",
     "PagerDuty_Key",
     "PAGERDUTY_SERVICE_ID",
+    "PAGERDUTY_INCIDENTS_ENABLED",
 )
 
 

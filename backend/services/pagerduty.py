@@ -3,16 +3,11 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from urllib.parse import urlparse
-
 import httpx
 
 from config import settings
 
 logger = logging.getLogger(__name__)
-
-_LOCALHOST_HOSTNAMES = {"localhost", "127.0.0.1", "::1"}
-
 
 @dataclass(frozen=True)
 class PagerDutyIncidentResult:
@@ -24,33 +19,20 @@ class PagerDutyIncidentResult:
     response_body: str | None = None
 
 
-def _is_localhost_runtime() -> bool:
-    """Return True when runtime URLs indicate a localhost/developer environment."""
-    candidate_urls = [
-        settings.BACKEND_PUBLIC_URL,
-        settings.FRONTEND_URL,
-    ]
+def _pagerduty_incidents_enabled() -> bool:
+    """Return True when PagerDuty incident creation is explicitly enabled."""
+    if settings.PAGERDUTY_INCIDENTS_ENABLED:
+        return True
 
-    for value in candidate_urls:
-        if not value:
-            continue
-
-        parsed = urlparse(value)
-        hostname = parsed.hostname
-        if hostname and hostname.lower() in _LOCALHOST_HOSTNAMES:
-            logger.info(
-                "PagerDuty incidents disabled for localhost runtime (url=%s)",
-                value,
-            )
-            return True
-
+    logger.info(
+        "PagerDuty incident skipped: incidenting disabled (PAGERDUTY_INCIDENTS_ENABLED=false)"
+    )
     return False
 
 
 def get_pagerduty_config() -> tuple[str, str, str] | None:
     """Return PagerDuty settings if complete, else log and skip."""
-    if _is_localhost_runtime():
-        logger.info("PagerDuty incident skipped: localhost runtime detected")
+    if not _pagerduty_incidents_enabled():
         return None
 
     from_email = settings.PAGERDUTY_FROM_EMAIL
