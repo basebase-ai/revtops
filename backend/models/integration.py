@@ -39,8 +39,8 @@ class Integration(Base):
     __tablename__ = "integrations"
     __table_args__ = (
         UniqueConstraint(
-            "organization_id", "provider", "user_id",
-            name="uq_integration_org_provider_user"
+            "organization_id", "connector", "user_id",
+            name="uq_integration_org_connector_user"
         ),
     )
 
@@ -51,8 +51,8 @@ class Integration(Base):
         UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False
     )
 
-    # Integration type: 'hubspot', 'slack', 'google_calendar', 'salesforce', 'gmail', etc.
-    provider: Mapped[str] = mapped_column(String(50), nullable=False)
+    # Connector slug: 'hubspot', 'slack', 'google_calendar', 'salesforce', 'gmail', etc.
+    connector: Mapped[str] = mapped_column(String(50), nullable=False)
 
     # Owner of this integration (who authenticated)
     # NOTE: nullable=True for backwards compatibility during migration.
@@ -107,7 +107,8 @@ class Integration(Base):
         result: dict[str, Any] = {
             "id": str(self.id),
             "organization_id": str(self.organization_id),
-            "provider": self.provider,
+            "connector": self.connector,
+            "provider": self.connector,  # Deprecated alias for connector; remove after frontend migration
             "user_id": str(self.user_id),
             "is_active": self.is_active,
             "last_sync_at": f"{self.last_sync_at.isoformat()}Z" if self.last_sync_at else None,

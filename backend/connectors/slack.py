@@ -135,7 +135,7 @@ class SlackConnector(BaseConnector):
 
         conditions = [
             Integration.organization_id == uuid.UUID(self.organization_id),
-            Integration.provider == self.source_system,
+            Integration.connector == self.source_system,
             Integration.extra_data["team_id"].astext == self.team_id,
         ]
         if require_active:

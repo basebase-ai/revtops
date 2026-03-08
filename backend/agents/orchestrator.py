@@ -203,8 +203,8 @@ All external connectors (HubSpot, Linear, Gmail, Slack, etc.) are **user-scoped*
 
 ### Reading & Analyzing Data
 - **run_sql_query**: Execute SELECT queries against the database. Use for structured analysis, filtering, joins, aggregations, exact text matching (ILIKE). Always prefer this for questions that can be answered with SQL. **Includes GitHub data**: query github_repositories, github_commits, github_pull_requests for repo activity, who's committing, recent PRs, etc. **Do NOT add organization_id to WHERE clauses** — data is automatically scoped to the user's organization via row-level security. **Semantic search**: Use `semantic_embed('text')` inline to search activities by meaning (e.g. `ORDER BY embedding <=> semantic_embed('pricing discussion') LIMIT 10`).
-- **run_action** with system=code_sandbox (Code Sandbox): Run shell commands in a persistent Linux sandbox. Use for complex multi-step data analysis, Python/bash/Node scripts, CLI tools, or computation beyond SQL. Only use if **code_sandbox** is listed under Connected Systems (enabled) below. If not enabled, offer to connect it using `initiate_connector`.
-- **query_system** with system=web_search (Web Search): Search the web for external information. Only use if **web_search** is listed under Connected Systems below; if not enabled, offer to connect it using `initiate_connector`.
+- **run_action** with connector=code_sandbox (Code Sandbox): Run shell commands in a persistent Linux sandbox. Use for complex multi-step data analysis, Python/bash/Node scripts, CLI tools, or computation beyond SQL. Only use if **code_sandbox** is listed under Connected Connectors (enabled) below. If not enabled, offer to connect it using `initiate_connector`.
+- **query_system** with connector=web_search (Web Search): Search the web for external information. Only use if **web_search** is listed under Connected Connectors below; if not enabled, offer to connect it using `initiate_connector`.
 
 
 ### Writing & Modifying Data
@@ -275,11 +275,11 @@ When the user provides a CSV or file for import, include ALL available fields fr
 | File a GitHub issue | **write_to_system_of_record** (target_system="github", record_type="issue") |
 | Create a report or chart | **run_sql_query** → **create_artifact** |
 | Create an interactive dashboard or chart with filters | **run_sql_query** (inspect data) → **write_app** (create) → **write_app** (test_query to verify) |
-| Complex multi-step data analysis, statistical modeling, or ML | **run_action** (system=code_sandbox, action=execute_command) — only if code_sandbox is enabled in Connected Systems |
+| Complex multi-step data analysis, statistical modeling, or ML | **run_action** (connector=code_sandbox, action=execute_command) — only if code_sandbox is enabled in Connected Connectors |
 | Generate a chart programmatically (matplotlib, seaborn) | **run_action** (code_sandbox, execute_command) — only if enabled |
 | Transform or combine data in ways SQL can't handle | **run_action** (code_sandbox, execute_command) — only if enabled |
 | Set up a recurring task | **run_sql_write** (INSERT INTO workflows) |
-| Research a company externally | **query_system** (system=web_search) — only if web_search is enabled in Connected Systems |
+| Research a company externally | **query_system** (connector=web_search) — only if web_search is enabled in Connected Connectors |
 
 ### Workflow Automations
 
@@ -852,7 +852,7 @@ class ChatOrchestrator:
             async with get_session(organization_id=self.organization_id) as session:
                 result = await session.execute(
                     select(
-                        Integration.provider,
+                        Integration.connector,
                         Integration.last_sync_at,
                         Integration.last_error,
                     )
@@ -860,7 +860,7 @@ class ChatOrchestrator:
                         Integration.organization_id == UUID(self.organization_id),
                         Integration.is_active == True,  # noqa: E712
                     )
-                    .order_by(Integration.provider)
+                    .order_by(Integration.connector)
                 )
                 rows = result.all()
 
@@ -1285,11 +1285,11 @@ WHERE scheduled_start >= '2026-01-27'::date AND scheduled_start < '2026-01-28'::
         if self.organization_id:
             systems_manifest: str | None = await self._build_systems_manifest()
             if systems_manifest:
-                system_prompt += "\n\n## Connected Systems\n"
+                system_prompt += "\n\n## Connected Connectors\n"
                 system_prompt += (
-                    "Use `query_system`, `write_to_system`, and `run_action` only for systems listed **above** under the enabled connectors. "
+                    "Use `query_system`, `write_to_system`, and `run_action` only for connectors listed **above** under the enabled connectors. "
                     "Use `list_connected_systems` to refresh this list mid-conversation.\n\n"
-                    "**IMPORTANT**: Before calling any of these tools, check that the target system (e.g. code_sandbox, web_search, google_drive) "
+                    "**IMPORTANT**: Before calling any of these tools, check that the target connector (e.g. code_sandbox, web_search, google_drive) "
                     "appears in the **enabled** list above, not under \"Connectors not currently enabled\". "
                     "If the user's request needs a connector that is only in the not-enabled list, do **not** call the tool — "
                     "instead, offer to help them connect it using `initiate_connector` which will open the OAuth authorization flow in their browser.\n\n"

@@ -145,12 +145,12 @@ IMPORTANT: Only SELECT queries are allowed. No INSERT, UPDATE, DELETE, DROP, etc
 
 register_tool(
     name="list_connected_systems",
-    description="""Refresh and return the capabilities manifest for all connected systems.
+    description="""Refresh and return the capabilities manifest for all connected connectors.
 
 Use this to get an up-to-date list of connected integrations and their capabilities
 (query, write, action). The manifest shows available operations and their parameters
-for each system. Useful when the user asks about available integrations or when you
-need to verify a system is connected before using it.""",
+for each connector. Useful when the user asks about available integrations or when you
+need to verify a connector is connected before using it.""",
     input_schema={
         "type": "object",
         "properties": {},
@@ -163,26 +163,26 @@ need to verify a system is connected before using it.""",
 
 register_tool(
     name="query_system",
-    description="""Query a connected system for on-demand data retrieval.
+    description="""Query a connected connector for on-demand data retrieval.
 
 Use this for any QUERY-capable connector: web search (web_search), Apollo enrichment,
 Google Drive file search/read, or any future connector with query capability.
 
-The query string format depends on the system — check the Connected Systems manifest
-in the system prompt for each system's query_description.""",
+The query string format depends on the connector — check the Connected Connectors manifest
+in the system prompt for each connector's query_description.""",
     input_schema={
         "type": "object",
         "properties": {
-            "system": {
+            "connector": {
                 "type": "string",
                 "description": "Connector slug (e.g. 'web_search', 'apollo', 'google_drive')",
             },
             "query": {
                 "type": "string",
-                "description": "Query string — format depends on the system (see Connected Systems manifest)",
+                "description": "Query string — format depends on the connector (see Connected Connectors manifest)",
             },
         },
-        "required": ["system", "query"],
+        "required": ["connector", "query"],
     },
     category=ToolCategory.EXTERNAL_READ,
     default_requires_approval=False,
@@ -191,16 +191,16 @@ in the system prompt for each system's query_description.""",
 
 register_tool(
     name="write_to_system",
-    description="""Create or update records in a connected system.
+    description="""Create or update records in a connected connector.
 
 Use this for any WRITE-capable connector: HubSpot (deals, contacts, companies),
 GitHub/Linear/Asana (issues), or any future connector with write capability.
 
-Check the Connected Systems manifest for available operations and their required parameters.""",
+Check the Connected Connectors manifest for available operations and their required parameters.""",
     input_schema={
         "type": "object",
         "properties": {
-            "system": {
+            "connector": {
                 "type": "string",
                 "description": "Connector slug (e.g. 'hubspot', 'linear', 'github', 'asana')",
             },
@@ -210,10 +210,10 @@ Check the Connected Systems manifest for available operations and their required
             },
             "data": {
                 "type": "object",
-                "description": "Record data — fields depend on system and operation (see Connected Systems manifest)",
+                "description": "Record data — fields depend on connector and operation (see Connected Connectors manifest)",
             },
         },
-        "required": ["system", "operation", "data"],
+        "required": ["connector", "operation", "data"],
     },
     category=ToolCategory.EXTERNAL_WRITE,
     default_requires_approval=False,
@@ -222,17 +222,17 @@ Check the Connected Systems manifest for available operations and their required
 
 register_tool(
     name="run_action",
-    description="""Execute a side-effect action on a connected system.
+    description="""Execute a side-effect action on a connected connector.
 
 Use this for any ACTION-capable connector: sending Slack messages, sending emails
 (Gmail/Outlook), sending SMS (Twilio), fetching URLs (web_search), creating Google Drive
 files, executing sandbox commands (code_sandbox), or any future connector with action capability.
 
-Check the Connected Systems manifest for available actions and their required parameters.""",
+Check the Connected Connectors manifest for available actions and their required parameters.""",
     input_schema={
         "type": "object",
         "properties": {
-            "system": {
+            "connector": {
                 "type": "string",
                 "description": "Connector slug (e.g. 'slack', 'gmail', 'twilio', 'web_search', 'code_sandbox')",
             },
@@ -242,10 +242,10 @@ Check the Connected Systems manifest for available actions and their required pa
             },
             "params": {
                 "type": "object",
-                "description": "Action parameters — fields depend on system and action (see Connected Systems manifest)",
+                "description": "Action parameters — fields depend on connector and action (see Connected Connectors manifest)",
             },
         },
-        "required": ["system", "action", "params"],
+        "required": ["connector", "action", "params"],
     },
     category=ToolCategory.EXTERNAL_WRITE,
     default_requires_approval=False,
@@ -478,7 +478,7 @@ Use this for any batch operation: enriching contacts, researching companies, sen
 Provide EITHER tool (to call a tool per item) OR workflow_id (to run a workflow per item).
 
 **Tool mode** — each item renders params_template ({{field}} placeholders filled from item), then the tool is called. Results stored in bulk_operation_results (queryable via run_sql_query). Uses distributed Celery workers.
-  Example: foreach(tool="query_system", items_query="SELECT id, name FROM contacts", params_template={"system": "web_search", "query": "Current role of {{name}}?"})
+  Example: foreach(tool="query_system", items_query="SELECT id, name FROM contacts", params_template={"connector": "web_search", "query": "Current role of {{name}}?"})
 
 **Workflow mode** — each item dict is passed as input_data to the workflow. Uses async in-process execution with context propagation.
   Example: foreach(workflow_id="uuid-...", items=[{"email": "a@b.com"}, {"email": "c@d.com"}])

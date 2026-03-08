@@ -619,16 +619,31 @@ export const useChatStore = create<ChatState>()(
       const hasStreamingMessages = current.messages.some(
         (msg) => msg.isStreaming,
       );
-      if (!hasStreamingMessages && !current.streamingMessageId) return;
+      const hasInProgressTools = current.messages.some((msg) =>
+        msg.contentBlocks.some(
+          (block) => block.type === "tool_use" && block.status !== "complete",
+        ),
+      );
+      if (!hasStreamingMessages && !current.streamingMessageId && !hasInProgressTools) return;
 
       console.log(
         "[Store] Marking complete for conversation:",
         conversationId,
       );
 
-      const updated = current.messages.map((msg) =>
-        msg.isStreaming ? { ...msg, isStreaming: false } : msg,
-      );
+      const updated = current.messages.map((msg) => {
+        const finalizedBlocks = msg.contentBlocks.map((block) =>
+          block.type === "tool_use" &&
+          block.status !== "complete"
+            ? { ...block, status: "complete" as const }
+            : block,
+        );
+        const blocksChanged = finalizedBlocks !== msg.contentBlocks;
+        if (msg.isStreaming || blocksChanged) {
+          return { ...msg, isStreaming: false, contentBlocks: finalizedBlocks };
+        }
+        return msg;
+      });
       set({
         conversations: {
           ...conversations,

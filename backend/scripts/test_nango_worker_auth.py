@@ -75,7 +75,7 @@ async def _resolve_connection_id_from_db(
     async with get_session(organization_id=organization_id, user_id=user_id) as session:
         stmt = select(Integration).where(
             Integration.organization_id == organization_id,
-            Integration.provider == provider,
+            Integration.connector == provider,
         )
         if user_id:
             stmt = stmt.where(Integration.user_id == user_id)

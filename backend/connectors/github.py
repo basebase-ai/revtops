@@ -89,7 +89,7 @@ class GitHubConnector(BaseConnector):
     ) -> Any:
         """GET from the GitHub REST API. Returns parsed JSON."""
         headers: dict[str, str] = await self._get_headers()
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
             resp: httpx.Response = await client.get(
                 f"{GITHUB_API_BASE}{path}",
                 headers=headers,
@@ -105,7 +105,7 @@ class GitHubConnector(BaseConnector):
     ) -> Any:
         """POST to the GitHub REST API. Returns parsed JSON."""
         headers: dict[str, str] = await self._get_headers()
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
             resp: httpx.Response = await client.post(
                 f"{GITHUB_API_BASE}{path}",
                 headers=headers,
@@ -130,7 +130,7 @@ class GitHubConnector(BaseConnector):
         request_params: dict[str, Any] = {"per_page": 100, **(params or {})}
         url: str = f"{GITHUB_API_BASE}{path}"
 
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
             for _ in range(max_pages):
                 resp: httpx.Response = await client.get(
                     url, headers=headers, params=request_params
@@ -184,14 +184,17 @@ class GitHubConnector(BaseConnector):
 
         org_uuid: UUID = UUID(self.organization_id)
 
-        # 1. Check existing mapping
+        # 1. Check existing mapping (prefer rows with user_id; tolerate duplicates)
         async with get_session(organization_id=self.organization_id) as session:
             result = await session.execute(
-                select(SlackUserMapping.user_id).where(
+                select(SlackUserMapping.user_id)
+                .where(
                     SlackUserMapping.organization_id == org_uuid,
                     SlackUserMapping.external_userid == login,
                     SlackUserMapping.source == "github",
                 )
+                .order_by(SlackUserMapping.user_id.desc().nulls_last())
+                .limit(1)
             )
             mapping_user_id: UUID | None = result.scalar_one_or_none()
 
@@ -199,14 +202,16 @@ class GitHubConnector(BaseConnector):
             self._login_cache[login] = mapping_user_id
             return mapping_user_id
 
-        # 2. Try email match against users table
+        # 2. Try email match against users table (tolerate duplicate emails)
         if email:
             async with get_session(organization_id=self.organization_id) as session:
                 result = await session.execute(
-                    select(User.id).where(
+                    select(User.id)
+                    .where(
                         User.organization_id == org_uuid,
                         User.email == email,
                     )
+                    .limit(1)
                 )
                 matched_user_id: UUID | None = result.scalar_one_or_none()
 
@@ -236,11 +241,14 @@ class GitHubConnector(BaseConnector):
         """
         org_uuid: UUID = UUID(self.organization_id)
         existing = await session.execute(
-            select(SlackUserMapping).where(
+            select(SlackUserMapping)
+            .where(
                 SlackUserMapping.organization_id == org_uuid,
                 SlackUserMapping.external_userid == github_login,
                 SlackUserMapping.source == "github",
             )
+            .order_by(SlackUserMapping.user_id.desc().nulls_last())
+            .limit(1)
         )
         mapping: SlackUserMapping | None = existing.scalar_one_or_none()
 

@@ -345,7 +345,7 @@ async def list_admin_integrations(user_id: str) -> AdminIntegrationsResponse:
         result = await session.execute(
             select(Integration, Organization.name.label("org_name"))
             .join(Organization, Integration.organization_id == Organization.id)
-            .order_by(Organization.name, Integration.provider)
+            .order_by(Organization.name, Integration.connector)
         )
         rows = result.all()
     
@@ -357,7 +357,7 @@ async def list_admin_integrations(user_id: str) -> AdminIntegrationsResponse:
             id=str(integration.id),
             organization_id=str(integration.organization_id),
             organization_name=org_name,
-            provider=integration.provider,
+            provider=integration.connector,
             is_active=integration.is_active,
             last_sync_at=integration.last_sync_at.isoformat() if integration.last_sync_at else None,
             last_error=integration.last_error,
@@ -686,7 +686,7 @@ async def trigger_sync(
         result = await session.execute(
             select(Integration).where(
                 Integration.organization_id == customer_uuid,
-                Integration.provider == provider,
+                Integration.connector == provider,
                 Integration.is_active == True,
             )
         )
@@ -737,7 +737,7 @@ async def get_sync_status(organization_id: str, provider: str) -> SyncStatusResp
             result = await session.execute(
                 select(Integration).where(
                     Integration.organization_id == UUID(organization_id),
-                    Integration.provider == provider,
+                    Integration.connector == provider,
                 )
             )
             integration = result.scalar_one_or_none()
@@ -801,11 +801,11 @@ async def trigger_sync_all(
     if not integrations:
         raise HTTPException(status_code=404, detail="No active integrations found")
 
-    providers: list[str] = list({i.provider for i in integrations})
+    providers: list[str] = list({i.connector for i in integrations})
 
     # Trigger sync for each integration (including per-user variants)
     for integration in integrations:
-        prov: str = integration.provider
+        prov: str = integration.connector
         if prov in CONNECTORS:
             status_key: str = _get_status_key(organization_id, prov)
             _sync_status[status_key] = {
@@ -984,7 +984,7 @@ async def match_hubspot_owners(organization_id: str) -> OwnerMatchResponse:
         result = await session.execute(
             select(Integration).where(
                 Integration.organization_id == UUID(organization_id),
-                Integration.provider == "hubspot",
+                Integration.connector == "hubspot",
                 Integration.is_active == True,
             )
         )
@@ -1089,7 +1089,7 @@ async def list_github_repos(organization_id: str) -> GitHubAvailableReposRespons
             select(Integration)
             .where(
                 Integration.organization_id == UUID(organization_id),
-                Integration.provider == "github",
+                Integration.connector == "github",
                 Integration.is_active == True,
             )
             .limit(1)
@@ -1256,7 +1256,7 @@ async def queue_sync(organization_id: str, provider: str) -> QueuedSyncResponse:
         result = await session.execute(
             select(Integration).where(
                 Integration.organization_id == customer_uuid,
-                Integration.provider == provider,
+                Integration.connector == provider,
                 Integration.is_active == True,
             )
         )

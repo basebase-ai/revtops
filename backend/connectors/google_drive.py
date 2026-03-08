@@ -1,16 +1,18 @@
 """
-Google Drive connector for syncing file metadata, reading, and creating files.
+Google Drive connector for syncing file metadata, reading, creating, and editing files.
 
 1. Syncs all file metadata (folders, docs, sheets, slides) from a user's Drive
 2. Supports searching files by name
 3. Exports text representations of Docs, Sheets, and Slides on demand
 4. Creates new Google Docs, Sheets, and Slides with content
+5. Edits existing Google Docs, Sheets, and Slides (replaces or appends content)
 
 Flow:
 1. User connects Google account via OAuth (Nango)
 2. Sync crawls Drive and stores file metadata in shared_files table (source='google_drive')
 3. Agent can search files by name and read their text content
 4. Agent can create new files in the user's Drive and populate them with content
+5. Agent can edit existing files (user must have edit permission on the file)
 """
 
 import json
@@ -261,9 +263,18 @@ class GoogleDriveConnector(BaseConnector):
                     {"name": "folder_id", "type": "string", "required": False, "description": "Google Drive folder ID to place the file in"},
                 ],
             ),
+            ConnectorAction(
+                name="edit_file",
+                description="Edit an existing Google Doc, Sheet, or Slides presentation. Requires edit permission on the file.",
+                parameters=[
+                    {"name": "external_id", "type": "string", "required": True, "description": "Google Drive file ID of the file to edit"},
+                    {"name": "content", "type": "string", "required": True, "description": "New content. For documents: Markdown. For sheets/slides: JSON. Same format as create_file."},
+                    {"name": "mode", "type": "string", "required": False, "description": "Edit mode: 'replace' (default) replaces all content, 'append' adds to end (documents only)"},
+                ],
+            ),
         ],
         nango_integration_id="google-drive",
-        description="Google Drive – file metadata sync, search, read, and create",
+        description="Google Drive – file metadata sync, search, read, create, and edit",
     )
 
     def __init__(self, organization_id: str, user_id: str) -> None:
@@ -283,7 +294,7 @@ class GoogleDriveConnector(BaseConnector):
             result = await session.execute(
                 select(Integration).where(
                     Integration.organization_id == UUID(self.organization_id),
-                    Integration.provider == "google_drive",
+                    Integration.connector == "google_drive",
                     Integration.user_id == UUID(self.user_id),
                 )
             )
@@ -811,6 +822,394 @@ class GoogleDriveConnector(BaseConnector):
             result["populate_warning"] = populate_error
         return result
 
+    # -------------------------------------------------------------------------
+    # File Editing
+    # -------------------------------------------------------------------------
+
+    async def edit_file(
+        self,
+        external_id: str,
+        content: Any,
+        mode: str = "replace",
+    ) -> dict[str, Any]:
+        """
+        Edit an existing Google Workspace file by replacing or appending content.
+
+        Args:
+            external_id: Google Drive file ID.
+            content: New content (same format as create_file).
+            mode: 'replace' (clear & rewrite) or 'append' (documents only).
+
+        Returns:
+            Dict with edit result metadata.
+        """
+        if mode not in ("replace", "append"):
+            return {"error": f"Unsupported mode '{mode}'. Use: replace, append."}
+
+        await self.get_oauth_token()
+
+        org_uuid: UUID = UUID(self.organization_id)
+        user_uuid: UUID = UUID(self.user_id)
+
+        file_record: Optional[SharedFile] = None
+        async with get_session(organization_id=self.organization_id) as session:
+            result = await session.execute(
+                select(SharedFile).where(
+                    and_(
+                        SharedFile.organization_id == org_uuid,
+                        SharedFile.user_id == user_uuid,
+                        SharedFile.source == "google_drive",
+                        SharedFile.external_id == external_id,
+                    )
+                )
+            )
+            file_record = result.scalar_one_or_none()
+
+        if not file_record:
+            return {"error": f"File not found in synced metadata: {external_id}"}
+
+        mime_type: str = file_record.mime_type or ""
+        file_name: str = file_record.name or ""
+
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            edit_error: Optional[str] = None
+
+            if mime_type == GOOGLE_DOC_MIME:
+                edit_error = await self._edit_document(client, external_id, content, mode)
+            elif mime_type == GOOGLE_SHEET_MIME:
+                if mode == "append":
+                    return {"error": "Append mode is not supported for spreadsheets. Use 'replace'."}
+                edit_error = await self._edit_spreadsheet(client, external_id, content)
+            elif mime_type == GOOGLE_SLIDES_MIME:
+                if mode == "append":
+                    return {"error": "Append mode is not supported for presentations. Use 'replace'."}
+                edit_error = await self._edit_presentation(client, external_id, content)
+            else:
+                return {"error": f"Editing is not supported for files of type '{mime_type}'. Only Google Docs, Sheets, and Slides can be edited."}
+
+        if edit_error:
+            return {"error": edit_error}
+
+        web_link: str = file_record.web_view_link or f"https://docs.google.com/open?id={external_id}"
+
+        return {
+            "status": "edited",
+            "external_id": external_id,
+            "name": file_name,
+            "mime_type": mime_type,
+            "mode": mode,
+            "web_view_link": web_link,
+        }
+
+    async def _edit_document(
+        self, client: httpx.AsyncClient, doc_id: str, content: Any, mode: str
+    ) -> Optional[str]:
+        """Edit a Google Doc: replace all content or append to end."""
+        text_content: str = str(content) if content else ""
+        if not text_content:
+            return "Content is empty — nothing to write."
+
+        if mode == "replace":
+            # Fetch current doc to get the end-of-body index
+            doc_resp = await client.get(
+                f"{DOCS_API_BASE}/documents/{doc_id}",
+                headers=self._get_headers(),
+                params={"fields": "body.content"},
+            )
+            if doc_resp.status_code == 403:
+                return f"Permission denied: you don't have edit access to this document. (HTTP 403)"
+            if doc_resp.status_code != 200:
+                return f"Failed to fetch document structure: {doc_resp.status_code} — {doc_resp.text[:200]}"
+
+            doc_data: dict[str, Any] = doc_resp.json()
+            body_content: list[dict[str, Any]] = doc_data.get("body", {}).get("content", [])
+
+            end_index: int = 1
+            for element in body_content:
+                ei: int = element.get("endIndex", 0)
+                if ei > end_index:
+                    end_index = ei
+
+            # Delete existing body content (index 1 to end_index - 1)
+            requests: list[dict[str, Any]] = []
+            if end_index > 2:
+                requests.append({
+                    "deleteContentRange": {
+                        "range": {"startIndex": 1, "endIndex": end_index - 1},
+                    }
+                })
+
+            if requests:
+                del_resp = await client.post(
+                    f"{DOCS_API_BASE}/documents/{doc_id}:batchUpdate",
+                    headers={**self._get_headers(), "Content-Type": "application/json"},
+                    json={"requests": requests},
+                )
+                if del_resp.status_code == 403:
+                    return f"Permission denied: you don't have edit access to this document. (HTTP 403)"
+                if del_resp.status_code != 200:
+                    return f"Failed to clear document: {del_resp.status_code} — {del_resp.text[:200]}"
+
+            # Insert new content from index 1
+            insert_requests: list[dict[str, Any]] = _markdown_to_docs_requests(text_content)
+            if insert_requests:
+                ins_resp = await client.post(
+                    f"{DOCS_API_BASE}/documents/{doc_id}:batchUpdate",
+                    headers={**self._get_headers(), "Content-Type": "application/json"},
+                    json={"requests": insert_requests},
+                )
+                if ins_resp.status_code != 200:
+                    return f"Failed to insert new content: {ins_resp.status_code} — {ins_resp.text[:200]}"
+
+            return None
+
+        # mode == "append"
+        doc_resp = await client.get(
+            f"{DOCS_API_BASE}/documents/{doc_id}",
+            headers=self._get_headers(),
+            params={"fields": "body.content"},
+        )
+        if doc_resp.status_code == 403:
+            return f"Permission denied: you don't have edit access to this document. (HTTP 403)"
+        if doc_resp.status_code != 200:
+            return f"Failed to fetch document structure: {doc_resp.status_code} — {doc_resp.text[:200]}"
+
+        doc_data = doc_resp.json()
+        body_content = doc_data.get("body", {}).get("content", [])
+
+        end_index = 1
+        for element in body_content:
+            ei = element.get("endIndex", 0)
+            if ei > end_index:
+                end_index = ei
+
+        # Build insert requests starting at current end (before the trailing newline)
+        append_idx: int = max(end_index - 1, 1)
+        raw_requests: list[dict[str, Any]] = _markdown_to_docs_requests(text_content)
+
+        # Shift all indices in the requests to start at append_idx instead of 1
+        offset: int = append_idx - 1
+        shifted_requests: list[dict[str, Any]] = []
+        for req in raw_requests:
+            shifted_req: dict[str, Any] = {}
+            for key, val in req.items():
+                if isinstance(val, dict):
+                    new_val: dict[str, Any] = dict(val)
+                    if "location" in new_val and "index" in new_val["location"]:
+                        new_val["location"] = dict(new_val["location"])
+                        new_val["location"]["index"] += offset
+                    if "range" in new_val:
+                        new_range: dict[str, Any] = dict(new_val["range"])
+                        if "startIndex" in new_range:
+                            new_range["startIndex"] += offset
+                        if "endIndex" in new_range:
+                            new_range["endIndex"] += offset
+                        new_val["range"] = new_range
+                    shifted_req[key] = new_val
+                else:
+                    shifted_req[key] = val
+            shifted_requests.append(shifted_req)
+
+        if shifted_requests:
+            ins_resp = await client.post(
+                f"{DOCS_API_BASE}/documents/{doc_id}:batchUpdate",
+                headers={**self._get_headers(), "Content-Type": "application/json"},
+                json={"requests": shifted_requests},
+            )
+            if ins_resp.status_code == 403:
+                return f"Permission denied: you don't have edit access to this document. (HTTP 403)"
+            if ins_resp.status_code != 200:
+                return f"Failed to append content: {ins_resp.status_code} — {ins_resp.text[:200]}"
+
+        return None
+
+    async def _edit_spreadsheet(
+        self, client: httpx.AsyncClient, spreadsheet_id: str, content: Any
+    ) -> Optional[str]:
+        """Replace all content in a Google Sheet."""
+        if isinstance(content, str):
+            try:
+                content = json.loads(content)
+            except (json.JSONDecodeError, TypeError):
+                content = {"sheets": [{"title": "Sheet1", "data": [[content]]}]}
+
+        if not isinstance(content, dict):
+            return "Spreadsheet content must be a JSON object with a 'sheets' key."
+
+        sheets: list[dict[str, Any]] = content.get("sheets", [])
+        if not sheets:
+            flat_data: Any = content.get("data")
+            if flat_data and isinstance(flat_data, list):
+                sheets = [{"title": "Sheet1", "data": flat_data}]
+
+        if not sheets:
+            return "No sheet data provided."
+
+        errors: list[str] = []
+        for sheet in sheets:
+            sheet_title: str = sheet.get("title", "Sheet1")
+            rows: Any = sheet.get("data", [])
+            if not isinstance(rows, list) or not rows:
+                continue
+
+            # Clear existing data in this sheet
+            clear_range: str = f"'{sheet_title}'"
+            clear_resp = await client.post(
+                f"{SHEETS_API_BASE}/spreadsheets/{spreadsheet_id}/values/{clear_range}:clear",
+                headers={**self._get_headers(), "Content-Type": "application/json"},
+                json={},
+            )
+            if clear_resp.status_code == 403:
+                return f"Permission denied: you don't have edit access to this spreadsheet. (HTTP 403)"
+            if clear_resp.status_code != 200:
+                errors.append(f"Sheet '{sheet_title}' clear failed: {clear_resp.status_code} — {clear_resp.text[:200]}")
+                continue
+
+            # Write new data
+            range_notation: str = f"'{sheet_title}'!A1"
+            write_resp = await client.put(
+                f"{SHEETS_API_BASE}/spreadsheets/{spreadsheet_id}/values/{range_notation}",
+                headers={**self._get_headers(), "Content-Type": "application/json"},
+                params={"valueInputOption": "USER_ENTERED"},
+                json={"range": range_notation, "majorDimension": "ROWS", "values": rows},
+            )
+            if write_resp.status_code == 403:
+                return f"Permission denied: you don't have edit access to this spreadsheet. (HTTP 403)"
+            if write_resp.status_code != 200:
+                errors.append(f"Sheet '{sheet_title}' write failed: {write_resp.status_code} — {write_resp.text[:200]}")
+
+        return "; ".join(errors) if errors else None
+
+    async def _edit_presentation(
+        self, client: httpx.AsyncClient, presentation_id: str, content: Any
+    ) -> Optional[str]:
+        """Replace all slides in a Google Slides presentation."""
+        if isinstance(content, str):
+            try:
+                content = json.loads(content)
+            except (json.JSONDecodeError, TypeError):
+                content = {"slides": [{"title": content}]}
+
+        if not isinstance(content, dict):
+            return "Presentation content must be a JSON object with a 'slides' key."
+
+        new_slides: list[dict[str, Any]] = content.get("slides", [])
+        if not new_slides:
+            return "No slide data provided."
+
+        # Get existing slides
+        get_resp = await client.get(
+            f"{SLIDES_API_BASE}/presentations/{presentation_id}",
+            headers=self._get_headers(),
+            params={"fields": "slides.objectId"},
+        )
+        if get_resp.status_code == 403:
+            return f"Permission denied: you don't have edit access to this presentation. (HTTP 403)"
+        if get_resp.status_code != 200:
+            return f"Failed to fetch presentation: {get_resp.status_code} — {get_resp.text[:200]}"
+
+        existing_slide_ids: list[str] = [
+            s["objectId"] for s in get_resp.json().get("slides", [])
+        ]
+
+        # Create new slides
+        create_requests: list[dict[str, Any]] = []
+        slide_object_ids: list[str] = []
+        for idx, _slide_def in enumerate(new_slides):
+            slide_obj_id: str = f"edit_slide_{idx}"
+            slide_object_ids.append(slide_obj_id)
+            create_requests.append({
+                "createSlide": {
+                    "objectId": slide_obj_id,
+                    "insertionIndex": idx,
+                    "slideLayoutReference": {"predefinedLayout": "TITLE_AND_BODY"},
+                }
+            })
+
+        batch_resp = await client.post(
+            f"{SLIDES_API_BASE}/presentations/{presentation_id}:batchUpdate",
+            headers={**self._get_headers(), "Content-Type": "application/json"},
+            json={"requests": create_requests},
+        )
+        if batch_resp.status_code == 403:
+            return f"Permission denied: you don't have edit access to this presentation. (HTTP 403)"
+        if batch_resp.status_code != 200:
+            return f"Slides create failed: {batch_resp.status_code} — {batch_resp.text[:200]}"
+
+        # Delete old slides
+        if existing_slide_ids:
+            delete_requests: list[dict[str, Any]] = [
+                {"deleteObject": {"objectId": sid}} for sid in existing_slide_ids
+            ]
+            del_resp = await client.post(
+                f"{SLIDES_API_BASE}/presentations/{presentation_id}:batchUpdate",
+                headers={**self._get_headers(), "Content-Type": "application/json"},
+                json={"requests": delete_requests},
+            )
+            if del_resp.status_code != 200:
+                logger.warning("[GoogleDrive] Failed to delete old slides: %s", del_resp.status_code)
+
+        # Populate new slides with content (re-fetch to get placeholder IDs)
+        full_resp = await client.get(
+            f"{SLIDES_API_BASE}/presentations/{presentation_id}",
+            headers=self._get_headers(),
+        )
+        if full_resp.status_code != 200:
+            return f"Could not fetch presentation after creating slides: {full_resp.status_code}"
+
+        text_requests: list[dict[str, Any]] = []
+        all_slides: list[dict[str, Any]] = full_resp.json().get("slides", [])
+
+        for slide_data in all_slides:
+            obj_id: str = slide_data.get("objectId", "")
+            if obj_id not in slide_object_ids:
+                continue
+            idx = slide_object_ids.index(obj_id)
+            slide_def: dict[str, Any] = new_slides[idx]
+
+            for element in slide_data.get("pageElements", []):
+                shape: Optional[dict[str, Any]] = element.get("shape")
+                if not shape:
+                    continue
+                placeholder: Optional[dict[str, Any]] = shape.get("placeholder")
+                if not placeholder:
+                    continue
+
+                ph_type: str = placeholder.get("type", "")
+                element_id: str = element.get("objectId", "")
+
+                if ph_type in ("TITLE", "CENTERED_TITLE") and slide_def.get("title"):
+                    text_requests.append({
+                        "insertText": {
+                            "objectId": element_id,
+                            "text": slide_def["title"],
+                            "insertionIndex": 0,
+                        }
+                    })
+                elif ph_type == "BODY" and slide_def.get("body"):
+                    text_requests.append({
+                        "insertText": {
+                            "objectId": element_id,
+                            "text": slide_def["body"],
+                            "insertionIndex": 0,
+                        }
+                    })
+
+        if text_requests:
+            text_resp = await client.post(
+                f"{SLIDES_API_BASE}/presentations/{presentation_id}:batchUpdate",
+                headers={**self._get_headers(), "Content-Type": "application/json"},
+                json={"requests": text_requests},
+            )
+            if text_resp.status_code != 200:
+                return f"Slides text insert failed: {text_resp.status_code} — {text_resp.text[:200]}"
+
+        return None
+
+    # -------------------------------------------------------------------------
+    # File Creation – Content Population Helpers
+    # -------------------------------------------------------------------------
+
     async def _populate_document(
         self, client: httpx.AsyncClient, doc_id: str, content: Any
     ) -> Optional[str]:
@@ -1105,5 +1504,11 @@ class GoogleDriveConnector(BaseConnector):
                 title=params.get("title", ""),
                 content=params.get("content", ""),
                 folder_id=params.get("folder_id"),
+            )
+        if action == "edit_file":
+            return await self.edit_file(
+                external_id=params.get("external_id", ""),
+                content=params.get("content", ""),
+                mode=params.get("mode", "replace"),
             )
         raise ValueError(f"Unknown action: {action}")

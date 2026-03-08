@@ -362,6 +362,8 @@ def _log_tool_execution_result(
         logger.info("[Tools] search_cloud_files returned %d results", len(result.get("files", [])))
     elif executed_tool_name == "read_cloud_file":
         logger.info("[Tools] read_cloud_file completed: %s", result.get("file_name", "unknown"))
+    elif executed_tool_name == "edit_cloud_file":
+        logger.info("[Tools] edit_cloud_file completed: %s", result.get("status", result.get("error", "unknown")))
     elif executed_tool_name == "create_artifact":
         logger.info("[Tools] create_artifact completed: %s", result.get("artifact_id"))
     elif executed_tool_name == "keep_notes":
@@ -535,7 +537,7 @@ async def _get_connector_instance(
     registry = discover_connectors()
     connector_cls: type[BaseConnector] | None = registry.get(slug)
     if connector_cls is None:
-        return None, f"Unknown system '{slug}'. Use list_connected_systems to see available systems."
+        return None, f"Unknown connector '{slug}'. Use list_connected_systems to see available connectors."
 
     meta: ConnectorMeta = connector_cls.meta  # type: ignore[attr-defined]
 
@@ -551,7 +553,7 @@ async def _get_connector_instance(
             result = await session.execute(
                 select(Integration).where(
                     Integration.organization_id == UUID(organization_id),
-                    Integration.provider == slug,
+                    Integration.connector == slug,
                     Integration.user_id == UUID(user_id),
                     Integration.is_active == True,  # noqa: E712
                 )
@@ -571,7 +573,7 @@ async def _get_connector_instance(
                 result = await session.execute(
                     select(Integration).where(
                         Integration.organization_id == UUID(organization_id),
-                        Integration.provider == slug,
+                        Integration.connector == slug,
                         Integration.is_active == True,  # noqa: E712
                         share_flag == True,  # noqa: E712
                     )
@@ -582,7 +584,7 @@ async def _get_connector_instance(
                 result = await session.execute(
                     select(Integration).where(
                         Integration.organization_id == UUID(organization_id),
-                        Integration.provider == slug,
+                        Integration.connector == slug,
                         Integration.is_active == True,  # noqa: E712
                     )
                 )
@@ -605,13 +607,13 @@ async def _get_connector_instance(
 
 
 async def _list_connected_systems(organization_id: str) -> dict[str, Any]:
-    """Return the systems manifest for all connected connectors."""
+    """Return the connectors manifest for all connected connectors."""
     from connectors.registry import Capability, ConnectorMeta, discover_connectors
     from models.integration import Integration
 
     async with get_session(organization_id=organization_id) as session:
         result = await session.execute(
-            select(Integration.provider).where(
+            select(Integration.connector).where(
                 Integration.organization_id == UUID(organization_id),
                 Integration.is_active == True,  # noqa: E712
             )
@@ -620,7 +622,7 @@ async def _list_connected_systems(organization_id: str) -> dict[str, Any]:
 
     registry = discover_connectors()
 
-    systems: list[dict[str, Any]] = []
+    connectors: list[dict[str, Any]] = []
     for slug, connector_cls in sorted(registry.items()):
         if slug not in active_providers:
             continue
@@ -642,33 +644,33 @@ async def _list_connected_systems(organization_id: str) -> dict[str, Any]:
                 {"name": act.name, "description": act.description, "parameters": act.parameters}
                 for act in meta.actions
             ]
-        systems.append(entry)
+        connectors.append(entry)
 
-    return {"systems": systems, "count": len(systems)}
+    return {"connectors": connectors, "count": len(connectors)}
 
 
 async def _query_system(
     params: dict[str, Any], organization_id: str, user_id: str | None
 ) -> dict[str, Any]:
     """Dispatch a query to a QUERY-capable connector."""
-    system: str = (params.get("system") or "").strip()
+    connector: str = (params.get("connector") or "").strip()
     query: str = (params.get("query") or "").strip()
-    if not system:
-        return {"error": "system is required"}
+    if not connector:
+        return {"error": "connector is required"}
     if not query:
         return {"error": "query is required"}
 
     dp_ctx = ConnectorContext(
         organization_id=organization_id,
         user_id=user_id,
-        provider=system,
+        provider=connector,
         operation="query",
     )
-    dp_result = await check_connector_call(dp_ctx, {"system": system, "query": query})
+    dp_result = await check_connector_call(dp_ctx, {"connector": connector, "query": query})
     if not dp_result.allowed:
         return {"error": dp_result.deny_reason or "Connector query not allowed"}
 
-    instance, error = await _get_connector_instance(system, organization_id, user_id, required_capability="query")
+    instance, error = await _get_connector_instance(connector, organization_id, user_id, required_capability="query")
     if error:
         return {"error": error}
     assert instance is not None
@@ -676,8 +678,8 @@ async def _query_system(
     try:
         return await instance.query(query)
     except Exception as exc:
-        logger.error("[Tools] query_system(%s) failed: %s", system, exc, exc_info=True)
-        return {"error": f"Query to {system} failed: {exc}"}
+        logger.error("[Tools] query_system(%s) failed: %s", connector, exc, exc_info=True)
+        return {"error": f"Query to {connector} failed: {exc}"}
 
 
 async def _write_to_system(
@@ -688,26 +690,26 @@ async def _write_to_system(
     conversation_id: str | None,
 ) -> dict[str, Any]:
     """Dispatch a write to a WRITE-capable connector."""
-    system: str = (params.get("system") or "").strip()
+    connector: str = (params.get("connector") or "").strip()
     operation: str = (params.get("operation") or "").strip()
     data: dict[str, Any] = params.get("data") or {}
 
-    if not system:
-        return {"error": "system is required"}
+    if not connector:
+        return {"error": "connector is required"}
     if not operation:
         return {"error": "operation is required"}
 
     dp_ctx = ConnectorContext(
         organization_id=organization_id,
         user_id=user_id,
-        provider=system,
+        provider=connector,
         operation="write",
     )
-    dp_result = await check_connector_call(dp_ctx, {"system": system, "operation": operation, "data": data})
+    dp_result = await check_connector_call(dp_ctx, {"connector": connector, "operation": operation, "data": data})
     if not dp_result.allowed:
         return {"error": dp_result.deny_reason or "Connector write not allowed"}
 
-    instance, error = await _get_connector_instance(system, organization_id, user_id, required_capability="write")
+    instance, error = await _get_connector_instance(connector, organization_id, user_id, required_capability="write")
     if error:
         return {"error": error}
     assert instance is not None
@@ -715,8 +717,8 @@ async def _write_to_system(
     try:
         return await instance.write(operation, data)
     except Exception as exc:
-        logger.error("[Tools] write_to_system(%s, %s) failed: %s", system, operation, exc, exc_info=True)
-        return {"error": f"Write to {system}.{operation} failed: {exc}"}
+        logger.error("[Tools] write_to_system(%s, %s) failed: %s", connector, operation, exc, exc_info=True)
+        return {"error": f"Write to {connector}.{operation} failed: {exc}"}
 
 
 async def _run_action(
@@ -727,17 +729,17 @@ async def _run_action(
     context: dict[str, Any] | None,
 ) -> dict[str, Any]:
     """Dispatch an action to an ACTION-capable connector."""
-    system: str = (params.get("system") or "").strip()
+    connector: str = (params.get("connector") or "").strip()
     action: str = (params.get("action") or "").strip()
     action_params: dict[str, Any] = params.get("params") or {}
 
-    if not system:
-        return {"error": "system is required"}
+    if not connector:
+        return {"error": "connector is required"}
     if not action:
         return {"error": "action is required"}
 
     # Inject conversation_id for code_sandbox execute_command
-    if system == "code_sandbox" and action == "execute_command":
+    if connector == "code_sandbox" and action == "execute_command":
         conversation_id: str | None = (context or {}).get("conversation_id")
         if conversation_id:
             action_params["conversation_id"] = conversation_id
@@ -745,14 +747,14 @@ async def _run_action(
     dp_ctx = ConnectorContext(
         organization_id=organization_id,
         user_id=user_id,
-        provider=system,
+        provider=connector,
         operation="action",
     )
-    dp_result = await check_connector_call(dp_ctx, {"system": system, "action": action, "params": action_params})
+    dp_result = await check_connector_call(dp_ctx, {"connector": connector, "action": action, "params": action_params})
     if not dp_result.allowed:
         return {"error": dp_result.deny_reason or "Connector action not allowed"}
 
-    instance, error = await _get_connector_instance(system, organization_id, user_id, required_capability="action")
+    instance, error = await _get_connector_instance(connector, organization_id, user_id, required_capability="action")
     if error:
         return {"error": error}
     assert instance is not None
@@ -760,8 +762,8 @@ async def _run_action(
     try:
         return await instance.execute_action(action, action_params)
     except Exception as exc:
-        logger.error("[Tools] run_action(%s, %s) failed: %s", system, action, exc, exc_info=True)
-        return {"error": f"Action {system}.{action} failed: {exc}"}
+        logger.error("[Tools] run_action(%s, %s) failed: %s", connector, action, exc, exc_info=True)
+        return {"error": f"Action {connector}.{action} failed: {exc}"}
 
 
 # =============================================================================
@@ -2155,7 +2157,7 @@ async def _handle_tracker_write(
         result = await session.execute(
             select(Integration).where(
                 Integration.organization_id == UUID(organization_id),
-                Integration.provider == target_system,
+                Integration.connector == target_system,
                 Integration.is_active == True,
             )
         )
@@ -2288,7 +2290,7 @@ async def _handle_code_repo_write(
         result = await session.execute(
             select(Integration).where(
                 Integration.organization_id == UUID(organization_id),
-                Integration.provider == target_system,
+                Integration.connector == target_system,
                 Integration.is_active == True,
             )
         )
@@ -2407,7 +2409,7 @@ async def _crm_write(
         result = await session.execute(
             select(Integration).where(
                 Integration.organization_id == UUID(organization_id),
-                Integration.provider == target_system,
+                Integration.connector == target_system,
                 Integration.is_active == True,
             )
         )
@@ -4199,7 +4201,7 @@ async def _enrich_contacts_with_apollo(
         result = await session.execute(
             select(Integration).where(
                 Integration.organization_id == UUID(organization_id),
-                Integration.provider == "apollo",
+                Integration.connector == "apollo",
                 Integration.is_active == True,
             )
         )
@@ -4329,7 +4331,7 @@ async def _enrich_company_with_apollo(
         result = await session.execute(
             select(Integration).where(
                 Integration.organization_id == UUID(organization_id),
-                Integration.provider == "apollo",
+                Integration.connector == "apollo",
                 Integration.is_active == True,
             )
         )
@@ -4412,7 +4414,7 @@ async def _send_email_from(
             select(Integration).where(
                 Integration.organization_id == UUID(organization_id),
                 Integration.user_id == UUID(user_id),
-                Integration.provider.in_(["gmail", "microsoft_mail"]),
+                Integration.connector.in_(["gmail", "microsoft_mail"]),
                 Integration.is_active == True,
             )
         )
@@ -4447,7 +4449,7 @@ async def _send_email_from(
         "operation_id": operation_id,
         "tool_name": "send_email_from",
         "preview": {
-            "provider": integration.provider,
+            "connector": integration.connector,
             "to": to,
             "subject": subject,
             "body": body[:500] + ("..." if len(body) > 500 else ""),
@@ -4487,7 +4489,7 @@ async def execute_send_email_from(
             select(Integration).where(
                 Integration.organization_id == UUID(organization_id),
                 Integration.user_id == UUID(user_id),
-                Integration.provider.in_(["gmail", "microsoft_mail"]),
+                Integration.connector.in_(["gmail", "microsoft_mail"]),
                 Integration.is_active == True,
             )
         )
@@ -4501,7 +4503,7 @@ async def execute_send_email_from(
     
     try:
         # Create appropriate connector with user_id for per-user integrations
-        if integration.provider == "gmail":
+        if integration.connector == "gmail":
             connector = GmailConnector(
                 organization_id=organization_id,
                 user_id=user_id,
@@ -4522,11 +4524,11 @@ async def execute_send_email_from(
         )
         
         if result.get("success"):
-            logger.info(f"[Tools] Email sent via {integration.provider} to {to}")
+            logger.info(f"[Tools] Email sent via {integration.connector} to {to}")
             return {
                 "status": "completed",
                 "message": f"Email sent successfully to {to}",
-                "provider": integration.provider,
+                "connector": integration.connector,
                 "to": to,
                 "subject": subject,
             }
@@ -4584,12 +4586,12 @@ async def _send_slack(
         all_int_list = all_integrations.scalars().all()
         logger.info(f"[send_slack] Found {len(all_int_list)} integrations for org {organization_id}")
         for i in all_int_list:
-            logger.info(f"[send_slack]   - provider={i.provider}, is_active={i.is_active}")
+            logger.info(f"[send_slack]   - provider={i.connector}, is_active={i.is_active}")
         
         result = await session.execute(
             select(Integration).where(
                 Integration.organization_id == UUID(organization_id),
-                Integration.provider == "slack",
+                Integration.connector == "slack",
                 Integration.is_active == True,
             )
         )
@@ -4656,7 +4658,7 @@ async def execute_send_slack(
         result = await session.execute(
             select(Integration).where(
                 Integration.organization_id == UUID(organization_id),
-                Integration.provider == "slack",
+                Integration.connector == "slack",
                 Integration.is_active == True,
             )
         )
@@ -4762,7 +4764,7 @@ async def _trigger_sync(
         result = await session.execute(
             select(Integration).where(
                 Integration.organization_id == UUID(organization_id),
-                Integration.provider == provider,
+                Integration.connector == provider,
                 Integration.is_active == True,
             )
         )
@@ -4838,7 +4840,7 @@ async def _initiate_connector(
         result = await session.execute(
             select(Integration).where(
                 Integration.organization_id == UUID(organization_id),
-                Integration.provider == provider,
+                Integration.connector == provider,
                 Integration.user_id == UUID(user_id),
                 Integration.is_active == True,  # noqa: E712
             )
@@ -5808,6 +5810,79 @@ async def execute_create_cloud_file(
     except Exception as e:
         logger.error("[Tools._create_cloud_file] Failed: %s", e)
         return {"error": f"Failed to create cloud file: {str(e)}"}
+
+
+async def _edit_cloud_file(
+    params: dict[str, Any],
+    organization_id: str,
+    user_id: str | None,
+    skip_approval: bool = False,
+) -> dict[str, Any]:
+    """
+    Edit an existing Google Workspace file (Doc, Sheet, or Slides).
+
+    Routes to GoogleDriveConnector.edit_file() for the actual API calls.
+    """
+    external_id: str = params.get("external_id", "").strip()
+    content: Any = params.get("content")
+    mode: str = params.get("mode", "replace").strip()
+
+    if not external_id:
+        return {"error": "external_id is required."}
+    if not content:
+        return {"error": "content is required."}
+    if not user_id:
+        return {"error": "Google Drive file editing requires an authenticated user."}
+
+    if not skip_approval:
+        operation_id: str = str(uuid4())
+        store_pending_operation(
+            operation_id=operation_id,
+            tool_name="edit_cloud_file",
+            params=params,
+            organization_id=organization_id,
+            user_id=user_id,
+        )
+        return {
+            "type": "pending_approval",
+            "status": "pending_approval",
+            "operation_id": operation_id,
+            "tool_name": "edit_cloud_file",
+            "preview": {
+                "external_id": external_id,
+                "mode": mode,
+            },
+            "message": f"Ready to edit Google Drive file {external_id} (mode: {mode}). Please approve to proceed.",
+        }
+
+    return await execute_edit_cloud_file(params, organization_id, user_id)
+
+
+async def execute_edit_cloud_file(
+    params: dict[str, Any],
+    organization_id: str,
+    user_id: str,
+) -> dict[str, Any]:
+    """Execute the actual Google Drive file edit (called after approval)."""
+    external_id: str = params.get("external_id", "").strip()
+    content: Any = params.get("content")
+    mode: str = params.get("mode", "replace").strip()
+
+    try:
+        from connectors.google_drive import GoogleDriveConnector
+
+        connector = GoogleDriveConnector(organization_id, user_id)
+        result: dict[str, Any] = await connector.edit_file(
+            external_id=external_id,
+            content=content,
+            mode=mode,
+        )
+        return result
+    except ValueError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        logger.error("[Tools._edit_cloud_file] Failed: %s", e)
+        return {"error": f"Failed to edit cloud file: {str(e)}"}
 
 
 # =============================================================================

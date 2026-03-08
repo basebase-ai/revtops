@@ -95,7 +95,7 @@ async def _require_slack_integration(organization_id: UUID) -> Integration:
         result = await session.execute(
             select(Integration).where(
                 Integration.organization_id == organization_id,
-                Integration.provider == "slack",
+                Integration.connector == "slack",
                 Integration.is_active == True,
             )
         )

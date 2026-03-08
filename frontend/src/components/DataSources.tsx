@@ -883,26 +883,29 @@ export function DataSources(): JSX.Element {
 
       if (!response.ok) throw new Error('Sync failed');
 
-      // Poll for completion
+      // Poll for completion (GitHub sync can take 1–2 min; allow 2.5 min)
       let attempts = 0;
+      const maxAttempts = 150;
       const checkStatus = async (): Promise<void> => {
         const statusRes = await fetch(`${API_BASE}/sync/${organizationId}/${provider}/status`);
         const status = await statusRes.json();
 
-        if (status.status === 'completed' || status.status === 'failed' || attempts >= 30) {
+        if (status.status === 'completed' || status.status === 'failed' || attempts >= maxAttempts) {
           setSyncingProviders((prev) => {
             const next = new Set(prev);
             next.delete(provider);
             return next;
           });
 
-          // Invalidate cache to get updated sync status
-          if (status.status === 'completed' || status.status === 'failed') {
-            void fetchIntegrations();
+          // Always refetch: on completion, failure, or timeout (slow syncs like GitHub can exceed 30s)
+          void fetchIntegrations();
+          // If we timed out, sync may still be running; refetch again after delay to pick up result
+          if (attempts >= maxAttempts) {
+            setTimeout(() => void fetchIntegrations(), 60000);
           }
         } else {
           attempts++;
-          setTimeout(() => void checkStatus(), 1000);
+          setTimeout(() => void checkStatus(), 2000);
         }
       };
 

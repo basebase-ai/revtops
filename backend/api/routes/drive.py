@@ -230,7 +230,7 @@ async def _run_sync(org_id: str, user_id: str) -> None:
             result = await session.execute(
                 sa_select(Integration).where(
                     Integration.organization_id == UUID(org_id),
-                    Integration.provider == "google_drive",
+                    Integration.connector == "google_drive",
                     Integration.user_id == UUID(user_id),
                 )
             )

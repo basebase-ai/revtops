@@ -65,7 +65,7 @@ async def check_connector_call(
             result = await session.execute(
                 select(Integration).where(
                     Integration.organization_id == UUID(context.organization_id),
-                    Integration.provider == context.provider,
+                    Integration.connector == context.provider,
                     Integration.user_id == UUID(context.user_id),
                     Integration.is_active == True,  # noqa: E712
                 )
@@ -89,7 +89,7 @@ async def check_connector_call(
             result = await session.execute(
                 select(Integration).where(
                     Integration.organization_id == UUID(context.organization_id),
-                    Integration.provider == context.provider,
+                    Integration.connector == context.provider,
                     Integration.is_active == True,  # noqa: E712
                     share_flag == True,  # noqa: E712
                 )

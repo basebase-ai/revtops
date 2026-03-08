@@ -296,7 +296,7 @@ async def find_organization_by_slack_team(team_id: str) -> str | None:
     integrations: list[Integration] = []
     query = (
         select(Integration)
-        .where(Integration.provider == "slack")
+        .where(Integration.connector == "slack")
         .where(Integration.is_active == True)
     )
     for attempt in (1, 2):
@@ -539,7 +539,7 @@ async def refresh_slack_user_mappings_for_org(organization_id: str) -> int:
         integrations_query = (
             select(Integration)
             .where(Integration.organization_id == UUID(organization_id))
-            .where(Integration.provider == "slack")
+            .where(Integration.connector == "slack")
             .where(Integration.is_active == True)
         )
         integrations_result = await session.execute(integrations_query)
@@ -903,7 +903,7 @@ async def get_slack_user_ids_for_revtops_user(
         integrations_query = (
             select(Integration)
             .where(Integration.organization_id == UUID(organization_id))
-            .where(Integration.provider == "slack")
+            .where(Integration.connector == "slack")
             .where(Integration.is_active == True)
         )
         integrations_result = await sess.execute(integrations_query)
@@ -1484,7 +1484,7 @@ async def resolve_revtops_user_for_slack_actor(
         integrations_query = (
             select(Integration)
             .where(Integration.organization_id == UUID(organization_id))
-            .where(Integration.provider == "slack")
+            .where(Integration.connector == "slack")
             .where(Integration.is_active == True)
         )
         integrations_result = await session.execute(integrations_query)

@@ -1387,7 +1387,7 @@ async def _action_send_slack(
                 select(Integration).where(
                     and_(
                         Integration.organization_id == UUID(org_id),
-                        Integration.provider == "slack",
+                        Integration.connector == "slack",
                         Integration.is_active == True,
                     )
                 )
@@ -1627,7 +1627,7 @@ async def _action_send_email_from(
             query = select(Integration).where(
                 and_(
                     Integration.organization_id == UUID(org_id),
-                    Integration.provider == provider,
+                    Integration.connector == provider,
                     Integration.is_active == True,
                 )
             )

@@ -9,7 +9,7 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Optional
 
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -49,8 +49,8 @@ class GitHubPullRequest(Base):
         UUID(as_uuid=True), ForeignKey("github_repositories.id"), nullable=False
     )
 
-    # PR identification
-    github_pr_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    # PR identification (BIGINT: GitHub IDs can exceed int32)
+    github_pr_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     number: Mapped[int] = mapped_column(Integer, nullable=False)
 
     # Content

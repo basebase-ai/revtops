@@ -479,6 +479,7 @@ async def _execute_tool_approval(
         execute_save_memory,
         execute_keep_notes,
         execute_create_cloud_file,
+        execute_edit_cloud_file,
     )
     
     # First check if this is in our in-memory pending operations store
@@ -521,6 +522,10 @@ async def _execute_tool_approval(
             return result
         elif tool_name == "create_cloud_file":
             result = await execute_create_cloud_file(params, op_org_id, op_user_id)
+            result["tool_name"] = tool_name
+            return result
+        elif tool_name == "edit_cloud_file":
+            result = await execute_edit_cloud_file(params, op_org_id, op_user_id)
             result["tool_name"] = tool_name
             return result
 

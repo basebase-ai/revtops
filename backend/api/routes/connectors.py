@@ -98,7 +98,7 @@ async def handle_connector_webhook(
         result = await session.execute(
             select(Integration).where(
                 Integration.organization_id == org_uuid,
-                Integration.provider == provider,
+                Integration.connector == provider,
                 Integration.is_active == True,
             )
         )

@@ -265,7 +265,7 @@ class BaseConnector(ABC):
         """
         conditions = [
             Integration.organization_id == UUID(self.organization_id),
-            Integration.provider == self.source_system,
+            Integration.connector == self.source_system,
         ]
         if require_active:
             conditions.append(Integration.is_active == True)  # noqa: E712

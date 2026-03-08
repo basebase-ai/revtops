@@ -1,9 +1,15 @@
 """Alembic migration environment configuration."""
 
 from logging.config import fileConfig
+from pathlib import Path
 
+from dotenv import load_dotenv
 from alembic import context
 from sqlalchemy import pool, create_engine
+
+# Load .env from project root before config (alembic cwd may differ)
+_root: Path = Path(__file__).resolve().parent.parent.parent
+load_dotenv(_root / ".env")
 
 from config import settings
 from models.database import Base
@@ -23,9 +29,14 @@ from models.credit_transaction import CreditTransaction
 
 config = context.config
 
-# Convert async URL to sync URL for alembic migrations
-# postgresql+asyncpg:// -> postgresql://
-sync_url = settings.DATABASE_URL.replace("+asyncpg", "")
+# Use MIGRATION_DATABASE_URL for DDL (direct connection, table owner) when set;
+# otherwise DATABASE_URL (pooler can cause "must be owner" errors).
+migration_url: str = (
+    settings.MIGRATION_DATABASE_URL
+    if settings.MIGRATION_DATABASE_URL
+    else settings.DATABASE_URL
+)
+sync_url: str = migration_url.replace("+asyncpg", "")
 config.set_main_option("sqlalchemy.url", sync_url)
 
 if config.config_file_name is not None:

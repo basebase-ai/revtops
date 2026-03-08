@@ -759,7 +759,7 @@ async def sync_user(request: SyncUserRequest) -> SyncUserResponse:
                 drive_integration_result = await session.execute(
                     select(Integration).where(
                         Integration.organization_id == existing.organization_id,
-                        Integration.provider == "google_drive",
+                        Integration.connector == "google_drive",
                         Integration.user_id == existing.id,
                         Integration.is_active == True,
                     )
@@ -1083,7 +1083,7 @@ async def create_organization(
             session.add(
                 Integration(
                     organization_id=org_uuid,
-                    provider="web_search",
+                    connector="web_search",
                     user_id=creator_user_id,
                     scope="organization",
                     nango_connection_id="builtin",
@@ -1801,7 +1801,7 @@ async def invite_missing_slack_users_to_organization(
         slack_integration_result = await session.execute(
             select(Integration.id).where(
                 Integration.organization_id == org_uuid,
-                Integration.provider == "slack",
+                Integration.connector == "slack",
                 Integration.is_active == True,
             )
         )
@@ -2777,7 +2777,7 @@ async def confirm_integration(
                     _existing_slack_rows = await _check_session.execute(
                         select(Integration.extra_data).where(
                             Integration.organization_id == org_uuid,
-                            Integration.provider == "slack",
+                            Integration.connector == "slack",
                             Integration.is_active.is_(True),
                         )
                     )
@@ -2859,7 +2859,7 @@ async def confirm_integration(
         result = await session.execute(
             select(Integration).where(
                 Integration.organization_id == org_uuid,
-                Integration.provider == request.provider,
+                Integration.connector == request.provider,
                 Integration.user_id == user_uuid,
             )
         )
@@ -2881,7 +2881,7 @@ async def confirm_integration(
         else:
             new_integration = Integration(
                 organization_id=org_uuid,
-                provider=request.provider,
+                connector=request.provider,
                 user_id=user_uuid,
                 scope="user",  # Satisfy DB NOT NULL; column deprecated, all integrations are user-scoped
                 nango_connection_id=nango_connection_id,
@@ -2992,7 +2992,7 @@ async def update_integration_sharing(
 
         org_id_str = str(integration.organization_id)
         user_id_str = str(integration.user_id) if integration.user_id else ""
-        provider = integration.provider
+        provider = integration.connector
 
     # Propagate share_synced_data to activity visibility
     new_visibility: str = "team" if request.share_synced_data else "owner_only"
@@ -3131,7 +3131,7 @@ async def connect_builtin(request: ConnectBuiltinRequest) -> dict[str, Any]:
             result = await session.execute(
                 select(Integration).where(
                     Integration.organization_id == org_uuid,
-                    Integration.provider == request.provider,
+                    Integration.connector == request.provider,
                     Integration.user_id == user_uuid,
                 )
             )
@@ -3143,7 +3143,7 @@ async def connect_builtin(request: ConnectBuiltinRequest) -> dict[str, Any]:
             else:
                 new_integration = Integration(
                     organization_id=org_uuid,
-                    provider=request.provider,
+                    connector=request.provider,
                     user_id=user_uuid,
                     scope="user",  # Satisfy DB NOT NULL; column deprecated, all integrations are user-scoped
                     nango_connection_id="builtin",
@@ -3286,7 +3286,7 @@ async def nango_callback(
         result = await session.execute(
             select(Integration).where(
                 Integration.organization_id == org_uuid,
-                Integration.provider == provider,
+                Integration.connector == provider,
                 Integration.user_id == user_uuid,
             )
         )
@@ -3302,7 +3302,7 @@ async def nango_callback(
         else:
             new_integration = Integration(
                 organization_id=org_uuid,
-                provider=provider,
+                connector=provider,
                 user_id=user_uuid,
                 scope="user",  # Satisfy DB NOT NULL; column deprecated, all integrations are user-scoped
                 nango_connection_id=connection_id,
@@ -3378,9 +3378,9 @@ async def list_integrations(
         # Group integrations by provider
         integrations_by_provider: dict[str, list[Integration]] = {}
         for i in all_integrations:
-            if i.provider not in integrations_by_provider:
-                integrations_by_provider[i.provider] = []
-            integrations_by_provider[i.provider].append(i)
+            if i.connector not in integrations_by_provider:
+                integrations_by_provider[i.connector] = []
+            integrations_by_provider[i.connector].append(i)
 
         # Get team members
         team_result = await db_session.execute(
@@ -3413,10 +3413,17 @@ async def list_integrations(
                         user_name=user_obj.name or user_obj.email,
                     ))
 
-            # Use current user's integration for display, or first available
-            ref_integration = current_user_integration or (
-                integrations_for_provider[0] if integrations_for_provider else None
-            )
+            # Use current user's integration for display, or the one with most recent sync
+            # (sync may update a different integration when multiple exist)
+            if current_user_integration:
+                ref_integration = current_user_integration
+            elif integrations_for_provider:
+                ref_integration = max(
+                    integrations_for_provider,
+                    key=lambda i: (i.last_sync_at or datetime.min),
+                )
+            else:
+                ref_integration = None
 
             # Get owner name
             connected_by_name: str | None = None
@@ -3517,7 +3524,7 @@ async def disconnect_integration(
         result = await db_session.execute(
             select(Integration).where(
                 Integration.organization_id == org_uuid,
-                Integration.provider == provider,
+                Integration.connector == provider,
                 Integration.user_id == current_user_uuid,
             )
         )
@@ -3529,7 +3536,7 @@ async def disconnect_integration(
             result = await db_session.execute(
                 select(Integration).where(
                     Integration.organization_id == org_uuid,
-                    Integration.provider == provider,
+                    Integration.connector == provider,
                     Integration.nango_connection_id == expected_conn_id,
                 )
             )
@@ -3542,7 +3549,7 @@ async def disconnect_integration(
                 result = await db_session.execute(
                     select(Integration).where(
                         Integration.organization_id == org_uuid,
-                        Integration.provider == provider,
+                        Integration.connector == provider,
                     )
                 )
                 integration = result.scalar_one_or_none()
@@ -4038,7 +4045,7 @@ async def _run_initial_drive_sync(organization_id: str, user_id: Optional[str]) 
             result = await session.execute(
                 select(Integration).where(
                     Integration.organization_id == UUID(organization_id),
-                    Integration.provider == "google_drive",
+                    Integration.connector == "google_drive",
                     Integration.user_id == UUID(user_id),
                 )
             )

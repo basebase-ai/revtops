@@ -193,7 +193,7 @@ async def _get_all_active_integrations() -> list[dict[str, str | None]]:
         return [
             {
                 "organization_id": str(i.organization_id),
-                "provider": i.provider,
+                "connector": i.connector,
                 "user_id": str(i.user_id) if i.user_id else None,
                 "last_sync_at": i.last_sync_at.isoformat() if i.last_sync_at else None,
             }
@@ -203,7 +203,7 @@ async def _get_all_active_integrations() -> list[dict[str, str | None]]:
 
 def _should_sync_in_periodic_run(integration: dict[str, str | None], now: datetime) -> bool:
     """Return whether an integration is due for sync in the periodic global run."""
-    provider: str = integration["provider"]  # type: ignore[assignment]
+    provider: str = integration["connector"]  # type: ignore[assignment]
     cadence: timedelta = PROVIDER_SYNC_INTERVALS.get(provider, DEFAULT_SYNC_INTERVAL)
     raw_last_sync_at: str | None = integration.get("last_sync_at")
 
@@ -258,7 +258,7 @@ async def _get_org_integrations(organization_id: str) -> list[dict[str, str | No
         integrations = result.scalars().all()
         return [
             {
-                "provider": i.provider,
+                "connector": i.connector,
                 "user_id": str(i.user_id) if i.user_id else None,
             }
             for i in integrations
@@ -306,7 +306,7 @@ def sync_organization(self: Any, organization_id: str) -> dict[str, Any]:
         results: dict[str, Any] = {}
         
         for entry in integration_entries:
-            provider: str = entry["provider"]  # type: ignore[assignment]
+            provider: str = entry["connector"]  # type: ignore[assignment]
             uid: str | None = entry["user_id"]
             key: str = f"{provider}:{uid}" if uid else provider
             results[key] = await _sync_integration(organization_id, provider, user_id=uid)
@@ -353,7 +353,7 @@ def sync_all_organizations(self: Any) -> dict[str, Any]:
             for entry in entries:
                 if not _should_sync_in_periodic_run(entry, now):
                     continue
-                provider: str = entry["provider"]  # type: ignore[assignment]
+                provider: str = entry["connector"]  # type: ignore[assignment]
                 uid: str | None = entry["user_id"]
                 key: str = f"{provider}:{uid}" if uid else provider
                 result = await _sync_integration(org_id, provider, user_id=uid)
