@@ -178,19 +178,27 @@ export function SandpackAppRenderer({
 }: SandpackAppRendererProps): JSX.Element {
   const [tokenData, setTokenData] = useState<AppTokenData | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [tokenRetry, setTokenRetry] = useState<number>(0);
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  const retryingRef = useRef<boolean>(false);
 
-  // Listen for error messages from the iframe
+  // Listen for error / token-expired messages from the iframe
   useEffect(() => {
     const handler = (event: MessageEvent): void => {
       const data = event.data as { type?: string; error?: string } | null;
       if (data?.type === "app-error" && data.error && onError) {
         onError(data.error);
       }
+      if (data?.type === "app-token-expired" && !retryingRef.current) {
+        retryingRef.current = true;
+        try { sessionStorage.removeItem(`app_token_${appId}`); } catch { /* ignore */ }
+        setTokenData(null);
+        setTokenRetry((n: number) => n + 1);
+      }
     };
     window.addEventListener("message", handler);
     return () => window.removeEventListener("message", handler);
-  }, [onError]);
+  }, [onError, appId]);
 
   const fetchToken = useCallback(async (): Promise<void> => {
     if (embedToken) {
@@ -230,12 +238,13 @@ export function SandpackAppRenderer({
     try {
       sessionStorage.setItem(cacheKey, JSON.stringify({ ...resp.data, _cachedAt: Date.now() }));
     } catch { /* storage full — ignore */ }
+    retryingRef.current = false;
     setTokenData(resp.data);
   }, [appId, embedToken]);
 
   useEffect(() => {
     void fetchToken();
-  }, [fetchToken]);
+  }, [fetchToken, tokenRetry]);
 
   if (error) {
     return (

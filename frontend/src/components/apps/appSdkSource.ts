@@ -54,6 +54,9 @@ export function useAppQuery(queryName, params) {
       );
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
+        if (res.status === 401) {
+          try { window.parent.postMessage({ type: "app-token-expired" }, "*"); } catch (_) {}
+        }
         throw new Error(body.detail || "Query failed (" + res.status + ")");
       }
       const json = await res.json();
