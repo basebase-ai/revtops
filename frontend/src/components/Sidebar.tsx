@@ -319,18 +319,16 @@ function OrgSwitcherSection({
                 </div>
               ))}
               <div className="border-t border-surface-700 my-1" />
-              <button
-                type="button"
-                onClick={() => { setShowDropdown(false); onCreateNewOrg(); }}
-                className="w-full flex items-center gap-3 px-3 py-2.5 text-left text-surface-400 hover:bg-surface-700 hover:text-surface-200 transition-colors"
-              >
-                <div className="w-6 h-6 rounded bg-surface-600 flex items-center justify-center text-surface-300 text-xs font-medium flex-shrink-0">
-                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-                  </svg>
-                </div>
-                <span className="text-sm">Create new team</span>
-              </button>
+              <div className="flex items-center justify-between px-3 py-2.5">
+                <span className="text-sm text-surface-400">New Team</span>
+                <button
+                  type="button"
+                  onClick={() => { setShowDropdown(false); onCreateNewOrg(); }}
+                  className="shrink-0 px-2.5 py-1 rounded-md bg-primary-600 hover:bg-primary-500 text-white text-xs font-medium transition-colors"
+                >
+                  + Create
+                </button>
+              </div>
             </div>
           </div>,
           document.body
@@ -339,26 +337,34 @@ function OrgSwitcherSection({
 
       {/* Team members row */}
       {members.length > 0 && (
-        <button
-          onClick={onOpenOrgPanel}
-          className="w-full flex items-center px-3 py-1.5 hover:bg-surface-800/50 transition-colors"
-        >
-          <span className="text-xs text-surface-500">
-            {members.length} {members.length !== 1 ? 'members' : 'member'}
-          </span>
-          <div className="flex -space-x-1.5 ml-auto">
-            {members.filter((m) => m.avatarUrl && !m.isGuest).slice(0, 5).map((m, idx) => (
-              <img
-                key={m.id}
-                src={m.avatarUrl!}
-                alt={m.name ?? m.email ?? ''}
-                referrerPolicy="no-referrer"
-                className="w-6 h-6 rounded-full object-cover border border-surface-800"
-                style={{ zIndex: 5 - idx }}
-              />
-            ))}
-          </div>
-        </button>
+        <div className="flex items-center gap-2 px-3 py-1.5">
+          <button
+            onClick={onOpenOrgPanel}
+            className="flex-1 min-w-0 flex items-center gap-2 hover:bg-surface-800/50 transition-colors rounded -mx-1 px-1 py-0.5"
+          >
+            <span className="text-xs text-surface-500 shrink-0">
+              {members.length} {members.length !== 1 ? 'members' : 'member'}
+            </span>
+            <div className="flex -space-x-1.5 ml-auto">
+              {members.filter((m) => m.avatarUrl && !m.isGuest).slice(0, 3).map((m, idx) => (
+                <img
+                  key={m.id}
+                  src={m.avatarUrl!}
+                  alt={m.name ?? m.email ?? ''}
+                  referrerPolicy="no-referrer"
+                  className="w-6 h-6 rounded-full object-cover border border-surface-800"
+                  style={{ zIndex: 3 - idx }}
+                />
+              ))}
+            </div>
+          </button>
+          <button
+            onClick={onOpenOrgPanel}
+            className="shrink-0 px-2.5 py-1 rounded-md bg-primary-600 hover:bg-primary-500 text-white text-xs font-medium transition-colors"
+          >
+            + Invite
+          </button>
+        </div>
       )}
 
       {/* Credits row */}
