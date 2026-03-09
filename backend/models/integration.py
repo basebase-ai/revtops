@@ -23,7 +23,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from models.database import Base
 
 
-class Integration(Base):
+class Integration(Base):  # type: ignore[misc]
     """
     Integration model for tracking connected integrations.
 
@@ -35,6 +35,13 @@ class Integration(Base):
     - share_query_access: Others can query live data via this connection
     - share_write_access: Others can write via this connection (almost always false)
     """
+
+    def __init__(self, **kwargs: Any) -> None:
+        if "provider" not in kwargs and "connector" in kwargs:
+            kwargs["provider"] = kwargs["connector"]
+        elif "connector" not in kwargs and "provider" in kwargs:
+            kwargs["connector"] = kwargs["provider"]
+        super().__init__(**kwargs)
 
     __tablename__ = "integrations"
     __table_args__ = (
@@ -53,6 +60,9 @@ class Integration(Base):
 
     # Connector slug: 'hubspot', 'slack', 'google_calendar', 'salesforce', 'gmail', etc.
     connector: Mapped[str] = mapped_column(String(50), nullable=False)
+
+    # Legacy column kept for DB NOT-NULL constraint; always mirrors `connector`.
+    provider: Mapped[str] = mapped_column(String(50), nullable=False)
 
     # Owner of this integration (who authenticated)
     # NOTE: nullable=True for backwards compatibility during migration.
