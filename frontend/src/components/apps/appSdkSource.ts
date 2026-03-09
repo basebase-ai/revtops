@@ -64,7 +64,7 @@ export function useAppQuery(queryName, params) {
       setColumns(json.columns ?? []);
     } catch (err) {
       if (err.name !== "AbortError") {
-        setError(err.message || "Unknown error");
+        setError(err instanceof Error ? err : new Error(err.message || "Unknown error"));
       }
     } finally {
       setLoading(false);
