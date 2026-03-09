@@ -148,6 +148,9 @@ class Settings(BaseSettings):
     # Credits
     NUM_GRACE_CREDITS: int = 5
 
+    # Support requests — post to Slack for immediate notification (fallback: email to support@)
+    SUPPORT_SLACK_WEBHOOK_URL: Optional[str] = None
+
     @property
     def sandbox_database_url(self) -> str:
         """Sync Postgres URL for E2B sandbox (strips SQLAlchemy asyncpg prefix)."""

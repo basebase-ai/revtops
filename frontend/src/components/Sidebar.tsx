@@ -15,8 +15,127 @@ import { useMemo, useState, useRef, useEffect, useCallback } from 'react';
 import type { View, ChatSummary, OrganizationInfo } from './AppLayout';
 import { useAppStore, useIsGlobalAdmin, useActiveTasksByConversation, type UserOrganization } from '../store';
 import { updateConversation } from '../api/client';
+import { apiRequest } from '../lib/api';
+import { FaLifeRing } from 'react-icons/fa';
 import { Avatar, type AvatarUser } from './Avatar';
 import { APP_NAME, LOGO_PATH, RELEASE_STAGE } from '../lib/brand';
+
+/** Help button and modal for support requests. */
+function HelpButton(): JSX.Element {
+  const [showModal, setShowModal] = useState(false);
+  const [message, setMessage] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [success, setSuccess] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleSubmit = useCallback(async (): Promise<void> => {
+    const trimmed = message.trim();
+    if (!trimmed || submitting) return;
+    setSubmitting(true);
+    setError(null);
+    const { error: err } = await apiRequest<{ status: string; detail: string }>('/support/request', {
+      method: 'POST',
+      body: JSON.stringify({ message: trimmed }),
+    });
+    setSubmitting(false);
+    if (err) {
+      setError(err);
+      return;
+    }
+    setSuccess(true);
+    setMessage('');
+  }, [message, submitting]);
+
+  const handleClose = useCallback((): void => {
+    setShowModal(false);
+    setSuccess(false);
+    setError(null);
+    setMessage('');
+  }, []);
+
+  return (
+    <>
+      <button
+        onClick={() => setShowModal(true)}
+        title="Get Immediate Help"
+        className="p-2 rounded-lg text-amber-400 hover:text-amber-300 hover:bg-amber-500/15 transition-colors"
+        aria-label="Get Immediate Help"
+      >
+        <FaLifeRing className="w-5 h-5" />
+      </button>
+      {showModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+          onClick={(e) => { if (e.target === e.currentTarget) handleClose(); }}
+        >
+          <div
+            className="bg-surface-900 border border-surface-700 rounded-xl shadow-xl max-w-md w-full p-6"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-lg font-semibold text-surface-100">Get Help</h2>
+              <button
+                onClick={handleClose}
+                className="p-1 text-surface-400 hover:text-surface-200 rounded transition-colors"
+                aria-label="Close"
+              >
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            {success ? (
+              <p className="text-sm text-surface-300 mb-4">
+                Your message has been sent. A team member will be notified immediately and will respond within a few minutes during business hours.
+              </p>
+            ) : (
+              <>
+                <p className="text-sm text-surface-300 mb-4">
+                  You&apos;re our partner in building this product. Share questions, feedback, feature requests, or suggestions of any kind—we read every message and respond within a few minutes during business hours.
+                </p>
+                <textarea
+                  value={message}
+                  onChange={(e) => setMessage(e.target.value)}
+                  placeholder="Questions, feedback, feature requests, or suggestions..."
+                  rows={4}
+                  className="w-full px-3 py-2 rounded-lg bg-surface-800 border border-surface-700 text-surface-100 placeholder-surface-500 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent resize-none mb-4"
+                  maxLength={4000}
+                />
+                {error && <p className="text-sm text-red-400 mb-2">{error}</p>}
+              </>
+            )}
+            <div className="flex justify-end gap-2">
+              {success ? (
+                <button
+                  onClick={handleClose}
+                  className="px-4 py-2 rounded-lg bg-primary-600 hover:bg-primary-700 text-white font-medium transition-colors"
+                >
+                  Done
+                </button>
+              ) : (
+                <>
+                  <button
+                    onClick={handleClose}
+                    className="px-4 py-2 rounded-lg text-surface-400 hover:text-surface-200 hover:bg-surface-800 transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={() => void handleSubmit()}
+                    disabled={!message.trim() || submitting}
+                    className="px-4 py-2 rounded-lg bg-primary-600 hover:bg-primary-700 text-white font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {submitting ? 'Sending...' : 'Send'}
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
 
 /** Small SVG donut chart showing remaining credits as a ring. */
 function CreditDonut({ balance, total }: { balance: number; total: number }): JSX.Element {
@@ -479,22 +598,25 @@ export function Sidebar({
 
       {/* Bottom Section */}
       <div className="mt-auto border-t border-surface-800">
-        {/* User Profile */}
+        {/* User Profile + Help */}
         {user && (
-          <button
-            onClick={onOpenProfilePanel}
-            className={`w-full flex items-center gap-3 px-3 py-3 hover:bg-surface-800/50 transition-colors border-t border-surface-800 ${collapsed ? 'justify-center' : ''}`}
-          >
-            <Avatar user={user} size="md" />
-            {!collapsed && (
-              <div className="flex-1 min-w-0 text-left">
-                <div className="text-sm font-medium text-surface-200 truncate">
-                  {user.name ?? 'User'}
+          <div className="flex items-center border-t border-surface-800">
+            <button
+              onClick={onOpenProfilePanel}
+              className={`flex-1 min-w-0 flex items-center gap-3 px-3 py-3 hover:bg-surface-800/50 transition-colors ${collapsed ? 'justify-center' : ''}`}
+            >
+              <Avatar user={user} size="md" />
+              {!collapsed && (
+                <div className="flex-1 min-w-0 text-left">
+                  <div className="text-sm font-medium text-surface-200 truncate">
+                    {user.name ?? 'User'}
+                  </div>
+                  <div className="text-xs text-surface-500 truncate">{user.email}</div>
                 </div>
-                <div className="text-xs text-surface-500 truncate">{user.email}</div>
-              </div>
-            )}
-          </button>
+              )}
+            </button>
+            <HelpButton />
+          </div>
         )}
 
       </div>
