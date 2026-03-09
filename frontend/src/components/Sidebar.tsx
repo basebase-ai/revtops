@@ -12,6 +12,7 @@
  */
 
 import { useMemo, useState, useRef, useEffect, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import type { View, ChatSummary, OrganizationInfo } from './AppLayout';
 import { useAppStore, useIsGlobalAdmin, useActiveTasksByConversation, type UserOrganization } from '../store';
 import { updateConversation } from '../api/client';
@@ -190,18 +191,39 @@ function OrgSwitcherSection({
   const fetchConversations = useAppStore((state) => state.fetchConversations);
   const fetchIntegrations = useAppStore((state) => state.fetchIntegrations);
   const [showDropdown, setShowDropdown] = useState(false);
-  const dropdownRef = useRef<HTMLDivElement>(null);
+  const [dropdownRect, setDropdownRect] = useState<{ top: number; left: number; width: number } | null>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const dropdownContentRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent): void => {
-      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
-        setShowDropdown(false);
+      const target = e.target as Node;
+      if (
+        triggerRef.current?.contains(target) ||
+        dropdownContentRef.current?.contains(target)
+      ) {
+        return;
       }
+      setShowDropdown(false);
     };
     if (showDropdown) {
       document.addEventListener('mousedown', handleClickOutside);
     }
     return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [showDropdown]);
+
+  useEffect(() => {
+    if (showDropdown && triggerRef.current) {
+      const rect = triggerRef.current.getBoundingClientRect();
+      const inset = 8; // matches original mx-2
+      setDropdownRect({
+        top: rect.bottom + 4,
+        left: rect.left + inset,
+        width: Math.max(200, rect.width - inset * 2),
+      });
+    } else {
+      setDropdownRect(null);
+    }
   }, [showDropdown]);
 
   const handleSwitchOrg = async (orgId: string): Promise<void> => {
@@ -211,10 +233,11 @@ function OrgSwitcherSection({
   };
 
   return (
-    <div className="relative" ref={dropdownRef}>
-      {/* Org identity row + dropdown (positioned relative to this row only) */}
+    <div className="relative">
+      {/* Org identity row */}
       <div className="relative">
         <button
+          ref={triggerRef}
           onClick={() => setShowDropdown((prev) => !prev)}
           className="w-full flex items-center gap-3 px-3 pt-3 pb-1 hover:bg-surface-800/50 transition-colors"
         >
@@ -246,9 +269,14 @@ function OrgSwitcherSection({
           </svg>
         </button>
 
-        {/* Org switcher dropdown — appears directly below the org identity row */}
-        {showDropdown && (
-          <div className="absolute top-full left-0 right-0 mt-1 mx-2 bg-surface-800 border border-surface-700 rounded-lg shadow-xl overflow-hidden z-50">
+        {/* Org switcher dropdown — rendered in portal to escape overflow clipping */}
+        {showDropdown && dropdownRect != null && createPortal(
+          <div
+            ref={dropdownContentRef}
+            role="menu"
+            className="fixed bg-surface-800 border border-surface-700 rounded-lg shadow-xl overflow-hidden z-[9999]"
+            style={{ top: dropdownRect.top, left: dropdownRect.left, width: dropdownRect.width }}
+          >
             <div className="py-1">
               {organizations.map((org) => (
                 <div
@@ -304,7 +332,8 @@ function OrgSwitcherSection({
                 <span className="text-sm">Create new team</span>
               </button>
             </div>
-          </div>
+          </div>,
+          document.body
         )}
       </div>
 
