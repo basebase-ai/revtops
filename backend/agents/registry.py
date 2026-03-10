@@ -1,12 +1,12 @@
 """
-Unified Tool Registry for Revtops Agent.
+Unified Tool Registry for Basebase Agent.
 
 This module defines all tools available to the agent with:
 - Categories (local_read, local_write, external_read, external_write)
 - Default approval requirements
 - Tool metadata for Claude
 
-Mental Model ("Cursor for GTM"):
+Mental Model ("Cursor for your business"):
 - LOCAL_READ: Query synced data - always safe (like reading files)
 - LOCAL_WRITE: Modify synced data - tracked, reversible (like editing files)
 - EXTERNAL_READ: Web search, enrichment - may cost $ (like API calls)

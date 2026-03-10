@@ -23,13 +23,13 @@ def test_write_on_connector_routes_to_dispatcher(monkeypatch) -> None:
         organization_id: str,
         user_id: str | None,
         skip_approval: bool,
-        conversation_id: str | None,
+        context: dict[str, object] | None,
     ) -> dict[str, object]:
         called["params"] = params
         called["organization_id"] = organization_id
         called["user_id"] = user_id
         called["skip_approval"] = skip_approval
-        called["conversation_id"] = conversation_id
+        called["context"] = context
         return {"status": "created", "message": "ok"}
 
     async def _fake_deduct_with_grace(*args, **kwargs):
@@ -58,4 +58,4 @@ def test_write_on_connector_routes_to_dispatcher(monkeypatch) -> None:
     assert called["organization_id"] == "00000000-0000-0000-0000-000000000001"
     assert called["user_id"] == "00000000-0000-0000-0000-000000000002"
     assert called["skip_approval"] is True
-    assert called["conversation_id"] == "00000000-0000-0000-0000-000000000003"
+    assert called["context"] == {"conversation_id": "00000000-0000-0000-0000-000000000003"}

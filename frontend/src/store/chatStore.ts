@@ -933,7 +933,7 @@ export const useChatStore = create<ChatState>()(
               let lastIdx = -1;
               for (let i = blocks.length - 1; i >= 0; i--) {
                 const b = blocks[i];
-                if (b.type === "artifact" && b.artifact.id === artifact.id) {
+                if (b && b.type === "artifact" && b.artifact.id === artifact.id) {
                   lastIdx = i;
                   break;
                 }
