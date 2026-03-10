@@ -975,10 +975,16 @@ export const useChatStore = create<ChatState>()(
 
           if (isLastAssistant) {
             const blocks: ContentBlock[] = msg.contentBlocks ?? [];
-            return {
-              ...msg,
-              contentBlocks: [...blocks, { type: "app" as const, app }],
-            };
+            const existingIdx: number = blocks.findIndex(
+              (b) => b.type === "app" && (b as AppBlock).app.id === app.id,
+            );
+            const nextBlocks: ContentBlock[] =
+              existingIdx >= 0
+                ? blocks.map((b, i) =>
+                    i === existingIdx ? { type: "app" as const, app } : b,
+                  )
+                : [...blocks, { type: "app" as const, app }];
+            return { ...msg, contentBlocks: nextBlocks };
           }
           return msg;
         },

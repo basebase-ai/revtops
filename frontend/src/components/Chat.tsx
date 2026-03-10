@@ -269,19 +269,21 @@ export function Chat({
   // Agent is running if there's an active task OR we're in a thinking/pending state
   const agentRunning = activeTaskId !== null || isThinking;
 
-  // Extract all apps from conversation messages (for preview panel)
+  // Extract all apps from conversation messages (for preview panel).
+  // When an app is updated, a newer block appears in a later message — use the latest version.
   const conversationApps = useMemo((): AppBlock["app"][] => {
-    const apps: AppBlock["app"][] = [];
-    const seen = new Set<string>();
+    const latestById = new Map<string, AppBlock["app"]>();
+    const order: string[] = [];
     for (const msg of messages) {
       for (const block of msg.contentBlocks) {
-        if (block.type === "app" && !seen.has((block as AppBlock).app.id)) {
-          seen.add((block as AppBlock).app.id);
-          apps.push((block as AppBlock).app);
+        if (block.type === "app") {
+          const app = (block as AppBlock).app;
+          if (!latestById.has(app.id)) order.push(app.id);
+          latestById.set(app.id, app);
         }
       }
     }
-    return apps;
+    return order.map((id) => latestById.get(id)!);
   }, [messages]);
 
   // Derive current artifact from messages (latest block with matching id) so updates propagate in real time
@@ -2392,11 +2394,29 @@ function getToolStatusText(
     case 'write_on_connector': {
       const writeConnector: string = typeof input?.connector === 'string' ? input.connector : '';
       const writeOp: string = typeof input?.operation === 'string' ? input.operation : 'write';
+      const data: Record<string, unknown> = typeof input?.data === 'object' && input?.data !== null ? input.data as Record<string, unknown> : {};
       if (writeConnector === 'artifacts') {
         if (isComplete) {
           return result?.error ? 'Artifact update failed' : (writeOp === 'update' ? 'Updated artifact' : 'Created artifact');
         }
         return writeOp === 'update' ? 'Updating artifact...' : 'Creating artifact...';
+      }
+      if (writeConnector === 'apps') {
+        const appTitle: string = typeof data?.title === 'string' ? data.title : (typeof result?.title === 'string' ? result.title : 'app');
+        if (writeOp === 'create') {
+          if (isComplete) return result?.error ? 'Failed to create app' : `Created app: ${appTitle}`;
+          return `Creating app: ${appTitle}...`;
+        }
+        if (writeOp === 'update') {
+          if (isComplete) return result?.error ? 'Failed to update app' : 'Updated app';
+          return 'Updating app...';
+        }
+        if (writeOp === 'test_query') {
+          const queryName: string = typeof data?.query_name === 'string' ? data.query_name : 'query';
+          const rowCount: number | undefined = typeof result?.row_count === 'number' ? result.row_count : undefined;
+          if (isComplete) return result?.error ? 'Query test failed' : `Tested query "${queryName}" (${rowCount ?? 0} rows)`;
+          return `Testing query "${queryName}"...`;
+        }
       }
       const connectorLabel: string = writeConnector ? writeConnector.replace(/_/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase()) : 'connector';
       const opLabel: string = writeOp.replace(/_/g, ' ');
@@ -2420,42 +2440,6 @@ function getToolStatusText(
         return result?.error ? 'Connector action failed' : 'Completed connector action';
       }
       return 'Running action (details when available)...';
-    }
-    case 'write_app': {
-      const operation: string = typeof input?.operation === 'string' ? input.operation : 'create';
-      const appTitle: string = typeof input?.title === 'string' ? input.title 
-        : (typeof result?.title === 'string' ? result.title : 'app');
-      if (operation === 'create') {
-        if (isComplete) {
-          return result?.error ? 'Failed to create app' : `Created app: ${appTitle}`;
-        }
-        return `Creating app: ${appTitle}...`;
-      }
-      if (operation === 'update') {
-        if (isComplete) {
-          return result?.error ? 'Failed to update app' : `Updated app: ${appTitle}`;
-        }
-        return `Updating app...`;
-      }
-      if (operation === 'read') {
-        if (isComplete) {
-          return result?.error ? 'Failed to read app' : `Read app: ${appTitle}`;
-        }
-        return 'Reading app code...';
-      }
-      if (operation === 'test_query') {
-        const queryName: string = typeof input?.query_name === 'string' ? input.query_name : 'query';
-        const rowCount: number | undefined = typeof result?.row_count === 'number' ? result.row_count : undefined;
-        if (isComplete) {
-          return result?.error ? `Query test failed` : `Tested query "${queryName}" (${rowCount ?? 0} rows)`;
-        }
-        return `Testing query "${queryName}"...`;
-      }
-      // Fallback for unknown operations
-      if (isComplete) {
-        return result?.error ? 'App operation failed' : 'Completed app operation';
-      }
-      return 'Working on app...';
     }
     default:
       return isComplete ? `Completed ${toolName}` : `Running ${toolName}...`;

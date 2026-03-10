@@ -34,6 +34,7 @@ export function AppPreviewPanel({
 }: AppPreviewPanelProps): JSX.Element {
   const activeApp = apps.find((a) => a.id === activeAppId) ?? apps[apps.length - 1];
   const [linkCopied, setLinkCopied] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
 
   const handleCopyLink = useCallback(async (): Promise<void> => {
     if (!activeApp) return;
@@ -85,6 +86,17 @@ export function AppPreviewPanel({
 
         <div className="flex-1" />
 
+        {/* Reload */}
+        <button
+          onClick={() => setReloadKey((k: number) => k + 1)}
+          className="p-1 rounded text-surface-500 hover:text-surface-300 hover:bg-surface-800 transition-colors"
+          title="Reload app"
+        >
+          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+          </svg>
+        </button>
+
         {/* Share link */}
         <button
           onClick={() => void handleCopyLink()}
@@ -132,11 +144,9 @@ export function AppPreviewPanel({
 
       {/* App renderer body */}
       {!collapsed && (
-        <div className="flex-1 overflow-hidden min-h-0">
+        <div key={reloadKey} className="flex-1 overflow-hidden min-h-0">
           <SandpackAppRenderer
             appId={activeApp.id}
-            frontendCode={activeApp.frontendCode}
-            frontendCodeCompiled={activeApp.frontendCodeCompiled}
             onError={onAppError}
           />
         </div>

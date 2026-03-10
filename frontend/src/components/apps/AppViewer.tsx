@@ -22,6 +22,7 @@ interface AppViewerProps {
 export function AppViewer({ app, onAppError }: AppViewerProps): JSX.Element {
   const [linkCopied, setLinkCopied] = useState<boolean>(false);
   const [embedCopied, setEmbedCopied] = useState<boolean>(false);
+  const [reloadKey, setReloadKey] = useState<number>(0);
 
   const organization = useAppStore((s) => s.organization);
   const organizations = useAppStore((s) => s.organizations);
@@ -62,6 +63,16 @@ export function AppViewer({ app, onAppError }: AppViewerProps): JSX.Element {
         </div>
         <div className="flex items-center gap-1.5">
           <button
+            onClick={() => setReloadKey((k: number) => k + 1)}
+            className="flex items-center gap-1 px-2.5 py-1 rounded-md bg-surface-700 hover:bg-surface-600 text-surface-300 text-xs font-medium transition-colors"
+            title="Reload app"
+          >
+            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+            </svg>
+            Reload
+          </button>
+          <button
             onClick={() => void handleCopyLink()}
             className="flex items-center gap-1 px-2.5 py-1 rounded-md bg-surface-700 hover:bg-surface-600 text-surface-300 text-xs font-medium transition-colors"
           >
@@ -83,11 +94,9 @@ export function AppViewer({ app, onAppError }: AppViewerProps): JSX.Element {
       </div>
 
       {/* Renderer */}
-      <div className="flex-1 overflow-auto">
+      <div key={reloadKey} className="flex-1 overflow-auto">
         <SandpackAppRenderer
           appId={app.id}
-          frontendCode={app.frontendCode}
-          frontendCodeCompiled={app.frontendCodeCompiled}
           onError={onAppError}
         />
       </div>

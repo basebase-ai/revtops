@@ -144,6 +144,8 @@ def _validate_sql_is_select(sql: str) -> None:
 def _json_serial(obj: Any) -> Any:
     """JSON serializer for types not handled by default."""
     if isinstance(obj, datetime):
+        if obj.tzinfo is not None:
+            return obj.isoformat()
         return f"{obj.isoformat()}Z"
     if isinstance(obj, date):
         return obj.isoformat()

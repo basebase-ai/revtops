@@ -23,9 +23,15 @@ interface AppTokenData {
   api_base: string;
 }
 
+interface AppApiData {
+  frontend_code: string;
+  frontend_code_compiled?: string | null;
+}
+
 interface SandpackAppRendererProps {
   appId: string;
-  frontendCode: string;
+  /** Initial code used until the API fetch completes. */
+  frontendCode?: string;
   frontendCodeCompiled?: string | null;
   embedToken?: string;
   onError?: (message: string) => void;
@@ -171,16 +177,33 @@ ${CS}
 
 export function SandpackAppRenderer({
   appId,
-  frontendCode,
-  frontendCodeCompiled,
+  frontendCode: initialCode,
+  frontendCodeCompiled: initialCompiled,
   embedToken,
   onError,
 }: SandpackAppRendererProps): JSX.Element {
   const [tokenData, setTokenData] = useState<AppTokenData | null>(null);
+  const [appCode, setAppCode] = useState<string | null>(initialCode ?? null);
+  const [appCodeCompiled, setAppCodeCompiled] = useState<string | null | undefined>(initialCompiled);
   const [error, setError] = useState<string | null>(null);
   const [tokenRetry, setTokenRetry] = useState<number>(0);
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const retryingRef = useRef<boolean>(false);
+
+  // Fetch latest app code from DB — always prefer this over the prop snapshot
+  useEffect(() => {
+    if (embedToken) return; // embed page fetches its own data
+    let cancelled = false;
+    (async () => {
+      const resp = await apiRequest<AppApiData>(`/apps/${appId}`);
+      if (cancelled) return;
+      if (resp.data) {
+        setAppCode(resp.data.frontend_code);
+        setAppCodeCompiled(resp.data.frontend_code_compiled);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [appId, embedToken]);
 
   // Listen for error / token-expired messages from the iframe
   useEffect(() => {
@@ -256,7 +279,7 @@ export function SandpackAppRenderer({
     );
   }
 
-  if (!tokenData) {
+  if (!tokenData || !appCode) {
     return (
       <div className="flex items-center justify-center h-full min-h-[200px]">
         <div className="animate-spin w-6 h-6 border-2 border-surface-500 border-t-primary-500 rounded-full" />
@@ -270,8 +293,8 @@ export function SandpackAppRenderer({
       : tokenData.api_base;
 
   const srcdoc: string = buildSrcdocHtml({
-    frontendCode,
-    frontendCodeCompiled,
+    frontendCode: appCode,
+    frontendCodeCompiled: appCodeCompiled,
     token: tokenData.token,
     apiBase: resolvedApiBase,
     appId,
