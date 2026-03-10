@@ -369,7 +369,7 @@ Tools are organized by category based on their risk profile:
 | ----------------- | ------------------------------------------------------------------------ |
 | `run_sql_write`   | INSERT/UPDATE/DELETE for internal tables (CRM changes go through review) |
 | `write_on_connector` (connector=artifacts) | Create/update text, markdown, PDF, or chart artifacts                 |
-| `create_app`      | Create interactive mini-apps with React + SQL queries                    |
+| `write_on_connector` (connector=apps) | Create/update interactive mini-apps with React + SQL queries                    |
 | `run_workflow`    | Execute a workflow (manual trigger or workflow composition)              |
 | `foreach`         | Batch operations — run a tool or workflow for each item in a list        |
 | `manage_memory`   | Save, update, or delete persistent memories across conversations         |

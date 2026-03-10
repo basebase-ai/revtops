@@ -213,9 +213,7 @@ All external connectors (HubSpot, Linear, Gmail, Slack, etc.) are **user-scoped*
 
 ### Creating Outputs
 - **Artifacts (write_on_connector, connector="artifacts")**: When the user asks to **edit, revise, update, change, or add to** an artifact from this conversation — use **operation="update"** with the `artifact_id` from the prior create/update tool result. The same URL stays; do not create a new artifact. Use **operation="create"** only for brand-new content. If unsure of the artifact_id, use **query_on_connector** with `query="read <artifact_id>"` to fetch it.
-- **write_app**: Create or update an **interactive mini-app** with live data. Use this when the user wants a dashboard, chart with filters/dropdowns, or any interactive data view. The app has server-side SQL queries and client-side React code that calls them via the `useAppQuery` SDK hook. Apps appear in the Apps gallery and can be shared/embedded.
-  - Operations: `create` (new app), `update` (modify existing), `read` (inspect code), `test_query` (verify data)
-  - **Best practice**: After creating an app, use `test_query` to verify the SQL returns correct data before considering it done.
+- **Apps (write_on_connector, connector="apps")**: Create or update **interactive mini-apps** with React + SQL. Call `get_connector_docs("apps")` before first use. Use `query_on_connector` with `query="read <app_id>"` to read an app; use `write_on_connector` with operations create, update, test_query.
 - **send_email_from**: Send an email as the user from their connected Gmail/Outlook.
 - **send_slack**: Post a message to a Slack channel.
 - **send_sms**: Send a text message to a phone number via Twilio. Look up the user's phone_number from the users table if they say "text me".
@@ -275,7 +273,7 @@ When the user provides a CSV or file for import, include ALL available fields fr
 | File a GitHub issue | **write_to_system_of_record** (target_system="github", record_type="issue") |
 | Create a report or chart | **run_sql_query** → **write_on_connector** (connector="artifacts", operation="create") |
 | Edit/update an existing artifact | **write_on_connector** (connector="artifacts", operation="update", data={artifact_id: "…", content: "…"}) |
-| Create an interactive dashboard or chart with filters | **run_sql_query** (inspect data) → **write_app** (create) → **write_app** (test_query to verify) |
+| Create an interactive dashboard or chart with filters | **run_sql_query** (inspect data) → **write_on_connector** (connector="apps", operation="create") → **write_on_connector** (operation="test_query" to verify) |
 | Complex multi-step data analysis, statistical modeling, or ML | **run_on_connector** (connector=code_sandbox, action=execute_command) — only if code_sandbox is enabled in Connected Connectors |
 | Generate a chart programmatically (matplotlib, seaborn) | **run_on_connector** (code_sandbox, execute_command) — only if enabled |
 | Transform or combine data in ways SQL can't handle | **run_on_connector** (code_sandbox, execute_command) — only if enabled |
@@ -382,7 +380,7 @@ Interactive mini-apps created by Basebase (dashboards, charts with filters, etc.
 id, organization_id, user_id, title, description, queries (JSONB), frontend_code (TEXT), created_at
 ```
 - Query this table to find existing apps when a user wants to update one.
-- Use `write_app(operation="read", app_id=...)` to get the full code, then `write_app(operation="update", ...)` to modify.
+- Use `query_on_connector` (connector="apps", query="read <app_id>") to get the full code, then `write_on_connector` (connector="apps", operation="update", ...) to modify.
 
 ### accounts
 Companies/organizations - your customers and prospects.
@@ -1276,7 +1274,8 @@ WHERE scheduled_start >= '2026-01-27'::date AND scheduled_start < '2026-01-28'::
                 system_prompt += (
                     "Use `query_on_connector`, `write_on_connector`, and `run_on_connector` only for connectors listed **above** under the enabled connectors. "
                     "Use `list_connected_connectors` to refresh this list mid-conversation.\n\n"
-                    "**IMPORTANT**: Before calling any of these tools, check that the target connector (e.g. code_sandbox, web_search, google_drive) "
+                    "**IMPORTANT**: Before using a connector (query, write, or run) for the first time in this conversation, call `get_connector_docs(connector)` to read its usage guide, parameter formats, and operation rules.\n\n"
+                    "**IMPORTANT**: Check that the target connector (e.g. code_sandbox, web_search, google_drive) "
                     "appears in the **enabled** list above, not under \"Connectors not currently enabled\". "
                     "If the user's request needs a connector that is only in the not-enabled list, do **not** call the tool — "
                     "instead, offer to help them connect it using `initiate_connector` which will open the OAuth authorization flow in their browser.\n\n"
@@ -1744,7 +1743,6 @@ WHERE scheduled_start >= '2026-01-27'::date AND scheduled_start < '2026-01-28'::
                             "artifact": artifact_data,
                         })
 
-                if tool_name == "write_app" and tool_result.get("status") == "success":
                     app_data: dict[str, Any] | None = tool_result.get("app")
                     if app_data:
                         yield json.dumps({
