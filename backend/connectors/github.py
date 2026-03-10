@@ -51,8 +51,10 @@ class GitHubConnector(BaseConnector):
             "Read GitHub resources on demand. "
             "Prefix with 'file:' to read a file (e.g. 'file:README.md repo:owner/repo'). "
             "Prefix with 'dir:' to list a directory (e.g. 'dir:src/ repo:owner/repo'). "
-            "Prefix with 'issue:' to read an issue with comments (e.g. 'issue:42 repo:owner/repo'). "
-            "Prefix with 'pr:' to read a pull request with reviews (e.g. 'pr:99 repo:owner/repo'). "
+            "Prefix with 'issues:' to list issues (e.g. 'issues:open repo:owner/repo'). "
+            "Prefix with 'issue:' to read a single issue with comments (e.g. 'issue:42 repo:owner/repo'). "
+            "Prefix with 'prs:' to list pull requests (e.g. 'prs:open repo:owner/repo'). "
+            "Prefix with 'pr:' to read a single PR with reviews (e.g. 'pr:99 repo:owner/repo'). "
             "Prefix with 'commit:' to read a commit with diff (e.g. 'commit:abc123 repo:owner/repo'). "
             "Add 'ref:branch_name' to read files/dirs from a specific branch."
         ),
@@ -117,8 +119,10 @@ Every query requires `repo:owner/repo`. Optional: `ref:branch_name` for files/di
 | `file:` | `file:README.md repo:owner/repo` | Decoded file content, SHA, size |
 | `file:` | `file:src/main.py repo:owner/repo ref:develop` | File from a specific branch |
 | `dir:` | `dir:src/ repo:owner/repo` | Directory listing (names, types, sizes) |
-| `issue:` | `issue:42 repo:owner/repo` | Issue details + all comments |
-| `pr:` | `pr:99 repo:owner/repo` | PR details + reviews + review comments |
+| `issues:` | `issues:open repo:owner/repo` | List of issues (open, closed, or all) |
+| `issue:` | `issue:42 repo:owner/repo` | Single issue details + all comments |
+| `prs:` | `prs:open repo:owner/repo` | List of pull requests (open, closed, or all) |
+| `pr:` | `pr:99 repo:owner/repo` | Single PR details + reviews + review comments |
 | `commit:` | `commit:abc123 repo:owner/repo` | Commit message, diff stats, changed files with patches |
 
 ---
@@ -606,7 +610,9 @@ Use `run_sql_query` on `github_repositories`, `github_commits`, `github_pull_req
             if ":" in part:
                 key, _, val = part.partition(":")
                 key_lower: str = key.lower()
-                if not prefix and key_lower in ("file", "dir", "issue", "pr", "commit"):
+                if not prefix and key_lower in (
+                    "file", "dir", "issue", "issues", "pr", "prs", "commit",
+                ):
                     prefix = key_lower
                     value = val
                 else:
@@ -621,7 +627,7 @@ Use `run_sql_query` on `github_repositories`, `github_commits`, `github_pull_req
     async def query(self, request: str) -> dict[str, Any]:
         """Dispatch an on-demand read query (QUERY capability).
 
-        Supported prefixes: file:, dir:, issue:, pr:, commit:.
+        Supported prefixes: file:, dir:, issue:, issues:, pr:, prs:, commit:.
         All queries require ``repo:owner/repo``.
         """
         prefix, value, params = self._parse_query(request)
@@ -633,7 +639,9 @@ Use `run_sql_query` on `github_repositories`, `github_commits`, `github_pull_req
             "file": self._query_file,
             "dir": self._query_dir,
             "issue": self._query_issue,
+            "issues": self._query_issues_list,
             "pr": self._query_pr,
+            "prs": self._query_prs_list,
             "commit": self._query_commit,
         }
         handler = dispatch.get(prefix)
@@ -641,7 +649,7 @@ Use `run_sql_query` on `github_repositories`, `github_commits`, `github_pull_req
             return {
                 "error": (
                     f"Unknown query prefix '{prefix}:'. "
-                    "Supported: file:, dir:, issue:, pr:, commit:"
+                    "Supported: file:, dir:, issue:, issues:, pr:, prs:, commit:"
                 ),
             }
         return await handler(repo, value, params)
@@ -744,6 +752,46 @@ Use `run_sql_query` on `github_repositories`, `github_commits`, `github_pull_req
             "repo_full_name": clean_repo,
         }
 
+    async def _query_issues_list(
+        self, repo: str, state_filter: str, params: dict[str, str]
+    ) -> dict[str, Any]:
+        """List issues for a repo, filtered by state (open/closed/all)."""
+        clean_repo: str = self._validate_repo(repo)
+        state: str = state_filter.strip().lower() if state_filter else "open"
+        if state not in ("open", "closed", "all"):
+            state = "open"
+
+        raw_issues: list[dict[str, Any]] = await self._gh_get_paginated(
+            f"/repos/{clean_repo}/issues",
+            params={"state": state, "per_page": 100},
+            max_pages=3,
+        )
+
+        # GitHub's issues endpoint includes PRs; filter them out
+        issues: list[dict[str, Any]] = [
+            {
+                "number": i["number"],
+                "title": i.get("title", ""),
+                "state": i.get("state", ""),
+                "author": i.get("user", {}).get("login", "unknown"),
+                "labels": [lbl["name"] for lbl in i.get("labels", []) if "name" in lbl],
+                "assignees": [a["login"] for a in i.get("assignees", []) if "login" in a],
+                "comments": i.get("comments", 0),
+                "created_at": i.get("created_at"),
+                "updated_at": i.get("updated_at"),
+                "url": i.get("html_url", ""),
+            }
+            for i in raw_issues
+            if "pull_request" not in i
+        ]
+
+        return {
+            "state_filter": state,
+            "issue_count": len(issues),
+            "issues": issues,
+            "repo_full_name": clean_repo,
+        }
+
     async def _query_pr(
         self, repo: str, pr_number: str, params: dict[str, str]
     ) -> dict[str, Any]:
@@ -820,6 +868,45 @@ Use `run_sql_query` on `github_repositories`, `github_commits`, `github_pull_req
             "reviews": reviews,
             "review_comment_count": len(review_comments),
             "review_comments": review_comments,
+            "repo_full_name": clean_repo,
+        }
+
+    async def _query_prs_list(
+        self, repo: str, state_filter: str, params: dict[str, str]
+    ) -> dict[str, Any]:
+        """List pull requests for a repo, filtered by state (open/closed/all)."""
+        clean_repo: str = self._validate_repo(repo)
+        state: str = state_filter.strip().lower() if state_filter else "open"
+        if state not in ("open", "closed", "all"):
+            state = "open"
+
+        raw_prs: list[dict[str, Any]] = await self._gh_get_paginated(
+            f"/repos/{clean_repo}/pulls",
+            params={"state": state, "sort": "updated", "direction": "desc", "per_page": 100},
+            max_pages=3,
+        )
+
+        prs: list[dict[str, Any]] = [
+            {
+                "number": p["number"],
+                "title": p.get("title", ""),
+                "state": "merged" if p.get("merged_at") else p.get("state", ""),
+                "draft": p.get("draft", False),
+                "author": p.get("user", {}).get("login", "unknown"),
+                "head": p.get("head", {}).get("ref", ""),
+                "base": p.get("base", {}).get("ref", ""),
+                "labels": [lbl["name"] for lbl in p.get("labels", []) if "name" in lbl],
+                "created_at": p.get("created_at"),
+                "updated_at": p.get("updated_at"),
+                "url": p.get("html_url", ""),
+            }
+            for p in raw_prs
+        ]
+
+        return {
+            "state_filter": state,
+            "pr_count": len(prs),
+            "pull_requests": prs,
             "repo_full_name": clean_repo,
         }
 
