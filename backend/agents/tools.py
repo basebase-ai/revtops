@@ -559,12 +559,14 @@ async def _get_connector_instance(
 
         # If no personal integration, look for shared integrations
         if integration is None:
-            # For query/write, need to check sharing flags
-            if required_capability in ("query", "write"):
-                share_flag = (
-                    Integration.share_query_access if required_capability == "query"
-                    else Integration.share_write_access
-                )
+            share_flag_map: dict[str, Any] = {
+                "query": Integration.share_query_access,
+                "write": Integration.share_write_access,
+                "action": Integration.share_write_access,
+            }
+            share_flag = share_flag_map.get(required_capability) if required_capability else None
+
+            if share_flag is not None:
                 result = await session.execute(
                     select(Integration).where(
                         Integration.organization_id == UUID(organization_id),
@@ -575,7 +577,7 @@ async def _get_connector_instance(
                 )
                 integration = result.scalar_one_or_none()
             else:
-                # For sync, find any active integration
+                # sync or unknown capability — find any active integration
                 result = await session.execute(
                     select(Integration).where(
                         Integration.organization_id == UUID(organization_id),
@@ -588,7 +590,7 @@ async def _get_connector_instance(
         if integration is None:
             if required_capability == "query":
                 return None, f"No {slug} integration with query access. Connect your own or ask a teammate to enable query sharing."
-            elif required_capability == "write":
+            elif required_capability in ("write", "action"):
                 return None, f"No {slug} integration with write access. Connect your own or ask a teammate to enable write sharing."
             return None, f"Connector '{slug}' is not connected. Ask the user to connect it in the Connectors page."
 
@@ -5162,20 +5164,24 @@ async def _search_cloud_files(
     if not name_query:
         return {"error": "name_query is required."}
 
+    if not user_id:
+        return {"error": "User context is required to search cloud files."}
+
     try:
         from uuid import UUID as _UUID
         from sqlalchemy import select, and_
         from models.shared_file import SharedFile
         from models.database import get_session
 
-        org_uuid = _UUID(organization_id)
+        org_uuid: _UUID = _UUID(organization_id)
+        user_uuid: _UUID = _UUID(user_id)
 
         # Normalise wildcard-only queries (e.g. "*") to match all files
         cleaned_query: str = name_query.replace("*", "").strip()
 
-        # Org-wide search: all team members' files are visible
         filters: list[Any] = [
             SharedFile.organization_id == org_uuid,
+            SharedFile.user_id == user_uuid,
             SharedFile.mime_type != "application/vnd.google-apps.folder",
         ]
 
@@ -5232,20 +5238,24 @@ async def _read_cloud_file(
     if not external_id:
         return {"error": "external_id is required."}
 
+    if not user_id:
+        return {"error": "User context is required to read cloud files."}
+
     try:
         from uuid import UUID as _UUID
         from sqlalchemy import select, and_
         from models.shared_file import SharedFile
         from models.database import get_session
 
-        # Look up the file to determine its source (org-wide, not user-scoped)
-        org_uuid = _UUID(organization_id)
+        org_uuid: _UUID = _UUID(organization_id)
+        user_uuid: _UUID = _UUID(user_id)
 
         async with get_session(organization_id=organization_id) as session:
             result = await session.execute(
                 select(SharedFile).where(
                     and_(
                         SharedFile.organization_id == org_uuid,
+                        SharedFile.user_id == user_uuid,
                         SharedFile.external_id == external_id,
                     )
                 )
@@ -5256,13 +5266,10 @@ async def _read_cloud_file(
             return {"error": f"File not found in synced metadata: {external_id}"}
 
         source: str = file_record.source
-        # Use the file owner's credentials to fetch content from the source API
-        file_owner_id: str = str(file_record.user_id)
 
-        # Dispatch to the right connector based on source
         if source == "google_drive":
             from connectors.google_drive import GoogleDriveConnector
-            connector = GoogleDriveConnector(organization_id, file_owner_id)
+            connector: GoogleDriveConnector = GoogleDriveConnector(organization_id, user_id)
             return await connector.get_file_content(external_id)
         else:
             return {"error": f"Reading files from '{source}' is not yet supported."}
