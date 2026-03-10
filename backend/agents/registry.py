@@ -604,7 +604,14 @@ register_tool(
 - All SQL must be SELECT-only. No INSERT/UPDATE/DELETE.
 - Do NOT add organization_id to WHERE clauses (RLS handles it).
 - frontend_code must export a default React component.
-- When creating or updating app UI, NEVER use `<style>` tags or standard CSS classes, as strict Content Security Policies in the sandboxed iframes block them. You MUST use inline CSS for ALL styling directly on the elements (e.g. `style={{ margin: 0, padding: 0, width: "100%", overflowX: "hidden" }}`). Do NOT use generic class names except those provided by standard Basebase SDK components.
+
+**CRITICAL — Styling rules (apps render inside a sandboxed iframe):**
+- NO CSS frameworks are available (no Tailwind, no Bootstrap, no CSS modules). Class-based utility styling like className="flex gap-4" will NOT work.
+- Use React inline styles for ALL styling: style={{ display: "flex", gap: "1rem" }}
+- A minimal dark-theme base is pre-loaded (dark background, light text, basic table/input/button styles). Build on top of it with inline styles.
+- Always include layout resets on your root container: style={{ margin: 0, padding: "1rem", width: "100%", maxWidth: "100%", overflowX: "hidden", boxSizing: "border-box" }}
+- For reusable style objects, define them as JS constants: const cardStyle = { background: "#27272a", borderRadius: "0.5rem", padding: "1rem", border: "1px solid #3f3f46" };
+- Color palette (dark theme): background #18181b, surface #27272a, border #3f3f46, text #e4e4e7, muted text #a1a1aa, accent #6366f1, error #fca5a5.
 
 **Example create:**
 {
