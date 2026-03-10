@@ -276,11 +276,21 @@ async def get_session(
                 break
             except DBAPIError as exc:
                 await session.close()
+                session = None
                 if attempt == 1 and exc.connection_invalidated:
                     logger.warning(
                         "Detected invalid DB connection during session bootstrap; retrying with a fresh checkout"
                     )
                     continue
+                raise
+            except BaseException:
+                # Catch everything (including CancelledError, KeyboardInterrupt)
+                # to ensure the session is closed and the connection returned to pool
+                try:
+                    await session.close()
+                except Exception:
+                    pass
+                session = None
                 raise
 
         if session is None:
@@ -292,20 +302,21 @@ async def get_session(
             await session.rollback()
         raise
     finally:
-        # Reset role AND org context before returning connection to pool.
-        # Without this, a pooled connection could leak one org's RLS context to another.
-        # Must run as separate statements: prepared statements (e.g. Supavisor) allow only one command.
-        try:
-            logger.debug("Session cleanup: resetting RLS context (set_config + RESET ROLE)")
-            if session is not None:
+        if session is not None:
+            # Reset role AND org context before returning connection to pool.
+            # Without this, a pooled connection could leak one org's RLS context to another.
+            # Must run as separate statements: prepared statements (e.g. Supavisor) allow only one command.
+            try:
+                logger.debug("Session cleanup: resetting RLS context (set_config + RESET ROLE)")
                 await session.execute(text("SELECT set_config('app.current_org_id', '', false)"))
                 await session.execute(text("SELECT set_config('app.current_user_id', '', false)"))
                 await session.execute(text("RESET ROLE"))
-        except Exception:
-            pass  # Connection might already be closed
-        # This returns the connection to the pool, doesn't close it
-        if session is not None:
-            await session.close()
+            except Exception:
+                logger.warning("Failed to reset RLS context during session cleanup", exc_info=True)
+            try:
+                await session.close()
+            except Exception:
+                logger.warning("Failed to close session during cleanup", exc_info=True)
 
 
 @asynccontextmanager
@@ -336,10 +347,16 @@ async def get_admin_session() -> AsyncGenerator[AsyncSession, None]:
         await session.execute(text("RESET ROLE"))
         yield session
     except Exception:
-        await session.rollback()
+        try:
+            await session.rollback()
+        except Exception:
+            logger.warning("Failed to rollback admin session", exc_info=True)
         raise
     finally:
-        await session.close()
+        try:
+            await session.close()
+        except Exception:
+            logger.warning("Failed to close admin session", exc_info=True)
 
 
 async def init_db() -> None:
