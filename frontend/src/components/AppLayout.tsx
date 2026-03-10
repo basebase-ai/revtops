@@ -229,13 +229,15 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
     }
   }, [user?.id]);
 
-  // Fetch on mount + listen for updates
+  // Fetch on mount, on org switch, + listen for updates
+  const orgId = organization?.id;
   useEffect(() => {
+    setPendingChangesCount(0);
     void fetchPendingCount();
     const handle = (): void => { void fetchPendingCount(); };
     window.addEventListener('pending-changes-updated', handle);
     return () => window.removeEventListener('pending-changes-updated', handle);
-  }, [fetchPendingCount]);
+  }, [fetchPendingCount, orgId]);
 
   // React Query: Get team members for member count (single source of truth)
   const { data: teamData } = useTeamMembers(
