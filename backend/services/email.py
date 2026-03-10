@@ -348,7 +348,7 @@ async def send_invitation_email(to_email: str, name: str) -> bool:
                 <tr>
                   <td style="padding:20px 24px;">
                     <p style="margin:0 0 12px;font-size:14px;font-weight:600;color:#111;">One AI for your whole team</p>
-                    <p style="margin:0;color:#6b7280;font-size:13px;line-height:1.6;">Penny lives in your Slack workspace. Ask her anything &mdash; deal updates, meeting prep, customer research &mdash; and she answers right in the thread. When one person learns something, the whole team benefits.</p>
+                    <p style="margin:0;color:#6b7280;font-size:13px;line-height:1.6;">Basebase lives in your Slack workspace. Ask it anything &mdash; deal updates, meeting prep, customer research &mdash; and it answers right in the thread. When one person learns something, the whole team benefits.</p>
                   </td>
                 </tr>
               </table>
@@ -368,11 +368,11 @@ async def send_invitation_email(to_email: str, name: str) -> bool:
     """
 
     text_content: str = f"""
-{name}, you're invited to use Penny in your Slack workspace.
+{name}, you're invited to use Basebase in your Slack workspace.
 
 Sign up for Basebase to get started.
 
-Penny lives in your Slack workspace. Ask her anything -- deal updates, meeting prep, customer research -- and she answers right in the thread. When one person learns something, the whole team benefits.
+Basebase lives in your Slack workspace. Ask it anything -- deal updates, meeting prep, customer research -- and it answers right in the thread. When one person learns something, the whole team benefits.
 
 Get started: {invite_url}
 
@@ -447,15 +447,15 @@ async def send_org_invitation_email(
     invite_url: str = f"{settings.FRONTEND_URL}?{'&'.join(params)}"
 
     headline: str = (
-        f"{invited_by_name} invited you to use Penny in {org_name}&apos;s Slack workspace"
+        f"{invited_by_name} invited you to use Basebase in {org_name}&apos;s Slack workspace"
         if invited_by_name
-        else f"You&apos;ve been invited to use Penny in {org_name}&apos;s Slack workspace"
+        else f"You&apos;ve been invited to use Basebase in {org_name}&apos;s Slack workspace"
     )
 
     subject: str = (
-        f"{invited_by_name} invited you to use Penny"
+        f"{invited_by_name} invited you to use Basebase"
         if invited_by_name
-        else f"You're invited to use Penny in {org_name}'s Slack"
+        else f"You're invited to use Basebase in {org_name}'s Slack"
     )
 
     html_content: str = f"""
@@ -499,7 +499,7 @@ async def send_org_invitation_email(
                 <tr>
                   <td style="padding:20px 24px;">
                     <p style="margin:0 0 12px;font-size:14px;font-weight:600;color:#111;">One AI for your whole team</p>
-                    <p style="margin:0;color:#6b7280;font-size:13px;line-height:1.6;">Penny lives in your Slack workspace. Ask her anything &mdash; deal updates, meeting prep, customer research &mdash; and she answers right in the thread. When one person learns something, the whole team benefits.</p>
+                    <p style="margin:0;color:#6b7280;font-size:13px;line-height:1.6;">Basebase lives in your Slack workspace. Ask it anything &mdash; deal updates, meeting prep, customer research &mdash; and it answers right in the thread. When one person learns something, the whole team benefits.</p>
                   </td>
                 </tr>
               </table>
@@ -507,7 +507,7 @@ async def send_org_invitation_email(
           </tr>
           <tr>
             <td style="padding:28px 36px;text-align:center;">
-              <p style="margin:0;color:#9ca3af;font-size:12px;line-height:1.6;">You received this email because someone at {org_name} invited you to use Penny.<br/>If this wasn&apos;t expected, you can safely ignore it.</p>
+              <p style="margin:0;color:#9ca3af;font-size:12px;line-height:1.6;">You received this email because someone at {org_name} invited you to use Basebase.<br/>If this wasn&apos;t expected, you can safely ignore it.</p>
             </td>
           </tr>
         </table>
@@ -519,9 +519,9 @@ async def send_org_invitation_email(
     """
 
     headline_text: str = (
-        f"{invited_by_name} invited you to use Penny in {org_name}'s Slack workspace."
+        f"{invited_by_name} invited you to use Basebase in {org_name}'s Slack workspace."
         if invited_by_name
-        else f"You've been invited to use Penny in {org_name}'s Slack workspace."
+        else f"You've been invited to use Basebase in {org_name}'s Slack workspace."
     )
 
     text_content: str = f"""
@@ -529,7 +529,7 @@ async def send_org_invitation_email(
 
 Sign up for Basebase to accept.
 
-Penny lives in your Slack workspace. Ask her anything -- deal updates, meeting prep, customer research -- and she answers right in the thread. When one person learns something, the whole team benefits.
+Basebase lives in your Slack workspace. Ask it anything -- deal updates, meeting prep, customer research -- and it answers right in the thread. When one person learns something, the whole team benefits.
 
 Get started: {invite_url}
 

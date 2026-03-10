@@ -89,7 +89,7 @@ class SlackConnector(BaseConnector):
                 description="Send a message to Slack. Provide `channel` for channels/DM IDs, or `user_id` to open a DM and send directly to that user. Uses Slack mrkdwn: *bold*, _italic_, ~strike~.",
                 parameters=[
                     {"name": "channel", "type": "string", "required": False, "description": "Channel/DM/MPIM ID (e.g. 'C123', 'D123', 'G123') or channel name"},
-                    {"name": "user_id", "type": "string", "required": False, "description": "Slack user ID (e.g. 'U123'). If provided without channel, Penny opens a DM to this user and sends the message."},
+                    {"name": "user_id", "type": "string", "required": False, "description": "Slack user ID (e.g. 'U123'). If provided without channel, Basebase opens a DM to this user and sends the message."},
                     {"name": "text", "type": "string", "required": True, "description": "Message text in Slack mrkdwn format"},
                     {"name": "thread_ts", "type": "string", "required": False, "description": "Thread timestamp to reply in-thread (when channel is provided)"},
                 ],

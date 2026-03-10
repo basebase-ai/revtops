@@ -90,8 +90,8 @@ function generateUUID(): string {
 }
 
 const SKIP_MESSAGES: Record<number, string> = {
-  2: "Without Slack, Penny won't respond in your workspace. You can connect Slack later from Connectors. Skip for now?",
-  3: "Fewer connections mean Penny has less context. You can add sources anytime from Connectors. Skip?",
+  2: "Without Slack, Basebase won't respond in your workspace. You can connect Slack later from Connectors. Skip for now?",
+  3: "Fewer connections mean Basebase has less context. You can add sources anytime from Connectors. Skip?",
   4: "You can invite teammates later from Team settings. Skip?",
 };
 
@@ -515,10 +515,10 @@ export function OnboardingWizard({ emailDomain, isInvitedMode = false, isCreatin
                   <span className="text-3xl">&#x1F44B;</span>
                 </div>
                 <h1 className="text-2xl font-bold text-white leading-tight">
-                  Meet Penny, your new<br />AI teammate
+                  Meet Basebase, your new<br />AI teammate
                 </h1>
                 <p className="text-surface-300 mt-3 text-[15px] leading-relaxed max-w-sm mx-auto">
-                  She finds data across all your tools, manages tasks, runs workflows,
+                  It finds data across all your tools, manages tasks, runs workflows,
                   and keeps your whole team in the loop — so nobody has to sign into
                   five different apps to get one answer.
                 </p>
@@ -541,7 +541,7 @@ export function OnboardingWizard({ emailDomain, isInvitedMode = false, isCreatin
                 <div>
                   <label htmlFor="websiteUrl" className="block text-sm font-medium text-surface-300 mb-1.5">
                     Company website
-                    <span className="text-surface-500 font-normal ml-1">(so Penny can learn about you)</span>
+                    <span className="text-surface-500 font-normal ml-1">(so Basebase can learn about you)</span>
                   </label>
                   <input
                     id="websiteUrl"
@@ -604,7 +604,7 @@ export function OnboardingWizard({ emailDomain, isInvitedMode = false, isCreatin
                   Welcome to {organization?.name ?? 'your team'}!
                 </h1>
                 <p className="text-surface-300 mt-3 text-[15px] leading-relaxed max-w-sm mx-auto">
-                  You&apos;re all set as a member. Let&apos;s connect your tools so Penny
+                  You&apos;re all set as a member. Let&apos;s connect your tools so Basebase
                   can help you alongside your team.
                 </p>
               </div>
@@ -687,12 +687,12 @@ export function OnboardingWizard({ emailDomain, isInvitedMode = false, isCreatin
                 <h2 className="text-xl font-bold text-white">
                   {slackSatisfied && !slackConnected
                     ? 'Slack is ready'
-                    : isInvitedMode ? 'Connect your Slack account' : 'Bring Penny where your team already works'}
+                    : isInvitedMode ? 'Connect your Slack account' : 'Bring Basebase where your team already works'}
                 </h2>
                 <p className="text-surface-300 mt-3 text-sm leading-relaxed">
                   {slackSatisfied && !slackConnected
-                    ? 'Your team already connected Slack for this team. Penny is available in any channel the bot has been invited to.'
-                    : <>Connect Slack and your team can ask Penny anything right from the channels they&apos;re
+                    ? 'Your team already connected Slack for this team. Basebase is available in any channel the bot has been invited to.'
+                    : <>Connect Slack and your team can ask Basebase anything right from the channels they&apos;re
                       already in &mdash; deal updates, meeting prep, customer research &mdash; no tab-switching required.</>
                   }
                 </p>
@@ -714,7 +714,7 @@ export function OnboardingWizard({ emailDomain, isInvitedMode = false, isCreatin
                   <svg className="w-5 h-5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
                   </svg>
-                  <span className="font-medium">Slack connected &mdash; Penny is in your workspace!</span>
+                  <span className="font-medium">Slack connected &mdash; Basebase is in your workspace!</span>
                 </div>
               ) : (
                 <button
@@ -740,12 +740,12 @@ export function OnboardingWizard({ emailDomain, isInvitedMode = false, isCreatin
             <>
               <div className="mb-6">
                 <h2 className="text-xl font-bold text-white">
-                  {isInvitedMode ? 'Connect your data sources' : 'Give Penny superpowers'}
+                  {isInvitedMode ? 'Connect your data sources' : 'Give Basebase superpowers'}
                 </h2>
                 <p className="text-surface-300 mt-2 text-sm leading-relaxed">
                   {isInvitedMode
-                    ? 'Team-wide sources are already set up. Connect your personal accounts (email, calendar) so Penny has full context.'
-                    : 'Now that you can ask Penny questions directly in Slack, what data sources do you want her to be able to read/write?'
+                    ? 'Team-wide sources are already set up. Connect your personal accounts (email, calendar) so Basebase has full context.'
+                    : 'Now that you can ask Basebase questions directly in Slack, what data sources do you want it to be able to read/write?'
                   }
                 </p>
               </div>
@@ -830,7 +830,7 @@ export function OnboardingWizard({ emailDomain, isInvitedMode = false, isCreatin
                 </div>
                 <h2 className="text-xl font-bold text-white">Better together</h2>
                 <p className="text-surface-300 mt-3 text-sm leading-relaxed">
-                  Invite your teammates and watch the magic happen! Penny gets smarter with
+                  Invite your teammates and watch the magic happen! Basebase gets smarter with
                   every person who joins. Meeting briefs, deal updates, customer insights
                   &mdash; all synced and accessible. Less chasing, more celebrating together.
                 </p>
@@ -879,11 +879,11 @@ export function OnboardingWizard({ emailDomain, isInvitedMode = false, isCreatin
                 <h2 className="text-2xl font-bold text-white">You&apos;re ready to roll</h2>
                 <p className="text-surface-300 mt-3 text-sm leading-relaxed max-w-sm mx-auto">
                   Your free plan includes <span className="text-white font-semibold">100 credits/month</span> &mdash;
-                  enough to explore everything Penny can do. Upgrade anytime if you want more.
+                  enough to explore everything Basebase can do. Upgrade anytime if you want more.
                 </p>
               </div>
               <div className="space-y-2 mb-2 p-4 rounded-xl bg-surface-800/50 border border-surface-700/50">
-                <p className="text-surface-400 text-xs font-medium mb-3">Try asking Penny:</p>
+                <p className="text-surface-400 text-xs font-medium mb-3">Try asking Basebase:</p>
                 <div className="flex flex-col gap-2">
                   <div className="self-start rounded-2xl rounded-bl-sm px-4 py-2.5 bg-primary-500/15 border border-primary-500/25 text-sm text-surface-100 max-w-[92%]">
                     &ldquo;Catch me up on what I missed this week&rdquo;
@@ -903,7 +903,7 @@ export function OnboardingWizard({ emailDomain, isInvitedMode = false, isCreatin
             </>
           )}
 
-          {/* Step 6: Success — Penny's research + launch */}
+          {/* Step 6: Success — Basebase's research + launch */}
           {contentStep === 6 && (
             <>
               <div className="text-center mb-6">
@@ -912,7 +912,7 @@ export function OnboardingWizard({ emailDomain, isInvitedMode = false, isCreatin
                 </div>
                 <h2 className="text-2xl font-bold text-white">Setup complete!</h2>
                 <p className="text-surface-300 mt-2 text-sm">
-                  While you were setting up, Penny got a head start.
+                  While you were setting up, Basebase got a head start.
                 </p>
               </div>
               {companySummary ? (
@@ -924,13 +924,13 @@ export function OnboardingWizard({ emailDomain, isInvitedMode = false, isCreatin
               ) : companySummaryLoading ? (
                 <div className="mb-6 p-5 rounded-xl bg-surface-800/50 border border-surface-700 animate-pulse">
                   <p className="text-surface-400 text-sm">
-                    Penny is researching your company&hellip;
+                    Basebase is researching your company&hellip;
                   </p>
                 </div>
               ) : (
                 <div className="mb-6 p-5 rounded-xl bg-surface-800/50 border border-surface-700">
                   <p className="text-surface-300 text-sm">
-                    Penny is ready to learn about your business. Start a conversation and she&apos;ll
+                    Basebase is ready to learn about your business. Start a conversation and it&apos;ll
                     get up to speed fast.
                   </p>
                 </div>
@@ -940,7 +940,7 @@ export function OnboardingWizard({ emailDomain, isInvitedMode = false, isCreatin
                 onClick={onComplete}
                 className="w-full btn-primary py-3.5 text-base font-semibold"
               >
-                Start chatting with Penny
+                Start chatting with Basebase
               </button>
               <div className="flex justify-center gap-1.5 pt-6">
                 {Array.from({ length: TOTAL_STEPS }, (_, i) => (

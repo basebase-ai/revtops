@@ -1,5 +1,5 @@
 /**
- * Apps gallery page – lists all Penny apps for the current org.
+ * Apps gallery page – lists all Basebase apps for the current org.
  *
  * Accessible via the "Apps" nav item in the sidebar.
  */
@@ -226,7 +226,7 @@ export function AppsGallery(): JSX.Element {
         <div>
           <h1 className="text-xl font-bold text-surface-100">Apps</h1>
           <p className="text-sm text-surface-400 mt-1">
-            Interactive dashboards and data views created by Penny
+            Interactive dashboards and data views created by Basebase
           </p>
         </div>
         <span className="text-sm text-surface-500">
@@ -251,7 +251,7 @@ export function AppsGallery(): JSX.Element {
           </svg>
           <p className="text-surface-400 mb-2">No apps yet</p>
           <p className="text-surface-500 text-sm">
-            Ask Penny to create an interactive chart or dashboard in chat
+            Ask Basebase to create an interactive chart or dashboard in chat
           </p>
         </div>
       ) : (

@@ -172,7 +172,7 @@ async def update_tool_result(
         logger.error(f"[update_tool_result] Error: {e}")
         return False
 
-SYSTEM_PROMPT = """You are Penny, an AI assistant created by Basebase that helps business teams to work across their siloed tools and data sources.
+SYSTEM_PROMPT = """You are Basebase, an AI assistant created by Basebase that helps business teams to work across their siloed tools and data sources.
 
 You help team members quickly gather and summarize information and also complete tasks using the tools from the Basebase platform.
 
@@ -376,7 +376,7 @@ WHERE d.organization_id = :org_id
 ```
 
 ### apps
-Interactive mini-apps created by Penny (dashboards, charts with filters, etc.).
+Interactive mini-apps created by Basebase (dashboards, charts with filters, etc.).
 ```
 id, organization_id, user_id, title, description, queries (JSONB), frontend_code (TEXT), created_at
 ```

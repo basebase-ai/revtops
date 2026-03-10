@@ -1,6 +1,6 @@
 """Add activity visibility scoping (integration_id, owner_user_id, visibility).
 
-Enables per-connector "others can read" enforcement so Penny respects
+Enables per-connector "others can read" enforcement so Basebase respects
 share_synced_data when querying activities (e.g., private emails).
 
 Revision ID: 093_activity_visibility_scoping

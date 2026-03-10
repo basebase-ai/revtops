@@ -55,7 +55,7 @@ def _extract_component_name(code: str) -> str:
 
 def transpile_jsx(source: str) -> tuple[str, str] | None:
     """
-    Transpile Penny app JSX source into plain JS.
+    Transpile Basebase app JSX source into plain JS.
 
     1. Extract the component name from the raw source.
     2. Strip imports/exports (same transforms as the frontend).

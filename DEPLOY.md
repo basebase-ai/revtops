@@ -109,9 +109,9 @@ VITE_NANGO_PUBLIC_KEY=...
 
 OAuth redirect stays as `api.nango.dev/oauth/callback`; no change needed when you change app/API domain. Ensure **VITE_NANGO_PUBLIC_KEY** is set when building the frontend (required for the Connect UI popup); if it’s missing, connecting GitHub or other Nango integrations can fail.
 
-### Slack: Add-to-Slack (Penny bot) and Nango Connect
+### Slack: Add-to-Slack (Basebase bot) and Nango Connect
 
-To support both (1) **Connect** (Nango OAuth) and (2) **Add Penny to Slack** (other workspaces installing the bot), use a single Slack OAuth callback on your backend:
+To support both (1) **Connect** (Nango OAuth) and (2) **Add Basebase to Slack** (other workspaces installing the bot), use a single Slack OAuth callback on your backend:
 
 1. **Slack app** (api.slack.com → Your App → OAuth & Permissions): set **Redirect URL** to:
    ```

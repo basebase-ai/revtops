@@ -1,4 +1,4 @@
-"""Create apps table for interactive Penny mini-apps.
+"""Create apps table for interactive Basebase mini-apps.
 
 Separates apps from the artifacts table. Apps have dedicated columns
 for queries (JSONB) and frontend_code (Text) instead of overloading

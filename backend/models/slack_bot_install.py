@@ -12,7 +12,7 @@ from models.database import Base
 
 
 class SlackBotInstall(Base):
-    """Stores bot token for a workspace that added Penny via the public Add-to-Slack link."""
+    """Stores bot token for a workspace that added Basebase via the public Add-to-Slack link."""
 
     __tablename__ = "slack_bot_installs"
 

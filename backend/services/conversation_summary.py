@@ -30,7 +30,7 @@ _MAX_MESSAGES_FOR_PROMPT = 50
 _MODEL = "claude-3-5-haiku-20241022"
 
 _SYSTEM_PROMPT = (
-    "You summarize conversations between a user and an AI assistant called Penny. "
+    "You summarize conversations between a user and an AI assistant called Basebase. "
     "Return ONLY valid JSON with two keys:\n"
     '- "overall": A 1-2 sentence summary of the entire conversation so far.\n'
     '- "recent": A 1-2 sentence summary of the most recent exchange(s).\n'

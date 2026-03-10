@@ -1,5 +1,5 @@
 """
-Penny Apps API routes.
+Basebase Apps API routes.
 
 Provides endpoints to:
 - Execute named queries from an app's server-side spec

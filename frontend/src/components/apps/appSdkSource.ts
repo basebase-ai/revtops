@@ -4,7 +4,7 @@
  * This is shipped as a string constant so SandpackAppRenderer can place it
  * at /node_modules/@revtops/app-sdk/index.js inside the sandbox filesystem.
  *
- * Penny's generated React code imports from "@revtops/app-sdk".
+ * Basebase's generated React code imports from "@revtops/app-sdk".
  */
 
 export const APP_SDK_SOURCE: string = `

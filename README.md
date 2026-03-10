@@ -1,8 +1,8 @@
 # Basebase: Agentic Intelligence for Companies
 
-Basebase is an **agentic intelligence framework** that connects to the siloed tools and data sources your business already uses — CRM, email, calendars, Slack, issue trackers, code repos, meeting transcripts, and more — and exposes a unified AI agent (called "**Penny**") in Slack and in a web app that helps team members work faster, smarter, and with full context.
+Basebase is an **agentic intelligence framework** that connects to the siloed tools and data sources your business already uses — CRM, email, calendars, Slack, issue trackers, code repos, meeting transcripts, and more — and exposes a unified AI agent (called "**Basebase**") in Slack and in a web app that helps team members work faster, smarter, and with full context.
 
-Instead of switching between a dozen tabs, employees ask **Penny** questions in natural language — via the **web app** or **Slack** — and get instant, data-backed answers, reports, and actions across every connected system.
+Instead of switching between a dozen tabs, employees ask **Basebase** questions in natural language — via the **web app** or **Slack** — and get instant, data-backed answers, reports, and actions across every connected system.
 
 ## Architecture
 
@@ -39,13 +39,13 @@ All integrations connect via OAuth through [Nango](https://nango.dev) — tokens
 ### How Users Interact
 
 - **Web App** — Full-featured React interface with real-time chat (WebSocket-streamed), a data browser, semantic search, workflow manager, and a pending-changes approval panel for CRM writes.
-- **Slack** — DM the bot or @mention it in any channel. Penny reads the thread context and responds inline. Conversations sync between Slack and the web app.
+- **Slack** — DM the bot or @mention it in any channel. Basebase reads the thread context and responds inline. Conversations sync between Slack and the web app.
 
 ### Synchronous and Asynchronous Agent Operation
 
 Basebase supports multiple execution modes:
 
-- **Synchronous (real-time)** — Users chat with Penny via WebSocket. Tool calls execute inline and results stream back token-by-token.
+- **Synchronous (real-time)** — Users chat with Basebase via WebSocket. Tool calls execute inline and results stream back token-by-token.
 - **Asynchronous (background)** — Workflows run on a Celery task queue. Scheduled (cron), event-driven (e.g. "after every data sync"), or manually triggered.
 - **Agent Swarms** — Complex tasks can be decomposed into prompt-based workflows that spawn child agents, each tackling a sub-problem. Workflows can trigger other workflows, enabling multi-agent coordination to solve problems no single agent pass could handle.
 

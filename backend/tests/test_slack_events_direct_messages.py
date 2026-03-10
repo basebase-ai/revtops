@@ -29,7 +29,7 @@ def test_process_event_callback_routes_mpim_messages_to_direct_message_handler(m
             "channel_type": "mpim",
             "channel": "G123",
             "user": "U123",
-            "text": "hey penny",
+            "text": "hey basebase",
             "ts": "1700000000.001",
         },
     }
@@ -40,7 +40,7 @@ def test_process_event_callback_routes_mpim_messages_to_direct_message_handler(m
         "team_id": "T123",
         "channel_id": "G123",
         "user_id": "U123",
-        "message_text": "hey penny",
+        "message_text": "hey basebase",
         "event_ts": "1700000000.001",
         "thread_ts": None,
     }

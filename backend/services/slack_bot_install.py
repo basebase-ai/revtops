@@ -1,7 +1,7 @@
 """
 Slack "Add to Slack" (bot install) flow — token storage and lookup.
 
-When another workspace adds the Penny bot via the public link, we exchange
+When another workspace adds the Basebase bot via the public link, we exchange
 the OAuth code ourselves and store the bot token here (not in Nango).
 Events from that workspace are then routed to the correct org via
 find_organization_by_slack_team + get_slack_bot_token.

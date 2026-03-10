@@ -371,7 +371,7 @@ export function Home(): JSX.Element {
       </header>
 
       <div className="flex-1 overflow-auto p-4 md:p-6">
-        {/* Banner: "Choose App" when org has apps, "Ask Penny" when none */}
+        {/* Banner: "Choose App" when org has apps, "Ask Basebase" when none */}
         {orgAppCount > 0 ? (
           <div className="mb-4 md:mb-6 bg-surface-800/60 border border-surface-700 rounded-xl p-4">
             <div className="flex items-center gap-3">
@@ -405,7 +405,7 @@ export function Home(): JSX.Element {
               <div className="flex-1 min-w-0">
                 <p className="text-surface-300 text-sm">
                   <span className="font-medium text-surface-200">Make this Home tab your own</span>
-                  {' '}— ask Penny to build a custom dashboard and it will appear here for your whole team.
+                  {' '}— ask Basebase to build a custom dashboard and it will appear here for your whole team.
                 </p>
               </div>
               <button
@@ -417,7 +417,7 @@ export function Home(): JSX.Element {
                 }}
                 className="flex-shrink-0 px-3 py-1.5 bg-primary-600 hover:bg-primary-500 text-white text-xs font-medium rounded-lg transition-colors"
               >
-                Ask Penny
+                Ask Basebase
               </button>
             </div>
           </div>

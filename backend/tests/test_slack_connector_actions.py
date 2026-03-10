@@ -18,12 +18,12 @@ def test_execute_action_send_message_can_initiate_dm_with_user_id(monkeypatch) -
     result = asyncio.run(
         connector.execute_action(
             "send_message",
-            {"user_id": "U123", "text": "Hi from Penny"},
+            {"user_id": "U123", "text": "Hi from Basebase"},
         )
     )
 
     assert result == {"ok": True}
-    assert captured == {"slack_user_id": "U123", "text": "Hi from Penny"}
+    assert captured == {"slack_user_id": "U123", "text": "Hi from Basebase"}
 
 
 def test_execute_action_send_message_accepts_legacy_message_param(monkeypatch) -> None:
