@@ -50,6 +50,9 @@ USAGE_GUIDE: str = """# Apps Connector Usage Guide
 - react-plotly.js (import Plot from "react-plotly.js")
 - @revtops/app-sdk (useAppQuery, useDateRange, Spinner, ErrorBanner)
 
+## CRITICAL — Data access
+The App component receives NO props. Data is NOT passed in. You MUST call `useAppQuery(queryName, params)` inside the component to fetch data from your server-side queries. The returned `data` is an array of rows (objects). Example: `const { data, loading, error } = useAppQuery('my_query', {}); const firstRow = data?.[0];`
+
 ## SDK API
 - useAppQuery(queryName, params) → { data, columns, loading, error, refetch }
 - useDateRange(period) → { start, end } (ISO date strings)
@@ -70,19 +73,21 @@ USAGE_GUIDE: str = """# Apps Connector Usage Guide
 - For reusable style objects, define them as JS constants: const cardStyle = { background: "#27272a", borderRadius: "0.5rem", padding: "1rem", border: "1px solid #3f3f46" };
 - Color palette (dark theme): background #18181b, surface #27272a, border #3f3f46, text #e4e4e7, muted text #a1a1aa, accent #6366f1, error #fca5a5.
 
-## Example create
+## Example create (Hello World)
 ```json
 {
-  "title": "Revenue by Region",
+  "title": "Hello World",
   "queries": {
-    "revenue_data": {
-      "sql": "SELECT custom_fields->>'region' as region, SUM(amount) as revenue FROM deals WHERE close_date >= :start_date GROUP BY 1",
-      "params": { "start_date": { "type": "date" } }
+    "hello": {
+      "sql": "SELECT 'Hello, World!' AS message, NOW() AS current_time",
+      "params": {}
     }
   },
-  "frontend_code": "import { useAppQuery } from '@revtops/app-sdk';\\nexport default function App() { ... }"
+  "frontend_code": "import { useAppQuery, Spinner, ErrorBanner } from '@revtops/app-sdk';\\nexport default function App() {\\n  const { data, loading, error } = useAppQuery('hello', {});\\n  if (loading) return <Spinner />;\\n  if (error) return <ErrorBanner message={error.message} />;\\n  const msg = data?.[0]?.message || 'Hello';\\n  const time = data?.[0]?.current_time;\\n  return (\\n    <div style={{ margin: 0, padding: '1rem', minHeight: '200px' }}>\\n      <h1>{msg}</h1>\\n      {time && <p>Server time: {new Date(time).toLocaleString()}</p>}\\n    </div>\\n  );\\n}"
 }
 ```
+
+For Revenue by Region (with params), use useAppQuery('revenue_data', { start_date: '2024-01-01' }) — the query name and params must match the keys in queries.
 
 ## Example test_query
 ```json

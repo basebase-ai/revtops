@@ -269,19 +269,21 @@ export function Chat({
   // Agent is running if there's an active task OR we're in a thinking/pending state
   const agentRunning = activeTaskId !== null || isThinking;
 
-  // Extract all apps from conversation messages (for preview panel)
+  // Extract all apps from conversation messages (for preview panel).
+  // When an app is updated, a newer block appears in a later message — use the latest version.
   const conversationApps = useMemo((): AppBlock["app"][] => {
-    const apps: AppBlock["app"][] = [];
-    const seen = new Set<string>();
+    const latestById = new Map<string, AppBlock["app"]>();
+    const order: string[] = [];
     for (const msg of messages) {
       for (const block of msg.contentBlocks) {
-        if (block.type === "app" && !seen.has((block as AppBlock).app.id)) {
-          seen.add((block as AppBlock).app.id);
-          apps.push((block as AppBlock).app);
+        if (block.type === "app") {
+          const app = (block as AppBlock).app;
+          if (!latestById.has(app.id)) order.push(app.id);
+          latestById.set(app.id, app);
         }
       }
     }
-    return apps;
+    return order.map((id) => latestById.get(id)!);
   }, [messages]);
 
   // Derive current artifact from messages (latest block with matching id) so updates propagate in real time

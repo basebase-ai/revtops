@@ -26,7 +26,7 @@ import {
   SiJira,
   SiAsana,
 } from 'react-icons/si';
-import { HiOutlineCalendar, HiOutlineMail, HiGlobeAlt, HiUserGroup, HiDeviceMobile, HiMicrophone, HiLightningBolt, HiX, HiCog, HiShare, HiLockClosed } from 'react-icons/hi';
+import { HiOutlineCalendar, HiOutlineMail, HiGlobeAlt, HiUserGroup, HiDeviceMobile, HiMicrophone, HiLightningBolt, HiX, HiCog, HiShare, HiLockClosed, HiDocumentText, HiCube } from 'react-icons/hi';
 // Custom Apollo.io icon - 8-ray starburst matching their brand
 const ApolloIcon: IconType = ({ className, ...props }) => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className={className} {...props}>
@@ -64,6 +64,8 @@ const ICON_MAP: Record<string, IconType> = {
   globe: HiGlobeAlt,
   terminal: HiLightningBolt,
   sms: HiDeviceMobile,
+  artifacts: HiDocumentText,
+  apps: HiCube,
 };
 
 // Sharing defaults for providers (used when showing the sharing modal)
@@ -79,6 +81,8 @@ const PROVIDER_SHARING_DEFAULTS: Record<string, { shareSyncedData: boolean; shar
   web_search: { shareSyncedData: true, shareQueryAccess: false, shareWriteAccess: false },
   code_sandbox: { shareSyncedData: true, shareQueryAccess: false, shareWriteAccess: false },
   twilio: { shareSyncedData: true, shareQueryAccess: false, shareWriteAccess: false },
+  artifacts: { shareSyncedData: true, shareQueryAccess: true, shareWriteAccess: true },
+  apps: { shareSyncedData: true, shareQueryAccess: true, shareWriteAccess: true },
   gmail: { shareSyncedData: false, shareQueryAccess: false, shareWriteAccess: false },
   google_calendar: { shareSyncedData: false, shareQueryAccess: false, shareWriteAccess: false },
   microsoft_calendar: { shareSyncedData: false, shareQueryAccess: false, shareWriteAccess: false },
@@ -117,12 +121,17 @@ const INTEGRATION_CONFIG: Record<string, IntegrationConfigEntry> = {
   web_search: { name: 'Web Search', description: 'Web search and URL fetching — enable for the agent to search the web or fetch pages', icon: 'globe', color: 'from-emerald-500 to-teal-600', scope: 'organization' },
   code_sandbox: { name: 'Code Sandbox', description: 'Run shell commands and scripts in a secure sandbox (Python, Node, bash)', icon: 'terminal', color: 'from-amber-500 to-orange-600', scope: 'organization' },
   twilio: { name: 'Twilio', description: 'Send SMS messages to phone numbers', icon: 'sms', color: 'from-red-500 to-pink-600', scope: 'organization' },
+  artifacts: { name: 'Artifact Builder', description: 'Create and update downloadable files (reports, markdown, PDFs, charts)', icon: 'artifacts', color: 'from-slate-500 to-slate-600', scope: 'organization' },
+  apps: { name: 'App Builder', description: 'Create and update interactive mini-apps with React + SQL', icon: 'apps', color: 'from-violet-500 to-purple-600', scope: 'organization' },
 };
 
 const SUPPORTED_PROVIDERS = new Set(Object.keys(INTEGRATION_CONFIG));
 
 /** Built-in connectors that connect with one click (no OAuth popup). */
-const BUILTIN_CONNECTORS = new Set(['web_search', 'code_sandbox', 'twilio']);
+const BUILTIN_CONNECTORS = new Set(['web_search', 'code_sandbox', 'twilio', 'artifacts', 'apps']);
+
+/** Connectors that have no sync — on-demand only (no Sync button, no "Starting sync"). */
+const NO_SYNC_PROVIDERS = new Set(['apollo', 'web_search', 'code_sandbox', 'twilio', 'artifacts', 'apps']);
 
 // Common integrations to show as tiles when org has zero connected (display order)
 const COMMON_INTEGRATION_KEYS: ReadonlyArray<string> = [
@@ -1072,7 +1081,7 @@ export function DataSources(): JSX.Element {
     const isConnecting = connectingProvider === integration.provider;
     const isStartingSync =
       (state === 'connected' || state === 'org-connected') &&
-      integration.provider !== 'apollo' &&
+      !NO_SYNC_PROVIDERS.has(integration.provider) &&
       !integration.lastSyncAt &&
       !syncingProviders.has(integration.provider);
     const isSyncing = syncingProviders.has(integration.provider) || isStartingSync;
@@ -1097,8 +1106,8 @@ export function DataSources(): JSX.Element {
     // Button config by state
     const getButtonConfig = (): { text: string; className: string; action: () => void; disabled: boolean; hidden?: boolean } => {
       if (state === 'connected' || state === 'org-connected') {
-        // Apollo.io is on-demand enrichment - no regular sync
-        if (integration.provider === 'apollo') {
+        // Apollo, artifacts, apps, web_search, code_sandbox, twilio — no sync, on-demand only
+        if (NO_SYNC_PROVIDERS.has(integration.provider)) {
           return {
             text: '',
             className: '',

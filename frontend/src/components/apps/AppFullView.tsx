@@ -172,8 +172,6 @@ export function AppFullView({ appId }: AppFullViewProps): JSX.Element {
       <div className="flex-1 overflow-hidden">
         <SandpackAppRenderer
           appId={appId}
-          frontendCode={app.frontend_code}
-          frontendCodeCompiled={app.frontend_code_compiled}
         />
       </div>
     </div>

@@ -34,6 +34,7 @@ export function AppPreviewPanel({
 }: AppPreviewPanelProps): JSX.Element {
   const activeApp = apps.find((a) => a.id === activeAppId) ?? apps[apps.length - 1];
   const [linkCopied, setLinkCopied] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
 
   const handleCopyLink = useCallback(async (): Promise<void> => {
     if (!activeApp) return;
@@ -132,11 +133,9 @@ export function AppPreviewPanel({
 
       {/* App renderer body */}
       {!collapsed && (
-        <div className="flex-1 overflow-hidden min-h-0">
+        <div key={reloadKey} className="flex-1 overflow-hidden min-h-0">
           <SandpackAppRenderer
             appId={activeApp.id}
-            frontendCode={activeApp.frontendCode}
-            frontendCodeCompiled={activeApp.frontendCodeCompiled}
             onError={onAppError}
           />
         </div>
