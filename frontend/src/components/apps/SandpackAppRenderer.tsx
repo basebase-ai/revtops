@@ -1,11 +1,11 @@
 /**
- * Renders a Penny App inside a sandboxed srcdoc iframe.
+ * Renders a Basebase App inside a sandboxed srcdoc iframe.
  *
  * Replaces the Sandpack-based approach with a simpler, more reliable method:
  * 1. React + ReactDOM + Plotly loaded from CDN as UMD globals
  * 2. Babel standalone transpiles JSX in-browser
  * 3. SDK + Plot shim inlined (no module bundler needed)
- * 4. Penny's code has imports stripped (everything is already in scope)
+ * 4. Basebase's code has imports stripped (everything is already in scope)
  *
  * The iframe uses sandbox="allow-scripts" for security isolation.
  */
@@ -49,7 +49,7 @@ function stripModuleSyntax(code: string): string {
 }
 
 /**
- * Transform Penny's code for the srcdoc environment:
+ * Transform Basebase's code for the srcdoc environment:
  * - Strip imports (everything is in global scope)
  * - Capture the default-exported component name
  */
@@ -291,7 +291,7 @@ export function SandpackAppRenderer({
           borderRadius: 8,
           background: "#18181b",
         }}
-        title="Penny App"
+        title="Basebase App"
       />
     </div>
   );

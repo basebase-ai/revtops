@@ -1,6 +1,6 @@
 """Add slack_bot_installs table for Add-to-Slack (bot install) OAuth flow.
 
-Stores bot tokens for workspaces that add Penny via the public "Add to Slack"
+Stores bot tokens for workspaces that add Basebase via the public "Add to Slack"
 link, so we can route events to the correct org without going through Nango.
 
 Revision ID: 078_slack_bot_installs

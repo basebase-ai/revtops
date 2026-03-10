@@ -133,7 +133,7 @@ export function HomeAppPicker({
 
               {apps.length === 0 && (
                 <div className="text-center py-6 text-surface-500 text-sm">
-                  No apps yet. Ask Penny to create one!
+                  No apps yet. Ask Basebase to create one!
                 </div>
               )}
             </div>

@@ -1,7 +1,7 @@
 /**
  * Persistent app preview panel shown above the chat messages.
  *
- * Displays the active Penny App with a header bar containing:
+ * Displays the active Basebase App with a header bar containing:
  * - App title + switcher dropdown (when multiple apps exist)
  * - Collapse toggle (hides/shows the renderer)
  * - Close (X) button to dismiss the preview

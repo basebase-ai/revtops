@@ -1,10 +1,10 @@
 /**
- * App viewer component for displaying an interactive Penny App in the side panel.
+ * App viewer component for displaying an interactive Basebase App in the side panel.
  *
  * Wraps SandpackAppRenderer with:
  * - Header showing title and type badge
  * - Share / Embed action buttons
- * - Error feedback ("Fix it" prompt sent back to Penny)
+ * - Error feedback ("Fix it" prompt sent back to Basebase)
  */
 
 import { useState, useCallback } from "react";

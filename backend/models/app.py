@@ -1,5 +1,5 @@
 """
-App model - interactive mini-apps created by Penny.
+App model - interactive mini-apps created by Basebase.
 
 Each app has server-side SQL queries and client-side React code.
 Separate from Artifact which handles static files (text, markdown, PDF, charts).

@@ -1179,8 +1179,8 @@ export function DataSources(): JSX.Element {
       return (
         <div className="mt-4 pt-4 border-t border-surface-700/50 space-y-3">
           <div className="text-xs text-surface-400 space-y-1">
-            <p><strong className="text-surface-300">To sync:</strong> Invite @Penny to channels—type <code className="text-surface-300">/invite @Penny</code> or add her from channel details.</p>
-            <p><strong className="text-surface-300">To chat:</strong> Mention @Penny in any channel she’s in; she’ll reply in the thread.</p>
+            <p><strong className="text-surface-300">To sync:</strong> Invite @Basebase to channels—type <code className="text-surface-300">/invite @Basebase</code> or add it from channel details.</p>
+            <p><strong className="text-surface-300">To chat:</strong> Mention @Basebase in any channel it's in; it'll reply in the thread.</p>
           </div>
           <div className="flex items-center justify-between">
             <div>
@@ -1721,7 +1721,7 @@ export function DataSources(): JSX.Element {
               From your team ({fromTeamConnectors.length})
             </h2>
             <p className="text-sm text-surface-400 mb-4">
-              Teammates have connected these personal integrations. Connect your own for Penny to access your data.
+              Teammates have connected these personal integrations. Connect your own for Basebase to access your data.
             </p>
             <div className="grid gap-4">
               {fromTeamConnectors.map((integration) => renderIntegrationTile(integration, 'team-only'))}
@@ -1980,7 +1980,7 @@ export function DataSources(): JSX.Element {
                       Others can read
                     </div>
                     <div className="text-xs text-surface-500 mt-0.5">
-                      When on: teammates and Penny can see synced records (emails, meetings, etc.). When off: only you can see it.
+                      When on: teammates and Basebase can see synced records (emails, meetings, etc.). When off: only you can see it.
                     </div>
                   </div>
                 </label>
