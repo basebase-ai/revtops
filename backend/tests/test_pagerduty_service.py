@@ -54,7 +54,7 @@ def test_create_pagerduty_incident_with_details_missing_config(monkeypatch: Any)
 
 def test_create_pagerduty_incident_with_details_http_error(monkeypatch: Any) -> None:
     monkeypatch.setattr(pagerduty.httpx, "AsyncClient", _FakeAsyncClient500)
-    monkeypatch.setenv("PAGERDUTY_FROM_EMAIL", "alerts@revtops.com")
+    monkeypatch.setenv("PAGERDUTY_FROM_EMAIL", "alerts@basebase.com")
     monkeypatch.setenv("PagerDuty_Key", "pd_test_key")
     monkeypatch.setenv("PAGERDUTY_SERVICE_ID", "svc_123")
     monkeypatch.setenv("FRONTEND_URL", "https://app.basebase.com")
@@ -78,7 +78,7 @@ def test_create_pagerduty_incident_with_details_http_error(monkeypatch: Any) -> 
 
 def test_create_pagerduty_incident_with_details_success(monkeypatch: Any) -> None:
     monkeypatch.setattr(pagerduty.httpx, "AsyncClient", _FakeAsyncClient)
-    monkeypatch.setenv("PAGERDUTY_FROM_EMAIL", "alerts@revtops.com")
+    monkeypatch.setenv("PAGERDUTY_FROM_EMAIL", "alerts@basebase.com")
     monkeypatch.setenv("PagerDuty_Key", "pd_test_key")
     monkeypatch.setenv("PAGERDUTY_SERVICE_ID", "svc_123")
     monkeypatch.setenv("FRONTEND_URL", "https://app.basebase.com")
@@ -101,7 +101,7 @@ def test_create_pagerduty_incident_with_details_success(monkeypatch: Any) -> Non
 
 
 def test_get_pagerduty_config_skips_when_incidents_disabled(monkeypatch: Any) -> None:
-    monkeypatch.setenv("PAGERDUTY_FROM_EMAIL", "alerts@revtops.com")
+    monkeypatch.setenv("PAGERDUTY_FROM_EMAIL", "alerts@basebase.com")
     monkeypatch.setenv("PagerDuty_Key", "pd_test_key")
     monkeypatch.setenv("PAGERDUTY_SERVICE_ID", "svc_123")
     monkeypatch.setenv("PAGERDUTY_INCIDENTS_ENABLED", "false")
@@ -113,7 +113,7 @@ def test_get_pagerduty_config_skips_when_incidents_disabled(monkeypatch: Any) ->
 
 
 def test_get_pagerduty_config_returns_config_when_incidents_enabled(monkeypatch: Any) -> None:
-    monkeypatch.setenv("PAGERDUTY_FROM_EMAIL", "alerts@revtops.com")
+    monkeypatch.setenv("PAGERDUTY_FROM_EMAIL", "alerts@basebase.com")
     monkeypatch.setenv("PagerDuty_Key", "pd_test_key")
     monkeypatch.setenv("PAGERDUTY_SERVICE_ID", "svc_123")
     monkeypatch.setenv("PAGERDUTY_INCIDENTS_ENABLED", "true")
@@ -121,4 +121,4 @@ def test_get_pagerduty_config_returns_config_when_incidents_enabled(monkeypatch:
 
     config = pagerduty.get_pagerduty_config()
 
-    assert config == ("alerts@revtops.com", "pd_test_key", "svc_123")
+    assert config == ("alerts@basebase.com", "pd_test_key", "svc_123")

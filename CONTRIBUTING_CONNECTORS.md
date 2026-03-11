@@ -1,7 +1,7 @@
-# Building a Connector for Revtops
+# Building a Connector for Basebase
 
 This guide walks you through building a new data source connector. Connectors
-let Revtops pull data from external systems, query them on demand, write
+let Basebase pull data from external systems, query them on demand, write
 records back, execute side-effect actions, and receive real-time events.
 
 ## Quick Start
@@ -321,7 +321,7 @@ manifest when they are enabled for the org.
 
 ## Testing
 
-Run the Revtops dev stack with your connector installed:
+Run the Basebase dev stack with your connector installed:
 
 ```bash
 cd backend
@@ -371,5 +371,5 @@ hyper-niche, rapid iteration), create a Python package with an entry point:
 my_crm = "my_package:MyCrmConnector"
 ```
 
-Install it alongside Revtops (`pip install revtops-connector-mycrm`) and
+Install it alongside Basebase (`pip install revtops-connector-mycrm`) and
 the system will discover it automatically via `importlib.metadata.entry_points`.

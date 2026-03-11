@@ -2,7 +2,7 @@
 
 ## Overview
 
-The Zoom connector imports cloud recording transcripts from a connected Zoom user account and stores them as `activities` in Revtops. It is designed for meeting intelligence use cases where users want transcripts available in search, reporting, and agent workflows. The connector is **user-scoped** and uses **OAuth2** through Nango.
+The Zoom connector imports cloud recording transcripts from a connected Zoom user account and stores them as `activities` in Basebase. It is designed for meeting intelligence use cases where users want transcripts available in search, reporting, and agent workflows. The connector is **user-scoped** and uses **OAuth2** through Nango.
 
 At a high level, each sync:
 
@@ -42,7 +42,7 @@ At a high level, each sync:
 
 ### OAuth and provider wiring
 
-Revtops uses Nango to handle OAuth token storage and refresh. The Zoom provider is wired in three places:
+Basebase uses Nango to handle OAuth token storage and refresh. The Zoom provider is wired in three places:
 
 1. Connector metadata (`nango_integration_id="zoom"`)
 2. Backend provider-to-Nango mapping (`NANGO_INTEGRATION_IDS["zoom"]`)
@@ -52,7 +52,7 @@ Revtops uses Nango to handle OAuth token storage and refresh. The Zoom provider 
 
 - A valid Zoom OAuth app configured in Nango.
 - Backend environment configured with the Zoom integration identifier (`NANGO_ZOOM_INTEGRATION_ID`, default `zoom`).
-- User has connected Zoom in the Revtops integrations UI.
+- User has connected Zoom in the Basebase integrations UI.
 - Zoom account has cloud recordings and available transcript files.
 
 ---
@@ -61,7 +61,7 @@ Revtops uses Nango to handle OAuth token storage and refresh. The Zoom provider 
 
 ### 1) Initial sync trigger
 
-After OAuth connection, Revtops background setup includes the Zoom connector in initial sync dispatch (`_run_initial_sync`). That run invokes `connector.sync_all()` and records sync status/error metadata.
+After OAuth connection, Basebase background setup includes the Zoom connector in initial sync dispatch (`_run_initial_sync`). That run invokes `connector.sync_all()` and records sync status/error metadata.
 
 ### 2) Rolling fetch window
 

@@ -172,7 +172,7 @@ async def update_tool_result(
         logger.error(f"[update_tool_result] Error: {e}")
         return False
 
-SYSTEM_PROMPT = """You are Basebase, an AI assistant created by Basebase that helps business teams to work across their siloed tools and data sources.
+SYSTEM_PROMPT = """You are Basebase, an AI assistant created by Basebase that helps business teams to work across their siloed tools and data sources. Basebase is built for mid-market companies (20-200 people) with many siloed SaaS subscriptions and data.
 
 You help team members quickly gather and summarize information and also complete tasks using the tools from the Basebase platform.
 
