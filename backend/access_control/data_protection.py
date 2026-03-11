@@ -4,7 +4,9 @@ Data Protection Layer.
 Interposes on connector sync and tool calls to enforce sharing permissions
 and block unauthorized connector operations per org/user/context.
 
-All connectors are user-scoped. Sharing flags on Integration control access:
+Org-scoped connectors (e.g. Slack, Twilio) are shared by the whole org — any
+team member can use them. User-scoped connectors (e.g. Google Drive) enforce
+sharing flags on Integration to control access:
 - share_synced_data: Team can see synced records
 - share_query_access: Team can query live data via this connection
 - share_write_access: Team can write data via this connection
@@ -18,6 +20,7 @@ from uuid import UUID
 
 from sqlalchemy import select
 
+from connectors.registry import ConnectorScope, discover_connectors
 from models.database import get_session
 from models.integration import Integration
 
@@ -78,20 +81,20 @@ async def check_connector_call(
                 )
 
         # Check for shared integrations
-        share_flag_map = {
-            "query": Integration.share_query_access,
-            "write": Integration.share_write_access,
-            "action": Integration.share_write_access,  # Actions require write access
-        }
-        share_flag = share_flag_map.get(context.operation)
+        # Org-scoped connectors: any team member can use the org's integration
+        registry = discover_connectors()
+        connector_cls = registry.get(context.provider)
+        is_org_scoped = (
+            connector_cls is not None
+            and getattr(connector_cls.meta, "scope", None) == ConnectorScope.ORGANIZATION
+        )
 
-        if share_flag is not None:
+        if is_org_scoped:
             result = await session.execute(
                 select(Integration).where(
                     Integration.organization_id == UUID(context.organization_id),
                     Integration.connector == context.provider,
                     Integration.is_active == True,  # noqa: E712
-                    share_flag == True,  # noqa: E712
                 )
             )
             shared_integration = result.scalar_one_or_none()
@@ -100,6 +103,30 @@ async def check_connector_call(
                     allowed=True,
                     integration_user_id=str(shared_integration.user_id),
                 )
+        else:
+            # User-scoped: check sharing flags
+            share_flag_map = {
+                "query": Integration.share_query_access,
+                "write": Integration.share_write_access,
+                "action": Integration.share_write_access,  # Actions require write access
+            }
+            share_flag = share_flag_map.get(context.operation)
+
+            if share_flag is not None:
+                result = await session.execute(
+                    select(Integration).where(
+                        Integration.organization_id == UUID(context.organization_id),
+                        Integration.connector == context.provider,
+                        Integration.is_active == True,  # noqa: E712
+                        share_flag == True,  # noqa: E712
+                    )
+                )
+                shared_integration = result.scalar_one_or_none()
+                if shared_integration:
+                    return DataProtectionResult(
+                        allowed=True,
+                        integration_user_id=str(shared_integration.user_id),
+                    )
 
     # No access
     operation_name = context.operation
