@@ -15,6 +15,7 @@ Flow:
 5. Agent can edit existing files (user must have edit permission on the file)
 """
 
+import asyncio
 import json
 import logging
 import re
@@ -764,7 +765,74 @@ Call via `run_on_connector(connector='google_drive', action='edit_file', params=
             result = await session.execute(query)
             rows: list[SharedFile] = list(result.scalars().all())
 
-            return [row.to_dict() for row in rows]
+            if rows:
+                return [row.to_dict() for row in rows]
+
+        # ------------------------------------------------------------------
+        # Live Drive API fallback – only when a real search term was given
+        # ------------------------------------------------------------------
+        if not cleaned_query:
+            return []
+
+        await self.get_oauth_token()
+
+        escaped_term: str = cleaned_query.replace("'", "\\'")
+        drive_query: str = (
+            f"name contains '{escaped_term}'"
+            f" and mimeType != '{GOOGLE_FOLDER_MIME}'"
+            f" and trashed=false"
+        )
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.get(
+                f"{DRIVE_API_BASE}/files",
+                headers=self._get_headers(),
+                params={
+                    "q": drive_query,
+                    "fields": LIST_FIELDS,
+                    "pageSize": limit,
+                    "supportsAllDrives": "true",
+                    "includeItemsFromAllDrives": "true",
+                },
+            )
+
+            if resp.status_code != 200:
+                logger.warning(
+                    "[GoogleDrive] Live search fallback failed: %s %s",
+                    resp.status_code,
+                    resp.text,
+                )
+                return []
+
+            api_files: list[dict[str, Any]] = resp.json().get("files", [])
+
+        # Filter by requested MIME types if specified
+        if mime_types:
+            api_files = [f for f in api_files if f.get("mimeType") in mime_types]
+
+        # Upsert into shared_files so subsequent queries hit the fast DB path
+        if api_files:
+            await asyncio.gather(
+                *(self._upsert_created_file(f) for f in api_files)
+            )
+
+        now_iso: str = f"{datetime.utcnow().isoformat()}Z"
+        return [
+            {
+                "external_id": f["id"],
+                "source": "google_drive",
+                "name": f.get("name", ""),
+                "mime_type": f.get("mimeType", ""),
+                "folder_path": "/",
+                "web_view_link": f.get("webViewLink"),
+                "file_size": None,
+                "source_modified_at": (
+                    f.get("modifiedTime") if f.get("modifiedTime") else None
+                ),
+                "synced_at": now_iso,
+            }
+            for f in api_files
+        ]
 
     # -------------------------------------------------------------------------
     # Content Reading (on-demand from Google API)
