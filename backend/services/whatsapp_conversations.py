@@ -321,7 +321,7 @@ async def process_inbound_whatsapp(
         logger.info("[whatsapp_conversations] No user found for phone=%s", phone)
         await send_sms(
             to=phone,
-            body="This phone number is not registered with RevTops. "
+            body="This phone number is not registered with Basebase. "
                  "Please add your phone number in your profile settings first.",
             whatsapp=True,
         )
@@ -387,7 +387,7 @@ async def process_inbound_whatsapp(
     if not await can_use_credits(organization_id):
         await _send_whatsapp_reply(
             to=phone,
-            text="You're out of credits or don't have an active subscription. Please add a payment method in Revtops to continue.",
+            text="You're out of credits or don't have an active subscription. Please add a payment method in Basebase to continue.",
         )
         return {"status": "error", "error": "insufficient_credits"}
 

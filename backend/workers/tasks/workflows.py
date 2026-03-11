@@ -690,7 +690,7 @@ async def _execute_workflow(
             org_id_str = str(workflow.organization_id)
             if not await can_use_credits(org_id_str):
                 run.status = "failed"
-                run.error_message = "Insufficient credits or no active subscription. Please add a payment method in Revtops."
+                run.error_message = "Insufficient credits or no active subscription. Please add a payment method in Basebase."
                 run.completed_at = datetime.utcnow()
                 await session.commit()
                 return {
@@ -1307,7 +1307,7 @@ async def _action_send_email(
     from services.email import send_email
     
     to = params.get("to", "")
-    subject = params.get("subject", "Revtops Workflow Notification")
+    subject = params.get("subject", "Basebase Workflow Notification")
     body = params.get("body", "")
     
     # Substitute context variables
@@ -1527,7 +1527,7 @@ async def _action_send_system_email(
     from services.email import send_email
     
     to = params.get("to", "")
-    subject = params.get("subject", "Revtops Notification")
+    subject = params.get("subject", "Basebase Notification")
     body = params.get("body", "")
     reply_to = params.get("reply_to")
     

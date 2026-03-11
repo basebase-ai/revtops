@@ -78,8 +78,8 @@ Basebase supports multiple execution modes:
 ### 1. Clone and configure environment
 
 ```bash
-git clone https://github.com/basebase-ai/revtops.git
-cd revtops
+git clone https://github.com/basebase-ai/basebase.git
+cd basebase
 cp env.example .env
 ```
 
@@ -237,7 +237,7 @@ Frontend only needs `VITE_*` environment variables. Beat only needs `REDIS_URL` 
 ## Project Structure
 
 ```
-revtops/
+basebase/
 ├── backend/
 │   ├── access_control/    # Permission checks and data protection
 │   ├── agents/            # Claude orchestration and tool definitions

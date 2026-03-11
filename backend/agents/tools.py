@@ -288,7 +288,7 @@ async def execute_tool(
         )
         if not ok:
             return {
-                "error": "You're out of credits. Please add a payment method in Revtops to continue.",
+                "error": "You're out of credits. Please add a payment method in Basebase to continue.",
                 "_out_of_credits_after_turn": True,
             }
 

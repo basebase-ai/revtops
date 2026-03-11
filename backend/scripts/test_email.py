@@ -28,9 +28,9 @@ async def send_test_email(to_email: str) -> None:
                 "Content-Type": "application/json",
             },
             json={
-                "from": "Revtops <support@revtops.com>",
+                "from": "Basebase <support@basebase.com>",
                 "to": [to_email],
-                "subject": "Test email from Revtops",
+                "subject": "Test email from Basebase",
                 "html": "<h1>It works!</h1><p>Your Resend integration is configured correctly.</p>",
                 "text": "It works! Your Resend integration is configured correctly.",
             },

@@ -115,7 +115,7 @@ async def _create_pagerduty_incident(
     await create_pagerduty_incident(
         title=f"{check_result.name} is down",
         details=(
-            "Automated Revtops dependency monitor detected an outage. "
+            "Automated Basebase dependency monitor detected an outage. "
             f"Dependency: {check_result.name}. Details: {check_result.details}"
         ),
     )

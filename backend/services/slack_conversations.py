@@ -2304,7 +2304,7 @@ async def process_slack_dm(
     ):
         await connector.post_message(
             channel=channel_id,
-            text="You're out of credits or don't have an active subscription. Please add a payment method in Revtops to continue.",
+            text="You're out of credits or don't have an active subscription. Please add a payment method in Basebase to continue.",
         )
         await connector.remove_reaction(channel=channel_id, timestamp=event_ts)
         return {"status": "error", "error": "insufficient_credits"}
@@ -2510,7 +2510,7 @@ async def process_slack_mention(
     ):
         await connector.post_message(
             channel=channel_id,
-            text="You're out of credits or don't have an active subscription. Please add a payment method in Revtops to continue.",
+            text="You're out of credits or don't have an active subscription. Please add a payment method in Basebase to continue.",
             thread_ts=thread_ts,
         )
         await connector.remove_reaction(channel=channel_id, timestamp=event_ts)
@@ -2736,7 +2736,7 @@ async def process_slack_thread_reply(
     ):
         await connector.post_message(
             channel=channel_id,
-            text="You're out of credits or don't have an active subscription. Please add a payment method in Revtops to continue.",
+            text="You're out of credits or don't have an active subscription. Please add a payment method in Basebase to continue.",
             thread_ts=thread_ts,
         )
         await connector.remove_reaction(channel=channel_id, timestamp=event_ts)

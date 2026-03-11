@@ -544,7 +544,7 @@ async def process_inbound_sms(
         logger.info("[sms_conversations] No user found for phone=%s", phone)
         await send_sms(
             to=phone,
-            body="This phone number is not registered with RevTops. "
+            body="This phone number is not registered with Basebase. "
                  "Please add your phone number in your profile settings first.",
         )
         return {"status": "rejected", "reason": "unknown_phone"}
@@ -614,7 +614,7 @@ async def process_inbound_sms(
     if not await can_use_credits(organization_id):
         await _send_sms_reply(
             to=phone,
-            text="You're out of credits or don't have an active subscription. Please add a payment method in Revtops to continue.",
+            text="You're out of credits or don't have an active subscription. Please add a payment method in Basebase to continue.",
         )
         return {"status": "error", "error": "insufficient_credits"}
 

@@ -243,7 +243,7 @@ async def request_slack_user_mapping_code(
         len(slack_user_candidates),
     )
     message_text = (
-        "Your RevTops verification code is: "
+        "Your Basebase verification code is: "
         f"{code}\n\nIf you didn't request this, you can ignore it."
     )
     connector = SlackConnector(organization_id=str(org_uuid))

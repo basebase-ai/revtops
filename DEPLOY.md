@@ -137,7 +137,7 @@ To support both (1) **Connect** (Nango OAuth) and (2) **Add Basebase to Slack** 
 - Ensure `FRONTEND_URL` is set correctly on the backend
 - Check that the URL doesn't have a trailing slash
 
-### Nango after domain change (e.g. revtops.com → basebase.com)
+### Nango after domain change (e.g. old-domain.com → basebase.com)
 - Redirect URLs in Nango stay as **api.nango.dev/oauth/callback**; the domain change doesn’t affect that.
 - **Backend env (production):** Set `FRONTEND_URL=https://app.basebase.com` (and `BACKEND_PUBLIC_URL=https://api.basebase.com` if used). The backend passes `redirect_url` to Nango so users land on your app after OAuth; that URL is built from `FRONTEND_URL`.
 - **Supabase:** Update **Site URL** and **Redirect URLs** to `https://app.basebase.com` (see “Updating Supabase Auth” above).
@@ -145,7 +145,7 @@ To support both (1) **Connect** (Nango OAuth) and (2) **Add Basebase to Slack** 
 ### GitHub / Nango integrations fail to connect
 - Ensure **VITE_NANGO_PUBLIC_KEY** is set when building the frontend (build arg / env). If it’s missing, the Connect UI can fail (console may show “VITE_NANGO_PUBLIC_KEY is not set”). Nango OAuth callback stays as api.nango.dev; no change needed when changing app domain.
 
-### OAuth redirects to wrong domain (e.g. app.revtops.com instead of app.basebase.com)
+### OAuth redirects to wrong domain (e.g. old-domain.com instead of app.basebase.com)
 - Supabase uses **Site URL** as the default post-login redirect. Update it: **Supabase** → **Authentication** → **URL Configuration** → set **Site URL** to your app origin (e.g. `https://app.basebase.com`) and add that origin to **Redirect URLs** (`https://app.basebase.com/**`).
 
 ### WebSocket Connection Issues

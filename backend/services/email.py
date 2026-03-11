@@ -229,7 +229,7 @@ async def send_waitlist_confirmation(to_email: str, name: str) -> bool:
         
         <p>Thanks for signing up for Basebase! We've added you to our waitlist and will reach out as soon as your spot is ready.</p>
         
-        <p>We're building Basebase to help revenue teams unlock insights by connecting your CRM, Slack, email, and calendar — all through a simple chat interface.</p>
+        <p>We're building Basebase to help business teams work across their siloed tools and data — CRM, Slack, email, calendars, and more — through a simple chat interface. Built for mid-market companies (20-200 people) with lots of SaaS sprawl.</p>
         
         <p>We'll be in touch soon with next steps.</p>
         
@@ -248,7 +248,7 @@ async def send_waitlist_confirmation(to_email: str, name: str) -> bool:
 
 Thanks for signing up for Basebase! We've added you to our waitlist and will reach out as soon as your spot is ready.
 
-We're building Basebase to help revenue teams unlock insights by connecting your CRM, Slack, email, and calendar — all through a simple chat interface.
+We're building Basebase to help business teams work across their siloed tools and data — CRM, Slack, email, calendars, and more — through a simple chat interface. Built for mid-market companies (20-200 people) with lots of SaaS sprawl.
 
 We'll be in touch soon with next steps.
 
@@ -348,7 +348,7 @@ async def send_invitation_email(to_email: str, name: str) -> bool:
                 <tr>
                   <td style="padding:20px 24px;">
                     <p style="margin:0 0 12px;font-size:14px;font-weight:600;color:#111;">One AI for your whole team</p>
-                    <p style="margin:0;color:#6b7280;font-size:13px;line-height:1.6;">Basebase lives in your Slack workspace. Ask it anything &mdash; deal updates, meeting prep, customer research &mdash; and it answers right in the thread. When one person learns something, the whole team benefits.</p>
+                    <p style="margin:0;color:#6b7280;font-size:13px;line-height:1.6;">Basebase lives in your Slack workspace. Ask it anything &mdash; cross-tool summaries, data lookups, task automation &mdash; and it answers right in the thread. When one person learns something, the whole team benefits.</p>
                   </td>
                 </tr>
               </table>
@@ -372,7 +372,7 @@ async def send_invitation_email(to_email: str, name: str) -> bool:
 
 Sign up for Basebase to get started.
 
-Basebase lives in your Slack workspace. Ask it anything -- deal updates, meeting prep, customer research -- and it answers right in the thread. When one person learns something, the whole team benefits.
+Basebase lives in your Slack workspace. Ask it anything -- cross-tool summaries, data lookups, task automation -- and it answers right in the thread. When one person learns something, the whole team benefits.
 
 Get started: {invite_url}
 
@@ -499,7 +499,7 @@ async def send_org_invitation_email(
                 <tr>
                   <td style="padding:20px 24px;">
                     <p style="margin:0 0 12px;font-size:14px;font-weight:600;color:#111;">One AI for your whole team</p>
-                    <p style="margin:0;color:#6b7280;font-size:13px;line-height:1.6;">Basebase lives in your Slack workspace. Ask it anything &mdash; deal updates, meeting prep, customer research &mdash; and it answers right in the thread. When one person learns something, the whole team benefits.</p>
+                    <p style="margin:0;color:#6b7280;font-size:13px;line-height:1.6;">Basebase lives in your Slack workspace. Ask it anything &mdash; cross-tool summaries, data lookups, task automation &mdash; and it answers right in the thread. When one person learns something, the whole team benefits.</p>
                   </td>
                 </tr>
               </table>
@@ -529,7 +529,7 @@ async def send_org_invitation_email(
 
 Sign up for Basebase to accept.
 
-Basebase lives in your Slack workspace. Ask it anything -- deal updates, meeting prep, customer research -- and it answers right in the thread. When one person learns something, the whole team benefits.
+Basebase lives in your Slack workspace. Ask it anything -- cross-tool summaries, data lookups, task automation -- and it answers right in the thread. When one person learns something, the whole team benefits.
 
 Get started: {invite_url}
 

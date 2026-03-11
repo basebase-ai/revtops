@@ -46,7 +46,7 @@ def test_expected_env_vars_include_pagerduty() -> None:
 def test_pagerduty_incident_request_shape(monkeypatch: Any) -> None:
     monkeypatch.setattr(pagerduty.httpx, "AsyncClient", _FakeAsyncClient)
     monkeypatch.setenv("PAGERDUTY_INCIDENTS_ENABLED", "true")
-    monkeypatch.setenv("PAGERDUTY_FROM_EMAIL", "alerts@revtops.com")
+    monkeypatch.setenv("PAGERDUTY_FROM_EMAIL", "alerts@basebase.com")
     monkeypatch.setenv("PagerDuty_Key", "pd_test_key")
     monkeypatch.setenv("PAGERDUTY_SERVICE_ID", "svc_123")
     monkeypatch.setenv("FRONTEND_URL", "https://app.basebase.com")
@@ -67,7 +67,7 @@ def test_pagerduty_incident_request_shape(monkeypatch: Any) -> None:
 
     last_call = _FakeAsyncClient.last_call
     assert last_call["url"] == "https://api.pagerduty.com/incidents"
-    assert last_call["headers"]["From"] == "alerts@revtops.com"
+    assert last_call["headers"]["From"] == "alerts@basebase.com"
     assert last_call["headers"]["Authorization"] == "Token token=pd_test_key"
     assert last_call["json"]["incident"]["service"]["id"] == "svc_123"
     assert last_call["json"]["incident"]["title"] == "Redis is down"
@@ -108,7 +108,7 @@ def test_monitor_dependencies_logs_health_check_outcome(monkeypatch: Any, caplog
 
     monkeypatch.setattr(monitoring, "clear_incident_failure", _fake_clear_incident_failure)
     monkeypatch.setattr(monitoring, "evaluate_incident_creation", _fake_evaluate_incident_creation)
-    monkeypatch.setenv("PAGERDUTY_FROM_EMAIL", "alerts@revtops.com")
+    monkeypatch.setenv("PAGERDUTY_FROM_EMAIL", "alerts@basebase.com")
     monkeypatch.setenv("PagerDuty_Key", "pd_test_key")
     monkeypatch.setenv("PAGERDUTY_SERVICE_ID", "svc_123")
     monkeypatch.setattr(pagerduty, "settings", settings.__class__())
@@ -176,10 +176,10 @@ def test_check_jwks_endpoint_unhealthy_when_supabase_url_missing(monkeypatch: An
 
 
 def test_api_healthcheck_url_uses_backend_public_url(monkeypatch: Any) -> None:
-    monkeypatch.setenv("BACKEND_PUBLIC_URL", "https://revtops.example.com/")
+    monkeypatch.setenv("BACKEND_PUBLIC_URL", "https://basebase.example.com/")
     monkeypatch.setattr(monitoring, "settings", settings.__class__())
 
-    assert monitoring._api_healthcheck_url() == "https://revtops.example.com/health"
+    assert monitoring._api_healthcheck_url() == "https://basebase.example.com/health"
 
 
 def test_check_http_endpoint_marks_supabase_522_as_connection_pool_outage(monkeypatch: Any) -> None:
