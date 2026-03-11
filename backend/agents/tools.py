@@ -520,13 +520,14 @@ async def _get_connector_instance(
 ) -> tuple["BaseConnector | None", str | None]:
     """Resolve a connector by slug, verify active Integration, and instantiate.
 
-    All connectors are user-scoped. For query/write operations, checks sharing flags
-    to determine if the requesting user has access.
+    Org-scoped connectors (e.g. Slack, Twilio) are shared by the whole org — any
+    team member can use them without sharing flags. User-scoped connectors (e.g.
+    Google Drive) check sharing flags to determine if a non-owner has access.
 
     Returns (connector_instance, None) on success or (None, error_message) on failure.
     """
     from connectors.base import BaseConnector
-    from connectors.registry import Capability, ConnectorMeta, discover_connectors
+    from connectors.registry import Capability, ConnectorMeta, ConnectorScope, discover_connectors
     from models.integration import Integration
 
     registry = discover_connectors()
@@ -559,33 +560,45 @@ async def _get_connector_instance(
 
         # If no personal integration, look for shared integrations
         if integration is None:
-            share_flag_map: dict[str, Any] = {
-                "query": Integration.share_query_access,
-                "write": Integration.share_write_access,
-                "action": Integration.share_write_access,
-            }
-            share_flag = share_flag_map.get(required_capability) if required_capability else None
-
-            if share_flag is not None:
+            # Org-scoped connectors: any team member can use the org's integration
+            if meta.scope == ConnectorScope.ORGANIZATION:
                 result = await session.execute(
                     select(Integration).where(
                         Integration.organization_id == UUID(organization_id),
                         Integration.connector == slug,
                         Integration.is_active == True,  # noqa: E712
-                        share_flag == True,  # noqa: E712
                     )
                 )
                 integration = result.scalar_one_or_none()
             else:
-                # sync or unknown capability — find any active integration
-                result = await session.execute(
-                    select(Integration).where(
-                        Integration.organization_id == UUID(organization_id),
-                        Integration.connector == slug,
-                        Integration.is_active == True,  # noqa: E712
+                # User-scoped: check sharing flags
+                share_flag_map: dict[str, Any] = {
+                    "query": Integration.share_query_access,
+                    "write": Integration.share_write_access,
+                    "action": Integration.share_write_access,
+                }
+                share_flag = share_flag_map.get(required_capability) if required_capability else None
+
+                if share_flag is not None:
+                    result = await session.execute(
+                        select(Integration).where(
+                            Integration.organization_id == UUID(organization_id),
+                            Integration.connector == slug,
+                            Integration.is_active == True,  # noqa: E712
+                            share_flag == True,  # noqa: E712
+                        )
                     )
-                )
-                integration = result.scalar_one_or_none()
+                    integration = result.scalar_one_or_none()
+                else:
+                    # sync or unknown capability — find any active integration
+                    result = await session.execute(
+                        select(Integration).where(
+                            Integration.organization_id == UUID(organization_id),
+                            Integration.connector == slug,
+                            Integration.is_active == True,  # noqa: E712
+                        )
+                    )
+                    integration = result.scalar_one_or_none()
 
         if integration is None:
             if required_capability == "query":
