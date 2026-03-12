@@ -135,7 +135,23 @@ Use `write_on_connector(connector='hubspot', operation='...', data={...})` with 
 
 **update_deal** — Required: `id` (HubSpot deal ID, use `source_id` from the `deals` table). Optional: same fields as create.
 
-**Pipeline/stage IDs:** Query `pipelines` and `pipeline_stages` tables to get valid `pipeline` and `dealstage` values. `dealstage` is the stage ID (e.g. from `pipeline_stages.source_id`), not the stage name.
+**IMPORTANT — Pipeline and stage IDs:** The `dealstage` and `pipeline` fields MUST use HubSpot **source_id** values, NOT human-readable names. Before creating deals, ALWAYS run:
+```sql
+SELECT ps.source_id, ps.name, ps.display_order, p.name as pipeline_name, p.source_id as pipeline_source_id
+FROM pipeline_stages ps JOIN pipelines p ON ps.pipeline_id = p.id
+ORDER BY p.name, ps.display_order
+```
+Use the stage `source_id` (e.g. "appointmentscheduled" or "2967830202") in `dealstage`, and `pipeline_source_id` in `pipeline`. If the query returns 0 rows, tell the user no pipelines are synced yet.
+
+**IMPORTANT — Deal owner (hubspot_owner_id):** This field requires a **HubSpot numeric owner ID**, NOT a Basebase user UUID. Look up from:
+```sql
+SELECT u.id, u.name, u.email, m.external_userid AS hubspot_owner_id
+FROM user_mappings_for_identity m JOIN users u ON u.id = m.user_id
+WHERE m.source = 'hubspot' AND m.user_id IS NOT NULL
+```
+Use `m.external_userid` when setting `hubspot_owner_id`. If no mapping exists, tell the user that user hasn't been matched to a HubSpot owner yet.
+
+**Engagements (calls, meetings, notes) with associations:** When linking to a deal/contact/company, use the **HubSpot record ID** (numeric `source_id`), not the internal UUID. Query `SELECT id, name, source_id FROM deals` (or contacts, accounts) and use `source_id` in `{"to_object_type": "deal", "to_object_id": "<source_id>"}`.
 
 ### Contacts
 
