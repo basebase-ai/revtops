@@ -152,10 +152,28 @@ celery_app.conf.beat_schedule = {
 
 @worker_process_init.connect
 def setup_backend_path(**kwargs) -> None:
-    """Ensure backend/ is on sys.path in every forked worker process."""
+    """Ensure backend/ is on sys.path and reset async state in every forked worker.
+
+    After fork, event loops and connection pools from the parent are invalid.
+    Reset sync task state and dispose DB engine so the first task gets fresh
+    resources bound to its loop (avoids 'Future attached to different loop').
+    """
     _dir = str(Path(__file__).resolve().parent.parent)
     if _dir not in sys.path:
         sys.path.insert(0, _dir)
+
+    # Reset async state so first task creates fresh loop/engine (no stale refs from parent)
+    try:
+        from models.database import dispose_engine
+        dispose_engine()
+    except Exception:
+        pass
+
+    try:
+        from workers.tasks import sync as sync_module
+        sync_module._worker_loop = None
+    except Exception:
+        pass
 
 
 @worker_process_shutdown.connect

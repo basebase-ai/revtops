@@ -69,7 +69,20 @@ class NangoClient:
         if not self.secret_key:
             raise ValueError("NANGO_SECRET_KEY is required")
         self._token_cache: dict[tuple[str, str], tuple[str, float]] = {}
-        self._token_cache_lock: asyncio.Lock = asyncio.Lock()
+        # Lock created lazily per event loop to avoid "Future attached to different loop"
+        # in Celery workers where the singleton is created at import time (no loop) but
+        # tasks run on a later loop.
+        self._token_cache_lock: asyncio.Lock | None = None
+        self._lock_loop_id: int | None = None
+
+    def _ensure_token_cache_lock(self) -> asyncio.Lock:
+        """Return lock bound to the current event loop (required for Celery worker reuse)."""
+        loop = asyncio.get_running_loop()
+        loop_id = id(loop)
+        if self._token_cache_lock is None or self._lock_loop_id != loop_id:
+            self._token_cache_lock = asyncio.Lock()
+            self._lock_loop_id = loop_id
+        return self._token_cache_lock
 
     def _get_headers(self) -> dict[str, str]:
         """Get authorization headers for Nango API."""
@@ -200,7 +213,7 @@ class NangoClient:
         """
         key: tuple[str, str] = _token_cache_key(integration_id, connection_id)
         now: float = time.monotonic()
-        async with self._token_cache_lock:
+        async with self._ensure_token_cache_lock():
             entry = self._token_cache.get(key)
             if entry is not None:
                 token, expires_at = entry
@@ -227,7 +240,7 @@ class NangoClient:
             print(f"[Nango] Full credentials object: {credentials}")
             raise ValueError(f"No token found for {integration_id}:{connection_id}")
 
-        async with self._token_cache_lock:
+        async with self._ensure_token_cache_lock():
             self._token_cache[key] = (token, now + _TOKEN_CACHE_TTL_SECONDS)
         return token
 
