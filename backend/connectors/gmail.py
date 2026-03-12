@@ -216,7 +216,7 @@ Send an email via the user's connected Gmail account. Emails are sent from the a
         """
         await self.ensure_sync_active("sync_activities:start")
         from connectors.resolution import build_activity_resolver
-        from sqlalchemy import select, text
+        from sqlalchemy import select
         from sqlalchemy.dialects.postgresql import insert as pg_insert
 
         # Get emails from the last 30 days
@@ -310,24 +310,13 @@ Send an email via the user's connected Gmail account. Emails are sent from the a
                 row["visibility"] = activity.visibility
             rows.append(row)
 
-        # Bulk upsert in batches (conflict on org+source_system+source_id unique constraint)
+        # Bulk insert in batches — skip duplicates (emails don't change)
         BATCH_SIZE: int = 500
-        update_cols: list[str] = [
-            "type", "subject", "description", "activity_date",
-            "contact_id", "account_id", "deal_id",
-            "custom_fields", "synced_at",
-            "integration_id", "owner_user_id", "visibility",
-        ]
         count: int = 0
         async with get_session(organization_id=self.organization_id) as session:
             for i in range(0, len(rows), BATCH_SIZE):
                 batch: list[dict[str, Any]] = rows[i : i + BATCH_SIZE]
-                stmt = pg_insert(Activity).values(batch)
-                stmt = stmt.on_conflict_do_update(
-                    index_elements=["organization_id", "source_system", "source_id"],
-                    index_where=text("source_id IS NOT NULL"),
-                    set_={col: getattr(stmt.excluded, col) for col in update_cols},
-                )
+                stmt = pg_insert(Activity).values(batch).on_conflict_do_nothing()
                 await session.execute(stmt)
                 await session.commit()
                 count = i + len(batch)
