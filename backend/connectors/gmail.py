@@ -251,8 +251,11 @@ Send an email via the user's connected Gmail account. Emails are sent from the a
             for row in result.all():
                 existing_map[row[0]] = row[1]
 
-        # Build row dicts for bulk upsert
+        # Build row dicts for bulk upsert (deduplicate by source_id to avoid
+        # undefined ON CONFLICT behavior when the same message appears twice
+        # in a single INSERT batch due to Gmail pagination overlap)
         rows: list[dict[str, Any]] = []
+        seen_source_ids: set[str] = set()
         for message in messages:
             activity: Optional[Activity] = self._normalize_message(message)
             if not activity:
@@ -262,6 +265,9 @@ Send an email via the user's connected Gmail account. Emails are sent from the a
             # is not violated when multiple users in same org connect Gmail
             raw_msg_id: str = activity.source_id or ""
             source_id: str = f"{scope_prefix}{raw_msg_id}"
+            if source_id in seen_source_ids:
+                continue
+            seen_source_ids.add(source_id)
             activity.source_id = source_id
 
             # Reuse existing ID if this message was previously synced
