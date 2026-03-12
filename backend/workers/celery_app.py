@@ -170,8 +170,8 @@ def setup_backend_path(**kwargs) -> None:
         pass
 
     try:
-        from workers.tasks import sync as sync_module
-        sync_module._worker_loop = None
+        from workers.run_async import reset_worker_loop
+        reset_worker_loop()
     except Exception:
         pass
 

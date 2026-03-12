@@ -179,7 +179,7 @@ async def _heartbeat_age_seconds() -> int | None:
 @celery_app.task(bind=True, name="workers.tasks.monitoring.monitor_dependencies")
 def monitor_dependencies(self: Any) -> dict[str, Any]:
     """Periodic task: monitor key dependencies and open PagerDuty incidents if down."""
-    import asyncio
+    from workers.run_async import run_async
 
     logger.info("Task %s: Starting dependency monitoring run", self.request.id)
 
@@ -245,13 +245,13 @@ def monitor_dependencies(self: Any) -> dict[str, Any]:
             "down_services": [result.name for result in down],
         }
 
-    return asyncio.run(_run())
+    return run_async(_run())
 
 
 @celery_app.task(bind=True, name="workers.tasks.monitoring.monitoring_heartbeat_watchdog")
 def monitoring_heartbeat_watchdog(self: Any) -> dict[str, Any]:
     """Ensure dependency checks are executing regularly and incident on stale runs."""
-    import asyncio
+    from workers.run_async import run_async
 
     logger.info("Task %s: Starting dependency monitor heartbeat watchdog", self.request.id)
 
@@ -303,4 +303,4 @@ def monitoring_heartbeat_watchdog(self: Any) -> dict[str, Any]:
         )
         return {"status": "ok", "age_seconds": age_seconds}
 
-    return asyncio.run(_run())
+    return run_async(_run())

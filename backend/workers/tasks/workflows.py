@@ -17,7 +17,7 @@ _backend_dir = Path(__file__).resolve().parent.parent.parent
 if str(_backend_dir) not in sys.path:
     sys.path.insert(0, str(_backend_dir))
 
-import asyncio
+
 import json
 import logging
 from datetime import UTC, datetime
@@ -481,27 +481,7 @@ def format_workflow_runtime_context_for_prompt(
     )
 
 
-_worker_loop: asyncio.AbstractEventLoop | None = None
-
-
-def run_async(coro: Any) -> Any:
-    """Run an async function in a sync context (for Celery tasks).
-
-    Reuses a single event loop per worker process so that asyncpg connections
-    (which are bound to a specific loop) remain valid across task invocations.
-    This avoids the costly dispose-and-reconnect cycle that was causing
-    TimeoutError on every check_scheduled_workflows call.
-    """
-    global _worker_loop
-
-    if _worker_loop is None or _worker_loop.is_closed():
-        from models.database import dispose_engine
-        # Only dispose when we truly need a new loop (first call or after a crash)
-        dispose_engine()
-        _worker_loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(_worker_loop)
-
-    return _worker_loop.run_until_complete(coro)
+from workers.run_async import run_async
 
 
 async def _check_scheduled_workflows() -> dict[str, Any]:
