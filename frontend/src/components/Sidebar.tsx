@@ -509,6 +509,39 @@ export function Sidebar({
   const activeTasksByConversation = useActiveTasksByConversation();
   const storedWidth = useAppStore((state) => state.sidebarWidth);
   const widthPx = collapsed ? 64 : storedWidth;
+
+  // Draggable divider between nav and chat history
+  const [navHeight, setNavHeight] = useState<number | null>(null);
+  const isDraggingDividerRef = useRef(false);
+  const startYRef = useRef(0);
+  const startNavHeightRef = useRef(0);
+  const navRef = useRef<HTMLDivElement>(null);
+
+  const handleNavDividerMouseDown = useCallback((e: React.MouseEvent): void => {
+    e.preventDefault();
+    isDraggingDividerRef.current = true;
+    startYRef.current = e.clientY;
+    startNavHeightRef.current = navRef.current?.getBoundingClientRect().height ?? 200;
+    document.body.style.cursor = 'row-resize';
+    document.body.style.userSelect = 'none';
+
+    const onMouseMove = (ev: MouseEvent): void => {
+      if (!isDraggingDividerRef.current) return;
+      const delta = ev.clientY - startYRef.current;
+      const newHeight = Math.min(500, Math.max(80, startNavHeightRef.current + delta));
+      setNavHeight(newHeight);
+    };
+    const onMouseUp = (): void => {
+      isDraggingDividerRef.current = false;
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+    };
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mouseup', onMouseUp);
+  }, []);
+
   const orderedChats = useMemo(() => {
     if (pinnedChatIds.length === 0) {
       return recentChats;
@@ -560,61 +593,72 @@ export function Sidebar({
         </button>
       </div>
 
-      {/* Navigation Tabs */}
-      <nav className="px-2 space-y-1">
-        <NavItem view="home" label="Home" collapsed={collapsed} currentView={currentView} onViewChange={onViewChange} icon={
-          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" />
-          </svg>
-        } />
-        <NavItem view="data-sources" label="Connectors" badge={connectedSourcesCount} collapsed={collapsed} currentView={currentView} onViewChange={onViewChange} icon={
-          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4" />
-          </svg>
-        } />
-        <NavItem view="data" label="Search Data" collapsed={collapsed} currentView={currentView} onViewChange={onViewChange} icon={
-          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h18M3 14h18m-9-4v8m-7 0h14a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
-          </svg>
-        } />
-        <NavItem view="workflows" label="Workflows" badge={workflowCount} collapsed={collapsed} currentView={currentView} onViewChange={onViewChange} icon={
-          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-          </svg>
-        } />
-        <NavItem view="apps" label="Apps" activeViews={['apps', 'app-view']} collapsed={collapsed} currentView={currentView} onViewChange={onViewChange} icon={
-          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
-          </svg>
-        } />
-        {pendingChangesCount > 0 && (
-          <NavItem view="pending-changes" label="Changes" badge={pendingChangesCount} badgeColor="amber" colorTheme="amber" fontWeight="medium" collapsed={collapsed} currentView={currentView} onViewChange={onViewChange} icon={
+      {/* Navigation Tabs — scrollable pane */}
+      <div
+        ref={navRef}
+        className="overflow-y-auto scrollbar-thin flex-shrink-0"
+        style={navHeight != null ? { height: navHeight } : undefined}
+      >
+        <nav className="px-2 space-y-1">
+          <NavItem view="home" label="Home" collapsed={collapsed} currentView={currentView} onViewChange={onViewChange} icon={
             <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" />
             </svg>
           } />
-        )}
-        {isGlobalAdmin && (
-          <button
-            onClick={() => onViewChange('admin')}
-            title={collapsed ? 'Global Admin' : undefined}
-            className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${
-              currentView === 'admin'
-                ? 'bg-surface-800 text-surface-100'
-                : 'text-surface-400 hover:text-surface-200 hover:bg-surface-800/50'
-            } ${collapsed ? 'justify-center' : ''}`}
-          >
+          <NavItem view="data-sources" label="Connectors" badge={connectedSourcesCount} collapsed={collapsed} currentView={currentView} onViewChange={onViewChange} icon={
             <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4" />
             </svg>
-            {!collapsed && <span>Global Admin</span>}
-          </button>
-        )}
-      </nav>
+          } />
+          <NavItem view="data" label="Search Data" collapsed={collapsed} currentView={currentView} onViewChange={onViewChange} icon={
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h18M3 14h18m-9-4v8m-7 0h14a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+            </svg>
+          } />
+          <NavItem view="workflows" label="Workflows" badge={workflowCount} collapsed={collapsed} currentView={currentView} onViewChange={onViewChange} icon={
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+            </svg>
+          } />
+          <NavItem view="apps" label="Apps" activeViews={['apps', 'app-view']} collapsed={collapsed} currentView={currentView} onViewChange={onViewChange} icon={
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+            </svg>
+          } />
+          {pendingChangesCount > 0 && (
+            <NavItem view="pending-changes" label="Changes" badge={pendingChangesCount} badgeColor="amber" colorTheme="amber" fontWeight="medium" collapsed={collapsed} currentView={currentView} onViewChange={onViewChange} icon={
+              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+              </svg>
+            } />
+          )}
+          {isGlobalAdmin && (
+            <button
+              onClick={() => onViewChange('admin')}
+              title={collapsed ? 'Global Admin' : undefined}
+              className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${
+                currentView === 'admin'
+                  ? 'bg-surface-800 text-surface-100'
+                  : 'text-surface-400 hover:text-surface-200 hover:bg-surface-800/50'
+              } ${collapsed ? 'justify-center' : ''}`}
+            >
+              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+              </svg>
+              {!collapsed && <span>Global Admin</span>}
+            </button>
+          )}
+        </nav>
+      </div>
 
-      {/* Divider */}
-      <div className="mx-3 my-3 border-t border-surface-800" />
+      {/* Draggable divider between nav and chat history */}
+      <div
+        onMouseDown={handleNavDividerMouseDown}
+        className="mx-3 my-0 h-1 cursor-row-resize flex-shrink-0 group flex items-center justify-center"
+      >
+        <div className="w-full border-t border-surface-800 group-hover:border-surface-600 group-active:border-primary-500 transition-colors" />
+      </div>
 
       {/* Recent Chats - Accordion with Shared and Private sections */}
       <ChatAccordion
@@ -916,7 +960,7 @@ function ChatAccordion({
       
       {/* Shared Section Content - scrollable */}
       {expandedSection === 'shared' && (
-        <div className="flex-1 overflow-y-auto space-y-0.5 min-h-0">
+        <div className="flex-1 overflow-y-auto scrollbar-thin space-y-0.5 min-h-0">
           {sharedChats.length > 0 ? (
             sharedChats.map((chat) => renderChatItem(chat, false))
           ) : (
@@ -926,7 +970,7 @@ function ChatAccordion({
           )}
         </div>
       )}
-      
+
       {/* Private Section Header */}
       <button
         onClick={() => setExpandedSection(expandedSection === 'private' ? 'shared' : 'private')}
@@ -942,10 +986,10 @@ function ChatAccordion({
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
         </svg>
       </button>
-      
+
       {/* Private Section Content - scrollable */}
       {expandedSection === 'private' && (
-        <div className="flex-1 overflow-y-auto space-y-0.5 min-h-0">
+        <div className="flex-1 overflow-y-auto scrollbar-thin space-y-0.5 min-h-0">
           {privateChats.length > 0 ? (
             privateChats.map((chat) => renderChatItem(chat, true))
           ) : (
