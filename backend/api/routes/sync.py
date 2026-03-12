@@ -925,7 +925,7 @@ async def sync_integration_data(
 
         # Record error in database
         try:
-            connector = connector_class(organization_id)
+            connector = connector_class(organization_id, user_id=user_id)
             await connector.record_error(error_msg)
         except Exception as record_err:
             print(f"[Sync] Failed to record error to DB: {record_err}")

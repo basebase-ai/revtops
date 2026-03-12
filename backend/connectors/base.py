@@ -496,6 +496,14 @@ class BaseConnector(ABC):
     async def record_error(self, error: str) -> None:
         """Record an error for this integration."""
         if not self._integration:
+            await self._load_integration()
+        if not self._integration:
+            logger.warning(
+                "record_error: no integration found for %s org=%s user=%s; error not persisted",
+                self.source_system,
+                self.organization_id,
+                self.user_id,
+            )
             return
 
         async with get_session(organization_id=self.organization_id) as session:
