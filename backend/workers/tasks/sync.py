@@ -320,6 +320,190 @@ def sync_organization(self: Any, organization_id: str) -> dict[str, Any]:
     return run_async(_sync_all_for_org())
 
 
+@celery_app.task(
+    bind=True,
+    name="workers.tasks.sync.check_huddle_recording",
+    max_retries=3,
+    default_retry_delay=600,
+)
+def check_huddle_recording(
+    self: Any,
+    meeting_id: str,
+    organization_id: str,
+) -> dict[str, Any]:
+    """
+    Check Google Drive for a recording after a huddle ends.
+
+    Retries up to 3 times with 10-minute delay to allow time for
+    Google to process and upload the recording to Drive.
+    """
+    logger.info(f"Task {self.request.id}: Checking recording for meeting {meeting_id}")
+    return run_async(_check_huddle_recording(self, meeting_id, organization_id))
+
+
+async def _check_huddle_recording(
+    task: Any,
+    meeting_id: str,
+    organization_id: str,
+) -> dict[str, Any]:
+    """Async implementation of huddle recording check."""
+    from models.database import get_session
+    from models.meeting import Meeting
+    from workers.events import emit_event
+
+    async with get_session(organization_id=organization_id) as session:
+        meeting = await session.get(Meeting, UUID(meeting_id))
+        if not meeting:
+            return {"status": "skipped", "reason": "meeting_not_found"}
+
+        if meeting.recording_drive_id:
+            return {"status": "skipped", "reason": "recording_already_linked"}
+
+        title = meeting.title or "Huddle"
+        start_time = meeting.scheduled_start
+        organizer_email = meeting.organizer_email
+
+    # Get Drive OAuth token — prefer the huddle organizer's integration
+    try:
+        from connectors.registry import discover_connectors
+
+        connectors = discover_connectors()
+        drive_cls = connectors.get("google_drive")
+        if not drive_cls:
+            return {"status": "skipped", "reason": "google_drive_connector_not_available"}
+
+        from models.database import get_admin_session
+        from models.integration import Integration
+        from models.user import User
+        from sqlalchemy import select
+
+        drive_integration = None
+
+        # Try organizer's Drive integration first (recordings land in their Drive)
+        if organizer_email:
+            async with get_admin_session() as admin_session:
+                organizer_result = await admin_session.execute(
+                    select(Integration)
+                    .join(User, Integration.user_id == User.id)
+                    .where(
+                        Integration.organization_id == UUID(organization_id),
+                        Integration.connector == "google_drive",
+                        Integration.is_active == True,  # noqa: E712
+                        User.email == organizer_email,
+                    )
+                )
+                drive_integration = organizer_result.scalars().first()
+
+        # Fall back to any active Drive integration in the org
+        if not drive_integration:
+            async with get_admin_session() as admin_session:
+                result = await admin_session.execute(
+                    select(Integration).where(
+                        Integration.organization_id == UUID(organization_id),
+                        Integration.connector == "google_drive",
+                        Integration.is_active == True,  # noqa: E712
+                    )
+                )
+                drive_integration = result.scalars().first()
+
+        if not drive_integration:
+            return {"status": "skipped", "reason": "no_drive_integration"}
+
+        drive_connector = drive_cls(
+            organization_id, user_id=str(drive_integration.user_id)
+        )
+        token, _ = await drive_connector.get_oauth_token()
+    except Exception as e:
+        logger.warning("Failed to get Drive token for recording check: %s", e)
+        raise task.retry(exc=e)
+
+    # Search Drive for recording files (mp4 or webm)
+    import httpx
+
+    search_after = start_time.strftime("%Y-%m-%dT%H:%M:%S")
+    # Cap search window to ~60 min after meeting start to reduce false positives
+    search_before = (start_time + timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%S")
+    query = (
+        f"(mimeType='video/mp4' or mimeType='video/webm') "
+        f"and modifiedTime > '{search_after}' "
+        f"and modifiedTime < '{search_before}' "
+        f"and trashed=false"
+    )
+
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                "https://www.googleapis.com/drive/v3/files",
+                headers={"Authorization": f"Bearer {token}"},
+                params={
+                    "q": query,
+                    "fields": "files(id,name,webViewLink,modifiedTime)",
+                    "orderBy": "modifiedTime desc",
+                    "pageSize": 20,
+                },
+                timeout=30.0,
+            )
+            resp.raise_for_status()
+            files = resp.json().get("files", [])
+    except Exception as e:
+        logger.warning("Drive search failed for recording: %s", e)
+        raise task.retry(exc=e)
+
+    # Match recordings — prioritize title match, fall back to "meet" keyword
+    title_lower = title.lower()
+    matched = None
+    fallback = None
+    for f in files:
+        name_lower = f.get("name", "").lower()
+        if title_lower != "huddle" and title_lower in name_lower:
+            matched = f
+            break
+        if fallback is None and "meet" in name_lower:
+            fallback = f
+    if not matched:
+        matched = fallback
+
+    if not matched:
+        # No match yet — retry if we have retries left
+        remaining = task.max_retries - task.request.retries
+        if remaining > 0:
+            logger.info(
+                "No recording found for meeting %s, %d retries remaining",
+                meeting_id,
+                remaining,
+            )
+            raise task.retry()
+        return {"status": "not_found", "meeting_id": meeting_id}
+
+    # Link recording to the Meeting
+    async with get_session(organization_id=organization_id) as session:
+        meeting = await session.get(Meeting, UUID(meeting_id))
+        if meeting:
+            meeting.recording_url = matched.get("webViewLink", "")
+            meeting.recording_drive_id = matched.get("id", "")
+            await session.commit()
+
+    # Emit event for downstream consumers
+    await emit_event(
+        event_type="huddle.recording_ready",
+        organization_id=organization_id,
+        data={
+            "meeting_id": meeting_id,
+            "recording_url": matched.get("webViewLink", ""),
+            "drive_file_id": matched.get("id", ""),
+            "file_name": matched.get("name", ""),
+        },
+    )
+
+    logger.info("Linked recording %s to meeting %s", matched.get("id"), meeting_id)
+    return {
+        "status": "found",
+        "meeting_id": meeting_id,
+        "drive_file_id": matched.get("id", ""),
+        "recording_url": matched.get("webViewLink", ""),
+    }
+
+
 @celery_app.task(bind=True, name="workers.tasks.sync.sync_all_organizations")
 def sync_all_organizations(self: Any) -> dict[str, Any]:
     """

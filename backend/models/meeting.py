@@ -67,6 +67,13 @@ class Meeting(Base):
     # Full transcript (optional, can be large)
     transcript: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
+    # Huddle / Google Meet fields
+    conference_link: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    google_event_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, index=True)
+    huddle_status: Mapped[Optional[str]] = mapped_column(String(50), nullable=True, index=True)
+    recording_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    recording_drive_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+
     # Links to related entities
     account_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True), ForeignKey("accounts.id"), nullable=True
@@ -105,6 +112,9 @@ class Meeting(Base):
             "summary": self.summary,
             "action_items": self.action_items,
             "key_topics": self.key_topics,
+            "conference_link": self.conference_link,
+            "huddle_status": self.huddle_status,
+            "recording_url": self.recording_url,
             "account_id": str(self.account_id) if self.account_id else None,
             "deal_id": str(self.deal_id) if self.deal_id else None,
         }
@@ -120,4 +130,7 @@ class Meeting(Base):
             "status": self.status,
             "has_summary": bool(self.summary),
             "has_action_items": bool(self.action_items),
+            "conference_link": self.conference_link,
+            "huddle_status": self.huddle_status,
+            "recording_url": self.recording_url,
         }
