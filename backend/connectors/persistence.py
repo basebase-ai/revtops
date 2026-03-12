@@ -17,7 +17,7 @@ from typing import Any, Sequence
 from uuid import UUID
 
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from models.database import get_session
@@ -191,13 +191,19 @@ async def persist_records(
                 if col in rows[0]:
                     update_cols[col] = getattr(pg_insert(table).excluded, col)
 
+        on_conflict_kwargs: dict[str, Any] = {
+            "index_elements": conflict_keys,
+            "set_": update_cols,
+        }
+        # The activities table has a partial unique index (source_id IS NOT NULL)
+        # so ON CONFLICT must include the WHERE predicate to match it.
+        if entity == "activities":
+            on_conflict_kwargs["index_where"] = text("source_id IS NOT NULL")
+
         stmt = (
             pg_insert(table)
             .values(rows)
-            .on_conflict_do_update(
-                index_elements=conflict_keys,
-                set_=update_cols,
-            )
+            .on_conflict_do_update(**on_conflict_kwargs)
         )
         await session.execute(stmt)
         await session.commit()
