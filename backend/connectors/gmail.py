@@ -216,7 +216,7 @@ Send an email via the user's connected Gmail account. Emails are sent from the a
         """
         await self.ensure_sync_active("sync_activities:start")
         from connectors.resolution import build_activity_resolver
-        from sqlalchemy import select
+        from sqlalchemy import select, text
         from sqlalchemy.dialects.postgresql import insert as pg_insert
 
         # Get emails from the last 30 days
@@ -319,6 +319,7 @@ Send an email via the user's connected Gmail account. Emails are sent from the a
                 stmt = pg_insert(Activity).values(batch)
                 stmt = stmt.on_conflict_do_update(
                     index_elements=["organization_id", "source_system", "source_id"],
+                    index_where=text("source_id IS NOT NULL"),
                     set_={col: getattr(stmt.excluded, col) for col in update_cols},
                 )
                 await session.execute(stmt)
