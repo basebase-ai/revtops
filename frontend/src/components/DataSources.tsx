@@ -88,6 +88,7 @@ const PROVIDER_SHARING_DEFAULTS: Record<string, { shareSyncedData: boolean; shar
   microsoft_calendar: { shareSyncedData: false, shareQueryAccess: false, shareWriteAccess: false },
   microsoft_mail: { shareSyncedData: false, shareQueryAccess: false, shareWriteAccess: false },
   fireflies: { shareSyncedData: false, shareQueryAccess: false, shareWriteAccess: false },
+  granola: { shareSyncedData: false, shareQueryAccess: false, shareWriteAccess: false },
   zoom: { shareSyncedData: false, shareQueryAccess: false, shareWriteAccess: false },
   google_drive: { shareSyncedData: false, shareQueryAccess: false, shareWriteAccess: false },
 };
@@ -111,6 +112,7 @@ const INTEGRATION_CONFIG: Record<string, IntegrationConfigEntry> = {
   microsoft_calendar: { name: 'Microsoft Calendar', description: 'Outlook calendar events and meetings', icon: 'microsoft_calendar', color: 'from-sky-500 to-sky-600', scope: 'user' },
   microsoft_mail: { name: 'Microsoft Mail', description: 'Outlook emails and communications', icon: 'microsoft_mail', color: 'from-sky-500 to-sky-600', scope: 'user' },
   fireflies: { name: 'Fireflies', description: 'Meeting transcriptions and notes', icon: 'fireflies', color: 'from-violet-500 to-violet-600', scope: 'user' },
+  granola: { name: 'Granola', description: 'AI meeting notes, transcripts, and action items', icon: '/connector-icons/granola.png', color: 'from-lime-500 to-green-600', scope: 'user' },
   google_drive: { name: 'Google Drive', description: 'Sync files — search and read Docs, Sheets, Slides from Drive', icon: 'google_drive', color: 'from-yellow-500 to-amber-500', scope: 'user' },
   apollo: { name: 'Apollo.io', description: 'Data enrichment - Contact titles, companies, emails', icon: 'apollo', color: 'from-yellow-400 to-yellow-500', scope: 'user' },
   github: { name: 'GitHub', description: 'Track repos, commits, and pull requests by team', icon: 'github', color: 'from-gray-600 to-gray-700', scope: 'user' },
@@ -1045,8 +1047,14 @@ export function DataSources(): JSX.Element {
   );
   const availableIntegrations = allIntegrations.filter((i) => !i.connected);
 
-  // Icon renderer based on icon identifier
+  const isImageIcon = (iconId: string): boolean =>
+    iconId.startsWith('/') || iconId.startsWith('http');
+
+  // Icon renderer — supports both react-icon keys and image paths
   const renderIcon = (iconId: string): JSX.Element => {
+    if (isImageIcon(iconId)) {
+      return <img src={iconId} alt="" className="w-full h-full rounded-xl object-cover" />;
+    }
     const IconComponent = ICON_MAP[iconId] ?? HiGlobeAlt;
     return <IconComponent className="w-8 h-8" />;
   };
@@ -1344,7 +1352,7 @@ export function DataSources(): JSX.Element {
         <div className="flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-4">
           {/* Icon and name row on mobile */}
           <div className="flex items-center gap-3 sm:gap-4">
-            <div className={`${getColorClass(integration.color)} p-2.5 sm:p-3 rounded-xl text-white ${iconOpacity} flex-shrink-0`}>
+            <div className={`${isImageIcon(integration.icon) ? '' : getColorClass(integration.color) + ' p-2.5 sm:p-3 text-white'} rounded-xl ${iconOpacity} flex-shrink-0 w-[52px] h-[52px] sm:w-14 sm:h-14 flex items-center justify-center overflow-hidden`}>
               {renderIcon(integration.icon)}
             </div>
 
@@ -1561,7 +1569,7 @@ export function DataSources(): JSX.Element {
                         disabled={isConnecting}
                         className="w-full flex items-center gap-4 px-4 py-3 rounded-xl hover:bg-surface-800 transition-colors text-left group disabled:opacity-50"
                       >
-                        <div className={`${getColorClass(integration.color)} p-2 rounded-lg text-white flex-shrink-0`}>
+                        <div className={`${isImageIcon(integration.icon) ? '' : getColorClass(integration.color) + ' p-2 text-white'} rounded-lg flex-shrink-0 w-10 h-10 flex items-center justify-center overflow-hidden`}>
                           {renderIcon(integration.icon)}
                         </div>
                         <div className="flex-1 min-w-0">
@@ -1663,7 +1671,7 @@ export function DataSources(): JSX.Element {
                       disabled={isConnecting}
                       className="card p-4 text-left hover:border-surface-600 hover:bg-surface-800/50 transition-colors disabled:opacity-50 flex items-start gap-3 group"
                     >
-                      <div className={`${getColorClass(config.color)} p-2 rounded-lg text-white flex-shrink-0 opacity-90 group-hover:opacity-100 transition-opacity`}>
+                      <div className={`${isImageIcon(config.icon) ? '' : getColorClass(config.color) + ' p-2 text-white'} rounded-lg flex-shrink-0 w-10 h-10 flex items-center justify-center overflow-hidden opacity-90 group-hover:opacity-100 transition-opacity`}>
                         {renderIcon(config.icon)}
                       </div>
                       <div className="flex-1 min-w-0">

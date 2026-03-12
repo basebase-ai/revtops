@@ -4016,6 +4016,7 @@ async def run_initial_sync(
     from connectors.github import GitHubConnector
     from connectors.linear import LinearConnector
     from connectors.asana import AsanaConnector
+    from connectors.granola import GranolaConnector
 
     # Google Drive uses a different sync pattern (not BaseConnector)
     if provider == "google_drive":
@@ -4035,6 +4036,7 @@ async def run_initial_sync(
         "github": GitHubConnector,
         "linear": LinearConnector,
         "asana": AsanaConnector,
+        "granola": GranolaConnector,
     }
 
     connector_class = connectors.get(provider)
