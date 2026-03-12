@@ -522,7 +522,7 @@ export function Sidebar({
     isDraggingDividerRef.current = true;
     startYRef.current = e.clientY;
     startNavHeightRef.current = navRef.current?.getBoundingClientRect().height ?? 200;
-    document.body.style.cursor = 'row-resize';
+    document.body.style.cursor = 'ns-resize';
     document.body.style.userSelect = 'none';
 
     const onMouseMove = (ev: MouseEvent): void => {
@@ -655,7 +655,7 @@ export function Sidebar({
       {/* Draggable divider between nav and chat history */}
       <div
         onMouseDown={handleNavDividerMouseDown}
-        className="mx-3 my-0 h-1 cursor-row-resize flex-shrink-0 group flex items-center justify-center"
+        className="mx-3 h-2 cursor-ns-resize flex-shrink-0 group flex items-center justify-center"
       >
         <div className="w-full border-t border-surface-800 group-hover:border-surface-600 group-active:border-primary-500 transition-colors" />
       </div>
