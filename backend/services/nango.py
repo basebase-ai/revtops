@@ -447,6 +447,7 @@ class NangoClient:
         connection_id: str,
         organization_id: Optional[str] = None,
         user_id: Optional[str] = None,
+        organization_name: Optional[str] = None,
     ) -> dict[str, Any]:
         """
         Create a Nango Connect session for OAuth.
@@ -476,7 +477,10 @@ class NangoClient:
             elif not org_id:
                 org_id = connection_id
             
-            payload["organization"] = {"id": org_id}
+            org_payload: dict[str, str] = {"id": org_id}
+            if organization_name:
+                org_payload["display_name"] = organization_name
+            payload["organization"] = org_payload
             
             # Set end_user for user-scoped connections
             end_user_id = user_id

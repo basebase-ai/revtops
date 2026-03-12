@@ -189,7 +189,7 @@ register_tool(
     description="""Query a connected connector for on-demand data retrieval.
 
 Use this for any QUERY-capable connector: web search (web_search), Apollo enrichment,
-Google Drive file search/read, or any future connector with query capability.
+Google Drive file search/read, Granola meeting search (granola), or any other connector with query capability.
 
 The query string format depends on the connector. Call `get_connector_docs(connector)` for
 detailed query formats, parameters, and examples before using a connector.""",

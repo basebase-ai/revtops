@@ -190,6 +190,14 @@ class GranolaMcpClient:
                 return None
             raise
 
+    async def query_meetings(self, query: str) -> str:
+        """Call query_granola_meetings — semantic search across meetings."""
+        result: Any = await self.call_tool(
+            "query_granola_meetings",
+            {"query": query},
+        )
+        return _extract_text(result) or ""
+
 
 def _extract_content_list(result: Any) -> list[dict[str, Any]]:
     """Parse MCP tool result into a list of content dicts.
@@ -313,8 +321,15 @@ class GranolaConnector(BaseConnector):
         auth_type=AuthType.OAUTH2,
         scope=ConnectorScope.USER,
         entity_types=["activities"],
-        capabilities=[Capability.SYNC],
+        capabilities=[Capability.SYNC, Capability.QUERY],
         nango_integration_id="granola-mcp",
+        query_description=(
+            "Query Granola meetings on demand. Supported formats:\n"
+            "- Natural language search: 'What did we discuss about pricing?'\n"
+            "- Get notes for a specific meeting: 'meeting:<granola_meeting_id>'\n"
+            "- Get transcript for a specific meeting: 'transcript:<granola_meeting_id>'\n"
+            "Natural language queries use Granola's semantic search across all meetings."
+        ),
         description="Granola – meeting notes and transcript sync via MCP",
     )
 
@@ -339,6 +354,45 @@ class GranolaConnector(BaseConnector):
 
     async def fetch_deal(self, deal_id: str) -> dict[str, Any]:
         return {"error": "Granola does not support deals"}
+
+    # -- QUERY capability --------------------------------------------------------
+
+    async def query(self, request: str) -> dict[str, Any]:
+        """Execute an on-demand query against Granola meetings.
+
+        Supports:
+          - ``meeting:<id>``  — fetch notes for a specific meeting
+          - ``transcript:<id>`` — fetch transcript for a specific meeting
+          - bare text — semantic search via query_granola_meetings
+        """
+        stripped: str = request.strip()
+        if not stripped:
+            return {"error": "Empty query"}
+
+        mcp: GranolaMcpClient = await self._get_mcp_client()
+        lower: str = stripped.lower()
+
+        if lower.startswith("meeting:"):
+            meeting_id: str = stripped[len("meeting:"):].strip()
+            if not meeting_id:
+                return {"error": "meeting_id is required after 'meeting:'"}
+            notes: str = await mcp.get_meetings(meeting_ids=[meeting_id])
+            return {"meeting_id": meeting_id, "notes": notes}
+
+        if lower.startswith("transcript:"):
+            meeting_id = stripped[len("transcript:"):].strip()
+            if not meeting_id:
+                return {"error": "meeting_id is required after 'transcript:'"}
+            transcript: str | None = await mcp.get_meeting_transcript(meeting_id)
+            if transcript is None:
+                return {
+                    "meeting_id": meeting_id,
+                    "error": "Transcript not available (may require a paid Granola tier)",
+                }
+            return {"meeting_id": meeting_id, "transcript": transcript}
+
+        result_text: str = await mcp.query_meetings(stripped)
+        return {"query": stripped, "results": result_text}
 
     # -- Main sync ---------------------------------------------------------------
 

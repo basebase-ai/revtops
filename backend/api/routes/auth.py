@@ -2707,11 +2707,19 @@ async def get_connect_session(
     # All connections are user-scoped
     connection_id = f"{org_id_str}:user:{user_id_str}"
 
+    org_name: str | None = None
+    async with get_session() as db_session:
+        from models.organization import Organization
+        org_row = await db_session.get(Organization, UUID(org_id_str))
+        if org_row:
+            org_name = org_row.name
+
     nango = get_nango_client()
     try:
         session_data = await nango.create_connect_session(
             integration_id=nango_integration_id,
             connection_id=connection_id,
+            organization_name=org_name or "Basebase",
         )
     except ValueError as e:
         raise HTTPException(status_code=500, detail=str(e))
