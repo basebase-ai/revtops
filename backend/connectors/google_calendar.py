@@ -9,6 +9,7 @@ Responsibilities:
 - Handle pagination
 """
 
+import asyncio
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -603,12 +604,12 @@ class GoogleCalendarConnector(BaseConnector):
 
         google_event_id = data.get("id", "")
         meet_link = data.get("hangoutLink", "")
+        organizer_email = data.get("organizer", {}).get("email", "")
 
         # If conference creation is still pending, poll once
         conf_data = data.get("conferenceData", {})
         create_status = conf_data.get("createRequest", {}).get("status", {})
         if isinstance(create_status, dict) and create_status.get("statusCode") == "pending":
-            import asyncio
             await asyncio.sleep(2)
             data = await self._make_request("GET", f"/calendars/primary/events/{google_event_id}")
             meet_link = data.get("hangoutLink", meet_link)
@@ -628,7 +629,7 @@ class GoogleCalendarConnector(BaseConnector):
                 participants=participants_normalized,
                 title=title,
                 duration_minutes=duration_minutes,
-                organizer_email=None,
+                organizer_email=organizer_email or None,
                 status="scheduled",
             )
             meeting.conference_link = meet_link

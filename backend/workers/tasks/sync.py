@@ -361,8 +361,9 @@ async def _check_huddle_recording(
 
         title = meeting.title or "Huddle"
         start_time = meeting.scheduled_start
+        organizer_email = meeting.organizer_email
 
-    # Get Drive OAuth token for the organizer via the google_drive connector
+    # Get Drive OAuth token — prefer the huddle organizer's integration
     try:
         from connectors.registry import discover_connectors
 
@@ -371,20 +372,39 @@ async def _check_huddle_recording(
         if not drive_cls:
             return {"status": "skipped", "reason": "google_drive_connector_not_available"}
 
-        # Find a user in this org who has an active google_drive integration
         from models.database import get_admin_session
         from models.integration import Integration
+        from models.user import User
         from sqlalchemy import select
 
-        async with get_admin_session() as admin_session:
-            result = await admin_session.execute(
-                select(Integration).where(
-                    Integration.organization_id == UUID(organization_id),
-                    Integration.connector == "google_drive",
-                    Integration.is_active == True,  # noqa: E712
+        drive_integration = None
+
+        # Try organizer's Drive integration first (recordings land in their Drive)
+        if organizer_email:
+            async with get_admin_session() as admin_session:
+                organizer_result = await admin_session.execute(
+                    select(Integration)
+                    .join(User, Integration.user_id == User.id)
+                    .where(
+                        Integration.organization_id == UUID(organization_id),
+                        Integration.connector == "google_drive",
+                        Integration.is_active == True,  # noqa: E712
+                        User.email == organizer_email,
+                    )
                 )
-            )
-            drive_integration = result.scalar_one_or_none()
+                drive_integration = organizer_result.scalar_one_or_none()
+
+        # Fall back to any active Drive integration in the org
+        if not drive_integration:
+            async with get_admin_session() as admin_session:
+                result = await admin_session.execute(
+                    select(Integration).where(
+                        Integration.organization_id == UUID(organization_id),
+                        Integration.connector == "google_drive",
+                        Integration.is_active == True,  # noqa: E712
+                    )
+                )
+                drive_integration = result.scalar_one_or_none()
 
         if not drive_integration:
             return {"status": "skipped", "reason": "no_drive_integration"}
@@ -397,13 +417,16 @@ async def _check_huddle_recording(
         logger.warning("Failed to get Drive token for recording check: %s", e)
         raise task.retry(exc=e)
 
-    # Search Drive for recording files
+    # Search Drive for recording files (mp4 or webm)
     import httpx
 
     search_after = start_time.strftime("%Y-%m-%dT%H:%M:%S")
+    # Cap search window to ~60 min after meeting start to reduce false positives
+    search_before = (start_time + timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%S")
     query = (
-        f"mimeType='video/mp4' "
+        f"(mimeType='video/mp4' or mimeType='video/webm') "
         f"and modifiedTime > '{search_after}' "
+        f"and modifiedTime < '{search_before}' "
         f"and trashed=false"
     )
 
@@ -426,14 +449,19 @@ async def _check_huddle_recording(
         logger.warning("Drive search failed for recording: %s", e)
         raise task.retry(exc=e)
 
-    # Match by meeting title or "meet" in filename
+    # Match recordings — prioritize title match, fall back to "meet" keyword
     title_lower = title.lower()
     matched = None
+    fallback = None
     for f in files:
         name_lower = f.get("name", "").lower()
-        if title_lower in name_lower or "meet" in name_lower:
+        if title_lower != "huddle" and title_lower in name_lower:
             matched = f
             break
+        if fallback is None and "meet" in name_lower:
+            fallback = f
+    if not matched:
+        matched = fallback
 
     if not matched:
         # No match yet — retry if we have retries left
