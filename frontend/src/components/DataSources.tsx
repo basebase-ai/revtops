@@ -36,7 +36,7 @@ const ApolloIcon: IconType = ({ className, ...props }) => (
     <line x1="19.07" y1="4.93" x2="4.93" y2="19.07" />
   </svg>
 );
-import { API_BASE } from '../lib/api';
+import { API_BASE, apiRequest } from '../lib/api';
 import { useAppStore, useIntegrations, useIntegrationsLoading, type Integration, type SyncStats } from '../store';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { useIsMobile } from '../hooks';
@@ -872,8 +872,8 @@ export function DataSources(): JSX.Element {
       // Google Drive uses its own sync endpoint (user-scoped)
       if (provider === 'google_drive') {
         const params = new URLSearchParams({ organization_id: organizationId, user_id: userId });
-        const response = await fetch(`${API_BASE}/drive/sync?${params.toString()}`, { method: 'POST' });
-        if (!response.ok) throw new Error('Drive sync failed');
+        const { error } = await apiRequest<{ status: string; message: string }>(`/drive/sync?${params.toString()}`, { method: 'POST' });
+        if (error) throw new Error(error);
         // Drive sync runs in background — wait a bit then refresh integrations
         setTimeout(() => {
           setSyncingProviders((prev) => {
