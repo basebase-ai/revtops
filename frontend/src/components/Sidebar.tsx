@@ -627,6 +627,7 @@ export function Sidebar({
         onSelectChat={onSelectChat}
         onDeleteChat={onDeleteChat}
         togglePinChat={togglePinChat}
+        onViewAll={() => onViewChange('chats')}
       />
 
       {collapsed && <div className="flex-1" />}
@@ -684,6 +685,7 @@ function ChatAccordion({
   onSelectChat,
   onDeleteChat,
   togglePinChat,
+  onViewAll,
 }: {
   collapsed: boolean;
   orderedChats: ChatSummary[];
@@ -694,6 +696,7 @@ function ChatAccordion({
   onSelectChat: (id: string) => void;
   onDeleteChat: (id: string) => void;
   togglePinChat: (id: string) => void;
+  onViewAll: () => void;
 }): JSX.Element | null {
   const [expandedSection, setExpandedSection] = useState<'shared' | 'private'>('shared');
   const [editingChatId, setEditingChatId] = useState<string | null>(null);
@@ -744,8 +747,8 @@ function ChatAccordion({
 
   if (collapsed) return null;
 
-  const sharedChats = orderedChats.filter(c => c.scope === 'shared').slice(0, 50);
-  const privateChats = orderedChats.filter(c => c.scope === 'private').slice(0, 50);
+  const sharedChats = orderedChats.filter(c => c.scope === 'shared').slice(0, 10);
+  const privateChats = orderedChats.filter(c => c.scope === 'private').slice(0, 10);
 
   const renderChatItem = (chat: ChatSummary, showLockIcon: boolean) => {
     const hasActiveTask = chat.id in activeTasksByConversation;
@@ -884,7 +887,18 @@ function ChatAccordion({
   
   return (
     <div className="flex-1 flex flex-col min-h-0 px-2">
-      {/* Shared Section Header - always visible */}
+      {/* Chat History header with View All link */}
+      <div className="flex-shrink-0 flex items-center justify-between px-3 py-2">
+        <span className="text-xs font-semibold text-surface-200 uppercase tracking-wider">Chat History</span>
+        <button
+          onClick={onViewAll}
+          className="text-xs font-medium text-amber-400 hover:text-amber-300 transition-colors"
+        >
+          View All
+        </button>
+      </div>
+
+      {/* Shared Section Header */}
       <button
         onClick={() => setExpandedSection(expandedSection === 'shared' ? 'private' : 'shared')}
         className="flex-shrink-0 w-full flex items-center justify-between px-3 py-2 text-xs font-medium text-surface-400 hover:text-surface-200 transition-colors"
@@ -913,7 +927,7 @@ function ChatAccordion({
         </div>
       )}
       
-      {/* Private Section Header - always visible */}
+      {/* Private Section Header */}
       <button
         onClick={() => setExpandedSection(expandedSection === 'private' ? 'shared' : 'private')}
         className="flex-shrink-0 w-full flex items-center justify-between px-3 py-2 text-xs font-medium text-surface-400 hover:text-surface-200 transition-colors border-t border-surface-800 mt-1"

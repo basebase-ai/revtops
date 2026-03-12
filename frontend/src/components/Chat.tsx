@@ -1222,11 +1222,39 @@ export function Chat({
   }, [chatId]);
 
   if (isLoading) {
+    const skeletonTitle: string =
+      useAppStore.getState().recentChats.find((c) => c.id === chatId)?.title ?? 'Loading…';
+
     return (
-      <div className="flex-1 flex items-center justify-center min-h-0 overflow-hidden">
-        <div className="flex flex-col items-center gap-4">
-          <div className="w-8 h-8 border-2 border-primary-500 border-t-transparent rounded-full animate-spin" />
-          <p className="text-surface-400">Loading...</p>
+      <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+        {/* Header skeleton */}
+        <header className="hidden md:flex h-14 border-b border-surface-800 items-center px-4 md:px-6 flex-shrink-0">
+          <h1 className="text-lg font-semibold text-surface-100 truncate max-w-md">{skeletonTitle}</h1>
+        </header>
+
+        {/* Message skeletons */}
+        <div className="flex-1 overflow-hidden p-3 md:p-6">
+          <div className="max-w-3xl mx-auto space-y-4">
+            {Array.from({ length: 6 }, (_, i) => (
+              <div key={i} className={`flex gap-3 ${i % 2 === 0 ? '' : 'justify-end'}`}>
+                <div className={`flex gap-2 ${i % 2 === 0 ? 'max-w-[70%]' : 'max-w-[60%] flex-row-reverse'}`}>
+                  <div className="w-6 h-6 rounded-md bg-surface-800 animate-pulse flex-shrink-0" />
+                  <div className="space-y-1.5 flex-1">
+                    <div className={`h-3.5 rounded bg-surface-800 animate-pulse ${i % 3 === 0 ? 'w-3/4' : 'w-full'}`} />
+                    <div className={`h-3.5 rounded bg-surface-800 animate-pulse ${i % 2 === 0 ? 'w-5/6' : 'w-2/3'}`} />
+                    {i % 3 === 0 && <div className="h-3.5 rounded bg-surface-800 animate-pulse w-1/2" />}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Input skeleton */}
+        <div className="flex-shrink-0 border-t border-surface-800 p-3 md:p-4">
+          <div className="max-w-3xl mx-auto">
+            <div className="h-11 rounded-xl bg-surface-800/50 animate-pulse" />
+          </div>
         </div>
       </div>
     );

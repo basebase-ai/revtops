@@ -291,7 +291,7 @@ export const useChatStore = create<ChatState>()(
 
         const requestStart = performance.now();
         const { data, error } = await apiRequest<ConversationApiResponse>(
-          `/chat/conversations?limit=40`,
+          `/chat/conversations?limit=20`,
         );
 
         if (error) {

@@ -245,6 +245,7 @@ export interface ActiveTask {
 export type View =
   | "home"
   | "chat"
+  | "chats"
   | "data-sources"
   | "data"
   | "workflows"
