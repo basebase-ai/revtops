@@ -17,10 +17,10 @@ from typing import Any, Optional
 import httpx
 
 from connectors.base import BaseConnector
-from connectors.registry import AuthType, Capability, ConnectorMeta, ConnectorScope
+from connectors.registry import AuthType, Capability, ConnectorAction, ConnectorMeta, ConnectorScope
 from models.activity import Activity
 from models.database import get_session
-from services.meeting_dedup import find_or_create_meeting
+from services.meeting_dedup import find_or_create_meeting, merge_participants
 
 logger = logging.getLogger(__name__)
 
@@ -37,9 +37,42 @@ class GoogleCalendarConnector(BaseConnector):
         auth_type=AuthType.OAUTH2,
         scope=ConnectorScope.USER,
         entity_types=["activities"],
-        capabilities=[Capability.SYNC],
+        capabilities=[Capability.SYNC, Capability.ACTION],
         nango_integration_id="google-calendar",
-        description="Google Calendar – event sync",
+        description="Google Calendar – event sync and Meet huddle management",
+        actions=[
+            ConnectorAction(
+                name="create_huddle",
+                description="Create an instant Google Meet huddle with participants. Returns a Meet link and calendar event.",
+                parameters=[
+                    {"name": "title", "type": "string", "required": False, "description": "Meeting title (default: 'Huddle')"},
+                    {"name": "participants", "type": "array", "required": True, "description": "List of participant email addresses"},
+                    {"name": "duration_minutes", "type": "integer", "required": False, "description": "Duration in minutes (default: 30)"},
+                    {"name": "description", "type": "string", "required": False, "description": "Meeting description"},
+                ],
+            ),
+            ConnectorAction(
+                name="invite_to_huddle",
+                description="Add participants to an existing huddle.",
+                parameters=[
+                    {"name": "meeting_id", "type": "string", "required": True, "description": "UUID of the Meeting entity"},
+                    {"name": "participants", "type": "array", "required": True, "description": "Email addresses to add"},
+                ],
+            ),
+            ConnectorAction(
+                name="end_huddle",
+                description="End an active huddle by shortening the calendar event to now.",
+                parameters=[
+                    {"name": "meeting_id", "type": "string", "required": True, "description": "UUID of the Meeting entity"},
+                ],
+            ),
+        ],
+        usage_guide=(
+            "Use create_huddle to start an instant Google Meet meeting. "
+            "Use invite_to_huddle to add people to an ongoing huddle. "
+            "Use end_huddle to wrap up. Recordings must be started manually in Meet; "
+            "they are auto-fetched from Drive after the huddle ends."
+        ),
     )
 
     async def _get_headers(self) -> dict[str, str]:
@@ -55,6 +88,7 @@ class GoogleCalendarConnector(BaseConnector):
         method: str,
         endpoint: str,
         params: Optional[dict[str, Any]] = None,
+        json_body: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         """Make an authenticated request to Google Calendar API."""
         headers = await self._get_headers()
@@ -66,6 +100,7 @@ class GoogleCalendarConnector(BaseConnector):
                 url=url,
                 headers=headers,
                 params=params,
+                json=json_body,
                 timeout=30.0,
             )
             response.raise_for_status()
@@ -505,3 +540,233 @@ class GoogleCalendarConnector(BaseConnector):
         # This would require POST capability
         # Placeholder for future implementation
         raise NotImplementedError("Event creation not implemented in MVP")
+
+    # ------------------------------------------------------------------
+    # ACTION capability – huddle management
+    # ------------------------------------------------------------------
+
+    async def execute_action(self, action: str, params: dict[str, Any]) -> dict[str, Any]:
+        """Dispatch huddle actions."""
+        if action == "create_huddle":
+            return await self._action_create_huddle(params)
+        if action == "invite_to_huddle":
+            return await self._action_invite_to_huddle(params)
+        if action == "end_huddle":
+            return await self._action_end_huddle(params)
+        raise ValueError(f"Unknown action: {action}")
+
+    async def _action_create_huddle(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Create an instant Google Meet huddle via Calendar API."""
+        title = params.get("title", "Huddle")
+        participants: list[str] = params.get("participants") or []
+        duration_minutes: int = params.get("duration_minutes", 30)
+        description = params.get("description", "")
+
+        if not participants:
+            raise ValueError("create_huddle requires at least one participant email")
+
+        now = datetime.utcnow()
+        end = now + timedelta(minutes=duration_minutes)
+
+        event_body: dict[str, Any] = {
+            "summary": title,
+            "description": description,
+            "start": {"dateTime": now.isoformat() + "Z", "timeZone": "UTC"},
+            "end": {"dateTime": end.isoformat() + "Z", "timeZone": "UTC"},
+            "attendees": [{"email": e} for e in participants],
+            "conferenceData": {
+                "createRequest": {
+                    "requestId": uuid.uuid4().hex,
+                    "conferenceSolutionKey": {"type": "hangoutsMeet"},
+                },
+            },
+        }
+
+        try:
+            data = await self._make_request(
+                "POST",
+                "/calendars/primary/events",
+                params={"conferenceDataVersion": "1", "sendUpdates": "all"},
+                json_body=event_body,
+            )
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 403:
+                return {
+                    "status": "error",
+                    "error": (
+                        "Calendar write access denied. The google-calendar integration "
+                        "needs the full 'calendar' scope (not calendar.readonly). "
+                        "Please re-authorize the integration in Settings → Integrations."
+                    ),
+                }
+            raise
+
+        google_event_id = data.get("id", "")
+        meet_link = data.get("hangoutLink", "")
+
+        # If conference creation is still pending, poll once
+        conf_data = data.get("conferenceData", {})
+        create_status = conf_data.get("createRequest", {}).get("status", {})
+        if isinstance(create_status, dict) and create_status.get("statusCode") == "pending":
+            import asyncio
+            await asyncio.sleep(2)
+            data = await self._make_request("GET", f"/calendars/primary/events/{google_event_id}")
+            meet_link = data.get("hangoutLink", meet_link)
+
+        # Build normalized participant list
+        participants_normalized = [
+            {"email": e.lower(), "name": "", "is_organizer": False, "rsvp_status": "needsAction"}
+            for e in participants
+        ]
+
+        # Create canonical Meeting entity
+        async with get_session(organization_id=self.organization_id) as session:
+            meeting = await find_or_create_meeting(
+                organization_id=self.organization_id,
+                scheduled_start=now,
+                scheduled_end=end,
+                participants=participants_normalized,
+                title=title,
+                duration_minutes=duration_minutes,
+                organizer_email=None,
+                status="scheduled",
+            )
+            meeting.conference_link = meet_link
+            meeting.google_event_id = google_event_id
+            meeting.huddle_status = "active"
+            await session.commit()
+            meeting_id = str(meeting.id)
+
+        return {
+            "status": "ok",
+            "meeting_id": meeting_id,
+            "meet_link": meet_link,
+            "google_event_id": google_event_id,
+            "title": title,
+            "participants": participants,
+        }
+
+    async def _action_invite_to_huddle(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Add participants to an existing huddle."""
+        from models.meeting import Meeting
+
+        meeting_id = params.get("meeting_id")
+        new_emails: list[str] = params.get("participants") or []
+
+        if not meeting_id:
+            raise ValueError("invite_to_huddle requires meeting_id")
+        if not new_emails:
+            raise ValueError("invite_to_huddle requires at least one participant email")
+
+        async with get_session(organization_id=self.organization_id) as session:
+            meeting = await session.get(Meeting, uuid.UUID(meeting_id))
+            if not meeting:
+                raise ValueError(f"Meeting {meeting_id} not found")
+            if not meeting.google_event_id:
+                raise ValueError("Meeting has no linked Google Calendar event")
+
+            google_event_id = meeting.google_event_id
+
+            # GET current event to read existing attendees
+            event_data = await self._make_request(
+                "GET", f"/calendars/primary/events/{google_event_id}"
+            )
+            existing_attendees = event_data.get("attendees", [])
+            existing_emails = {a.get("email", "").lower() for a in existing_attendees}
+
+            # Deduplicate and add new attendees
+            added: list[str] = []
+            for email in new_emails:
+                if email.lower() not in existing_emails:
+                    existing_attendees.append({"email": email})
+                    added.append(email)
+
+            if added:
+                await self._make_request(
+                    "PATCH",
+                    f"/calendars/primary/events/{google_event_id}",
+                    params={"sendUpdates": "all"},
+                    json_body={"attendees": existing_attendees},
+                )
+
+            # Update Meeting participants
+            new_participant_records = [
+                {"email": e.lower(), "name": "", "is_organizer": False, "rsvp_status": "needsAction"}
+                for e in added
+            ]
+            meeting.participants = merge_participants(
+                meeting.participants or [], new_participant_records
+            )
+            meeting.participant_count = len(meeting.participants)
+            await session.commit()
+
+        return {
+            "status": "ok",
+            "meeting_id": meeting_id,
+            "added_participants": added,
+            "total_participants": len(existing_attendees),
+        }
+
+    async def _action_end_huddle(self, params: dict[str, Any]) -> dict[str, Any]:
+        """End an active huddle by shortening the calendar event."""
+        from models.meeting import Meeting
+
+        meeting_id = params.get("meeting_id")
+        if not meeting_id:
+            raise ValueError("end_huddle requires meeting_id")
+
+        async with get_session(organization_id=self.organization_id) as session:
+            meeting = await session.get(Meeting, uuid.UUID(meeting_id))
+            if not meeting:
+                raise ValueError(f"Meeting {meeting_id} not found")
+            if not meeting.google_event_id:
+                raise ValueError("Meeting has no linked Google Calendar event")
+
+            google_event_id = meeting.google_event_id
+            now = datetime.utcnow()
+
+            # PATCH calendar event end time to now
+            try:
+                await self._make_request(
+                    "PATCH",
+                    f"/calendars/primary/events/{google_event_id}",
+                    json_body={
+                        "end": {"dateTime": now.isoformat() + "Z", "timeZone": "UTC"},
+                    },
+                )
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code == 403:
+                    return {
+                        "status": "error",
+                        "error": "Calendar write access denied. Please re-authorize with full calendar scope.",
+                    }
+                raise
+
+            # Calculate actual duration
+            actual_duration = None
+            if meeting.scheduled_start:
+                delta = now - meeting.scheduled_start
+                actual_duration = max(1, int(delta.total_seconds() / 60))
+
+            meeting.status = "completed"
+            meeting.huddle_status = "ended"
+            meeting.scheduled_end = now
+            if actual_duration:
+                meeting.duration_minutes = actual_duration
+            await session.commit()
+
+        # Schedule recording check with 5-min delay
+        try:
+            from workers.tasks.sync import check_huddle_recording
+            check_huddle_recording.apply_async(
+                args=[meeting_id, self.organization_id],
+                countdown=300,
+            )
+        except Exception as e:
+            logger.warning("Failed to schedule recording check: %s", e)
+
+        return {
+            "status": "ok",
+            "meeting_id": meeting_id,
+            "actual_duration_minutes": actual_duration,
+        }
