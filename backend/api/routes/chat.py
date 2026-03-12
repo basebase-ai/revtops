@@ -26,7 +26,7 @@ import redis.asyncio as aioredis
 
 
 from pydantic import BaseModel
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.auth_middleware import AuthContext, get_current_auth
@@ -102,8 +102,13 @@ async def _get_slack_user_ids(
 
 def _build_conversation_access_filter(
     auth: AuthContext,
-    slack_user_ids: set[str],
+    slack_user_ids: set[str] | None = None,
 ):
+    """Build an OR filter for conversations the user may access.
+
+    When *slack_user_ids* is ``None`` (or empty) the Slack branch is omitted,
+    making the query cheaper for the common non-Slack path.
+    """
     # User's own conversations (private or shared)
     user_filter = or_(
         Conversation.user_id == auth.user_id,
@@ -247,38 +252,61 @@ async def list_conversations(
     org_id = auth.organization_id_str
 
     async with get_session(organization_id=org_id) as session:
-        slack_user_ids = await _get_slack_user_ids(auth, session=session)
-        # Simple query - message_count and last_message_preview are cached on the conversation
-        # Filter out workflow conversations - they're accessed via Automations tab, not chat list
+        # Fast path: query without Slack filter first
         query = (
-            select(Conversation, func.count(Conversation.id).over().label("total_count"))
+            select(Conversation)
             .where(Conversation.type != "workflow")
+            .where(_build_conversation_access_filter(auth))
         )
-        query = query.where(_build_conversation_access_filter(auth, slack_user_ids))
-        
-        # Optional scope filter
+
         if scope in ("shared", "private"):
             query = query.where(Conversation.scope == scope)
-        if slack_user_ids:
-            logger.info(
-                "[chat] Listing conversations for user=%s with Slack IDs %s",
-                auth.user_id_str,
-                sorted(slack_user_ids),
-            )
+
         result = await session.execute(
             query.order_by(Conversation.updated_at.desc())
             .offset(offset)
             .limit(limit)
         )
-        rows = result.all()
+        conversations: list[Conversation] = list(result.scalars().all())
 
-        # Extract total from first row (window function returns same value for all rows)
-        total: int = rows[0][1] if rows else 0
+        # Slow path: if we got fewer rows than limit, Slack conversations may
+        # be missing. Resolve Slack IDs and merge any additional results.
+        if len(conversations) < limit:
+            slack_user_ids = await _get_slack_user_ids(auth, session=session)
+            if slack_user_ids:
+                logger.info(
+                    "[chat] Listing conversations for user=%s with Slack IDs %s",
+                    auth.user_id_str,
+                    sorted(slack_user_ids),
+                )
+                seen_ids = {c.id for c in conversations}
+                slack_query = (
+                    select(Conversation)
+                    .where(Conversation.type != "workflow")
+                    .where(Conversation.source == "slack")
+                    .where(Conversation.source_user_id.in_(slack_user_ids))
+                )
+                if auth.organization_id:
+                    slack_query = slack_query.where(
+                        Conversation.organization_id == auth.organization_id
+                    )
+                if scope in ("shared", "private"):
+                    slack_query = slack_query.where(Conversation.scope == scope)
+
+                slack_result = await session.execute(
+                    slack_query.order_by(Conversation.updated_at.desc()).limit(limit)
+                )
+                for conv in slack_result.scalars().all():
+                    if conv.id not in seen_ids:
+                        conversations.append(conv)
+                        seen_ids.add(conv.id)
+
+                conversations.sort(key=lambda c: c.updated_at, reverse=True)
+                conversations = conversations[:limit]
 
         # Collect all participant user IDs to fetch in one query
         all_participant_ids: set[UUID] = set()
-        for row in rows:
-            conv: Conversation = row[0]
+        for conv in conversations:
             for uid in (conv.participating_user_ids or []):
                 all_participant_ids.add(uid)
 
@@ -293,9 +321,7 @@ async def list_conversations(
 
         # Build response using cached fields
         response_items: list[ConversationResponse] = []
-        for row in rows:
-            conv: Conversation = row[0]
-
+        for conv in conversations:
             if conv.source == "slack":
                 preview_length = len(conv.last_message_preview or "")
                 logger.debug(
@@ -339,7 +365,7 @@ async def list_conversations(
 
         return ConversationListResponse(
             conversations=response_items,
-            total=total,
+            total=len(response_items),
         )
 
 
@@ -410,13 +436,13 @@ async def create_conversation(
 async def get_conversation(
     conversation_id: str,
     auth: AuthContext = Depends(get_current_auth),
-    limit: int = 30,
+    limit: int = 15,
     before: Optional[str] = None,
 ) -> ConversationDetailResponse:
     """Get a conversation with its messages (paginated).
 
     Args:
-        limit: Number of messages to return (default 30).
+        limit: Number of messages to return (default 15).
         before: ISO timestamp cursor — return messages created before this time
                 (pass the oldest loaded message's ``created_at`` to page backwards).
     """
@@ -438,13 +464,24 @@ async def get_conversation(
     org_id = auth.organization_id_str
 
     async with get_session(organization_id=org_id) as session:
-        slack_user_ids = await _get_slack_user_ids(auth, session=session)
+        # Fast path: try without Slack lookup (covers web chats + shared org chats)
         result = await session.execute(
             select(Conversation)
             .where(Conversation.id == conv_uuid)
-            .where(_build_conversation_access_filter(auth, slack_user_ids))
+            .where(_build_conversation_access_filter(auth))
         )
         conversation = result.scalar_one_or_none()
+
+        # Slow path: conversation not found — may be a Slack DM visible only via source_user_id
+        if not conversation:
+            slack_user_ids = await _get_slack_user_ids(auth, session=session)
+            if slack_user_ids:
+                result = await session.execute(
+                    select(Conversation)
+                    .where(Conversation.id == conv_uuid)
+                    .where(_build_conversation_access_filter(auth, slack_user_ids))
+                )
+                conversation = result.scalar_one_or_none()
 
         if not conversation:
             raise HTTPException(status_code=404, detail="Conversation not found")

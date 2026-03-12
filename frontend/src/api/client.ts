@@ -52,6 +52,8 @@ export interface ConversationSummary {
   updated_at: string;
   message_count: number;
   last_message_preview: string | null;
+  scope?: "private" | "shared";
+  participants?: Array<{ id: string; name: string | null; email: string; avatar_url?: string | null }>;
 }
 
 export interface ConversationListResponse {

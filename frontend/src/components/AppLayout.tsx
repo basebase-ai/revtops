@@ -25,6 +25,7 @@ import { Home } from './Home';
 import { DataSources } from './DataSources';
 import { Data } from './Data';
 import { Chat } from './Chat';
+import { ChatsList } from './ChatsList';
 import { Workflows } from './Workflows';
 import { Memories } from './Memories';
 import { AdminPanel } from './AdminPanel';
@@ -398,6 +399,7 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
         return;
       }
       const viewMap: Record<string, typeof currentView> = {
+        chats: "chats",
         sources: "data-sources",
         data: "data",
         workflows: "workflows",
@@ -436,6 +438,7 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
     const viewPaths: Record<string, typeof currentView> = {
       "/": "home",
       "/chat": "chat",
+      "/chats": "chats",
       "/sources": "data-sources",
       "/data": "data",
       "/workflows": "workflows",
@@ -501,6 +504,7 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
       const viewPaths: Record<typeof currentView, string> = {
         home: "/",
         chat: "/chat",
+        chats: "/chats",
         "data-sources": "/sources",
         data: "/data",
         workflows: "/workflows",
@@ -1251,6 +1255,7 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
   const viewTitles: Record<string, string> = {
     home: 'Home',
     chat: 'Chat',
+    chats: 'All Chats',
     'data-sources': 'Connectors',
     workflows: 'Workflows',
     memory: 'Memory',
@@ -1408,6 +1413,13 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
             crmApprovalResults={crmApprovalResults}
             onConversationNotFound={handleConversationNotFound}
             creditsInfo={billingStatus ? { balance: billingStatus.credits_balance, included: billingStatus.credits_included } : null}
+          />
+        )}
+        {currentView === 'chats' && (
+          <ChatsList
+            chats={recentChats}
+            onSelectChat={handleSelectChat}
+            onNewChat={startNewChat}
           />
         )}
         {currentView === 'data-sources' && (
