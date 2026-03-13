@@ -18,7 +18,7 @@ interface MemoryDashboardResponse {
 }
 
 const GLOBAL_COMMAND_CATEGORY = 'global_commands';
-const GLOBAL_COMMAND_MAX_LENGTH = 400;
+const GLOBAL_COMMAND_MAX_LENGTH = 800;
 
 function formatTime(value: string | null): string {
   if (!value) return 'Unknown time';
@@ -36,6 +36,7 @@ export function Memories(): JSX.Element {
   const [isGlobalCommandDirty, setIsGlobalCommandDirty] = useState<boolean>(false);
   const globalCommandSaveTimeoutRef = useRef<number | null>(null);
   const lastSavedGlobalCommandRef = useRef<string>('');
+  const globalCommandTextareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   const orgId = organization?.id;
   const userId = user?.id;
@@ -61,6 +62,13 @@ export function Memories(): JSX.Element {
     setIsGlobalCommandDirty(false);
     lastSavedGlobalCommandRef.current = serverValue;
   }, [globalCommandMemory?.id, globalCommandMemory?.content]);
+
+  useEffect(() => {
+    const textarea = globalCommandTextareaRef.current;
+    if (!textarea) return;
+    textarea.style.height = 'auto';
+    textarea.style.height = `${textarea.scrollHeight}px`;
+  }, [globalCommandDraft]);
 
   const updateMemory = useMutation({
     mutationFn: async ({ memoryId, content }: { memoryId: string; content: string }) => {
@@ -172,9 +180,10 @@ export function Memories(): JSX.Element {
           <>
             <div className="rounded-lg border border-primary-700/40 bg-primary-950/20 p-3">
               <div className="text-xs uppercase tracking-wide text-primary-300 mb-2">Global command</div>
-              <p className="text-xs text-surface-400 mb-2">Sent on every message. Maximum 400 characters.</p>
+              <p className="text-xs text-surface-400 mb-2">Applied on every message. Maximum 800 characters.</p>
               <textarea
-                className="w-full min-h-20 rounded-lg bg-surface-800 border border-surface-700 px-3 py-2 text-sm text-surface-100"
+                ref={globalCommandTextareaRef}
+                className="w-full min-h-20 overflow-hidden rounded-lg bg-surface-800 border border-surface-700 px-3 py-2 text-sm text-surface-100"
                 value={globalCommandDraft}
                 onChange={(e) => {
                   setGlobalCommandDraft(e.target.value);
