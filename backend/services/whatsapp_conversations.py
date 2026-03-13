@@ -1,17 +1,11 @@
 """
-WhatsApp conversation service.
+WhatsApp conversation service — **DEPRECATED**.
 
-Handles processing inbound WhatsApp messages (via Twilio) and routing them
-through the agent orchestrator.  Nearly identical to the SMS flow in
-``services/sms_conversations.py`` but with ``source='whatsapp'``.
+This module is superseded by ``messengers/_twilio_phone.py`` and
+``messengers/whatsapp.py``.  The WhatsApp webhook route now uses
+``WhatsAppMessenger.process_inbound()`` instead of ``process_inbound_whatsapp()``.
 
-Flow:
-1. Normalise the sender phone number
-2. Look up the RevTops user by phone_number (admin session — org unknown)
-3. Resolve the organisation (single-org fast path, multi-org qualifying question)
-4. Find or create a conversation (source='whatsapp', keyed on phone number + org)
-5. Stream the response from the ChatOrchestrator
-6. Send the reply back via WhatsApp (split into <=1600 char segments)
+This file will be deleted once the Slack messenger migration is complete.
 """
 from __future__ import annotations
 

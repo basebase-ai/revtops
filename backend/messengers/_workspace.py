@@ -1,0 +1,780 @@
+"""
+Shared base for workspace/team-based messengers (Slack, Teams, Discord, …).
+
+Implements the common pipeline for messengers where:
+- A "workspace" (Slack team, Teams tenant, Discord guild) maps to an org
+- Users are identified by a platform-specific ID and resolved via
+  ``messenger_user_mappings`` + email/profile fallback
+- Conversations are threaded (channel + thread ID → one conversation)
+- Responses can be streamed via repeated ``post_message`` calls
+- Channel messages are persisted as Activity rows for analytics
+
+Concrete subclasses implement a handful of platform-specific hooks:
+``fetch_user_info``, ``post_message``, ``download_file``, ``format_text``.
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import time
+import uuid as _uuid
+from datetime import UTC, datetime
+from typing import Any
+from uuid import UUID
+
+from sqlalchemy import select, or_, text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+from config import settings
+from messengers.base import (
+    BaseMessenger,
+    InboundMessage,
+    MessageType,
+    OutboundResponse,
+)
+from models.activity import Activity
+from models.conversation import Conversation
+from models.database import get_admin_session, get_session
+from models.integration import Integration
+from models.messenger_bot_install import MessengerBotInstall
+from models.messenger_user_mapping import MessengerUserMapping
+from models.org_member import OrgMember
+from models.organization import Organization
+from models.user import User
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Streaming constants
+# ---------------------------------------------------------------------------
+
+STREAM_FLUSH_CHAR_THRESHOLD: int = 240
+STREAM_FLUSH_INTERVAL_SECONDS: float = 0.7
+SLOW_REPLY_TIMEOUT_SECONDS: int = 30
+SLOW_REPLY_MESSAGE: str = "Still working on this, one moment…"
+
+# ---------------------------------------------------------------------------
+# In-memory caches
+# ---------------------------------------------------------------------------
+
+_USER_INFO_CACHE_TTL_SECONDS: int = 600
+_USER_INFO_CACHE_MAX_ENTRIES: int = 5000
+_user_info_cache: dict[tuple[str, str, str], tuple[dict[str, Any] | None, float]] = {}
+_user_info_cache_lock: asyncio.Lock = asyncio.Lock()
+
+_WORKSPACE_ORG_CACHE_TTL_SECONDS: int = 300
+_workspace_org_cache: dict[tuple[str, str], tuple[str | None, float]] = {}
+_workspace_org_cache_lock: asyncio.Lock = asyncio.Lock()
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _merge_participating_user_ids(
+    existing: list[UUID] | None,
+    new_user_id: str | None,
+) -> list[UUID]:
+    """Add *new_user_id* to *existing* list if not already present."""
+    current: list[UUID] = list(existing or [])
+    if new_user_id:
+        uid: UUID = UUID(new_user_id)
+        if uid not in current:
+            current.append(uid)
+    return current
+
+
+# ===========================================================================
+# WorkspaceMessenger
+# ===========================================================================
+
+
+class WorkspaceMessenger(BaseMessenger):
+    """Shared base for team/guild-based messengers (Slack, Teams, Discord).
+
+    Subclasses must implement the following platform-specific hooks:
+
+    - :meth:`fetch_user_info`
+    - :meth:`post_message`
+    - :meth:`download_file`
+    - :meth:`format_text`
+
+    And optionally:
+
+    - :meth:`add_typing_indicator`
+    - :meth:`remove_typing_indicator`
+    - :meth:`get_bot_token`
+    """
+
+    # ------------------------------------------------------------------
+    # Platform-specific hooks (abstract — implemented by subclasses)
+    # ------------------------------------------------------------------
+
+    async def fetch_user_info(
+        self,
+        workspace_id: str,
+        external_user_id: str,
+    ) -> dict[str, Any] | None:
+        """Fetch user profile from the platform API. Returns None on failure."""
+        return None
+
+    async def post_message(
+        self,
+        channel_id: str,
+        text: str,
+        thread_id: str | None = None,
+        *,
+        workspace_id: str | None = None,
+        organization_id: str | None = None,
+    ) -> str | None:
+        """Post a message and return the message ID/timestamp. Must be overridden."""
+        raise NotImplementedError
+
+    async def download_file(
+        self,
+        file_info: dict[str, Any],
+        *,
+        workspace_id: str | None = None,
+        organization_id: str | None = None,
+    ) -> tuple[bytes, str, str] | None:
+        """Download a file. Returns ``(data, filename, content_type)`` or None."""
+        return None
+
+    async def add_typing_indicator(self, message: InboundMessage) -> None:
+        """Show a typing/processing indicator (e.g. reaction). No-op by default."""
+
+    async def remove_typing_indicator(self, message: InboundMessage) -> None:
+        """Remove the typing/processing indicator. No-op by default."""
+
+    # ------------------------------------------------------------------
+    # User resolution
+    # ------------------------------------------------------------------
+
+    async def resolve_user(self, message: InboundMessage) -> User | None:
+        """Resolve an external workspace user to a RevTops user.
+
+        1. Try ``messenger_user_mappings`` (inherited from BaseMessenger)
+        2. Fetch platform profile, try email match, auto-create mapping
+        3. Fall back to org guest user if configured
+        """
+        user: User | None = await super().resolve_user(message)
+        if user is not None:
+            return user
+
+        workspace_id: str | None = message.messenger_context.get("workspace_id")
+        if not workspace_id:
+            return None
+
+        organization_id: str | None = await self._resolve_org_from_workspace(workspace_id)
+        if not organization_id:
+            return None
+
+        profile: dict[str, Any] | None = await self.get_cached_user_info(
+            workspace_id, message.external_user_id,
+        )
+        if profile is None:
+            return await self._resolve_guest_user(organization_id)
+
+        email: str | None = self._extract_email_from_profile(profile)
+        if email:
+            matched_user: User | None = await self._match_user_by_email(
+                organization_id, email,
+            )
+            if matched_user is not None:
+                await self._upsert_user_mapping(
+                    platform=self.meta.slug,
+                    workspace_id=workspace_id,
+                    external_user_id=message.external_user_id,
+                    user_id=matched_user.id,
+                    organization_id=UUID(organization_id),
+                    external_email=email,
+                    match_source="email",
+                )
+                return matched_user
+
+        return await self._resolve_guest_user(organization_id)
+
+    def _extract_email_from_profile(self, profile: dict[str, Any]) -> str | None:
+        """Extract email from a platform user profile. Override per platform."""
+        return None
+
+    async def _match_user_by_email(
+        self,
+        organization_id: str,
+        email: str,
+    ) -> User | None:
+        """Find an org user whose email matches."""
+        async with get_admin_session() as session:
+            org_uuid: UUID = UUID(organization_id)
+            membership_subq = (
+                select(OrgMember.user_id)
+                .where(OrgMember.organization_id == org_uuid)
+                .where(OrgMember.status.in_(("active", "onboarding")))
+            )
+            result = await session.execute(
+                select(User)
+                .where(
+                    or_(
+                        User.organization_id == org_uuid,
+                        User.id.in_(membership_subq),
+                    )
+                )
+                .where(User.email == email)
+            )
+            return result.scalar_one_or_none()
+
+    async def _resolve_guest_user(self, organization_id: str) -> User | None:
+        """Fall back to the org's guest user if configured."""
+        async with get_admin_session() as session:
+            org = await session.get(Organization, UUID(organization_id))
+            if not org or not getattr(org, "guest_user_enabled", False) or not getattr(org, "guest_user_id", None):
+                return None
+            guest: User | None = await session.get(User, org.guest_user_id)
+            if guest and getattr(guest, "is_guest", False):
+                return guest
+            return None
+
+    # ------------------------------------------------------------------
+    # Organisation resolution
+    # ------------------------------------------------------------------
+
+    async def resolve_organization(
+        self,
+        user: User,
+        message: InboundMessage,
+    ) -> tuple[str, str] | None:
+        workspace_id: str | None = message.messenger_context.get("workspace_id")
+        if not workspace_id:
+            logger.warning("[%s] Missing workspace_id in message context", self.meta.slug)
+            return None
+
+        org_id: str | None = await self._resolve_org_from_workspace(workspace_id)
+        if org_id is None:
+            logger.warning(
+                "[%s] No organisation found for workspace %s",
+                self.meta.slug,
+                workspace_id,
+            )
+            return None
+
+        async with get_admin_session() as session:
+            org = await session.get(Organization, UUID(org_id))
+            org_name: str = org.name if org else "Unknown"
+
+        return org_id, org_name
+
+    async def _resolve_org_from_workspace(self, workspace_id: str) -> str | None:
+        """Look up organisation from workspace ID using cache + DB."""
+        platform: str = self.meta.slug
+
+        now: float = time.monotonic()
+        cache_key: tuple[str, str] = (platform, workspace_id)
+        async with _workspace_org_cache_lock:
+            cached = _workspace_org_cache.get(cache_key)
+            if cached and cached[1] > now:
+                return cached[0]
+            _workspace_org_cache.pop(cache_key, None)
+
+        org_id: str | None = None
+
+        # 1. Check messenger_bot_installs
+        async with get_admin_session() as session:
+            result = await session.execute(
+                select(MessengerBotInstall.organization_id)
+                .where(MessengerBotInstall.platform == platform)
+                .where(MessengerBotInstall.workspace_id == workspace_id)
+            )
+            row = result.first()
+            if row:
+                org_id = str(row[0])
+
+        # 2. Fall back to Integration table (for Nango-based installs)
+        if org_id is None:
+            async with get_admin_session() as session:
+                result = await session.execute(
+                    select(Integration)
+                    .where(Integration.connector == platform)
+                    .where(Integration.is_active == True)  # noqa: E712
+                )
+                integrations: list[Integration] = list(result.scalars().all())
+
+                for integration in integrations:
+                    extra: dict[str, Any] = integration.extra_data or {}
+                    stored_ws_id: str | None = extra.get("team_id") or extra.get("workspace_id") or extra.get("tenant_id")
+                    if stored_ws_id and stored_ws_id == workspace_id:
+                        org_id = str(integration.organization_id)
+                        break
+
+                if org_id is None and len(integrations) == 1:
+                    org_id = str(integrations[0].organization_id)
+
+        expiry: float = time.monotonic() + _WORKSPACE_ORG_CACHE_TTL_SECONDS
+        async with _workspace_org_cache_lock:
+            _workspace_org_cache[(platform, workspace_id)] = (org_id, expiry)
+
+        return org_id
+
+    # ------------------------------------------------------------------
+    # Conversation management
+    # ------------------------------------------------------------------
+
+    async def _has_existing_conversation(self, message: InboundMessage) -> bool:
+        """Check whether a conversation already exists for this message's thread.
+
+        Used to gate thread-reply processing — the bot only responds in
+        threads where it is already participating.
+        """
+        ctx: dict[str, Any] = message.messenger_context
+        channel_id: str = ctx.get("channel_id", "")
+        thread_id: str | None = ctx.get("thread_id") or ctx.get("thread_ts")
+        workspace_id: str | None = ctx.get("workspace_id")
+        source: str = self.meta.slug
+
+        if not thread_id or not workspace_id:
+            return False
+
+        source_channel_id: str = f"{channel_id}:{thread_id}"
+        org_id: str | None = await self._resolve_org_from_workspace(workspace_id)
+        if not org_id:
+            return False
+
+        async with get_session(organization_id=org_id) as session:
+            result = await session.execute(
+                select(Conversation.id)
+                .where(Conversation.organization_id == UUID(org_id))
+                .where(Conversation.source == source)
+                .where(Conversation.source_channel_id == source_channel_id)
+                .limit(1)
+            )
+            return result.first() is not None
+
+    async def find_or_create_conversation(
+        self,
+        organization_id: str,
+        user: User,
+        message: InboundMessage,
+    ) -> Conversation:
+        ctx: dict[str, Any] = message.messenger_context
+        channel_id: str = ctx.get("channel_id", "")
+        thread_id: str | None = ctx.get("thread_id") or ctx.get("thread_ts")
+        source: str = self.meta.slug
+
+        source_channel_id: str = f"{channel_id}:{thread_id}" if thread_id else channel_id
+        revtops_user_id: str | None = str(user.id) if user.id else None
+
+        async with get_session(organization_id=organization_id) as session:
+            result = await session.execute(
+                select(Conversation)
+                .where(Conversation.organization_id == UUID(organization_id))
+                .where(Conversation.source == source)
+                .where(Conversation.source_channel_id == source_channel_id)
+            )
+            conversation: Conversation | None = result.scalar_one_or_none()
+
+            if conversation is not None:
+                changed: bool = False
+                if message.external_user_id and conversation.source_user_id != message.external_user_id:
+                    conversation.source_user_id = message.external_user_id
+                    changed = True
+
+                merged: list[UUID] = _merge_participating_user_ids(
+                    conversation.participating_user_ids, revtops_user_id,
+                )
+                if merged != (conversation.participating_user_ids or []):
+                    conversation.participating_user_ids = merged
+                    changed = True
+
+                if revtops_user_id and conversation.user_id != UUID(revtops_user_id):
+                    conversation.user_id = UUID(revtops_user_id)
+                    changed = True
+
+                if changed:
+                    await session.commit()
+                return conversation
+
+            source_label: str = {
+                "direct": f"{self.meta.name} DM",
+                "mention": f"{self.meta.name} @mention",
+                "thread_reply": f"{self.meta.name} Thread",
+            }.get(message.message_type.value, self.meta.name)
+
+            user_display: str = user.name or message.external_user_id
+            conversation = Conversation(
+                organization_id=UUID(organization_id),
+                user_id=UUID(revtops_user_id) if revtops_user_id else None,
+                source=source,
+                source_channel_id=source_channel_id,
+                source_user_id=message.external_user_id,
+                participating_user_ids=_merge_participating_user_ids([], revtops_user_id),
+                type="agent",
+                title=f"{source_label} - {user_display}",
+            )
+            session.add(conversation)
+            await session.commit()
+            await session.refresh(conversation)
+
+            logger.info(
+                "[%s] Created conversation %s channel=%s user=%s",
+                source, conversation.id, source_channel_id, revtops_user_id,
+            )
+            return conversation
+
+    # ------------------------------------------------------------------
+    # Attachments
+    # ------------------------------------------------------------------
+
+    async def download_attachments(self, message: InboundMessage) -> list[str]:
+        from services.file_handler import MAX_FILE_SIZE, store_file
+
+        if not message.raw_attachments:
+            return []
+
+        workspace_id: str | None = message.messenger_context.get("workspace_id")
+        organization_id: str | None = message.messenger_context.get("organization_id")
+        attachment_ids: list[str] = []
+
+        for file_info in message.raw_attachments:
+            result: tuple[bytes, str, str] | None = await self.download_file(
+                file_info,
+                workspace_id=workspace_id,
+                organization_id=organization_id,
+            )
+            if result is None:
+                continue
+            data, filename, content_type = result
+            if len(data) > MAX_FILE_SIZE:
+                logger.warning("[%s] File %s too large (%d bytes)", self.meta.slug, filename, len(data))
+                continue
+            stored = store_file(filename=filename, data=data, content_type=content_type)
+            attachment_ids.append(stored.upload_id)
+
+        return attachment_ids
+
+    # ------------------------------------------------------------------
+    # Response delivery (streaming)
+    # ------------------------------------------------------------------
+
+    async def send_response(
+        self,
+        message: InboundMessage,
+        response: OutboundResponse,
+    ) -> None:
+        ctx: dict[str, Any] = message.messenger_context
+        channel_id: str = ctx.get("channel_id", "")
+        thread_id: str | None = ctx.get("thread_id") or ctx.get("thread_ts")
+        workspace_id: str | None = ctx.get("workspace_id")
+        organization_id: str | None = ctx.get("organization_id")
+
+        if not response.text:
+            return
+
+        await self.post_message(
+            channel_id=channel_id,
+            text=response.text,
+            thread_id=thread_id,
+            workspace_id=workspace_id,
+            organization_id=organization_id,
+        )
+
+    async def stream_and_post_responses(
+        self,
+        orchestrator: Any,
+        message: InboundMessage,
+        message_text: str,
+        attachment_ids: list[str] | None = None,
+        organization_id: str | None = None,
+    ) -> int:
+        """Stream orchestrator output and post text segments incrementally.
+
+        Flushes happen when a tool-call boundary arrives, the buffer reaches
+        ``STREAM_FLUSH_CHAR_THRESHOLD``, or ``STREAM_FLUSH_INTERVAL_SECONDS``
+        elapsed since last flush.
+
+        Returns total character count of all posted text.
+        """
+        ctx: dict[str, Any] = message.messenger_context
+        channel_id: str = ctx.get("channel_id", "")
+        thread_id: str | None = ctx.get("thread_id") or ctx.get("thread_ts")
+        workspace_id: str | None = ctx.get("workspace_id")
+
+        current_text: str = ""
+        total_length: int = 0
+        last_flush_at: float = time.monotonic()
+
+        async def _flush(*, reason: str, force: bool = False) -> None:
+            nonlocal current_text, total_length, last_flush_at
+            text_to_send: str = current_text.strip() if force else current_text.strip()
+            if not force:
+                text_to_send = current_text.strip()
+            current_text = "" if force else ""
+
+            if not text_to_send:
+                return
+
+            formatted: str = self.format_text(text_to_send)
+            await self.post_message(
+                channel_id=channel_id,
+                text=formatted,
+                thread_id=thread_id,
+                workspace_id=workspace_id,
+                organization_id=organization_id,
+            )
+            total_length += len(text_to_send)
+            last_flush_at = time.monotonic()
+
+        try:
+            async for chunk in orchestrator.process_message(
+                message_text, attachment_ids=attachment_ids,
+            ):
+                if chunk.startswith("{"):
+                    await _flush(reason="tool_boundary", force=True)
+                    self._handle_json_chunk(chunk, channel_id, thread_id, workspace_id, organization_id)
+                else:
+                    current_text += chunk
+                    size_flush: bool = len(current_text) >= STREAM_FLUSH_CHAR_THRESHOLD
+                    time_flush: bool = (time.monotonic() - last_flush_at) >= STREAM_FLUSH_INTERVAL_SECONDS
+                    if size_flush or time_flush:
+                        await _flush(reason="buffer_size" if size_flush else "interval")
+        except Exception as exc:
+            logger.error("[%s] Error during streaming: %s", self.meta.slug, exc, exc_info=True)
+            current_text += "\nSorry, something went wrong processing your message. Please try again."
+
+        await _flush(reason="stream_end", force=True)
+        return total_length
+
+    def _handle_json_chunk(
+        self,
+        chunk: str,
+        channel_id: str,
+        thread_id: str | None,
+        workspace_id: str | None,
+        organization_id: str | None,
+    ) -> None:
+        """Process a JSON orchestrator chunk (artifacts, apps, etc.). Override to post links."""
+
+    # ------------------------------------------------------------------
+    # Overridden process_inbound with streaming + typing indicator support
+    # ------------------------------------------------------------------
+
+    async def process_inbound(self, message: InboundMessage) -> dict[str, Any]:
+        """Extended pipeline with typing indicators and streaming delivery."""
+        from agents.orchestrator import ChatOrchestrator
+        from services.credits import can_use_credits
+
+        # For thread replies, silently ignore if the bot isn't already
+        # participating in the thread (no existing conversation).
+        if message.message_type == MessageType.THREAD_REPLY:
+            has_conversation: bool = await self._has_existing_conversation(message)
+            if not has_conversation:
+                logger.info(
+                    "[%s] Ignoring thread reply — no existing conversation for thread",
+                    self.meta.slug,
+                )
+                return {"status": "ignored", "reason": "no_existing_thread_conversation"}
+
+        await self.add_typing_indicator(message)
+
+        user: User | None = await self.resolve_user(message)
+        if user is None:
+            await self.send_response(message, OutboundResponse(text=self.unknown_user_message()))
+            await self.remove_typing_indicator(message)
+            return {"status": "rejected", "reason": "unknown_user"}
+
+        org_result: tuple[str, str] | None = await self.resolve_organization(user, message)
+        if org_result is None:
+            await self.remove_typing_indicator(message)
+            return {"status": "error", "error": "no_organization"}
+
+        organization_id, organization_name = org_result
+        message.messenger_context["organization_id"] = organization_id
+
+        if not await can_use_credits(organization_id):
+            await self.send_response(message, OutboundResponse(text=self.no_credits_message()))
+            await self.remove_typing_indicator(message)
+            return {"status": "error", "error": "insufficient_credits"}
+
+        conversation: Conversation = await self.find_or_create_conversation(
+            organization_id, user, message,
+        )
+
+        attachment_ids: list[str] = await self.download_attachments(message)
+        message_text: str = message.text or ("(see attached files)" if attachment_ids else "")
+
+        ctx: dict[str, Any] = message.messenger_context
+        slack_user_email: str | None = ctx.get("user_email")
+
+        orchestrator = ChatOrchestrator(
+            user_id=str(user.id),
+            organization_id=organization_id,
+            conversation_id=str(conversation.id),
+            user_email=user.email,
+            source_user_id=message.external_user_id,
+            source_user_email=slack_user_email or user.email,
+            workflow_context=ctx.get("workflow_context"),
+            source=self.meta.slug,
+            timezone=ctx.get("timezone"),
+            local_time=ctx.get("local_time"),
+        )
+
+        if self.meta.response_mode.value == "streaming":
+            response_task: asyncio.Task[int] = asyncio.create_task(
+                self.stream_and_post_responses(
+                    orchestrator=orchestrator,
+                    message=message,
+                    message_text=message_text,
+                    attachment_ids=attachment_ids or None,
+                    organization_id=organization_id,
+                )
+            )
+            done, _ = await asyncio.wait(
+                {response_task}, timeout=SLOW_REPLY_TIMEOUT_SECONDS,
+            )
+            if response_task in done:
+                total: int = response_task.result()
+                await self.remove_typing_indicator(message)
+                return {
+                    "status": "success",
+                    "conversation_id": str(conversation.id),
+                    "response_length": total,
+                }
+
+            # Slow path: notify user and continue in background
+            channel_id: str = ctx.get("channel_id", "")
+            thread_id: str | None = ctx.get("thread_id") or ctx.get("thread_ts")
+            await self.post_message(
+                channel_id=channel_id,
+                text=SLOW_REPLY_MESSAGE,
+                thread_id=thread_id,
+                workspace_id=ctx.get("workspace_id"),
+                organization_id=organization_id,
+            )
+
+            async def _finish() -> None:
+                try:
+                    await response_task
+                except Exception as exc:
+                    logger.error("[%s] Background response failed: %s", self.meta.slug, exc)
+                finally:
+                    await self.remove_typing_indicator(message)
+
+            asyncio.create_task(_finish())
+            return {"status": "timeout_continuing", "conversation_id": str(conversation.id)}
+
+        # Batch mode (fallback — workspace messengers are usually streaming)
+        return await super().process_inbound(message)
+
+    # ------------------------------------------------------------------
+    # Activity persistence
+    # ------------------------------------------------------------------
+
+    async def persist_channel_activity(
+        self,
+        message: InboundMessage,
+        organization_id: str,
+    ) -> None:
+        """Save a non-DM channel message as an Activity row for analytics."""
+        ctx: dict[str, Any] = message.messenger_context
+        channel_id: str = ctx.get("channel_id", "")
+        ts: str = message.message_id
+        thread_id: str | None = ctx.get("thread_id") or ctx.get("thread_ts")
+
+        source_id: str = f"{channel_id}:{ts}"
+
+        activity_date: datetime | None = None
+        try:
+            activity_date = datetime.utcfromtimestamp(float(ts))
+        except (ValueError, TypeError):
+            pass
+
+        try:
+            async with get_session(organization_id=organization_id) as session:
+                stmt = pg_insert(Activity).values(
+                    id=_uuid.uuid4(),
+                    organization_id=UUID(organization_id),
+                    source_system=self.meta.slug,
+                    source_id=source_id,
+                    type=f"{self.meta.slug}_message",
+                    subject=f"#{channel_id}",
+                    description=message.text[:1000] if message.text else "",
+                    activity_date=activity_date,
+                    custom_fields={
+                        "channel_id": channel_id,
+                        "user_id": message.external_user_id,
+                        "sender_slack_id": message.external_user_id,
+                        "thread_ts": thread_id,
+                    },
+                    synced_at=datetime.utcnow(),
+                ).on_conflict_do_nothing(
+                    index_elements=["organization_id", "source_system", "source_id"],
+                    index_where=text("source_id IS NOT NULL"),
+                )
+                await session.execute(stmt)
+                await session.commit()
+        except Exception as exc:
+            logger.error(
+                "[%s] Failed to persist activity for %s: %s",
+                self.meta.slug, source_id, exc,
+            )
+
+    # ------------------------------------------------------------------
+    # User info caching
+    # ------------------------------------------------------------------
+
+    async def get_cached_user_info(
+        self,
+        workspace_id: str,
+        external_user_id: str,
+    ) -> dict[str, Any] | None:
+        """Get user info with in-memory caching."""
+        cache_key: tuple[str, str, str] = (self.meta.slug, workspace_id, external_user_id)
+        now: float = time.monotonic()
+
+        async with _user_info_cache_lock:
+            cached = _user_info_cache.get(cache_key)
+            if cached and cached[1] > now:
+                return cached[0]
+            _user_info_cache.pop(cache_key, None)
+
+        profile: dict[str, Any] | None = await self.fetch_user_info(
+            workspace_id, external_user_id,
+        )
+
+        ttl: int = _USER_INFO_CACHE_TTL_SECONDS if profile else 120
+        async with _user_info_cache_lock:
+            if len(_user_info_cache) >= _USER_INFO_CACHE_MAX_ENTRIES:
+                expired = [k for k, (_, exp) in _user_info_cache.items() if exp <= now]
+                for k in expired:
+                    del _user_info_cache[k]
+            _user_info_cache[cache_key] = (profile, now + ttl)
+
+        return profile
+
+    # ------------------------------------------------------------------
+    # Mapping upsert
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    async def _upsert_user_mapping(
+        platform: str,
+        workspace_id: str | None,
+        external_user_id: str,
+        user_id: UUID,
+        organization_id: UUID,
+        external_email: str | None = None,
+        match_source: str = "auto",
+    ) -> None:
+        async with get_admin_session() as session:
+            stmt = pg_insert(MessengerUserMapping).values(
+                platform=platform,
+                workspace_id=workspace_id,
+                external_user_id=external_user_id,
+                user_id=user_id,
+                organization_id=organization_id,
+                external_email=external_email,
+                match_source=match_source,
+            ).on_conflict_do_nothing(
+                constraint="uq_messenger_user_mappings_platform_ws_extid",
+            )
+            await session.execute(stmt)
+            await session.commit()

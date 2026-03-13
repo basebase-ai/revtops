@@ -228,15 +228,19 @@ async def _process_inbound_sms(
 ) -> None:
     """Wrapper for background processing with top-level exception handling."""
     try:
-        from services.sms_conversations import process_inbound_sms
+        from messengers.base import InboundMessage, MessageType
+        from messengers.sms import SmsMessenger
 
-        await process_inbound_sms(
-            from_number=from_number,
-            to_number=to_number,
-            body=body,
-            message_sid=message_sid,
-            media_items=media_items,
+        message = InboundMessage(
+            external_user_id=from_number,
+            text=body,
+            message_type=MessageType.DIRECT,
+            raw_attachments=media_items or [],
+            messenger_context={"to_number": to_number},
+            message_id=message_sid,
         )
+        messenger = SmsMessenger()
+        await messenger.process_inbound(message)
     except Exception as e:
         logger.exception("[twilio_events] Background SMS processing failed: %s", e)
 

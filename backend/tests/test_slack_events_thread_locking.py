@@ -1,6 +1,8 @@
 import asyncio
 
 from api.routes import slack_events
+from messengers.base import InboundMessage, MessageType
+from messengers.slack import SlackMessenger
 
 
 def test_thread_lock_manager_serializes_same_thread_work() -> None:
@@ -37,16 +39,17 @@ def test_process_event_callback_serializes_thread_reply_events(monkeypatch) -> N
     async def _fake_is_duplicate_message(_channel_id: str, _message_ts: str) -> bool:
         return False
 
-    async def _fake_process_thread_reply(**_kwargs):
+    async def _fake_process_inbound(self, message: InboundMessage):
         nonlocal overlap_counter, max_overlap
         overlap_counter += 1
         max_overlap = max(max_overlap, overlap_counter)
         await asyncio.sleep(0.03)
         overlap_counter -= 1
+        return {"status": "success"}
 
     monkeypatch.setattr(slack_events, "is_duplicate_event", _fake_is_duplicate_event)
     monkeypatch.setattr(slack_events, "is_duplicate_message", _fake_is_duplicate_message)
-    monkeypatch.setattr(slack_events, "process_slack_thread_reply", _fake_process_thread_reply)
+    monkeypatch.setattr(SlackMessenger, "process_inbound", _fake_process_inbound)
 
     payload_template = {
         "type": "event_callback",
@@ -78,7 +81,7 @@ def test_process_event_callback_serializes_thread_reply_events(monkeypatch) -> N
 
 
 def test_process_event_callback_routes_thread_message_bot_mention_to_mention_handler(monkeypatch) -> None:
-    captured: dict[str, str] = {}
+    captured: list[InboundMessage] = []
 
     async def _fake_is_duplicate_event(_event_id: str) -> bool:
         return False
@@ -86,18 +89,13 @@ def test_process_event_callback_routes_thread_message_bot_mention_to_mention_han
     async def _fake_is_duplicate_message(_channel_id: str, _message_ts: str) -> bool:
         return False
 
-    async def _fake_process_slack_mention(**kwargs):
-        captured["thread_ts"] = kwargs["thread_ts"]
-        captured["message_text"] = kwargs["message_text"]
-        captured["channel_id"] = kwargs["channel_id"]
-
-    async def _fake_process_slack_thread_reply(**_kwargs):
-        raise AssertionError("thread reply handler should not be called")
+    async def _fake_process_inbound(self, message: InboundMessage):
+        captured.append(message)
+        return {"status": "success"}
 
     monkeypatch.setattr(slack_events, "is_duplicate_event", _fake_is_duplicate_event)
     monkeypatch.setattr(slack_events, "is_duplicate_message", _fake_is_duplicate_message)
-    monkeypatch.setattr(slack_events, "process_slack_mention", _fake_process_slack_mention)
-    monkeypatch.setattr(slack_events, "process_slack_thread_reply", _fake_process_slack_thread_reply)
+    monkeypatch.setattr(SlackMessenger, "process_inbound", _fake_process_inbound)
 
     payload = {
         "type": "event_callback",
@@ -117,11 +115,12 @@ def test_process_event_callback_routes_thread_message_bot_mention_to_mention_han
 
     asyncio.run(slack_events._process_event_callback_impl(payload))
 
-    assert captured == {
-        "thread_ts": "1700000000.001",
-        "message_text": "can you help in this thread?",
-        "channel_id": "C123",
-    }
+    assert len(captured) == 1
+    msg: InboundMessage = captured[0]
+    assert msg.message_type == MessageType.MENTION
+    assert msg.text == "can you help in this thread?"
+    assert msg.messenger_context["channel_id"] == "C123"
+    assert msg.messenger_context["thread_ts"] == "1700000000.001"
 
 
 def test_strip_bot_mentions_removes_only_known_bot_mentions() -> None:

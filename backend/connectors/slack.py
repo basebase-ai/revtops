@@ -711,7 +711,7 @@ Send a message to a Slack channel, DM, or user.
 
     async def sync_all(self) -> dict[str, int]:
         """Run all sync operations."""
-        from services.slack_conversations import (
+        from services.slack_identity import (
             refresh_slack_user_mappings_from_directory,
             refresh_slack_user_mappings_for_org,
             upsert_slack_user_mapping_from_nango_action,

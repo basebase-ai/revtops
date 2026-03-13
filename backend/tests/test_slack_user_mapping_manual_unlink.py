@@ -2,7 +2,7 @@ import asyncio
 from types import SimpleNamespace
 from uuid import UUID
 
-from services import slack_conversations
+from services import slack_identity
 
 
 class _FakeExecuteResult:
@@ -50,13 +50,13 @@ def test_upsert_for_user_does_not_promote_manual_unlink(monkeypatch):
     )
     fake_session = _FakeSession(rows=[manual_unlink_mapping])
     monkeypatch.setattr(
-        slack_conversations,
+        slack_identity,
         "get_admin_session",
         lambda: _FakeSessionContext(fake_session),
     )
 
     asyncio.run(
-        slack_conversations._upsert_slack_user_mapping(
+        slack_identity._upsert_slack_user_mapping(
             organization_id="11111111-1111-1111-1111-111111111111",
             user_id=UUID("22222222-2222-2222-2222-222222222222"),
             slack_user_id="U123",
@@ -81,13 +81,13 @@ def test_unmapped_upsert_does_not_mutate_manual_unlink(monkeypatch):
     )
     fake_session = _FakeSession(rows=[manual_unlink_mapping])
     monkeypatch.setattr(
-        slack_conversations,
+        slack_identity,
         "get_admin_session",
         lambda: _FakeSessionContext(fake_session),
     )
 
     asyncio.run(
-        slack_conversations._upsert_slack_user_mapping(
+        slack_identity._upsert_slack_user_mapping(
             organization_id="11111111-1111-1111-1111-111111111111",
             user_id=None,
             slack_user_id="U123",

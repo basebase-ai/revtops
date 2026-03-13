@@ -1,0 +1,13 @@
+---
+description: Run build and test checks before creating a PR
+alwaysApply: true
+---
+
+# Pre-PR Checks
+
+Before creating a pull request, always run these checks and fix any failures:
+
+1. **Frontend build**: `npm run build` (from the project root or frontend directory)
+2. **Backend tests**: `pytest -q tests` (from `backend/`)
+
+Do not create the PR until both pass cleanly.

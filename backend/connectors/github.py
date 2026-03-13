@@ -28,7 +28,7 @@ from models.database import get_session
 from models.github_commit import GitHubCommit
 from models.github_pull_request import GitHubPullRequest
 from models.github_repository import GitHubRepository
-from models.slack_user_mapping import SlackUserMapping
+from models.external_identity_mapping import ExternalIdentityMapping
 from models.user import User
 
 logger = logging.getLogger(__name__)
@@ -334,13 +334,13 @@ Use `run_sql_query` on `github_repositories`, `github_commits`, `github_pull_req
         # 1. Check existing mapping (prefer rows with user_id; tolerate duplicates)
         async with get_session(organization_id=self.organization_id) as session:
             result = await session.execute(
-                select(SlackUserMapping.user_id)
+                select(ExternalIdentityMapping.user_id)
                 .where(
-                    SlackUserMapping.organization_id == org_uuid,
-                    SlackUserMapping.external_userid == login,
-                    SlackUserMapping.source == "github",
+                    ExternalIdentityMapping.organization_id == org_uuid,
+                    ExternalIdentityMapping.external_userid == login,
+                    ExternalIdentityMapping.source == "github",
                 )
-                .order_by(SlackUserMapping.user_id.desc().nulls_last())
+                .order_by(ExternalIdentityMapping.user_id.desc().nulls_last())
                 .limit(1)
             )
             mapping_user_id: UUID | None = result.scalar_one_or_none()
@@ -388,16 +388,16 @@ Use `run_sql_query` on `github_repositories`, `github_commits`, `github_pull_req
         """
         org_uuid: UUID = UUID(self.organization_id)
         existing = await session.execute(
-            select(SlackUserMapping)
+            select(ExternalIdentityMapping)
             .where(
-                SlackUserMapping.organization_id == org_uuid,
-                SlackUserMapping.external_userid == github_login,
-                SlackUserMapping.source == "github",
+                ExternalIdentityMapping.organization_id == org_uuid,
+                ExternalIdentityMapping.external_userid == github_login,
+                ExternalIdentityMapping.source == "github",
             )
-            .order_by(SlackUserMapping.user_id.desc().nulls_last())
+            .order_by(ExternalIdentityMapping.user_id.desc().nulls_last())
             .limit(1)
         )
-        mapping: SlackUserMapping | None = existing.scalar_one_or_none()
+        mapping: ExternalIdentityMapping | None = existing.scalar_one_or_none()
 
         if mapping:
             if not mapping.user_id and user_id:
@@ -409,7 +409,7 @@ Use `run_sql_query` on `github_repositories`, `github_commits`, `github_pull_req
                 mapping.external_email = github_email
         else:
             session.add(
-                SlackUserMapping(
+                ExternalIdentityMapping(
                     id=uuid_mod.uuid4(),
                     organization_id=org_uuid,
                     user_id=user_id,
@@ -515,12 +515,12 @@ Use `run_sql_query` on `github_repositories`, `github_commits`, `github_pull_req
         async with get_session(organization_id=self.organization_id) as session:
             result = await session.execute(
                 select(
-                    SlackUserMapping.external_userid,
-                    SlackUserMapping.user_id,
+                    ExternalIdentityMapping.external_userid,
+                    ExternalIdentityMapping.user_id,
                 ).where(
-                    SlackUserMapping.organization_id == org_uuid,
-                    SlackUserMapping.source == "github",
-                    SlackUserMapping.user_id.isnot(None),
+                    ExternalIdentityMapping.organization_id == org_uuid,
+                    ExternalIdentityMapping.source == "github",
+                    ExternalIdentityMapping.user_id.isnot(None),
                 )
             )
             login_to_user: dict[str, UUID] = {

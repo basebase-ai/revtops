@@ -37,7 +37,7 @@ from models.user import User
 from models.organization import Organization
 from services.favicon import update_org_logo_from_website
 from services.nango import extract_connection_metadata, get_nango_client
-from services.slack_conversations import upsert_slack_user_mappings_from_metadata
+from services.slack_identity import upsert_slack_user_mappings_from_metadata
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -1273,7 +1273,7 @@ async def get_organization_members(
     Only accessible by members of that organization.
     Uses JWT to identify the requester.
     """
-    from models.slack_user_mapping import SlackUserMapping
+    from models.external_identity_mapping import ExternalIdentityMapping as SlackUserMapping
     from models.org_member import OrgMember
 
     try:
@@ -1449,7 +1449,7 @@ async def link_identity(
 
     Reassigns the mapping's ``user_id`` and ``revtops_email`` to the target user.
     """
-    from models.slack_user_mapping import SlackUserMapping
+    from models.external_identity_mapping import ExternalIdentityMapping as SlackUserMapping
 
     if not user_id:
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -1552,7 +1552,7 @@ async def unlink_identity(
     - Users can always unlink identities currently linked to themselves.
     - Users with link-identity permission can unlink any identity in the org.
     """
-    from models.slack_user_mapping import SlackUserMapping
+    from models.external_identity_mapping import ExternalIdentityMapping as SlackUserMapping
 
     if not user_id:
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -1804,7 +1804,7 @@ async def invite_missing_slack_users_to_organization(
 ) -> SlackMissingInviteResponse:
     """Invite Slack users (with email) who are not already present in the org."""
     from models.org_member import OrgMember
-    from models.slack_user_mapping import SlackUserMapping
+    from models.external_identity_mapping import ExternalIdentityMapping as SlackUserMapping
     from services.email import send_org_invitation_email
 
     if not user_id:
@@ -2168,7 +2168,7 @@ async def remove_organization_member(
     Requires org admin for this org, or global_admin.
     """
     from models.org_member import OrgMember
-    from models.slack_user_mapping import SlackUserMapping
+    from models.external_identity_mapping import ExternalIdentityMapping as SlackUserMapping
 
     if not user_id:
         raise HTTPException(status_code=401, detail="Not authenticated")

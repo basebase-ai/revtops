@@ -16,9 +16,9 @@ from config import get_redis_connection_kwargs, settings
 from connectors.slack import SlackConnector
 from models.database import get_admin_session, get_session
 from models.integration import Integration
-from models.slack_user_mapping import SlackUserMapping
+from models.external_identity_mapping import ExternalIdentityMapping
 from models.user import User
-from services import slack_conversations
+from services import slack_identity
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -121,7 +121,7 @@ def _normalize_email(email: str) -> str:
             original,
             normalized,
         )
-    if not slack_conversations.EMAIL_PATTERN.fullmatch(normalized):
+    if not slack_identity.EMAIL_PATTERN.fullmatch(normalized):
         raise HTTPException(status_code=400, detail="Invalid email address")
     return normalized
 
@@ -138,11 +138,11 @@ async def list_user_mappings_for_identity(
             {"org_id": str(org_uuid)},
         )
         result = await session.execute(
-            select(SlackUserMapping)
-            .where(SlackUserMapping.organization_id == org_uuid)
-            .where(SlackUserMapping.source == "slack")
-            .where(SlackUserMapping.user_id == user_uuid)
-            .order_by(SlackUserMapping.created_at.desc())
+            select(ExternalIdentityMapping)
+            .where(ExternalIdentityMapping.organization_id == org_uuid)
+            .where(ExternalIdentityMapping.source == "slack")
+            .where(ExternalIdentityMapping.user_id == user_uuid)
+            .order_by(ExternalIdentityMapping.created_at.desc())
         )
         mappings = result.scalars().all()
 
@@ -177,11 +177,11 @@ async def request_slack_user_mapping_code(
             {"org_id": str(org_uuid)},
         )
         result = await session.execute(
-            select(SlackUserMapping)
-            .where(SlackUserMapping.organization_id == org_uuid)
-            .where(SlackUserMapping.source == "slack")
-            .where(SlackUserMapping.external_email == email)
-            .order_by(SlackUserMapping.updated_at.desc())
+            select(ExternalIdentityMapping)
+            .where(ExternalIdentityMapping.organization_id == org_uuid)
+            .where(ExternalIdentityMapping.source == "slack")
+            .where(ExternalIdentityMapping.external_email == email)
+            .order_by(ExternalIdentityMapping.updated_at.desc())
         )
         matched_mappings = result.scalars().all()
 
@@ -342,7 +342,7 @@ async def verify_slack_user_mapping_code(
     if not slack_user_id:
         raise HTTPException(status_code=400, detail="Slack user information missing")
 
-    await slack_conversations.upsert_slack_user_mapping_for_user(
+    await slack_identity.upsert_slack_user_mapping_for_user(
         organization_id=str(org_uuid),
         user_id=user_uuid,
         slack_user_id=slack_user_id,
@@ -378,11 +378,11 @@ async def delete_slack_user_mapping(
             {"org_id": str(org_uuid)},
         )
         result = await session.execute(
-            select(SlackUserMapping)
-            .where(SlackUserMapping.id == mapping_uuid)
-            .where(SlackUserMapping.organization_id == org_uuid)
-            .where(SlackUserMapping.source == "slack")
-            .where(SlackUserMapping.user_id == user_uuid)
+            select(ExternalIdentityMapping)
+            .where(ExternalIdentityMapping.id == mapping_uuid)
+            .where(ExternalIdentityMapping.organization_id == org_uuid)
+            .where(ExternalIdentityMapping.source == "slack")
+            .where(ExternalIdentityMapping.user_id == user_uuid)
         )
         mapping = result.scalar_one_or_none()
         if not mapping:

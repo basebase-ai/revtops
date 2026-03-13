@@ -27,7 +27,7 @@ from connectors.registry import (
     AuthType, Capability, ConnectorMeta, ConnectorScope, WriteOperation,
 )
 from models.database import get_session
-from models.slack_user_mapping import SlackUserMapping
+from models.external_identity_mapping import ExternalIdentityMapping
 from models.tracker_issue import TrackerIssue
 from models.tracker_project import TrackerProject
 from models.tracker_team import TrackerTeam
@@ -1002,13 +1002,13 @@ Use `write_on_connector(connector='linear', operation='...', data={...})` with `
                     candidates.append(user.email)
 
             mapping_rows = await session.execute(
-                select(SlackUserMapping).where(
-                    SlackUserMapping.organization_id == org_uuid,
-                    SlackUserMapping.user_id == user_uuid,
-                    SlackUserMapping.source == "linear",
+                select(ExternalIdentityMapping).where(
+                    ExternalIdentityMapping.organization_id == org_uuid,
+                    ExternalIdentityMapping.user_id == user_uuid,
+                    ExternalIdentityMapping.source == "linear",
                 )
             )
-            mappings: list[SlackUserMapping] = list(mapping_rows.scalars().all())
+            mappings: list[ExternalIdentityMapping] = list(mapping_rows.scalars().all())
             for mapping in mappings:
                 if mapping.external_userid:
                     candidates.append(mapping.external_userid)

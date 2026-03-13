@@ -1,17 +1,13 @@
 """
-SMS conversation service.
+SMS conversation service — **DEPRECATED**.
 
-Handles processing inbound SMS messages (via Twilio) and routing them
-through the agent orchestrator.  Mirrors the Slack conversation flow in
-``services/slack_conversations.py`` but adapted for the SMS channel.
+This module is superseded by ``messengers/_twilio_phone.py`` and
+``messengers/sms.py``.  The Twilio webhook route now uses
+``SmsMessenger.process_inbound()`` instead of ``process_inbound_sms()``.
 
-Flow:
-1. Normalise the sender phone number
-2. Look up the RevTops user by phone_number (admin session — org unknown)
-3. Resolve the organisation (single-org fast path, multi-org qualifying question)
-4. Find or create a conversation (source='sms', keyed on phone number + org)
-5. Stream the response from the ChatOrchestrator
-6. Send the reply back via SMS (split into <=1600 char segments)
+This file is kept temporarily because some helper functions (e.g.
+``_download_twilio_media``) are imported by ``whatsapp_conversations.py``.
+Both files will be deleted once the Slack messenger migration is complete.
 """
 from __future__ import annotations
 

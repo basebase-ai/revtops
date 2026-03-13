@@ -24,7 +24,7 @@ from models.activity import Activity
 from models.contact import Contact
 from models.database import get_session
 from models.deal import Deal
-from models.slack_user_mapping import SlackUserMapping
+from models.external_identity_mapping import ExternalIdentityMapping
 from models.user import User
 
 # Salesforce API version
@@ -557,13 +557,13 @@ class SalesforceConnector(BaseConnector):
         async with get_session(organization_id=self.organization_id) as session:
             # Look up by external_userid in user_mappings_for_identity
             result = await session.execute(
-                select(SlackUserMapping).where(
-                    SlackUserMapping.organization_id == org_uuid,
-                    SlackUserMapping.external_userid == sf_user_id,
-                    SlackUserMapping.source == "salesforce",
+                select(ExternalIdentityMapping).where(
+                    ExternalIdentityMapping.organization_id == org_uuid,
+                    ExternalIdentityMapping.external_userid == sf_user_id,
+                    ExternalIdentityMapping.source == "salesforce",
                 )
             )
-            mapping: SlackUserMapping | None = result.scalar_one_or_none()
+            mapping: ExternalIdentityMapping | None = result.scalar_one_or_none()
 
             if mapping and mapping.user_id:
                 return mapping.user_id

@@ -25,7 +25,8 @@ from models.database import Base
 # Conversation types
 ConversationType = Literal["agent", "workflow"]
 
-# Conversation sources
+# Conversation sources — should match messenger slugs from messengers.registry.
+# New sources are added by creating a new messenger in backend/messengers/.
 ConversationSource = Literal["web", "slack", "sms", "whatsapp"]
 
 # Conversation scopes

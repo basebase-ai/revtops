@@ -36,7 +36,7 @@ from models.chat_message import ChatMessage
 from models.conversation import Conversation
 from models.user import User
 from services.file_handler import store_file, MAX_FILE_SIZE
-from services.slack_conversations import get_slack_user_ids_for_revtops_user
+from services.slack_identity import get_slack_user_ids_for_revtops_user
 
 
 router = APIRouter()

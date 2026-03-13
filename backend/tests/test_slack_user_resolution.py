@@ -1,18 +1,10 @@
+"""Tests for Slack identity resolution functions in services.slack_identity."""
 import asyncio
 
-import pytest
 from types import SimpleNamespace
 from uuid import UUID
 
-from services import slack_conversations
-
-
-@pytest.fixture(autouse=True)
-def _clear_slack_team_cache():
-    slack_conversations._slack_team_org_cache.clear()
-    yield
-    slack_conversations._slack_team_org_cache.clear()
-
+from services import slack_identity
 
 
 class _FakeScalarResult:
@@ -55,19 +47,6 @@ class _FakeAdminSessionContext:
         return False
 
 
-class _RaisingSession:
-    async def execute(self, _query):
-        raise RuntimeError("db down")
-
-
-class _RaisingAdminSessionContext:
-    async def __aenter__(self):
-        return _RaisingSession()
-
-    async def __aexit__(self, exc_type, exc, tb):
-        return False
-
-
 class _FakeSlackConnector:
     def __init__(self, organization_id: str, team_id: str | None = None):
         self.organization_id = organization_id
@@ -101,14 +80,14 @@ def test_resolve_revtops_user_falls_back_to_connected_slack_name_match(monkeypat
     ]
 
     monkeypatch.setattr(
-        slack_conversations,
+        slack_identity,
         "get_admin_session",
         lambda: _FakeAdminSessionContext([users, integrations, []]),
     )
-    monkeypatch.setattr(slack_conversations, "SlackConnector", _FakeSlackConnector)
+    monkeypatch.setattr(slack_identity, "SlackConnector", _FakeSlackConnector)
 
     resolved = asyncio.run(
-        slack_conversations.resolve_revtops_user_for_slack_actor(
+        slack_identity.resolve_revtops_user_for_slack_actor(
             organization_id=org_id,
             slack_user_id="U123",
         )
@@ -116,67 +95,6 @@ def test_resolve_revtops_user_falls_back_to_connected_slack_name_match(monkeypat
 
     assert resolved is not None
     assert resolved.id == jane_id
-
-
-
-
-def test_find_organization_by_slack_team_uses_cache(monkeypatch):
-    org_id = "11111111-1111-1111-1111-111111111111"
-    integration = SimpleNamespace(
-        provider="slack",
-        is_active=True,
-        organization_id=org_id,
-        extra_data={"team_id": "T123"},
-    )
-    calls = {"count": 0}
-
-    def _fake_admin_session():
-        calls["count"] += 1
-        return _FakeAdminSessionContext([[integration]])
-
-    monkeypatch.setattr(slack_conversations, "get_admin_session", _fake_admin_session)
-
-    first = asyncio.run(slack_conversations.find_organization_by_slack_team("T123"))
-    second = asyncio.run(slack_conversations.find_organization_by_slack_team("T123"))
-
-    assert first == org_id
-    assert second == org_id
-    assert calls["count"] == 1
-
-
-def test_find_organization_by_slack_team_normalizes_whitespace_and_case(monkeypatch):
-    org_id = "11111111-1111-1111-1111-111111111111"
-    integration = SimpleNamespace(
-        provider="slack",
-        is_active=True,
-        organization_id=org_id,
-        extra_data={"team_id": " t123 "},
-    )
-
-    monkeypatch.setattr(
-        slack_conversations,
-        "get_admin_session",
-        lambda: _FakeAdminSessionContext([[integration]]),
-    )
-
-    resolved = asyncio.run(
-        slack_conversations.find_organization_by_slack_team("T123")
-    )
-
-    assert resolved == org_id
-
-def test_find_organization_by_slack_team_returns_none_when_lookup_fails(monkeypatch):
-    monkeypatch.setattr(
-        slack_conversations,
-        "get_admin_session",
-        lambda: _RaisingAdminSessionContext(),
-    )
-
-    resolved = asyncio.run(
-        slack_conversations.find_organization_by_slack_team("T123")
-    )
-
-    assert resolved is None
 
 
 def test_resolve_revtops_user_matches_slack_metadata(monkeypatch):
@@ -196,7 +114,7 @@ def test_resolve_revtops_user_matches_slack_metadata(monkeypatch):
     ]
 
     monkeypatch.setattr(
-        slack_conversations,
+        slack_identity,
         "get_admin_session",
         lambda: _FakeAdminSessionContext([users, integrations, []]),
     )
@@ -205,10 +123,10 @@ def test_resolve_revtops_user_matches_slack_metadata(monkeypatch):
         def __init__(self, organization_id: str, team_id: str | None = None):
             raise AssertionError("SlackConnector should not be called when metadata matches")
 
-    monkeypatch.setattr(slack_conversations, "SlackConnector", _NoSlackConnector)
+    monkeypatch.setattr(slack_identity, "SlackConnector", _NoSlackConnector)
 
     resolved = asyncio.run(
-        slack_conversations.resolve_revtops_user_for_slack_actor(
+        slack_identity.resolve_revtops_user_for_slack_actor(
             organization_id=org_id,
             slack_user_id="U456",
         )
@@ -216,8 +134,6 @@ def test_resolve_revtops_user_matches_slack_metadata(monkeypatch):
 
     assert resolved is not None
     assert resolved.id == jane_id
-
-
 
 
 def test_resolve_revtops_user_uses_legacy_mapping_source_and_normalizes_id(monkeypatch):
@@ -238,7 +154,7 @@ def test_resolve_revtops_user_uses_legacy_mapping_source_and_normalizes_id(monke
     ]
 
     monkeypatch.setattr(
-        slack_conversations,
+        slack_identity,
         "get_admin_session",
         lambda: _FakeAdminSessionContext([users, integrations, mappings]),
     )
@@ -247,10 +163,10 @@ def test_resolve_revtops_user_uses_legacy_mapping_source_and_normalizes_id(monke
         def __init__(self, organization_id: str, team_id: str | None = None):
             raise AssertionError("SlackConnector should not be called when legacy mapping exists")
 
-    monkeypatch.setattr(slack_conversations, "SlackConnector", _NoSlackConnector)
+    monkeypatch.setattr(slack_identity, "SlackConnector", _NoSlackConnector)
 
     resolved = asyncio.run(
-        slack_conversations.resolve_revtops_user_for_slack_actor(
+        slack_identity.resolve_revtops_user_for_slack_actor(
             organization_id=org_id,
             slack_user_id=" u888 ",
         )
@@ -273,7 +189,7 @@ def test_resolve_revtops_user_uses_existing_mapping(monkeypatch):
     ]
 
     monkeypatch.setattr(
-        slack_conversations,
+        slack_identity,
         "get_admin_session",
         lambda: _FakeAdminSessionContext([users, integrations, mappings]),
     )
@@ -282,10 +198,10 @@ def test_resolve_revtops_user_uses_existing_mapping(monkeypatch):
         def __init__(self, organization_id: str, team_id: str | None = None):
             raise AssertionError("SlackConnector should not be called when mapping exists")
 
-    monkeypatch.setattr(slack_conversations, "SlackConnector", _NoSlackConnector)
+    monkeypatch.setattr(slack_identity, "SlackConnector", _NoSlackConnector)
 
     resolved = asyncio.run(
-        slack_conversations.resolve_revtops_user_for_slack_actor(
+        slack_identity.resolve_revtops_user_for_slack_actor(
             organization_id=org_id,
             slack_user_id="U999",
         )
@@ -304,26 +220,28 @@ def test_resolve_revtops_user_falls_back_to_guest_when_slack_profile_missing(mon
     ]
 
     monkeypatch.setattr(
-        slack_conversations,
+        slack_identity,
         "get_admin_session",
         lambda: _FakeAdminSessionContext([users, [], []]),
     )
+
     async def _fake_fetch_slack_user_info(organization_id: str, slack_user_id: str):
         return None
 
     monkeypatch.setattr(
-        slack_conversations,
+        slack_identity,
         "_fetch_slack_user_info",
         _fake_fetch_slack_user_info,
     )
     guest_user = SimpleNamespace(id=guest_id, is_guest=True)
+
     async def _fake_resolve_guest(_organization_id: str):
         return guest_user
 
-    monkeypatch.setattr(slack_conversations, "_resolve_guest_user_for_org", _fake_resolve_guest)
+    monkeypatch.setattr(slack_identity, "_resolve_guest_user_for_org", _fake_resolve_guest)
 
     resolved = asyncio.run(
-        slack_conversations.resolve_revtops_user_for_slack_actor(
+        slack_identity.resolve_revtops_user_for_slack_actor(
             organization_id=org_id,
             slack_user_id="U404",
         )
@@ -337,13 +255,14 @@ def test_resolve_revtops_user_falls_back_to_guest_for_empty_slack_id(monkeypatch
     org_id = "11111111-1111-1111-1111-111111111111"
     guest_id = UUID("33333333-3333-3333-3333-333333333333")
     guest_user = SimpleNamespace(id=guest_id, is_guest=True)
+
     async def _fake_resolve_guest(_organization_id: str):
         return guest_user
 
-    monkeypatch.setattr(slack_conversations, "_resolve_guest_user_for_org", _fake_resolve_guest)
+    monkeypatch.setattr(slack_identity, "_resolve_guest_user_for_org", _fake_resolve_guest)
 
     resolved = asyncio.run(
-        slack_conversations.resolve_revtops_user_for_slack_actor(
+        slack_identity.resolve_revtops_user_for_slack_actor(
             organization_id=org_id,
             slack_user_id="   ",
         )
@@ -351,399 +270,3 @@ def test_resolve_revtops_user_falls_back_to_guest_for_empty_slack_id(monkeypatch
 
     assert resolved is not None
     assert resolved.id == guest_id
-
-
-def test_merge_participating_user_ids_adds_unique_uuid():
-    existing = [UUID("11111111-1111-1111-1111-111111111111")]
-
-    merged = slack_conversations._merge_participating_user_ids(
-        existing,
-        "22222222-2222-2222-2222-222222222222",
-    )
-
-    assert merged == [
-        UUID("11111111-1111-1111-1111-111111111111"),
-        UUID("22222222-2222-2222-2222-222222222222"),
-    ]
-
-
-def test_merge_participating_user_ids_moves_duplicate_to_end_for_recency():
-    existing = [
-        UUID("11111111-1111-1111-1111-111111111111"),
-        UUID("22222222-2222-2222-2222-222222222222"),
-    ]
-
-    merged = slack_conversations._merge_participating_user_ids(
-        existing,
-        "11111111-1111-1111-1111-111111111111",
-    )
-
-    assert merged == [
-        UUID("22222222-2222-2222-2222-222222222222"),
-        UUID("11111111-1111-1111-1111-111111111111"),
-    ]
-
-
-def test_resolve_current_revtops_user_id_prefers_linked_user_then_latest_participant():
-    linked_user = SimpleNamespace(id=UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"))
-    conversation = SimpleNamespace(
-        user_id=UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
-        participating_user_ids=[UUID("cccccccc-cccc-cccc-cccc-cccccccccccc")],
-    )
-
-    resolved_with_link = slack_conversations._resolve_current_revtops_user_id(
-        linked_user=linked_user,
-        conversation=conversation,
-    )
-    assert resolved_with_link == "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
-
-    resolved_without_link = slack_conversations._resolve_current_revtops_user_id(
-        linked_user=None,
-        conversation=conversation,
-    )
-    assert resolved_without_link == "cccccccc-cccc-cccc-cccc-cccccccccccc"
-
-
-def test_resolve_current_revtops_user_id_uses_last_participant_when_primary_missing():
-    conversation = SimpleNamespace(
-        user_id=None,
-        participating_user_ids=[
-            UUID("cccccccc-cccc-cccc-cccc-cccccccccccc"),
-            UUID("dddddddd-dddd-dddd-dddd-dddddddddddd"),
-        ],
-    )
-
-    resolved_fallback = slack_conversations._resolve_current_revtops_user_id(
-        linked_user=None,
-        conversation=conversation,
-    )
-    assert resolved_fallback == "dddddddd-dddd-dddd-dddd-dddddddddddd"
-
-
-def test_resolve_current_revtops_user_id_falls_back_to_primary_when_no_participants():
-    conversation = SimpleNamespace(
-        user_id=UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
-        participating_user_ids=[],
-    )
-
-    resolved_fallback = slack_conversations._resolve_current_revtops_user_id(
-        linked_user=None,
-        conversation=conversation,
-    )
-    assert resolved_fallback == "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
-
-
-def test_resolve_thread_active_user_id_uses_new_linked_speaker_on_handoff():
-    linked_user = SimpleNamespace(id=UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"))
-    conversation = SimpleNamespace(
-        user_id=UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
-        participating_user_ids=[UUID("cccccccc-cccc-cccc-cccc-cccccccccccc")],
-    )
-
-    resolved = slack_conversations._resolve_thread_active_user_id(
-        linked_user=linked_user,
-        conversation=conversation,
-        speaker_changed=True,
-    )
-
-    assert resolved == "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
-
-
-def test_resolve_thread_active_user_id_clears_active_user_on_unresolved_handoff():
-    conversation = SimpleNamespace(
-        user_id=UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
-        participating_user_ids=[UUID("cccccccc-cccc-cccc-cccc-cccccccccccc")],
-    )
-
-    resolved = slack_conversations._resolve_thread_active_user_id(
-        linked_user=None,
-        conversation=conversation,
-        speaker_changed=True,
-    )
-
-    assert resolved is None
-
-
-def test_process_slack_thread_reply_applies_speaker_and_global_handoff_before_other_processing(monkeypatch):
-    events: list[str] = []
-    conversation = SimpleNamespace(
-        id=UUID("99999999-9999-9999-9999-999999999999"),
-        source_user_id="U_OLD",
-        user_id=UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
-        participating_user_ids=[UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")],
-    )
-
-    class _FakeSlackConnectorForThread:
-        def __init__(self, organization_id: str, team_id: str | None = None):
-            self.organization_id = organization_id
-
-        async def add_reaction(self, channel: str, timestamp: str):
-            events.append("add_reaction")
-
-        async def remove_reaction(self, channel: str, timestamp: str):
-            events.append("remove_reaction")
-
-    async def _fake_find_org(_team_id: str):
-        return "11111111-1111-1111-1111-111111111111"
-
-    async def _fake_find_thread_conversation(**_kwargs):
-        return conversation
-
-    async def _fake_find_or_create_conversation(**kwargs):
-        events.append(f"find_or_create:{kwargs['slack_user_id']}:{kwargs['revtops_user_id']}")
-        if kwargs["slack_user_id"] == "U_NEW" and kwargs["revtops_user_id"] is None:
-            conversation.source_user_id = "U_NEW"
-            conversation.user_id = None
-        if kwargs["revtops_user_id"]:
-            conversation.user_id = UUID(kwargs["revtops_user_id"])
-        return conversation
-
-    async def _fake_fetch_slack_user_info(**_kwargs):
-        events.append("fetch_slack_user")
-        return {}
-
-    async def _fake_resolve_user(**_kwargs):
-        events.append("resolve_user")
-        return SimpleNamespace(
-            id=UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
-            email="new.user@acme.com",
-        )
-
-    async def _fake_stream_and_post_responses(**_kwargs):
-        events.append("stream")
-        return 3
-
-    async def _fake_can_use_credits(_org_id: str) -> bool:
-        return True
-
-    monkeypatch.setattr(slack_conversations, "find_organization_by_slack_team", _fake_find_org)
-    monkeypatch.setattr(slack_conversations, "find_thread_conversation", _fake_find_thread_conversation)
-    monkeypatch.setattr(slack_conversations, "find_or_create_conversation", _fake_find_or_create_conversation)
-    monkeypatch.setattr(slack_conversations, "_fetch_slack_user_info", _fake_fetch_slack_user_info)
-    monkeypatch.setattr(slack_conversations, "resolve_revtops_user_for_slack_actor", _fake_resolve_user)
-    monkeypatch.setattr(slack_conversations, "_stream_and_post_responses", _fake_stream_and_post_responses)
-    monkeypatch.setattr(slack_conversations, "SlackConnector", _FakeSlackConnectorForThread)
-    monkeypatch.setattr(slack_conversations, "can_use_credits", _fake_can_use_credits)
-
-    result = asyncio.run(
-        slack_conversations.process_slack_thread_reply(
-            team_id="T123",
-            channel_id="C123",
-            user_id="U_NEW",
-            message_text="hello",
-            thread_ts="111.222",
-            event_ts="111.333",
-            files=None,
-        )
-    )
-
-    assert result["status"] == "success"
-    assert events.index("add_reaction") < events.index("fetch_slack_user")
-    assert events.index("find_or_create:U_NEW:None") < events.index("fetch_slack_user")
-    assert events.index("add_reaction") < events.index("find_or_create:U_NEW:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
-
-
-def test_process_slack_mention_returns_identity_unmapped_for_unresolved_speaker_handoff(monkeypatch):
-    events: list[str] = []
-    existing_conversation = SimpleNamespace(
-        id=UUID("99999999-9999-9999-9999-999999999999"),
-        source_user_id="U_OLD",
-        user_id=UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
-        participating_user_ids=[UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")],
-    )
-    persisted_conversation = SimpleNamespace(
-        id=existing_conversation.id,
-        source_user_id="U_NEW",
-        user_id=None,
-        participating_user_ids=[UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")],
-    )
-
-    class _FakeSlackConnectorForMention:
-        def __init__(self, organization_id: str, team_id: str | None = None):
-            self.organization_id = organization_id
-
-        async def add_reaction(self, channel: str, timestamp: str):
-            events.append("add_reaction")
-
-        async def remove_reaction(self, channel: str, timestamp: str):
-            events.append("remove_reaction")
-
-        async def post_message(self, channel: str, text: str, thread_ts: str | None = None):
-            events.append(f"post_message:{thread_ts}")
-
-    async def _fake_find_org(_team_id: str):
-        return "11111111-1111-1111-1111-111111111111"
-
-    async def _fake_fetch_slack_user_info(**_kwargs):
-        return {}
-
-    async def _fake_resolve_user(**_kwargs):
-        return None
-
-    async def _fake_find_thread_conversation(**_kwargs):
-        return existing_conversation
-
-    async def _fake_find_or_create_conversation(**kwargs):
-        events.append(
-            f"find_or_create:{kwargs['slack_user_id']}:{kwargs['revtops_user_id']}:{kwargs['clear_current_user_on_unresolved']}"
-        )
-        return persisted_conversation
-
-    async def _fake_stream_and_post_responses(**kwargs):
-        events.append(f"stream_user_id:{kwargs['orchestrator'].user_id}")
-        return 2
-
-    async def _fake_can_use_credits(_org_id: str) -> bool:
-        return True
-
-    monkeypatch.setattr(slack_conversations, "find_organization_by_slack_team", _fake_find_org)
-    monkeypatch.setattr(slack_conversations, "_fetch_slack_user_info", _fake_fetch_slack_user_info)
-    monkeypatch.setattr(slack_conversations, "resolve_revtops_user_for_slack_actor", _fake_resolve_user)
-    monkeypatch.setattr(slack_conversations, "find_thread_conversation", _fake_find_thread_conversation)
-    monkeypatch.setattr(slack_conversations, "find_or_create_conversation", _fake_find_or_create_conversation)
-    monkeypatch.setattr(slack_conversations, "_stream_and_post_responses", _fake_stream_and_post_responses)
-    monkeypatch.setattr(slack_conversations, "SlackConnector", _FakeSlackConnectorForMention)
-    monkeypatch.setattr(slack_conversations, "can_use_credits", _fake_can_use_credits)
-
-    result = asyncio.run(
-        slack_conversations.process_slack_mention(
-            team_id="T123",
-            channel_id="C123",
-            user_id="U_NEW",
-            message_text="hello",
-            thread_ts="111.222",
-            event_ts="111.333",
-            files=None,
-        )
-    )
-
-    assert result == {"status": "error", "error": "identity_unmapped"}
-    assert "post_message:111.222" in events
-
-
-def test_process_slack_dm_retries_unknown_identity_with_ingest_before_refusal(monkeypatch):
-    events: list[str] = []
-
-    class _FakeConnector:
-        def __init__(self, organization_id: str, team_id: str | None = None):
-            self.organization_id = organization_id
-
-        async def add_reaction(self, channel: str, timestamp: str):
-            events.append("add_reaction")
-
-        async def remove_reaction(self, channel: str, timestamp: str):
-            events.append("remove_reaction")
-
-        async def post_message(self, channel: str, text: str, thread_ts: str | None = None):
-            events.append("post_message")
-
-    async def _fake_find_org(_team_id: str):
-        return "11111111-1111-1111-1111-111111111111"
-
-    async def _fake_fetch_slack_user_info(**_kwargs):
-        events.append("fetch_slack_user")
-        return {"profile": {"email": "new.user@acme.com"}}
-
-    async def _fake_resolve_user(**_kwargs):
-        events.append("resolve_user")
-        return None
-
-    async def _fake_ingest_retry(**_kwargs):
-        events.append("ingest_retry")
-        return None
-
-    monkeypatch.setattr(slack_conversations, "find_organization_by_slack_team", _fake_find_org)
-    monkeypatch.setattr(slack_conversations, "_fetch_slack_user_info", _fake_fetch_slack_user_info)
-    monkeypatch.setattr(slack_conversations, "resolve_revtops_user_for_slack_actor", _fake_resolve_user)
-    monkeypatch.setattr(slack_conversations, "_ingest_unknown_slack_actor_and_retry_mapping", _fake_ingest_retry)
-    monkeypatch.setattr(slack_conversations, "SlackConnector", _FakeConnector)
-
-    result = asyncio.run(
-        slack_conversations.process_slack_dm(
-            team_id="T123",
-            channel_id="D123",
-            user_id="U_NEW",
-            message_text="hello",
-            event_ts="111.333",
-            thread_ts="111.222",
-            files=None,
-        )
-    )
-
-    assert result == {"status": "error", "error": "identity_unmapped"}
-    assert events.index("resolve_user") < events.index("ingest_retry")
-    assert events.index("ingest_retry") < events.index("post_message")
-
-
-def test_process_slack_dm_unknown_identity_ingest_can_recover_user(monkeypatch):
-    events: list[str] = []
-
-    class _FakeConnector:
-        def __init__(self, organization_id: str, team_id: str | None = None):
-            self.organization_id = organization_id
-
-        async def add_reaction(self, channel: str, timestamp: str):
-            events.append("add_reaction")
-
-        async def remove_reaction(self, channel: str, timestamp: str):
-            events.append("remove_reaction")
-
-        async def post_message(self, channel: str, text: str, thread_ts: str | None = None):
-            events.append("post_message")
-
-    class _FakeOrchestrator:
-        def __init__(self, **kwargs):
-            self.user_id = kwargs.get("user_id")
-            events.append(f"orchestrator_user:{self.user_id}")
-
-    async def _fake_find_org(_team_id: str):
-        return "11111111-1111-1111-1111-111111111111"
-
-    async def _fake_fetch_slack_user_info(**_kwargs):
-        return {"profile": {"email": "new.user@acme.com"}}
-
-    async def _fake_resolve_user(**_kwargs):
-        return None
-
-    async def _fake_ingest_retry(**_kwargs):
-        events.append("ingest_retry")
-        return SimpleNamespace(
-            id=UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
-            email="new.user@acme.com",
-        )
-
-    async def _fake_find_or_create_conversation(**_kwargs):
-        return SimpleNamespace(id=UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"))
-
-    async def _fake_stream_and_post_responses(**_kwargs):
-        events.append("stream")
-        return 1
-
-    async def _fake_can_use_credits(_org_id: str) -> bool:
-        return True
-
-    monkeypatch.setattr(slack_conversations, "find_organization_by_slack_team", _fake_find_org)
-    monkeypatch.setattr(slack_conversations, "_fetch_slack_user_info", _fake_fetch_slack_user_info)
-    monkeypatch.setattr(slack_conversations, "resolve_revtops_user_for_slack_actor", _fake_resolve_user)
-    monkeypatch.setattr(slack_conversations, "_ingest_unknown_slack_actor_and_retry_mapping", _fake_ingest_retry)
-    monkeypatch.setattr(slack_conversations, "find_or_create_conversation", _fake_find_or_create_conversation)
-    monkeypatch.setattr(slack_conversations, "_stream_and_post_responses", _fake_stream_and_post_responses)
-    monkeypatch.setattr(slack_conversations, "can_use_credits", _fake_can_use_credits)
-    monkeypatch.setattr(slack_conversations, "ChatOrchestrator", _FakeOrchestrator)
-    monkeypatch.setattr(slack_conversations, "SlackConnector", _FakeConnector)
-
-    result = asyncio.run(
-        slack_conversations.process_slack_dm(
-            team_id="T123",
-            channel_id="D123",
-            user_id="U_NEW",
-            message_text="hello",
-            event_ts="111.333",
-            thread_ts="111.222",
-            files=None,
-        )
-    )
-
-    assert result["status"] == "success"
-    assert "ingest_retry" in events
-    assert "stream" in events

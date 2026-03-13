@@ -33,7 +33,7 @@ from models.deal import Deal
 from models.goal import Goal
 from models.org_member import OrgMember
 from models.pipeline import Pipeline, PipelineStage
-from models.slack_user_mapping import SlackUserMapping
+from models.external_identity_mapping import ExternalIdentityMapping
 from models.user import User
 
 HUBSPOT_API_BASE = "https://api.hubapi.com"
@@ -1432,13 +1432,13 @@ Use `m.external_userid` when setting `hubspot_owner_id`. If no mapping exists, t
         """
         org_uuid: uuid.UUID = uuid.UUID(self.organization_id)
         existing = await session.execute(
-            select(SlackUserMapping).where(
-                SlackUserMapping.organization_id == org_uuid,
-                SlackUserMapping.external_userid == hs_owner_id,
-                SlackUserMapping.source == "hubspot",
+            select(ExternalIdentityMapping).where(
+                ExternalIdentityMapping.organization_id == org_uuid,
+                ExternalIdentityMapping.external_userid == hs_owner_id,
+                ExternalIdentityMapping.source == "hubspot",
             )
         )
-        mapping: SlackUserMapping | None = existing.scalar_one_or_none()
+        mapping: ExternalIdentityMapping | None = existing.scalar_one_or_none()
 
         if mapping:
             # Upgrade from unmapped to mapped if we now have a user
@@ -1448,7 +1448,7 @@ Use `m.external_userid` when setting `hubspot_owner_id`. If no mapping exists, t
                 mapping.match_source = match_source
         else:
             session.add(
-                SlackUserMapping(
+                ExternalIdentityMapping(
                     id=uuid.uuid4(),
                     organization_id=org_uuid,
                     user_id=user_id,
@@ -1663,7 +1663,7 @@ Use `m.external_userid` when setting `hubspot_owner_id`. If no mapping exists, t
         """
         # 1. Check identity mapping table
         async with get_session(organization_id=self.organization_id) as session:
-            from models.slack_user_mapping import SlackUserMapping as IdentityMapping
+            from models.external_identity_mapping import ExternalIdentityMapping as IdentityMapping
 
             result = await session.execute(
                 select(IdentityMapping).where(

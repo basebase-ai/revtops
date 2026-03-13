@@ -32,12 +32,8 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from config import get_redis_connection_kwargs, settings
-from services.slack_conversations import (
-    persist_slack_message_activity,
-    process_slack_dm,
-    process_slack_mention,
-    process_slack_thread_reply,
-)
+from messengers.base import InboundMessage, MessageType
+from messengers.slack import SlackMessenger
 
 logger = logging.getLogger(__name__)
 
@@ -288,64 +284,52 @@ async def _process_event_callback(payload: dict[str, Any]) -> None:
 
 async def _process_event_callback_impl(payload: dict[str, Any]) -> None:
     """Implementation of event_callback processing (called from background task)."""
-    event = payload.get("event", {})
-    event_id = payload.get("event_id", "")
-    team_id = payload.get("team_id", "")
-    bot_user_ids = _extract_bot_user_ids(payload)
+    event: dict[str, Any] = payload.get("event", {})
+    event_id: str = payload.get("event_id", "")
+    team_id: str = payload.get("team_id", "")
+    bot_user_ids: set[str] = _extract_bot_user_ids(payload)
 
     if event_id and await is_duplicate_event(event_id):
         logger.info("[slack_events] Skipping duplicate event: %s", event_id)
         return
 
-    inner_type = event.get("type")
+    inner_type: str | None = event.get("type")
+    messenger = SlackMessenger()
 
     if inner_type == "message":
-        channel_type = event.get("channel_type")
+        channel_type: str | None = event.get("channel_type")
         if event.get("bot_id") or event.get("subtype") == "bot_message":
             return
         if event.get("subtype") in ("message_changed", "message_deleted"):
             return
 
+        # Persist non-DM channel messages as Activity rows
         if channel_type != "im" and event.get("text", "").strip():
+            activity_msg: InboundMessage = _build_inbound_message(
+                event, team_id, MessageType.MENTION,
+            )
             asyncio.create_task(
-                persist_slack_message_activity(
-                    team_id=team_id,
-                    channel_id=event.get("channel", ""),
-                    user_id=event.get("user", ""),
-                    message_text=event.get("text", ""),
-                    ts=event.get("ts", ""),
-                    thread_ts=event.get("thread_ts"),
-                )
+                _persist_activity(messenger, activity_msg, team_id)
             )
 
-        is_direct_message = channel_type in {"im", "mpim"}
+        is_direct_message: bool = channel_type in {"im", "mpim"}
         if is_direct_message:
-            channel_id = event.get("channel", "")
-            user_id = event.get("user", "")
-            text = event.get("text", "")
-            message_ts = event.get("ts") or event.get("event_ts", "")
-            thread_ts = event.get("thread_ts")
+            channel_id: str = event.get("channel", "")
+            user_id: str = event.get("user", "")
+            text: str = event.get("text", "")
+            message_ts: str = event.get("ts") or event.get("event_ts", "")
+            thread_ts: str | None = event.get("thread_ts")
             files: list[dict[str, Any]] = event.get("files", [])
             if not text.strip() and not files:
                 return
             logger.info(
                 "[slack_events] Processing direct message type=%s from %s in %s thread=%s: %s (files=%d)",
-                channel_type,
-                user_id,
-                channel_id,
-                thread_ts,
-                text[:50],
-                len(files),
+                channel_type, user_id, channel_id, thread_ts, text[:50], len(files),
             )
-            await process_slack_dm(
-                team_id=team_id,
-                channel_id=channel_id,
-                user_id=user_id,
-                message_text=text,
-                event_ts=message_ts,
-                thread_ts=thread_ts,
-                files=files,
+            message: InboundMessage = _build_inbound_message(
+                event, team_id, MessageType.DIRECT,
             )
+            await messenger.process_inbound(message)
             return
 
         thread_ts = event.get("thread_ts")
@@ -353,54 +337,36 @@ async def _process_event_callback_impl(payload: dict[str, Any]) -> None:
             channel_id = event.get("channel", "")
             user_id = event.get("user", "")
             text = event.get("text", "")
-            message_ts: str = event.get("ts", "")
-            files: list[dict[str, Any]] = event.get("files", [])
+            message_ts = event.get("ts", "")
+            files = event.get("files", [])
             if not text.strip() and not files:
                 return
 
-            # When a bot @mention happens inside an existing thread where the bot
-            # has not previously participated, Slack may deliver a message event
-            # before app_mention. In that ordering, treating this as a normal
-            # thread reply can cause the conversation lookup path to ignore the
-            # message before app_mention runs. If the current message explicitly
-            # mentions this bot, route it through mention handling for the same
-            # thread so the bot reliably joins and replies in-thread.
             if _message_mentions_bot_user(text, bot_user_ids):
                 if message_ts and channel_id and await is_duplicate_message(channel_id, message_ts):
                     logger.info(
                         "[slack_events] Skipping duplicate message %s:%s (already claimed by another event type)",
-                        channel_id,
-                        message_ts,
+                        channel_id, message_ts,
                     )
                     return
 
-                normalized_text = _strip_bot_mentions(text, bot_user_ids)
+                normalized_text: str = _strip_bot_mentions(text, bot_user_ids)
                 logger.info(
-                    "[slack_events] Routing in-thread bot mention from message event to mention handler user=%s channel=%s thread=%s",
-                    user_id,
-                    channel_id,
-                    thread_ts,
+                    "[slack_events] Routing in-thread bot mention to mention handler user=%s channel=%s thread=%s",
+                    user_id, channel_id, thread_ts,
                 )
-                lock_key = SlackThreadLockManager.build_lock_key(team_id, channel_id, thread_ts)
+                lock_key: str = SlackThreadLockManager.build_lock_key(team_id, channel_id, thread_ts)
                 async with _thread_lock_manager.thread_lock(lock_key):
-                    await process_slack_mention(
-                        team_id=team_id,
-                        channel_id=channel_id,
-                        user_id=user_id,
-                        message_text=normalized_text,
-                        thread_ts=thread_ts,
-                        event_ts=message_ts,
-                        files=files,
+                    message = _build_inbound_message(
+                        event, team_id, MessageType.MENTION, text_override=normalized_text,
                     )
+                    await messenger.process_inbound(message)
                 return
 
-            # Cross-event-type dedup: if the same message already triggered
-            # an app_mention handler, skip the redundant thread-reply path.
             if message_ts and channel_id and await is_duplicate_message(channel_id, message_ts):
                 logger.info(
                     "[slack_events] Skipping duplicate message %s:%s (already claimed by another event type)",
-                    channel_id,
-                    message_ts,
+                    channel_id, message_ts,
                 )
                 return
 
@@ -410,51 +376,87 @@ async def _process_event_callback_impl(payload: dict[str, Any]) -> None:
             )
             lock_key = SlackThreadLockManager.build_lock_key(team_id, channel_id, thread_ts)
             async with _thread_lock_manager.thread_lock(lock_key):
-                await process_slack_thread_reply(
-                    team_id=team_id,
-                    channel_id=channel_id,
-                    user_id=user_id,
-                    message_text=text,
-                    thread_ts=thread_ts,
-                    event_ts=message_ts,
-                    files=files,
+                message = _build_inbound_message(
+                    event, team_id, MessageType.THREAD_REPLY,
                 )
+                await messenger.process_inbound(message)
             return
 
     if inner_type == "app_mention":
         channel_id = event.get("channel", "")
         user_id = event.get("user", "")
         text = re.sub(r"<@[A-Z0-9]+>\s*", "", event.get("text", "")).strip()
-        event_ts = event.get("event_ts", "")
+        event_ts: str = event.get("event_ts", "")
         message_ts = event.get("ts", "") or event_ts
         thread_ts = event.get("thread_ts")
-        files: list[dict[str, Any]] = event.get("files", [])
+        files = event.get("files", [])
         if not text and not files:
             return
 
-        # Cross-event-type dedup: if the same message already triggered
-        # a thread-reply handler, skip the redundant app_mention path.
         if message_ts and channel_id and await is_duplicate_message(channel_id, message_ts):
             logger.info(
                 "[slack_events] Skipping duplicate message %s:%s (already claimed by another event type)",
-                channel_id,
-                message_ts,
+                channel_id, message_ts,
             )
             return
 
         logger.info("[slack_events] Processing @mention from %s in %s: %s (files=%d)", user_id, channel_id, text[:50], len(files))
-        lock_thread_ts = thread_ts or event_ts
+        lock_thread_ts: str = thread_ts or event_ts
         lock_key = SlackThreadLockManager.build_lock_key(team_id, channel_id, lock_thread_ts)
         async with _thread_lock_manager.thread_lock(lock_key):
-            await process_slack_mention(
-                team_id=team_id,
-                channel_id=channel_id,
-                user_id=user_id,
-                message_text=text,
-                thread_ts=lock_thread_ts,
-                event_ts=message_ts,
-                files=files,
+            message = _build_inbound_message(
+                event, team_id, MessageType.MENTION,
+                text_override=text,
+                thread_ts_override=lock_thread_ts,
             )
+            await messenger.process_inbound(message)
+
+
+def _build_inbound_message(
+    event: dict[str, Any],
+    team_id: str,
+    message_type: MessageType,
+    *,
+    text_override: str | None = None,
+    thread_ts_override: str | None = None,
+) -> InboundMessage:
+    """Build an :class:`InboundMessage` from a Slack event payload."""
+    channel_id: str = event.get("channel", "")
+    user_id: str = event.get("user", "")
+    text: str = text_override if text_override is not None else event.get("text", "")
+    event_ts: str = event.get("event_ts", "") or event.get("ts", "")
+    message_ts: str = event.get("ts", "") or event_ts
+    thread_ts: str | None = thread_ts_override or event.get("thread_ts")
+    files: list[dict[str, Any]] = event.get("files", [])
+
+    return InboundMessage(
+        external_user_id=user_id,
+        text=text,
+        message_type=message_type,
+        raw_attachments=files,
+        messenger_context={
+            "workspace_id": team_id,
+            "channel_id": channel_id,
+            "thread_id": thread_ts,
+            "thread_ts": thread_ts,
+            "event_ts": event_ts,
+        },
+        message_id=message_ts,
+    )
+
+
+async def _persist_activity(
+    messenger: SlackMessenger,
+    message: InboundMessage,
+    team_id: str,
+) -> None:
+    """Persist a channel message as an Activity row via the messenger."""
+    try:
+        org_id: str | None = await messenger._resolve_org_from_workspace(team_id)
+        if org_id:
+            await messenger.persist_channel_activity(message, org_id)
+    except Exception as exc:
+        logger.error("[slack_events] Failed to persist activity: %s", exc)
 
 
 def _extract_bot_user_ids(payload: dict[str, Any]) -> set[str]:

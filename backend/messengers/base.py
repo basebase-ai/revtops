@@ -1,0 +1,376 @@
+"""
+Base messenger class and shared data types.
+
+Every chat messenger (Slack, SMS, WhatsApp, web, MS Teams, Discord, ...)
+inherits from :class:`BaseMessenger` and declares a class-level ``meta``
+attribute of type :class:`MessengerMeta` so that :func:`discover_messengers`
+can auto-discover it.
+
+``BaseMessenger.process_inbound`` implements the common pipeline:
+
+    resolve user -> resolve org -> check credits -> find/create conversation
+    -> download attachments -> run orchestrator -> format -> deliver response
+
+Subclasses only override the abstract hooks that differ per platform.
+"""
+from __future__ import annotations
+
+import json
+import logging
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Any, ClassVar
+
+from models.conversation import Conversation
+from models.user import User
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Enums
+# ---------------------------------------------------------------------------
+
+
+class ResponseMode(Enum):
+    """How the messenger delivers responses back to the user."""
+
+    STREAMING = "streaming"
+    BATCH = "batch"
+
+
+class MessageType(Enum):
+    """Classification of an inbound message."""
+
+    DIRECT = "direct"
+    MENTION = "mention"
+    THREAD_REPLY = "thread_reply"
+
+
+# ---------------------------------------------------------------------------
+# Metadata
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class MessengerMeta:
+    """Self-describing metadata attached to every messenger class."""
+
+    name: str
+    slug: str
+    response_mode: ResponseMode
+    description: str = ""
+
+
+# ---------------------------------------------------------------------------
+# Message data classes
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class InboundMessage:
+    """Platform-normalized inbound message."""
+
+    external_user_id: str
+    text: str
+    message_type: MessageType
+    raw_attachments: list[dict[str, Any]] = field(default_factory=list)
+    messenger_context: dict[str, Any] = field(default_factory=dict)
+    message_id: str = ""
+
+
+@dataclass
+class OutboundResponse:
+    """Platform-normalized outbound response."""
+
+    text: str
+    media_urls: list[str] = field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Abstract base
+# ---------------------------------------------------------------------------
+
+
+class BaseMessenger(ABC):
+    """Abstract base for all chat messenger integrations.
+
+    Subclasses **must** set a class-level ``meta: MessengerMeta`` attribute.
+
+    The concrete :meth:`process_inbound` method runs the shared pipeline;
+    subclasses implement the abstract hooks below to supply platform-specific
+    behaviour.
+    """
+
+    meta: ClassVar[MessengerMeta]
+
+    # ------------------------------------------------------------------
+    # Identity resolution
+    # ------------------------------------------------------------------
+
+    async def resolve_user(self, message: InboundMessage) -> User | None:
+        """Map an external messenger identity to a RevTops :class:`User`.
+
+        Default implementation queries ``messenger_user_mappings`` by
+        ``(platform=self.meta.slug, external_user_id)``.  Subclasses may
+        override to add fallback strategies (e.g. phone-number lookup).
+        """
+        from models.messenger_user_mapping import MessengerUserMapping
+        from models.database import get_admin_session
+        from sqlalchemy import select
+
+        platform: str = self.meta.slug
+        external_id: str = message.external_user_id
+        workspace_id: str | None = message.messenger_context.get("workspace_id")
+
+        async with get_admin_session() as session:
+            stmt = (
+                select(User)
+                .join(
+                    MessengerUserMapping,
+                    MessengerUserMapping.user_id == User.id,
+                )
+                .where(MessengerUserMapping.platform == platform)
+                .where(MessengerUserMapping.external_user_id == external_id)
+            )
+            if workspace_id is not None:
+                stmt = stmt.where(
+                    MessengerUserMapping.workspace_id == workspace_id
+                )
+            result = await session.execute(stmt)
+            return result.scalar_one_or_none()
+
+    # ------------------------------------------------------------------
+    # Organisation resolution
+    # ------------------------------------------------------------------
+
+    @abstractmethod
+    async def resolve_organization(
+        self,
+        user: User,
+        message: InboundMessage,
+    ) -> tuple[str, str] | None:
+        """Return ``(organization_id, organization_name)`` or *None*.
+
+        Returning *None* means a qualifying question has been sent and the
+        current message should not be processed further.
+        """
+
+    # ------------------------------------------------------------------
+    # Conversation management
+    # ------------------------------------------------------------------
+
+    @abstractmethod
+    async def find_or_create_conversation(
+        self,
+        organization_id: str,
+        user: User,
+        message: InboundMessage,
+    ) -> Conversation:
+        """Find or create the :class:`Conversation` for this message."""
+
+    # ------------------------------------------------------------------
+    # Attachments
+    # ------------------------------------------------------------------
+
+    @abstractmethod
+    async def download_attachments(
+        self,
+        message: InboundMessage,
+    ) -> list[str]:
+        """Download media and return a list of ``upload_id`` strings."""
+
+    # ------------------------------------------------------------------
+    # Response delivery
+    # ------------------------------------------------------------------
+
+    @abstractmethod
+    async def send_response(
+        self,
+        message: InboundMessage,
+        response: OutboundResponse,
+    ) -> None:
+        """Deliver *response* back to the user on this messenger."""
+
+    # ------------------------------------------------------------------
+    # Text formatting
+    # ------------------------------------------------------------------
+
+    @abstractmethod
+    def format_text(self, markdown: str) -> str:
+        """Convert Markdown to the messenger's native text format."""
+
+    # ------------------------------------------------------------------
+    # Customisable messages
+    # ------------------------------------------------------------------
+
+    def unknown_user_message(self) -> str:
+        """Reply text when the sender cannot be resolved to a user."""
+        return (
+            "This identity is not registered with Basebase. "
+            "Please link your account first."
+        )
+
+    def no_credits_message(self) -> str:
+        """Reply text when the organisation is out of credits."""
+        return (
+            "You're out of credits or don't have an active subscription. "
+            "Please add a payment method in Basebase to continue."
+        )
+
+    # ------------------------------------------------------------------
+    # Shared pipeline
+    # ------------------------------------------------------------------
+
+    async def process_inbound(
+        self,
+        message: InboundMessage,
+    ) -> dict[str, Any]:
+        """End-to-end pipeline for an inbound message.
+
+        1. Resolve user
+        2. Resolve organisation
+        3. Check credits
+        4. Find / create conversation
+        5. Download attachments
+        6. Run :class:`ChatOrchestrator`
+        7. Format and deliver response
+
+        Returns a result dict with ``status`` and supplementary fields.
+        """
+        from agents.orchestrator import ChatOrchestrator
+        from services.credits import can_use_credits
+
+        # 1. Resolve user
+        user: User | None = await self.resolve_user(message)
+        if user is None:
+            logger.info(
+                "[%s] Unknown user external_id=%s",
+                self.meta.slug,
+                message.external_user_id,
+            )
+            await self.send_response(
+                message,
+                OutboundResponse(text=self.unknown_user_message()),
+            )
+            return {"status": "rejected", "reason": "unknown_user"}
+
+        user_id: str = str(user.id)
+        user_email: str | None = user.email
+
+        # 2. Resolve organisation
+        org_result: tuple[str, str] | None = await self.resolve_organization(
+            user, message
+        )
+        if org_result is None:
+            return {"status": "pending_org_choice"}
+
+        organization_id: str
+        organization_name: str
+        organization_id, organization_name = org_result
+
+        logger.info(
+            "[%s] Resolved org=%s (%s) for user=%s",
+            self.meta.slug,
+            organization_id,
+            organization_name,
+            user_id,
+        )
+
+        # 3. Check credits
+        if not await can_use_credits(organization_id):
+            await self.send_response(
+                message,
+                OutboundResponse(text=self.no_credits_message()),
+            )
+            return {"status": "error", "error": "insufficient_credits"}
+
+        # 4. Find / create conversation
+        conversation: Conversation = await self.find_or_create_conversation(
+            organization_id, user, message
+        )
+
+        # 5. Download attachments
+        attachment_ids: list[str] = await self.download_attachments(message)
+
+        message_text: str = message.text or (
+            "(see attached files)" if attachment_ids else ""
+        )
+
+        # 6. Run orchestrator
+        orchestrator = ChatOrchestrator(
+            user_id=user_id,
+            organization_id=organization_id,
+            conversation_id=str(conversation.id),
+            user_email=user_email,
+            source_user_id=message.external_user_id,
+            source_user_email=user_email,
+            workflow_context=None,
+            source=self.meta.slug,
+        )
+
+        full_response: str = ""
+        outbound_media_urls: list[str] = []
+        try:
+            async for chunk in orchestrator.process_message(
+                message_text,
+                attachment_ids=attachment_ids or None,
+            ):
+                if chunk.startswith("{"):
+                    outbound_media_urls.extend(
+                        self._extract_media_from_chunk(chunk)
+                    )
+                else:
+                    full_response += chunk
+        except Exception:
+            logger.exception(
+                "[%s] Orchestrator error conversation=%s",
+                self.meta.slug,
+                conversation.id,
+            )
+            full_response += (
+                "\nSorry, something went wrong processing your message. "
+                "Please try again."
+            )
+
+        # 7. Format and deliver
+        response_text: str = self.format_text(full_response.strip())
+        if response_text or outbound_media_urls:
+            await self.send_response(
+                message,
+                OutboundResponse(
+                    text=response_text,
+                    media_urls=outbound_media_urls,
+                ),
+            )
+        else:
+            logger.warning(
+                "[%s] Empty response for conversation=%s",
+                self.meta.slug,
+                conversation.id,
+            )
+
+        logger.info(
+            "[%s] Replied (%d chars) conversation=%s",
+            self.meta.slug,
+            len(response_text),
+            conversation.id,
+        )
+        return {
+            "status": "success",
+            "conversation_id": str(conversation.id),
+            "response_length": len(response_text),
+        }
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _extract_media_from_chunk(chunk: str) -> list[str]:
+        """Extract public media URLs from a JSON orchestrator chunk.
+
+        Override in subclasses that support rich media (e.g. MMS images).
+        """
+        return []
