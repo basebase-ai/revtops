@@ -27,7 +27,7 @@ _MIN_MESSAGES_FOR_SUMMARY = 4
 _REGENERATION_THRESHOLD = 2
 _MAX_MESSAGES_FOR_PROMPT = 50
 
-_MODEL = "claude-3-5-haiku-20241022"
+_MODEL = "claude-haiku-4-5-20251001"
 
 _SYSTEM_PROMPT = (
     "You summarize conversations between a user and an AI assistant called Basebase. "
