@@ -330,20 +330,21 @@ function ChatRow({
           </div>
         </div>
 
-        <div className="text-xs text-surface-500 whitespace-nowrap">{formatDate(chat.lastMessageAt)}</div>
+        <div className="flex flex-col items-end gap-2 flex-shrink-0">
+          <div className="text-xs text-surface-500 whitespace-nowrap">{formatDate(chat.lastMessageAt)}</div>
+          <button
+            onClick={(e) => { e.stopPropagation(); onTogglePin(chat.id); }}
+            className={`p-1.5 rounded ${
+              isPinned ? 'opacity-100 text-primary-400' : 'opacity-0 text-surface-500'
+            } group-hover:opacity-100 hover:bg-surface-700 hover:text-surface-200 transition-all`}
+            title={isPinned ? 'Unpin conversation' : 'Pin conversation'}
+          >
+            <svg className={`w-4 h-4 ${isPinned ? 'text-primary-400' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />
+            </svg>
+          </button>
+        </div>
       </div>
-
-      <button
-        onClick={(e) => { e.stopPropagation(); onTogglePin(chat.id); }}
-        className={`absolute right-3 top-3 p-1.5 rounded ${
-          isPinned ? 'opacity-100 text-primary-400' : 'opacity-0 text-surface-500'
-        } group-hover:opacity-100 hover:bg-surface-700 hover:text-surface-200 transition-all`}
-        title={isPinned ? 'Unpin conversation' : 'Pin conversation'}
-      >
-        <svg className={`w-4 h-4 ${isPinned ? 'text-primary-400' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />
-        </svg>
-      </button>
     </button>
   );
 }
