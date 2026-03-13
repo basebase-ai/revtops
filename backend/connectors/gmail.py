@@ -219,8 +219,7 @@ Send an email via the user's connected Gmail account. Emails are sent from the a
         from sqlalchemy import select
         from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-        # Get emails from the last 30 days
-        after: datetime = datetime.utcnow() - timedelta(days=30)
+        after: datetime = self.sync_since or (datetime.utcnow() - timedelta(days=30))
         before: datetime = datetime.utcnow()
 
         messages: list[dict[str, Any]] = await self.get_messages(

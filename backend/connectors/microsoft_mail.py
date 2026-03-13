@@ -177,9 +177,8 @@ class MicrosoftMailConnector(BaseConnector):
         with deals and accounts.
         """
         await self.ensure_sync_active("sync_activities:start")
-        # Get emails from the last 30 days
-        received_after = datetime.utcnow() - timedelta(days=30)
-        received_before = datetime.utcnow()
+        received_after: datetime = self.sync_since or (datetime.utcnow() - timedelta(days=30))
+        received_before: datetime = datetime.utcnow()
 
         emails = await self.get_emails(
             received_after=received_after,

@@ -206,8 +206,7 @@ class GoogleCalendarConnector(BaseConnector):
         await self.ensure_sync_active("sync_activities:start")
         from connectors.resolution import build_activity_resolver
 
-        # Get events from primary calendar for the last 30 days and next 30 days
-        time_min: datetime = datetime.utcnow() - timedelta(days=30)
+        time_min: datetime = self.sync_since or (datetime.utcnow() - timedelta(days=30))
         time_max: datetime = datetime.utcnow() + timedelta(days=30)
 
         # Import broadcast function for real-time progress updates

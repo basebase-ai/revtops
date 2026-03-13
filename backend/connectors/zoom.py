@@ -160,9 +160,9 @@ class ZoomConnector(BaseConnector):
     async def sync_activities(self) -> int:
         """Sync Zoom meeting transcripts as activities."""
         await self.ensure_sync_active("sync_activities:start")
-        now = datetime.utcnow()
-        start_date = (now - timedelta(days=7)).date()
-        end_date = now.date()
+        now: datetime = datetime.utcnow()
+        start_date: date = self.sync_since.date() if self.sync_since else (now - timedelta(days=7)).date()
+        end_date: date = now.date()
 
         meetings = await self._fetch_recordings(start_date, end_date)
         logger.info("Processing Zoom recordings", extra={"count": len(meetings)})

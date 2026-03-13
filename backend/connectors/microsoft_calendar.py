@@ -171,9 +171,8 @@ class MicrosoftCalendarConnector(BaseConnector):
         3. Link the Activity to the Meeting
         """
         await self.ensure_sync_active("sync_activities:start")
-        # Get events from default calendar for the last 30 days and next 30 days
-        time_min = datetime.utcnow() - timedelta(days=30)
-        time_max = datetime.utcnow() + timedelta(days=30)
+        time_min: datetime = self.sync_since or (datetime.utcnow() - timedelta(days=30))
+        time_max: datetime = datetime.utcnow() + timedelta(days=30)
 
         events = await self.get_events(
             time_min=time_min,

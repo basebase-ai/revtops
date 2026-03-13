@@ -421,6 +421,20 @@ class GranolaConnector(BaseConnector):
         )
         meetings_list: list[dict[str, Any]] = await mcp.list_meetings()
         logger.info("Got %d meetings from Granola", len(meetings_list))
+
+        if self.sync_since:
+            filtered: list[dict[str, Any]] = []
+            for stub in meetings_list:
+                raw_date: Any = stub.get("date") or stub.get("start_time")
+                meeting_dt: datetime = _parse_datetime(raw_date)
+                if meeting_dt >= self.sync_since:
+                    filtered.append(stub)
+            logger.info(
+                "Granola incremental filter: %d → %d meetings since %s",
+                len(meetings_list), len(filtered), self.sync_since,
+            )
+            meetings_list = filtered
+
         for i, stub in enumerate(meetings_list):
             print(f"[Granola] Meeting stub {i}: {json.dumps(stub, default=str)[:2000]}")
 

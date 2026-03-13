@@ -420,9 +420,14 @@ class AsanaConnector(BaseConnector):
                     else:
                         continue  # No teams synced yet
 
+                task_params: dict[str, Any] = {"limit": 100, "opt_fields": task_fields}
+                if self.sync_since:
+                    task_params["modified_since"] = self.sync_since.strftime(
+                        "%Y-%m-%dT%H:%M:%S.000Z"
+                    )
                 tasks: list[dict[str, Any]] = await self._get_paginated(
                     f"/projects/{project_source_id}/tasks",
-                    {"limit": 100, "opt_fields": task_fields},
+                    task_params,
                 )
 
                 for task in tasks:

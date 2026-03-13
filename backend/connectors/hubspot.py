@@ -343,6 +343,77 @@ Use `m.external_userid` when setting `hubspot_owner_id`. If no mapping exists, t
 
         return all_results
 
+    async def _search_results_since(
+        self,
+        object_type: str,
+        properties: list[str],
+        since: datetime,
+        associations: Optional[list[str]] = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Paginate through HubSpot Search API filtered by hs_lastmodifieddate.
+
+        The search API supports POST ``/crm/v3/objects/{type}/search`` with
+        ``filterGroups`` for date-based incremental fetching.
+        """
+        all_results: list[dict[str, Any]] = []
+        after: int = 0
+        iso_ms: str = since.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+        while True:
+            body: dict[str, Any] = {
+                "filterGroups": [
+                    {
+                        "filters": [
+                            {
+                                "propertyName": "hs_lastmodifieddate",
+                                "operator": "GTE",
+                                "value": iso_ms,
+                            }
+                        ]
+                    }
+                ],
+                "properties": properties,
+                "limit": limit,
+            }
+            if after:
+                body["after"] = after
+            if associations:
+                body["associations"] = associations
+
+            data: dict[str, Any] = await self._make_request(
+                "POST",
+                f"/crm/v3/objects/{object_type}/search",
+                json_data=body,
+            )
+            results: list[dict[str, Any]] = data.get("results", [])
+            all_results.extend(results)
+
+            paging: dict[str, Any] = data.get("paging", {})
+            next_link: dict[str, Any] = paging.get("next", {})
+            after_val: str | None = next_link.get("after")
+            if not after_val:
+                break
+            after = int(after_val)
+
+        return all_results
+
+    async def _paginate_or_search(
+        self,
+        endpoint: str,
+        object_type: str,
+        properties: list[str],
+        associations: Optional[list[str]] = None,
+    ) -> list[dict[str, Any]]:
+        """Use incremental search when sync_since is available, otherwise full list."""
+        if self.sync_since:
+            return await self._search_results_since(
+                object_type, properties, self.sync_since, associations=associations,
+            )
+        return await self._paginate_results(
+            endpoint, properties, associations=associations,
+        )
+
     async def sync_pipelines(self) -> int:
         """
         Sync all deal pipelines and stages from HubSpot.
@@ -468,8 +539,9 @@ Use `m.external_userid` when setting `hubspot_owner_id`. If no mapping exists, t
             "pipeline",
         ]
 
-        raw_deals = await self._paginate_results(
+        raw_deals = await self._paginate_or_search(
             "/crm/v3/objects/deals",
+            "deals",
             properties=properties,
             associations=["companies"],
         )
@@ -665,8 +737,8 @@ Use `m.external_userid` when setting `hubspot_owner_id`. If no mapping exists, t
             "hs_lastmodifieddate",
         ]
 
-        raw_companies = await self._paginate_results(
-            "/crm/v3/objects/companies", properties=properties
+        raw_companies = await self._paginate_or_search(
+            "/crm/v3/objects/companies", "companies", properties=properties,
         )
 
         # Pre-load owner email cache so _normalize_account doesn't trigger per-row fetches
@@ -797,8 +869,9 @@ Use `m.external_userid` when setting `hubspot_owner_id`. If no mapping exists, t
         # Fetch contacts with company associations
         print(f"[HubSpot] Fetching contacts for org {self.organization_id}...")
         try:
-            raw_contacts = await self._paginate_results(
+            raw_contacts = await self._paginate_or_search(
                 "/crm/v3/objects/contacts",
+                "contacts",
                 properties=properties,
                 associations=["companies"],
             )
@@ -998,8 +1071,9 @@ Use `m.external_userid` when setting `hubspot_owner_id`. If no mapping exists, t
                 properties = ["hs_timestamp", "hs_note_body"]
 
             try:
-                raw_engagements: list[dict[str, Any]] = await self._paginate_results(
+                raw_engagements: list[dict[str, Any]] = await self._paginate_or_search(
                     f"/crm/v3/objects/{engagement_type}",
+                    engagement_type,
                     properties=properties,
                     associations=["deals", "contacts", "companies"],
                 )

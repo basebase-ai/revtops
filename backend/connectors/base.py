@@ -44,6 +44,10 @@ class BaseConnector(ABC):
     # Not required yet (backward compat) but needed for auto-discovery.
     meta: ConnectorMeta
 
+    # Safety buffer subtracted from last_sync_at to avoid missing items
+    # due to clock skew or eventual consistency in upstream APIs.
+    _SYNC_SINCE_BUFFER: timedelta = timedelta(minutes=5)
+
     def __init__(self, organization_id: str, user_id: str | None = None) -> None:
         """
         Initialize the connector.
@@ -57,6 +61,18 @@ class BaseConnector(ABC):
         self._token: str | None = None
         self._credentials: dict[str, Any] | None = None
         self._integration: Integration | None = None
+
+    @property
+    def sync_since(self) -> datetime | None:
+        """Return the cutoff time for incremental sync, or None for first sync.
+
+        When a previous successful sync timestamp exists, returns that time
+        minus a small safety buffer. Connectors should fall back to their
+        default window (e.g. 30 days) when this returns None.
+        """
+        if self._integration and self._integration.last_sync_at:
+            return self._integration.last_sync_at - self._SYNC_SINCE_BUFFER
+        return None
 
     async def ensure_sync_active(self, stage: str) -> None:
         """Stop in-flight syncs when integration has been disconnected or pending config."""

@@ -1387,9 +1387,12 @@ Use `run_sql_query` on `github_repositories`, `github_commits`, `github_pull_req
     async def _sync_commits_for_repo(self, repo: GitHubRepository) -> int:
         """Fetch and upsert commits for a single repo."""
         org_uuid: UUID = UUID(self.organization_id)
+        commit_params: dict[str, Any] = {"sha": repo.default_branch}
+        if self.sync_since:
+            commit_params["since"] = self.sync_since.strftime("%Y-%m-%dT%H:%M:%SZ")
         raw_commits: list[dict[str, Any]] = await self._gh_get_paginated(
             f"/repos/{repo.full_name}/commits",
-            params={"sha": repo.default_branch},
+            params=commit_params,
         )
 
         count: int = 0
@@ -1494,6 +1497,10 @@ Use `run_sql_query` on `github_repositories`, `github_commits`, `github_pull_req
         count: int = 0
         async with get_session(organization_id=self.organization_id) as session:
             for pr in raw_prs:
+                if self.sync_since and pr.get("updated_at"):
+                    updated_at: datetime | None = self._parse_gh_date_optional(pr["updated_at"])
+                    if updated_at and updated_at < self.sync_since:
+                        break
                 user_info: dict[str, Any] = pr.get("user", {})
                 author_login: str = user_info.get("login", "unknown")
                 merged_by: dict[str, Any] | None = pr.get("merged_by")

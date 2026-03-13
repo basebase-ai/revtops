@@ -199,8 +199,16 @@ class FirefliesConnector(BaseConnector):
         )
         
         print(f"[Fireflies] Fetching transcripts for org {self.organization_id}")
-        transcripts = await self.get_transcripts(limit=50)  # Fireflies max is 50
+        transcripts: list[dict[str, Any]] = await self.get_transcripts(limit=50)
         print(f"[Fireflies] Got {len(transcripts)} transcripts")
+
+        if self.sync_since:
+            cutoff_ms: float = self.sync_since.timestamp() * 1000
+            transcripts = [
+                t for t in transcripts
+                if (t.get("date") or 0) >= cutoff_ms
+            ]
+            print(f"[Fireflies] After incremental filter: {len(transcripts)} transcripts since {self.sync_since}")
 
         count = 0
         # Pass user_id for RLS: activities with owner_only visibility require

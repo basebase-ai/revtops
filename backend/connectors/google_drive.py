@@ -544,10 +544,14 @@ Call via `run_on_connector(connector='google_drive', action='edit_file', params=
         all_files: list[dict[str, Any]] = []
         page_token: Optional[str] = None
 
+        drive_query: str = "trashed=false"
+        if self.sync_since:
+            drive_query += f" and modifiedTime > '{self.sync_since.isoformat()}Z'"
+
         async with httpx.AsyncClient(timeout=60.0) as client:
             while True:
                 params: dict[str, Any] = {
-                    "q": "trashed=false",
+                    "q": drive_query,
                     "fields": LIST_FIELDS,
                     "pageSize": 1000,
                     "supportsAllDrives": "true",

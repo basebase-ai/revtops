@@ -512,8 +512,7 @@ Send a message to a Slack channel, DM, or user.
             self.organization_id,
         )
 
-        # Calculate timestamp for last 7 days
-        oldest = (datetime.utcnow().timestamp()) - (7 * 24 * 60 * 60)
+        oldest: float = self.sync_since.timestamp() if self.sync_since else (datetime.utcnow().timestamp() - 7 * 24 * 60 * 60)
 
         count = 0
         channels_with_messages = 0

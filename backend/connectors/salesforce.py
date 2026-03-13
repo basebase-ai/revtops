@@ -137,6 +137,13 @@ class SalesforceConnector(BaseConnector):
 
         return all_records
 
+    def _soql_incremental_filter(self) -> str:
+        """Return a SOQL WHERE clause fragment for incremental sync, or empty string."""
+        if self.sync_since:
+            iso: str = self.sync_since.strftime("%Y-%m-%dT%H:%M:%SZ")
+            return f" WHERE LastModifiedDate > {iso}"
+        return ""
+
     async def sync_deals(self) -> int:
         """
         Sync all opportunities from Salesforce.
@@ -145,11 +152,12 @@ class SalesforceConnector(BaseConnector):
         - Id, Name, AccountId, OwnerId, Amount, StageName
         - Probability, CloseDate, CreatedDate, LastModifiedDate
         """
-        soql = """
-            SELECT Id, Name, AccountId, OwnerId, Amount, StageName,
-                   Probability, CloseDate, CreatedDate, LastModifiedDate
-            FROM Opportunity
-        """
+        soql: str = (
+            "SELECT Id, Name, AccountId, OwnerId, Amount, StageName,"
+            " Probability, CloseDate, CreatedDate, LastModifiedDate"
+            " FROM Opportunity"
+            + self._soql_incremental_filter()
+        )
 
         raw_opportunities = await self._query_soql(soql)
 
@@ -248,11 +256,12 @@ class SalesforceConnector(BaseConnector):
 
     async def sync_accounts(self) -> int:
         """Sync all accounts from Salesforce."""
-        soql = """
-            SELECT Id, Name, Website, Industry, NumberOfEmployees,
-                   AnnualRevenue, OwnerId, CreatedDate, LastModifiedDate
-            FROM Account
-        """
+        soql: str = (
+            "SELECT Id, Name, Website, Industry, NumberOfEmployees,"
+            " AnnualRevenue, OwnerId, CreatedDate, LastModifiedDate"
+            " FROM Account"
+            + self._soql_incremental_filter()
+        )
 
         raw_accounts = await self._query_soql(soql)
 
@@ -333,11 +342,12 @@ class SalesforceConnector(BaseConnector):
 
     async def sync_contacts(self) -> int:
         """Sync all contacts from Salesforce."""
-        soql = """
-            SELECT Id, AccountId, FirstName, LastName, Name, Email,
-                   Title, Phone, CreatedDate, LastModifiedDate
-            FROM Contact
-        """
+        soql: str = (
+            "SELECT Id, AccountId, FirstName, LastName, Name, Email,"
+            " Title, Phone, CreatedDate, LastModifiedDate"
+            " FROM Contact"
+            + self._soql_incremental_filter()
+        )
 
         raw_contacts = await self._query_soql(soql)
 
@@ -405,11 +415,12 @@ class SalesforceConnector(BaseConnector):
         count: int = 0
 
         # Sync Tasks
-        task_soql = """
-            SELECT Id, WhatId, WhoId, Subject, Description,
-                   ActivityDate, OwnerId, CreatedDate, LastModifiedDate
-            FROM Task
-        """
+        task_soql: str = (
+            "SELECT Id, WhatId, WhoId, Subject, Description,"
+            " ActivityDate, OwnerId, CreatedDate, LastModifiedDate"
+            " FROM Task"
+            + self._soql_incremental_filter()
+        )
 
         try:
             raw_tasks = await self._query_soql(task_soql)
@@ -439,11 +450,12 @@ class SalesforceConnector(BaseConnector):
             pass
 
         # Sync Events
-        event_soql = """
-            SELECT Id, WhatId, WhoId, Subject, Description,
-                   StartDateTime, EndDateTime, OwnerId, CreatedDate, LastModifiedDate
-            FROM Event
-        """
+        event_soql: str = (
+            "SELECT Id, WhatId, WhoId, Subject, Description,"
+            " StartDateTime, EndDateTime, OwnerId, CreatedDate, LastModifiedDate"
+            " FROM Event"
+            + self._soql_incremental_filter()
+        )
 
         try:
             raw_events = await self._query_soql(event_soql)

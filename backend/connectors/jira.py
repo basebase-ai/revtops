@@ -338,8 +338,10 @@ class JiraConnector(BaseConnector):
             for row in result.all():
                 project_map[row[0]] = row[1]
 
-        # Fetch issues using JQL search
-        jql: str = "ORDER BY updated DESC"
+        jql: str = ""
+        if self.sync_since:
+            jql = f"updated >= '{self.sync_since.strftime('%Y-%m-%d %H:%M')}' "
+        jql += "ORDER BY updated DESC"
         issues: list[dict[str, Any]] = await self._get_paginated(
             "/search",
             {

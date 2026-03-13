@@ -455,6 +455,16 @@ Use `write_on_connector(connector='linear', operation='...', data={...})` with `
         count: int = 0
         async with get_session(organization_id=self.organization_id) as session:
             for issue in issues:
+                if self.sync_since and issue.get("updatedAt"):
+                    try:
+                        updated_at: datetime = datetime.fromisoformat(
+                            issue["updatedAt"].replace("Z", "+00:00")
+                        ).replace(tzinfo=None)
+                        if updated_at < self.sync_since:
+                            break
+                    except (ValueError, TypeError):
+                        pass
+
                 team_data: dict[str, Any] | None = issue.get("team")
                 if not team_data:
                     continue  # Skip issues without a team
