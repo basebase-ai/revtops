@@ -392,6 +392,7 @@ async def _check_huddle_recording(
             recording_url = ""
             recording_drive_id = ""
             transcript_url = ""
+            gemini_summary = ""
             participant_data: list[dict[str, Any]] = []
 
             async with httpx.AsyncClient() as client:
@@ -402,11 +403,15 @@ async def _check_huddle_recording(
                     timeout=30.0,
                 )
                 if rec_resp.status_code == 200:
-                    recordings = rec_resp.json().get("recordings", [])
+                    rec_json = rec_resp.json()
+                    recordings = rec_json.get("recordings", [])
+                    logger.info("Recordings response for %s: %s", meeting_id, rec_json)
                     if recordings:
                         drive_dest = recordings[0].get("driveDestination", {})
                         recording_url = drive_dest.get("exportUri", "")
                         recording_drive_id = drive_dest.get("file", "").split("/")[-1] if drive_dest.get("file") else ""
+                else:
+                    logger.warning("Recordings API returned %d for %s", rec_resp.status_code, meeting_id)
 
                 # Fetch transcripts
                 trans_resp = await client.get(
@@ -415,10 +420,14 @@ async def _check_huddle_recording(
                     timeout=30.0,
                 )
                 if trans_resp.status_code == 200:
-                    transcripts = trans_resp.json().get("transcripts", [])
+                    trans_json = trans_resp.json()
+                    transcripts = trans_json.get("transcripts", [])
+                    logger.info("Transcripts response for %s: %s", meeting_id, trans_json)
                     if transcripts:
                         docs_dest = transcripts[0].get("docsDestination", {})
                         transcript_url = docs_dest.get("exportUri", "")
+                else:
+                    logger.warning("Transcripts API returned %d for %s", trans_resp.status_code, meeting_id)
 
                 # Fetch participants
                 part_resp = await client.get(
@@ -435,23 +444,19 @@ async def _check_huddle_recording(
                             "name": signin.get("displayName", anon.get("displayName", "")),
                         })
 
+                # Fetch Gemini meeting summary doc from "Meet Recordings" in Drive
+                gemini_summary = await _fetch_gemini_summary(
+                    client, organization_id, organizer_email, title, start_time, meeting_id
+                )
+
         except Exception as e:
             if "retry" in type(e).__name__.lower():
                 raise
             logger.warning("Meet API recording check failed: %s", e)
             raise task.retry(exc=e)
 
-        if not recording_url and not transcript_url and not participant_data:
-            remaining = task.max_retries - task.request.retries
-            if remaining > 0:
-                logger.info(
-                    "No recordings/transcripts found yet for meeting %s, %d retries remaining",
-                    meeting_id, remaining,
-                )
-                raise task.retry()
-            return {"status": "not_found", "meeting_id": meeting_id}
-
-        # Update the meeting
+        # Save whatever we have so far (participants, summary) even if
+        # recordings/transcripts aren't ready yet — don't lose data on retry
         async with get_session(organization_id=organization_id) as session:
             meeting = await session.get(Meeting, UUID(meeting_id))
             if meeting:
@@ -464,7 +469,23 @@ async def _check_huddle_recording(
                 if participant_data:
                     meeting.participants = participant_data
                     meeting.participant_count = len(participant_data)
+                if gemini_summary:
+                    meeting.summary = gemini_summary
                 await session.commit()
+
+        if not recording_url and not transcript_url:
+            remaining = task.max_retries - task.request.retries
+            if remaining > 0:
+                logger.info(
+                    "No recordings/transcripts found yet for meeting %s (%d participants found), %d retries remaining",
+                    meeting_id, len(participant_data), remaining,
+                )
+                raise task.retry()
+            else:
+                logger.info(
+                    "Retries exhausted for meeting %s — saved %d participants + summary without recordings/transcripts",
+                    meeting_id, len(participant_data),
+                )
 
         if recording_url:
             await emit_event(
@@ -478,13 +499,14 @@ async def _check_huddle_recording(
                 },
             )
 
-        logger.info("Linked Meet API data to meeting %s", meeting_id)
+        logger.info("Linked Meet API data to meeting %s (summary=%s)", meeting_id, bool(gemini_summary))
         return {
             "status": "found",
             "meeting_id": meeting_id,
             "recording_url": recording_url,
             "transcript_url": transcript_url,
             "participant_count": len(participant_data),
+            "has_summary": bool(gemini_summary),
         }
 
     # ── Legacy fallback: Drive search for meetings without meet_space_name ──
@@ -566,15 +588,104 @@ async def _check_huddle_recording(
     }
 
 
+async def _fetch_gemini_summary(
+    client: "httpx.AsyncClient",
+    organization_id: str,
+    organizer_email: str | None,
+    title: str,
+    start_time: datetime,
+    meeting_id: str,
+) -> str:
+    """Search Drive's 'Meet Recordings' folder for a Gemini-generated summary doc.
+
+    For named meetings, Gemini uses the meeting title as the doc name.
+    For huddles (title='Huddle'), the doc is named like 'Meeting started <timestamp>'.
+    Returns the plain-text content of the doc, or empty string if not found.
+    """
+    # Get a Drive-scoped token (Calendar token won't have Drive access)
+    drive_token = await _get_google_token(
+        None, organization_id, organizer_email, preferred_connector="google_drive"
+    )
+    if not drive_token:
+        logger.info("No Drive token available for Gemini summary fetch, meeting %s", meeting_id)
+        return ""
+
+    drive_headers = {"Authorization": f"Bearer {drive_token}"}
+    DRIVE_API = "https://www.googleapis.com/drive/v3"
+
+    # Build time window: summary appears shortly after meeting ends
+    search_after = start_time.strftime("%Y-%m-%dT%H:%M:%S")
+    search_before = (start_time + timedelta(hours=4)).strftime("%Y-%m-%dT%H:%M:%S")
+
+    # Search for the doc by name — try meeting title first, then fall back to
+    # "Meeting started" (Gemini's default for huddles / unnamed meetings)
+    name_filters = ["name contains 'Meeting started'"]
+    if title and title.lower() != "huddle":
+        name_filters.insert(0, f"name contains '{title}'")
+
+    files = []
+    try:
+        for name_filter in name_filters:
+            query = (
+                f"mimeType='application/vnd.google-apps.document' "
+                f"and {name_filter} "
+                f"and modifiedTime > '{search_after}' "
+                f"and modifiedTime < '{search_before}' "
+                f"and trashed=false"
+            )
+            resp = await client.get(
+                f"{DRIVE_API}/files",
+                headers=drive_headers,
+                params={
+                    "q": query,
+                    "fields": "files(id,name,modifiedTime)",
+                    "orderBy": "modifiedTime desc",
+                    "pageSize": 5,
+                },
+                timeout=30.0,
+            )
+            resp.raise_for_status()
+            files = resp.json().get("files", [])
+            if files:
+                break
+
+        if not files:
+            logger.info("No Gemini summary doc found for meeting %s", meeting_id)
+            return ""
+
+        doc_id = files[0]["id"]
+        doc_name = files[0].get("name", "")
+        logger.info("Found Gemini summary doc '%s' (%s) for meeting %s", doc_name, doc_id, meeting_id)
+
+        # Export as plain text
+        export_resp = await client.get(
+            f"{DRIVE_API}/files/{doc_id}/export",
+            headers=drive_headers,
+            params={"mimeType": "text/plain"},
+            timeout=30.0,
+        )
+        export_resp.raise_for_status()
+        summary_text = export_resp.text.strip()
+
+        logger.info("Fetched Gemini summary (%d chars) for meeting %s", len(summary_text), meeting_id)
+        return summary_text
+
+    except Exception as e:
+        logger.warning("Failed to fetch Gemini summary for meeting %s: %s", meeting_id, e)
+        return ""
+
+
 async def _get_google_token(
     task: Any,
     organization_id: str,
     organizer_email: str | None,
+    preferred_connector: str | None = None,
 ) -> str | None:
     """Get a Google OAuth token for Meet/Drive API calls.
 
     Prefers the Calendar integration (same token works for Meet API).
     Falls back to Drive integration if Calendar is not available.
+    Use preferred_connector='google_drive' to try Drive first (e.g. for Drive API calls).
     """
     from connectors.registry import discover_connectors
     from models.database import get_admin_session
@@ -584,8 +695,13 @@ async def _get_google_token(
 
     connectors = discover_connectors()
 
-    # Try Calendar integration first (same OAuth token covers Meet API)
-    for connector_name in ("google_calendar", "google_drive"):
+    # Default order: Calendar first (covers Meet API), Drive fallback
+    order = ["google_calendar", "google_drive"]
+    if preferred_connector and preferred_connector in order:
+        order.remove(preferred_connector)
+        order.insert(0, preferred_connector)
+
+    for connector_name in order:
         cls = connectors.get(connector_name)
         if not cls:
             continue
@@ -686,3 +802,133 @@ def sync_all_organizations(self: Any) -> dict[str, Any]:
         return summary
     
     return run_async(_sync_all())
+
+
+@celery_app.task(bind=True, name="workers.tasks.sync.sweep_active_huddles")
+def sweep_active_huddles(self: Any) -> dict[str, Any]:
+    """
+    Periodic task that finds huddles still marked 'active' and checks
+    whether their conference has actually ended. If so, marks them
+    completed and schedules the recording/transcript check.
+    """
+    logger.info(f"Task {self.request.id}: Sweeping active huddles")
+    return run_async(_sweep_active_huddles())
+
+
+async def _sweep_active_huddles() -> dict[str, Any]:
+    """Async implementation of the active huddle sweep."""
+    import httpx
+    from models.database import get_admin_session, get_session
+    from models.meeting import Meeting
+    from sqlalchemy import select
+
+    MEET_API = "https://meet.googleapis.com/v2"
+
+    # Find all meetings with huddle_status = 'active'
+    async with get_admin_session() as session:
+        result = await session.execute(
+            select(Meeting).where(Meeting.huddle_status == "active")
+        )
+        active_huddles = result.scalars().all()
+
+    if not active_huddles:
+        return {"status": "ok", "checked": 0, "ended": 0}
+
+    ended = 0
+    checked = 0
+
+    for meeting in active_huddles:
+        checked += 1
+        org_id = str(meeting.organization_id)
+        meeting_id = str(meeting.id)
+
+        # Skip huddles less than 5 minutes old (still likely in progress)
+        if meeting.scheduled_start:
+            age_minutes = (datetime.utcnow() - meeting.scheduled_start).total_seconds() / 60
+            if age_minutes < 5:
+                continue
+
+        if meeting.meet_space_name:
+            # New path: check Meet API for active conference
+            token = await _get_google_token(None, org_id, meeting.organizer_email)
+            if not token:
+                logger.warning("No token for huddle sweep, meeting %s", meeting_id)
+                continue
+
+            try:
+                async with httpx.AsyncClient() as client:
+                    resp = await client.get(
+                        f"{MEET_API}/conferenceRecords",
+                        headers={
+                            "Authorization": f"Bearer {token}",
+                            "Content-Type": "application/json",
+                        },
+                        params={"filter": f'space.name="{meeting.meet_space_name}"'},
+                        timeout=30.0,
+                    )
+                    resp.raise_for_status()
+                    records = resp.json().get("conferenceRecords", [])
+
+                if records:
+                    # Conference record exists — check if it has ended
+                    latest = records[-1]
+                    end_time = latest.get("endTime")
+                    if end_time:
+                        # Conference ended — mark meeting completed
+                        now = datetime.utcnow()
+                        async with get_session(organization_id=org_id) as session:
+                            m = await session.get(Meeting, meeting.id)
+                            if m and m.huddle_status == "active":
+                                m.status = "completed"
+                                m.huddle_status = "ended"
+                                m.scheduled_end = now
+                                if m.scheduled_start:
+                                    m.duration_minutes = max(1, int((now - m.scheduled_start).total_seconds() / 60))
+                                await session.commit()
+                                ended += 1
+
+                        # Schedule recording check
+                        check_huddle_recording.apply_async(
+                            args=[meeting_id, org_id],
+                            countdown=300,
+                        )
+                        logger.info("Sweep: ended huddle %s, scheduled recording check", meeting_id)
+                else:
+                    # No conference record — nobody ever joined. If old enough (>30 min), clean up.
+                    if meeting.scheduled_start:
+                        age = (datetime.utcnow() - meeting.scheduled_start).total_seconds() / 60
+                        if age > 30:
+                            async with get_session(organization_id=org_id) as session:
+                                m = await session.get(Meeting, meeting.id)
+                                if m and m.huddle_status == "active":
+                                    m.status = "cancelled"
+                                    m.huddle_status = "ended"
+                                    await session.commit()
+                                    ended += 1
+                            logger.info("Sweep: cancelled stale huddle %s (no one joined)", meeting_id)
+
+            except Exception as e:
+                logger.warning("Sweep: error checking huddle %s: %s", meeting_id, e)
+                continue
+
+        elif meeting.google_event_id:
+            # Legacy path: check if calendar event end time has passed
+            if meeting.scheduled_end and meeting.scheduled_end < datetime.utcnow():
+                async with get_session(organization_id=org_id) as session:
+                    m = await session.get(Meeting, meeting.id)
+                    if m and m.huddle_status == "active":
+                        m.status = "completed"
+                        m.huddle_status = "ended"
+                        if m.scheduled_start:
+                            m.duration_minutes = max(1, int((m.scheduled_end - m.scheduled_start).total_seconds() / 60))
+                        await session.commit()
+                        ended += 1
+
+                check_huddle_recording.apply_async(
+                    args=[meeting_id, org_id],
+                    countdown=300,
+                )
+                logger.info("Sweep: ended legacy huddle %s", meeting_id)
+
+    logger.info("Sweep complete: checked=%d, ended=%d", checked, ended)
+    return {"status": "ok", "checked": checked, "ended": ended}

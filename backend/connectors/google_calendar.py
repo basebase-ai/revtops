@@ -594,23 +594,37 @@ class GoogleCalendarConnector(BaseConnector):
         meeting_uri = data.get("meetingUri", "")         # "https://meet.google.com/abc-mnop-xyz"
         meeting_code = data.get("meetingCode", "")       # "abc-mnop-xyz"
 
+        # Look up organizer email from the user whose token created the space
+        organizer_email = None
+        if self.user_id:
+            from models.user import User
+            async with get_session(organization_id=self.organization_id) as session:
+                user = await session.get(User, uuid.UUID(self.user_id))
+                if user:
+                    organizer_email = user.email
+
         # Create canonical Meeting entity
+        meeting = await find_or_create_meeting(
+            organization_id=self.organization_id,
+            scheduled_start=now,
+            scheduled_end=end,
+            participants=[],
+            title=title,
+            duration_minutes=duration_minutes,
+            organizer_email=organizer_email,
+            status="scheduled",
+        )
+
+        # Re-fetch in a new session to set Meet-specific fields
+        from models.meeting import Meeting
         async with get_session(organization_id=self.organization_id) as session:
-            meeting = await find_or_create_meeting(
-                organization_id=self.organization_id,
-                scheduled_start=now,
-                scheduled_end=end,
-                participants=[],
-                title=title,
-                duration_minutes=duration_minutes,
-                status="scheduled",
-            )
-            meeting.conference_link = meeting_uri
-            meeting.meet_space_name = meet_space_name
-            meeting.meeting_code = meeting_code
-            meeting.huddle_status = "active"
+            m = await session.get(Meeting, meeting.id)
+            m.conference_link = meeting_uri
+            m.meet_space_name = meet_space_name
+            m.meeting_code = meeting_code
+            m.huddle_status = "active"
             await session.commit()
-            meeting_id = str(meeting.id)
+            meeting_id = str(m.id)
 
         return {
             "status": "ok",

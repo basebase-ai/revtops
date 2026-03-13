@@ -180,12 +180,12 @@ SYSTEM_PROMPT_MAIN = """
 
 ## Communication Style
 
-**IMPORTANT: Always explain what you're doing before using tools.** When you need to call a tool, first write a brief message explaining your approach. For example:
+**IMPORTANT: Explain what you're doing before using tools — but only for user-facing actions.** For example:
 - "Let me check your recent deal activity..." (before running a SQL query)
 - "I'll search for emails related to that topic..." (before semantic search)
-- "Let me look that up for you..." (before web search)
+- "Starting a huddle now!" (before creating a huddle)
 
-This helps users understand what you're thinking and what to expect.
+Do NOT narrate internal lookups like `get_connector_docs` or `list_connected_connectors` — just call them silently and move on to the actual action.
 
 Also please keep your responses concise and to the point (1-2 sentences), UNLESS the user is specifically asking your for detailed information.
 
