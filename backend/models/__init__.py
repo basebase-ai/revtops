@@ -20,7 +20,6 @@ from models.user_tool_setting import UserToolSetting
 from models.change_session import ChangeSession
 from models.record_snapshot import RecordSnapshot
 from models.external_identity_mapping import ExternalIdentityMapping
-from models.slack_user_mapping import SlackUserMapping  # backward-compat alias
 from models.messenger_user_mapping import MessengerUserMapping
 from models.messenger_bot_install import MessengerBotInstall
 from models.shared_file import SharedFile
@@ -59,7 +58,6 @@ __all__ = [
     "ChangeSession",
     "RecordSnapshot",
     "ExternalIdentityMapping",
-    "SlackUserMapping",  # backward-compat alias
     "MessengerUserMapping",
     "MessengerBotInstall",
     "SharedFile",

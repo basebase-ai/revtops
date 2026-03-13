@@ -1273,7 +1273,7 @@ async def get_organization_members(
     Only accessible by members of that organization.
     Uses JWT to identify the requester.
     """
-    from models.external_identity_mapping import ExternalIdentityMapping as SlackUserMapping
+    from models.external_identity_mapping import ExternalIdentityMapping
     from models.org_member import OrgMember
 
     try:
@@ -1317,14 +1317,14 @@ async def get_organization_members(
 
         # Fetch all identity mappings for this org in one query
         mappings_result = await session.execute(
-            select(SlackUserMapping).where(
-                SlackUserMapping.organization_id == org_uuid,
+            select(ExternalIdentityMapping).where(
+                ExternalIdentityMapping.organization_id == org_uuid,
             )
         )
-        all_mappings: list[SlackUserMapping] = list(mappings_result.scalars().all())
+        all_mappings: list[ExternalIdentityMapping] = list(mappings_result.scalars().all())
 
         # Group mappings by user_id
-        mappings_by_user: dict[UUID | None, list[SlackUserMapping]] = {}
+        mappings_by_user: dict[UUID | None, list[ExternalIdentityMapping]] = {}
         for m in all_mappings:
             mappings_by_user.setdefault(m.user_id, []).append(m)
 
@@ -1337,7 +1337,7 @@ async def get_organization_members(
             if u.is_guest and not guest_user_enabled:
                 continue
 
-            user_mappings: list[SlackUserMapping] = mappings_by_user.get(u.id, [])
+            user_mappings: list[ExternalIdentityMapping] = mappings_by_user.get(u.id, [])
             identities: list[IdentityMappingResponse] = [
                 IdentityMappingResponse(
                     id=str(m.id),
@@ -1380,7 +1380,7 @@ async def get_organization_members(
         )
 
         # Collect unmapped identity rows (user_id is NULL)
-        unmapped_mappings: list[SlackUserMapping] = mappings_by_user.get(None, [])
+        unmapped_mappings: list[ExternalIdentityMapping] = mappings_by_user.get(None, [])
 
         # Avoid showing stale "unmapped" rows when the same external account
         # is already linked to a team user via the same source + external identity.
@@ -1393,7 +1393,7 @@ async def get_organization_members(
             if identity_value:
                 linked_identity_keys.add((mapping.source, identity_value.lower()))
 
-        filtered_unmapped_mappings: list[SlackUserMapping] = []
+        filtered_unmapped_mappings: list[ExternalIdentityMapping] = []
         for mapping in unmapped_mappings:
             identity_value = mapping.external_email or mapping.external_userid
             if not identity_value:
@@ -1449,7 +1449,7 @@ async def link_identity(
 
     Reassigns the mapping's ``user_id`` and ``revtops_email`` to the target user.
     """
-    from models.external_identity_mapping import ExternalIdentityMapping as SlackUserMapping
+    from models.external_identity_mapping import ExternalIdentityMapping
 
     if not user_id:
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -1477,7 +1477,7 @@ async def link_identity(
             raise HTTPException(status_code=403, detail="Guest user identities cannot be manually linked")
 
         # Fetch the mapping
-        mapping: SlackUserMapping | None = await session.get(SlackUserMapping, mapping_uuid)
+        mapping: ExternalIdentityMapping | None = await session.get(ExternalIdentityMapping, mapping_uuid)
         if not mapping or mapping.organization_id != org_uuid:
             raise HTTPException(status_code=404, detail="Identity mapping not found")
 
@@ -1503,22 +1503,22 @@ async def link_identity(
         if mapping.source == "slack":
             related_filters = []
             if mapping.external_userid:
-                related_filters.append(SlackUserMapping.external_userid == mapping.external_userid)
+                related_filters.append(ExternalIdentityMapping.external_userid == mapping.external_userid)
             if mapping.external_email:
-                related_filters.append(func.lower(SlackUserMapping.external_email) == mapping.external_email.lower())
+                related_filters.append(func.lower(ExternalIdentityMapping.external_email) == mapping.external_email.lower())
             if target_user.email:
-                related_filters.append(func.lower(SlackUserMapping.external_email) == target_user.email.lower())
+                related_filters.append(func.lower(ExternalIdentityMapping.external_email) == target_user.email.lower())
 
             if related_filters:
                 related_result = await session.execute(
-                    select(SlackUserMapping)
-                    .where(SlackUserMapping.organization_id == org_uuid)
-                    .where(SlackUserMapping.source == "slack")
-                    .where(SlackUserMapping.id != mapping_uuid)
-                    .where(SlackUserMapping.user_id.is_(None))
+                    select(ExternalIdentityMapping)
+                    .where(ExternalIdentityMapping.organization_id == org_uuid)
+                    .where(ExternalIdentityMapping.source == "slack")
+                    .where(ExternalIdentityMapping.id != mapping_uuid)
+                    .where(ExternalIdentityMapping.user_id.is_(None))
                     .where(or_(*related_filters))
                 )
-                related_mappings: list[SlackUserMapping] = list(related_result.scalars().all())
+                related_mappings: list[ExternalIdentityMapping] = list(related_result.scalars().all())
                 for related_mapping in related_mappings:
                     related_mapping.user_id = target_uuid
                     related_mapping.revtops_email = target_user.email
@@ -1552,7 +1552,7 @@ async def unlink_identity(
     - Users can always unlink identities currently linked to themselves.
     - Users with link-identity permission can unlink any identity in the org.
     """
-    from models.external_identity_mapping import ExternalIdentityMapping as SlackUserMapping
+    from models.external_identity_mapping import ExternalIdentityMapping
 
     if not user_id:
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -1569,7 +1569,7 @@ async def unlink_identity(
         if not requester or requester.organization_id != org_uuid:
             raise HTTPException(status_code=403, detail="Not authorized to modify this organization")
 
-        mapping: SlackUserMapping | None = await session.get(SlackUserMapping, mapping_uuid)
+        mapping: ExternalIdentityMapping | None = await session.get(ExternalIdentityMapping, mapping_uuid)
         if not mapping or mapping.organization_id != org_uuid:
             raise HTTPException(status_code=404, detail="Identity mapping not found")
 
@@ -1804,7 +1804,7 @@ async def invite_missing_slack_users_to_organization(
 ) -> SlackMissingInviteResponse:
     """Invite Slack users (with email) who are not already present in the org."""
     from models.org_member import OrgMember
-    from models.external_identity_mapping import ExternalIdentityMapping as SlackUserMapping
+    from models.external_identity_mapping import ExternalIdentityMapping
     from services.email import send_org_invitation_email
 
     if not user_id:
@@ -1841,11 +1841,11 @@ async def invite_missing_slack_users_to_organization(
             raise HTTPException(status_code=404, detail="Slack integration not connected")
 
         slack_rows = await session.execute(
-            select(SlackUserMapping.external_email)
+            select(ExternalIdentityMapping.external_email)
             .where(
-                SlackUserMapping.organization_id == org_uuid,
-                SlackUserMapping.source == "slack",
-                SlackUserMapping.external_email.is_not(None),
+                ExternalIdentityMapping.organization_id == org_uuid,
+                ExternalIdentityMapping.source == "slack",
+                ExternalIdentityMapping.external_email.is_not(None),
             )
             .distinct()
         )
@@ -2168,7 +2168,7 @@ async def remove_organization_member(
     Requires org admin for this org, or global_admin.
     """
     from models.org_member import OrgMember
-    from models.external_identity_mapping import ExternalIdentityMapping as SlackUserMapping
+    from models.external_identity_mapping import ExternalIdentityMapping
 
     if not user_id:
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -2209,9 +2209,9 @@ async def remove_organization_member(
         target_membership.status = "deactivated"
 
         unlink_result = await session.execute(
-            select(SlackUserMapping).where(
-                SlackUserMapping.organization_id == org_uuid,
-                SlackUserMapping.user_id == target_uuid,
+            select(ExternalIdentityMapping).where(
+                ExternalIdentityMapping.organization_id == org_uuid,
+                ExternalIdentityMapping.user_id == target_uuid,
             )
         )
         mappings_to_unlink = list(unlink_result.scalars().all())
@@ -2369,7 +2369,8 @@ async def delete_organization(
         # Delete org-scoped records first (before touching users) in dependency order.
         org_scoped_tables: tuple[str, ...] = (
             "user_mappings_for_identity",
-            "slack_bot_installs",
+            "messenger_user_mappings",
+            "messenger_bot_installs",
             "shared_files",
             "credit_transactions",
             "change_sessions",
@@ -2833,7 +2834,7 @@ async def confirm_integration(
                             )
 
         # For Slack, extract the bot token from Nango and upsert into
-        # slack_bot_installs so event-handling paths can look it up by team_id.
+        # messenger_bot_installs so event-handling paths can look it up by team_id.
         # With bot scopes configured in Nango, the top-level access_token is
         # the xoxb- bot token, and completing OAuth installs the app.
         if request.provider == "slack":
@@ -3261,7 +3262,7 @@ async def slack_oauth_callback(request: Request) -> RedirectResponse:
 
     Configure this URL as the Redirect URL in your Slack app and in Nango's
     Slack integration callback. Nango handles the code exchange and token
-    storage; the bot token is then extracted and stored in slack_bot_installs
+    storage; the bot token is then extracted and stored in messenger_bot_installs
     by confirm_integration.
     """
     nango_callback_url = "https://api.nango.dev/oauth/callback"
