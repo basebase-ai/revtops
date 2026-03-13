@@ -616,6 +616,7 @@ class ChatOrchestrator:
             "reports_to_name": None,
             "phone_number": getattr(self, "_phone_number", None),
             "participant_job_memories": [],
+            "global_command_memory": None,
         }
 
         try:
@@ -681,6 +682,9 @@ class ChatOrchestrator:
                 for mem in all_memories:
                     entry: dict[str, str] = {"id": str(mem.id), "content": mem.content}
                     if mem.entity_type == "user" and user_uuid and mem.entity_id == user_uuid:
+                        if mem.category == "global_commands":
+                            profile["global_command_memory"] = entry
+                            continue
                         profile["user_memories"].append(entry)
                     elif (
                         mem.entity_type == "organization_member"
@@ -916,9 +920,10 @@ class ChatOrchestrator:
             membership_title: str | None = profile["membership_title"]
             reports_to_name: str | None = profile["reports_to_name"]
             phone_number: str | None = profile["phone_number"]
+            global_command_memory: dict[str, str] | None = profile.get("global_command_memory")
 
             has_any_context: bool = bool(
-                user_memories or job_memories
+                user_memories or job_memories or global_command_memory
                 or membership_title or reports_to_name or phone_number
             )
 
@@ -926,6 +931,10 @@ class ChatOrchestrator:
                 system_prompt += "\n\n# Context Profile"
                 system_prompt += "\nThese are persisted facts about the user and their role."
                 system_prompt += " Follow preferences. Use manage_memory with action=\"update\" or action=\"delete\" and the [memory_id] shown in brackets to manage entries.\n"
+
+            if global_command_memory:
+                system_prompt += "\n## Global Command (Always Apply)\n"
+                system_prompt += f"- [{global_command_memory['id']}] {global_command_memory['content']}\n"
 
             # -- User profile section --
             if user_memories or phone_number:

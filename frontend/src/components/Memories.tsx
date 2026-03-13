@@ -17,6 +17,9 @@ interface MemoryDashboardResponse {
   memories: StoredMemory[];
 }
 
+const GLOBAL_COMMAND_CATEGORY = 'global_commands';
+const GLOBAL_COMMAND_MAX_LENGTH = 400;
+
 function formatTime(value: string | null): string {
   if (!value) return 'Unknown time';
   return new Date(value).toLocaleString();
@@ -28,6 +31,7 @@ export function Memories(): JSX.Element {
   const [editingMemoryId, setEditingMemoryId] = useState<string | null>(null);
   const [memoryDraft, setMemoryDraft] = useState<string>('');
   const [newMemoryContent, setNewMemoryContent] = useState<string>('');
+  const [newGlobalCommand, setNewGlobalCommand] = useState<string>('');
   const [showAddForm, setShowAddForm] = useState<boolean>(false);
 
   const orgId = organization?.id;
@@ -45,6 +49,8 @@ export function Memories(): JSX.Element {
   });
 
   const memories: StoredMemory[] = data?.memories ?? [];
+  const globalCommandMemory = memories.find((memory) => memory.category === GLOBAL_COMMAND_CATEGORY) ?? null;
+  const otherMemories = memories.filter((memory) => memory.category !== GLOBAL_COMMAND_CATEGORY);
 
   const updateMemory = useMutation({
     mutationFn: async ({ memoryId, content }: { memoryId: string; content: string }) => {
@@ -74,16 +80,17 @@ export function Memories(): JSX.Element {
   });
 
   const createMemory = useMutation({
-    mutationFn: async (content: string) => {
+    mutationFn: async ({ content, category }: { content: string; category?: string }) => {
       const { error: err } = await apiRequest(`/memories/${orgId}/user?user_id=${userId}`, {
         method: 'POST',
-        body: JSON.stringify({ content: content.trim() }),
+        body: JSON.stringify({ content: content.trim(), category }),
       });
       if (err) throw new Error(err);
     },
     onSuccess: () => {
       setNewMemoryContent('');
       setShowAddForm(false);
+      setNewGlobalCommand('');
       void queryClient.invalidateQueries({ queryKey });
     },
   });
@@ -91,7 +98,13 @@ export function Memories(): JSX.Element {
   const handleAddMemory = (): void => {
     const trimmed = newMemoryContent.trim();
     if (!trimmed) return;
-    createMemory.mutate(trimmed);
+    createMemory.mutate({ content: trimmed });
+  };
+
+  const handleSaveGlobalCommand = (): void => {
+    const trimmed = newGlobalCommand.trim();
+    if (!trimmed || trimmed.length > GLOBAL_COMMAND_MAX_LENGTH) return;
+    createMemory.mutate({ content: trimmed, category: GLOBAL_COMMAND_CATEGORY });
   };
 
   return (
@@ -102,6 +115,91 @@ export function Memories(): JSX.Element {
 
         {!isLoading && !isError && (
           <>
+            <div className="rounded-lg border border-primary-700/40 bg-primary-950/20 p-3">
+              <div className="text-xs uppercase tracking-wide text-primary-300 mb-2">Global command</div>
+              <p className="text-xs text-surface-400 mb-2">Sent on every message. Maximum 400 characters.</p>
+              <textarea
+                className="w-full min-h-20 rounded-lg bg-surface-800 border border-surface-700 px-3 py-2 text-sm text-surface-100"
+                value={editingMemoryId === globalCommandMemory?.id ? memoryDraft : (globalCommandMemory?.content ?? newGlobalCommand)}
+                onChange={(e) => {
+                  if (editingMemoryId === globalCommandMemory?.id) {
+                    setMemoryDraft(e.target.value);
+                    return;
+                  }
+                  setNewGlobalCommand(e.target.value);
+                }}
+                placeholder="e.g. Always start with a short summary before details"
+                maxLength={GLOBAL_COMMAND_MAX_LENGTH}
+                readOnly={Boolean(globalCommandMemory && editingMemoryId !== globalCommandMemory.id)}
+              />
+              <div className="mt-2 flex items-center justify-between gap-2">
+                <span className="text-xs text-surface-500">
+                  {(editingMemoryId === globalCommandMemory?.id ? memoryDraft : (globalCommandMemory?.content ?? newGlobalCommand)).length}/{GLOBAL_COMMAND_MAX_LENGTH}
+                </span>
+                <div className="flex items-center gap-2">
+                  {globalCommandMemory && (
+                    <button
+                      type="button"
+                      className="px-3 py-1.5 text-xs rounded-md bg-red-600/20 hover:bg-red-600/30 text-red-300"
+                      onClick={() => deleteMemory.mutate(globalCommandMemory.id)}
+                    >
+                      Delete
+                    </button>
+                  )}
+                  {editingMemoryId === globalCommandMemory?.id ? (
+                    <>
+                      <button
+                        type="button"
+                        className="px-3 py-1.5 text-xs rounded-md bg-primary-600 hover:bg-primary-700 text-white disabled:opacity-60"
+                        disabled={!memoryDraft.trim() || memoryDraft.length > GLOBAL_COMMAND_MAX_LENGTH}
+                        onClick={() => {
+                          updateMemory.mutate({ memoryId: globalCommandMemory.id, content: memoryDraft });
+                          setEditingMemoryId(null);
+                        }}
+                      >
+                        Save
+                      </button>
+                      <button
+                        type="button"
+                        className="px-3 py-1.5 text-xs rounded-md bg-surface-800 hover:bg-surface-700 text-surface-200"
+                        onClick={() => {
+                          setEditingMemoryId(null);
+                          setMemoryDraft(globalCommandMemory.content);
+                        }}
+                      >
+                        Cancel
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      {globalCommandMemory && (
+                        <button
+                          type="button"
+                          className="px-3 py-1.5 text-xs rounded-md bg-surface-800 hover:bg-surface-700 text-surface-200"
+                          onClick={() => {
+                            setEditingMemoryId(globalCommandMemory.id);
+                            setMemoryDraft(globalCommandMemory.content);
+                          }}
+                        >
+                          Edit
+                        </button>
+                      )}
+                      {!globalCommandMemory && (
+                        <button
+                          type="button"
+                          className="px-3 py-1.5 text-xs rounded-md bg-primary-600 hover:bg-primary-700 text-white disabled:opacity-60"
+                          disabled={!newGlobalCommand.trim() || newGlobalCommand.length > GLOBAL_COMMAND_MAX_LENGTH || createMemory.isPending}
+                          onClick={handleSaveGlobalCommand}
+                        >
+                          Save
+                        </button>
+                      )}
+                    </>
+                  )}
+                </div>
+              </div>
+            </div>
+
             <div className="flex justify-end">
               {!showAddForm && (
                 <button
@@ -144,7 +242,7 @@ export function Memories(): JSX.Element {
             )}
 
             <div className="space-y-3">
-              {memories.length ? memories.map((memory) => (
+              {otherMemories.length ? otherMemories.map((memory) => (
                 <div key={memory.id} className="rounded-lg border border-surface-800 bg-surface-900 p-3">
                   <div className="flex flex-col gap-3">
                     <div className="w-full">

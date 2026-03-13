@@ -5558,6 +5558,25 @@ async def execute_keep_notes(
     return {"note_id": f"{run_id}:{len(notes) - 1}", "content": content, "status": "saved"}
 
 
+
+GLOBAL_COMMAND_CATEGORY = "global_commands"
+GLOBAL_COMMAND_MAX_LENGTH = 400
+
+
+def _normalize_memory_category(category: str | None) -> str | None:
+    if not category:
+        return None
+    normalized = category.strip().lower()
+    if not normalized:
+        return None
+    return GLOBAL_COMMAND_CATEGORY if normalized in {"global_command", "global_commands"} else normalized
+
+
+def _validate_memory_content_for_category(content: str, category: str | None) -> str | None:
+    if category == GLOBAL_COMMAND_CATEGORY and len(content) > GLOBAL_COMMAND_MAX_LENGTH:
+        return f"Global command memories must be {GLOBAL_COMMAND_MAX_LENGTH} characters or fewer."
+    return None
+
 async def _manage_memory(
     params: dict[str, Any], organization_id: str, user_id: str | None, skip_approval: bool = False
 ) -> dict[str, Any]:
@@ -5624,9 +5643,10 @@ async def execute_save_memory(
         return {"status": "failed", "error": "content is required."}
 
     entity_type: str = params.get("entity_type", "user").strip()
-    category: str | None = params.get("category")
-    if category:
-        category = category.strip() or None
+    category: str | None = _normalize_memory_category(params.get("category"))
+    content_error = _validate_memory_content_for_category(content, category)
+    if content_error:
+        return {"status": "failed", "error": content_error}
 
     from models.memory import Memory
     from models.org_member import OrgMember
@@ -5736,6 +5756,10 @@ async def _update_memory(
 
         if memory.created_by_user_id and str(memory.created_by_user_id) != user_id:
             return {"error": f"Memory {memory_id} does not belong to this user."}
+
+        content_error = _validate_memory_content_for_category(new_content, _normalize_memory_category(memory.category))
+        if content_error:
+            return {"error": content_error}
 
         memory.content = new_content
         await session.commit()

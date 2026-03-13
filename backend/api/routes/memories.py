@@ -14,6 +14,29 @@ from models.memory import Memory
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
+GLOBAL_COMMAND_CATEGORY = "global_commands"
+GLOBAL_COMMAND_CATEGORY_ALIASES = {"global_command", "global_commands"}
+GLOBAL_COMMAND_MAX_LENGTH = 400
+
+
+def normalize_memory_category(category: str | None) -> str | None:
+    if not category:
+        return None
+    normalized = category.strip().lower()
+    if not normalized:
+        return None
+    if normalized in GLOBAL_COMMAND_CATEGORY_ALIASES:
+        return GLOBAL_COMMAND_CATEGORY
+    return normalized
+
+
+def validate_memory_content(content: str, category: str | None) -> None:
+    if category == GLOBAL_COMMAND_CATEGORY and len(content) > GLOBAL_COMMAND_MAX_LENGTH:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Global command memories must be {GLOBAL_COMMAND_MAX_LENGTH} characters or fewer",
+        )
+
 
 class MemoryResponse(BaseModel):
     id: str
@@ -90,13 +113,15 @@ async def create_user_memory(
     content = request.content.strip()
     if not content:
         raise HTTPException(status_code=400, detail="content is required")
+    category = normalize_memory_category(request.category)
+    validate_memory_content(content, category)
 
     async with get_session(organization_id=organization_id) as session:
         memory = Memory(
             entity_type="user",
             entity_id=user_uuid,
             organization_id=org_uuid,
-            category=(request.category.strip() or None) if request.category else None,
+            category=category,
             content=content,
             created_by_user_id=user_uuid,
         )
@@ -119,7 +144,8 @@ async def create_user_memory(
 @router.patch("/{organization_id}/user/{memory_id}", response_model=MemoryResponse)
 async def update_user_memory(organization_id: str, memory_id: str, user_id: str, request: UpdateMemoryRequest) -> MemoryResponse:
     """Update a user-stored memory's content."""
-    if not request.content.strip():
+    content = request.content.strip()
+    if not content:
         raise HTTPException(status_code=400, detail="content is required")
 
     try:
@@ -143,7 +169,9 @@ async def update_user_memory(organization_id: str, memory_id: str, user_id: str,
         if not memory:
             raise HTTPException(status_code=404, detail="Memory not found")
 
-        memory.content = request.content.strip()
+        validate_memory_content(content, normalize_memory_category(memory.category))
+
+        memory.content = content
         await session.commit()
         await session.refresh(memory)
 
