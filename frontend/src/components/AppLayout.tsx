@@ -1541,7 +1541,7 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
                 </span>
                 <span>{RELEASE_STAGE.description}</span>
               </p>
-              <div className="self-start">
+              <div>
                 <button
                   onClick={dismissReleaseBanner}
                   className="flex-shrink-0 text-surface-400 hover:text-surface-200 transition-colors px-1"
