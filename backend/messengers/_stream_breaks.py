@@ -16,6 +16,15 @@ def _is_valid_sentence_break(text: str, punct_idx: int) -> bool:
         return False
     if punct_idx >= 1 and text[punct_idx - 1:punct_idx] == "~":
         return False
+
+    line_start: int = text.rfind("\n", 0, punct_idx) + 1
+    line_prefix: str = text[line_start:punct_idx].strip()
+
+    if line_prefix.startswith(("-", "*", "+")):
+        return False
+    if re.fullmatch(r"\d+", line_prefix):
+        return False
+
     return True
 
 
@@ -56,14 +65,5 @@ def find_safe_break(
     if limit is None:
         return 0
 
-    # Fallback when no sentence boundary is available in the bounded window.
-    newline_break: int = text.rfind("\n", 0, max_index)
-    if newline_break > 0:
-        return newline_break
-
-    space_break: int = text.rfind(" ", 0, max_index)
-    if space_break > 0:
-        return space_break
-
-    return max_index if max_index < len(text) else 0
-
+    # Bounded windows still require sentence boundaries.
+    return 0
