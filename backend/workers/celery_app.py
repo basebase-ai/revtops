@@ -142,6 +142,12 @@ celery_app.conf.beat_schedule = {
         "schedule": timedelta(minutes=15),
     },
 
+    # Sweep active huddles every 5 minutes — ends stale conferences, triggers recording check
+    "sweep-active-huddles": {
+        "task": "workers.tasks.sync.sweep_active_huddles",
+        "schedule": timedelta(minutes=5),
+    },
+
     # Ensure monitor task itself keeps running; incident if no heartbeat for 30m
     "monitoring-heartbeat-watchdog": {
         "task": "workers.tasks.monitoring.monitoring_heartbeat_watchdog",
