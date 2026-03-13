@@ -343,10 +343,11 @@ async def _check_huddle_recording(
         if not meeting:
             return {"status": "skipped", "reason": "meeting_not_found"}
 
-        if meeting.recording_drive_id:
-            return {"status": "skipped", "reason": "recording_already_linked"}
+        if meeting.recording_drive_id and meeting.summary:
+            return {"status": "skipped", "reason": "recording_and_summary_already_linked"}
 
         meet_space_name = meeting.meet_space_name
+        meeting_code = meeting.meeting_code
         title = meeting.title or "Huddle"
         start_time = meeting.scheduled_start
         organizer_email = meeting.organizer_email
@@ -361,11 +362,11 @@ async def _check_huddle_recording(
     MEET_API = "https://meet.googleapis.com/v2"
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
-    # ── New path: Meet API conference records ──
+    # ── Meet API path (huddles with space name) ──
     if meet_space_name:
         try:
             async with httpx.AsyncClient() as client:
-                # Find the conference record for this space
+                # Find the conference record by space name
                 resp = await client.get(
                     f"{MEET_API}/conferenceRecords",
                     headers=headers,
@@ -508,6 +509,39 @@ async def _check_huddle_recording(
             "participant_count": len(participant_data),
             "has_summary": bool(gemini_summary),
         }
+
+    # ── Calendared meetings: just fetch the Gemini summary from Drive ──
+    if meeting_code:
+        gemini_summary = ""
+        try:
+            async with httpx.AsyncClient() as client:
+                gemini_summary = await _fetch_gemini_summary(
+                    client, organization_id, organizer_email, title, start_time, meeting_id
+                )
+        except Exception as e:
+            logger.warning("Drive summary fetch failed for calendared meeting %s: %s", meeting_id, e)
+
+        if gemini_summary:
+            async with get_session(organization_id=organization_id) as session:
+                meeting = await session.get(Meeting, UUID(meeting_id))
+                if meeting:
+                    meeting.summary = gemini_summary
+                    await session.commit()
+            logger.info("Saved Gemini summary (%d chars) for calendared meeting %s", len(gemini_summary), meeting_id)
+            return {
+                "status": "found",
+                "meeting_id": meeting_id,
+                "has_summary": True,
+            }
+
+        # No summary found yet — retry if retries remain
+        if task is not None:
+            remaining = task.max_retries - task.request.retries
+            if remaining > 0:
+                logger.info("No Gemini summary yet for calendared meeting %s, %d retries remaining", meeting_id, remaining)
+                raise task.retry()
+
+        return {"status": "not_found", "meeting_id": meeting_id}
 
     # ── Legacy fallback: Drive search for meetings without meet_space_name ──
     search_after = start_time.strftime("%Y-%m-%dT%H:%M:%S")

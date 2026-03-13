@@ -341,9 +341,33 @@ class GoogleCalendarConnector(BaseConnector):
                         )
                         session.add(activity)
                     
+                    # Set Meet conference fields on the meeting if available
+                    if meeting and parsed.get("conference_id") and parsed["meeting_type"] == "google_meet":
+                        if not meeting.meeting_code:
+                            meeting.meeting_code = parsed["conference_id"]
+                        if not meeting.conference_link and parsed.get("conference_link"):
+                            meeting.conference_link = parsed["conference_link"]
+                        if not meeting.google_event_id:
+                            meeting.google_event_id = parsed["event_id"]
+                        if not meeting.organizer_email and parsed.get("organizer_email"):
+                            meeting.organizer_email = parsed["organizer_email"]
+                        # If Gemini attached notes directly, fetch the summary now
+                        gemini_doc_id = parsed.get("gemini_doc_id", "")
+                        if gemini_doc_id and not meeting.summary:
+                            try:
+                                summary = await self._fetch_gemini_doc(gemini_doc_id)
+                                if summary:
+                                    meeting.summary = summary
+                                    logger.info(
+                                        "[GCal Sync] Saved Gemini summary (%d chars) from attachment for meeting %s",
+                                        len(summary), meeting.id,
+                                    )
+                            except Exception as e:
+                                logger.warning("[GCal Sync] Failed to fetch Gemini doc %s: %s", gemini_doc_id, e)
+
                     await session.flush()
                     count += 1
-                    
+
                     # Broadcast progress every 5 events
                     if count % 5 == 0:
                         await broadcast_sync_progress(
@@ -390,6 +414,40 @@ class GoogleCalendarConnector(BaseConnector):
                     print(f"[GCal Sync]   Deleting orphaned meeting: {meeting.title} at {meeting.scheduled_start}")
                     await session.delete(meeting)
                 await session.commit()
+
+        # Schedule Gemini summary fetch for completed Google Meet meetings
+        # that have a meeting_code but no summary yet
+        try:
+            from models.meeting import Meeting as MeetingModel
+            async with get_session(organization_id=self.organization_id) as session:
+                # Only check meetings from the last 7 days — older ones are unlikely
+                # to still have Gemini summaries we haven't fetched
+                cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=7)
+                needs_summary = await session.execute(
+                    select(MeetingModel).where(
+                        MeetingModel.organization_id == uuid.UUID(self.organization_id),
+                        MeetingModel.status == "completed",
+                        MeetingModel.meeting_code.isnot(None),
+                        MeetingModel.summary.is_(None),
+                        MeetingModel.huddle_status.is_(None),  # Skip huddles — handled by sweep
+                        MeetingModel.scheduled_start > cutoff,
+                    )
+                )
+                meetings_needing_summary = needs_summary.scalars().all()
+
+            if meetings_needing_summary:
+                from workers.tasks.sync import check_huddle_recording
+                for m in meetings_needing_summary:
+                    check_huddle_recording.apply_async(
+                        args=[str(m.id), self.organization_id],
+                        countdown=10,
+                    )
+                logger.info(
+                    "[GCal Sync] Scheduled summary fetch for %d completed Meet meetings",
+                    len(meetings_needing_summary),
+                )
+        except Exception as e:
+            logger.warning("[GCal Sync] Failed to schedule summary fetches: %s", e)
 
         # Broadcast final progress
         await broadcast_sync_progress(
@@ -469,12 +527,15 @@ class GoogleCalendarConnector(BaseConnector):
         organizer = gcal_event.get("organizer", {})
         organizer_email = organizer.get("email", "")
 
-        # Determine meeting type
+        # Determine meeting type and extract conference details
         meeting_type = "meeting"
+        conference_id = ""  # Meet meeting code (e.g. "aaa-bbbb-ccc")
         if gcal_event.get("conferenceData"):
-            conf_type = gcal_event.get("conferenceData", {}).get("conferenceSolution", {}).get("name", "")
+            conf_data = gcal_event["conferenceData"]
+            conf_type = conf_data.get("conferenceSolution", {}).get("name", "")
             if "meet" in conf_type.lower():
                 meeting_type = "google_meet"
+                conference_id = conf_data.get("conferenceId", "")
             elif "zoom" in conf_type.lower():
                 meeting_type = "zoom"
 
@@ -513,8 +574,62 @@ class GoogleCalendarConnector(BaseConnector):
             "calendar_id": organizer_email,
             "location": gcal_event.get("location"),
             "conference_link": gcal_event.get("hangoutLink"),
+            "conference_id": conference_id,
+            "gemini_doc_id": self._extract_gemini_doc_id(gcal_event),
             "visibility": gcal_event.get("visibility"),
         }
+
+    async def _fetch_gemini_doc(self, doc_id: str) -> str:
+        """Export a Gemini notes doc as plain text using the Drive API."""
+        from connectors.registry import discover_connectors
+        from models.database import get_admin_session
+        from models.integration import Integration
+        from sqlalchemy import select
+
+        # Get a Drive-scoped token
+        connectors = discover_connectors()
+        drive_cls = connectors.get("google_drive")
+        if not drive_cls:
+            return ""
+
+        # Prefer the Drive integration of the user whose calendar we're syncing
+        async with get_admin_session() as session:
+            query = select(Integration).where(
+                Integration.organization_id == uuid.UUID(self.organization_id),
+                Integration.connector == "google_drive",
+                Integration.is_active == True,  # noqa: E712
+            )
+            if self.user_id:
+                query = query.where(Integration.user_id == uuid.UUID(self.user_id))
+            result = await session.execute(query)
+            integration = result.scalars().first()
+
+        if not integration:
+            return ""
+
+        connector = drive_cls(self.organization_id, user_id=str(integration.user_id))
+        token, _ = await connector.get_oauth_token()
+
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                f"https://www.googleapis.com/drive/v3/files/{doc_id}/export",
+                headers={"Authorization": f"Bearer {token}"},
+                params={"mimeType": "text/plain"},
+                timeout=30.0,
+            )
+            resp.raise_for_status()
+            return resp.text.strip()
+
+    @staticmethod
+    def _extract_gemini_doc_id(gcal_event: dict[str, Any]) -> str:
+        """Extract the Gemini notes doc fileId from calendar event attachments."""
+        for att in gcal_event.get("attachments", []):
+            if (
+                att.get("mimeType") == "application/vnd.google-apps.document"
+                and "gemini" in att.get("title", "").lower()
+            ):
+                return att.get("fileId", "")
+        return ""
 
     async def sync_all(self) -> dict[str, int]:
         """Run all sync operations."""
