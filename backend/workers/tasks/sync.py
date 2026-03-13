@@ -343,10 +343,11 @@ async def _check_huddle_recording(
         if not meeting:
             return {"status": "skipped", "reason": "meeting_not_found"}
 
-        if meeting.recording_drive_id:
-            return {"status": "skipped", "reason": "recording_already_linked"}
+        if meeting.recording_drive_id and meeting.summary:
+            return {"status": "skipped", "reason": "recording_and_summary_already_linked"}
 
         meet_space_name = meeting.meet_space_name
+        meeting_code = meeting.meeting_code
         title = meeting.title or "Huddle"
         start_time = meeting.scheduled_start
         organizer_email = meeting.organizer_email
@@ -361,11 +362,11 @@ async def _check_huddle_recording(
     MEET_API = "https://meet.googleapis.com/v2"
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
-    # ── New path: Meet API conference records ──
+    # ── Meet API path (huddles with space name) ──
     if meet_space_name:
         try:
             async with httpx.AsyncClient() as client:
-                # Find the conference record for this space
+                # Find the conference record by space name
                 resp = await client.get(
                     f"{MEET_API}/conferenceRecords",
                     headers=headers,
@@ -509,6 +510,39 @@ async def _check_huddle_recording(
             "has_summary": bool(gemini_summary),
         }
 
+    # ── Calendared meetings: just fetch the Gemini summary from Drive ──
+    if meeting_code:
+        gemini_summary = ""
+        try:
+            async with httpx.AsyncClient() as client:
+                gemini_summary = await _fetch_gemini_summary(
+                    client, organization_id, organizer_email, title, start_time, meeting_id
+                )
+        except Exception as e:
+            logger.warning("Drive summary fetch failed for calendared meeting %s: %s", meeting_id, e)
+
+        if gemini_summary:
+            async with get_session(organization_id=organization_id) as session:
+                meeting = await session.get(Meeting, UUID(meeting_id))
+                if meeting:
+                    meeting.summary = gemini_summary
+                    await session.commit()
+            logger.info("Saved Gemini summary (%d chars) for calendared meeting %s", len(gemini_summary), meeting_id)
+            return {
+                "status": "found",
+                "meeting_id": meeting_id,
+                "has_summary": True,
+            }
+
+        # No summary found yet — retry if retries remain
+        if task is not None:
+            remaining = task.max_retries - task.request.retries
+            if remaining > 0:
+                logger.info("No Gemini summary yet for calendared meeting %s, %d retries remaining", meeting_id, remaining)
+                raise task.retry()
+
+        return {"status": "not_found", "meeting_id": meeting_id}
+
     # ── Legacy fallback: Drive search for meetings without meet_space_name ──
     search_after = start_time.strftime("%Y-%m-%dT%H:%M:%S")
     search_before = (start_time + timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%S")
@@ -621,7 +655,8 @@ async def _fetch_gemini_summary(
     # "Meeting started" (Gemini's default for huddles / unnamed meetings)
     name_filters = ["name contains 'Meeting started'"]
     if title and title.lower() != "huddle":
-        name_filters.insert(0, f"name contains '{title}'")
+        safe_title = title.replace("\\", "\\\\").replace("'", "\\'")
+        name_filters.insert(0, f"name contains '{safe_title}'")
 
     files = []
     try:
@@ -932,3 +967,52 @@ async def _sweep_active_huddles() -> dict[str, Any]:
 
     logger.info("Sweep complete: checked=%d, ended=%d", checked, ended)
     return {"status": "ok", "checked": checked, "ended": ended}
+
+
+@celery_app.task(bind=True, name="workers.tasks.sync.sweep_completed_meetings")
+def sweep_completed_meetings(self: Any) -> dict[str, Any]:
+    """
+    Periodic task that finds recently-ended calendared Google Meet meetings
+    missing a Gemini summary and schedules a fetch.
+    """
+    logger.info(f"Task {self.request.id}: Sweeping completed meetings for summaries")
+    return run_async(_sweep_completed_meetings())
+
+
+async def _sweep_completed_meetings() -> dict[str, Any]:
+    """Async implementation: find completed Meet meetings needing summaries."""
+    from models.database import get_admin_session
+    from models.meeting import Meeting
+    from sqlalchemy import select
+
+    now = datetime.utcnow()
+    cutoff = now - timedelta(hours=2)
+
+    async with get_admin_session() as session:
+        result = await session.execute(
+            select(Meeting).where(
+                Meeting.meeting_code.isnot(None),
+                Meeting.summary.is_(None),
+                Meeting.huddle_status.is_(None),  # Skip huddles — handled by sweep_active_huddles
+                Meeting.status == "completed",
+                Meeting.scheduled_end.isnot(None),
+                Meeting.scheduled_end < now,
+                Meeting.scheduled_end > cutoff,
+            )
+        )
+        meetings = result.scalars().all()
+
+    if not meetings:
+        return {"status": "ok", "checked": 0, "scheduled": 0}
+
+    scheduled = 0
+    for meeting in meetings:
+        check_huddle_recording.apply_async(
+            args=[str(meeting.id), str(meeting.organization_id)],
+            countdown=10,
+        )
+        scheduled += 1
+        logger.info("Sweep: scheduled summary fetch for calendared meeting %s", meeting.id)
+
+    logger.info("Completed meeting sweep: found=%d, scheduled=%d", len(meetings), scheduled)
+    return {"status": "ok", "checked": len(meetings), "scheduled": scheduled}

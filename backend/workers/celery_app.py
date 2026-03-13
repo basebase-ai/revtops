@@ -148,6 +148,12 @@ celery_app.conf.beat_schedule = {
         "schedule": timedelta(minutes=5),
     },
 
+    # Sweep completed calendared Meet meetings every 5 minutes for missing Gemini summaries
+    "sweep-completed-meetings": {
+        "task": "workers.tasks.sync.sweep_completed_meetings",
+        "schedule": timedelta(minutes=5),
+    },
+
     # Ensure monitor task itself keeps running; incident if no heartbeat for 30m
     "monitoring-heartbeat-watchdog": {
         "task": "workers.tasks.monitoring.monitoring_heartbeat_watchdog",
