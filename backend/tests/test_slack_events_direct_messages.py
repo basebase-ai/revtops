@@ -1,24 +1,22 @@
 import asyncio
 
 from api.routes import slack_events
+from messengers.base import InboundMessage, MessageType
+from messengers.slack import SlackMessenger
 
 
 def test_process_event_callback_routes_mpim_messages_to_direct_message_handler(monkeypatch) -> None:
-    captured: dict[str, str | None] = {}
+    captured: list[InboundMessage] = []
 
     async def _fake_is_duplicate_event(_event_id: str) -> bool:
         return False
 
-    async def _fake_process_slack_dm(**kwargs):
-        captured["team_id"] = kwargs["team_id"]
-        captured["channel_id"] = kwargs["channel_id"]
-        captured["user_id"] = kwargs["user_id"]
-        captured["message_text"] = kwargs["message_text"]
-        captured["event_ts"] = kwargs["event_ts"]
-        captured["thread_ts"] = kwargs["thread_ts"]
+    async def _fake_process_inbound(self, message: InboundMessage):
+        captured.append(message)
+        return {"status": "success"}
 
     monkeypatch.setattr(slack_events, "is_duplicate_event", _fake_is_duplicate_event)
-    monkeypatch.setattr(slack_events, "process_slack_dm", _fake_process_slack_dm)
+    monkeypatch.setattr(SlackMessenger, "process_inbound", _fake_process_inbound)
 
     payload = {
         "type": "event_callback",
@@ -36,28 +34,28 @@ def test_process_event_callback_routes_mpim_messages_to_direct_message_handler(m
 
     asyncio.run(slack_events._process_event_callback_impl(payload))
 
-    assert captured == {
-        "team_id": "T123",
-        "channel_id": "G123",
-        "user_id": "U123",
-        "message_text": "hey basebase",
-        "event_ts": "1700000000.001",
-        "thread_ts": None,
-    }
+    assert len(captured) == 1
+    msg: InboundMessage = captured[0]
+    assert msg.message_type == MessageType.DIRECT
+    assert msg.external_user_id == "U123"
+    assert msg.text == "hey basebase"
+    assert msg.messenger_context["workspace_id"] == "T123"
+    assert msg.messenger_context["channel_id"] == "G123"
+    assert msg.messenger_context["thread_id"] is None
 
 
 def test_process_event_callback_passes_thread_ts_for_direct_message_thread(monkeypatch) -> None:
-    captured: dict[str, str | None] = {}
+    captured: list[InboundMessage] = []
 
     async def _fake_is_duplicate_event(_event_id: str) -> bool:
         return False
 
-    async def _fake_process_slack_dm(**kwargs):
-        captured["thread_ts"] = kwargs["thread_ts"]
-        captured["event_ts"] = kwargs["event_ts"]
+    async def _fake_process_inbound(self, message: InboundMessage):
+        captured.append(message)
+        return {"status": "success"}
 
     monkeypatch.setattr(slack_events, "is_duplicate_event", _fake_is_duplicate_event)
-    monkeypatch.setattr(slack_events, "process_slack_dm", _fake_process_slack_dm)
+    monkeypatch.setattr(SlackMessenger, "process_inbound", _fake_process_inbound)
 
     payload = {
         "type": "event_callback",
@@ -76,7 +74,7 @@ def test_process_event_callback_passes_thread_ts_for_direct_message_thread(monke
 
     asyncio.run(slack_events._process_event_callback_impl(payload))
 
-    assert captured == {
-        "thread_ts": "1700000000.001",
-        "event_ts": "1700000000.002",
-    }
+    assert len(captured) == 1
+    msg: InboundMessage = captured[0]
+    assert msg.messenger_context["thread_ts"] == "1700000000.001"
+    assert msg.message_id == "1700000000.002"
