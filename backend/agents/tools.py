@@ -186,6 +186,7 @@ ALLOWED_TABLES: set[str] = {
     "shared_files",
     "tracker_teams", "tracker_projects", "tracker_issues",
     "bulk_operations", "bulk_operation_results",
+    "temp_data",
 }
 
 
