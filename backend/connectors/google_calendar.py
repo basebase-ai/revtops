@@ -310,7 +310,9 @@ class GoogleCalendarConnector(BaseConnector):
                             organizer_email=parsed["organizer_email"],
                             status=parsed["meeting_status"],
                         )
-                        
+                        # Re-attach to outer session so meeting_code etc. persist
+                        meeting = await session.merge(meeting)
+
                         # Create new Activity record linked to the Meeting
                         vis: dict[str, Any] = self._activity_visibility_fields()
                         activity: Activity = Activity(
