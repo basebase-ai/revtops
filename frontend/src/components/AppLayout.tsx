@@ -616,10 +616,86 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
             }
           } else if (typeof chunkData === 'object' && chunkData !== null) {
             const data = chunkData as Record<string, unknown>;
-            
-            if (data.type === 'tool_call_start') {
-              // Tool call STARTING — LLM is still streaming the input JSON.
-              // Show a placeholder block immediately so the user sees activity.
+
+            if (data.type === 'thinking_start') {
+              const state = useAppStore.getState();
+              const convState = state.conversations[conversation_id];
+              const thinkingBlock = { type: 'thinking' as const, text: '', isStreaming: true };
+              if (convState?.streamingMessageId) {
+                const updated = convState.messages.map((msg) => {
+                  if (msg.id !== convState.streamingMessageId) return msg;
+                  return { ...msg, contentBlocks: [...msg.contentBlocks, thinkingBlock] };
+                });
+                useAppStore.setState({
+                  conversations: {
+                    ...state.conversations,
+                    [conversation_id]: { ...convState, messages: updated },
+                  },
+                });
+              } else {
+                const msgId = `assistant-${Date.now()}`;
+                startConversationStreaming(conversation_id, msgId, '', chunkIndex);
+                const state2 = useAppStore.getState();
+                const convState2 = state2.conversations[conversation_id];
+                if (convState2?.streamingMessageId) {
+                  const updated = convState2.messages.map((msg) => {
+                    if (msg.id !== convState2.streamingMessageId) return msg;
+                    return { ...msg, contentBlocks: [thinkingBlock] };
+                  });
+                  useAppStore.setState({
+                    conversations: {
+                      ...state2.conversations,
+                      [conversation_id]: { ...convState2, messages: updated },
+                    },
+                  });
+                }
+              }
+            } else if (data.type === 'thinking_delta') {
+              const state = useAppStore.getState();
+              const convState = state.conversations[conversation_id];
+              const streamingId = convState?.streamingMessageId;
+              if (convState && streamingId) {
+                const updated = convState.messages.map((msg) => {
+                  if (msg.id !== streamingId) return msg;
+                  const blocks = [...msg.contentBlocks];
+                  const lastBlock = blocks[blocks.length - 1];
+                  if (lastBlock && lastBlock.type === 'thinking') {
+                    blocks[blocks.length - 1] = {
+                      ...lastBlock,
+                      text: lastBlock.text + (data.text as string),
+                    };
+                  }
+                  return { ...msg, contentBlocks: blocks };
+                });
+                useAppStore.setState({
+                  conversations: {
+                    ...state.conversations,
+                    [conversation_id]: { ...convState, messages: updated },
+                  },
+                });
+              }
+            } else if (data.type === 'thinking_stop') {
+              const state = useAppStore.getState();
+              const convState = state.conversations[conversation_id];
+              const streamingId = convState?.streamingMessageId;
+              if (convState && streamingId) {
+                const updated = convState.messages.map((msg) => {
+                  if (msg.id !== streamingId) return msg;
+                  const blocks = msg.contentBlocks.map((block) =>
+                    block.type === 'thinking' && block.isStreaming
+                      ? { ...block, isStreaming: false }
+                      : block,
+                  );
+                  return { ...msg, contentBlocks: blocks };
+                });
+                useAppStore.setState({
+                  conversations: {
+                    ...state.conversations,
+                    [conversation_id]: { ...convState, messages: updated },
+                  },
+                });
+              }
+            } else if (data.type === 'tool_call_start') {
               const toolBlock = {
                 type: 'tool_use' as const,
                 id: data.tool_id as string,
@@ -970,7 +1046,87 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
                 }
               } else if (typeof chunkData === 'object' && chunkData !== null) {
                 const data = chunkData as Record<string, unknown>;
-                if (data.type === 'tool_call_start') {
+                if (data.type === 'thinking_start') {
+                  const state = useAppStore.getState();
+                  const convState = state.conversations[conversationId];
+                  const thinkingBlock = { type: 'thinking' as const, text: '', isStreaming: true };
+                  if (convState?.streamingMessageId) {
+                    const updated = convState.messages.map((msg) =>
+                      msg.id === convState.streamingMessageId
+                        ? { ...msg, contentBlocks: [...msg.contentBlocks, thinkingBlock] }
+                        : msg,
+                    );
+                    useAppStore.setState({
+                      conversations: {
+                        ...state.conversations,
+                        [conversationId]: { ...convState, messages: updated },
+                      },
+                    });
+                  } else {
+                    const msgId = `assistant-${Date.now()}`;
+                    startConversationStreaming(conversationId, msgId, '', chunkIndex);
+                    const state2 = useAppStore.getState();
+                    const convState2 = state2.conversations[conversationId];
+                    if (convState2?.streamingMessageId) {
+                      const updated = convState2.messages.map((msg) =>
+                        msg.id === convState2.streamingMessageId
+                          ? { ...msg, contentBlocks: [thinkingBlock] }
+                          : msg,
+                      );
+                      useAppStore.setState({
+                        conversations: {
+                          ...state2.conversations,
+                          [conversationId]: { ...convState2, messages: updated },
+                        },
+                      });
+                    }
+                  }
+                } else if (data.type === 'thinking_delta') {
+                  const state = useAppStore.getState();
+                  const convState = state.conversations[conversationId];
+                  const streamingId = convState?.streamingMessageId;
+                  if (convState && streamingId) {
+                    const updated = convState.messages.map((msg) => {
+                      if (msg.id !== streamingId) return msg;
+                      const blocks = [...msg.contentBlocks];
+                      const lastBlock = blocks[blocks.length - 1];
+                      if (lastBlock && lastBlock.type === 'thinking') {
+                        blocks[blocks.length - 1] = {
+                          ...lastBlock,
+                          text: lastBlock.text + (data.text as string),
+                        };
+                      }
+                      return { ...msg, contentBlocks: blocks };
+                    });
+                    useAppStore.setState({
+                      conversations: {
+                        ...state.conversations,
+                        [conversationId]: { ...convState, messages: updated },
+                      },
+                    });
+                  }
+                } else if (data.type === 'thinking_stop') {
+                  const state = useAppStore.getState();
+                  const convState = state.conversations[conversationId];
+                  const streamingId = convState?.streamingMessageId;
+                  if (convState && streamingId) {
+                    const updated = convState.messages.map((msg) => {
+                      if (msg.id !== streamingId) return msg;
+                      const blocks = msg.contentBlocks.map((block) =>
+                        block.type === 'thinking' && block.isStreaming
+                          ? { ...block, isStreaming: false }
+                          : block,
+                      );
+                      return { ...msg, contentBlocks: blocks };
+                    });
+                    useAppStore.setState({
+                      conversations: {
+                        ...state.conversations,
+                        [conversationId]: { ...convState, messages: updated },
+                      },
+                    });
+                  }
+                } else if (data.type === 'tool_call_start') {
                   const toolBlock = {
                     type: 'tool_use' as const,
                     id: data.tool_id as string,

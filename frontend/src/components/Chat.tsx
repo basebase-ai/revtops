@@ -33,6 +33,7 @@ import {
   type ChatMessage,
   type ConversationSummaryData,
   type Integration,
+  type ThinkingBlock as ThinkingBlockType,
   type ToolCallData,
   type ToolUseBlock,
   type ErrorBlock,
@@ -2091,6 +2092,14 @@ function MessageWithBlocks({
       {/* Content blocks in order */}
       <div className="flex-1 max-w-[85%] overflow-hidden">
         {blocks.map((block, index) => {
+          if (block.type === 'thinking') {
+            if (!block.text && !block.isStreaming) return null;
+            return (
+              <div key={`thinking-${index}`} className={index > 0 ? 'mt-1' : ''}>
+                <ThinkingBlockIndicator block={block} />
+              </div>
+            );
+          }
           if (block.type === 'text') {
             const isLast = index === lastTextIndex;
             return (
@@ -2154,6 +2163,58 @@ function MessageWithBlocks({
           </span>
         </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * Collapsible thinking block — shows Claude's reasoning process.
+ * Open (expanded) while streaming with capped height and internal scroll;
+ * auto-collapses when thinking completes and the next content appears.
+ */
+function ThinkingBlockIndicator({
+  block,
+}: {
+  block: ThinkingBlockType;
+}): JSX.Element {
+  const [collapsed, setCollapsed] = useState<boolean>(!block.isStreaming);
+
+  // Auto-close when thinking finishes so the next message takes focus
+  useEffect(() => {
+    if (!block.isStreaming) {
+      setCollapsed(true);
+    }
+  }, [block.isStreaming]);
+
+  // While streaming, keep expanded so the user sees the thinking box open
+  const isExpanded: boolean = block.isStreaming || !collapsed;
+
+  return (
+    <div className="my-1">
+      <button
+        onClick={() => setCollapsed((prev) => !prev)}
+        className="flex items-center gap-1 text-xs text-surface-500 hover:text-surface-300 transition-colors cursor-pointer"
+      >
+        <svg
+          className={`w-3 h-3 transition-transform ${isExpanded ? 'rotate-90' : ''}`}
+          fill="none"
+          viewBox="0 0 24 24"
+          stroke="currentColor"
+        >
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+        </svg>
+        <span>
+          {block.isStreaming ? 'Thinking…' : 'Thought process'}
+        </span>
+        {block.isStreaming && (
+          <span className="inline-block w-1 h-1 rounded-full bg-primary-400 animate-pulse" />
+        )}
+      </button>
+      {isExpanded && (
+        <div className="mt-1 ml-4 pl-2 border-l border-surface-700 text-xs text-surface-500 whitespace-pre-wrap leading-relaxed max-h-48 overflow-y-auto">
+          {block.text || (block.isStreaming ? '' : null)}
+        </div>
+      )}
     </div>
   );
 }

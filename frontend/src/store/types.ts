@@ -161,6 +161,12 @@ export interface AppBlock {
   };
 }
 
+export interface ThinkingBlock {
+  type: "thinking";
+  text: string;
+  isStreaming?: boolean;
+}
+
 export interface AttachmentBlock {
   type: "attachment";
   filename: string;
@@ -174,6 +180,7 @@ export type ContentBlock =
   | ErrorBlock
   | ArtifactBlock
   | AppBlock
+  | ThinkingBlock
   | AttachmentBlock;
 
 // Legacy type for streaming compatibility

@@ -36,6 +36,7 @@ export type {
   ErrorBlock,
   ArtifactBlock,
   AppBlock,
+  ThinkingBlock,
   AttachmentBlock,
   ContentBlock,
   ToolCallData,

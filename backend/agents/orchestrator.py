@@ -1059,6 +1059,7 @@ class ChatOrchestrator:
             tool_uses: list[dict[str, Any]] = []
             current_tool: dict[str, Any] | None = None
             current_tool_input_json = ""
+            is_thinking_block: bool = False
             final_message = None
             context_retry_needed = False
 
@@ -1071,31 +1072,32 @@ class ChatOrchestrator:
                     tool_uses = []
                     current_tool = None
                     current_tool_input_json = ""
+                    is_thinking_block = False
                     
                     # Stream the response
                     async with self.client.messages.stream(
                         model="claude-opus-4-6",
-                        max_tokens=16384,
+                        max_tokens=32768,
                         system=system_prompt,
                         tools=get_tools(self.workflow_context),
                         messages=messages,
+                        thinking={"type": "adaptive"},
                     ) as stream:
                         async for event in stream:
                             # Handle different event types
                             if event.type == "content_block_start":
-                                if event.content_block.type == "text":
-                                    # Text block starting - nothing to do yet
+                                if event.content_block.type == "thinking":
+                                    is_thinking_block = True
+                                    yield json.dumps({"type": "thinking_start"})
+                                elif event.content_block.type == "text":
                                     pass
                                 elif event.content_block.type == "tool_use":
-                                    # Tool use block starting - capture id and name
                                     current_tool = {
                                         "id": event.content_block.id,
                                         "name": event.content_block.name,
                                         "input": {},
                                     }
                                     current_tool_input_json = ""
-                                    # Immediately notify frontend that a tool call is starting
-                                    # so it can show a spinner while the input JSON streams
                                     yield json.dumps({
                                         "type": "tool_call_start",
                                         "tool_name": event.content_block.name,
@@ -1103,18 +1105,25 @@ class ChatOrchestrator:
                                     })
                             
                             elif event.type == "content_block_delta":
-                                if event.delta.type == "text_delta":
-                                    # Stream text immediately!
-                                    text = event.delta.text
+                                if event.delta.type == "thinking_delta":
+                                    yield json.dumps({
+                                        "type": "thinking_delta",
+                                        "text": event.delta.thinking,
+                                    })
+                                elif event.delta.type == "signature_delta":
+                                    pass
+                                elif event.delta.type == "text_delta":
+                                    text: str = event.delta.text
                                     current_text += text
                                     yield text
                                 elif event.delta.type == "input_json_delta":
-                                    # Accumulate tool input JSON
                                     current_tool_input_json += event.delta.partial_json
                             
                             elif event.type == "content_block_stop":
-                                if current_tool is not None:
-                                    # Parse the accumulated JSON for tool input
+                                if is_thinking_block:
+                                    is_thinking_block = False
+                                    yield json.dumps({"type": "thinking_stop"})
+                                elif current_tool is not None:
                                     try:
                                         current_tool["input"] = json.loads(current_tool_input_json) if current_tool_input_json else {}
                                     except json.JSONDecodeError:
@@ -1122,7 +1131,6 @@ class ChatOrchestrator:
                                         current_tool["input"] = {}
                                     
                                     tool_uses.append(current_tool)
-                                    # Send tool_call with input immediately so the UI can show "Running X on Y" instead of "Running connector action..."
                                     yield json.dumps({
                                         "type": "tool_call",
                                         "tool_name": current_tool["name"],
@@ -1412,11 +1420,17 @@ class ChatOrchestrator:
                 yield out_of_credits_message
                 break
 
-            # Add assistant message with all tool uses, then user message with all results
-            # Convert content blocks to plain dicts to avoid Pydantic serialization issues
+            # Add assistant message with all tool uses, then user message with all results.
+            # Thinking blocks must be preserved for the API to maintain reasoning continuity.
             assistant_content: list[dict[str, Any]] = []
             for block in final_message.content:
-                if block.type == "text":
+                if block.type == "thinking":
+                    assistant_content.append({
+                        "type": "thinking",
+                        "thinking": block.thinking,
+                        "signature": block.signature,
+                    })
+                elif block.type == "text":
                     assistant_content.append({"type": "text", "text": block.text})
                 elif block.type == "tool_use":
                     assistant_content.append({
