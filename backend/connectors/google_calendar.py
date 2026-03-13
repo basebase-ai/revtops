@@ -441,7 +441,6 @@ class GoogleCalendarConnector(BaseConnector):
                             MeetingModel.title.isnot(None),
                         ),
                         MeetingModel.summary.is_(None),
-                        MeetingModel.huddle_status.is_(None),  # Skip huddles — handled by sweep
                         MeetingModel.scheduled_start > cutoff,
                     )
                 )
