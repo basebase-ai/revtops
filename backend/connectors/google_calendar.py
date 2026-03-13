@@ -732,7 +732,7 @@ class GoogleCalendarConnector(BaseConnector):
             status="scheduled",
         )
 
-        # Re-fetch in a new session to set Meet-specific fields
+        # Re-fetch in a new session to set Meet-specific fields and create Activity
         from models.meeting import Meeting
         async with get_session(organization_id=self.organization_id) as session:
             m = await session.get(Meeting, meeting.id)
@@ -740,6 +740,26 @@ class GoogleCalendarConnector(BaseConnector):
             m.meet_space_name = meet_space_name
             m.meeting_code = meeting_code
             m.huddle_status = "active"
+
+            # Create an Activity so the huddle is discoverable via activity search
+            vis = self._activity_visibility_fields()
+            activity = Activity(
+                id=uuid.uuid4(),
+                organization_id=uuid.UUID(self.organization_id),
+                source_system=self.source_system,
+                source_id=f"huddle-{meeting_code}",
+                meeting_id=meeting.id,
+                type="google_meet",
+                subject=title,
+                activity_date=now,
+                **vis,
+                custom_fields={
+                    "conference_link": meeting_uri,
+                    "meeting_code": meeting_code,
+                    "is_huddle": True,
+                },
+            )
+            session.add(activity)
             await session.commit()
             meeting_id = str(m.id)
 
