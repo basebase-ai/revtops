@@ -160,6 +160,10 @@ class WorkspaceMessenger(BaseMessenger):
         """
         user: User | None = await super().resolve_user(message)
         if user is not None:
+            logger.info(
+                "[%s] Resolved user via mapping: user=%s ext=%s",
+                self.meta.slug, user.id, message.external_user_id,
+            )
             return user
 
         workspace_id: str | None = message.messenger_context.get("workspace_id")
@@ -174,6 +178,10 @@ class WorkspaceMessenger(BaseMessenger):
             workspace_id, message.external_user_id,
         )
         if profile is None:
+            logger.warning(
+                "[%s] No profile for ext=%s ws=%s — falling back to guest",
+                self.meta.slug, message.external_user_id, workspace_id,
+            )
             return await self._resolve_guest_user(organization_id)
 
         email: str | None = self._extract_email_from_profile(profile)
@@ -191,7 +199,20 @@ class WorkspaceMessenger(BaseMessenger):
                     external_email=email,
                     match_source="email",
                 )
+                logger.info(
+                    "[%s] Resolved user via email match: user=%s email=%s",
+                    self.meta.slug, matched_user.id, email,
+                )
                 return matched_user
+            logger.warning(
+                "[%s] Email %s from profile did not match any org member (org=%s)",
+                self.meta.slug, email, organization_id,
+            )
+        else:
+            logger.warning(
+                "[%s] No email in profile for ext=%s ws=%s — falling back to guest",
+                self.meta.slug, message.external_user_id, workspace_id,
+            )
 
         return await self._resolve_guest_user(organization_id)
 

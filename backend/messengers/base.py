@@ -113,12 +113,15 @@ class BaseMessenger(ABC):
         """Map an external messenger identity to a RevTops :class:`User`.
 
         Default implementation queries ``messenger_user_mappings`` by
-        ``(platform=self.meta.slug, external_user_id)``.  Subclasses may
-        override to add fallback strategies (e.g. phone-number lookup).
+        ``(platform, external_user_id)``.  When a ``workspace_id`` is
+        present in the message context, an exact match is preferred but
+        rows with ``workspace_id IS NULL`` (legacy data) are accepted as
+        a fallback.  Subclasses may override to add strategies such as
+        phone-number lookup.
         """
         from models.messenger_user_mapping import MessengerUserMapping
         from models.database import get_admin_session
-        from sqlalchemy import select
+        from sqlalchemy import case, or_, select
 
         platform: str = self.meta.slug
         external_id: str = message.external_user_id
@@ -126,7 +129,7 @@ class BaseMessenger(ABC):
 
         async with get_admin_session() as session:
             stmt = (
-                select(User)
+                select(User, MessengerUserMapping.workspace_id)
                 .join(
                     MessengerUserMapping,
                     MessengerUserMapping.user_id == User.id,
@@ -136,10 +139,18 @@ class BaseMessenger(ABC):
             )
             if workspace_id is not None:
                 stmt = stmt.where(
-                    MessengerUserMapping.workspace_id == workspace_id
+                    or_(
+                        MessengerUserMapping.workspace_id == workspace_id,
+                        MessengerUserMapping.workspace_id.is_(None),
+                    )
+                ).order_by(
+                    case(
+                        (MessengerUserMapping.workspace_id == workspace_id, 0),
+                        else_=1,
+                    )
                 )
-            result = await session.execute(stmt)
-            return result.scalar_one_or_none()
+            rows = (await session.execute(stmt)).first()
+            return rows[0] if rows else None
 
     # ------------------------------------------------------------------
     # Organisation resolution
