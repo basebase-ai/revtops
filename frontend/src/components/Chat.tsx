@@ -1619,7 +1619,7 @@ export function Chat({
             className={`relative rounded-2xl border bg-surface-900 transition-all duration-150 ${
               isDragOver
                 ? 'border-primary-500 ring-2 ring-primary-500/40'
-                : (!isConnected || agentRunning || outOfCredits) ? 'border-surface-700 opacity-50' : 'border-surface-700 focus-within:ring-2 focus-within:ring-primary-500 focus-within:border-transparent'
+                : (!isConnected || outOfCredits) ? 'border-surface-700 opacity-50' : 'border-surface-700 focus-within:ring-2 focus-within:ring-primary-500 focus-within:border-transparent'
             }`}
           >
             {/* Drop zone overlay */}
@@ -1660,7 +1660,7 @@ export function Chat({
               className="w-full resize-none bg-transparent text-surface-100 px-4 pt-3 pb-1 text-sm placeholder-surface-500 focus:outline-none leading-5 scrollbar-none disabled:cursor-not-allowed"
               style={{ minHeight: '36px', maxHeight: '240px' }}
               rows={1}
-              disabled={!isConnected || agentRunning || outOfCredits}
+              disabled={!isConnected || outOfCredits}
               autoFocus={chatId === null}
             />
 
