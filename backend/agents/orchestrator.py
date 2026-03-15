@@ -28,6 +28,7 @@ from models.chat_message import ChatMessage
 from models.conversation import Conversation
 from models.database import get_session
 from models.memory import Memory
+from services.anthropic_health import report_anthropic_call_failure, report_anthropic_call_success
 
 logger = logging.getLogger(__name__)
 
@@ -1185,9 +1186,14 @@ class ChatOrchestrator:
                             })
                     
                     # Success - break out of retry loop
+                    await report_anthropic_call_success(source="agents.orchestrator._stream_with_tools")
                     break
                     
                 except APIStatusError as e:
+                    await report_anthropic_call_failure(
+                        exc=e,
+                        source="agents.orchestrator._stream_with_tools",
+                    )
                     last_error = e
                     error_type = getattr(e, "body", {}).get("error", {}).get("type", "") if isinstance(getattr(e, "body", None), dict) else ""
 

@@ -20,6 +20,7 @@ from typing import Any
 from uuid import UUID
 
 from workers.celery_app import celery_app
+from services.anthropic_health import report_anthropic_call_failure, report_anthropic_call_success
 from workers.run_async import run_async
 
 logger = logging.getLogger(__name__)
@@ -1209,12 +1210,20 @@ async def _generate_meeting_summary(
 
     # Call Claude
     client = AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
-    response = await client.messages.create(
-        model=_SUMMARY_MODEL,
-        max_tokens=1024,
-        system=_SUMMARY_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": user_message}],
-    )
+    try:
+        response = await client.messages.create(
+            model=_SUMMARY_MODEL,
+            max_tokens=1024,
+            system=_SUMMARY_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": user_message}],
+        )
+        await report_anthropic_call_success(source="workers.tasks.sync._generate_meeting_summary")
+    except Exception as exc:
+        await report_anthropic_call_failure(
+            exc=exc,
+            source="workers.tasks.sync._generate_meeting_summary",
+        )
+        raise
     summary_text = response.content[0].text.strip()
 
     # Save

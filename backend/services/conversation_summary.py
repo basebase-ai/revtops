@@ -21,6 +21,8 @@ from models.chat_message import ChatMessage as ChatMessageModel
 from models.database import get_session
 from sqlalchemy import select, update
 
+from services.anthropic_health import report_anthropic_call_failure, report_anthropic_call_success
+
 logger = logging.getLogger(__name__)
 
 _MIN_MESSAGES_FOR_SUMMARY = 4
@@ -117,12 +119,20 @@ async def generate_conversation_summary(
 
         # Call Claude Haiku
         client = AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
-        response = await client.messages.create(
-            model=_MODEL,
-            max_tokens=300,
-            system=_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": user_prompt}],
-        )
+        try:
+            response = await client.messages.create(
+                model=_MODEL,
+                max_tokens=300,
+                system=_SYSTEM_PROMPT,
+                messages=[{"role": "user", "content": user_prompt}],
+            )
+            await report_anthropic_call_success(source="services.conversation_summary.generate_conversation_summary")
+        except Exception as exc:
+            await report_anthropic_call_failure(
+                exc=exc,
+                source="services.conversation_summary.generate_conversation_summary",
+            )
+            raise
 
         # Parse response
         raw_text = response.content[0].text if response.content else ""

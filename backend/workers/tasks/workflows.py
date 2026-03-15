@@ -25,6 +25,7 @@ from typing import Any
 from uuid import UUID
 
 from workers.celery_app import celery_app
+from services.anthropic_health import report_anthropic_call_failure, report_anthropic_call_success
 
 logger = logging.getLogger(__name__)
 
@@ -1263,12 +1264,20 @@ async def _action_llm(
         }
 
     client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
-    response = client.messages.create(
-        model=model,
-        max_tokens=1024,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    
+    try:
+        response = client.messages.create(
+            model=model,
+            max_tokens=1024,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        await report_anthropic_call_success(source="workers.tasks.workflows._action_llm")
+    except Exception as exc:
+        await report_anthropic_call_failure(
+            exc=exc,
+            source="workers.tasks.workflows._action_llm",
+        )
+        raise
+
     output = response.content[0].text if response.content else ""
     
     return {
