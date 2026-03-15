@@ -23,6 +23,22 @@ from models.meeting import Meeting
 from models.activity import Activity
 from models.database import get_session
 
+# Delay (seconds) before generating summary — gives time for multiple
+# sources to arrive so we only call the LLM once.
+_SUMMARY_DELAY = 60
+
+
+def _schedule_summary(meeting_id: str, organization_id: str) -> None:
+    """Fire-and-forget: schedule LLM summary generation after a short delay."""
+    try:
+        from workers.tasks.sync import generate_meeting_summary
+        generate_meeting_summary.apply_async(
+            args=[meeting_id, organization_id],
+            countdown=_SUMMARY_DELAY,
+        )
+    except Exception:
+        logger.warning("Failed to schedule summary generation for %s", meeting_id, exc_info=True)
+
 logger = logging.getLogger(__name__)
 
 # Time window for matching meetings (±10 minutes)
@@ -176,6 +192,9 @@ async def find_or_create_meeting(
     summary: str | None = None,
     action_items: list[dict[str, Any]] | None = None,
     key_topics: list[str] | None = None,
+    notes_source: str | None = None,
+    notes_text: str | None = None,
+    notes_doc_id: str | None = None,
     status: str = "scheduled",
 ) -> Meeting:
     """
@@ -245,20 +264,28 @@ async def find_or_create_meeting(
             if organizer_email and not meeting.organizer_email:
                 meeting.organizer_email = organizer_email
             
-            # Update content fields (transcript data takes precedence)
-            if summary:
+            # Update content fields — prefer structured external_notes
+            notes_changed = False
+            if notes_source and notes_text:
+                meeting.set_notes(notes_source, notes_text, doc_id=notes_doc_id)
+                notes_changed = meeting.has_notes_from(notes_source)
+            elif summary:
                 meeting.summary = summary
             if action_items:
                 meeting.action_items = action_items
             if key_topics:
                 meeting.key_topics = key_topics
-            
+
             # Update status if more specific
             if status == "completed" and meeting.status == "scheduled":
                 meeting.status = status
-            
+
             await session.commit()
             await session.refresh(meeting)
+
+            if notes_changed:
+                _schedule_summary(str(meeting.id), str(organization_id))
+
             return meeting
         
         # Create new meeting
@@ -279,12 +306,18 @@ async def find_or_create_meeting(
             action_items=action_items,
             key_topics=key_topics,
         )
-        
+        if notes_source and notes_text:
+            meeting.set_notes(notes_source, notes_text, doc_id=notes_doc_id)
+
         session.add(meeting)
         await session.commit()
         await session.refresh(meeting)
-        
+
         logger.info("Created new meeting %s", meeting.id)
+
+        if notes_source and notes_text and meeting.has_notes_from(notes_source):
+            _schedule_summary(str(meeting.id), str(organization_id))
+
         return meeting
 
 

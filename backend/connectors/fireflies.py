@@ -232,7 +232,8 @@ class FirefliesConnector(BaseConnector):
                         title=parsed["title"],
                         duration_minutes=parsed["duration_minutes"],
                         organizer_email=parsed["organizer_email"],
-                        summary=parsed["overview"],
+                        notes_source="fireflies",
+                        notes_text=parsed["overview"],
                         action_items=parsed["action_items_structured"],
                         key_topics=parsed["keywords"],
                         status="completed",  # Transcripts are for completed meetings

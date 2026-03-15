@@ -223,9 +223,6 @@ class ZoomConnector(BaseConnector):
                         participants=participants or None,
                         organizer_email=host_email if isinstance(host_email, str) else None,
                         title=topic,
-                        summary=None,
-                        action_items=None,
-                        key_topics=None,
                         status="completed",
                     )
                     logger.info(
