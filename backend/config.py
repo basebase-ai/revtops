@@ -129,6 +129,11 @@ class Settings(BaseSettings):
     SLACK_CLIENT_SECRET: Optional[str] = None
     # Public backend URL (for Slack OAuth redirect_uri). Default from FRONTEND_URL for local.
     BACKEND_PUBLIC_URL: Optional[str] = None
+
+    # Microsoft Teams Bot Framework (Azure Bot registration)
+    MICROSOFT_APP_ID: Optional[str] = None
+    MICROSOFT_APP_PASSWORD: Optional[str] = None
+    MICROSOFT_TENANT_ID: Optional[str] = None  # Required for single-tenant bots
     
     # ScrapingBee (for fetch_url tool - web scraping with proxy support)
     SCRAPINGBEE_API_KEY: Optional[str] = None
