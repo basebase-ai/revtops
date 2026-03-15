@@ -21,6 +21,7 @@ from uuid import UUID, uuid4
 from anthropic import APIStatusError, AsyncAnthropic
 from sqlalchemy import select, update
 
+from agents.model_routing import is_short_phrase_for_cheap_model
 from agents.tools import execute_tool, get_tools
 from config import settings
 from models.chat_message import ChatMessage
@@ -845,6 +846,20 @@ class ChatOrchestrator:
             {"role": "user", "content": user_content}
         ]
 
+        selected_model: str = settings.ANTHROPIC_PRIMARY_MODEL
+        if (
+            settings.USE_CHEAP_MODEL_FOR_SHORT_PHRASE
+            and is_short_phrase_for_cheap_model(user_content)
+        ):
+            selected_model = settings.CHEAP_SHORT_PHRASE_MODEL
+
+        logger.info(
+            "[Orchestrator] conversation_id=%s selected_model=%s short_phrase_cheap_enabled=%s",
+            self.conversation_id,
+            selected_model,
+            settings.USE_CHEAP_MODEL_FOR_SHORT_PHRASE,
+        )
+
         # Keep track of content blocks for saving (preserves interleaving order)
         content_blocks: list[dict[str, Any]] = []
 
@@ -1018,7 +1033,7 @@ class ChatOrchestrator:
 
 
         # Stream responses with tool handling loop
-        async for chunk in self._stream_with_tools(messages, system_prompt, content_blocks):
+        async for chunk in self._stream_with_tools(messages, system_prompt, content_blocks, selected_model):
             yield chunk
         
         # Save conversation (user message was already saved at the start)
@@ -1043,6 +1058,7 @@ class ChatOrchestrator:
         messages: list[dict[str, Any]],
         system_prompt: str,
         content_blocks: list[dict[str, Any]],
+        model_name: str,
     ) -> AsyncGenerator[str, None]:
         """
         Stream Claude's response, handling tool calls in a loop.
@@ -1084,8 +1100,15 @@ class ChatOrchestrator:
                     is_thinking_block = False
                     
                     # Stream the response
+                    logger.info(
+                        "[Orchestrator] Sending message batch to Anthropic conversation_id=%s model=%s message_count=%d attempt=%d",
+                        self.conversation_id,
+                        model_name,
+                        len(messages),
+                        attempt + 1,
+                    )
                     async with self.client.messages.stream(
-                        model="claude-opus-4-6",
+                        model=model_name,
                         max_tokens=32768,
                         system=system_prompt,
                         tools=get_tools(self.workflow_context),
