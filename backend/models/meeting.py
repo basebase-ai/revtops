@@ -15,6 +15,8 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Optional
 
+from datetime import timezone as tz
+
 from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -80,6 +82,9 @@ class Meeting(Base):
     transcript_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     summary_doc_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
 
+    # Per-source meeting notes keyed by source name (gemini, granola, fireflies, etc.)
+    external_notes: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB, nullable=True)
+
     # Links to related entities
     account_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True), ForeignKey("accounts.id"), nullable=True
@@ -103,6 +108,58 @@ class Meeting(Base):
         "Activity", back_populates="meeting"
     )
 
+    def set_notes(
+        self,
+        source: str,
+        content: str,
+        *,
+        doc_id: str | None = None,
+        content_type: str = "text/plain",
+    ) -> bool:
+        """Append notes from *source* without touching ``summary``.
+
+        Each source key holds a list of note entries. Duplicate content
+        (same source + same content string) is skipped to avoid no-op
+        writes on repeated syncs.
+
+        Returns True if new content was added, False if it was a duplicate.
+        """
+        entry: dict[str, Any] = {
+            "content": content,
+            "fetched_at": datetime.now(tz.utc).isoformat(),
+            "content_type": content_type,
+        }
+        if doc_id:
+            entry["doc_id"] = doc_id
+
+        if self.external_notes is None:
+            self.external_notes = {}
+
+        existing = self.external_notes.get(source, [])
+
+        # Skip no-op updates (e.g. repeated syncs with same content)
+        if any(e.get("content") == content for e in existing):
+            return False
+
+        # SQLAlchemy needs a new dict reference to detect JSONB mutation
+        self.external_notes = {**self.external_notes, source: [*existing, entry]}
+        return True
+
+    def has_notes_from(self, source: str) -> bool:
+        """Return True if at least one note from *source* exists."""
+        if not self.external_notes:
+            return False
+        return bool(self.external_notes.get(source))
+
+    @classmethod
+    def missing_notes_filter(cls, source: str):
+        """SQLAlchemy filter: rows that do NOT have notes from *source*."""
+        from sqlalchemy import or_, not_
+        return or_(
+            cls.external_notes.is_(None),
+            not_(cls.external_notes.has_key(source)),
+        )
+
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for API responses."""
         return {
@@ -123,6 +180,7 @@ class Meeting(Base):
             "recording_url": self.recording_url,
             "transcript_url": self.transcript_url,
             "meeting_code": self.meeting_code,
+            "external_notes": self.external_notes,
             "account_id": str(self.account_id) if self.account_id else None,
             "deal_id": str(self.deal_id) if self.deal_id else None,
         }

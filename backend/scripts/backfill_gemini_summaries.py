@@ -22,18 +22,24 @@ from workers.tasks.sync import _fetch_gemini_summary, _get_google_token
 
 
 async def backfill():
-    # Find all meetings with meet_space_name set but no summary
+    # Find all completed meetings with no summary that have a title or meet_space_name
+    from sqlalchemy import or_
     async with get_admin_session() as session:
         result = await session.execute(
             select(Meeting).where(
-                Meeting.meet_space_name.isnot(None),
-                Meeting.summary.is_(None),
-            )
+                Meeting.status == "completed",
+                or_(
+                    Meeting.meet_space_name.isnot(None),
+                    Meeting.meeting_code.isnot(None),
+                    Meeting.title.isnot(None),
+                ),
+                Meeting.missing_notes_filter("gemini"),
+            ).order_by(Meeting.scheduled_start.desc())
         )
         meetings = result.scalars().all()
 
     if not meetings:
-        print("No meetings to backfill — all have summaries or no meet_space_name.")
+        print("No meetings to backfill.")
         return
 
     print(f"Found {len(meetings)} meeting(s) to backfill:\n")
@@ -56,8 +62,7 @@ async def backfill():
         if summary:
             async with get_session(organization_id=org_id) as session:
                 m = await session.get(Meeting, meeting.id)
-                m.summary = summary
-                m.summary_doc_id = doc_id
+                m.set_notes("gemini", summary, doc_id=doc_id)
                 await session.commit()
             print(f"  OK   {meeting_id}: saved {len(summary)} chars (doc={doc_id})")
             filled += 1

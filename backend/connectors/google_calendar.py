@@ -356,11 +356,15 @@ class GoogleCalendarConnector(BaseConnector):
                             meeting.organizer_email = parsed["organizer_email"]
                         # If Gemini attached notes directly, fetch the summary now
                         gemini_doc_id = parsed.get("gemini_doc_id", "")
-                        if gemini_doc_id and not meeting.summary:
+                        if gemini_doc_id and not meeting.has_notes_from("gemini"):
                             try:
                                 summary = await self._fetch_gemini_doc(gemini_doc_id)
-                                if summary:
-                                    meeting.summary = summary
+                                if summary and meeting.set_notes("gemini", summary, doc_id=gemini_doc_id):
+                                    from workers.tasks.sync import generate_meeting_summary, _SUMMARY_DELAY
+                                    generate_meeting_summary.apply_async(
+                                        args=[str(meeting.id), self.organization_id],
+                                        countdown=_SUMMARY_DELAY,
+                                    )
                                     logger.info(
                                         "[GCal Sync] Saved Gemini summary (%d chars) from attachment for meeting %s",
                                         len(summary), meeting.id,
@@ -440,7 +444,7 @@ class GoogleCalendarConnector(BaseConnector):
                             MeetingModel.meeting_code.isnot(None),
                             MeetingModel.title.isnot(None),
                         ),
-                        MeetingModel.summary.is_(None),
+                        MeetingModel.missing_notes_filter("gemini"),
                         MeetingModel.scheduled_start > cutoff,
                     )
                 )

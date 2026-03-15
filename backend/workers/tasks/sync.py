@@ -470,10 +470,15 @@ async def _check_huddle_recording(
                 if participant_data:
                     meeting.participants = participant_data
                     meeting.participant_count = len(participant_data)
+                notes_changed = False
                 if gemini_summary:
-                    meeting.summary = gemini_summary
-                    meeting.summary_doc_id = summary_doc_id
+                    notes_changed = meeting.set_notes("gemini", gemini_summary, doc_id=summary_doc_id)
                 await session.commit()
+
+        if notes_changed:
+            generate_meeting_summary.apply_async(
+                args=[meeting_id, organization_id], countdown=_SUMMARY_DELAY,
+            )
 
         if not recording_url and not transcript_url:
             remaining = task.max_retries - task.request.retries
@@ -524,12 +529,16 @@ async def _check_huddle_recording(
             logger.warning("Drive summary fetch failed for calendared meeting %s: %s", meeting_id, e)
 
         if gemini_summary:
+            notes_changed = False
             async with get_session(organization_id=organization_id) as session:
                 meeting = await session.get(Meeting, UUID(meeting_id))
                 if meeting:
-                    meeting.summary = gemini_summary
-                    meeting.summary_doc_id = summary_doc_id
+                    notes_changed = meeting.set_notes("gemini", gemini_summary, doc_id=summary_doc_id)
                     await session.commit()
+            if notes_changed:
+                generate_meeting_summary.apply_async(
+                    args=[meeting_id, organization_id], countdown=_SUMMARY_DELAY,
+                )
             logger.info("Saved Gemini summary (%d chars) for calendared meeting %s", len(gemini_summary), meeting_id)
             return {
                 "status": "found",
@@ -1126,3 +1135,97 @@ async def _sweep_completed_meetings() -> dict[str, Any]:
         checked, ended, scheduled,
     )
     return {"status": "ok", "checked": checked, "ended": ended, "scheduled": scheduled}
+
+
+# ── Meeting summary generation ──────────────────────────────────────────
+
+
+@celery_app.task(
+    bind=True,
+    name="workers.tasks.sync.generate_meeting_summary",
+    max_retries=2,
+    default_retry_delay=30,
+)
+def generate_meeting_summary(
+    self: Any,
+    meeting_id: str,
+    organization_id: str,
+) -> dict[str, Any]:
+    """Generate an LLM summary from all external_notes for a meeting."""
+    logger.info("Generating meeting summary for %s", meeting_id)
+    return run_async(_generate_meeting_summary(self, meeting_id, organization_id))
+
+
+# Delay before generating summary — gives time for multiple sources to arrive
+_SUMMARY_DELAY = 60
+
+_SUMMARY_MODEL = "claude-haiku-4-5-20251001"
+
+_SUMMARY_SYSTEM_PROMPT = (
+    "You synthesize meeting notes from multiple sources into a single concise summary. "
+    "Each source may capture different aspects of the meeting (auto-generated notes, "
+    "personal notes, transcript summaries). Combine them into a coherent summary that "
+    "preserves all key information.\n\n"
+    "Guidelines:\n"
+    "- Lead with the main topics and decisions\n"
+    "- Include action items if mentioned in any source\n"
+    "- Keep it concise (2-4 paragraphs max)\n"
+    "- Do not mention the source names or that multiple sources exist\n"
+    "- Write in plain text, no markdown"
+)
+
+
+async def _generate_meeting_summary(
+    task: Any,
+    meeting_id: str,
+    organization_id: str,
+) -> dict[str, Any]:
+    from anthropic import AsyncAnthropic
+    from config import settings
+    from models.database import get_admin_session
+    from models.meeting import Meeting
+
+    async with get_admin_session() as session:
+        meeting = await session.get(Meeting, UUID(meeting_id))
+        if not meeting or not meeting.external_notes:
+            return {"status": "skipped", "reason": "no notes"}
+
+        # Build prompt from all sources
+        parts = []
+        for source, entries in meeting.external_notes.items():
+            for entry in entries:
+                content = entry.get("content", "").strip()
+                if content:
+                    parts.append(f"[{source}]\n{content}")
+
+        if not parts:
+            return {"status": "skipped", "reason": "empty notes"}
+
+        title = meeting.title or "Untitled Meeting"
+        user_message = (
+            f"Meeting: {title}\n\n"
+            + "\n\n---\n\n".join(parts)
+        )
+
+    # Call Claude
+    client = AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
+    response = await client.messages.create(
+        model=_SUMMARY_MODEL,
+        max_tokens=1024,
+        system=_SUMMARY_SYSTEM_PROMPT,
+        messages=[{"role": "user", "content": user_message}],
+    )
+    summary_text = response.content[0].text.strip()
+
+    # Save
+    async with get_admin_session() as session:
+        meeting = await session.get(Meeting, UUID(meeting_id))
+        if meeting:
+            meeting.summary = summary_text
+            await session.commit()
+
+    logger.info(
+        "Generated meeting summary (%d chars) for %s from %d source(s)",
+        len(summary_text), meeting_id, len(parts),
+    )
+    return {"status": "ok", "meeting_id": meeting_id, "summary_length": len(summary_text)}
