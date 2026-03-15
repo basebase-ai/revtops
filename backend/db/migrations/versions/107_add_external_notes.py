@@ -72,5 +72,15 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    # Restore summary/summary_doc_id from external_notes before dropping
+    op.execute(
+        sa.text("""
+            UPDATE meetings
+            SET summary = (external_notes->'gemini'->-1->>'content'),
+                summary_doc_id = (external_notes->'gemini'->-1->>'doc_id')
+            WHERE external_notes ? 'gemini'
+              AND jsonb_array_length(external_notes->'gemini') > 0
+        """)
+    )
     op.drop_index("ix_meetings_external_notes", table_name="meetings")
     op.drop_column("meetings", "external_notes")

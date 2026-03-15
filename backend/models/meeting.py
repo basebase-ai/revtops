@@ -115,12 +115,14 @@ class Meeting(Base):
         *,
         doc_id: str | None = None,
         content_type: str = "text/plain",
-    ) -> None:
+    ) -> bool:
         """Append notes from *source* without touching ``summary``.
 
         Each source key holds a list of note entries. Duplicate content
         (same source + same content string) is skipped to avoid no-op
         writes on repeated syncs.
+
+        Returns True if new content was added, False if it was a duplicate.
         """
         entry: dict[str, Any] = {
             "content": content,
@@ -137,10 +139,11 @@ class Meeting(Base):
 
         # Skip no-op updates (e.g. repeated syncs with same content)
         if any(e.get("content") == content for e in existing):
-            return
+            return False
 
         # SQLAlchemy needs a new dict reference to detect JSONB mutation
         self.external_notes = {**self.external_notes, source: [*existing, entry]}
+        return True
 
     def has_notes_from(self, source: str) -> bool:
         """Return True if at least one note from *source* exists."""

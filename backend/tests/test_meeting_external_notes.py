@@ -121,6 +121,22 @@ class TestSetNotesDoesNotTouchSummary:
         assert m.summary is None
 
 
+class TestSetNotesReturnValue:
+    def test_returns_true_on_new_content(self):
+        m = Meeting()
+        assert m.set_notes("granola", "hello") is True
+
+    def test_returns_false_on_duplicate(self):
+        m = Meeting()
+        m.set_notes("granola", "hello")
+        assert m.set_notes("granola", "hello") is False
+
+    def test_returns_true_on_different_content(self):
+        m = Meeting()
+        m.set_notes("granola", "v1")
+        assert m.set_notes("granola", "v2") is True
+
+
 class TestMissingNotesFilter:
     def test_generates_valid_clause(self):
         clause = Meeting.missing_notes_filter("gemini")

@@ -264,11 +264,12 @@ async def find_or_create_meeting(
             if organizer_email and not meeting.organizer_email:
                 meeting.organizer_email = organizer_email
             
-            # Update content fields — prefer structured external_notes
+            # Update content fields — prefer structured external_notes.
+            # When notes_source is used, summary is updated asynchronously
+            # by a Celery task (~60s delay) rather than inline.
             notes_changed = False
             if notes_source and notes_text:
-                meeting.set_notes(notes_source, notes_text, doc_id=notes_doc_id)
-                notes_changed = meeting.has_notes_from(notes_source)
+                notes_changed = meeting.set_notes(notes_source, notes_text, doc_id=notes_doc_id)
             elif summary:
                 meeting.summary = summary
             if action_items:
@@ -306,8 +307,9 @@ async def find_or_create_meeting(
             action_items=action_items,
             key_topics=key_topics,
         )
+        notes_changed = False
         if notes_source and notes_text:
-            meeting.set_notes(notes_source, notes_text, doc_id=notes_doc_id)
+            notes_changed = meeting.set_notes(notes_source, notes_text, doc_id=notes_doc_id)
 
         session.add(meeting)
         await session.commit()
@@ -315,7 +317,7 @@ async def find_or_create_meeting(
 
         logger.info("Created new meeting %s", meeting.id)
 
-        if notes_source and notes_text and meeting.has_notes_from(notes_source):
+        if notes_changed:
             _schedule_summary(str(meeting.id), str(organization_id))
 
         return meeting
