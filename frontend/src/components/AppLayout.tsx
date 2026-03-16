@@ -724,6 +724,35 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
                   timestamp: new Date(),
                 });
               }
+            } else if (data.type === 'tool_input_progress') {
+              const toolId = data.tool_id as string;
+              const chars = data.chars as number;
+              const toolName = data.tool_name as string;
+              const state = useAppStore.getState();
+              const convState = state.conversations[conversation_id];
+              if (convState) {
+                const updated = convState.messages.map((msg) => {
+                  const hasBlock = msg.contentBlocks.some(
+                    (b) => b.type === 'tool_use' && b.id === toolId,
+                  );
+                  if (!hasBlock) return msg;
+                  return {
+                    ...msg,
+                    contentBlocks: msg.contentBlocks.map((block) => {
+                      if (block.type === 'tool_use' && block.id === toolId) {
+                        return { ...block, input: { ...block.input, _streaming_chars: chars, tool_name: toolName } };
+                      }
+                      return block;
+                    }),
+                  };
+                });
+                useAppStore.setState({
+                  conversations: {
+                    ...state.conversations,
+                    [conversation_id]: { ...convState, messages: updated },
+                  },
+                });
+              }
             } else if (data.type === 'tool_call') {
               // Tool call fully parsed — find and update the streaming placeholder
               const state = useAppStore.getState();
@@ -1156,6 +1185,10 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
                       timestamp: new Date(),
                     });
                   }
+                } else if (data.type === 'tool_input_progress') {
+                  updateConversationToolMessage(conversationId, data.tool_id as string, {
+                    input: { _streaming_chars: data.chars as number, tool_name: data.tool_name as string },
+                  });
                 } else if (data.type === 'tool_call') {
                   updateConversationToolMessage(conversationId, data.tool_id as string, {
                     toolName: data.tool_name as string,

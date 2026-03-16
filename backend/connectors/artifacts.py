@@ -137,18 +137,30 @@ class ArtifactConnector(BaseConnector):
             return await self._update(data)
         return {"error": f"Unknown operation: {operation}. Use 'create' or 'update'."}
 
+    _MIME_TO_SHORT: dict[str, str] = {
+        "text/plain": "text",
+        "text/markdown": "markdown",
+        "text/x-markdown": "markdown",
+        "application/pdf": "pdf",
+        "application/json": "chart",
+    }
+    _VALID_TYPES: set[str] = {"text", "markdown", "pdf", "chart"}
+
+    @classmethod
+    def _normalise_content_type(cls, raw: str) -> str:
+        return cls._MIME_TO_SHORT.get(raw, raw)
+
     async def _create(self, data: dict[str, Any]) -> dict[str, Any]:
         title: str = str(data.get("title", "Untitled"))
         filename: str = str(data.get("filename", "artifact.txt"))
-        content_type: str = str(data.get("content_type", "text"))
+        content_type: str = self._normalise_content_type(str(data.get("content_type", "text")))
         content: str = str(data.get("content", ""))
         conversation_id: str | None = data.get("conversation_id")
         message_id: str | None = data.get("message_id")
 
-        valid_types: set[str] = {"text", "markdown", "pdf", "chart"}
-        if content_type not in valid_types:
+        if content_type not in self._VALID_TYPES:
             return {
-                "error": f"Invalid content_type '{content_type}'. Must be one of: {', '.join(valid_types)}"
+                "error": f"Invalid content_type '{content_type}'. Must be one of: {', '.join(self._VALID_TYPES)}"
             }
         if not content.strip():
             return {"error": "Content cannot be empty"}
@@ -225,8 +237,8 @@ class ArtifactConnector(BaseConnector):
             return {"error": "At least one of content, title, filename, or content_type must be provided"}
 
         if content_type is not None:
-            valid_types: set[str] = {"text", "markdown", "pdf", "chart"}
-            if content_type not in valid_types:
+            content_type = self._normalise_content_type(content_type)
+            if content_type not in self._VALID_TYPES:
                 return {"error": f"Invalid content_type '{content_type}'"}
         if content is not None and not str(content).strip():
             return {"error": "Content cannot be empty"}

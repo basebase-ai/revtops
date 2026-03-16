@@ -2213,7 +2213,9 @@ function ThinkingBlockIndicator({
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
         </svg>
         <span>
-          {block.isStreaming ? 'Thinking…' : 'Thought process'}
+          {block.isStreaming
+            ? `Thinking${block.text.length > 0 ? ` (${formatStreamingChars(block.text.length)})` : ''}…`
+            : `Thought process (${formatStreamingChars(block.text.length)})`}
         </span>
         {block.isStreaming && (
           <span className="inline-block w-1 h-1 rounded-full bg-primary-400 animate-pulse" />
@@ -2364,12 +2366,19 @@ function getErrorSummary(errorMessage: string): string {
 /**
  * Generate user-friendly status text for tool calls
  */
+function formatStreamingChars(chars: number): string {
+  if (chars < 1000) return `${chars} chars`;
+  return `${(chars / 1000).toFixed(1)}k chars`;
+}
+
 function getToolStatusText(
   toolName: string, 
   input: Record<string, unknown> | undefined, 
   isComplete: boolean,
   result: Record<string, unknown> | undefined
 ): string {
+  const streamingChars: number | undefined = typeof input?._streaming_chars === 'number' ? input._streaming_chars : undefined;
+
   switch (toolName) {
     case 'think': {
       return isComplete ? 'Thinking' : 'Thinking...';
@@ -2504,6 +2513,9 @@ function getToolStatusText(
       const writeOp: string = typeof input?.operation === 'string' ? input.operation : 'write';
       const data: Record<string, unknown> = typeof input?.data === 'object' && input?.data !== null ? input.data as Record<string, unknown> : {};
       const errorMsg: string = typeof result?.error === 'string' ? result.error : '';
+      if (streamingChars !== undefined) {
+        return `Writing to connector (${formatStreamingChars(streamingChars)} generated)...`;
+      }
       if (writeConnector === 'artifacts') {
         const artifactTitle: string = typeof data?.title === 'string' ? data.title : '';
         const titleSuffix: string = artifactTitle ? `: ${artifactTitle}` : '';
@@ -2554,6 +2566,9 @@ function getToolStatusText(
       return 'Running action (details when available)...';
     }
     default:
+      if (streamingChars !== undefined) {
+        return `Generating ${toolName} input (${formatStreamingChars(streamingChars)})...`;
+      }
       return isComplete ? `Completed ${toolName}` : `Running ${toolName}...`;
   }
 }

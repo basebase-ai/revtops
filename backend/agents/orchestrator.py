@@ -189,6 +189,8 @@ SYSTEM_PROMPT_MAIN = """
 
 Do NOT narrate internal lookups like `get_connector_docs` or `list_connected_connectors` — just call them silently and move on to the actual action.
 
+**When the user attaches files** (documents, spreadsheets, images, PDFs, etc.), briefly acknowledge what you received before proceeding — e.g. "I see you've attached a Discovery Report template — let me review it and fill it in." This shows the user you understood the attachment's content and purpose. Keep the acknowledgement to one sentence, then move on to the task.
+
 Also please keep your responses concise and to the point (1-2 sentences), UNLESS the user is specifically asking your for detailed information.
 
 ## Planning for Complex Tasks
@@ -1160,6 +1162,14 @@ class ChatOrchestrator:
                                     yield text
                                 elif event.delta.type == "input_json_delta":
                                     current_tool_input_json += event.delta.partial_json
+                                    token_len: int = len(current_tool_input_json)
+                                    if token_len % 200 < len(event.delta.partial_json):
+                                        yield json.dumps({
+                                            "type": "tool_input_progress",
+                                            "tool_id": current_tool["id"] if current_tool else "",
+                                            "tool_name": current_tool["name"] if current_tool else "",
+                                            "chars": token_len,
+                                        })
                             
                             elif event.type == "content_block_stop":
                                 if is_thinking_block:
