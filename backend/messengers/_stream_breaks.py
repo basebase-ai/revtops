@@ -6,6 +6,32 @@ from typing import Literal
 StreamBreakStrategy = Literal["best", "quickest_safe"]
 
 _SENTENCE_BREAK_RE: re.Pattern[str] = re.compile(r"[.!?](?:\s|$)")
+_FENCE_RE: re.Pattern[str] = re.compile(r"^```", re.MULTILINE)
+
+
+def _build_fence_ranges(text: str) -> list[tuple[int, int]]:
+    """Return (start, end) ranges for fenced code blocks in *text*.
+
+    Unpaired opening fences extend to the end of the string so that we
+    never break inside an in-progress code block.
+    """
+    fences: list[int] = [m.start() for m in _FENCE_RE.finditer(text)]
+    ranges: list[tuple[int, int]] = []
+    i: int = 0
+    while i < len(fences):
+        open_pos: int = fences[i]
+        close_pos: int = fences[i + 1] if i + 1 < len(fences) else len(text)
+        ranges.append((open_pos, close_pos))
+        i += 2
+    return ranges
+
+
+def _inside_code_fence(position: int, ranges: list[tuple[int, int]]) -> bool:
+    """Return True if *position* falls inside any fenced code block range."""
+    for start, end in ranges:
+        if start <= position <= end:
+            return True
+    return False
 
 
 def _is_valid_sentence_break(text: str, punct_idx: int) -> bool:
@@ -38,6 +64,8 @@ def find_safe_break(
 
     - ``best``: choose the farthest safe sentence break within ``limit``.
     - ``quickest_safe``: choose the first safe sentence break within ``limit``.
+
+    Breaks inside fenced code blocks (````` ``` `````) are always skipped.
     """
     if not text:
         return 0
@@ -46,12 +74,16 @@ def find_safe_break(
     if max_index <= 0:
         return 0
 
+    fence_ranges: list[tuple[int, int]] = _build_fence_ranges(text)
+
     selected_break: int = 0
     for match in _SENTENCE_BREAK_RE.finditer(text):
         candidate: int = match.end()
         if candidate > max_index:
             break
         punct_idx: int = match.start()
+        if _inside_code_fence(punct_idx, fence_ranges):
+            continue
         if not _is_valid_sentence_break(text, punct_idx):
             continue
         if strategy == "quickest_safe":

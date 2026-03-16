@@ -20,43 +20,55 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 
+_SEPARATOR_ROW_RE: re.Pattern[str] = re.compile(r'^\|[\s\-:]+\|$')
+
+
+def _clean_table_lines(raw: str) -> str:
+    """Strip markdown separator rows from a pipe-delimited table."""
+    lines: list[str] = raw.strip().split('\n')
+    filtered: list[str] = [
+        line for line in lines if not _SEPARATOR_ROW_RE.match(line.strip())
+    ]
+    return '\n'.join(filtered)
+
+
 def markdown_to_mrkdwn(text: str) -> str:
+    """Convert standard Markdown to Slack mrkdwn format.
+
+    Handles bold, italic, links, headers, and tables.  Existing fenced code
+    blocks are extracted first so their contents are never double-processed.
     """
-    Convert standard Markdown to Slack mrkdwn format.
-    
-    Key differences:
-    - Bold: **text** → *text*
-    - Italic: *text* → _text_ (when not already bold)
-    - Links: [text](url) → <url|text>
-    - Headers: # Header → *Header*
-    - Tables: Wrapped in code blocks (Slack doesn't support tables)
-    """
-    # Convert markdown tables to code blocks (Slack doesn't support tables)
-    # Match table pattern: lines starting with | and containing |
-    table_pattern = r'((?:^\|.+\|$\n?)+)'
-    
-    def wrap_table_in_code_block(match: re.Match[str]) -> str:
-        table = match.group(1)
-        # Remove the separator row (|---|---|) as it's just visual noise in monospace
-        lines = table.strip().split('\n')
-        filtered_lines: list[str] = []
-        for line in lines:
-            # Skip separator rows like |---|---| or | --- | --- |
-            if not re.match(r'^\|[\s\-:]+\|$', line.strip()):
-                filtered_lines.append(line)
-        return '```\n' + '\n'.join(filtered_lines) + '\n```'
-    
-    text = re.sub(table_pattern, wrap_table_in_code_block, text, flags=re.MULTILINE)
-    
-    # Convert bold: **text** → *text*
+
+    # -- Step 1: extract fenced code blocks into placeholders ---------------
+    code_blocks: list[str] = []
+    _FENCE_RE: re.Pattern[str] = re.compile(r'```\w*\n(.*?)```', re.DOTALL)
+
+    def _extract_fence(match: re.Match[str]) -> str:
+        content: str = match.group(1)
+        cleaned: str = _clean_table_lines(content) if '|' in content else content.strip()
+        idx: int = len(code_blocks)
+        code_blocks.append('```\n' + cleaned + '\n```')
+        return f'\x00CB{idx}\x00'
+
+    text = _FENCE_RE.sub(_extract_fence, text)
+
+    # -- Step 2: wrap bare markdown tables that weren't already fenced ------
+    _TABLE_RE: re.Pattern[str] = re.compile(r'((?:^\|.+\|$\n?)+)', re.MULTILINE)
+
+    def _wrap_table(match: re.Match[str]) -> str:
+        return '```\n' + _clean_table_lines(match.group(1)) + '\n```'
+
+    text = _TABLE_RE.sub(_wrap_table, text)
+
+    # -- Step 3: inline formatting ------------------------------------------
     text = re.sub(r'\*\*(.+?)\*\*', r'*\1*', text)
-    
-    # Convert markdown links: [text](url) → <url|text>
     text = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'<\2|\1>', text)
-    
-    # Convert headers: # Header → *Header*
     text = re.sub(r'^#{1,6}\s+(.+)$', r'*\1*', text, flags=re.MULTILINE)
-    
+
+    # -- Step 4: restore code blocks ----------------------------------------
+    for i, block in enumerate(code_blocks):
+        text = text.replace(f'\x00CB{i}\x00', block)
+
     return text
 
 from api.websockets import broadcast_sync_progress
