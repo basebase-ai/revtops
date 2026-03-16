@@ -325,7 +325,10 @@ async def _process_message_activity(activity: dict[str, Any]) -> None:
     channel_data: dict[str, Any] = activity.get("channelData") or {}
     conv_type: str = (channel_data.get("channel") or {}).get("id") if isinstance(channel_data.get("channel"), dict) else ""
     conversation: dict[str, Any] = activity.get("conversation") or {}
-    is_group: bool = (conversation.get("isGroup") or "").lower() == "true"
+    is_group_raw: Any = conversation.get("isGroup")
+    is_group: bool = is_group_raw is True or (
+        isinstance(is_group_raw, str) and is_group_raw.lower() == "true"
+    )
     reply_to_id: str | None = activity.get("replyToId")
     recipient: dict[str, Any] = activity.get("recipient") or {}
     bot_id: str | None = recipient.get("id")
