@@ -2263,8 +2263,9 @@ function ToolBlockIndicator({
   block: ToolUseBlock;
   onClick: () => void;
 }): JSX.Element {
-  const isComplete = block.status === 'complete';
-  const statusText = getToolStatusText(block.name, block.input, isComplete, block.result);
+  const isComplete: boolean = block.status === 'complete';
+  const hasError: boolean = isComplete && !!(block.result as Record<string, unknown> | undefined)?.error;
+  const statusText: string = getToolStatusText(block.name, block.input, isComplete, block.result);
 
   return (
     <button
@@ -2272,16 +2273,22 @@ function ToolBlockIndicator({
       className="flex items-center gap-1.5 py-0.5 text-xs text-surface-500 hover:text-surface-300 transition-colors cursor-pointer group text-left"
     >
       {isComplete ? (
-        <svg className="w-3.5 h-3.5 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-        </svg>
+        hasError ? (
+          <svg className="w-3.5 h-3.5 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+          </svg>
+        ) : (
+          <svg className="w-3.5 h-3.5 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+          </svg>
+        )
       ) : (
         <svg className="w-3.5 h-3.5 text-surface-600 animate-spin" fill="none" viewBox="0 0 24 24">
           <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
           <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
         </svg>
       )}
-      <span className="text-surface-500 italic group-hover:text-surface-300">{statusText}</span>
+      <span className={`italic group-hover:text-surface-300 ${hasError ? 'text-red-400/80' : 'text-surface-500'}`}>{statusText}</span>
       <svg className="w-3 h-3 text-surface-600 opacity-0 group-hover:opacity-100 transition-opacity" fill="none" viewBox="0 0 24 24" stroke="currentColor">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
       </svg>
@@ -2496,11 +2503,15 @@ function getToolStatusText(
       const writeConnector: string = typeof input?.connector === 'string' ? input.connector : '';
       const writeOp: string = typeof input?.operation === 'string' ? input.operation : 'write';
       const data: Record<string, unknown> = typeof input?.data === 'object' && input?.data !== null ? input.data as Record<string, unknown> : {};
+      const errorMsg: string = typeof result?.error === 'string' ? result.error : '';
       if (writeConnector === 'artifacts') {
+        const artifactTitle: string = typeof data?.title === 'string' ? data.title : '';
+        const titleSuffix: string = artifactTitle ? `: ${artifactTitle}` : '';
         if (isComplete) {
-          return result?.error ? 'Artifact update failed' : (writeOp === 'update' ? 'Updated artifact' : 'Created artifact');
+          if (errorMsg) return `Failed to create artifact${titleSuffix}`;
+          return writeOp === 'update' ? `Updated artifact${titleSuffix}` : `Created artifact${titleSuffix}`;
         }
-        return writeOp === 'update' ? 'Updating artifact...' : 'Creating artifact...';
+        return writeOp === 'update' ? `Updating artifact${titleSuffix}...` : `Creating artifact${titleSuffix}...`;
       }
       if (writeConnector === 'apps') {
         const appTitle: string = typeof data?.title === 'string' ? data.title : (typeof result?.title === 'string' ? result.title : 'app');
@@ -2522,7 +2533,7 @@ function getToolStatusText(
       const connectorLabel: string = writeConnector ? writeConnector.replace(/_/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase()) : 'connector';
       const opLabel: string = writeOp.replace(/_/g, ' ');
       if (isComplete) {
-        return result?.error ? `Write to ${connectorLabel} failed` : `Wrote to ${connectorLabel} (${opLabel})`;
+        return errorMsg ? `Write to ${connectorLabel} failed` : `Wrote to ${connectorLabel} (${opLabel})`;
       }
       return `Writing to ${connectorLabel} (${opLabel})...`;
     }
@@ -2560,7 +2571,8 @@ function ToolCallModal({
   toolCall: ToolCallData; 
   onClose: () => void;
 }): JSX.Element {
-  const isComplete = toolCall.status === 'complete';
+  const isComplete: boolean = toolCall.status === 'complete';
+  const hasError: boolean = isComplete && !!(toolCall.result as Record<string, unknown> | undefined)?.error;
   
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={onClose}>
@@ -2572,11 +2584,19 @@ function ToolCallModal({
         <div className="flex items-center justify-between p-4 border-b border-surface-700">
           <div className="flex items-center gap-3">
             {isComplete ? (
-              <div className="w-8 h-8 rounded-lg bg-green-500/20 flex items-center justify-center">
-                <svg className="w-4 h-4 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                </svg>
-              </div>
+              hasError ? (
+                <div className="w-8 h-8 rounded-lg bg-red-500/20 flex items-center justify-center">
+                  <svg className="w-4 h-4 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                  </svg>
+                </div>
+              ) : (
+                <div className="w-8 h-8 rounded-lg bg-green-500/20 flex items-center justify-center">
+                  <svg className="w-4 h-4 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                  </svg>
+                </div>
+              )
             ) : (
               <div className="w-8 h-8 rounded-lg bg-primary-500/20 flex items-center justify-center">
                 <svg className="w-4 h-4 text-primary-400 animate-spin" fill="none" viewBox="0 0 24 24">
@@ -2587,8 +2607,8 @@ function ToolCallModal({
             )}
             <div>
               <h3 className="text-lg font-semibold text-surface-100">{toolCall.toolName}</h3>
-              <p className="text-sm text-surface-400">
-                {isComplete ? 'Completed' : 'Running...'}
+              <p className={`text-sm ${hasError ? 'text-red-400' : 'text-surface-400'}`}>
+                {isComplete ? (hasError ? 'Failed' : 'Completed') : 'Running...'}
               </p>
             </div>
           </div>

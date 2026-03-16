@@ -1803,8 +1803,26 @@ class ChatOrchestrator:
                     sender_user_id=self.user_id,
                 )
 
+    @staticmethod
+    def _strip_null_bytes(obj: Any) -> Any:
+        """Recursively strip null bytes from strings in a JSON-serialisable structure.
+
+        PostgreSQL JSONB columns cannot store \\x00; Exa and other web-search
+        providers occasionally return content containing them, which causes
+        asyncpg.UntranslatableCharacterError and silently breaks message saves.
+        """
+        if isinstance(obj, str):
+            return obj.replace("\x00", "")
+        if isinstance(obj, list):
+            return [AgentOrchestrator._strip_null_bytes(item) for item in obj]
+        if isinstance(obj, dict):
+            return {k: AgentOrchestrator._strip_null_bytes(v) for k, v in obj.items()}
+        return obj
+
     async def _save_assistant_message(self, assistant_blocks: list[dict[str, Any]]) -> None:
         """Save or update assistant message in database."""
+        assistant_blocks = self._strip_null_bytes(assistant_blocks)
+
         conv_uuid: UUID | None = UUID(self.conversation_id) if self.conversation_id else None
         user_uuid: UUID | None = UUID(self.user_id) if self.user_id else None
         org_uuid: UUID | None = UUID(self.organization_id) if self.organization_id else None
