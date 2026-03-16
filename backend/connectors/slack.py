@@ -8,6 +8,7 @@ Responsibilities:
 - Handle pagination and rate limits
 """
 
+import asyncio
 import logging
 import re
 import uuid
@@ -274,6 +275,8 @@ Send a message to a Slack channel, DM, or user.
             "Content-Type": "application/json",
         }
 
+    _MAX_RETRIES: int = 5
+
     async def _make_request(
         self,
         method: str,
@@ -281,27 +284,48 @@ Send a message to a Slack channel, DM, or user.
         params: Optional[dict[str, Any]] = None,
         json_data: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
-        """Make an authenticated request to Slack API."""
-        headers = await self._get_headers()
-        url = f"{SLACK_API_BASE}/{endpoint}"
+        """Make an authenticated request to Slack API with rate-limit retry."""
+        headers: dict[str, str] = await self._get_headers()
+        url: str = f"{SLACK_API_BASE}/{endpoint}"
 
-        async with httpx.AsyncClient() as client:
-            if method == "GET":
-                response = await client.get(
-                    url, headers=headers, params=params, timeout=30.0
-                )
-            else:
-                response = await client.post(
-                    url, headers=headers, json=json_data, timeout=30.0
-                )
+        for attempt in range(self._MAX_RETRIES + 1):
+            async with httpx.AsyncClient() as client:
+                if method == "GET":
+                    response: httpx.Response = await client.get(
+                        url, headers=headers, params=params, timeout=30.0
+                    )
+                else:
+                    response = await client.post(
+                        url, headers=headers, json=json_data, timeout=30.0
+                    )
 
-            response.raise_for_status()
-            data = response.json()
+                if response.status_code == 429 and attempt < self._MAX_RETRIES:
+                    retry_after: float = float(
+                        response.headers.get("Retry-After", str(2 ** attempt))
+                    )
+                    logger.warning(
+                        "[Slack API] 429 rate-limited on %s (attempt %d/%d), retrying in %.1fs",
+                        endpoint,
+                        attempt + 1,
+                        self._MAX_RETRIES,
+                        retry_after,
+                    )
+                    await asyncio.sleep(retry_after)
+                    continue
 
-            if not data.get("ok"):
-                raise ValueError(f"Slack API error: {data.get('error', 'Unknown')}")
+                response.raise_for_status()
+                data: dict[str, Any] = response.json()
 
-            return data
+                if not data.get("ok"):
+                    raise ValueError(f"Slack API error: {data.get('error', 'Unknown')}")
+
+                return data
+
+        raise httpx.HTTPStatusError(
+            "Rate limited after max retries",
+            request=response.request,
+            response=response,
+        )
 
     async def get_channels(self) -> list[dict[str, Any]]:
         """Get list of channels the bot has access to."""
