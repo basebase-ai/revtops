@@ -36,6 +36,7 @@ import { OrganizationPanel } from './OrganizationPanel';
 const AppsGallery = lazy(() => import('./apps/AppsGallery').then(m => ({ default: m.AppsGallery })));
 const AppFullView = lazy(() => import('./apps/AppFullView').then(m => ({ default: m.AppFullView })));
 const ArtifactFullView = lazy(() => import('./ArtifactFullView').then(m => ({ default: m.ArtifactFullView })));
+const DocumentsGallery = lazy(() => import('./documents/DocumentsGallery').then(m => ({ default: m.DocumentsGallery })));
 import { APP_NAME, LOGO_PATH, RELEASE_STAGE } from '../lib/brand';
 import { ProfilePanel } from './ProfilePanel';
 import { useAppStore, useUIStore, useMasquerade, useIntegrations, type ActiveTask, type ToolCallData, type ChatMessage, type ContentBlock } from '../store';
@@ -346,7 +347,7 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
 
       const orgPrefixMatch = path.match(/^\/([a-z0-9-]+)(?:\/(.*))?$/);
     const orgHandleFromPath: string | null =
-      orgPrefixMatch && orgPrefixMatch[1] && !/^(auth|admin|embed|chat|apps|artifact|artifacts|sources|data|workflows|memory|changes)$/i.test(orgPrefixMatch[1])
+      orgPrefixMatch && orgPrefixMatch[1] && !/^(auth|admin|embed|chat|apps|documents|artifact|artifacts|sources|data|workflows|memory|changes)$/i.test(orgPrefixMatch[1])
         ? orgPrefixMatch[1]
         : null;
 
@@ -405,6 +406,7 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
         workflows: "workflows",
         memory: "memory",
         apps: "apps",
+        documents: "documents",
         admin: "admin",
         changes: "pending-changes",
       };
@@ -444,6 +446,7 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
       "/workflows": "workflows",
       "/memory": "memory",
       "/apps": "apps",
+      "/documents": "documents",
       "/admin": "admin",
       "/changes": "pending-changes",
     };
@@ -510,6 +513,7 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
         workflows: "/workflows",
         apps: "/apps",
         "app-view": "/apps",
+        documents: "/documents",
         "artifact-view": "/chat",
         admin: "/admin",
         memory: "/memory",
@@ -1624,6 +1628,11 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
         {currentView === 'apps' && (
           <Suspense fallback={<div className="flex items-center justify-center h-64"><div className="animate-spin w-8 h-8 border-2 border-surface-500 border-t-primary-500 rounded-full" /></div>}>
             <AppsGallery />
+          </Suspense>
+        )}
+        {currentView === 'documents' && (
+          <Suspense fallback={<div className="flex items-center justify-center h-64"><div className="animate-spin w-8 h-8 border-2 border-surface-500 border-t-primary-500 rounded-full" /></div>}>
+            <DocumentsGallery />
           </Suspense>
         )}
         {currentView === 'app-view' && currentAppId && (

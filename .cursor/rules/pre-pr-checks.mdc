@@ -7,7 +7,10 @@ alwaysApply: true
 
 Before creating a pull request, always run these checks and fix any failures:
 
-1. **Frontend build**: `npm run build` (from the project root or frontend directory)
-2. **Backend tests**: `pytest -q tests` (from `backend/`)
+1. **Frontend build**: `npm run build` (from the project root or `frontend/` directory)
+2. **Backend tests**: From project root, set up the env first, then run tests:
+   - `source venv/bin/activate` (or `source backend/venv/bin/activate` if venv lives in backend)
+   - `pip install -r backend/requirements.txt` (or from `backend/`: `pip install -r requirements.txt`)
+   - From `backend/`: `pytest -q tests`
 
 Do not create the PR until both pass cleanly.
