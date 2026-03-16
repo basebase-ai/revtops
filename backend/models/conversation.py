@@ -27,7 +27,7 @@ ConversationType = Literal["agent", "workflow"]
 
 # Conversation sources — should match messenger slugs from messengers.registry.
 # New sources are added by creating a new messenger in backend/messengers/.
-ConversationSource = Literal["web", "slack", "sms", "whatsapp"]
+ConversationSource = Literal["web", "slack", "sms", "whatsapp", "teams"]
 
 # Conversation scopes
 ConversationScope = Literal["private", "shared"]
