@@ -333,9 +333,10 @@ class WorkspaceMessenger(BaseMessenger):
                 if org_id is None and len(integrations) == 1:
                     org_id = str(integrations[0].organization_id)
 
-        expiry: float = time.monotonic() + _WORKSPACE_ORG_CACHE_TTL_SECONDS
-        async with _workspace_org_cache_lock:
-            _workspace_org_cache[(platform, workspace_id)] = (org_id, expiry)
+        if org_id is not None:
+            expiry: float = time.monotonic() + _WORKSPACE_ORG_CACHE_TTL_SECONDS
+            async with _workspace_org_cache_lock:
+                _workspace_org_cache[(platform, workspace_id)] = (org_id, expiry)
 
         return org_id
 

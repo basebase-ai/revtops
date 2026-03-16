@@ -1,0 +1,36 @@
+{
+  "$schema": "https://developer.microsoft.com/en-us/json-schemas/teams/v1.17/MicrosoftTeams.schema.json",
+  "manifestVersion": "1.17",
+  "version": "1.0.0",
+  "id": "c2d24f3b-01bb-4012-bb60-03ee08cd976d",
+  "developer": {
+    "name": "Basebase",
+    "websiteUrl": "https://basebase.com",
+    "privacyUrl": "https://basebase.com/privacy",
+    "termsOfUseUrl": "https://basebase.com/terms"
+  },
+  "name": {
+    "short": "Basebase",
+    "full": "Basebase AI Assistant"
+  },
+  "description": {
+    "short": "Basebase AI assistant for your team",
+    "full": "Chat with Basebase directly in Microsoft Teams. Ask questions, get insights, and manage your workflow — in DMs, channels, or threads."
+  },
+  "icons": {
+    "outline": "outline.png",
+    "color": "color.png"
+  },
+  "accentColor": "#4F46E5",
+  "bots": [
+    {
+      "botId": "c2d24f3b-01bb-4012-bb60-03ee08cd976d",
+      "scopes": ["personal", "team", "groupChat"],
+      "supportsFiles": true,
+      "isNotificationOnly": false,
+      "commandLists": []
+    }
+  ],
+  "permissions": ["identity", "messageTeamMembers"],
+  "validDomains": ["api.basebase.com"]
+}
