@@ -20,7 +20,7 @@ from typing import Any
 import httpx
 import redis.asyncio as redis
 from fastapi import APIRouter, HTTPException, Request
-from jose import JWKError, JWTError, jwk, jwt
+from jose import JWTError, jwk, jwt
 
 from config import get_redis_connection_kwargs, settings
 from messengers.base import InboundMessage, MessageType
@@ -185,7 +185,7 @@ def _verify_teams_jwt(token: str) -> dict[str, Any]:
     signing_key_pem: str | None = None
     for key in _merged_jwks_keys:
         if key.get("kid") == kid:
-            alg: str = key.get("alg", "RS256")
+            alg: str = key.get("alg") or unverified.get("alg") or "RS256"
             signing_key_pem = jwk.construct(key, algorithm=alg).to_pem().decode("utf-8")
             break
     if not signing_key_pem:
@@ -228,7 +228,7 @@ async def verify_teams_request(request: Request) -> None:
     except ValueError as e:
         logger.warning("[teams_events] JWT validation failed: %s", e)
         raise HTTPException(status_code=401, detail="Invalid token")
-    except (JWTError, JWKError) as e:
+    except JWTError as e:
         logger.warning("[teams_events] JWT error: %s", e)
         raise HTTPException(status_code=401, detail="Invalid token")
 
