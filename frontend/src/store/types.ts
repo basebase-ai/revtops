@@ -262,6 +262,7 @@ export type View =
   | "memory"
   | "apps"
   | "app-view"
+  | "documents"
   | "artifact-view"
   | "admin"
   | "pending-changes";

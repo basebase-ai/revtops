@@ -13,14 +13,15 @@ Provides endpoints to:
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from api.auth_middleware import AuthContext, require_organization
 from models.artifact import Artifact
 from models.database import get_session
+from models.user import User
 from services.pdf_generator import generate_pdf
 
 router = APIRouter()
@@ -40,6 +41,7 @@ class ArtifactMetadata(BaseModel):
     message_id: Optional[str]
     created_at: Optional[str]
     user_id: Optional[str]
+    creator_name: Optional[str] = None
 
 
 class ArtifactContent(BaseModel):
@@ -64,6 +66,56 @@ class ArtifactListResponse(BaseModel):
 
     artifacts: list[ArtifactMetadata]
     total: int
+
+
+@router.get("", response_model=ArtifactListResponse)
+async def list_artifacts(
+    search: Optional[str] = Query(None),
+    auth: AuthContext = Depends(require_organization),
+) -> ArtifactListResponse:
+    """
+    List all artifacts for the current organization (most recent first).
+    Optional search filters on title and description (case-insensitive).
+    """
+    async with get_session(organization_id=auth.organization_id_str) as session:
+        stmt = select(Artifact).order_by(Artifact.created_at.desc())
+        if search and search.strip():
+            term: str = f"%{search.strip()}%"
+            stmt = stmt.where(
+                or_(
+                    Artifact.title.ilike(term),
+                    Artifact.description.ilike(term),
+                )
+            )
+        result = await session.execute(stmt)
+        artifacts: list[Artifact] = list(result.scalars().all())
+
+        user_ids: set[UUID] = {a.user_id for a in artifacts if a.user_id is not None}
+        users_map: dict[UUID, User] = {}
+        if user_ids:
+            user_result = await session.execute(select(User).where(User.id.in_(user_ids)))
+            for u in user_result.scalars().all():
+                users_map[u.id] = u
+
+        artifact_list: list[ArtifactMetadata] = [
+            ArtifactMetadata(
+                id=str(a.id),
+                type=a.type,
+                title=a.title,
+                description=a.description,
+                content_type=a.content_type,
+                mime_type=a.mime_type,
+                filename=a.filename,
+                conversation_id=str(a.conversation_id) if a.conversation_id else None,
+                message_id=str(a.message_id) if a.message_id else None,
+                created_at=f"{a.created_at.isoformat()}Z" if a.created_at else None,
+                user_id=str(a.user_id) if a.user_id else None,
+                creator_name=(u.name if (u := users_map.get(a.user_id)) else None),
+            )
+            for a in artifacts
+        ]
+
+        return ArtifactListResponse(artifacts=artifact_list, total=len(artifact_list))
 
 
 @router.get("/{artifact_id}", response_model=ArtifactContent)
@@ -113,6 +165,7 @@ async def get_artifact(
 @router.get("/{artifact_id}/download", response_model=None)
 async def download_artifact(
     artifact_id: str,
+    format: Optional[str] = Query(None),
     auth: AuthContext = Depends(require_organization),
 ) -> Response:
     """
@@ -146,12 +199,48 @@ async def download_artifact(
         content_type: str = artifact.content_type or "text"
         filename: str = artifact.filename or f"artifact.{_get_extension(content_type)}"
         
-        # Handle different content types
-        if content_type == "pdf":
-            # Generate PDF from markdown content
+        # #region agent log
+        import json as _json, time as _time
+        _log_path = "/Users/teg/Documents/basebase/basebase/.cursor/debug-fc2f88.log"
+        with open(_log_path, "a") as _f:
+            _f.write(_json.dumps({"sessionId":"fc2f88","hypothesisId":"H1","location":"artifacts.py:download","message":"download_artifact called","data":{"artifact_id":str(artifact.id),"stored_content_type":content_type,"requested_format":format,"filename":filename,"content_length":len(artifact.content) if artifact.content else 0},"timestamp":int(_time.time()*1000),"runId":"post-fix"}) + "\n")
+        # #endregion
+
+        # When format=pdf is requested, generate PDF from any text-based content
+        if format == "pdf" and content_type in ("markdown", "text", "pdf"):
             pdf_bytes: bytes = generate_pdf(artifact.content)
+            pdf_filename: str = artifact.filename or "artifact.pdf"
+            if not pdf_filename.endswith(".pdf"):
+                pdf_filename = pdf_filename.rsplit(".", 1)[0] + ".pdf"
+            # #region agent log
+            with open(_log_path, "a") as _f:
+                _f.write(_json.dumps({"sessionId":"fc2f88","hypothesisId":"H1_fix","location":"artifacts.py:format_pdf_branch","message":"PDF generated via format param","data":{"pdf_size":len(pdf_bytes),"starts_with_percent_pdf":pdf_bytes[:5] == b"%PDF-","pdf_filename":pdf_filename},"timestamp":int(_time.time()*1000),"runId":"post-fix"}) + "\n")
+            # #endregion
             return Response(
                 content=pdf_bytes,
+                media_type="application/pdf",
+                headers={
+                    "Content-Disposition": f'attachment; filename="{pdf_filename}"',
+                },
+            )
+
+        if format == "markdown" and content_type in ("markdown", "text", "pdf"):
+            md_filename: str = artifact.filename or "artifact.md"
+            if not md_filename.endswith(".md"):
+                md_filename = md_filename.rsplit(".", 1)[0] + ".md"
+            return Response(
+                content=artifact.content.encode("utf-8"),
+                media_type="text/markdown",
+                headers={
+                    "Content-Disposition": f'attachment; filename="{md_filename}"',
+                },
+            )
+
+        # Fallback: route by stored content_type when no format override
+        if content_type == "pdf":
+            pdf_bytes_fallback: bytes = generate_pdf(artifact.content)
+            return Response(
+                content=pdf_bytes_fallback,
                 media_type="application/pdf",
                 headers={
                     "Content-Disposition": f'attachment; filename="{filename}"',
@@ -159,9 +248,7 @@ async def download_artifact(
             )
         
         elif content_type == "chart":
-            # Return as HTML with embedded Plotly
             html_content: str = _generate_chart_html(artifact.content, artifact.title or "Chart")
-            # Use .html extension for charts
             if not filename.endswith(".html"):
                 filename = filename.rsplit(".", 1)[0] + ".html"
             return Response(
@@ -181,7 +268,7 @@ async def download_artifact(
                 },
             )
         
-        else:  # text or unknown
+        else:
             return Response(
                 content=artifact.content.encode("utf-8"),
                 media_type="text/plain",
@@ -222,7 +309,7 @@ async def list_conversation_artifacts(
         )
         artifacts: list[Artifact] = list(result.scalars().all())
 
-        artifact_list: list[ArtifactMetadata] = [
+        artifact_list = [
             ArtifactMetadata(
                 id=str(a.id),
                 type=a.type,
@@ -234,7 +321,7 @@ async def list_conversation_artifacts(
                 conversation_id=str(a.conversation_id) if a.conversation_id else None,
                 message_id=str(a.message_id) if a.message_id else None,
                 created_at=f"{a.created_at.isoformat()}Z" if a.created_at else None,
-                user_id=str(a.user_id),
+                user_id=str(a.user_id) if a.user_id else None,
             )
             for a in artifacts
         ]

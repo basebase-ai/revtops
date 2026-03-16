@@ -106,8 +106,8 @@ export function ArtifactFullView({
   };
 
   const goBack = (): void => {
-    setCurrentView("chat");
-    window.history.pushState({}, "", `${prefix}/chat`);
+    setCurrentView("documents");
+    window.history.pushState({}, "", `${prefix}/documents`);
   };
 
   if (loading) {
@@ -135,7 +135,7 @@ export function ArtifactFullView({
           <button
             onClick={goBack}
             className="text-surface-400 hover:text-surface-200 transition-colors"
-            title="Back to Chat"
+            title="Back to Documents"
           >
             <svg
               className="w-5 h-5"
