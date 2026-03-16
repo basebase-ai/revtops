@@ -1814,9 +1814,9 @@ class ChatOrchestrator:
         if isinstance(obj, str):
             return obj.replace("\x00", "")
         if isinstance(obj, list):
-            return [AgentOrchestrator._strip_null_bytes(item) for item in obj]
+            return [ChatOrchestrator._strip_null_bytes(item) for item in obj]
         if isinstance(obj, dict):
-            return {k: AgentOrchestrator._strip_null_bytes(v) for k, v in obj.items()}
+            return {k: ChatOrchestrator._strip_null_bytes(v) for k, v in obj.items()}
         return obj
 
     async def _save_assistant_message(self, assistant_blocks: list[dict[str, Any]]) -> None:
