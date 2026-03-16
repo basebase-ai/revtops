@@ -10,6 +10,8 @@ Supported file types:
 - Images (jpeg, png, gif, webp) → sent as native Claude image blocks
 - PDFs → sent as native Claude document blocks
 - XLSX → parsed to CSV text via openpyxl
+- DOCX → raw WordprocessingML XML (Claude parses XML natively)
+- PPTX → raw PresentationML XML per slide
 - CSV / plain text → inlined as text blocks
 """
 
@@ -51,15 +53,29 @@ PDF_MIME: str = "application/pdf"
 TEXT_MIMES: frozenset[str] = frozenset({
     "text/plain",
     "text/csv",
+    "text/tab-separated-values",
     "text/markdown",
     "text/html",
+    "text/css",
+    "text/calendar",
+    "text/vcard",
+    "text/x-vcard",
     "application/json",
     "application/xml",
     "text/xml",
+    "application/x-yaml",
+    "application/yaml",
+    "text/yaml",
+    "application/sql",
+    "application/rtf",
+    "text/rtf",
 })
 
 XLSX_MIME: str = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-XLS_MIME: str = "application/vnd.ms-excel"
+
+DOCX_MIME: str = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+PPTX_MIME: str = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
 
 
 @dataclass
@@ -226,8 +242,12 @@ def build_claude_content_blocks(
             blocks.append(_image_block(sf))
         elif mime == PDF_MIME:
             blocks.append(_pdf_block(sf))
-        elif mime in (XLSX_MIME, XLS_MIME):
+        elif mime == XLSX_MIME or sf.filename.endswith(".xlsx"):
             blocks.append(_xlsx_to_text_block(sf))
+        elif mime == DOCX_MIME or sf.filename.endswith(".docx"):
+            blocks.append(_docx_to_text_block(sf))
+        elif mime == PPTX_MIME or sf.filename.endswith(".pptx"):
+            blocks.append(_pptx_to_text_block(sf))
         elif _is_text_mime(mime) or sf.filename.endswith(".csv"):
             blocks.append(_text_file_block(sf))
         else:
@@ -306,6 +326,63 @@ def _xlsx_to_text_block(sf: StoredFile) -> dict[str, Any]:
         return {
             "type": "text",
             "text": f"[Attached file: {sf.filename} — could not parse Excel file: {e}]",
+        }
+
+
+def _docx_to_text_block(sf: StoredFile) -> dict[str, Any]:
+    """Extract the main document XML from a DOCX and send it raw — Claude groks XML natively."""
+    import zipfile
+
+    try:
+        with zipfile.ZipFile(io.BytesIO(sf.data)) as zf:
+            xml: str = zf.read("word/document.xml").decode("utf-8")
+
+        max_chars: int = 200_000
+        if len(xml) > max_chars:
+            xml = xml[:max_chars] + f"\n\n[Truncated — showing first {max_chars:,} characters of {len(xml):,} total]"
+
+        return {
+            "type": "text",
+            "text": f"Contents of {sf.filename} (Word XML):\n\n{xml}",
+        }
+
+    except Exception as e:
+        logger.warning("Failed to read DOCX %s: %s", sf.filename, e)
+        return {
+            "type": "text",
+            "text": f"[Attached file: {sf.filename} — could not read Word document: {e}]",
+        }
+
+
+def _pptx_to_text_block(sf: StoredFile) -> dict[str, Any]:
+    """Extract all slide XML from a PPTX and concatenate — same ZIP-of-XML approach as DOCX."""
+    import zipfile
+
+    try:
+        parts: list[str] = []
+        with zipfile.ZipFile(io.BytesIO(sf.data)) as zf:
+            slide_names: list[str] = sorted(
+                name for name in zf.namelist() if name.startswith("ppt/slides/slide") and name.endswith(".xml")
+            )
+            for name in slide_names:
+                parts.append(zf.read(name).decode("utf-8"))
+
+        xml: str = "\n\n".join(parts)
+
+        max_chars: int = 200_000
+        if len(xml) > max_chars:
+            xml = xml[:max_chars] + f"\n\n[Truncated — showing first {max_chars:,} characters of {len(xml):,} total]"
+
+        return {
+            "type": "text",
+            "text": f"Contents of {sf.filename} (PowerPoint XML, {len(slide_names)} slides):\n\n{xml}",
+        }
+
+    except Exception as e:
+        logger.warning("Failed to read PPTX %s: %s", sf.filename, e)
+        return {
+            "type": "text",
+            "text": f"[Attached file: {sf.filename} — could not read PowerPoint file: {e}]",
         }
 
 
