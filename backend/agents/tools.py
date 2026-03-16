@@ -303,6 +303,7 @@ async def execute_tool(
             return {"error": "manage_memory save/update is not available in workflows. Use keep_notes for workflow-scoped notes."}
 
     tool_handlers: dict[str, Callable[[], Awaitable[dict[str, Any]]]] = {
+        "think": lambda: _think(tool_input),
         "run_sql_query": lambda: _run_sql_query(tool_input, organization_id, user_id),
         "run_sql_write": lambda: _run_sql_write(tool_input, organization_id, user_id, context),
         "run_workflow": lambda: _run_workflow(tool_input, organization_id, user_id, context),
@@ -868,6 +869,12 @@ async def _run_on_connector(
 # =============================================================================
 # SQL Tools
 # =============================================================================
+
+
+async def _think(tool_input: dict[str, Any]) -> dict[str, Any]:
+    """No-op planning tool — returns the thought so it appears in conversation history."""
+    thought: str = tool_input.get("thought", "")
+    return {"status": "success", "thought": thought}
 
 
 async def _run_sql_query(

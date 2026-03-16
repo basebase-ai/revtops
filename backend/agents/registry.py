@@ -545,6 +545,32 @@ This is workflow-scoped memory, not user-wide memory.""",
 )
 
 register_tool(
+    name="think",
+    description="""Use this tool to plan your approach before taking action on complex, multi-step tasks.
+
+Call this when the request involves multiple tools, data dependencies between steps, or
+non-obvious ordering. Write out your reasoning: what information you need, which tools
+to call in what order, and what could go wrong.
+
+You do NOT need to call this for simple, single-tool requests. Only use it when planning
+genuinely helps — e.g. multi-query analysis, connector workflows with dependencies,
+bulk operations, or ambiguous requests that need decomposition.""",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "thought": {
+                "type": "string",
+                "description": "Your step-by-step plan or reasoning about how to approach the task.",
+            },
+        },
+        "required": ["thought"],
+    },
+    category=ToolCategory.LOCAL_READ,
+    default_requires_approval=False,
+)
+
+
+register_tool(
     name="manage_memory",
     description="""Save, update, or delete a persistent memory that is recalled at the start of every future conversation.
 
