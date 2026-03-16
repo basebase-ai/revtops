@@ -51,6 +51,15 @@ interface LegacyArtifact {
 // Union type for all artifact formats
 type AnyArtifact = LegacyArtifact | FileArtifact;
 
+const ALLOWED_DROP_EXTENSIONS: readonly string[] = [
+  '.pdf', '.csv', '.tsv', '.xlsx', '.docx', '.pptx',
+  '.txt', '.json', '.md', '.xml', '.html', '.css',
+  '.yaml', '.yml', '.rtf', '.eml', '.ics', '.vcf',
+  '.sql', '.log', '.py', '.js', '.ts', '.jsx', '.tsx',
+  '.sh', '.rb', '.java', '.c', '.cpp', '.h', '.go',
+  '.rs', '.swift', '.kt', '.r', '.m',
+] as const;
+
 interface ChatProps {
   userId?: string | null;
   organizationId: string;
@@ -1014,7 +1023,7 @@ export function Chat({
     setIsDragOver(false);
 
     const files = Array.from(e.dataTransfer.files).filter(
-      (f) => f.type.startsWith('image/') || f.type === 'application/pdf' || f.type.startsWith('text/') || f.name.endsWith('.csv') || f.name.endsWith('.xlsx') || f.name.endsWith('.xls') || f.name.endsWith('.json'),
+      (f) => f.type.startsWith('image/') || f.type === 'application/pdf' || f.type.startsWith('text/') || ALLOWED_DROP_EXTENSIONS.some((ext) => f.name.toLowerCase().endsWith(ext)),
     );
     if (files.length === 0) return;
 
@@ -1607,7 +1616,7 @@ export function Chat({
             type="file"
             multiple
             className="hidden"
-            accept="image/*,.pdf,.csv,.xlsx,.xls,.txt,.json,.md,.xml,.html"
+            accept="image/*,.pdf,.csv,.tsv,.xlsx,.docx,.pptx,.txt,.json,.md,.xml,.html,.css,.yaml,.yml,.rtf,.eml,.ics,.vcf,.sql,.log,.py,.js,.ts,.jsx,.tsx,.sh,.rb,.java,.c,.cpp,.h,.go,.rs,.swift,.kt,.r,.m"
             onChange={handleFileSelect}
           />
 
@@ -2355,6 +2364,9 @@ function getToolStatusText(
   result: Record<string, unknown> | undefined
 ): string {
   switch (toolName) {
+    case 'think': {
+      return isComplete ? 'Thinking' : 'Thinking...';
+    }
     case 'web_search': {
       const query = typeof input?.query === 'string' ? input.query : '';
       const truncatedQuery = query.length > 40 ? query.slice(0, 40) + '...' : query;
@@ -2702,8 +2714,13 @@ function ConnectionStatus({
 function getFileTypeLabel(filename: string, mimeType: string): string {
   const ext: string = filename.split('.').pop()?.toLowerCase() ?? '';
   const extMap: Record<string, string> = {
-    pdf: 'PDF', csv: 'CSV', xlsx: 'Excel', xls: 'Excel',
-    json: 'JSON', md: 'Markdown', xml: 'XML', html: 'HTML', txt: 'Text',
+    pdf: 'PDF', csv: 'CSV', tsv: 'TSV', xlsx: 'Excel', docx: 'Word', pptx: 'PowerPoint',
+    json: 'JSON', md: 'Markdown', xml: 'XML', html: 'HTML', css: 'CSS', txt: 'Text',
+    yaml: 'YAML', yml: 'YAML', rtf: 'RTF', eml: 'Email', ics: 'Calendar', vcf: 'Contact',
+    sql: 'SQL', log: 'Log',
+    py: 'Python', js: 'JavaScript', ts: 'TypeScript', jsx: 'JSX', tsx: 'TSX',
+    sh: 'Shell', rb: 'Ruby', java: 'Java', c: 'C', cpp: 'C++', h: 'Header',
+    go: 'Go', rs: 'Rust', swift: 'Swift', kt: 'Kotlin', r: 'R', m: 'Obj-C',
     png: 'PNG', jpg: 'JPEG', jpeg: 'JPEG', gif: 'GIF', webp: 'WebP', svg: 'SVG',
   };
   if (ext && ext in extMap) return extMap[ext] as string;

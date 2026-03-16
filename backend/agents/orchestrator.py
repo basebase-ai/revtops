@@ -1331,71 +1331,74 @@ class ChatOrchestrator:
                     )
                     asyncio.create_task(self._save_assistant_message_safe(blocks_snapshot))
             
-            # === EXECUTE TOOLS: Process each tool and update results ===
+            # === EXECUTE TOOLS: Run concurrently, then yield results in order ===
             tool_results: list[dict[str, Any]] = []
             forced_out_of_credits_closeout: bool = False
-            
-            for tool_use in tool_uses:
-                tool_name = tool_use["name"]
-                tool_input = tool_use["input"]
-                tool_id = tool_use["id"]
 
+            async def _run_single_tool(
+                t_name: str, t_input: dict[str, Any], t_id: str, t_ctx: dict[str, Any],
+            ) -> dict[str, Any]:
+                """Execute one tool with timeout; returns result dict (never raises)."""
                 logger.info(
                     "[Orchestrator] Tool call: %s | input=%s | org_id=%s | user_id=%s",
-                    tool_name,
-                    tool_input,
-                    self.organization_id,
-                    self.user_id,
+                    t_name, t_input, self.organization_id, self.user_id,
                 )
-
-                # Build context with conversation_id, message_id, tool_id for progress updates and connectors
-                tool_context: dict[str, Any] = {}
-                if self.workflow_context:
-                    tool_context.update(self.workflow_context)
-                if self.conversation_id:
-                    tool_context["conversation_id"] = self.conversation_id
-                if self._current_message_id:
-                    tool_context["message_id"] = str(self._current_message_id)
-                tool_context["tool_id"] = tool_id
-
-                # Execute tool with hard timeout so we always yield a result and the UI can stop "Running"
                 try:
-                    tool_result = await asyncio.wait_for(
+                    return await asyncio.wait_for(
                         execute_tool(
-                            tool_name, tool_input, self.organization_id, self.user_id,
-                            context=tool_context,
+                            t_name, t_input, self.organization_id, self.user_id,
+                            context=t_ctx,
                         ),
                         timeout=_TOOL_EXECUTION_TIMEOUT_SECONDS,
                     )
                 except asyncio.TimeoutError:
                     logger.warning(
                         "[Orchestrator] Tool %s (%s) timed out after %.0fs",
-                        tool_name, tool_id[:8] if tool_id else "", _TOOL_EXECUTION_TIMEOUT_SECONDS,
+                        t_name, t_id[:8] if t_id else "", _TOOL_EXECUTION_TIMEOUT_SECONDS,
                     )
-                    tool_result = {
+                    return {
                         "error": f"Tool timed out after {_TOOL_EXECUTION_TIMEOUT_SECONDS / 60:.0f} minutes. "
                         "The operation may still complete in the background; try again or use a smaller job.",
                     }
                 except Exception as exc:
-                    logger.exception("[Orchestrator] Tool %s raised: %s", tool_name, exc)
-                    tool_result = {"error": f"Tool execution failed: {exc}"}
+                    logger.exception("[Orchestrator] Tool %s raised: %s", t_name, exc)
+                    return {"error": f"Tool execution failed: {exc}"}
+
+            # Build per-tool contexts and launch all concurrently
+            tool_tasks: list[asyncio.Task[dict[str, Any]]] = []
+            for tool_use in tool_uses:
+                per_tool_ctx: dict[str, Any] = {}
+                if self.workflow_context:
+                    per_tool_ctx.update(self.workflow_context)
+                if self.conversation_id:
+                    per_tool_ctx["conversation_id"] = self.conversation_id
+                if self._current_message_id:
+                    per_tool_ctx["message_id"] = str(self._current_message_id)
+                per_tool_ctx["tool_id"] = tool_use["id"]
+
+                tool_tasks.append(asyncio.create_task(
+                    _run_single_tool(tool_use["name"], tool_use["input"], tool_use["id"], per_tool_ctx),
+                    name=f"tool-{tool_use['name']}-{tool_use['id'][:8]}",
+                ))
+
+            gathered_results: list[dict[str, Any]] = await asyncio.gather(*tool_tasks)
+
+            # Process results in the original tool order
+            for tool_use, tool_result in zip(tool_uses, gathered_results):
+                tool_name: str = tool_use["name"]
+                tool_input: dict[str, Any] = tool_use["input"]
+                tool_id: str = tool_use["id"]
 
                 forced_out_of_credits_closeout = forced_out_of_credits_closeout or bool(
                     tool_result.pop("_out_of_credits_after_turn", False)
                 )
 
-                logger.info(
-                    "[Orchestrator] Tool result for %s: %s",
-                    tool_name,
-                    tool_result,
-                )
+                logger.info("[Orchestrator] Tool result for %s: %s", tool_name, tool_result)
 
-                # Update the tool_use block in content_blocks with final result
-                block_idx = tool_block_indices[tool_id]
+                block_idx: int = tool_block_indices[tool_id]
                 content_blocks[block_idx]["result"] = tool_result
                 content_blocks[block_idx]["status"] = "complete"
 
-                # Send tool result to frontend (include tool_input so modal can show params if block had none yet)
                 yield json.dumps({
                     "type": "tool_result",
                     "tool_name": tool_name,
@@ -1405,31 +1408,17 @@ class ChatOrchestrator:
                     "status": "complete",
                 })
 
-                # Emit artifact or app block for frontend rendering
                 if tool_result.get("status") == "success":
                     artifact_data: dict[str, Any] | None = tool_result.get("artifact")
                     if artifact_data:
-                        yield json.dumps({
-                            "type": "artifact",
-                            "artifact": artifact_data,
-                        })
-                        content_blocks.append({
-                            "type": "artifact",
-                            "artifact": artifact_data,
-                        })
+                        yield json.dumps({"type": "artifact", "artifact": artifact_data})
+                        content_blocks.append({"type": "artifact", "artifact": artifact_data})
 
                     app_data: dict[str, Any] | None = tool_result.get("app")
                     if app_data:
-                        yield json.dumps({
-                            "type": "app",
-                            "app": app_data,
-                        })
-                        content_blocks.append({
-                            "type": "app",
-                            "app": app_data,
-                        })
+                        yield json.dumps({"type": "app", "app": app_data})
+                        content_blocks.append({"type": "app", "app": app_data})
 
-                # Emit connector_connect event for OAuth flow
                 if tool_name == "initiate_connector" and tool_result.get("action") in ("connect_oauth", "connect_builtin"):
                     yield json.dumps({
                         "type": "connector_connect",
@@ -1440,8 +1429,6 @@ class ChatOrchestrator:
                         "connection_id": tool_result.get("connection_id"),
                     })
 
-                # Persist tool result to DB in background (fire-and-forget).
-                # The final _save_assistant_message at the end is the authoritative save.
                 if self.conversation_id:
                     asyncio.create_task(self._update_tool_result_safe(
                         self.conversation_id, tool_id, tool_result, self.organization_id,
