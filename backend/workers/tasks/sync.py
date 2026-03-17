@@ -19,6 +19,7 @@ from datetime import datetime, timedelta
 from typing import Any
 from uuid import UUID
 
+from config import settings
 from workers.celery_app import celery_app
 from services.anthropic_health import report_anthropic_call_failure, report_anthropic_call_success
 from workers.run_async import run_async
@@ -1160,7 +1161,7 @@ def generate_meeting_summary(
 # Delay before generating summary — gives time for multiple sources to arrive
 _SUMMARY_DELAY = 60
 
-_SUMMARY_MODEL = "claude-haiku-4-5-20251001"
+_SUMMARY_MODEL = settings.ANTHROPIC_CHEAP_MODEL
 
 _SUMMARY_SYSTEM_PROMPT = (
     "You synthesize meeting notes from multiple sources into a single concise summary. "

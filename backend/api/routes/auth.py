@@ -384,6 +384,8 @@ class IntegrationResponse(BaseModel):
     team_total: int = 0
     # Sync statistics
     sync_stats: Optional[dict[str, int]] = None
+    # Optional display name override (e.g. user-provided name for MCP connectors)
+    display_name: Optional[str] = None
 
 
 class IntegrationsListResponse(BaseModel):
@@ -3233,15 +3235,21 @@ async def patch_integration_sharing(
     }
 
 
-_BUILTIN_CONNECTORS: frozenset[str] = frozenset({"web_search", "code_sandbox", "twilio", "artifacts", "apps"})
+_BUILTIN_CONNECTORS: frozenset[str] = frozenset({"web_search", "code_sandbox", "twilio", "artifacts", "apps", "mcp"})
+
+
+def _is_builtin_connector(provider: str) -> bool:
+    """Check if a provider is a builtin connector, including dynamic mcp_* slugs."""
+    return provider in _BUILTIN_CONNECTORS or provider.startswith("mcp_")
 
 
 class ConnectBuiltinRequest(BaseModel):
     """Request to connect a built-in connector (no OAuth)."""
 
     organization_id: str
-    provider: str  # web_search | code_sandbox | twilio
+    provider: str  # web_search | code_sandbox | twilio | mcp
     user_id: str  # Required - all integrations are user-scoped
+    extra_data: dict[str, Any] | None = None  # Provider-specific config (e.g. MCP endpoint URL)
 
 
 @router.post("/integrations/connect-builtin")
@@ -3252,7 +3260,7 @@ async def connect_builtin(request: ConnectBuiltinRequest) -> dict[str, Any]:
     These connectors use platform credentials and do not go through Nango.
     The user must explicitly "connect" them in the Connectors tab before the agent can use them.
     """
-    if request.provider not in _BUILTIN_CONNECTORS:
+    if not _is_builtin_connector(request.provider):
         raise HTTPException(
             status_code=400,
             detail=f"Provider '{request.provider}' is not a built-in connector. Use the regular connect flow for OAuth integrations.",
@@ -3266,6 +3274,45 @@ async def connect_builtin(request: ConnectBuiltinRequest) -> dict[str, Any]:
         user_uuid = UUID(request.user_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid user ID")
+
+    # MCP connector: validate endpoint, discover tools, generate dynamic slug
+    connection_extra_data: dict[str, Any] | None = None
+    mcp_tool_count: int = 0
+    is_mcp: bool = request.provider == "mcp" or request.provider.startswith("mcp_")
+    if is_mcp:
+        if not request.extra_data or not request.extra_data.get("endpoint_url"):
+            raise HTTPException(status_code=400, detail="MCP connector requires 'endpoint_url' in extra_data")
+        endpoint_url: str = request.extra_data["endpoint_url"].strip()
+        auth_header: str | None = (request.extra_data.get("auth_header") or request.extra_data.get("bearer_token") or "").strip() or None
+
+        from connectors.mcp import GenericMcpClient
+        mcp_client: GenericMcpClient = GenericMcpClient(endpoint_url=endpoint_url, auth_header=auth_header)
+        try:
+            await mcp_client.initialize()
+            discovered_tools: list[dict[str, Any]] = await mcp_client.list_tools()
+        except Exception as exc:
+            logger.warning("MCP connect validation failed for %s: %s", endpoint_url, exc)
+            raise HTTPException(
+                status_code=400,
+                detail=f"Could not connect to MCP server at {endpoint_url}: {exc}",
+            ) from exc
+
+        mcp_tool_count = len(discovered_tools)
+        display_name: str = (request.extra_data.get("display_name") or "").strip() or "MCP Server"
+
+        # Generate a stable slug from the display name: "SimilarWeb" → "mcp_similarweb"
+        import re as _re
+        slug_suffix: str = _re.sub(r"[^a-z0-9]+", "_", display_name.lower()).strip("_")
+        if not slug_suffix:
+            slug_suffix = "server"
+        request.provider = f"mcp_{slug_suffix}"
+
+        connection_extra_data = {
+            "display_name": display_name,
+            "endpoint_url": endpoint_url,
+            "auth_header": auth_header,
+            "tools": discovered_tools,
+        }
 
     sharing_defaults = get_provider_sharing_defaults(request.provider)
 
@@ -3287,6 +3334,8 @@ async def connect_builtin(request: ConnectBuiltinRequest) -> dict[str, Any]:
                 existing.is_active = True
                 existing.nango_connection_id = "builtin"
                 existing.updated_at = datetime.utcnow()
+                if connection_extra_data:
+                    existing.extra_data = connection_extra_data
             else:
                 new_integration = Integration(
                     organization_id=org_uuid,
@@ -3296,6 +3345,7 @@ async def connect_builtin(request: ConnectBuiltinRequest) -> dict[str, Any]:
                     nango_connection_id="builtin",
                     connected_by_user_id=user_uuid,
                     is_active=True,
+                    extra_data=connection_extra_data,
                     share_synced_data=sharing_defaults.share_synced_data,
                     share_query_access=sharing_defaults.share_query_access,
                     share_write_access=sharing_defaults.share_write_access,
@@ -3303,6 +3353,8 @@ async def connect_builtin(request: ConnectBuiltinRequest) -> dict[str, Any]:
                 )
                 session.add(new_integration)
             await session.commit()
+    except HTTPException:
+        raise
     except Exception as e:
         logger.exception(
             "connect_builtin failed: provider=%s org=%s user=%s",
@@ -3312,7 +3364,10 @@ async def connect_builtin(request: ConnectBuiltinRequest) -> dict[str, Any]:
         )
         raise HTTPException(status_code=500, detail="Failed to connect built-in integration.") from e
 
-    return {"status": "connected", "provider": request.provider}
+    response: dict[str, Any] = {"status": "connected", "provider": request.provider}
+    if is_mcp:
+        response["tools_discovered"] = mcp_tool_count
+    return response
 
 
 @router.get("/connect/{provider}/redirect")
@@ -3578,6 +3633,10 @@ async def list_integrations(
                 owner = team_members[ref_integration.user_id]
                 connected_by_name = owner.name or owner.email
 
+            mcp_display_name: str | None = None
+            if provider.startswith("mcp_") and ref_integration and ref_integration.extra_data:
+                mcp_display_name = ref_integration.extra_data.get("display_name")
+
             response_integrations.append(IntegrationResponse(
                 id=str(ref_integration.id) if ref_integration else f"pending-{provider}",
                 provider=provider,
@@ -3607,6 +3666,7 @@ async def list_integrations(
                 team_connections=team_connections,
                 team_total=team_total,
                 sync_stats=ref_integration.sync_stats if ref_integration else None,
+                display_name=mcp_display_name,
             ))
 
         return IntegrationsListResponse(integrations=response_integrations)

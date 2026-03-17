@@ -529,11 +529,10 @@ async def _get_connector_instance(
     Returns (connector_instance, None) on success or (None, error_message) on failure.
     """
     from connectors.base import BaseConnector
-    from connectors.registry import Capability, ConnectorMeta, ConnectorScope, discover_connectors
+    from connectors.registry import Capability, ConnectorMeta, ConnectorScope, resolve_connector
     from models.integration import Integration
 
-    registry = discover_connectors()
-    connector_cls: type[BaseConnector] | None = registry.get(slug)
+    connector_cls: type[BaseConnector] | None = resolve_connector(slug)
     if connector_cls is None:
         return None, f"Unknown connector '{slug}'. Use list_connected_connectors to see available connectors."
 
@@ -631,28 +630,44 @@ async def _get_connector_instance(
 
 async def _list_connected_connectors(organization_id: str) -> dict[str, Any]:
     """Return the connectors manifest for all connected connectors."""
-    from connectors.registry import Capability, ConnectorMeta, discover_connectors
+    from connectors.registry import Capability, ConnectorMeta, discover_connectors, resolve_connector
     from models.integration import Integration
 
     async with get_session(organization_id=organization_id) as session:
         result = await session.execute(
-            select(Integration.connector).where(
+            select(Integration.connector, Integration.extra_data).where(
                 Integration.organization_id == UUID(organization_id),
                 Integration.is_active == True,  # noqa: E712
             )
         )
-        active_providers: set[str] = {row[0] for row in result.all()}
+        rows: list[tuple[str, dict[str, Any] | None]] = [(r[0], r[1]) for r in result.all()]
+
+    active_providers: set[str] = {row[0] for row in rows}
+    extra_data_by_provider: dict[str, dict[str, Any]] = {
+        row[0]: row[1] for row in rows if row[1]
+    }
 
     registry = discover_connectors()
 
+    # Collect all slugs to iterate: static registry entries + dynamic mcp_* slugs
+    all_slugs: set[str] = set(registry.keys()) | active_providers
+
     connectors: list[dict[str, Any]] = []
-    for slug, connector_cls in sorted(registry.items()):
+    for slug in sorted(all_slugs):
         if slug not in active_providers:
             continue
+        connector_cls = resolve_connector(slug)
+        if connector_cls is None:
+            continue
         meta: ConnectorMeta = connector_cls.meta  # type: ignore[attr-defined]
+
+        is_dynamic_mcp: bool = slug.startswith("mcp_")
+        mcp_extra: dict[str, Any] = extra_data_by_provider.get(slug, {}) if is_dynamic_mcp else {}
+        display_name: str = mcp_extra.get("display_name", slug) if is_dynamic_mcp else meta.name
+
         entry: dict[str, Any] = {
-            "slug": meta.slug,
-            "name": meta.name,
+            "slug": slug,
+            "name": display_name,
             "capabilities": [c.value for c in meta.capabilities],
         }
         if meta.query_description:
@@ -667,7 +682,19 @@ async def _list_connected_connectors(organization_id: str) -> dict[str, Any]:
                 {"name": act.name, "description": act.description, "parameters": act.parameters}
                 for act in meta.actions
             ]
+        if is_dynamic_mcp:
+            mcp_tools: list[dict[str, Any]] = mcp_extra.get("tools", [])
+            entry["mcp_tools_count"] = len(mcp_tools)
+            if mcp_tools:
+                entry["mcp_tools"] = [
+                    {"name": t.get("name", ""), "description": t.get("description", "")}
+                    for t in mcp_tools
+                    if isinstance(t, dict)
+                ]
         connectors.append(entry)
+
+    # Exclude the base "mcp" slug — it's a template, not a real connection
+    connectors = [c for c in connectors if c["slug"] != "mcp"]
 
     return {"connectors": connectors, "count": len(connectors)}
 
@@ -679,30 +706,35 @@ async def _get_connector_docs(
 
     Returns the connector's usage_guide if present, plus auto-generated
     parameter reference from actions, write_operations, and query_description.
+    For the MCP connector, appends dynamically-discovered tool schemas.
     """
-    from connectors.registry import Capability, ConnectorMeta, discover_connectors
+    from connectors.registry import Capability, ConnectorMeta, resolve_connector
     from models.integration import Integration
 
     slug: str = (params.get("connector") or "").strip().lower()
     if not slug:
         return {"error": "connector is required (e.g. 'google_drive', 'hubspot')"}
 
+    integration_extra_data: dict[str, Any] | None = None
     async with get_session(organization_id=organization_id) as session:
         result = await session.execute(
-            select(Integration.connector).where(
+            select(Integration.connector, Integration.extra_data).where(
                 Integration.organization_id == UUID(organization_id),
                 Integration.is_active == True,  # noqa: E712
             )
         )
-        active_providers: set[str] = {row[0] for row in result.all()}
+        active_providers: set[str] = set()
+        for row in result.all():
+            active_providers.add(row[0])
+            if row[0] == slug:
+                integration_extra_data = row[1]
 
     if slug not in active_providers:
         return {
             "error": f"'{slug}' is not connected. Use list_connected_connectors to see available connectors.",
         }
 
-    registry = discover_connectors()
-    connector_cls = registry.get(slug)
+    connector_cls = resolve_connector(slug)
     if not connector_cls:
         return {"error": f"Unknown connector: {slug}"}
 
@@ -728,6 +760,34 @@ async def _get_connector_docs(
         for act in meta.actions:
             param_parts = [f"- **{p['name']}** ({p.get('type', 'string')})" for p in act.parameters]
             param_lines.append(f"### {act.name}\n{act.description}\n" + "\n".join(param_parts))
+
+    if slug.startswith("mcp_") and integration_extra_data:
+        mcp_tools: list[dict[str, Any]] = integration_extra_data.get("tools", [])
+        if mcp_tools:
+            tool_lines: list[str] = ["## Available MCP tools\n"]
+            for tool in mcp_tools:
+                if not isinstance(tool, dict):
+                    continue
+                tool_name: str = tool.get("name", "unknown")
+                tool_desc: str = tool.get("description", "")
+                tool_lines.append(f"### {tool_name}")
+                if tool_desc:
+                    tool_lines.append(tool_desc)
+                input_schema: dict[str, Any] | None = tool.get("inputSchema")
+                if isinstance(input_schema, dict):
+                    props: dict[str, Any] = input_schema.get("properties", {})
+                    required_params: list[str] = input_schema.get("required", [])
+                    if props:
+                        for pname, pschema in props.items():
+                            ptype: str = pschema.get("type", "any") if isinstance(pschema, dict) else "any"
+                            pdesc: str = pschema.get("description", "") if isinstance(pschema, dict) else ""
+                            req_marker: str = " (required)" if pname in required_params else ""
+                            line: str = f"- **{pname}** ({ptype}{req_marker})"
+                            if pdesc:
+                                line += f": {pdesc}"
+                            tool_lines.append(line)
+                tool_lines.append("")
+            param_lines.append("\n".join(tool_lines))
 
     if param_lines:
         sections.append("\n\n---\n\n# Parameter reference\n\n" + "\n\n".join(param_lines))

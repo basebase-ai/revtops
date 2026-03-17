@@ -26,7 +26,7 @@ import {
   SiJira,
   SiAsana,
 } from 'react-icons/si';
-import { HiOutlineCalendar, HiOutlineMail, HiGlobeAlt, HiUserGroup, HiDeviceMobile, HiMicrophone, HiLightningBolt, HiX, HiCog, HiShare, HiLockClosed, HiDocumentText, HiCube } from 'react-icons/hi';
+import { HiOutlineCalendar, HiOutlineMail, HiGlobeAlt, HiUserGroup, HiDeviceMobile, HiMicrophone, HiLightningBolt, HiX, HiCog, HiShare, HiLockClosed, HiDocumentText, HiCube, HiLink } from 'react-icons/hi';
 // Custom Apollo.io icon - 8-ray starburst matching their brand
 const ApolloIcon: IconType = ({ className, ...props }) => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className={className} {...props}>
@@ -66,6 +66,7 @@ const ICON_MAP: Record<string, IconType> = {
   sms: HiDeviceMobile,
   artifacts: HiDocumentText,
   apps: HiCube,
+  plug: HiLink,
 };
 
 // Sharing defaults for providers (used when showing the sharing modal)
@@ -125,15 +126,21 @@ const INTEGRATION_CONFIG: Record<string, IntegrationConfigEntry> = {
   twilio: { name: 'Twilio', description: 'Send SMS messages to phone numbers', icon: 'sms', color: 'from-red-500 to-pink-600', scope: 'organization' },
   artifacts: { name: 'Artifact Builder', description: 'Create and update downloadable files (reports, markdown, PDFs, charts)', icon: 'artifacts', color: 'from-slate-500 to-slate-600', scope: 'organization' },
   apps: { name: 'App Builder', description: 'Create and update interactive mini-apps with React + SQL', icon: 'apps', color: 'from-violet-500 to-purple-600', scope: 'organization' },
+  mcp: { name: 'MCP Server', description: 'Connect any MCP-compatible server by URL', icon: 'plug', color: 'from-cyan-500 to-blue-600', scope: 'user' },
 };
 
 const SUPPORTED_PROVIDERS = new Set(Object.keys(INTEGRATION_CONFIG));
 
+/** Check if a provider is "supported" for display (static config or dynamic MCP). */
+function isSupportedProvider(provider: string): boolean {
+  return SUPPORTED_PROVIDERS.has(provider) || provider.startsWith('mcp_');
+}
+
 /** Built-in connectors that connect with one click (no OAuth popup). */
-const BUILTIN_CONNECTORS = new Set(['web_search', 'code_sandbox', 'twilio', 'artifacts', 'apps']);
+const BUILTIN_CONNECTORS = new Set(['web_search', 'code_sandbox', 'twilio', 'artifacts', 'apps', 'mcp']);
 
 /** Connectors that have no sync — on-demand only (no Sync button, no "Starting sync"). */
-const NO_SYNC_PROVIDERS = new Set(['apollo', 'web_search', 'code_sandbox', 'twilio', 'artifacts', 'apps']);
+const NO_SYNC_PROVIDERS = new Set(['apollo', 'web_search', 'code_sandbox', 'twilio', 'artifacts', 'apps', 'mcp']);
 
 // Common integrations to show as tiles when org has zero connected (display order)
 const COMMON_INTEGRATION_KEYS: ReadonlyArray<string> = [
@@ -320,6 +327,14 @@ export function DataSources(): JSX.Element {
   const [showSlackVerificationModal, setShowSlackVerificationModal] = useState(false);
   const [showConnectModal, setShowConnectModal] = useState(false);
   const [connectSearch, setConnectSearch] = useState('');
+
+  // MCP connect form state
+  const [showMcpForm, setShowMcpForm] = useState(false);
+  const [mcpName, setMcpName] = useState('');
+  const [mcpEndpointUrl, setMcpEndpointUrl] = useState('');
+  const [mcpBearerToken, setMcpBearerToken] = useState('');
+  const [mcpConnecting, setMcpConnecting] = useState(false);
+  const [mcpError, setMcpError] = useState<string | null>(null);
 
 
   // GitHub: available repos (from token), tracked repo ids, selection, loading
@@ -543,17 +558,20 @@ export function DataSources(): JSX.Element {
       if (integration.provider === 'microsoft') {
         return false;
       }
-      if (!SUPPORTED_PROVIDERS.has(integration.provider)) {
+      if (!isSupportedProvider(integration.provider)) {
         console.warn('[DataSources] Hiding unsupported integration provider from UI:', integration.provider);
         return false;
       }
       return true;
     })
     .map((integration) => {
-      const config = INTEGRATION_CONFIG[integration.provider]!;
+      const config: IntegrationConfigEntry = INTEGRATION_CONFIG[integration.provider]
+        ?? (integration.provider.startsWith('mcp_') ? INTEGRATION_CONFIG['mcp']! : undefined)!;
+      const name: string = integration.displayName ?? config.name;
       return {
         ...integration,
         ...config,
+        name,
         connected: integration.isActive,
       };
     });
@@ -580,6 +598,7 @@ export function DataSources(): JSX.Element {
         teamConnections: [],
         teamTotal: 0,
         syncStats: null,
+        displayName: null,
         shareSyncedData: defaults.shareSyncedData,
         shareQueryAccess: defaults.shareQueryAccess,
         shareWriteAccess: defaults.shareWriteAccess,
@@ -617,6 +636,7 @@ export function DataSources(): JSX.Element {
         teamConnections: [],
         teamTotal: 0,
         syncStats: null,
+        displayName: null,
         shareSyncedData: defaults.shareSyncedData,
         shareQueryAccess: defaults.shareQueryAccess,
         shareWriteAccess: defaults.shareWriteAccess,
@@ -637,6 +657,17 @@ export function DataSources(): JSX.Element {
     setConnectingProvider(provider);
 
     try {
+      // MCP connector — needs a form for URL + optional token
+      if (provider === 'mcp') {
+        setConnectingProvider(null);
+        setMcpName('');
+        setMcpEndpointUrl('');
+        setMcpBearerToken('');
+        setMcpError(null);
+        setShowMcpForm(true);
+        return;
+      }
+
       // Built-in connectors (Open Web, Code Sandbox, Twilio) — one-click, no OAuth
       if (BUILTIN_CONNECTORS.has(provider)) {
         const res = await fetch(`${API_BASE}/auth/integrations/connect-builtin`, {
@@ -731,6 +762,49 @@ export function DataSources(): JSX.Element {
     } catch (error) {
       console.error('Failed to connect:', error);
       setConnectingProvider(null);
+    }
+  };
+
+  const handleMcpConnect = async (): Promise<void> => {
+    if (!organizationId || !userId || mcpConnecting) return;
+    const trimmedUrl: string = mcpEndpointUrl.trim();
+    const trimmedName: string = mcpName.trim();
+    if (!trimmedName) {
+      setMcpError('Name is required');
+      return;
+    }
+    if (!trimmedUrl) {
+      setMcpError('Endpoint URL is required');
+      return;
+    }
+
+    setMcpConnecting(true);
+    setMcpError(null);
+    try {
+      const res: Response = await fetch(`${API_BASE}/auth/integrations/connect-builtin`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          organization_id: organizationId,
+          provider: 'mcp',
+          user_id: userId,
+          extra_data: {
+            display_name: trimmedName,
+            endpoint_url: trimmedUrl,
+            auth_header: mcpBearerToken.trim() || null,
+          },
+        }),
+      });
+      if (!res.ok) {
+        const err: { detail?: string } = await res.json().catch(() => ({ detail: res.statusText }));
+        throw new Error(err.detail ?? 'Failed to connect');
+      }
+      setShowMcpForm(false);
+      void fetchIntegrations();
+    } catch (error) {
+      setMcpError(error instanceof Error ? error.message : 'Failed to connect');
+    } finally {
+      setMcpConnecting(false);
     }
   };
 
@@ -852,12 +926,11 @@ export function DataSources(): JSX.Element {
 
   // Open sharing modal for editing an existing integration
   const handleOpenSharingSettings = (integration: DisplayIntegration): void => {
-    const config = INTEGRATION_CONFIG[integration.provider];
     setSharingModal({
       isOpen: true,
       integrationId: integration.id,
       provider: integration.provider,
-      providerName: config?.name ?? integration.provider,
+      providerName: integration.name,
       shareSyncedData: integration.shareSyncedData,
       shareQueryAccess: integration.shareQueryAccess,
       shareWriteAccess: integration.shareWriteAccess,
@@ -1089,7 +1162,7 @@ export function DataSources(): JSX.Element {
     const isConnecting = connectingProvider === integration.provider;
     const isStartingSync =
       (state === 'connected' || state === 'org-connected') &&
-      !NO_SYNC_PROVIDERS.has(integration.provider) &&
+      !NO_SYNC_PROVIDERS.has(integration.provider) && !integration.provider.startsWith('mcp_') &&
       !integration.lastSyncAt &&
       !syncingProviders.has(integration.provider);
     const isSyncing = syncingProviders.has(integration.provider) || isStartingSync;
@@ -1115,7 +1188,7 @@ export function DataSources(): JSX.Element {
     const getButtonConfig = (): { text: string; className: string; action: () => void; disabled: boolean; hidden?: boolean } => {
       if (state === 'connected' || state === 'org-connected') {
         // Apollo, artifacts, apps, web_search, code_sandbox, twilio — no sync, on-demand only
-        if (NO_SYNC_PROVIDERS.has(integration.provider)) {
+        if (NO_SYNC_PROVIDERS.has(integration.provider) || integration.provider.startsWith('mcp_')) {
           return {
             text: '',
             className: '',
@@ -1596,6 +1669,119 @@ export function DataSources(): JSX.Element {
                 })
               )}
             </ul>
+          </div>
+        </div>
+      )}
+
+      {/* MCP Connect Form Modal */}
+      {showMcpForm && (
+        <div className="fixed inset-0 z-50 flex items-start justify-center pt-[10vh]">
+          <div
+            className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+            onClick={() => { if (!mcpConnecting) setShowMcpForm(false); }}
+          />
+          <div className="relative bg-surface-900 border border-surface-700 rounded-2xl shadow-2xl w-full max-w-md mx-4 overflow-hidden">
+            <div className="p-5 border-b border-surface-700/50">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="bg-gradient-to-br from-cyan-500 to-blue-600 p-2 rounded-lg text-white">
+                    <HiLink className="w-5 h-5" />
+                  </div>
+                  <h2 className="text-lg font-semibold text-surface-100">Connect MCP Server</h2>
+                </div>
+                <button
+                  onClick={() => { if (!mcpConnecting) setShowMcpForm(false); }}
+                  className="text-surface-400 hover:text-surface-200 transition-colors"
+                >
+                  <HiX className="w-5 h-5" />
+                </button>
+              </div>
+            </div>
+            <form
+              onSubmit={(e) => { e.preventDefault(); void handleMcpConnect(); }}
+              className="p-5 space-y-4"
+            >
+              <div>
+                <label htmlFor="mcp-name" className="block text-sm font-medium text-surface-300 mb-1.5">
+                  Name <span className="text-red-400">*</span>
+                </label>
+                <input
+                  id="mcp-name"
+                  type="text"
+                  value={mcpName}
+                  onChange={(e) => setMcpName(e.target.value)}
+                  placeholder="e.g. SimilarWeb, Stripe, Notion"
+                  required
+                  disabled={mcpConnecting}
+                  autoFocus
+                  className="w-full rounded-lg bg-surface-800 border border-surface-600 px-4 py-2.5 text-sm text-surface-100 placeholder:text-surface-500 focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500/30 disabled:opacity-50"
+                />
+              </div>
+              <div>
+                <label htmlFor="mcp-url" className="block text-sm font-medium text-surface-300 mb-1.5">
+                  Endpoint URL <span className="text-red-400">*</span>
+                </label>
+                <input
+                  id="mcp-url"
+                  type="url"
+                  value={mcpEndpointUrl}
+                  onChange={(e) => setMcpEndpointUrl(e.target.value)}
+                  placeholder="https://mcp.example.com/mcp"
+                  required
+                  disabled={mcpConnecting}
+                  className="w-full rounded-lg bg-surface-800 border border-surface-600 px-4 py-2.5 text-sm text-surface-100 placeholder:text-surface-500 focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500/30 disabled:opacity-50"
+                />
+              </div>
+              <div>
+                <label htmlFor="mcp-token" className="block text-sm font-medium text-surface-300 mb-1.5">
+                  Auth Header <span className="text-surface-500 font-normal">(optional)</span>
+                </label>
+                <input
+                  id="mcp-token"
+                  type="password"
+                  value={mcpBearerToken}
+                  onChange={(e) => setMcpBearerToken(e.target.value)}
+                  placeholder="e.g. api-key: abc123  or  Bearer token"
+                  disabled={mcpConnecting}
+                  className="w-full rounded-lg bg-surface-800 border border-surface-600 px-4 py-2.5 text-sm text-surface-100 placeholder:text-surface-500 focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500/30 disabled:opacity-50"
+                />
+              </div>
+              {mcpError && (
+                <div className="text-sm text-red-400 bg-red-400/10 border border-red-400/20 rounded-lg px-3 py-2">
+                  {mcpError}
+                </div>
+              )}
+              <div className="flex gap-3 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setShowMcpForm(false)}
+                  disabled={mcpConnecting}
+                  className="flex-1 px-4 py-2.5 text-sm font-medium text-surface-300 bg-surface-800 hover:bg-surface-700 border border-surface-600 rounded-lg transition-colors disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={mcpConnecting || !mcpName.trim() || !mcpEndpointUrl.trim()}
+                  className="flex-1 px-4 py-2.5 text-sm font-semibold text-white bg-primary-600 hover:bg-primary-500 rounded-lg transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+                >
+                  {mcpConnecting ? (
+                    <>
+                      <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                      </svg>
+                      Connecting...
+                    </>
+                  ) : (
+                    'Connect'
+                  )}
+                </button>
+              </div>
+              <p className="text-xs text-surface-500">
+                We&apos;ll validate the connection and discover available tools from the MCP server.
+              </p>
+            </form>
           </div>
         </div>
       )}

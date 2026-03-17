@@ -180,3 +180,17 @@ def discover_connectors() -> dict[str, type[BaseConnector]]:
         pass
 
     return registry
+
+
+def resolve_connector(slug: str) -> type[BaseConnector] | None:
+    """Look up a connector class by slug, with mcp_* wildcard fallback.
+
+    Dynamic MCP slugs like ``mcp_similarweb`` are stored in the integrations
+    table but don't have dedicated connector modules.  They all resolve to
+    the generic ``McpConnector`` class registered under the ``mcp`` slug.
+    """
+    registry: dict[str, type[BaseConnector]] = discover_connectors()
+    cls: type[BaseConnector] | None = registry.get(slug)
+    if cls is None and slug.startswith("mcp_"):
+        cls = registry.get("mcp")
+    return cls

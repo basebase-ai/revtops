@@ -1094,6 +1094,7 @@ export const useChatStore = create<ChatState>()(
           }>;
           team_total: number;
           sync_stats: SyncStats | null;
+          display_name: string | null;
         }
 
         const data = (await response.json()) as {
@@ -1122,6 +1123,7 @@ export const useChatStore = create<ChatState>()(
           })),
           teamTotal: i.team_total,
           syncStats: i.sync_stats,
+          displayName: i.display_name ?? null,
         }));
 
         console.log("[Store] Fetched", integrations.length, "integrations");

@@ -97,6 +97,7 @@ export interface Integration {
   teamConnections: TeamConnection[];
   teamTotal: number;
   syncStats: SyncStats | null;
+  displayName: string | null;
 }
 
 // =============================================================================
