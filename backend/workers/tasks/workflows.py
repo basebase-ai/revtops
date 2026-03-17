@@ -1234,7 +1234,7 @@ async def _action_llm(
     from config import settings
 
     prompt = params.get("prompt", "")
-    model = params.get("model", "claude-opus-4-6")
+    model = params.get("model", settings.ANTHROPIC_PRIMARY_MODEL)
 
     # Substitute context variables in prompt
     for key, value in context.items():
