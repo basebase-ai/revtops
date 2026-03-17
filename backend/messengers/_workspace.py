@@ -219,6 +219,19 @@ class WorkspaceMessenger(BaseMessenger):
 
         return await self._resolve_guest_user(organization_id)
 
+    async def enrich_message_context(
+        self,
+        message: InboundMessage,
+        organization_id: str,
+    ) -> None:
+        """Hook for subclasses to attach platform-specific context to messages.
+
+        Workspace messengers can override this to enrich ``message.messenger_context``
+        with additional fields (e.g. human-readable channel names) before the
+        orchestrator is invoked.
+        """
+        return
+
     def _extract_email_from_profile(self, profile: dict[str, Any]) -> str | None:
         """Extract email from a platform user profile. Override per platform."""
         return None
@@ -445,6 +458,49 @@ class WorkspaceMessenger(BaseMessenger):
             )
             return conversation
 
+    async def stop_listening(self, message: InboundMessage) -> bool:
+        """Stop responding in this channel/thread by removing its conversation row.
+
+        For workspace messengers, "listening" in threads is gated by
+        :meth:`_has_existing_conversation`. Deleting the matching Conversation
+        makes subsequent thread replies get ignored until the bot is mentioned again.
+        """
+        ctx: dict[str, Any] = message.messenger_context
+        workspace_id: str | None = ctx.get("workspace_id")
+        channel_id: str = ctx.get("channel_id", "")
+        thread_id: str | None = ctx.get("thread_id") or ctx.get("thread_ts")
+
+        if not workspace_id or not channel_id:
+            return False
+
+        org_id: str | None = await self._resolve_org_from_workspace(workspace_id)
+        if not org_id:
+            return False
+
+        source_channel_id: str = f"{channel_id}:{thread_id}" if thread_id else channel_id
+
+        async with get_session(organization_id=org_id) as session:
+            result = await session.execute(
+                select(Conversation)
+                .where(Conversation.organization_id == UUID(org_id))
+                .where(Conversation.source == self.meta.slug)
+                .where(Conversation.source_channel_id == source_channel_id)
+            )
+            conversations: list[Conversation] = list(result.scalars().all())
+            if not conversations:
+                return False
+            for conv in conversations:
+                await session.delete(conv)
+            await session.commit()
+
+        logger.info(
+            "[%s] Stopped listening for source_channel_id=%s org=%s",
+            self.meta.slug,
+            source_channel_id,
+            org_id,
+        )
+        return True
+
     # ------------------------------------------------------------------
     # Attachments
     # ------------------------------------------------------------------
@@ -619,6 +675,10 @@ class WorkspaceMessenger(BaseMessenger):
 
         organization_id, organization_name = org_result
         message.messenger_context["organization_id"] = organization_id
+
+        # Allow platform-specific messengers to enrich the message context
+        # (e.g. add human-readable channel names) before invoking the orchestrator.
+        await self.enrich_message_context(message, organization_id=organization_id)
 
         if not await can_use_credits(organization_id):
             await self.send_response(message, OutboundResponse(text=self.no_credits_message()))

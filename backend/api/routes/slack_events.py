@@ -32,6 +32,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from config import get_redis_connection_kwargs, settings
+from connectors.slack import SlackConnector
 from messengers.base import InboundMessage, MessageType
 from messengers.slack import SlackMessenger
 
@@ -296,6 +297,42 @@ async def _process_event_callback_impl(payload: dict[str, Any]) -> None:
     inner_type: str | None = event.get("type")
     messenger = SlackMessenger()
 
+    if inner_type == "reaction_added":
+        reaction: str = str(event.get("reaction") or "").strip().lower()
+        if reaction not in {"x", "heavy_multiplication_x"}:
+            return
+        item: dict[str, Any] = event.get("item") or {}
+        if item.get("type") != "message":
+            return
+        channel_id: str = item.get("channel", "")
+        message_ts: str = item.get("ts", "")
+        if not channel_id or not message_ts:
+            return
+
+        thread_id: str | None = await _resolve_thread_id_for_reaction(
+            team_id=team_id,
+            channel_id=channel_id,
+            message_ts=message_ts,
+        )
+        if not thread_id:
+            return
+        stop_msg = InboundMessage(
+            external_user_id=str(event.get("user") or ""),
+            text="stop",
+            message_type=MessageType.THREAD_REPLY,
+            raw_attachments=[],
+            messenger_context={
+                "workspace_id": team_id,
+                "channel_id": channel_id,
+                "thread_id": thread_id,
+                "thread_ts": thread_id,
+                "event_ts": message_ts,
+            },
+            message_id=message_ts,
+        )
+        await messenger.stop_listening(stop_msg)
+        return
+
     if inner_type == "message":
         channel_type: str | None = event.get("channel_type")
         if event.get("bot_id") or event.get("subtype") == "bot_message":
@@ -326,6 +363,10 @@ async def _process_event_callback_impl(payload: dict[str, Any]) -> None:
                 "[slack_events] Processing direct message type=%s from %s in %s thread=%s: %s (files=%d)",
                 channel_type, user_id, channel_id, thread_ts, text[:50], len(files),
             )
+            if _is_stop_message(text):
+                message = _build_inbound_message(event, team_id, MessageType.DIRECT)
+                await messenger.stop_listening(message)
+                return
             message: InboundMessage = _build_inbound_message(
                 event, team_id, MessageType.DIRECT,
             )
@@ -351,6 +392,12 @@ async def _process_event_callback_impl(payload: dict[str, Any]) -> None:
                     return
 
                 normalized_text: str = _strip_bot_mentions(text, bot_user_ids)
+                if _is_stop_message(normalized_text):
+                    message = _build_inbound_message(
+                        event, team_id, MessageType.MENTION, text_override=normalized_text,
+                    )
+                    await messenger.stop_listening(message)
+                    return
                 logger.info(
                     "[slack_events] Routing in-thread bot mention to mention handler user=%s channel=%s thread=%s",
                     user_id, channel_id, thread_ts,
@@ -379,6 +426,9 @@ async def _process_event_callback_impl(payload: dict[str, Any]) -> None:
                 message = _build_inbound_message(
                     event, team_id, MessageType.THREAD_REPLY,
                 )
+                if _is_stop_message(message.text):
+                    await messenger.stop_listening(message)
+                    return
                 await messenger.process_inbound(message)
             return
 
@@ -409,6 +459,9 @@ async def _process_event_callback_impl(payload: dict[str, Any]) -> None:
                 text_override=text,
                 thread_ts_override=lock_thread_ts,
             )
+            if _is_stop_message(message.text):
+                await messenger.stop_listening(message)
+                return
             await messenger.process_inbound(message)
 
 
@@ -494,6 +547,34 @@ def _strip_bot_mentions(text: str, bot_user_ids: set[str]) -> str:
     for bot_user_id in bot_user_ids:
         normalized = re.sub(rf"<@{re.escape(bot_user_id)}>\s*", "", normalized)
     return normalized.strip()
+
+
+_STOP_RE: re.Pattern[str] = re.compile(r"(^|\b)stop(\b|$)", re.IGNORECASE)
+
+
+def _is_stop_message(text: str) -> bool:
+    """Return True when a message should stop the bot from listening."""
+    if not text:
+        return False
+    return _STOP_RE.search(text.strip()) is not None
+
+
+async def _resolve_thread_id_for_reaction(
+    *,
+    team_id: str,
+    channel_id: str,
+    message_ts: str,
+) -> str | None:
+    """Map a reaction's message ts to a thread identity."""
+    messenger = SlackMessenger()
+    org_id: str | None = await messenger._resolve_org_from_workspace(team_id)  # noqa: SLF001
+    if not org_id:
+        return None
+    connector = SlackConnector(organization_id=org_id, team_id=team_id)
+    msg = await connector.get_message_by_ts(channel_id, message_ts)
+    if not msg:
+        return None
+    return msg.get("thread_ts") or msg.get("ts")
 
 
 @router.post("/events", response_model=None)

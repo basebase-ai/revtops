@@ -407,6 +407,38 @@ Send a message to a Slack channel, DM, or user.
 
         return messages
 
+    async def get_message_by_ts(self, channel_id: str, ts: str) -> dict[str, Any] | None:
+        """Fetch a single message by timestamp via conversations.history.
+
+        Used for mapping reaction events back to a thread. Slack message objects
+        include ``thread_ts`` when the message is a thread reply; otherwise the
+        message's own ``ts`` is the thread root.
+        """
+        if not channel_id or not ts:
+            return None
+        try:
+            data = await self._make_request(
+                "GET",
+                "conversations.history",
+                params={
+                    "channel": channel_id,
+                    "latest": ts,
+                    "oldest": ts,
+                    "inclusive": True,
+                    "limit": 1,
+                },
+            )
+            msgs: list[dict[str, Any]] = data.get("messages", []) or []
+            return msgs[0] if msgs else None
+        except Exception as exc:
+            logger.warning(
+                "[SlackConnector] Failed to fetch message by ts channel=%s ts=%s: %s",
+                channel_id,
+                ts,
+                exc,
+            )
+            return None
+
     async def get_users(self) -> list[dict[str, Any]]:
         """Get list of workspace users."""
         users: list[dict[str, Any]] = []
