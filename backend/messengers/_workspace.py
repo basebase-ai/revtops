@@ -68,6 +68,11 @@ _WORKSPACE_ORG_CACHE_TTL_SECONDS: int = 300
 _workspace_org_cache: dict[tuple[str, str], tuple[str | None, float]] = {}
 _workspace_org_cache_lock: asyncio.Lock = asyncio.Lock()
 
+_CHANNEL_NAME_CACHE_TTL_SECONDS: int = 3600  # channel names change rarely
+_CHANNEL_NAME_CACHE_MAX_ENTRIES: int = 5000
+_channel_name_cache: dict[tuple[str, str], tuple[str | None, float]] = {}
+_channel_name_cache_lock: asyncio.Lock = asyncio.Lock()
+
 
 
 # ---------------------------------------------------------------------------
@@ -143,6 +148,26 @@ class WorkspaceMessenger(BaseMessenger):
     ) -> tuple[bytes, str, str] | None:
         """Download a file. Returns ``(data, filename, content_type)`` or None."""
         return None
+
+    async def fetch_channel_name(
+        self,
+        workspace_id: str,
+        channel_id: str,
+    ) -> str | None:
+        """Fetch the human-readable channel name from the platform API. Override per platform."""
+        return None
+
+    async def enrich_message_context(
+        self,
+        message: InboundMessage,
+        organization_id: str,
+    ) -> None:
+        """Hook for subclasses to attach platform-specific context to messages.
+
+        Called in ``process_inbound`` before the orchestrator is invoked, so
+        subclasses can enrich ``message.messenger_context`` with additional
+        fields (e.g. human-readable channel names).
+        """
 
     async def add_typing_indicator(self, message: InboundMessage) -> None:
         """Show a typing/processing indicator (e.g. reaction). No-op by default."""
@@ -620,6 +645,8 @@ class WorkspaceMessenger(BaseMessenger):
         organization_id, organization_name = org_result
         message.messenger_context["organization_id"] = organization_id
 
+        await self.enrich_message_context(message, organization_id)
+
         if not await can_use_credits(organization_id):
             await self.send_response(message, OutboundResponse(text=self.no_credits_message()))
             await self.remove_typing_indicator(message)
@@ -707,10 +734,17 @@ class WorkspaceMessenger(BaseMessenger):
         """Save a non-DM channel message as an Activity row for analytics."""
         ctx: dict[str, Any] = message.messenger_context
         channel_id: str = ctx.get("channel_id", "")
+        workspace_id: str | None = ctx.get("workspace_id")
         ts: str = message.message_id
         thread_id: str | None = ctx.get("thread_id") or ctx.get("thread_ts")
 
         source_id: str = f"{channel_id}:{ts}"
+
+        # Use channel name from enriched context, fall back to resolving it
+        channel_name: str | None = ctx.get("channel_name")
+        if not channel_name and workspace_id and channel_id:
+            channel_name = await self.resolve_channel_name(workspace_id, channel_id)
+        subject: str = f"#{channel_name}" if channel_name else f"#{channel_id}"
 
         activity_date: datetime | None = None
         try:
@@ -720,21 +754,25 @@ class WorkspaceMessenger(BaseMessenger):
 
         try:
             async with get_session(organization_id=organization_id) as session:
+                custom_fields: dict[str, Any] = {
+                    "channel_id": channel_id,
+                    "user_id": message.external_user_id,
+                    "sender_slack_id": message.external_user_id,
+                    "thread_ts": thread_id,
+                }
+                if channel_name:
+                    custom_fields["channel_name"] = channel_name
+
                 stmt = pg_insert(Activity).values(
                     id=_uuid.uuid4(),
                     organization_id=UUID(organization_id),
                     source_system=self.meta.slug,
                     source_id=source_id,
                     type=f"{self.meta.slug}_message",
-                    subject=f"#{channel_id}",
+                    subject=subject,
                     description=message.text[:1000] if message.text else "",
                     activity_date=activity_date,
-                    custom_fields={
-                        "channel_id": channel_id,
-                        "user_id": message.external_user_id,
-                        "sender_slack_id": message.external_user_id,
-                        "thread_ts": thread_id,
-                    },
+                    custom_fields=custom_fields,
                     synced_at=datetime.utcnow(),
                 ).on_conflict_do_nothing(
                     index_elements=["organization_id", "source_system", "source_id"],
@@ -780,6 +818,37 @@ class WorkspaceMessenger(BaseMessenger):
             _user_info_cache[cache_key] = (profile, now + ttl)
 
         return profile
+
+    # ------------------------------------------------------------------
+    # Channel name caching
+    # ------------------------------------------------------------------
+
+    async def resolve_channel_name(
+        self,
+        workspace_id: str,
+        channel_id: str,
+    ) -> str | None:
+        """Get channel name with in-memory caching. Falls back to platform API."""
+        cache_key: tuple[str, str] = (workspace_id, channel_id)
+        now: float = time.monotonic()
+
+        async with _channel_name_cache_lock:
+            cached = _channel_name_cache.get(cache_key)
+            if cached and cached[1] > now:
+                return cached[0]
+            _channel_name_cache.pop(cache_key, None)
+
+        name: str | None = await self.fetch_channel_name(workspace_id, channel_id)
+
+        ttl: int = _CHANNEL_NAME_CACHE_TTL_SECONDS if name else 120
+        async with _channel_name_cache_lock:
+            if len(_channel_name_cache) >= _CHANNEL_NAME_CACHE_MAX_ENTRIES:
+                expired = [k for k, (_, exp) in _channel_name_cache.items() if exp <= now]
+                for k in expired:
+                    del _channel_name_cache[k]
+            _channel_name_cache[cache_key] = (name, now + ttl)
+
+        return name
 
     # ------------------------------------------------------------------
     # Mapping upsert

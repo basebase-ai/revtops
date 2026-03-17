@@ -361,6 +361,20 @@ Send a message to a Slack channel, DM, or user.
 
         return channels
 
+    async def get_channel_info(self, channel_id: str) -> dict[str, Any] | None:
+        """Fetch channel metadata via ``conversations.info``. Returns the channel dict or None."""
+        try:
+            data = await self._make_request(
+                "GET", "conversations.info", params={"channel": channel_id}
+            )
+            return data.get("channel")
+        except Exception as exc:
+            logger.debug(
+                "[Slack] conversations.info failed for channel=%s: %s",
+                channel_id, exc,
+            )
+            return None
+
     async def join_channel(self, channel_id: str) -> bool:
         """Join a public channel. Returns True if joined or already a member. Requires channels:join scope."""
         try:
