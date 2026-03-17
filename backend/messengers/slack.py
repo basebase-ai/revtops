@@ -46,6 +46,25 @@ class SlackMessenger(WorkspaceMessenger):
             )
             return None
 
+    async def enrich_message_context(
+        self,
+        message: InboundMessage,
+        organization_id: str,
+    ) -> None:
+        """Attach human-readable channel name to messenger context."""
+        ctx = message.messenger_context
+        workspace_id: str | None = ctx.get("workspace_id")
+        channel_id: str = ctx.get("channel_id", "")
+
+        if not workspace_id or not channel_id:
+            return
+
+        channel_name: str | None = await self.resolve_channel_name(
+            workspace_id, channel_id,
+        )
+        if channel_name:
+            ctx.setdefault("channel_name", channel_name)
+
     async def post_message(
         self,
         channel_id: str,
@@ -148,6 +167,21 @@ class SlackMessenger(WorkspaceMessenger):
     # ------------------------------------------------------------------
     # Profile helpers
     # ------------------------------------------------------------------
+
+    async def fetch_channel_name(
+        self,
+        workspace_id: str,
+        channel_id: str,
+    ) -> str | None:
+        """Fetch channel name from Slack via ``conversations.info``."""
+        try:
+            connector: SlackConnector = await self._get_connector(workspace_id)
+            info: dict[str, Any] | None = await connector.get_channel_info(channel_id)
+            if info:
+                return info.get("name") or info.get("name_normalized")
+        except Exception as exc:
+            logger.debug("[slack] Failed to fetch channel name for %s: %s", channel_id, exc)
+        return None
 
     def _extract_email_from_profile(self, profile: dict[str, Any]) -> str | None:
         p: dict[str, Any] = profile.get("profile", profile)
