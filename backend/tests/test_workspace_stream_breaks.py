@@ -33,3 +33,13 @@ def test_find_safe_stream_break_skips_numbered_list_boundaries() -> None:
 
 def test_find_safe_stream_break_never_uses_space_fallback_with_limit() -> None:
     assert find_safe_break("no sentence break here", strategy="best", limit=10) == 0
+
+
+def test_find_safe_stream_break_skips_common_title_abbreviations() -> None:
+    text = "I met Dr. Smith yesterday. We talked"
+    assert find_safe_break(text, strategy="quickest_safe") == len("I met Dr. Smith yesterday. ")
+
+
+def test_find_safe_stream_break_skips_saint_abbreviation() -> None:
+    text = "They visited St. Louis last week. It was great"
+    assert find_safe_break(text, strategy="quickest_safe") == len("They visited St. Louis last week. ")

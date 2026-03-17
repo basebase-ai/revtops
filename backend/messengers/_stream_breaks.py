@@ -7,6 +7,15 @@ StreamBreakStrategy = Literal["best", "quickest_safe"]
 
 _SENTENCE_BREAK_RE: re.Pattern[str] = re.compile(r"[.!?](?:\s|$)")
 _FENCE_RE: re.Pattern[str] = re.compile(r"^```", re.MULTILINE)
+_TITLE_ABBREVIATIONS: set[str] = {
+    "mr",
+    "mrs",
+    "ms",
+    "dr",
+    "prof",
+    "st",
+    "saint",
+}
 
 
 def _build_fence_ranges(text: str) -> list[tuple[int, int]]:
@@ -42,6 +51,11 @@ def _is_valid_sentence_break(text: str, punct_idx: int) -> bool:
         return False
     if punct_idx >= 1 and text[punct_idx - 1:punct_idx] == "~":
         return False
+
+    if text[punct_idx] == ".":
+        token_match: re.Match[str] | None = re.search(r"([A-Za-z]+)$", text[:punct_idx])
+        if token_match and token_match.group(1).lower() in _TITLE_ABBREVIATIONS:
+            return False
 
     line_start: int = text.rfind("\n", 0, punct_idx) + 1
     line_prefix: str = text[line_start:punct_idx].strip()
