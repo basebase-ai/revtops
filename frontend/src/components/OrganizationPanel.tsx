@@ -54,9 +54,17 @@ interface UserUsage {
   total_credits_used: number;
 }
 
+interface ConversationUsage {
+  conversation_id: string;
+  title: string | null;
+  total_credits_used: number;
+  last_used_at: string | null;
+}
+
 interface CreditDetails {
   transactions: CreditTransaction[];
   usage_by_user: UserUsage[];
+  usage_by_conversation: ConversationUsage[];
   period_start: string | null;
   period_end: string | null;
   starting_balance: number;
@@ -1346,6 +1354,7 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
       {/* Credit Details Modal */}
       {showCreditDetails && (
         <CreditDetailsModal
+          organizationHandle={organization.handle ?? null}
           details={creditDetails}
           loading={creditDetailsLoading}
           onClose={() => setShowCreditDetails(false)}
@@ -1357,12 +1366,13 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
 
 
 interface CreditDetailsModalProps {
+  organizationHandle: string | null;
   details: CreditDetails | null;
   loading: boolean;
   onClose: () => void;
 }
 
-function CreditDetailsModal({ details, loading, onClose }: CreditDetailsModalProps): JSX.Element {
+function CreditDetailsModal({ organizationHandle, details, loading, onClose }: CreditDetailsModalProps): JSX.Element {
   const [PlotComponent, setPlotComponent] = useState<typeof import('react-plotly.js').default | null>(null);
   const [chartRange, setChartRange] = useState<[string, string] | null>(null);
 
@@ -1427,6 +1437,16 @@ function CreditDetailsModal({ details, loading, onClose }: CreditDetailsModalPro
     
     return { labels, values, emails };
   }, [details]);
+
+  const conversationUsage = useMemo(() => {
+    if (!details?.usage_by_conversation?.length) return [];
+    return details.usage_by_conversation;
+  }, [details]);
+
+  const navigateToConversation = (conversationId: string): void => {
+    const base = organizationHandle ? `/${organizationHandle}` : '';
+    window.location.href = `${base}/chat/${conversationId}`;
+  };
 
   return (
     <div 
@@ -1583,6 +1603,55 @@ function CreditDetailsModal({ details, loading, onClose }: CreditDetailsModalPro
                 ) : (
                   <div className="bg-surface-800/50 rounded-lg p-8 text-center text-surface-400">
                     No usage data for this period yet
+                  </div>
+                )}
+              </div>
+
+              {/* Usage by Conversation (per chat) */}
+              <div>
+                <h3 className="text-sm font-medium text-surface-200 mb-4">Usage by Chat</h3>
+                {conversationUsage.length > 0 ? (
+                  <div className="space-y-2">
+                    {conversationUsage.map((conv) => (
+                      <button
+                        key={conv.conversation_id}
+                        type="button"
+                        onClick={() => navigateToConversation(conv.conversation_id)}
+                        className="w-full flex items-center justify-between gap-3 px-3 py-2 rounded-lg bg-surface-800/50 hover:bg-surface-700/70 border border-surface-700 hover:border-primary-500/60 transition-colors text-left"
+                      >
+                        <div className="min-w-0">
+                          <p className="text-sm text-surface-100 truncate">
+                            {conv.title || 'Untitled chat'}
+                          </p>
+                          {conv.last_used_at && (
+                            <p className="text-xs text-surface-500 mt-0.5">
+                              Last used{' '}
+                              {new Date(conv.last_used_at).toLocaleString(undefined, {
+                                month: 'short',
+                                day: 'numeric',
+                                hour: '2-digit',
+                                minute: '2-digit',
+                              })}
+                            </p>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-3 flex-shrink-0">
+                          <span className="text-sm font-medium text-surface-50 whitespace-nowrap">
+                            {conv.total_credits_used} credits
+                          </span>
+                          <span className="inline-flex items-center gap-1 text-xs text-primary-300">
+                            View chat
+                            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                            </svg>
+                          </span>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="bg-surface-800/50 rounded-lg p-6 text-center text-surface-400">
+                    No per-chat credit usage recorded for this period yet
                   </div>
                 )}
               </div>

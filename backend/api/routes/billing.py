@@ -132,9 +132,17 @@ class UserUsageItem(BaseModel):
     total_credits_used: int
 
 
+class ConversationUsageItem(BaseModel):
+    conversation_id: str
+    title: Optional[str] = None
+    total_credits_used: int
+    last_used_at: Optional[str] = None
+
+
 class CreditDetailsResponse(BaseModel):
     transactions: list[CreditTransactionItem]
     usage_by_user: list[UserUsageItem]
+    usage_by_conversation: list[ConversationUsageItem] = []
     period_start: Optional[str] = None
     period_end: Optional[str] = None
     starting_balance: int = 0
@@ -466,6 +474,8 @@ async def get_credit_details(
         from sqlalchemy import select, func
         from models.credit_transaction import CreditTransaction
         from models.user import User
+        from models.conversation import Conversation
+        from models.database import get_session
         
         # Get org with period info
         result = await session.execute(
@@ -542,19 +552,94 @@ async def get_credit_details(
         
         usage_by_user: list[UserUsageItem] = []
         for user_id, email, name, total_used in usage_rows:
-            usage_by_user.append(UserUsageItem(
-                user_id=str(user_id) if user_id else "unknown",
-                user_email=email or "Unknown user",
-                user_name=name,
-                total_credits_used=int(total_used) if total_used else 0,
-            ))
+            usage_by_user.append(
+                UserUsageItem(
+                    user_id=str(user_id) if user_id else "unknown",
+                    user_email=email or "Unknown user",
+                    user_name=name,
+                    total_credits_used=int(total_used) if total_used else 0,
+                )
+            )
+
+        # Aggregate usage by conversation (per-chat credit consumption)
+        conv_usage_rows: list[tuple[str, int, datetime]] = []
+        if rows:
+            conv_usage_query = (
+                select(
+                    CreditTransaction.reference_id,
+                    func.sum(func.abs(CreditTransaction.amount)).label("total_used"),
+                    func.max(CreditTransaction.created_at).label("last_used_at"),
+                )
+                .where(CreditTransaction.organization_id == org_id)
+                .where(CreditTransaction.reference_type == "conversation")
+                .where(CreditTransaction.amount < 0)
+            )
+            if effective_period_start:
+                conv_usage_query = conv_usage_query.where(
+                    CreditTransaction.created_at >= effective_period_start
+                )
+            conv_usage_result = await session.execute(conv_usage_query.group_by(CreditTransaction.reference_id))
+            conv_usage_rows = conv_usage_result.all()
+
+        # Resolve conversation titles from the org-scoped database
+        usage_by_conversation: list[ConversationUsageItem] = []
+        if conv_usage_rows:
+            # Filter out rows without a reference_id
+            conv_id_strs = [
+                ref_id for (ref_id, _total_used, _last_used_at) in conv_usage_rows if ref_id
+            ]
+
+            id_to_title: dict[str, Optional[str]] = {}
+            if conv_id_strs:
+                # Best-effort: some IDs may be invalid UUIDs; skip those
+                valid_conv_ids: list[UUID] = []
+                for cid in conv_id_strs:
+                    try:
+                        valid_conv_ids.append(UUID(cid))
+                    except Exception:
+                        continue
+
+                if valid_conv_ids:
+                    async with get_session(organization_id=str(org_id)) as org_session:
+                        conv_result = await org_session.execute(
+                            select(Conversation.id, Conversation.title).where(
+                                Conversation.id.in_(valid_conv_ids)
+                            )
+                        )
+                        for conv_id, title in conv_result.all():
+                            id_to_title[str(conv_id)] = title
+
+            for ref_id, total_used, last_used_at in conv_usage_rows:
+                if not ref_id:
+                    continue
+                title = id_to_title.get(ref_id)
+                usage_by_conversation.append(
+                    ConversationUsageItem(
+                        conversation_id=ref_id,
+                        title=title,
+                        total_credits_used=int(total_used) if total_used else 0,
+                        last_used_at=last_used_at.isoformat().replace("+00:00", "Z")
+                        if last_used_at
+                        else None,
+                    )
+                )
+
+            # Sort by total credits used (descending)
+            usage_by_conversation.sort(
+                key=lambda item: item.total_credits_used, reverse=True
+            )
         
         # Return effective period (None if showing all-time)
         return CreditDetailsResponse(
             transactions=transactions,
             usage_by_user=usage_by_user,
-            period_start=effective_period_start.isoformat().replace("+00:00", "Z") if effective_period_start else None,
-            period_end=period_end.isoformat().replace("+00:00", "Z") if period_end and effective_period_start else None,
+            usage_by_conversation=usage_by_conversation,
+            period_start=effective_period_start.isoformat().replace("+00:00", "Z")
+            if effective_period_start
+            else None,
+            period_end=period_end.isoformat().replace("+00:00", "Z")
+            if period_end and effective_period_start
+            else None,
             starting_balance=starting_balance,
         )
 
