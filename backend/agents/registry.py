@@ -97,12 +97,12 @@ register_tool(
 Use this for any data analysis: filtering, joins, aggregations, date comparisons, etc.
 The query is automatically scoped to the user's organization for multi-tenant tables.
 
-Available tables:
-- meetings: Canonical meeting entities - deduplicated across all sources
+Available tables (use these exact column names):
+- meetings: id, title, scheduled_start, scheduled_end, summary, participants (JSONB), status, duration_minutes, organizer_email, account_id. Use scheduled_start/scheduled_end for dates (not start_time/end_time). Canonical meeting entities - deduplicated across all sources.
 - deals: Sales opportunities (name, amount, stage, close_date, owner_id, account_id)
 - accounts: Companies/customers (name, domain, industry, employee_count)
 - contacts: People at accounts (name, email, title, phone, account_id)
-- activities: Raw activity records - query by TYPE not source. Has a vector embedding column for semantic search (see below)
+- activities: id, type, subject, description, activity_date, embedding (vector). Raw activity records - query by TYPE not source. Use semantic_embed() for semantic search (see below). Do not query information_schema - only the tables listed here are allowed.
 - pipelines: Sales pipelines (name, display_order, is_default)
 - pipeline_stages: Stages in pipelines (pipeline_id, name, probability)
 - goals: Revenue goals and quotas synced from CRM (name, target_amount, start_date, end_date, goal_type, owner_id, pipeline_id, source_system, source_id, custom_fields JSONB). Compare target_amount against deal totals to measure progress.
