@@ -73,6 +73,7 @@ class SlackMessenger(WorkspaceMessenger):
         *,
         workspace_id: str | None = None,
         organization_id: str | None = None,
+        blocks: list[dict[str, Any]] | None = None,
     ) -> str | None:
         """Post a message to Slack via ``chat.postMessage``."""
         connector: SlackConnector = await self._get_connector(
@@ -82,6 +83,7 @@ class SlackMessenger(WorkspaceMessenger):
             channel=channel_id,
             text=text,
             thread_ts=thread_id,
+            blocks=blocks,
         )
         return result.get("ts")
 
@@ -128,7 +130,30 @@ class SlackMessenger(WorkspaceMessenger):
 
     def format_text(self, markdown: str) -> str:
         """Convert Markdown to Slack mrkdwn format."""
-        return markdown_to_mrkdwn(markdown)
+        text, _ = markdown_to_mrkdwn(markdown)
+        return text
+
+    async def format_and_post(
+        self,
+        channel_id: str,
+        thread_id: str | None,
+        text_to_send: str,
+        *,
+        workspace_id: str | None = None,
+        organization_id: str | None = None,
+    ) -> None:
+        """Format with markdown_to_mrkdwn and post; use blocks when table is present."""
+        text: str
+        blocks: list[dict[str, Any]] | None
+        text, blocks = markdown_to_mrkdwn(text_to_send)
+        await self.post_message(
+            channel_id=channel_id,
+            text=text,
+            thread_id=thread_id,
+            workspace_id=workspace_id,
+            organization_id=organization_id,
+            blocks=blocks,
+        )
 
     # ------------------------------------------------------------------
     # Typing indicators (reactions)

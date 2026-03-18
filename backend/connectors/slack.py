@@ -34,25 +34,25 @@ def _clean_table_lines(raw: str) -> str:
     return '\n'.join(filtered)
 
 
-def markdown_to_mrkdwn(text: str) -> str:
+def markdown_to_mrkdwn(text: str) -> tuple[str, Optional[list[dict[str, Any]]]]:
     """Convert standard Markdown to Slack mrkdwn format.
 
     Handles bold, italic, links, headers, and tables.  Existing fenced code
-    blocks are extracted first so their contents are never double-processed.
+    blocks are extracted first. Tables may be returned as Block Kit blocks.
+    Returns (mrkdwn_text, blocks_or_none).
     """
-
     from connectors.slack_tables import format_markdown_table_inline
 
-    # -- Step 1: extract fenced code blocks into placeholders ---------------
-    code_blocks: list[str] = []
+    # Placeholder content: plain string, or (blocks|None, fallback_text) for tables
+    code_blocks: list[str | tuple[Optional[list[dict[str, Any]]], str]] = []
     _FENCE_RE: re.Pattern[str] = re.compile(r'```\w*\n(.*?)```', re.DOTALL)
 
     def _extract_fence(match: re.Match[str]) -> str:
         content: str = match.group(1)
         idx: int = len(code_blocks)
         if '|' in content:
-            formatted: str = format_markdown_table_inline(content)
-            code_blocks.append(formatted)
+            table_blocks, fallback = format_markdown_table_inline(content)
+            code_blocks.append((table_blocks, fallback))
         else:
             code_blocks.append('```\n' + content.strip() + '\n```')
         return f'\x00CB{idx}\x00'
@@ -67,7 +67,10 @@ def markdown_to_mrkdwn(text: str) -> str:
 
     def _wrap_table(match: re.Match[str]) -> str:
         cleaned: str = _clean_table_lines(match.group(1))
-        return format_markdown_table_inline(cleaned)
+        table_blocks, fallback = format_markdown_table_inline(cleaned)
+        idx = len(code_blocks)
+        code_blocks.append((table_blocks, fallback))
+        return f'\x00CB{idx}\x00'
 
     text = _TABLE_RE.sub(_wrap_table, text)
 
@@ -76,11 +79,19 @@ def markdown_to_mrkdwn(text: str) -> str:
     text = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'<\2|\1>', text)
     text = re.sub(r'^#{1,6}\s+(.+)$', r'*\1*', text, flags=re.MULTILINE)
 
-    # -- Step 4: restore code blocks ----------------------------------------
+    # -- Step 4: restore placeholders and collect first table blocks ---------
+    out_blocks: Optional[list[dict[str, Any]]] = None
     for i, block in enumerate(code_blocks):
-        text = text.replace(f'\x00CB{i}\x00', block)
+        if isinstance(block, tuple):
+            table_blocks, fallback = block
+            text = text.replace(f'\x00CB{i}\x00', fallback)
+            if out_blocks is None and table_blocks is not None:
+                out_blocks = table_blocks
+        else:
+            assert isinstance(block, str)
+            text = text.replace(f'\x00CB{i}\x00', block)
 
-    return text
+    return (text, out_blocks)
 
 from api.websockets import broadcast_sync_progress
 from connectors.base import BaseConnector
@@ -1046,9 +1057,12 @@ Send a message to a Slack channel, DM, or user.
         """
         channel = await self._resolve_channel_for_post(channel)
 
-        # Auto-convert any Markdown to Slack mrkdwn format
-        formatted_text = markdown_to_mrkdwn(text)
-        
+        # When blocks are provided, text is already mrkdwn from the caller. Otherwise convert.
+        if blocks is not None:
+            formatted_text: str = text
+        else:
+            formatted_text, _ = markdown_to_mrkdwn(text)
+
         payload: dict[str, Any] = {
             "channel": channel,
             "text": formatted_text,

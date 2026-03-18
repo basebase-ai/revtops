@@ -1,9 +1,6 @@
 """
-Slack table formatting utilities for markdown_to_mrkdwn.
-
-Parses markdown pipe tables and reformats them for Slack's narrow
-monospace display.  The main entry point is ``format_markdown_table_inline``
-which is called from ``markdown_to_mrkdwn`` in ``connectors/slack.py``.
+Slack table formatting: parse markdown pipe tables and convert to Block Kit
+or fallback text for chat.postMessage.
 """
 
 import re
@@ -11,7 +8,16 @@ from typing import Any
 
 _SEPARATOR_RE: re.Pattern[str] = re.compile(r"^\|?[\s\-:|]+\|?$")
 
-_SLACK_CODE_LINE_MAX: int = 44
+# Slack: max 10 fields per section, 50 blocks per message. Use Block Kit for small tables.
+_BLOCK_KIT_MAX_ROWS: int = 15
+_FIELDS_PER_SECTION_MAX: int = 10
+
+
+def _cell_str(value: Any) -> str:
+    if value is None:
+        return ""
+    s: str = str(value).strip()
+    return s if s else "—"
 
 
 def _split_pipe_cells(line: str) -> list[str]:
@@ -53,61 +59,74 @@ def parse_markdown_table(md_table: str) -> tuple[list[str], list[dict[str, Any]]
     return (columns, rows)
 
 
-def _fits_in_codeblock(columns: list[str], rows: list[dict[str, Any]]) -> bool:
-    """Check whether an aligned pipe table would fit within Slack's line width."""
-    all_rows: list[list[str]] = [[str(c) for c in columns]]
-    for row in rows:
-        all_rows.append([str(row.get(col, "")) for col in columns])
-    col_widths: list[int] = [
-        max(len(all_rows[r][c]) for r in range(len(all_rows)))
-        for c in range(len(columns))
+def format_table_as_blocks(
+    columns: list[str],
+    rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Build Block Kit blocks for a table: header section, divider, one section per row.
+
+    Slack section.fields are capped at 10; total blocks capped at 50.
+    Caller should limit rows before calling (e.g. _BLOCK_KIT_MAX_ROWS).
+    """
+    num_cols: int = len(columns)
+    if num_cols > _FIELDS_PER_SECTION_MAX:
+        num_cols = _FIELDS_PER_SECTION_MAX
+    cols_used: list[str] = columns[:num_cols]
+
+    blocks: list[dict[str, Any]] = []
+
+    # Header row
+    header_fields: list[dict[str, str]] = [
+        {"type": "mrkdwn", "text": f"*{col}*"} for col in cols_used
     ]
-    line_len: int = sum(col_widths) + 3 * (len(columns) - 1)
-    return line_len <= _SLACK_CODE_LINE_MAX
+    blocks.append({"type": "section", "fields": header_fields})
+    blocks.append({"type": "divider"})
+
+    for row in rows:
+        row_fields: list[dict[str, str]] = [
+            {"type": "mrkdwn", "text": _cell_str(row.get(col))} for col in cols_used
+        ]
+        blocks.append({"type": "section", "fields": row_fields})
+
+    return blocks
 
 
-def _format_aligned_table(columns: list[str], rows: list[dict[str, Any]]) -> str:
-    """Aligned pipe table in a code block (only when it fits)."""
+def _format_as_codeblock_fallback(columns: list[str], rows: list[dict[str, Any]]) -> str:
+    """Fallback: aligned pipe table in a code block when Block Kit is not used."""
     all_cells: list[list[str]] = [[str(c) for c in columns]]
     for row in rows:
-        all_cells.append([str(row.get(col, "")) for col in columns])
+        all_cells.append([_cell_str(row.get(col)) for col in columns])
     col_widths: list[int] = [
         max(len(all_cells[r][c]) for r in range(len(all_cells)))
         for c in range(len(columns))
     ]
-    lines: list[str] = []
-    for row_cells in all_cells:
-        line: str = " | ".join(cell.ljust(col_widths[j]) for j, cell in enumerate(row_cells))
-        lines.append(line)
+    lines: list[str] = [
+        " | ".join(cell.ljust(col_widths[j]) for j, cell in enumerate(row_cells))
+        for row_cells in all_cells
+    ]
     return "```\n" + "\n".join(lines) + "\n```"
 
 
-def _format_as_list(columns: list[str], rows: list[dict[str, Any]]) -> str:
-    """Format each row as a bold-label list, which never wraps in Slack."""
-    parts: list[str] = []
-    for i, row in enumerate(rows):
-        lines: list[str] = []
-        for col in columns:
-            val: str = str(row.get(col, "") or "—")
-            lines.append(f"*{col}:* {val}")
-        parts.append("\n".join(lines))
-    return "\n\n".join(parts)
+def format_markdown_table_inline(md_table: str) -> tuple[list[dict[str, Any]] | None, str]:
+    """Format a markdown pipe table for Slack.
 
-
-def format_markdown_table_inline(md_table: str) -> str:
-    """Format a markdown pipe table for Slack inline display.
-
-    - If the table fits in ~68 chars wide, use an aligned code block.
-    - Otherwise, format each row as a labeled list (no wrapping).
-    - Falls back to raw code block if parsing fails.
+    Returns (blocks, fallback_text). When the table fits Block Kit limits,
+    blocks is a list of Block Kit dicts and fallback_text is a short summary.
+    When it does not fit or parse fails, blocks is None and fallback_text
+    is the code-block or raw table string.
     """
     parsed: tuple[list[str], list[dict[str, Any]]] | None = parse_markdown_table(md_table)
     if parsed is None:
-        return "```\n" + md_table.strip() + "\n```"
+        return (None, "```\n" + md_table.strip() + "\n```")
     columns: list[str] = parsed[0]
     rows: list[dict[str, Any]] = parsed[1]
     if not rows:
-        return "```\n" + md_table.strip() + "\n```"
-    if _fits_in_codeblock(columns, rows):
-        return _format_aligned_table(columns, rows)
-    return _format_as_list(columns, rows)
+        return (None, "```\n" + md_table.strip() + "\n```")
+
+    if len(rows) <= _BLOCK_KIT_MAX_ROWS and len(columns) <= _FIELDS_PER_SECTION_MAX:
+        blocks = format_table_as_blocks(columns, rows)
+        if len(blocks) <= 50:
+            fallback: str = f"Table: {len(rows)} rows × {len(columns)} columns"
+            return (blocks, fallback)
+
+    return (None, _format_as_codeblock_fallback(columns, rows))

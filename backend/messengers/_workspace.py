@@ -52,7 +52,6 @@ logger = logging.getLogger(__name__)
 
 STREAM_FLUSH_CHAR_THRESHOLD: int = 240
 STREAM_FLUSH_INTERVAL_SECONDS: float = 0.7
-STREAM_MAX_BUFFER_CHARS: int = 3000
 SLOW_REPLY_TIMEOUT_SECONDS: int = 30
 SLOW_REPLY_MESSAGE: str = "Still working on this, one moment…"
 
@@ -149,6 +148,25 @@ class WorkspaceMessenger(BaseMessenger):
     ) -> tuple[bytes, str, str] | None:
         """Download a file. Returns ``(data, filename, content_type)`` or None."""
         return None
+
+    async def format_and_post(
+        self,
+        channel_id: str,
+        thread_id: str | None,
+        text_to_send: str,
+        *,
+        workspace_id: str | None = None,
+        organization_id: str | None = None,
+    ) -> None:
+        """Format text and post to the channel. Override to use blocks (e.g. Slack)."""
+        formatted: str = self.format_text(text_to_send)
+        await self.post_message(
+            channel_id=channel_id,
+            text=formatted,
+            thread_id=thread_id,
+            workspace_id=workspace_id,
+            organization_id=organization_id,
+        )
 
     async def fetch_channel_name(
         self,
@@ -570,11 +588,10 @@ class WorkspaceMessenger(BaseMessenger):
             if not text_to_send:
                 return
 
-            formatted: str = self.format_text(text_to_send)
-            await self.post_message(
-                channel_id=channel_id,
-                text=formatted,
-                thread_id=thread_id,
+            await self.format_and_post(
+                channel_id,
+                thread_id,
+                text_to_send,
                 workspace_id=workspace_id,
                 organization_id=organization_id,
             )
@@ -593,9 +610,7 @@ class WorkspaceMessenger(BaseMessenger):
                     buf_len: int = len(current_text)
                     size_flush: bool = buf_len >= STREAM_FLUSH_CHAR_THRESHOLD
                     time_flush: bool = (time.monotonic() - last_flush_at) >= STREAM_FLUSH_INTERVAL_SECONDS
-                    if buf_len >= STREAM_MAX_BUFFER_CHARS:
-                        await _flush(reason="max_buffer", force=True)
-                    elif size_flush or time_flush:
+                    if size_flush or time_flush:
                         await _flush(reason="buffer_size" if size_flush else "interval")
         except Exception as exc:
             logger.error("[%s] Error during streaming: %s", self.meta.slug, exc, exc_info=True)
