@@ -41,28 +41,31 @@ def markdown_to_mrkdwn(text: str) -> str:
     blocks are extracted first so their contents are never double-processed.
     """
 
+    from connectors.slack_tables import format_markdown_table_inline
+
     # -- Step 1: extract fenced code blocks into placeholders ---------------
     code_blocks: list[str] = []
     _FENCE_RE: re.Pattern[str] = re.compile(r'```\w*\n(.*?)```', re.DOTALL)
 
     def _extract_fence(match: re.Match[str]) -> str:
         content: str = match.group(1)
-        cleaned: str = _clean_table_lines(content) if '|' in content else content.strip()
         idx: int = len(code_blocks)
-        code_blocks.append('```\n' + cleaned + '\n```')
+        if '|' in content:
+            formatted: str = format_markdown_table_inline(content)
+            code_blocks.append(formatted)
+        else:
+            code_blocks.append('```\n' + content.strip() + '\n```')
         return f'\x00CB{idx}\x00'
 
     text = _FENCE_RE.sub(_extract_fence, text)
 
     # -- Step 2: wrap bare markdown tables that weren't already fenced ------
-    # Match tables with leading | ... | OR pipe-separated lines (col | col | col)
     _TABLE_RE: re.Pattern[str] = re.compile(
         r'((?:^(?:\|.+\||[^\n|]+(?:\|[^\n|]+){2,})$\n?)+)',
         re.MULTILINE,
     )
 
     def _wrap_table(match: re.Match[str]) -> str:
-        from connectors.slack_tables import format_markdown_table_inline
         cleaned: str = _clean_table_lines(match.group(1))
         return format_markdown_table_inline(cleaned)
 
