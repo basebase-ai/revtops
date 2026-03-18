@@ -193,6 +193,8 @@ Use `m.external_userid` when setting `hubspot_owner_id`. If no mapping exists, t
         self._owner_cache: dict[str, Optional[uuid.UUID]] = {}
         # Cache for HubSpot pipeline ID -> internal pipeline ID mapping
         self._pipeline_cache: dict[str, uuid.UUID] = {}
+        # Cache for HubSpot stage ID -> (name, probability) mapping
+        self._stage_cache: dict[str, tuple[str, int | None]] = {}
         # Pre-fetched HubSpot owner ID -> email (populated by _ensure_owner_email_cache)
         self._owner_email_cache: dict[str, str] = {}
         # HubSpot owner ID -> full owner dict (email, firstName, lastName) for proactive user creation
@@ -492,26 +494,43 @@ Use `m.external_userid` when setting `hubspot_owner_id`. If no mapping exists, t
                     )
                     await session.merge(stage)
 
+                    # Pre-populate stage cache so sync_deals skips the DB query
+                    self._stage_cache[hs_stage_id] = (stage.name, probability)
+
                 count += 1
             await session.commit()
 
         return count
 
     async def _ensure_pipeline_cache(self) -> None:
-        """Load pipeline cache from database if not already loaded."""
-        if self._pipeline_cache:
+        """Load pipeline and stage caches from database if not already loaded."""
+        if self._pipeline_cache and self._stage_cache:
             return
 
         async with get_session(organization_id=self.organization_id) as session:
-            result = await session.execute(
-                select(Pipeline).where(
-                    Pipeline.organization_id == uuid.UUID(self.organization_id),
-                    Pipeline.source_system == self.source_system,
+            if not self._pipeline_cache:
+                result = await session.execute(
+                    select(Pipeline).where(
+                        Pipeline.organization_id == uuid.UUID(self.organization_id),
+                        Pipeline.source_system == self.source_system,
+                    )
                 )
-            )
-            pipelines = result.scalars().all()
-            for pipeline in pipelines:
-                self._pipeline_cache[pipeline.source_id] = pipeline.id
+                pipelines = result.scalars().all()
+                for pipeline in pipelines:
+                    self._pipeline_cache[pipeline.source_id] = pipeline.id
+
+            if not self._stage_cache:
+                pipeline_ids = list(self._pipeline_cache.values())
+                if pipeline_ids:
+                    result = await session.execute(
+                        select(
+                            PipelineStage.source_id,
+                            PipelineStage.name,
+                            PipelineStage.probability,
+                        ).where(PipelineStage.pipeline_id.in_(pipeline_ids))
+                    )
+                    for row in result.all():
+                        self._stage_cache[row[0]] = (row[1], row[2])
 
     async def sync_deals(self) -> int:
         """
@@ -598,6 +617,7 @@ Use `m.external_userid` when setting `hubspot_owner_id`. If no mapping exists, t
                 "id": deal.id, "organization_id": deal.organization_id,
                 "source_system": deal.source_system, "source_id": deal.source_id,
                 "name": deal.name, "amount": deal.amount, "stage": deal.stage,
+                "probability": deal.probability,
                 "pipeline_id": deal.pipeline_id, "close_date": deal.close_date,
                 "created_date": deal.created_date,
                 "last_modified_date": deal.last_modified_date,
@@ -611,7 +631,7 @@ Use `m.external_userid` when setting `hubspot_owner_id`. If no mapping exists, t
         # Bulk upsert in batches
         BATCH_SIZE: int = 500
         update_cols: list[str] = [
-            "name", "amount", "stage", "pipeline_id", "close_date",
+            "name", "amount", "stage", "probability", "pipeline_id", "close_date",
             "created_date", "last_modified_date", "owner_id", "account_id",
             "visible_to_user_ids", "custom_fields", "synced_at",
         ]
@@ -699,6 +719,13 @@ Use `m.external_userid` when setting `hubspot_owner_id`. If no mapping exists, t
             except (ValueError, TypeError):
                 pass
 
+        # Resolve stage ID to human-readable name and probability
+        hs_stage_id: str | None = props.get("dealstage")
+        stage_name: str | None = hs_stage_id
+        probability: int | None = None
+        if hs_stage_id and hs_stage_id in self._stage_cache:
+            stage_name, probability = self._stage_cache[hs_stage_id]
+
         return Deal(
             id=existing_id or uuid.uuid4(),
             organization_id=uuid.UUID(self.organization_id),
@@ -706,7 +733,8 @@ Use `m.external_userid` when setting `hubspot_owner_id`. If no mapping exists, t
             source_id=hs_id,
             name=props.get("dealname") or "Untitled Deal",
             amount=amount,
-            stage=props.get("dealstage"),
+            stage=stage_name,
+            probability=probability,
             pipeline_id=pipeline_id,
             close_date=close_date,
             created_date=created_date,
@@ -714,7 +742,7 @@ Use `m.external_userid` when setting `hubspot_owner_id`. If no mapping exists, t
             owner_id=owner_id,
             account_id=account_id,
             visible_to_user_ids=[owner_id] if owner_id else [],
-            custom_fields={"pipeline": hs_pipeline_id},  # Keep source ID for reference
+            custom_fields={"pipeline": hs_pipeline_id, "stage_id": hs_stage_id},
         )
 
     async def sync_accounts(self) -> int:
