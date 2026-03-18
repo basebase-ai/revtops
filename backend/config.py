@@ -40,8 +40,8 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/revenue_copilot"
     # Optional: use direct connection for migrations (avoids "must be owner" with pooler)
     MIGRATION_DATABASE_URL: Optional[str] = None
-    DB_POOL_SIZE: int = 1
-    DB_MAX_OVERFLOW: int = 2
+    DB_POOL_SIZE: int = 2
+    DB_MAX_OVERFLOW: int = 3
     DB_POOL_TIMEOUT_SECONDS: int = 10
     DB_POOL_RECYCLE_SECONDS: int = 300
     DB_CONNECT_TIMEOUT_SECONDS: float = 10.0
