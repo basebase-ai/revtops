@@ -48,22 +48,25 @@ def test_format_table_as_blocks_structure() -> None:
         {"Name": "Bob", "Email": "bob@example.com"},
     ]
     blocks = format_table_as_blocks(columns, rows)
-    assert len(blocks) == 4  # header section, divider, 2 row sections
-    assert blocks[0]["type"] == "section"
-    assert blocks[0]["fields"][0]["text"] == "*Name*"
-    assert blocks[0]["fields"][1]["text"] == "*Email*"
-    assert blocks[1]["type"] == "divider"
-    assert blocks[2]["fields"][0]["text"] == "Alice"
-    assert blocks[2]["fields"][1]["text"] == "alice@example.com"
-    assert blocks[3]["fields"][0]["text"] == "Bob"
-    assert blocks[3]["fields"][1]["text"] == "bob@example.com"
+    assert len(blocks) == 1
+    table: dict = blocks[0]
+    assert table["type"] == "table"
+    assert len(table["rows"]) == 3  # header + 2 data rows
+    assert table["rows"][0][0]["text"] == "Name"
+    assert table["rows"][0][1]["text"] == "Email"
+    assert table["rows"][1][0]["text"] == "Alice"
+    assert table["rows"][1][1]["text"] == "alice@example.com"
+    assert table["rows"][2][0]["text"] == "Bob"
+    assert table["rows"][2][1]["text"] == "bob@example.com"
+    assert all(cs.get("is_wrapped") is True for cs in table["column_settings"])
 
 
 def test_format_inline_small_table_returns_blocks() -> None:
     md = "| X | Y |\n| a | b |"
     blocks, fallback = format_markdown_table_inline(md)
     assert blocks is not None
-    assert len(blocks) == 3  # header, divider, one row
+    assert len(blocks) == 1
+    assert blocks[0]["type"] == "table"
     assert "Table" in fallback and "1" in fallback and "2" in fallback
 
 
@@ -76,8 +79,9 @@ def test_format_inline_medium_table_returns_blocks() -> None:
     )
     blocks, fallback = format_markdown_table_inline(md)
     assert blocks is not None
-    assert blocks[0]["type"] == "section"
-    assert "*Name*" in blocks[0]["fields"][0]["text"]
+    assert blocks[0]["type"] == "table"
+    assert len(blocks[0]["rows"]) == 3  # header + 2 data
+    assert blocks[0]["rows"][0][0]["text"] == "Name"
     assert "Table" in fallback and "2" in fallback and "4" in fallback
 
 
