@@ -965,7 +965,7 @@ Send a message to a Slack channel, DM, or user.
     async def query(self, request: str) -> dict[str, Any]:
         """Execute a read-only query against Slack."""
         stripped = request.strip()
-        if stripped.lower() in ("list_channels", "channels", "get_channels"):
+        if stripped.lower().replace(" ", "_") in ("list_channels", "channels", "get_channels"):
             channels = await self.get_channels()
             return {
                 "total": len(channels),
