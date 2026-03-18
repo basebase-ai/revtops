@@ -495,8 +495,8 @@ async def _resolve_semantic_embeds(query: str) -> tuple[str, str | None]:
         svc = get_embedding_service()
     except ValueError:
         return query, (
-            "semantic_embed() requires OPENAI_API_KEY to be configured. "
-            "Use ILIKE for text search instead."
+            "semantic_embed() requires OPENAI_API_KEY in .env (see env.example). "
+            "Use ILIKE for text search if you don't need embeddings."
         )
 
     texts: list[str] = [m.group(1).replace("\\'", "'") for m in matches]

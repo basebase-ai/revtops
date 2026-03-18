@@ -2398,20 +2398,23 @@ function getToolStatusText(
       const query = typeof input?.query === 'string' ? input.query.toLowerCase() : '';
       const tableNames: string[] = [];
       const knownTables = [
-        'deals', 'accounts', 'contacts', 'activities', 'integrations', 
-        'users', 'organizations', 'pipelines', 'pipeline_stages'
+        'deals', 'accounts', 'contacts', 'activities', 'integrations',
+        'users', 'organizations', 'pipelines', 'pipeline_stages', 'meetings',
       ];
       for (const table of knownTables) {
         if (query.includes(table)) {
           tableNames.push(table === 'pipeline_stages' ? 'stages' : table);
         }
       }
-      const tableDesc = tableNames.length > 0 
-        ? tableNames.join(' and ') 
-        : 'synced data';
-      
+      const tableDesc: string =
+        tableNames.length > 0 ? tableNames.join(' and ') : 'synced data';
+
       if (isComplete) {
-        const rowCount = typeof result?.row_count === 'number' ? result.row_count : 0;
+        if (result?.error) {
+          return `Query to ${tableDesc} failed`;
+        }
+        const rowCount: number =
+          typeof result?.row_count === 'number' ? result.row_count : 0;
         return `Queried ${tableDesc} (${rowCount} row${rowCount === 1 ? '' : 's'})`;
       }
       return `Querying ${tableDesc}...`;
