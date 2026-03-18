@@ -1408,6 +1408,7 @@ class ChatOrchestrator:
                 if self._current_message_id:
                     per_tool_ctx["message_id"] = str(self._current_message_id)
                 per_tool_ctx["tool_id"] = tool_use["id"]
+                per_tool_ctx["source"] = self.source
 
                 tool_tasks.append(asyncio.create_task(
                     _run_single_tool(tool_use["name"], tool_use["input"], tool_use["id"], per_tool_ctx),

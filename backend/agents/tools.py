@@ -220,7 +220,13 @@ async def _should_skip_approval(
     # Check if tool requires approval by default
     if not requires_approval(tool_name):
         return True
-    
+
+    # When the user is in Slack (or other messenger), there is no approval UI — auto-approve
+    # send_slack_table and send_slack so the table/message actually posts.
+    if context and context.get("source") in ("slack", "teams") and tool_name in ("send_slack_table", "send_slack"):
+        logger.info("[Tools] Skipping approval for %s - conversation from messenger (source=%s)", tool_name, context.get("source"))
+        return True
+
     # Check workflow-specific auto-approve
     if context and context.get("is_workflow"):
         auto_approve_tools = context.get("auto_approve_tools", [])
