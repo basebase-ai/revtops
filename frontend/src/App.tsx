@@ -377,12 +377,18 @@ function App(): JSX.Element {
   // Loading state
   if (isLoading) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="flex flex-col items-center gap-4">
-          <div className="w-10 h-10 rounded-xl bg-surface-800 flex items-center justify-center animate-pulse">
-            <img src={LOGO_PATH} alt="Loading" className="w-5 h-5" />
+      <div className="min-h-screen flex flex-col items-center justify-center bg-surface-950">
+        <div className="flex flex-col items-center gap-6">
+          <div className="relative">
+            <div className="w-14 h-14 rounded-full border-2 border-surface-700 border-t-primary-500 animate-spin" />
+            <div className="absolute inset-0 flex items-center justify-center">
+              <img src={LOGO_PATH} alt="" className="w-7 h-7 opacity-90" />
+            </div>
           </div>
-          <p className="text-surface-400">Loading...</p>
+          <div className="flex flex-col items-center gap-1">
+            <p className="text-surface-200 font-medium">Loading</p>
+            <p className="text-surface-500 text-sm">Preparing your workspace…</p>
+          </div>
         </div>
       </div>
     );

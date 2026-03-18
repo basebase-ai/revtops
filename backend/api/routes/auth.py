@@ -3235,7 +3235,7 @@ async def patch_integration_sharing(
     }
 
 
-_BUILTIN_CONNECTORS: frozenset[str] = frozenset({"web_search", "code_sandbox", "twilio", "artifacts", "apps", "mcp"})
+_BUILTIN_CONNECTORS: frozenset[str] = frozenset({"web_search", "code_sandbox", "twilio", "artifacts", "apps", "mcp", "ispot_tv"})
 
 
 def _is_builtin_connector(provider: str) -> bool:
@@ -3275,11 +3275,19 @@ async def connect_builtin(request: ConnectBuiltinRequest) -> dict[str, Any]:
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid user ID")
 
-    # MCP connector: validate endpoint, discover tools, generate dynamic slug
+    # iSpot.tv: store client_id and client_secret in extra_data (client_credentials flow)
     connection_extra_data: dict[str, Any] | None = None
     mcp_tool_count: int = 0
     is_mcp: bool = request.provider == "mcp" or request.provider.startswith("mcp_")
-    if is_mcp:
+    if request.provider == "ispot_tv":
+        if not request.extra_data:
+            raise HTTPException(status_code=400, detail="iSpot.tv requires client_id and client_secret in extra_data")
+        cid: str | None = (request.extra_data.get("client_id") or "").strip() or None
+        csec: str | None = (request.extra_data.get("client_secret") or "").strip() or None
+        if not cid or not csec:
+            raise HTTPException(status_code=400, detail="iSpot.tv requires non-empty client_id and client_secret")
+        connection_extra_data = {"client_id": cid, "client_secret": csec}
+    elif is_mcp:
         if not request.extra_data or not request.extra_data.get("endpoint_url"):
             raise HTTPException(status_code=400, detail="MCP connector requires 'endpoint_url' in extra_data")
         endpoint_url: str = request.extra_data["endpoint_url"].strip()

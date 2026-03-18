@@ -92,6 +92,7 @@ const PROVIDER_SHARING_DEFAULTS: Record<string, { shareSyncedData: boolean; shar
   granola: { shareSyncedData: false, shareQueryAccess: false, shareWriteAccess: false },
   zoom: { shareSyncedData: false, shareQueryAccess: false, shareWriteAccess: false },
   google_drive: { shareSyncedData: false, shareQueryAccess: false, shareWriteAccess: false },
+  ispot_tv: { shareSyncedData: true, shareQueryAccess: true, shareWriteAccess: false },
 };
 
 // Integration display config (colors, icons, descriptions)
@@ -127,6 +128,7 @@ const INTEGRATION_CONFIG: Record<string, IntegrationConfigEntry> = {
   artifacts: { name: 'Artifact Builder', description: 'Create and update downloadable files (reports, markdown, PDFs, charts)', icon: 'artifacts', color: 'from-slate-500 to-slate-600', scope: 'organization' },
   apps: { name: 'App Builder', description: 'Create and update interactive mini-apps with React + SQL', icon: 'apps', color: 'from-violet-500 to-purple-600', scope: 'organization' },
   mcp: { name: 'MCP Server', description: 'Connect any MCP-compatible server by URL', icon: 'plug', color: 'from-cyan-500 to-blue-600', scope: 'user' },
+  ispot_tv: { name: 'iSpot.tv', description: 'TV ad analytics — airings, spend, impressions, and conversions', icon: 'globe', color: 'from-emerald-500 to-teal-600', scope: 'organization' },
 };
 
 const SUPPORTED_PROVIDERS = new Set(Object.keys(INTEGRATION_CONFIG));
@@ -336,6 +338,12 @@ export function DataSources(): JSX.Element {
   const [mcpConnecting, setMcpConnecting] = useState(false);
   const [mcpError, setMcpError] = useState<string | null>(null);
 
+  // iSpot.tv connect form state (client credentials)
+  const [showIspotForm, setShowIspotForm] = useState(false);
+  const [ispotClientId, setIspotClientId] = useState('');
+  const [ispotClientSecret, setIspotClientSecret] = useState('');
+  const [ispotConnecting, setIspotConnecting] = useState(false);
+  const [ispotError, setIspotError] = useState<string | null>(null);
 
   // GitHub: available repos (from token), tracked repo ids, selection, loading
   interface GitHubRepo {
@@ -668,6 +676,16 @@ export function DataSources(): JSX.Element {
         return;
       }
 
+      // iSpot.tv — needs client_id and client_secret (no OAuth popup)
+      if (provider === 'ispot_tv') {
+        setConnectingProvider(null);
+        setIspotClientId('');
+        setIspotClientSecret('');
+        setIspotError(null);
+        setShowIspotForm(true);
+        return;
+      }
+
       // Built-in connectors (Open Web, Code Sandbox, Twilio) — one-click, no OAuth
       if (BUILTIN_CONNECTORS.has(provider)) {
         const res = await fetch(`${API_BASE}/auth/integrations/connect-builtin`, {
@@ -805,6 +823,44 @@ export function DataSources(): JSX.Element {
       setMcpError(error instanceof Error ? error.message : 'Failed to connect');
     } finally {
       setMcpConnecting(false);
+    }
+  };
+
+  const handleIspotConnect = async (): Promise<void> => {
+    if (!organizationId || !userId || ispotConnecting) return;
+    const clientId: string = ispotClientId.trim();
+    const clientSecret: string = ispotClientSecret.trim();
+    if (!clientId) {
+      setIspotError('Client ID is required');
+      return;
+    }
+    if (!clientSecret) {
+      setIspotError('Client Secret is required');
+      return;
+    }
+    setIspotConnecting(true);
+    setIspotError(null);
+    try {
+      const res: Response = await fetch(`${API_BASE}/auth/integrations/connect-builtin`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          organization_id: organizationId,
+          provider: 'ispot_tv',
+          user_id: userId,
+          extra_data: { client_id: clientId, client_secret: clientSecret },
+        }),
+      });
+      if (!res.ok) {
+        const err: { detail?: string } = await res.json().catch(() => ({ detail: res.statusText }));
+        throw new Error(err.detail ?? 'Failed to connect');
+      }
+      setShowIspotForm(false);
+      void fetchIntegrations();
+    } catch (error) {
+      setIspotError(error instanceof Error ? error.message : 'Failed to connect');
+    } finally {
+      setIspotConnecting(false);
     }
   };
 
@@ -1147,6 +1203,7 @@ export function DataSources(): JSX.Element {
       'from-yellow-500 to-amber-500': 'bg-yellow-500',
       'from-indigo-500 to-violet-600': 'bg-indigo-500',
       'from-gray-600 to-gray-700': 'bg-gray-600',
+      'from-emerald-500 to-teal-600': 'bg-emerald-500',
     };
     return colorMap[color] ?? 'bg-surface-600';
   };
@@ -1781,6 +1838,104 @@ export function DataSources(): JSX.Element {
               <p className="text-xs text-surface-500">
                 We&apos;ll validate the connection and discover available tools from the MCP server.
               </p>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {showIspotForm && (
+        <div className="fixed inset-0 z-50 flex items-start justify-center pt-[10vh]">
+          <div
+            className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+            onClick={() => { if (!ispotConnecting) setShowIspotForm(false); }}
+          />
+          <div className="relative bg-surface-900 border border-surface-700 rounded-2xl shadow-2xl w-full max-w-md mx-4 overflow-hidden">
+            <div className="p-5 border-b border-surface-700/50">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="bg-gradient-to-br from-emerald-500 to-teal-600 p-2 rounded-lg text-white">
+                    <HiGlobeAlt className="w-5 h-5" />
+                  </div>
+                  <h2 className="text-lg font-semibold text-surface-100">Connect iSpot.tv</h2>
+                </div>
+                <button
+                  onClick={() => { if (!ispotConnecting) setShowIspotForm(false); }}
+                  className="text-surface-400 hover:text-surface-200 transition-colors"
+                >
+                  <HiX className="w-5 h-5" />
+                </button>
+              </div>
+            </div>
+            <form
+              onSubmit={(e) => { e.preventDefault(); void handleIspotConnect(); }}
+              className="p-5 space-y-4"
+            >
+              <p className="text-sm text-surface-400">
+                Enter your iSpot.tv OAuth client credentials (from your iSpot account manager). No browser sign-in required.
+              </p>
+              <div>
+                <label htmlFor="ispot-client-id" className="block text-sm font-medium text-surface-300 mb-1.5">
+                  OAuth Client ID <span className="text-red-400">*</span>
+                </label>
+                <input
+                  id="ispot-client-id"
+                  type="text"
+                  value={ispotClientId}
+                  onChange={(e) => setIspotClientId(e.target.value)}
+                  placeholder="Client ID"
+                  required
+                  disabled={ispotConnecting}
+                  autoFocus
+                  className="w-full rounded-lg bg-surface-800 border border-surface-600 px-4 py-2.5 text-sm text-surface-100 placeholder:text-surface-500 focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500/30 disabled:opacity-50"
+                />
+              </div>
+              <div>
+                <label htmlFor="ispot-client-secret" className="block text-sm font-medium text-surface-300 mb-1.5">
+                  OAuth Client Secret <span className="text-red-400">*</span>
+                </label>
+                <input
+                  id="ispot-client-secret"
+                  type="password"
+                  value={ispotClientSecret}
+                  onChange={(e) => setIspotClientSecret(e.target.value)}
+                  placeholder="Client Secret"
+                  required
+                  disabled={ispotConnecting}
+                  className="w-full rounded-lg bg-surface-800 border border-surface-600 px-4 py-2.5 text-sm text-surface-100 placeholder:text-surface-500 focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500/30 disabled:opacity-50"
+                />
+              </div>
+              {ispotError && (
+                <div className="text-sm text-red-400 bg-red-400/10 border border-red-400/20 rounded-lg px-3 py-2">
+                  {ispotError}
+                </div>
+              )}
+              <div className="flex gap-3 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setShowIspotForm(false)}
+                  disabled={ispotConnecting}
+                  className="flex-1 px-4 py-2.5 text-sm font-medium text-surface-300 bg-surface-800 hover:bg-surface-700 border border-surface-600 rounded-lg transition-colors disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={ispotConnecting || !ispotClientId.trim() || !ispotClientSecret.trim()}
+                  className="flex-1 px-4 py-2.5 text-sm font-semibold text-white bg-primary-600 hover:bg-primary-500 rounded-lg transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+                >
+                  {ispotConnecting ? (
+                    <>
+                      <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                      </svg>
+                      Connecting...
+                    </>
+                  ) : (
+                    'Connect'
+                  )}
+                </button>
+              </div>
             </form>
           </div>
         </div>
