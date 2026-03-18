@@ -49,7 +49,7 @@ class ISpotTvConnector(BaseConnector):
         auth_type=AuthType.CUSTOM,
         scope=ConnectorScope.ORGANIZATION,
         entity_types=["accounts", "activities"],
-        capabilities=[Capability.SYNC, Capability.QUERY],
+        capabilities=[Capability.QUERY],
         query_description=(
             "Query iSpot.tv for TV ad analytics. Supports: "
             "airings, spots, brands, spend, impressions, conversions, attention metrics. "

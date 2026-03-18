@@ -20,7 +20,7 @@ from sqlalchemy import select
 
 from connectors.base import SyncCancelledError
 from connectors.github import GitHubConnector
-from connectors.registry import discover_connectors
+from connectors.registry import Capability, discover_connectors
 from models.database import get_session
 from models.integration import Integration
 from models.organization import Organization
@@ -675,10 +675,16 @@ async def trigger_sync(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid customer ID")
 
-    if provider not in CONNECTORS:
+    connector_cls = CONNECTORS.get(provider)
+    if not connector_cls:
         raise HTTPException(
             status_code=400,
             detail=f"Unknown provider: {provider}. Available: {list(CONNECTORS.keys())}",
+        )
+    if Capability.SYNC not in connector_cls.meta.capabilities:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Provider {provider} does not support sync (query-only connector).",
         )
 
     # Fetch *all* active integrations for this provider (may be per-user)
@@ -801,12 +807,14 @@ async def trigger_sync_all(
     if not integrations:
         raise HTTPException(status_code=404, detail="No active integrations found")
 
-    providers: list[str] = list({i.connector for i in integrations})
-
-    # Trigger sync for each integration (including per-user variants)
+    syncing_providers: list[str] = []
+    # Trigger sync for each integration (including per-user variants); skip query-only connectors
     for integration in integrations:
         prov: str = integration.connector
-        if prov in CONNECTORS:
+        connector_cls = CONNECTORS.get(prov)
+        if connector_cls is not None and Capability.SYNC in connector_cls.meta.capabilities:
+            if prov not in syncing_providers:
+                syncing_providers.append(prov)
             status_key: str = _get_status_key(organization_id, prov)
             _sync_status[status_key] = {
                 "status": "syncing",
@@ -823,7 +831,7 @@ async def trigger_sync_all(
     return SyncAllResponse(
         status="syncing",
         organization_id=organization_id,
-        integrations=providers,
+        integrations=syncing_providers,
     )
 
 

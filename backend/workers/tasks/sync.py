@@ -51,7 +51,7 @@ async def _sync_integration(
     Returns sync results including counts and any errors.
     """
     from connectors.base import SyncCancelledError
-    from connectors.registry import discover_connectors
+    from connectors.registry import Capability, discover_connectors
     from services.embedding_sync import generate_embeddings_for_organization
     from workers.events import emit_event
 
@@ -62,6 +62,14 @@ async def _sync_integration(
         return {
             "status": "failed",
             "error": f"Unknown provider: {provider}",
+            "organization_id": organization_id,
+            "provider": provider,
+        }
+    meta = getattr(connector_class, "meta", None)
+    if meta is not None and hasattr(meta, "capabilities") and Capability.SYNC not in meta.capabilities:
+        return {
+            "status": "skipped",
+            "error": "Query-only connector (no sync)",
             "organization_id": organization_id,
             "provider": provider,
         }
