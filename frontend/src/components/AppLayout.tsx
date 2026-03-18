@@ -1438,8 +1438,19 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
   // Guard against missing user/org (shouldn't happen, but be safe)
   if (!user || !organization) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
-        <p className="text-surface-400">Loading...</p>
+      <div className="min-h-screen flex flex-col items-center justify-center bg-surface-950">
+        <div className="flex flex-col items-center gap-6">
+          <div className="relative">
+            <div className="w-14 h-14 rounded-full border-2 border-surface-700 border-t-primary-500 animate-spin" />
+            <div className="absolute inset-0 flex items-center justify-center">
+              <img src={LOGO_PATH} alt="" className="w-7 h-7 opacity-90" />
+            </div>
+          </div>
+          <div className="flex flex-col items-center gap-1">
+            <p className="text-surface-200 font-medium">Loading</p>
+            <p className="text-surface-500 text-sm">Preparing your workspace…</p>
+          </div>
+        </div>
       </div>
     );
   }
