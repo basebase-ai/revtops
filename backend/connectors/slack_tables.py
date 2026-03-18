@@ -11,8 +11,7 @@ import io
 import re
 from typing import Any, TypedDict
 
-# Pipe table line (optional leading |, cells, optional trailing |). Separator row like |---| is excluded by caller.
-_TABLE_ROW_RE: re.Pattern[str] = re.compile(r"^\|?(.+)\|?$")
+_SEPARATOR_RE: re.Pattern[str] = re.compile(r"^\|?[\s\-:|]+\|?$")
 
 # Thresholds from plan
 _TINY_MAX_ROWS: int = 3
@@ -39,45 +38,56 @@ def _cell_str(value: Any) -> str:
     return s if s else ""
 
 
+def _split_pipe_cells(line: str) -> list[str]:
+    """Split a pipe-delimited table row into cell values.
+
+    Handles both ``| a | b | c |`` and ``a | b | c`` formats.
+    """
+    stripped: str = line.strip()
+    if stripped.startswith("|"):
+        stripped = stripped[1:]
+    if stripped.endswith("|"):
+        stripped = stripped[:-1]
+    return [c.strip() for c in stripped.split("|")]
+
+
 def parse_markdown_table(md_table: str) -> tuple[list[str], list[dict[str, Any]]] | None:
     """
     Parse a markdown pipe table string into (columns, rows).
-    Separator rows (|---|) must already be removed. Returns None if parse fails.
+    Separator rows are automatically filtered out. Returns None if parse fails.
     """
-    lines: list[str] = [ln.strip() for ln in md_table.strip().split("\n") if ln.strip()]
+    raw_lines: list[str] = [ln.strip() for ln in md_table.strip().split("\n") if ln.strip()]
+    lines: list[str] = [ln for ln in raw_lines if not _SEPARATOR_RE.match(ln)]
     if not lines:
         return None
-    # First line = header
-    header_match = _TABLE_ROW_RE.match(lines[0])
-    if not header_match:
-        return None
-    columns: list[str] = [c.strip() for c in header_match.group(1).split("|")]
+
+    columns: list[str] = _split_pipe_cells(lines[0])
     columns = [c for c in columns if c]
     if not columns:
         return None
+
     rows: list[dict[str, Any]] = []
     for line in lines[1:]:
-        m = _TABLE_ROW_RE.match(line)
-        if not m:
-            return None
-        cells: list[str] = [c.strip() for c in m.group(1).split("|")]
-        cells = [c for c in cells if c is not None]
-        if len(cells) != len(columns):
-            # Allow fewer cells (right-pad with "")
+        cells: list[str] = _split_pipe_cells(line)
+        if len(cells) < len(columns):
             cells = cells + [""] * (len(columns) - len(cells))
+        elif len(cells) > len(columns):
+            cells = cells[: len(columns)]
         rows.append(dict(zip(columns, cells)))
     return (columns, rows)
 
 
 def format_markdown_table_inline(md_table: str) -> str:
     """
-    Format a markdown pipe table (with separator row already removed) for Slack inline display.
-    Returns a truncated code block string, or the original wrapped in ``` if parsing fails.
+    Format a markdown pipe table for Slack inline display.
+    Separator rows are stripped automatically. Returns a truncated code block
+    string, or the original wrapped in ``` if parsing fails.
     """
-    parsed = parse_markdown_table(md_table)
+    parsed: tuple[list[str], list[dict[str, Any]]] | None = parse_markdown_table(md_table)
     if parsed is None:
         return "```\n" + md_table.strip() + "\n```"
-    columns, rows = parsed
+    columns: list[str] = parsed[0]
+    rows: list[dict[str, Any]] = parsed[1]
     return _format_as_codeblock(columns, rows)
 
 

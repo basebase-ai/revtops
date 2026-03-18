@@ -7,6 +7,7 @@ StreamBreakStrategy = Literal["best", "quickest_safe"]
 
 _SENTENCE_BREAK_RE: re.Pattern[str] = re.compile(r"[.!?](?:\s|$)")
 _FENCE_RE: re.Pattern[str] = re.compile(r"^```", re.MULTILINE)
+_PIPE_TABLE_LINE_RE: re.Pattern[str] = re.compile(r"\|.+\||[^|\n]+(?:\|[^|\n]+){2,}")
 _TITLE_ABBREVIATIONS: set[str] = {
     "mr",
     "mrs",
@@ -68,6 +69,21 @@ def _is_valid_sentence_break(text: str, punct_idx: int) -> bool:
     return True
 
 
+def _ends_inside_pipe_table(text: str) -> bool:
+    """Return True if *text* ends in the middle of a markdown pipe table.
+
+    A pipe table is a contiguous block of lines matching ``| ... |``.
+    If the last non-blank line is a pipe-table row and there is no blank line
+    or non-table text after it, assume more table rows are coming.
+    """
+    stripped: str = text.rstrip()
+    if not stripped:
+        return False
+    last_newline: int = stripped.rfind("\n")
+    last_line: str = stripped[last_newline + 1:].strip() if last_newline >= 0 else stripped.strip()
+    return bool(_PIPE_TABLE_LINE_RE.fullmatch(last_line))
+
+
 def find_safe_break(
     text: str,
     *,
@@ -86,6 +102,11 @@ def find_safe_break(
 
     max_index: int = len(text) if limit is None else min(limit, len(text))
     if max_index <= 0:
+        return 0
+
+    # If the text ends mid-pipe-table, defer the break entirely so the table
+    # isn't split across messages.
+    if _ends_inside_pipe_table(text):
         return 0
 
     fence_ranges: list[tuple[int, int]] = _build_fence_ranges(text)

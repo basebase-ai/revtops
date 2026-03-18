@@ -43,3 +43,19 @@ def test_find_safe_stream_break_skips_common_title_abbreviations() -> None:
 def test_find_safe_stream_break_skips_saint_abbreviation() -> None:
     text = "They visited St. Louis last week. It was great"
     assert find_safe_break(text, strategy="quickest_safe") == len("They visited St. Louis last week. ")
+
+
+def test_find_safe_stream_break_defers_inside_pipe_table_with_pipes() -> None:
+    text = "Here is the data:\n\n| Name | Email |\n| Alice | alice@co.com |"
+    assert find_safe_break(text, strategy="quickest_safe") == 0
+
+
+def test_find_safe_stream_break_defers_inside_pipe_table_without_pipes() -> None:
+    text = "Here is the data:\n\nName | Email | Phone\n--- | --- | ---\nAlice | alice@co.com | 555"
+    assert find_safe_break(text, strategy="quickest_safe") == 0
+
+
+def test_find_safe_stream_break_allows_break_after_table_ends() -> None:
+    text = "| Name | Email |\n| Alice | alice@co.com |\n\nNote: table done. More text"
+    idx: int = find_safe_break(text, strategy="quickest_safe")
+    assert idx > 0

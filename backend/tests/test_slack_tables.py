@@ -27,6 +27,26 @@ def test_parse_markdown_table_with_separator_removed() -> None:
     assert rows == [{"Name": "Acme", "Amount": "100"}]
 
 
+def test_parse_markdown_table_no_leading_pipes() -> None:
+    md = "Name | Email | Phone\n--- | --- | ---\nAlice | alice@co.com | 555\nBob | bob@co.com | 666"
+    out = parse_markdown_table(md)
+    assert out is not None
+    cols, rows = out
+    assert cols == ["Name", "Email", "Phone"]
+    assert len(rows) == 2
+    assert rows[0]["Name"] == "Alice"
+    assert rows[1]["Email"] == "bob@co.com"
+
+
+def test_parse_markdown_table_strips_separator_row() -> None:
+    md = "| Name | Amount |\n| --- | --- |\n| Acme | 100 |"
+    out = parse_markdown_table(md)
+    assert out is not None
+    cols, rows = out
+    assert cols == ["Name", "Amount"]
+    assert rows == [{"Name": "Acme", "Amount": "100"}]
+
+
 def test_parse_markdown_table_empty_returns_none() -> None:
     assert parse_markdown_table("") is None
     assert parse_markdown_table("\n\n") is None

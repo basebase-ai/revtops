@@ -52,6 +52,7 @@ logger = logging.getLogger(__name__)
 
 STREAM_FLUSH_CHAR_THRESHOLD: int = 240
 STREAM_FLUSH_INTERVAL_SECONDS: float = 0.7
+STREAM_MAX_BUFFER_CHARS: int = 3000
 SLOW_REPLY_TIMEOUT_SECONDS: int = 30
 SLOW_REPLY_MESSAGE: str = "Still working on this, one moment…"
 
@@ -589,9 +590,12 @@ class WorkspaceMessenger(BaseMessenger):
                     self._handle_json_chunk(chunk, channel_id, thread_id, workspace_id, organization_id)
                 else:
                     current_text += chunk
-                    size_flush: bool = len(current_text) >= STREAM_FLUSH_CHAR_THRESHOLD
+                    buf_len: int = len(current_text)
+                    size_flush: bool = buf_len >= STREAM_FLUSH_CHAR_THRESHOLD
                     time_flush: bool = (time.monotonic() - last_flush_at) >= STREAM_FLUSH_INTERVAL_SECONDS
-                    if size_flush or time_flush:
+                    if buf_len >= STREAM_MAX_BUFFER_CHARS:
+                        await _flush(reason="max_buffer", force=True)
+                    elif size_flush or time_flush:
                         await _flush(reason="buffer_size" if size_flush else "interval")
         except Exception as exc:
             logger.error("[%s] Error during streaming: %s", self.meta.slug, exc, exc_info=True)

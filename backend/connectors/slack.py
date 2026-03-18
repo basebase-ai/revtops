@@ -20,7 +20,9 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 
-_SEPARATOR_ROW_RE: re.Pattern[str] = re.compile(r'^\|[\s\-:]+\|$')
+_SEPARATOR_ROW_RE: re.Pattern[str] = re.compile(
+    r'^\|?[\s\-:|]+\|?$'
+)
 
 
 def _clean_table_lines(raw: str) -> str:
@@ -53,7 +55,11 @@ def markdown_to_mrkdwn(text: str) -> str:
     text = _FENCE_RE.sub(_extract_fence, text)
 
     # -- Step 2: wrap bare markdown tables that weren't already fenced ------
-    _TABLE_RE: re.Pattern[str] = re.compile(r'((?:^\|.+\|$\n?)+)', re.MULTILINE)
+    # Match tables with leading | ... | OR pipe-separated lines (col | col | col)
+    _TABLE_RE: re.Pattern[str] = re.compile(
+        r'((?:^(?:\|.+\||[^\n|]+(?:\|[^\n|]+){2,})$\n?)+)',
+        re.MULTILINE,
+    )
 
     def _wrap_table(match: re.Match[str]) -> str:
         from connectors.slack_tables import format_markdown_table_inline
