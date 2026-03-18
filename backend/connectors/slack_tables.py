@@ -11,7 +11,7 @@ from typing import Any
 
 _SEPARATOR_RE: re.Pattern[str] = re.compile(r"^\|?[\s\-:|]+\|?$")
 
-_SLACK_CODE_LINE_MAX: int = 68
+_SLACK_CODE_LINE_MAX: int = 44
 
 
 def _split_pipe_cells(line: str) -> list[str]:
