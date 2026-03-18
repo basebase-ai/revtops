@@ -12,6 +12,7 @@ never raised.
 import json
 import logging
 from datetime import datetime, timezone
+from typing import Any
 
 from anthropic import AsyncAnthropic
 
@@ -134,9 +135,20 @@ async def generate_conversation_summary(
             )
             raise
 
-        # Parse response
-        raw_text = response.content[0].text if response.content else ""
-        parsed = json.loads(raw_text)
+        # Parse response (LLM may return empty or non-JSON)
+        raw_text: str = response.content[0].text.strip() if response.content else ""
+        if not raw_text:
+            logger.warning("Conversation summary returned empty content for conversation %s", conversation_id)
+            return None
+        try:
+            parsed: dict[str, Any] = json.loads(raw_text)
+        except json.JSONDecodeError as e:
+            logger.warning(
+                "Conversation summary invalid JSON for conversation %s: %s",
+                conversation_id,
+                e,
+            )
+            return None
 
         summary_data = {
             "overall": parsed.get("overall", ""),

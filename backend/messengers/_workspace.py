@@ -462,7 +462,8 @@ class WorkspaceMessenger(BaseMessenger):
             )
             session.add(conversation)
             await session.commit()
-            await session.refresh(conversation)
+            # Avoid session.refresh() after commit — can raise InvalidRequestError with async
+            # (id is already set via default=uuid.uuid4)
 
             logger.info(
                 "[%s] Created conversation %s channel=%s user=%s",
