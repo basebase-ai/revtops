@@ -566,10 +566,15 @@ Send a message to a Slack channel, DM, or user.
             status="syncing",
         )
         
-        # Get channels
-        channels = await self.get_channels()
+        # Get channels, then filter out archived and empty ones
+        all_channels = await self.get_channels()
+        channels = [
+            ch for ch in all_channels
+            if not ch.get("is_archived") and (ch.get("num_members") or 0) > 0
+        ]
         logger.info(
-            "[Slack Sync] Retrieved %d channels for org=%s",
+            "[Slack Sync] Retrieved %d channels (%d active with members) for org=%s",
+            len(all_channels),
             len(channels),
             self.organization_id,
         )
