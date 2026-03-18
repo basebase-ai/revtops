@@ -8,9 +8,9 @@ from typing import Any
 
 _SEPARATOR_RE: re.Pattern[str] = re.compile(r"^\|?[\s\-:|]+\|?$")
 
-# Slack: max 10 fields per section, 50 blocks per message. Use Block Kit for small tables.
-_BLOCK_KIT_MAX_ROWS: int = 15
-_FIELDS_PER_SECTION_MAX: int = 10
+# Slack table block limits: max 100 rows, max 20 columns per row.
+_TABLE_BLOCK_MAX_ROWS: int = 100
+_TABLE_BLOCK_MAX_COLS: int = 20
 
 
 def _cell_str(value: Any) -> str:
@@ -63,32 +63,35 @@ def format_table_as_blocks(
     columns: list[str],
     rows: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Build Block Kit blocks for a table: header section, divider, one section per row.
+    """Build a single Slack ``table`` block for the data.
 
-    Slack section.fields are capped at 10; total blocks capped at 50.
-    Caller should limit rows before calling (e.g. _BLOCK_KIT_MAX_ROWS).
+    Uses Slack's native table block type which renders as a real table with
+    proper column headers, alignment, and row structure.  Limits: 100 rows,
+    20 columns.  Only one table block is allowed per message.
     """
-    num_cols: int = len(columns)
-    if num_cols > _FIELDS_PER_SECTION_MAX:
-        num_cols = _FIELDS_PER_SECTION_MAX
+    num_cols: int = min(len(columns), _TABLE_BLOCK_MAX_COLS)
     cols_used: list[str] = columns[:num_cols]
 
-    blocks: list[dict[str, Any]] = []
-
-    # Header row
-    header_fields: list[dict[str, str]] = [
-        {"type": "mrkdwn", "text": f"*{col}*"} for col in cols_used
+    header_row: list[dict[str, str]] = [
+        {"type": "raw_text", "text": col} for col in cols_used
     ]
-    blocks.append({"type": "section", "fields": header_fields})
-    blocks.append({"type": "divider"})
 
-    for row in rows:
-        row_fields: list[dict[str, str]] = [
-            {"type": "mrkdwn", "text": _cell_str(row.get(col))} for col in cols_used
-        ]
-        blocks.append({"type": "section", "fields": row_fields})
+    data_rows: list[list[dict[str, str]]] = []
+    for row in rows[:_TABLE_BLOCK_MAX_ROWS]:
+        data_rows.append([
+            {"type": "raw_text", "text": _cell_str(row.get(col))}
+            for col in cols_used
+        ])
 
-    return blocks
+    table_block: dict[str, Any] = {
+        "type": "table",
+        "column_settings": [
+            {"is_wrapped": True} for _ in cols_used
+        ],
+        "rows": [header_row] + data_rows,
+    }
+
+    return [table_block]
 
 
 def _format_as_codeblock_fallback(columns: list[str], rows: list[dict[str, Any]]) -> str:
@@ -123,10 +126,9 @@ def format_markdown_table_inline(md_table: str) -> tuple[list[dict[str, Any]] | 
     if not rows:
         return (None, "```\n" + md_table.strip() + "\n```")
 
-    if len(rows) <= _BLOCK_KIT_MAX_ROWS and len(columns) <= _FIELDS_PER_SECTION_MAX:
-        blocks = format_table_as_blocks(columns, rows)
-        if len(blocks) <= 50:
-            fallback: str = f"Table: {len(rows)} rows × {len(columns)} columns"
-            return (blocks, fallback)
+    if len(rows) <= _TABLE_BLOCK_MAX_ROWS and len(columns) <= _TABLE_BLOCK_MAX_COLS:
+        blocks: list[dict[str, Any]] = format_table_as_blocks(columns, rows)
+        fallback: str = f"Table: {len(rows)} rows × {len(columns)} columns"
+        return (blocks, fallback)
 
     return (None, _format_as_codeblock_fallback(columns, rows))
