@@ -494,6 +494,9 @@ Use `m.external_userid` when setting `hubspot_owner_id`. If no mapping exists, t
                     )
                     await session.merge(stage)
 
+                    # Pre-populate stage cache so sync_deals skips the DB query
+                    self._stage_cache[hs_stage_id] = (stage.name, probability)
+
                 count += 1
             await session.commit()
 
