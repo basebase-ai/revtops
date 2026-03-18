@@ -120,6 +120,31 @@ class HubSpotConnector(BaseConnector):
                     {"name": "numberofemployees", "type": "integer", "required": False, "description": "Number of employees"},
                 ],
             ),
+            WriteOperation(
+                name="create_note", entity_type="note",
+                description="Create a note attached to a deal in HubSpot",
+                parameters=[
+                    {"name": "hs_note_body", "type": "string", "required": True, "description": "Note content"},
+                    {"name": "deal_id", "type": "string", "required": True, "description": "HubSpot deal ID (source_id from deals table) to attach the note to"},
+                    {"name": "hs_timestamp", "type": "string", "required": False, "description": "ISO 8601 timestamp; defaults to now if omitted"},
+                ],
+            ),
+            WriteOperation(
+                name="update_note", entity_type="note",
+                description="Update an existing note in HubSpot",
+                parameters=[
+                    {"name": "id", "type": "string", "required": True, "description": "HubSpot note ID"},
+                    {"name": "hs_note_body", "type": "string", "required": False, "description": "Updated note content"},
+                    {"name": "hs_timestamp", "type": "string", "required": False, "description": "Updated timestamp (ISO 8601)"},
+                ],
+            ),
+            WriteOperation(
+                name="delete_note", entity_type="note",
+                description="Delete a note in HubSpot",
+                parameters=[
+                    {"name": "id", "type": "string", "required": True, "description": "HubSpot note ID"},
+                ],
+            ),
         ],
         nango_integration_id="hubspot",
         description="HubSpot CRM – deals, contacts, companies, and activities",
@@ -127,7 +152,7 @@ class HubSpotConnector(BaseConnector):
 
 ## Write operations (write_on_connector)
 
-Use `write_on_connector(connector='hubspot', operation='...', data={...})` with one of: `create_deal`, `update_deal`, `create_contact`, `update_contact`, `create_company`, `update_company`.
+Use `write_on_connector(connector='hubspot', operation='...', data={...})` with one of: `create_deal`, `update_deal`, `create_contact`, `update_contact`, `create_company`, `update_company`, `create_note`, `update_note`, `delete_note`.
 
 ### Deals
 
@@ -164,6 +189,31 @@ Use `m.external_userid` when setting `hubspot_owner_id`. If no mapping exists, t
 **create_company** — Required: `name`. Optional: `domain`, `industry`, `numberofemployees`.
 
 **update_company** — Required: `id` (HubSpot company ID). Optional: same fields as create.
+
+### Notes
+
+Notes are activities attached to deals (or contacts/companies). Use HubSpot **source_id** for `deal_id` (from `SELECT id, name, source_id FROM deals`).
+
+**create_note** — Required: `hs_note_body`, `deal_id` (HubSpot deal source_id). Optional: `hs_timestamp` (ISO 8601).
+
+**update_note** — Required: `id` (HubSpot note ID). Optional: `hs_note_body`, `hs_timestamp`.
+
+**delete_note** — Required: `id` (HubSpot note ID).
+
+**Create a note on a deal:**
+```json
+{"operation": "create_note", "record": {"hs_note_body": "Follow-up scheduled for next week.", "deal_id": "123456789"}}
+```
+
+**Update a note:**
+```json
+{"operation": "update_note", "record": {"id": "987654321", "hs_note_body": "Updated note text."}}
+```
+
+**Delete a note:**
+```json
+{"operation": "delete_note", "record": {"id": "987654321"}}
+```
 
 ### Examples
 
@@ -288,6 +338,8 @@ Use `m.external_userid` when setting `hubspot_owner_id`. If no mapping exists, t
                     )
                     raise last_exc
 
+                if response.status_code == 204:
+                    return {}
                 return response.json()
 
         # Should not reach here, but satisfy type checker
@@ -1874,6 +1926,21 @@ Use `m.external_userid` when setting `hubspot_owner_id`. If no mapping exists, t
         if operation == "update_company":
             company_id: str = data.pop("company_id", None) or data.pop("id")
             return await self.update_company(company_id, data)
+        if operation == "create_note":
+            deal_id: str = str(data.pop("deal_id", "") or data.pop("id", "")).strip()
+            body: str = str(data.pop("hs_note_body", "") or "").strip()
+            ts: Optional[str] = data.pop("hs_timestamp", None)
+            if not deal_id:
+                raise ValueError("create_note requires deal_id (HubSpot deal source_id from deals table)")
+            if not body:
+                raise ValueError("create_note requires hs_note_body (note content)")
+            return await self.create_note(hs_note_body=body, deal_id=deal_id, hs_timestamp=ts)
+        if operation == "update_note":
+            note_id: str = data.pop("note_id", None) or data.pop("id")
+            return await self.update_note(note_id, data)
+        if operation == "delete_note":
+            note_id_del: str = data.pop("note_id", None) or data.pop("id")
+            return await self.delete_note(note_id_del)
         raise ValueError(f"Unknown write operation: {operation}")
 
     async def create_contact(self, properties: dict[str, Any]) -> dict[str, Any]:
@@ -2223,6 +2290,88 @@ Use `m.external_userid` when setting `hubspot_owner_id`. If no mapping exists, t
             "id": data.get("id"),
             "properties": data.get("properties", {}),
         }
+
+    async def create_note(
+        self,
+        hs_note_body: str,
+        deal_id: str,
+        hs_timestamp: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """
+        Create a note in HubSpot and associate it with a deal.
+
+        Uses a two-step approach (create then associate) because HubSpot's
+        inline associations on create can silently drop the link.
+        Also resolves ``hubspot_owner_id`` from the requesting user so the
+        note is visible in the HubSpot UI.
+
+        Args:
+            hs_note_body: Note content.
+            deal_id: HubSpot deal ID (source_id) to attach the note to.
+            hs_timestamp: Optional ISO 8601 timestamp; defaults to now.
+
+        Returns:
+            Created note data with HubSpot ID.
+        """
+        properties: dict[str, Any] = {"hs_note_body": hs_note_body}
+        if hs_timestamp is not None:
+            properties["hs_timestamp"] = hs_timestamp
+        else:
+            properties["hs_timestamp"] = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+        if self.user_id:
+            try:
+                hs_owner_id: str | None = await self.map_user_to_hs_owner(uuid.UUID(self.user_id))
+                if hs_owner_id:
+                    properties["hubspot_owner_id"] = hs_owner_id
+            except Exception:
+                pass
+
+        try:
+            result: dict[str, Any] = await self.create_engagement(
+                engagement_type="note",
+                properties=properties,
+            )
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 400 and "INVALID_OWNER_ID" in str(exc):
+                properties.pop("hubspot_owner_id", None)
+                result = await self.create_engagement(
+                    engagement_type="note",
+                    properties=properties,
+                )
+            else:
+                raise
+
+        note_id: str | None = result.get("id")
+        if not note_id:
+            raise RuntimeError("HubSpot returned no note ID after creation")
+
+        assoc_type_id: int = self._ENGAGEMENT_ASSOC_TYPE_IDS["note"]["deal"]
+        await self._make_request(
+            "PUT",
+            f"/crm/v3/objects/notes/{note_id}/associations/deal/{deal_id}/{assoc_type_id}",
+        )
+
+        return result
+
+    async def update_note(
+        self, note_id: str, properties: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Update an existing note in HubSpot."""
+        data: dict[str, Any] = await self._make_request(
+            "PATCH",
+            f"/crm/v3/objects/notes/{note_id}",
+            json_data={"properties": properties},
+        )
+        return {
+            "id": data.get("id"),
+            "properties": data.get("properties", {}),
+        }
+
+    async def delete_note(self, note_id: str) -> dict[str, Any]:
+        """Delete a note in HubSpot."""
+        await self._make_request("DELETE", f"/crm/v3/objects/notes/{note_id}")
+        return {"id": note_id, "deleted": True}
 
     async def create_engagements_batch(
         self,
