@@ -8,6 +8,8 @@ and formatting.
 """
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 from typing import Any
 
@@ -16,6 +18,39 @@ from messengers._workspace import WorkspaceMessenger
 from messengers.base import InboundMessage, MessengerMeta, ResponseMode
 
 logger = logging.getLogger(__name__)
+
+# Tool names we do not show status for (internal/bookkeeping).
+_SKIP_TOOL_STATUS: frozenset[str] = frozenset({"think", "keep_notes", "manage_memory"})
+
+# Human-friendly status text for tool_call events. Use {connector} for connector slug.
+TOOL_STATUS_LABELS: dict[str, str] = {
+    "run_sql_query": "Querying your database",
+    "run_sql_write": "Updating your database",
+    "query_on_connector": "Looking up data in {connector}",
+    "write_on_connector": "Updating records in {connector}",
+    "run_on_connector": "Running action on {connector}",
+    "send_slack_table": "Preparing a table",
+    "trigger_sync": "Syncing data",
+    "run_workflow": "Running workflow",
+    "foreach": "Processing items",
+    "list_connected_connectors": "Checking connected tools",
+    "get_connector_docs": "Reading connector docs",
+    "initiate_connector": "Setting up a connection",
+}
+
+
+def _tool_status_text(tool_name: str, tool_input: dict[str, Any]) -> str | None:
+    """Return human-friendly status text for a tool call, or None to skip posting."""
+    if tool_name in _SKIP_TOOL_STATUS:
+        return None
+    label: str | None = TOOL_STATUS_LABELS.get(tool_name)
+    if label is None:
+        return None
+    connector_slug: str = (tool_input.get("connector") or "").strip() if isinstance(tool_input.get("connector"), str) else ""
+    if "{connector}" in label:
+        connector_display: str = connector_slug.replace("_", " ").title() if connector_slug else "connector"
+        return label.format(connector=connector_display)
+    return label
 
 
 class SlackMessenger(WorkspaceMessenger):
@@ -246,3 +281,48 @@ class SlackMessenger(WorkspaceMessenger):
         raise RuntimeError(
             f"Cannot create SlackConnector: no workspace_id or organization_id"
         )
+
+    # ------------------------------------------------------------------
+    # Tool call status (override _handle_json_chunk)
+    # ------------------------------------------------------------------
+
+    async def _handle_json_chunk(
+        self,
+        chunk: str,
+        channel_id: str,
+        thread_id: str | None,
+        workspace_id: str | None,
+        organization_id: str | None,
+    ) -> None:
+        """Post a short status message to Slack when a tool call starts."""
+        await super()._handle_json_chunk(
+            chunk, channel_id, thread_id, workspace_id, organization_id,
+        )
+        try:
+            data: dict[str, Any] = json.loads(chunk)
+        except (json.JSONDecodeError, TypeError):
+            return
+        if data.get("type") != "tool_call":
+            return
+        tool_name: str = (data.get("tool_name") or "").strip()
+        tool_input: dict[str, Any] = data.get("tool_input") or {}
+        if not isinstance(tool_input, dict):
+            tool_input = {}
+        status_text: str | None = _tool_status_text(tool_name, tool_input)
+        if status_text is None:
+            return
+        message: str = f"_{status_text}…_"
+
+        async def _post_status() -> None:
+            try:
+                await self.post_message(
+                    channel_id=channel_id,
+                    text=message,
+                    thread_id=thread_id,
+                    workspace_id=workspace_id,
+                    organization_id=organization_id,
+                )
+            except Exception as exc:
+                logger.debug("[slack] Tool status message failed: %s", exc)
+
+        asyncio.create_task(_post_status())

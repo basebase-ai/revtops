@@ -604,7 +604,7 @@ class WorkspaceMessenger(BaseMessenger):
             ):
                 if chunk.startswith("{"):
                     await _flush(reason="tool_boundary", force=True)
-                    self._handle_json_chunk(chunk, channel_id, thread_id, workspace_id, organization_id)
+                    await self._handle_json_chunk(chunk, channel_id, thread_id, workspace_id, organization_id)
                 else:
                     current_text += chunk
                     buf_len: int = len(current_text)
@@ -619,7 +619,7 @@ class WorkspaceMessenger(BaseMessenger):
         await _flush(reason="stream_end", force=True)
         return total_length
 
-    def _handle_json_chunk(
+    async def _handle_json_chunk(
         self,
         chunk: str,
         channel_id: str,
