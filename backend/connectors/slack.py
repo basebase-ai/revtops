@@ -107,6 +107,16 @@ SLACK_API_BASE = "https://slack.com/api"
 logger = logging.getLogger(__name__)
 
 
+def _is_row_level_security_error(exc: Exception) -> bool:
+    """Return True when an exception message looks like a Postgres RLS failure."""
+    message = str(exc).lower()
+    return (
+        "row-level security" in message
+        or "row level security" in message
+        or "violates row-level security policy" in message
+    )
+
+
 class SlackConnector(BaseConnector):
     """Connector for Slack workspace data."""
 
@@ -592,6 +602,25 @@ Send a message to a Slack channel, DM, or user.
             Tuple of (activities_count, channels_with_messages_count).
         """
         logger.info("[Slack Sync] Starting Slack activity sync for org=%s", self.organization_id)
+        if self._integration:
+            logger.info(
+                "[Slack Sync] Activity sync context org=%s integration=%s integration_user_id=%s connected_by_user_id=%s connector_user_id=%s share_synced_data=%s visibility=%s team_id=%s",
+                self.organization_id,
+                self._integration.id,
+                self._integration.user_id,
+                self._integration.connected_by_user_id,
+                self.user_id,
+                self._integration.share_synced_data,
+                "team" if self._integration.share_synced_data else "owner_only",
+                self.team_id,
+            )
+            if not self._integration.share_synced_data and not self.user_id:
+                logger.warning(
+                    "[Slack Sync] Owner-only activity sync is running without connector user_id org=%s integration=%s integration_user_id=%s; RLS writes may fail",
+                    self.organization_id,
+                    self._integration.id,
+                    self._integration.user_id,
+                )
         # Broadcast that we're starting
         await broadcast_sync_progress(
             organization_id=self.organization_id,
@@ -635,10 +664,31 @@ Send a message to a Slack channel, DM, or user.
         count = 0
         channels_with_messages = 0
         user_info_cache: dict[str, dict[str, Any]] = {}
-        async with get_session(organization_id=self.organization_id) as session:
+        session_user_id: str | None = None
+        if self.user_id:
+            session_user_id = self.user_id
+        elif self._integration and self._integration.user_id:
+            session_user_id = str(self._integration.user_id)
+        elif self._integration and self._integration.connected_by_user_id:
+            session_user_id = str(self._integration.connected_by_user_id)
+        logger.info(
+            "[Slack Sync] Opening activity sync DB session org=%s session_user_id=%s connector_user_id=%s integration_id=%s",
+            self.organization_id,
+            session_user_id,
+            self.user_id,
+            self._integration.id if self._integration else None,
+        )
+        async with get_session(
+            organization_id=self.organization_id,
+            user_id=session_user_id,
+        ) as session:
             for channel in channels:
                 channel_id = channel.get("id", "")
                 channel_name = channel.get("name", "unknown")
+                last_message_ts: str | None = None
+                last_message_user_id: str | None = None
+                last_source_id: str | None = None
+                last_visibility: str | None = None
                 logger.debug(
                     "[Slack Sync] Fetching messages for channel=%s (%s)",
                     channel_name,
@@ -676,6 +726,12 @@ Send a message to a Slack channel, DM, or user.
 
                         activity = self._normalize_message(msg, channel_id, channel_name)
                         if activity:
+                            last_message_ts = str(msg.get("ts")) if msg.get("ts") is not None else None
+                            last_message_user_id = (
+                                str(msg.get("user")) if msg.get("user") is not None else None
+                            )
+                            last_source_id = activity.source_id
+                            last_visibility = str(getattr(activity, "visibility", None))
                             now: datetime = datetime.utcnow()
                             logger.debug(
                                 "[Slack Sync] Upserting message source_id=%s channel=%s ts=%s",
@@ -688,6 +744,9 @@ Send a message to a Slack channel, DM, or user.
                                 .values(
                                     id=activity.id,
                                     organization_id=activity.organization_id,
+                                    integration_id=activity.integration_id,
+                                    owner_user_id=activity.owner_user_id,
+                                    visibility=activity.visibility,
                                     source_system=activity.source_system,
                                     source_id=activity.source_id,
                                     type=activity.type,
@@ -705,6 +764,9 @@ Send a message to a Slack channel, DM, or user.
                                     ],
                                     index_where=Activity.source_id.is_not(None),
                                     set_={
+                                        "integration_id": activity.integration_id,
+                                        "owner_user_id": activity.owner_user_id,
+                                        "visibility": activity.visibility,
                                         "subject": activity.subject,
                                         "description": activity.description,
                                         "custom_fields": activity.custom_fields,
@@ -731,6 +793,27 @@ Send a message to a Slack channel, DM, or user.
                 except Exception as e:
                     # Rollback so the session is usable for the next channel
                     await session.rollback()
+                    if _is_row_level_security_error(e):
+                        logger.error(
+                            "[Slack Sync] RLS error while syncing channel org=%s integration=%s integration_user_id=%s connected_by_user_id=%s connector_user_id=%s session_user_id=%s share_synced_data=%s channel=%s channel_id=%s is_private=%s is_member=%s oldest_ts=%s last_message_ts=%s last_message_user_id=%s last_source_id=%s last_visibility=%s",
+                            self.organization_id,
+                            self._integration.id if self._integration else None,
+                            self._integration.user_id if self._integration else None,
+                            self._integration.connected_by_user_id if self._integration else None,
+                            self.user_id,
+                            session_user_id,
+                            self._integration.share_synced_data if self._integration else None,
+                            channel_name,
+                            channel_id,
+                            channel.get("is_private"),
+                            channel.get("is_member"),
+                            oldest_ts,
+                            last_message_ts,
+                            last_message_user_id,
+                            last_source_id,
+                            last_visibility,
+                            exc_info=True,
+                        )
                     logger.warning(
                         "[Slack Sync] Error fetching messages from channel=%s (%s): %s",
                         channel_name,
