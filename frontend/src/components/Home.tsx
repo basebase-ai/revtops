@@ -1,16 +1,16 @@
 /**
  * Home view - displays either a custom app (if configured for the org)
- * or the default VP Sales pipeline view.
- *
- * A gear icon in the header lets users pick which app to show.
+ * or the semantic workstream map (clusters of team conversations by topic).
  */
 
-import { useEffect, useState, useMemo, useCallback } from 'react';
-import { apiRequest, API_BASE } from '../lib/api';
-import { formatDateOnly } from '../lib/dates';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { fetchWorkstreams } from '../api/workstreams';
+import { apiRequest } from '../lib/api';
 import { useAppStore, useIntegrations } from '../store';
+import type { WorkstreamsResponse } from '../store/types';
 import { SandpackAppRenderer } from './apps/SandpackAppRenderer';
 import { HomeAppPicker } from './apps/HomeAppPicker';
+import { WorkstreamMap } from './WorkstreamMap';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -24,62 +24,15 @@ interface HomeAppData {
   frontendCodeCompiled?: string | null;
 }
 
-interface Deal {
-  id: string;
-  name: string;
-  amount: number | null;
-  stage: string | null;
-  stage_probability: number | null;
-  close_date: string | null;
-  pipeline_id: string | null;
-  pipeline_name: string | null;
-  source_system: string | null;
-  source_id: string | null;
-}
-
-interface Pipeline {
-  id: string;
-  name: string;
-  is_default: boolean;
-}
-
-interface DealsApiResponse {
-  deals: Array<{
-    id: string;
-    name: string;
-    amount: number | null;
-    stage: string | null;
-    stage_probability: number | null;
-    close_date: string | null;
-    pipeline_id: string | null;
-    pipeline_name: string | null;
-    source_system?: string | null;
-    source_id?: string | null;
-  }>;
-  total: number;
-}
-
-interface PipelinesApiResponse {
-  pipelines: Array<{
-    id: string;
-    name: string;
-    is_default: boolean;
-  }>;
-  total: number;
-}
-
-const DEFAULT_STAGE_PROBABILITY = 50;
-
-interface PipelineWithDeals {
-  pipeline: Pipeline;
-  deals: Deal[];
-  totalAll: number;
-  totalProbAdjusted: number;
-}
-
 // ---------------------------------------------------------------------------
 // Home Component
 // ---------------------------------------------------------------------------
+
+const WORKSTREAM_WINDOW_OPTIONS: { value: number; label: string }[] = [
+  { value: 24, label: '24h' },
+  { value: 168, label: '7d' },
+  { value: 720, label: '30d' },
+];
 
 export function Home(): JSX.Element {
   const organization = useAppStore((state) => state.organization);
@@ -87,6 +40,7 @@ export function Home(): JSX.Element {
   const setPendingChatInput = useAppStore((state) => state.setPendingChatInput);
   const setPendingChatAutoSend = useAppStore((state) => state.setPendingChatAutoSend);
   const setCurrentView = useAppStore((state) => state.setCurrentView);
+  const setCurrentChatId = useAppStore((state) => state.setCurrentChatId);
 
   // Home app state
   const [homeApp, setHomeApp] = useState<HomeAppData | null>(null);
@@ -94,11 +48,14 @@ export function Home(): JSX.Element {
   const [showPicker, setShowPicker] = useState<boolean>(false);
   const [orgAppCount, setOrgAppCount] = useState<number>(0);
 
-  // Pipeline view state
-  const [deals, setDeals] = useState<Deal[]>([]);
-  const [pipelines, setPipelines] = useState<Pipeline[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  // Workstream map state (default view when no custom app)
+  const [workstreamWindow, setWorkstreamWindow] = useState<number>(24);
+  const [workstreamData, setWorkstreamData] = useState<WorkstreamsResponse | null>(null);
+  const [workstreamLoading, setWorkstreamLoading] = useState<boolean>(false);
+  const [workstreamError, setWorkstreamError] = useState<string | null>(null);
+  const mapContainerRef = useRef<HTMLDivElement>(null);
+  const [mapSize, setMapSize] = useState({ width: 800, height: 500 });
+
   
   const integrations = useIntegrations();
   const hasConnectedSources: boolean = integrations.some((i) => i.isActive);
@@ -119,137 +76,54 @@ export function Home(): JSX.Element {
     void fetchHomeApp();
   }, [organization?.id]);
 
-  // Fetch pipeline data
-  const fetchData = useCallback(async (): Promise<void> => {
+  // Fetch workstreams for map (when no custom home app)
+  const fetchWorkstreamsData = useCallback(async (): Promise<void> => {
     if (!organization?.id) return;
-    setLoading(true);
-    setError(null);
-
-    try {
-      const pipelinesRes = await fetch(
-        `${API_BASE}/deals/pipelines?organization_id=${organization.id}`,
-        { credentials: 'include' }
-      );
-
-      if (pipelinesRes.ok) {
-        const pipelinesData = await pipelinesRes.json() as PipelinesApiResponse;
-        setPipelines(pipelinesData.pipelines);
-      }
-
-      const dealsRes = await fetch(
-        `${API_BASE}/deals?organization_id=${organization.id}&limit=200&open_only=true`,
-        { credentials: 'include' }
-      );
-
-      if (!dealsRes.ok) {
-        throw new Error('Failed to fetch deals');
-      }
-
-      const dealsData = await dealsRes.json() as DealsApiResponse;
-      setDeals(
-        dealsData.deals.map(
-          (d): Deal => ({
-            ...d,
-            source_system: d.source_system ?? null,
-            source_id: d.source_id ?? null,
-          })
-        )
-      );
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
-    } finally {
-      setLoading(false);
+    setWorkstreamLoading(true);
+    setWorkstreamError(null);
+    const { data, error: err } = await fetchWorkstreams(workstreamWindow);
+    if (err) {
+      setWorkstreamError(err);
+      setWorkstreamData(null);
+    } else if (data) {
+      setWorkstreamData(data);
     }
-  }, [organization?.id]);
+    setWorkstreamLoading(false);
+  }, [organization?.id, workstreamWindow]);
 
-  // Fetch pipeline data (only when no home app is set)
   useEffect(() => {
-    if (!organization?.id) return;
-    if (homeAppLoading) return;
-    if (homeApp !== null) {
-      setLoading(false);
-      return;
-    }
+    if (!organization?.id || homeApp !== null || homeAppLoading) return;
+    void fetchWorkstreamsData();
+  }, [organization?.id, homeApp, homeAppLoading, fetchWorkstreamsData]);
 
-    void fetchData();
-  }, [organization?.id, homeAppLoading, homeApp, fetchData]);
+  // Re-fetch workstreams when backend broadcasts workstreams_stale (e.g. after embedding update)
+  useEffect(() => {
+    const handler = (): void => {
+      void fetchWorkstreamsData();
+    };
+    window.addEventListener('workstreams-stale', handler);
+    return () => window.removeEventListener('workstreams-stale', handler);
+  }, [fetchWorkstreamsData]);
 
-  // Group deals by pipeline
-  const pipelinesWithDeals = useMemo((): PipelineWithDeals[] => {
-    const sortedPipelines = [...pipelines].sort((a, b) => {
-      if (a.is_default && !b.is_default) return -1;
-      if (!a.is_default && b.is_default) return 1;
-      return a.name.localeCompare(b.name);
+  // Measure map container for WorkstreamMap dimensions
+  useEffect(() => {
+    const el = mapContainerRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver((entries) => {
+      const { width, height } = entries[0]?.contentRect ?? { width: 800, height: 500 };
+      setMapSize({ width: Math.max(200, width), height: Math.max(300, height) });
     });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
-    const pipelineIds = new Set(pipelines.map((p) => p.id));
-
-    const result: PipelineWithDeals[] = sortedPipelines.map((pipeline) => {
-      const pipelineDeals = deals.filter((deal) => deal.pipeline_id === pipeline.id);
-      const totalAll = pipelineDeals.reduce((sum, d) => sum + (d.amount ?? 0), 0);
-      const totalProbAdjusted = pipelineDeals.reduce(
-        (sum, d) =>
-          sum +
-          (d.amount ?? 0) * ((d.stage_probability ?? DEFAULT_STAGE_PROBABILITY) / 100),
-        0
-      );
-      return { pipeline, deals: pipelineDeals, totalAll, totalProbAdjusted };
-    });
-
-    const orphanedDeals = deals.filter(
-      (deal) => !deal.pipeline_id || !pipelineIds.has(deal.pipeline_id)
-    );
-    if (orphanedDeals.length > 0) {
-      const totalAll = orphanedDeals.reduce((sum, d) => sum + (d.amount ?? 0), 0);
-      const totalProbAdjusted = orphanedDeals.reduce(
-        (sum, d) =>
-          sum +
-          (d.amount ?? 0) * ((d.stage_probability ?? DEFAULT_STAGE_PROBABILITY) / 100),
-        0
-      );
-      result.push({
-        pipeline: { id: '__unassigned__', name: 'Unassigned', is_default: false },
-        deals: orphanedDeals,
-        totalAll,
-        totalProbAdjusted,
-      });
-    }
-
-    return result;
-  }, [pipelines, deals]);
-
-  const totalDeals: number = deals.length;
-  const grandTotalAll = useMemo(
-    () => pipelinesWithDeals.reduce((sum, p) => sum + p.totalAll, 0),
-    [pipelinesWithDeals]
+  const handleSelectConversation = useCallback(
+    (conversationId: string) => {
+      setCurrentChatId(conversationId);
+      setCurrentView('chat');
+    },
+    [setCurrentChatId, setCurrentView]
   );
-  const grandTotalProbAdjusted = useMemo(
-    () => pipelinesWithDeals.reduce((sum, p) => sum + p.totalProbAdjusted, 0),
-    [pipelinesWithDeals]
-  );
-
-  const formatCurrency = (amount: number | null): string => {
-    if (amount === null) return '—';
-    return new Intl.NumberFormat('en-US', {
-      style: 'currency',
-      currency: 'USD',
-      minimumFractionDigits: 0,
-      maximumFractionDigits: 0,
-    }).format(amount);
-  };
-
-  const formatDate = (dateStr: string | null): string => {
-    if (!dateStr) return '—';
-    return formatDateOnly(dateStr);
-  };
-
-  const handleDealClick = useCallback((deal: Deal) => {
-    const question = `Summarize the "${deal.name}" deal${deal.pipeline_name ? ` in the ${deal.pipeline_name} pipeline` : ''}. Include current stage, next steps, and recent activity.`;
-    setPendingChatInput(question);
-    setPendingChatAutoSend(true);
-    startNewChat();
-    setCurrentView('chat');
-  }, [setPendingChatAutoSend, setPendingChatInput, setCurrentView, startNewChat]);
 
   const handleAppSelected = useCallback((appId: string | null) => {
     if (appId === null) {
@@ -270,7 +144,7 @@ export function Home(): JSX.Element {
   // Loading state
   // ---------------------------------------------------------------------------
 
-  if (homeAppLoading || loading) {
+  if (homeAppLoading) {
     return (
       <div className="flex-1 flex items-center justify-center">
         <div className="flex items-center gap-3 text-surface-400">
@@ -331,17 +205,17 @@ export function Home(): JSX.Element {
   }
 
   // ---------------------------------------------------------------------------
-  // Default Pipeline View
+  // Default: Workstream Map (semantic Home)
   // ---------------------------------------------------------------------------
 
-  if (error) {
+  if (workstreamError && !workstreamData) {
     return (
       <div className="flex-1 flex items-center justify-center">
         <div className="text-center">
-          <div className="text-red-400 mb-2">Failed to load deals</div>
-          <div className="text-surface-500 text-sm">{error}</div>
+          <div className="text-red-400 mb-2">Failed to load workstreams</div>
+          <div className="text-surface-500 text-sm">{workstreamError}</div>
           <button
-            onClick={() => void fetchData()}
+            onClick={() => void fetchWorkstreamsData()}
             className="btn-secondary mt-4"
           >
             Try again
@@ -354,23 +228,37 @@ export function Home(): JSX.Element {
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
       <header className="hidden md:flex h-14 border-b border-surface-800 items-center justify-between px-4 md:px-6">
-        <h1 className="text-lg font-semibold text-surface-100">Pipelines</h1>
-        {orgAppCount > 0 && (
-          <button
-            onClick={() => setShowPicker(true)}
-            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md hover:bg-surface-800 text-surface-400 hover:text-surface-200 transition-colors text-xs"
-            title="Customize Home"
+        <h1 className="text-lg font-semibold text-surface-100">Home</h1>
+        <div className="flex items-center gap-2">
+          <select
+            value={workstreamWindow}
+            onChange={(e) => setWorkstreamWindow(Number(e.target.value))}
+            className="bg-surface-800 border border-surface-600 rounded-md px-2.5 py-1.5 text-sm text-surface-200"
+            aria-label="Activity time window"
           >
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-            </svg>
-            Customize
-          </button>
-        )}
+            {WORKSTREAM_WINDOW_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+          {orgAppCount > 0 && (
+            <button
+              onClick={() => setShowPicker(true)}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md hover:bg-surface-800 text-surface-400 hover:text-surface-200 transition-colors text-xs"
+              title="Customize Home"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+              </svg>
+              Customize
+            </button>
+          )}
+        </div>
       </header>
 
-      <div className="flex-1 overflow-auto p-4 md:p-6">
+      <div className="flex-1 overflow-auto p-4 md:p-6 flex flex-col">
         {/* Banner: "Choose App" when org has apps, "Ask Basebase" when none */}
         {orgAppCount > 0 ? (
           <div className="mb-4 md:mb-6 bg-surface-800/60 border border-surface-700 rounded-xl p-4">
@@ -455,141 +343,53 @@ export function Home(): JSX.Element {
           </div>
         )}
 
-        {pipelinesWithDeals.length === 0 && totalDeals === 0 ? (
-          <div className="text-center py-12">
-            <svg className="w-12 h-12 text-surface-600 mx-auto mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4" />
-            </svg>
-            <h3 className="text-surface-300 font-medium mb-1">No deals yet</h3>
-            <p className="text-surface-500 text-sm mb-3">
-              Connect your CRM and sync data to see deals here.
-            </p>
-            <button
-              onClick={() => {
-                window.dispatchEvent(new CustomEvent('navigate', { detail: 'data-sources' }));
-              }}
-              className="inline-flex items-center gap-2 px-3 py-1.5 bg-primary-600 hover:bg-primary-500 text-white text-sm font-medium rounded-lg transition-colors"
-            >
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
-              </svg>
-              Connect Integrations
-            </button>
-          </div>
-        ) : (
-          <>
-            {/* VP-first: total pipeline value at top */}
-            {totalDeals > 0 && (
-              <section className="mb-6 md:mb-8">
-                <h2 className="text-sm font-medium text-surface-500 uppercase tracking-wider mb-3">Pipeline value (open deals)</h2>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
-                  <div className="bg-surface-900 border border-surface-800 rounded-xl p-5">
-                    <div className="text-xs text-surface-500 mb-1">If all close</div>
-                    <div className="text-2xl md:text-3xl font-semibold text-surface-100 tabular-nums">{formatCurrency(grandTotalAll)}</div>
-                  </div>
-                  <div className="bg-surface-900 border border-surface-800 rounded-xl p-5">
-                    <div className="text-xs text-surface-500 mb-1">Probability-adjusted</div>
-                    <div className="text-2xl md:text-3xl font-semibold text-surface-100 tabular-nums">{formatCurrency(grandTotalProbAdjusted)}</div>
-                  </div>
-                </div>
-                <div className="flex flex-wrap gap-3">
-                  {pipelinesWithDeals
-                    .filter((p) => p.deals.length > 0)
-                    .map(({ pipeline, deals: pipelineDeals, totalAll: pipeTotalAll, totalProbAdjusted: pipeProbAdjusted }) => (
-                      <div
-                        key={pipeline.id}
-                        className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-surface-800/80 border border-surface-700 text-sm"
-                      >
-                        <span className="font-medium text-surface-200">{pipeline.name}</span>
-                        <span className="text-surface-500">
-                          {pipelineDeals.length} deal{pipelineDeals.length !== 1 ? 's' : ''}
-                        </span>
-                        <span className="text-surface-400 tabular-nums">{formatCurrency(pipeTotalAll)}</span>
-                        <span className="text-surface-500">/</span>
-                        <span className="text-surface-300 tabular-nums">{formatCurrency(pipeProbAdjusted)}</span>
-                      </div>
-                    ))}
-                </div>
-              </section>
-            )}
-
-            {/* Deal list */}
-            <section>
-              <h2 className="text-sm font-medium text-surface-500 uppercase tracking-wider mb-3">
-                Deal list — {totalDeals} open deal{totalDeals !== 1 ? 's' : ''}
-              </h2>
-              <div className="space-y-6">
-                {pipelinesWithDeals.map(({ pipeline, deals: pipelineDeals, totalAll: pipeTotalAll, totalProbAdjusted: pipeProbAdjusted }) => (
-                  <div key={pipeline.id} className="bg-surface-900 border border-surface-800 rounded-xl overflow-hidden">
-                    <div className="px-4 py-3 border-b border-surface-800 flex flex-wrap items-center justify-between gap-2">
-                      <div className="flex items-center gap-2">
-                        <h3 className="text-base font-semibold text-surface-100">{pipeline.name}</h3>
-                        {pipeline.is_default && (
-                          <span className="px-1.5 py-0.5 text-[10px] font-medium bg-primary-500/20 text-primary-400 rounded">Default</span>
-                        )}
-                      </div>
-                      <div className="flex items-center gap-3 text-xs text-surface-400">
-                        <span>{pipelineDeals.length} deal{pipelineDeals.length !== 1 ? 's' : ''}</span>
-                        {pipelineDeals.length > 0 && (
-                          <>
-                            <span className="tabular-nums">{formatCurrency(pipeTotalAll)}</span>
-                            <span className="text-surface-500">/</span>
-                            <span className="tabular-nums">{formatCurrency(pipeProbAdjusted)}</span>
-                          </>
-                        )}
-                      </div>
-                    </div>
-
-                    {pipelineDeals.length === 0 ? (
-                      <div className="px-4 py-8 text-center text-surface-500 text-sm">No deals in this pipeline</div>
-                    ) : (
-                      <div className="overflow-x-auto">
-                        <table className="w-full min-w-[400px]">
-                          <thead>
-                            <tr className="border-b border-surface-800">
-                              <th className="text-left px-3 md:px-4 py-3 text-xs font-medium text-surface-500 uppercase tracking-wider">Deal</th>
-                              <th className="text-left px-3 md:px-4 py-3 text-xs font-medium text-surface-500 uppercase tracking-wider hidden sm:table-cell">Stage</th>
-                              <th className="text-right px-3 md:px-4 py-3 text-xs font-medium text-surface-500 uppercase tracking-wider">Amount</th>
-                              <th className="text-right px-3 md:px-4 py-3 text-xs font-medium text-surface-500 uppercase tracking-wider hidden sm:table-cell">Close</th>
-                              <th className="w-24 px-3 md:px-4 py-3 text-right text-xs font-medium text-surface-500 uppercase tracking-wider" />
-                            </tr>
-                          </thead>
-                          <tbody className="divide-y divide-surface-800">
-                            {pipelineDeals.map((deal) => (
-                              <tr key={deal.id} className="hover:bg-surface-800/50 transition-colors">
-                                <td className="px-3 md:px-4 py-3">
-                                  <div className="font-medium text-surface-200 truncate max-w-[200px] md:max-w-none">{deal.name}</div>
-                                </td>
-                                <td className="px-3 md:px-4 py-3 hidden sm:table-cell">
-                                  {deal.stage ? (
-                                    <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-primary-500/20 text-primary-400">{deal.stage}</span>
-                                  ) : (
-                                    <span className="text-surface-500">—</span>
-                                  )}
-                                </td>
-                                <td className="px-3 md:px-4 py-3 text-right text-surface-300 tabular-nums">{formatCurrency(deal.amount)}</td>
-                                <td className="px-3 md:px-4 py-3 text-right text-surface-400 text-sm hidden sm:table-cell">{formatDate(deal.close_date)}</td>
-                                <td className="px-3 md:px-4 py-3 text-right">
-                                  <button
-                                    type="button"
-                                    onClick={() => handleDealClick(deal)}
-                                    className="text-xs font-medium text-primary-400 hover:text-primary-300"
-                                  >
-                                    View details
-                                  </button>
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    )}
-                  </div>
-                ))}
+        {/* Workstream map */}
+        <div ref={mapContainerRef} className="flex-1 min-h-[400px] rounded-xl border border-surface-700 bg-surface-900/50 overflow-hidden">
+          {workstreamLoading && !workstreamData ? (
+            <div className="flex items-center justify-center h-full min-h-[400px]">
+              <div className="flex items-center gap-3 text-surface-400">
+                <svg className="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                </svg>
+                <span>Loading workstreams…</span>
               </div>
-            </section>
-          </>
-        )}
+            </div>
+          ) : workstreamData && (workstreamData.workstreams.length > 0 || workstreamData.unclustered.length > 0) ? (
+            <WorkstreamMap
+              workstreams={workstreamData.workstreams}
+              unclustered={workstreamData.unclustered}
+              onSelectConversation={handleSelectConversation}
+              width={mapSize.width}
+              height={mapSize.height}
+            />
+          ) : (
+            <div className="flex flex-col items-center justify-center h-full min-h-[400px] text-center px-4">
+              <svg className="w-12 h-12 text-surface-600 mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+              </svg>
+              <h3 className="text-surface-300 font-medium mb-1">No shared conversations yet</h3>
+              <p className="text-surface-500 text-sm mb-4 max-w-sm">
+                Start a shared chat with your team to see workstreams here.
+              </p>
+            </div>
+          )}
+        </div>
+
+        <div className="mt-4 flex items-center justify-between">
+          <button
+            type="button"
+            onClick={() => setCurrentView('chats')}
+            className="text-sm text-primary-400 hover:text-primary-300 font-medium"
+          >
+            View all chats
+          </button>
+          {workstreamData?.computed_at && (
+            <span className="text-xs text-surface-500">
+              Updated {new Date(workstreamData.computed_at).toLocaleTimeString()}
+            </span>
+          )}
+        </div>
       </div>
 
       {showPicker && (

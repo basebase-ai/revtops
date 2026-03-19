@@ -123,6 +123,38 @@ export interface ChatSummary {
   participants?: Participant[];
 }
 
+// Workstream (semantic Home) types
+export interface WorkstreamParticipant {
+  id: string;
+  name: string | null;
+  avatar_url: string | null;
+  message_count_in_window: number;
+}
+
+export interface WorkstreamConversation {
+  id: string;
+  title: string | null;
+  message_count: number;
+  messages_in_window: number;
+  last_message_at: string;
+  participants: WorkstreamParticipant[];
+  position: [number, number] | null;
+}
+
+export interface WorkstreamItem {
+  id: string;
+  label: string;
+  description: string;
+  position: [number, number];
+  conversations: WorkstreamConversation[];
+}
+
+export interface WorkstreamsResponse {
+  workstreams: WorkstreamItem[];
+  unclustered: WorkstreamConversation[];
+  computed_at: string;
+}
+
 // Content block types (matches API)
 export interface TextBlock {
   type: "text";

@@ -19,6 +19,7 @@ from typing import Any, Literal, Optional
 from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.dialects.postgresql import ARRAY, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from pgvector.sqlalchemy import Vector
 
 from models.database import Base
 
@@ -119,6 +120,12 @@ class Conversation(Base):
     )
     last_message_preview: Mapped[Optional[str]] = mapped_column(
         String(200), nullable=True
+    )
+
+    # Semantic workstream clustering: vector representation of conversation content
+    embedding: Mapped[Optional[list[float]]] = mapped_column(Vector(1536), nullable=True)
+    embedding_message_count: Mapped[int] = mapped_column(
+        Integer, default=0, nullable=False
     )
 
     # Relationships

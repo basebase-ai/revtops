@@ -30,6 +30,7 @@ from models.credit_transaction import CreditTransaction
 from models.tracker_team import TrackerTeam
 from models.tracker_project import TrackerProject
 from models.tracker_issue import TrackerIssue
+from models.workstream_snapshot import WorkstreamSnapshot
 
 __all__ = [
     "Base",
@@ -68,4 +69,5 @@ __all__ = [
     "TrackerTeam",
     "TrackerProject",
     "TrackerIssue",
+    "WorkstreamSnapshot",
 ]

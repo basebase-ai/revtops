@@ -424,7 +424,7 @@ class TaskManager:
         conversation_id: str,
         organization_id: str,
     ) -> None:
-        """Fire-and-forget: generate summary and broadcast via WebSocket."""
+        """Fire-and-forget: generate summary, broadcast, then update conversation embedding."""
         try:
             from services.conversation_summary import generate_conversation_summary
             from api.websockets import sync_broadcaster
@@ -439,12 +439,38 @@ class TaskManager:
                         "summary": summary,
                     },
                 )
+
+            updated = await self._update_embedding_and_notify(conversation_id, organization_id)
+            if updated:
+                await sync_broadcaster.broadcast(
+                    organization_id,
+                    "workstreams_stale",
+                    {},
+                )
         except Exception:
             logger.warning(
                 "Background summary generation failed for conversation %s",
                 conversation_id,
                 exc_info=True,
             )
+
+    async def _update_embedding_and_notify(
+        self,
+        conversation_id: str,
+        organization_id: str,
+    ) -> bool:
+        """Update conversation embedding if stale. Returns True if updated."""
+        try:
+            from services.conversation_embeddings import update_conversation_embedding
+
+            return await update_conversation_embedding(conversation_id, organization_id)
+        except Exception:
+            logger.warning(
+                "Background embedding update failed for conversation %s",
+                conversation_id,
+                exc_info=True,
+            )
+            return False
 
     async def _broadcast(self, task_id: str, message: dict[str, Any]) -> None:
         """Broadcast a message to all WebSockets subscribed to a task."""

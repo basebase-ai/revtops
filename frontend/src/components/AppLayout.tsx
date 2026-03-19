@@ -142,7 +142,11 @@ interface WsSummaryUpdated {
   summary: { overall: string; recent: string; message_count_at_generation: number; updated_at: string };
 }
 
-type WsMessage = WsActiveTasks | WsTaskStarted | WsTaskChunk | WsTaskComplete | WsConversationCreated | WsCatchup | WsCrmApprovalResult | WsToolApprovalResult | WsToolProgress | WsError | WsNewMessage | WsSummaryUpdated;
+interface WsWorkstreamsStale {
+  type: 'workstreams_stale';
+}
+
+type WsMessage = WsActiveTasks | WsTaskStarted | WsTaskChunk | WsTaskComplete | WsConversationCreated | WsCatchup | WsCrmApprovalResult | WsToolApprovalResult | WsToolProgress | WsError | WsNewMessage | WsSummaryUpdated | WsWorkstreamsStale;
 
 // Props
 interface AppLayoutProps {
@@ -551,6 +555,7 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
       'tool_approval_result',
       'new_message',
       'summary_updated',
+      'workstreams_stale',
     ].includes(type);
   }, []);
 
@@ -1420,6 +1425,11 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
           if (conversation_id && summary) {
             useAppStore.getState().setConversationSummary(conversation_id, summary);
           }
+          break;
+        }
+
+        case 'workstreams_stale': {
+          window.dispatchEvent(new Event('workstreams-stale'));
           break;
         }
 
