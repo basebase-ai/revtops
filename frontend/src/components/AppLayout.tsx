@@ -700,6 +700,43 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
                   },
                 });
               }
+            } else if (data.type === 'attachment_meta') {
+              const attachments = data.attachments as Array<{
+                filename: string;
+                mimeType: string;
+                size: number;
+                attachment_id: string;
+              }>;
+              const state = useAppStore.getState();
+              const convState = state.conversations[conversation_id];
+              if (convState && attachments?.length > 0) {
+                const idByFilename = new Map<string, string>();
+                for (const att of attachments) {
+                  idByFilename.set(att.filename, att.attachment_id);
+                }
+                const updated = convState.messages.map((msg) => {
+                  if (msg.role !== 'user') return msg;
+                  const hasUnlinkedAttachment: boolean = msg.contentBlocks.some(
+                    (b) => b.type === 'attachment' && !b.attachmentId && !(b as unknown as Record<string, unknown>)['attachment_id'],
+                  );
+                  if (!hasUnlinkedAttachment) return msg;
+                  return {
+                    ...msg,
+                    contentBlocks: msg.contentBlocks.map((block) => {
+                      if (block.type !== 'attachment') return block;
+                      const aid: string | undefined = idByFilename.get(block.filename);
+                      if (!aid) return block;
+                      return { ...block, attachmentId: aid };
+                    }),
+                  };
+                });
+                useAppStore.setState({
+                  conversations: {
+                    ...state.conversations,
+                    [conversation_id]: { ...convState, messages: updated },
+                  },
+                });
+              }
             } else if (data.type === 'tool_call_start') {
               const toolBlock = {
                 type: 'tool_use' as const,
@@ -1169,6 +1206,43 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
                           : block,
                       );
                       return { ...msg, contentBlocks: blocks };
+                    });
+                    useAppStore.setState({
+                      conversations: {
+                        ...state.conversations,
+                        [conversationId]: { ...convState, messages: updated },
+                      },
+                    });
+                  }
+                } else if (data.type === 'attachment_meta') {
+                  const attachments = data.attachments as Array<{
+                    filename: string;
+                    mimeType: string;
+                    size: number;
+                    attachment_id: string;
+                  }>;
+                  const state = useAppStore.getState();
+                  const convState = state.conversations[conversationId];
+                  if (convState && attachments?.length > 0) {
+                    const idByFilename = new Map<string, string>();
+                    for (const att of attachments) {
+                      idByFilename.set(att.filename, att.attachment_id);
+                    }
+                    const updated = convState.messages.map((msg) => {
+                      if (msg.role !== 'user') return msg;
+                      const hasUnlinkedAttachment: boolean = msg.contentBlocks.some(
+                        (b) => b.type === 'attachment' && !b.attachmentId && !(b as unknown as Record<string, unknown>)['attachment_id'],
+                      );
+                      if (!hasUnlinkedAttachment) return msg;
+                      return {
+                        ...msg,
+                        contentBlocks: msg.contentBlocks.map((block) => {
+                          if (block.type !== 'attachment') return block;
+                          const aid: string | undefined = idByFilename.get(block.filename);
+                          if (!aid) return block;
+                          return { ...block, attachmentId: aid };
+                        }),
+                      };
                     });
                     useAppStore.setState({
                       conversations: {

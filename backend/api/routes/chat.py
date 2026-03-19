@@ -21,6 +21,7 @@ from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi.responses import Response
 import logging
 import redis.asyncio as aioredis
 
@@ -31,9 +32,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.auth_middleware import AuthContext, get_current_auth
 from config import get_redis_connection_kwargs, settings
-from models.database import get_session
+from models.chat_attachment import ChatAttachment
 from models.chat_message import ChatMessage
 from models.conversation import Conversation
+from models.database import get_session
 from models.user import User
 from services.file_handler import store_file, MAX_FILE_SIZE
 from services.slack_identity import get_slack_user_ids_for_revtops_user
@@ -1057,3 +1059,58 @@ async def upload_file(
         mime_type=stored.mime_type,
         size=stored.size,
     )
+
+
+@router.get("/attachments/{attachment_id}", response_class=Response)
+async def get_chat_attachment(
+    attachment_id: str,
+    auth: AuthContext = Depends(get_current_auth),
+) -> Response:
+    """
+    Get a chat message attachment by ID (file bytes).
+
+    Returns the file with Content-Type and Content-Disposition.
+    Access is restricted to users who can see the conversation.
+    """
+    try:
+        attachment_uuid = UUID(attachment_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid attachment ID format")
+
+    org_id: str | None = auth.organization_id_str
+    if not org_id:
+        raise HTTPException(status_code=403, detail="Organization context required")
+
+    async with get_session(organization_id=org_id) as session:
+        stmt = (
+            select(ChatAttachment)
+            .join(Conversation, ChatAttachment.conversation_id == Conversation.id)
+            .where(ChatAttachment.id == attachment_uuid)
+            .where(_build_conversation_access_filter(auth))
+        )
+        result = await session.execute(stmt)
+        attachment: ChatAttachment | None = result.scalar_one_or_none()
+
+        if not attachment:
+            slack_user_ids = await _get_slack_user_ids(auth, session=session)
+            if slack_user_ids:
+                stmt_slack = (
+                    select(ChatAttachment)
+                    .join(Conversation, ChatAttachment.conversation_id == Conversation.id)
+                    .where(ChatAttachment.id == attachment_uuid)
+                    .where(_build_conversation_access_filter(auth, slack_user_ids))
+                )
+                result_slack = await session.execute(stmt_slack)
+                attachment = result_slack.scalar_one_or_none()
+
+        if not attachment:
+            raise HTTPException(status_code=404, detail="Attachment not found")
+
+        safe_filename: str = attachment.filename.replace('"', "%22")
+        return Response(
+            content=attachment.content,
+            media_type=attachment.mime_type,
+            headers={
+                "Content-Disposition": f'inline; filename="{safe_filename}"',
+            },
+        )

@@ -178,6 +178,8 @@ export interface AttachmentBlock {
   filename: string;
   mimeType: string;
   size: number;
+  /** Set when attachment was persisted (sent message); enables click-to-view. API may return attachment_id. */
+  attachmentId?: string;
 }
 
 export type ContentBlock =

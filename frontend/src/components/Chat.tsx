@@ -175,6 +175,8 @@ export function Chat({
   // Local state
   const [input, setInput] = useState<string>('');
   const [currentArtifactId, setCurrentArtifactId] = useState<string | null>(null);
+  const [currentAttachmentId, setCurrentAttachmentId] = useState<string | null>(null);
+  const [currentAttachmentMeta, setCurrentAttachmentMeta] = useState<{ filename: string; mimeType: string } | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(false);
 
   // App preview panel state
@@ -413,6 +415,8 @@ export function Chat({
   useEffect(() => {
     setLocalConversationId(chatId ?? null);
     setCurrentArtifactId(null);
+    setCurrentAttachmentId(null);
+    setCurrentAttachmentMeta(null);
     // Reset preview state for new conversation
     setPreviewDismissed(false);
     setPreviewAppId(null);
@@ -1514,8 +1518,9 @@ export function Chat({
                     key={msg.id}
                     message={msg}
                     toolApprovals={toolApprovals}
-                    onArtifactClick={(a) => setCurrentArtifactId(a.id)}
-                    onAppClick={(app: AppBlock["app"]) => { setPreviewAppId(app.id); setPreviewCollapsed(false); setPreviewDismissed(false); setCurrentArtifactId(null); }}
+                    onArtifactClick={(a) => { setCurrentArtifactId(a.id); setCurrentAttachmentId(null); setCurrentAttachmentMeta(null); }}
+                    onAttachmentClick={(id, meta) => { setCurrentAttachmentId(id); setCurrentAttachmentMeta(meta); setCurrentArtifactId(null); }}
+                    onAppClick={(app: AppBlock["app"]) => { setPreviewAppId(app.id); setPreviewCollapsed(false); setPreviewDismissed(false); setCurrentArtifactId(null); setCurrentAttachmentId(null); setCurrentAttachmentMeta(null); }}
                     onToolApprove={handleToolApprove}
                     onToolCancel={handleToolCancel}
                     onToolClick={(block) => setSelectedToolCall({
@@ -1562,21 +1567,21 @@ export function Chat({
           </div>
         </div>
 
-        {/* Artifact sidebar - overlay on mobile, sidebar on desktop */}
-        {currentArtifact && (
+        {/* Artifact / attachment sidebar - overlay on mobile, sidebar on desktop */}
+        {(currentArtifact || currentAttachmentId) && (
           <>
             {/* Mobile backdrop */}
             <div
               className="fixed inset-0 bg-black/50 z-40 md:hidden animate-fade-in"
-              onClick={() => setCurrentArtifactId(null)}
+              onClick={() => { setCurrentArtifactId(null); setCurrentAttachmentId(null); setCurrentAttachmentMeta(null); }}
             />
             <div className="fixed inset-y-0 right-0 w-full max-w-md z-50 animate-slide-in-right md:relative md:w-1/2 md:z-auto md:animate-none md:transition-all md:duration-300 md:ease-in-out border-l border-surface-800 bg-surface-900 p-4 overflow-y-auto">
               <div className="flex items-center justify-between mb-2">
                 <h2 className="text-lg font-semibold text-surface-100 truncate">
-                  {currentArtifact.title}
+                  {currentArtifact ? currentArtifact.title : (currentAttachmentMeta?.filename ?? 'Attachment')}
                 </h2>
                 <button
-                  onClick={() => setCurrentArtifactId(null)}
+                  onClick={() => { setCurrentArtifactId(null); setCurrentAttachmentId(null); setCurrentAttachmentMeta(null); }}
                   className="text-surface-400 hover:text-surface-200 p-1 -mr-1"
                 >
                   <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -1584,7 +1589,14 @@ export function Chat({
                   </svg>
                 </button>
               </div>
-              <ArtifactViewer artifact={currentArtifact} />
+              {currentArtifact ? (
+                <ArtifactViewer artifact={currentArtifact} />
+              ) : currentAttachmentId && currentAttachmentMeta ? (
+                <ArtifactViewer
+                  attachmentId={currentAttachmentId}
+                  attachmentMeta={currentAttachmentMeta}
+                />
+              ) : null}
             </div>
           </>
         )}
@@ -1922,6 +1934,7 @@ function MessageWithBlocks({
   toolApprovals,
   onArtifactClick,
   onAppClick,
+  onAttachmentClick,
   onToolApprove,
   onToolCancel,
   onToolClick,
@@ -1933,6 +1946,7 @@ function MessageWithBlocks({
   toolApprovals: Map<string, { operationId: string; toolName: string; isProcessing: boolean; result: unknown }>;
   onArtifactClick: (artifact: AnyArtifact) => void;
   onAppClick: (app: AppBlock["app"]) => void;
+  onAttachmentClick?: (id: string, meta: { filename: string; mimeType: string }) => void;
   onToolApprove: (operationId: string, options?: Record<string, unknown>) => void;
   onToolCancel: (operationId: string) => void;
   onToolClick: (block: ToolUseBlock) => void;
@@ -1986,9 +2000,24 @@ function MessageWithBlocks({
             </div>
             {attachments.length > 0 && (
               <div className="flex flex-wrap gap-2 mt-1.5">
-                {attachments.map((att, i) => (
-                  <AttachmentCard key={`att-${i}`} filename={att.filename} mimeType={att.mimeType} size={att.size} />
-                ))}
+                {attachments.map((att, i) => {
+                  const attId: string | undefined =
+                    att.attachmentId ?? (att as { attachment_id?: string }).attachment_id;
+                  return (
+                    <AttachmentCard
+                      key={`att-${i}`}
+                      filename={att.filename}
+                      mimeType={att.mimeType}
+                      size={att.size}
+                      attachmentId={attId}
+                      onClick={
+                        attId && onAttachmentClick
+                          ? () => onAttachmentClick(attId, { filename: att.filename, mimeType: att.mimeType })
+                          : undefined
+                      }
+                    />
+                  );
+                })}
               </div>
             )}
             <div className="mt-0.5">
@@ -2030,9 +2059,24 @@ function MessageWithBlocks({
           </div>
           {attachments.length > 0 && (
             <div className="flex flex-wrap gap-2 justify-end mt-1.5">
-              {attachments.map((att, i) => (
-                <AttachmentCard key={`att-${i}`} filename={att.filename} mimeType={att.mimeType} size={att.size} />
-              ))}
+              {attachments.map((att, i) => {
+                const attId: string | undefined =
+                  att.attachmentId ?? (att as { attachment_id?: string }).attachment_id;
+                return (
+                  <AttachmentCard
+                    key={`att-${i}`}
+                    filename={att.filename}
+                    mimeType={att.mimeType}
+                    size={att.size}
+                    attachmentId={attId}
+                    onClick={
+                      attId && onAttachmentClick
+                        ? () => onAttachmentClick(attId, { filename: att.filename, mimeType: att.mimeType })
+                        : undefined
+                    }
+                  />
+                );
+              })}
             </div>
           )}
           <div className="mt-0.5">
@@ -2814,24 +2858,51 @@ function getFileIconColor(filename: string, mimeType: string): string {
 /**
  * Attachment card — used in both pending input and sent message bubbles.
  * Pass `onRemove` to show a dismiss button (for pending attachments).
+ * Pass `attachmentId` + `onClick` to make the card clickable (view attachment).
  */
 function AttachmentCard({
   filename,
   mimeType,
   size,
   onRemove,
+  attachmentId,
+  onClick,
 }: {
   filename: string;
   mimeType: string;
   size: number;
   onRemove?: () => void;
+  attachmentId?: string | null;
+  onClick?: () => void;
 }): JSX.Element {
   const label: string = getFileTypeLabel(filename, mimeType);
   const sizeStr: string = formatFileSize(size);
   const iconColor: string = getFileIconColor(filename, mimeType);
+  const isClickable: boolean = Boolean(attachmentId && onClick);
+
+  const baseClasses: string =
+    "relative group inline-flex items-center gap-2.5 rounded-xl bg-surface-800 border border-surface-700 px-3 py-2 max-w-[220px]";
+  const clickableClasses: string = isClickable
+    ? " cursor-pointer hover:bg-surface-750 hover:border-surface-600 transition-colors"
+    : "";
 
   return (
-    <div className="relative group inline-flex items-center gap-2.5 rounded-xl bg-surface-800 border border-surface-700 px-3 py-2 max-w-[220px]">
+    <div
+      className={baseClasses + clickableClasses}
+      role={isClickable ? "button" : undefined}
+      tabIndex={isClickable ? 0 : undefined}
+      onClick={isClickable ? onClick : undefined}
+      onKeyDown={
+        isClickable && onClick
+          ? (e: React.KeyboardEvent) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                onClick();
+              }
+            }
+          : undefined
+      }
+    >
       {/* File type icon */}
       <div className={`flex-shrink-0 w-9 h-9 rounded-lg flex items-center justify-center text-[10px] font-bold ${iconColor}`}>
         {label}
@@ -2845,7 +2916,10 @@ function AttachmentCard({
       {onRemove && (
         <button
           type="button"
-          onClick={onRemove}
+          onClick={(e: React.MouseEvent) => {
+            e.stopPropagation();
+            onRemove();
+          }}
           className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-surface-700 border border-surface-600 text-surface-400 hover:text-surface-100 hover:bg-surface-600 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
         >
           <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">

@@ -845,24 +845,48 @@ class ChatOrchestrator:
         if not self.conversation_id:
             self.conversation_id = await self._create_conversation()
 
-        # Resolve attachment metadata before save (files are consumed by _build_user_content)
+        # Resolve attachment metadata and persist file content before save (files are consumed by _build_user_content)
         attachment_meta: list[dict[str, Any]] = []
+        pre_generated_message_id: UUID | None = None
         if attachment_ids:
+            from models.chat_attachment import ChatAttachment
             from services.file_handler import retrieve_file, StoredFile
-            for aid in attachment_ids:
-                sf: StoredFile | None = retrieve_file(aid)
-                if sf is not None:
-                    attachment_meta.append({
-                        "type": "attachment",
-                        "filename": sf.filename,
-                        "mimeType": sf.mime_type,
-                        "size": sf.size,
-                    })
+
+            pre_generated_message_id = uuid4()
+            conv_uuid = UUID(self.conversation_id) if self.conversation_id else None
+            org_uuid = UUID(self.organization_id) if self.organization_id else None
+            if conv_uuid and org_uuid:
+                async with get_session(organization_id=self.organization_id) as session:
+                    for aid in attachment_ids:
+                        sf: StoredFile | None = retrieve_file(aid)
+                        if sf is not None:
+                            attachment_row = ChatAttachment(
+                                conversation_id=conv_uuid,
+                                message_id=pre_generated_message_id,
+                                filename=sf.filename,
+                                mime_type=sf.mime_type,
+                                size=sf.size,
+                                content=sf.data,
+                            )
+                            session.add(attachment_row)
+                            await session.flush()
+                            attachment_meta.append({
+                                "type": "attachment",
+                                "filename": sf.filename,
+                                "mimeType": sf.mime_type,
+                                "size": sf.size,
+                                "attachment_id": str(attachment_row.id),
+                            })
+                    await session.commit()
+
+            # Notify frontend of persisted attachment IDs so it can update optimistic message
+            if attachment_meta:
+                yield json.dumps({"type": "attachment_meta", "attachments": attachment_meta})
 
         # Fire-and-forget user message save — it's for persistence, not the Claude call.
         if save_user_message:
             message_to_persist = persisted_user_message if persisted_user_message is not None else user_message
-            asyncio.create_task(self._save_user_message_safe(message_to_persist, attachment_meta))
+            asyncio.create_task(self._save_user_message_safe(message_to_persist, attachment_meta, pre_generated_message_id))
 
         # Skip history DB call for new conversations (zero messages to load).
         if skip_history:
@@ -1567,10 +1591,11 @@ class ChatOrchestrator:
         self,
         user_msg: str,
         attachment_meta: list[dict[str, Any]] | None = None,
+        pre_generated_message_id: UUID | None = None,
     ) -> None:
         """Fire-and-forget wrapper for _save_user_message. Logs errors instead of raising."""
         try:
-            await self._save_user_message(user_msg, attachment_meta)
+            await self._save_user_message(user_msg, attachment_meta, pre_generated_message_id)
         except Exception as e:
             logger.warning("[Orchestrator] Background user message save failed: %s", e)
 
@@ -1777,6 +1802,7 @@ class ChatOrchestrator:
         self,
         user_msg: str,
         attachment_meta: list[dict[str, Any]] | None = None,
+        pre_generated_message_id: UUID | None = None,
     ) -> None:
         """Save user message to database immediately."""
         conv_uuid = UUID(self.conversation_id) if self.conversation_id else None
@@ -1788,7 +1814,7 @@ class ChatOrchestrator:
             blocks.extend(attachment_meta)
         blocks.append({"type": "text", "text": user_msg})
 
-        message_id = uuid4()
+        message_id: UUID = pre_generated_message_id if pre_generated_message_id is not None else uuid4()
         async with get_session(organization_id=self.organization_id) as session:
             message = ChatMessage(
                 id=message_id,

@@ -12,7 +12,7 @@
  * - Legacy data views (deals, accounts, pipelines)
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { apiRequest, API_BASE } from "../lib/api";
@@ -37,8 +37,15 @@ interface DataArtifact {
   data: Record<string, unknown>;
 }
 
-interface ArtifactViewerProps {
-  artifact: FileArtifact | DataArtifact;
+export interface AttachmentMeta {
+  filename: string;
+  mimeType: string;
+}
+
+export interface ArtifactViewerProps {
+  artifact?: FileArtifact | DataArtifact;
+  attachmentId?: string | null;
+  attachmentMeta?: AttachmentMeta | null;
   onDownload?: () => void;
 }
 
@@ -47,25 +54,102 @@ function isFileArtifact(artifact: FileArtifact | DataArtifact): artifact is File
   return "contentType" in artifact && "filename" in artifact;
 }
 
+type AttachmentDisplayType = "image" | "pdf" | "text" | "markdown";
+
+function attachmentDisplayType(mimeType: string): AttachmentDisplayType {
+  if (mimeType.startsWith("image/")) return "image";
+  if (mimeType === "application/pdf") return "pdf";
+  if (mimeType === "text/markdown" || mimeType === "text/x-markdown") return "markdown";
+  return "text";
+}
+
 export function ArtifactViewer({
   artifact,
+  attachmentId,
+  attachmentMeta,
   onDownload,
 }: ArtifactViewerProps): JSX.Element {
   const [content, setContent] = useState<string | null>(null);
+  const [blobUrl, setBlobUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState<boolean>(false);
   const [showDownloadMenu, setShowDownloadMenu] = useState<boolean>(false);
+  const [attachmentDisplay, setAttachmentDisplay] = useState<AttachmentDisplayType | null>(null);
+  const blobUrlRef = useRef<string | null>(null);
 
-  // Fetch content for file artifacts
+  const isAttachmentMode: boolean = Boolean(attachmentId && attachmentMeta);
+
+  // Fetch content for chat attachment (blob or text)
   useEffect(() => {
+    if (!isAttachmentMode || !attachmentId || !attachmentMeta) return;
+
+    const fetchAttachment = async (): Promise<void> => {
+      setLoading(true);
+      setError(null);
+      setContent(null);
+      if (blobUrlRef.current) {
+        URL.revokeObjectURL(blobUrlRef.current);
+        blobUrlRef.current = null;
+      }
+      setBlobUrl(null);
+      setAttachmentDisplay(null);
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        const token = session?.access_token ?? null;
+        const response = await fetch(`${API_BASE}/chat/attachments/${attachmentId}`, {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        });
+        if (!response.ok) {
+          const errBody = await response.text();
+          let msg = `HTTP ${response.status}`;
+          try {
+            const j = JSON.parse(errBody) as { detail?: string };
+            if (j.detail) msg = j.detail;
+          } catch {
+            // ignore
+          }
+          throw new Error(msg);
+        }
+        const contentType: string = response.headers.get("content-type") ?? attachmentMeta.mimeType;
+        const disp = attachmentDisplayType(contentType);
+        setAttachmentDisplay(disp);
+
+        if (disp === "text" || disp === "markdown") {
+          const text = await response.text();
+          setContent(text);
+        } else {
+          const blob = await response.blob();
+          const objectUrl = URL.createObjectURL(blob);
+          blobUrlRef.current = objectUrl;
+          setBlobUrl(objectUrl);
+        }
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Failed to load attachment");
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    void fetchAttachment();
+
+    return () => {
+      if (blobUrlRef.current) {
+        URL.revokeObjectURL(blobUrlRef.current);
+        blobUrlRef.current = null;
+      }
+    };
+  }, [isAttachmentMode, attachmentId, attachmentMeta?.filename, attachmentMeta?.mimeType]);
+
+  // Fetch content for file artifacts (existing behavior)
+  useEffect(() => {
+    if (isAttachmentMode || !artifact) return;
     if (!isFileArtifact(artifact)) return;
     if (artifact.content) {
       setContent(artifact.content);
       return;
     }
 
-    // Fetch content from API using authenticated request
     const fetchContent = async (): Promise<void> => {
       setLoading(true);
       setError(null);
@@ -85,10 +169,10 @@ export function ArtifactViewer({
     };
 
     void fetchContent();
-  }, [artifact]);
+  }, [artifact, isAttachmentMode]);
 
   const handleDownload = async (format: "markdown" | "pdf"): Promise<void> => {
-    if (!isFileArtifact(artifact)) return;
+    if (!artifact || !isFileArtifact(artifact)) return;
     setShowDownloadMenu(false);
 
     try {
@@ -138,8 +222,51 @@ export function ArtifactViewer({
     }
   };
 
+  // Handle chat attachment mode (blob or text from GET /api/chat/attachments/:id)
+  if (isAttachmentMode) {
+    return (
+      <div className="h-full flex flex-col">
+        <div className="flex-1 overflow-auto">
+          {loading && (
+            <div className="flex justify-center items-center h-32">
+              <div className="animate-spin w-6 h-6 border-2 border-surface-500 border-t-primary-500 rounded-full" />
+            </div>
+          )}
+          {error && (
+            <div className="p-4 rounded-lg bg-red-900/20 border border-red-700 text-red-300 text-sm">
+              {error}
+            </div>
+          )}
+          {!loading && !error && attachmentDisplay === "image" && blobUrl && (
+            <div className="flex justify-center p-2">
+              <img
+                src={blobUrl}
+                alt={attachmentMeta?.filename ?? "Attachment"}
+                className="max-w-full max-h-[70vh] object-contain rounded-lg"
+              />
+            </div>
+          )}
+          {!loading && !error && attachmentDisplay === "pdf" && blobUrl && (
+            <iframe
+              src={blobUrl}
+              title={attachmentMeta?.filename ?? "PDF"}
+              className="w-full h-[70vh] rounded-lg border border-surface-700"
+            />
+          )}
+          {!loading && !error && (attachmentDisplay === "text" || attachmentDisplay === "markdown") && content && (
+            attachmentDisplay === "markdown" ? (
+              <MarkdownViewer content={content} />
+            ) : (
+              <TextViewer content={content} onCopy={handleCopy} copied={copied} />
+            )
+          )}
+        </div>
+      </div>
+    );
+  }
+
   // Handle file-based artifacts
-  if (isFileArtifact(artifact)) {
+  if (artifact && isFileArtifact(artifact)) {
     return (
       <div className="h-full flex flex-col">
         {/* Header */}
@@ -209,19 +336,23 @@ export function ArtifactViewer({
   }
 
   // Handle legacy data artifacts
-  return (
-    <div className="h-full overflow-auto">
-      {/* Type badge */}
-      <div className="mb-4">
-        <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-primary-900 text-primary-200">
-          {artifact.type}
-        </span>
-      </div>
+  if (artifact) {
+    return (
+      <div className="h-full overflow-auto">
+        {/* Type badge */}
+        <div className="mb-4">
+          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-primary-900 text-primary-200">
+            {artifact.type}
+          </span>
+        </div>
 
-      {/* Data display */}
-      <div className="space-y-4">{renderLegacyData(artifact.data)}</div>
-    </div>
-  );
+        {/* Data display */}
+        <div className="space-y-4">{renderLegacyData(artifact.data)}</div>
+      </div>
+    );
+  }
+
+  return <></>;
 }
 
 // =============================================================================
