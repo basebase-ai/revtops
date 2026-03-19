@@ -1942,6 +1942,7 @@ function MessageWithBlocks({
 }): JSX.Element {
   const blocks = message.contentBlocks ?? [];
   const isUser = message.role === 'user';
+  const currentUser = useAppStore((s) => s.user);
   
   if (blocks.length === 0) {
     console.warn('[MessageWithBlocks] Empty contentBlocks for message:', message.id, message.role);
@@ -1973,9 +1974,9 @@ function MessageWithBlocks({
       };
       
       return (
-        <div className="flex gap-2 animate-slide-up">
+        <div className="flex items-start gap-2 animate-slide-up">
           {/* Avatar */}
-          <Avatar user={senderUser} size="sm" className="flex-shrink-0 rounded-md" />
+          <Avatar user={senderUser} size="md" className="flex-shrink-0 rounded-full" />
 
           {/* Content */}
           <div className="flex-1 max-w-[85%] overflow-hidden">
@@ -2001,14 +2002,26 @@ function MessageWithBlocks({
     }
     
     // Own messages (or private conversation) - right-aligned
+    const meUser = currentUser
+      ? {
+          id: currentUser.id,
+          name: currentUser.name ?? null,
+          email: currentUser.email ?? null,
+          avatarUrl: currentUser.avatarUrl ?? null,
+        }
+      : null;
     return (
-      <div className="flex gap-2 flex-row-reverse animate-slide-up">
-        {/* Avatar */}
-        <div className="flex-shrink-0 w-6 h-6 rounded-md flex items-center justify-center bg-primary-800">
-          <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
-          </svg>
-        </div>
+      <div className="flex items-start gap-2 flex-row-reverse animate-slide-up">
+        {/* Avatar - use profile photo when available */}
+        {meUser ? (
+          <Avatar user={meUser} size="md" className="flex-shrink-0 rounded-full" />
+        ) : (
+          <div className="flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center bg-primary-800">
+            <svg className="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+            </svg>
+          </div>
+        )}
 
         {/* Content: bubble + attachments + timestamp, all right-aligned */}
         <div className="flex-1 max-w-[85%] overflow-hidden text-right">
@@ -2088,13 +2101,13 @@ function MessageWithBlocks({
   };
 
   return (
-    <div className="flex gap-2">
+    <div className="flex items-start gap-2">
       {/* Avatar */}
-      <div className="flex-shrink-0 w-6 h-6 rounded-md bg-surface-800 flex items-center justify-center">
+      <div className="flex-shrink-0 w-8 h-8 rounded-full bg-surface-800 flex items-center justify-center overflow-hidden">
         <img 
           src={LOGO_PATH} 
           alt={APP_NAME} 
-          className="w-3.5 h-3.5" 
+          className="w-4 h-4 object-contain" 
         />
       </div>
 
@@ -2691,10 +2704,10 @@ function ToolCallModal({
  */
 function ThinkingIndicator(): JSX.Element {
   return (
-    <div className="flex gap-3">
+    <div className="flex items-start gap-2">
       {/* Avatar */}
-      <div className="w-6 h-6 rounded-md bg-gradient-to-br from-surface-700 to-surface-800 flex items-center justify-center flex-shrink-0">
-        <img src={LOGO_PATH} alt={APP_NAME} className="w-3.5 h-3.5 opacity-90" />
+      <div className="w-8 h-8 rounded-full bg-gradient-to-br from-surface-700 to-surface-800 flex items-center justify-center flex-shrink-0 overflow-hidden">
+        <img src={LOGO_PATH} alt={APP_NAME} className="w-4 h-4 object-contain opacity-90" />
       </div>
 
       {/* Thinking dots */}
