@@ -142,7 +142,7 @@ async def list_user_mappings_for_identity(
             .where(ExternalIdentityMapping.organization_id == org_uuid)
             .where(ExternalIdentityMapping.source == "slack")
             .where(ExternalIdentityMapping.user_id == user_uuid)
-            .order_by(ExternalIdentityMapping.created_at.desc())
+            .order_by(ExternalIdentityMapping.updated_at.desc(), ExternalIdentityMapping.created_at.desc())
         )
         mappings = result.scalars().all()
 

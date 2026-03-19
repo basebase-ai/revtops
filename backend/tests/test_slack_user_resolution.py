@@ -1,6 +1,7 @@
 """Tests for Slack identity resolution functions in services.slack_identity."""
 import asyncio
 
+from datetime import datetime
 from types import SimpleNamespace
 from uuid import UUID
 
@@ -31,9 +32,13 @@ class _FakeExecuteResult:
 class _FakeSession:
     def __init__(self, query_results):
         self._query_results = list(query_results)
+        self.commit_calls = 0
 
     async def execute(self, _query):
         return _FakeExecuteResult(self._query_results.pop(0))
+
+    async def commit(self):
+        self.commit_calls += 1
 
 
 class _FakeAdminSessionContext:
@@ -270,3 +275,86 @@ def test_resolve_revtops_user_falls_back_to_guest_for_empty_slack_id(monkeypatch
 
     assert resolved is not None
     assert resolved.id == guest_id
+
+
+def test_get_alternate_slack_user_ids_for_identity_returns_updated_preference_order(monkeypatch):
+    org_id = "11111111-1111-1111-1111-111111111111"
+    user_id = UUID("22222222-2222-2222-2222-222222222222")
+    newer = datetime(2026, 3, 19, 12, 0, 0)
+    older = datetime(2026, 3, 19, 11, 0, 0)
+
+    seed_rows = [
+        SimpleNamespace(
+            user_id=user_id,
+            external_userid="U123",
+            external_email="person@example.com",
+            updated_at=newer,
+        ),
+    ]
+    related_rows = [
+        SimpleNamespace(
+            user_id=user_id,
+            external_userid="U123",
+            external_email="person@example.com",
+            updated_at=newer,
+        ),
+        SimpleNamespace(
+            user_id=user_id,
+            external_userid="U456",
+            external_email="person@example.com",
+            updated_at=older,
+        ),
+        SimpleNamespace(
+            user_id=user_id,
+            external_userid="U789",
+            external_email="person@example.com",
+            updated_at=datetime(2026, 3, 19, 10, 0, 0),
+        ),
+    ]
+
+    monkeypatch.setattr(
+        slack_identity,
+        "get_admin_session",
+        lambda: _FakeAdminSessionContext([seed_rows, related_rows]),
+    )
+
+    alternate_ids = asyncio.run(
+        slack_identity.get_alternate_slack_user_ids_for_identity(
+            organization_id=org_id,
+            slack_user_id="u123",
+        )
+    )
+
+    assert alternate_ids == ["U456", "U789"]
+
+
+def test_demote_slack_user_id_preference_moves_user_not_found_to_bottom(monkeypatch):
+    org_id = "11111111-1111-1111-1111-111111111111"
+    user_id = UUID("22222222-2222-2222-2222-222222222222")
+    target = SimpleNamespace(
+        user_id=user_id,
+        external_userid="U123",
+        external_email="person@example.com",
+        created_at=datetime(2026, 3, 19, 9, 0, 0),
+        updated_at=datetime(2026, 3, 19, 12, 0, 0),
+    )
+    sibling = SimpleNamespace(
+        user_id=user_id,
+        external_userid="U456",
+        external_email="person@example.com",
+        created_at=datetime(2026, 3, 19, 8, 0, 0),
+        updated_at=datetime(2026, 3, 19, 11, 0, 0),
+    )
+    fake_ctx = _FakeAdminSessionContext([[target], [target, sibling]])
+
+    monkeypatch.setattr(slack_identity, "get_admin_session", lambda: fake_ctx)
+
+    asyncio.run(
+        slack_identity.demote_slack_user_id_preference(
+            organization_id=org_id,
+            slack_user_id="U123",
+        )
+    )
+
+    assert fake_ctx._session.commit_calls == 1
+    assert target.updated_at < sibling.updated_at

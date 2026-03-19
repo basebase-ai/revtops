@@ -17,7 +17,7 @@ import logging
 import re
 import time
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 from zoneinfo import ZoneInfo
@@ -646,6 +646,154 @@ async def get_alternate_slack_user_ids_for_identity(
         normalized_slack_user_id,
     )
     return alternate_ids
+
+
+async def mark_slack_user_id_preferred(
+    organization_id: str,
+    slack_user_id: str,
+) -> None:
+    """Promote a Slack identity to the top of the preference list for its person."""
+    normalized_slack_user_id: str = _normalize_slack_user_id(slack_user_id)
+    if not normalized_slack_user_id:
+        logger.info(
+            "[slack_identity] Skipping preference promotion for empty Slack user id org=%s",
+            organization_id,
+        )
+        return
+
+    now: datetime = datetime.now(UTC).replace(tzinfo=None)
+    try:
+        async with get_admin_session() as session:
+            result = await session.execute(
+                select(ExternalIdentityMapping)
+                .where(ExternalIdentityMapping.organization_id == UUID(organization_id))
+                .where(_slack_mapping_source_clause())
+                .where(ExternalIdentityMapping.external_userid == normalized_slack_user_id)
+            )
+            target_mappings: list[ExternalIdentityMapping] = list(result.scalars().all())
+            if not target_mappings:
+                logger.info(
+                    "[slack_identity] No mapping rows found to promote org=%s slack_user_id=%s",
+                    organization_id,
+                    normalized_slack_user_id,
+                )
+                return
+
+            for mapping in target_mappings:
+                mapping.updated_at = now
+            await session.commit()
+            logger.info(
+                "[slack_identity] Promoted Slack identity org=%s slack_user_id=%s rows=%d",
+                organization_id,
+                normalized_slack_user_id,
+                len(target_mappings),
+            )
+    except Exception as exc:
+        logger.warning(
+            "[slack_identity] Failed to promote Slack identity org=%s slack_user_id=%s: %s",
+            organization_id,
+            normalized_slack_user_id,
+            exc,
+            exc_info=True,
+        )
+
+
+async def demote_slack_user_id_preference(
+    organization_id: str,
+    slack_user_id: str,
+) -> None:
+    """Move an unresolved Slack identity to the bottom of its preference group."""
+    normalized_slack_user_id: str = _normalize_slack_user_id(slack_user_id)
+    if not normalized_slack_user_id:
+        logger.info(
+            "[slack_identity] Skipping preference demotion for empty Slack user id org=%s",
+            organization_id,
+        )
+        return
+
+    try:
+        async with get_admin_session() as session:
+            seed_result = await session.execute(
+                select(ExternalIdentityMapping)
+                .where(ExternalIdentityMapping.organization_id == UUID(organization_id))
+                .where(_slack_mapping_source_clause())
+                .where(ExternalIdentityMapping.external_userid == normalized_slack_user_id)
+                .order_by(ExternalIdentityMapping.updated_at.desc())
+            )
+            seed_mappings: list[ExternalIdentityMapping] = list(seed_result.scalars().all())
+            if not seed_mappings:
+                logger.info(
+                    "[slack_identity] No mapping rows found to demote org=%s slack_user_id=%s",
+                    organization_id,
+                    normalized_slack_user_id,
+                )
+                return
+
+            related_user_ids: set[UUID] = {
+                mapping.user_id
+                for mapping in seed_mappings
+                if mapping.user_id is not None
+            }
+            related_emails: set[str] = {
+                normalized_email
+                for mapping in seed_mappings
+                if (normalized_email := _normalize_slack_email(mapping.external_email))
+            }
+
+            related_filters: list[Any] = []
+            if related_user_ids:
+                related_filters.append(ExternalIdentityMapping.user_id.in_(related_user_ids))
+            if related_emails:
+                related_filters.append(func.lower(ExternalIdentityMapping.external_email).in_(related_emails))
+
+            if related_filters:
+                related_result = await session.execute(
+                    select(ExternalIdentityMapping)
+                    .where(ExternalIdentityMapping.organization_id == UUID(organization_id))
+                    .where(_slack_mapping_source_clause())
+                    .where(or_(*related_filters))
+                    .order_by(ExternalIdentityMapping.updated_at.desc())
+                )
+                related_mappings: list[ExternalIdentityMapping] = list(related_result.scalars().all())
+            else:
+                related_mappings = seed_mappings
+
+            non_target_timestamps: list[datetime] = [
+                (mapping.updated_at or mapping.created_at)
+                for mapping in related_mappings
+                if _normalize_slack_user_id(mapping.external_userid) != normalized_slack_user_id
+            ]
+            if not non_target_timestamps:
+                logger.info(
+                    "[slack_identity] No sibling mappings to demote behind org=%s slack_user_id=%s",
+                    organization_id,
+                    normalized_slack_user_id,
+                )
+                return
+
+            demoted_updated_at: datetime = min(non_target_timestamps) - timedelta(microseconds=1)
+            updated_rows: int = 0
+            for mapping in seed_mappings:
+                mapping.updated_at = demoted_updated_at
+                updated_rows += 1
+
+            await session.commit()
+            logger.info(
+                "[slack_identity] Demoted Slack identity org=%s slack_user_id=%s rows=%d sibling_count=%d demoted_updated_at=%s",
+                organization_id,
+                normalized_slack_user_id,
+                updated_rows,
+                len(non_target_timestamps),
+                demoted_updated_at.isoformat(),
+            )
+    except Exception as exc:
+        logger.warning(
+            "[slack_identity] Failed to demote Slack identity org=%s slack_user_id=%s: %s",
+            organization_id,
+            normalized_slack_user_id,
+            exc,
+            exc_info=True,
+        )
 
 
 async def get_slack_user_ids_for_revtops_user(

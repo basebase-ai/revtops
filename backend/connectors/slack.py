@@ -1315,8 +1315,19 @@ Send a message to a Slack channel, DM, or user.
         caller fall back to a broader channel announcement.
         """
         normalized_slack_user_id = str(slack_user_id).strip().upper()
+        from services.slack_identity import (
+            demote_slack_user_id_preference,
+            get_alternate_slack_user_ids_for_identity,
+            mark_slack_user_id_preferred,
+        )
+
         try:
-            return await self._send_direct_message_once(normalized_slack_user_id, text)
+            response = await self._send_direct_message_once(normalized_slack_user_id, text)
+            await mark_slack_user_id_preferred(
+                organization_id=self.organization_id,
+                slack_user_id=normalized_slack_user_id,
+            )
+            return response
         except ValueError as exc:
             if "user_not_found" not in str(exc):
                 raise
@@ -1325,8 +1336,10 @@ Send a message to a Slack channel, DM, or user.
                 normalized_slack_user_id,
                 self.organization_id,
             )
-
-        from services.slack_identity import get_alternate_slack_user_ids_for_identity
+            await demote_slack_user_id_preference(
+                organization_id=self.organization_id,
+                slack_user_id=normalized_slack_user_id,
+            )
 
         alternate_user_ids = await get_alternate_slack_user_ids_for_identity(
             organization_id=self.organization_id,
@@ -1343,9 +1356,19 @@ Send a message to a Slack channel, DM, or user.
                     idx,
                     len(alternate_user_ids),
                 )
-                return await self._send_direct_message_once(alternate_user_id, text)
+                response = await self._send_direct_message_once(alternate_user_id, text)
+                await mark_slack_user_id_preferred(
+                    organization_id=self.organization_id,
+                    slack_user_id=alternate_user_id,
+                )
+                return response
             except Exception as exc:  # noqa: BLE001 - keep trying alternates
                 last_error = exc
+                if "user_not_found" in str(exc):
+                    await demote_slack_user_id_preference(
+                        organization_id=self.organization_id,
+                        slack_user_id=alternate_user_id,
+                    )
                 logger.warning(
                     "[SlackConnector] Alternate Slack DM failed org=%s original=%s alternate=%s attempt=%d/%d error=%s",
                     self.organization_id,

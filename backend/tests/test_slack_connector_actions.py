@@ -157,6 +157,8 @@ def test_send_direct_message_retries_other_slack_identities_on_user_not_found(mo
     connector = SlackConnector(organization_id="00000000-0000-0000-0000-000000000001")
 
     attempts: list[str] = []
+    demotions: list[str] = []
+    promotions: list[str] = []
 
     async def _fake_send_direct_message_once(slack_user_id: str, text: str):
         attempts.append(f"{slack_user_id}:{text}")
@@ -169,22 +171,35 @@ def test_send_direct_message_retries_other_slack_identities_on_user_not_found(mo
         assert slack_user_id == "U123"
         return ["U456", "U789"]
 
+    async def _fake_demote(*, organization_id: str, slack_user_id: str):
+        assert organization_id == "00000000-0000-0000-0000-000000000001"
+        demotions.append(slack_user_id)
+
+    async def _fake_promote(*, organization_id: str, slack_user_id: str):
+        assert organization_id == "00000000-0000-0000-0000-000000000001"
+        promotions.append(slack_user_id)
+
     monkeypatch.setattr(connector, "_send_direct_message_once", _fake_send_direct_message_once)
     monkeypatch.setattr(
         "services.slack_identity.get_alternate_slack_user_ids_for_identity",
         _fake_get_alternates,
     )
+    monkeypatch.setattr("services.slack_identity.demote_slack_user_id_preference", _fake_demote)
+    monkeypatch.setattr("services.slack_identity.mark_slack_user_id_preferred", _fake_promote)
 
     result = asyncio.run(connector.send_direct_message("u123", "Hello there"))
 
     assert result == {"ok": True, "channel": "D456", "sent_to": "U456"}
     assert attempts == ["U123:Hello there", "U456:Hello there"]
+    assert demotions == ["U123"]
+    assert promotions == ["U456"]
 
 
 def test_send_direct_message_raises_when_all_alternate_slack_identities_fail(monkeypatch) -> None:
     connector = SlackConnector(organization_id="00000000-0000-0000-0000-000000000001")
 
     attempts: list[str] = []
+    demotions: list[str] = []
 
     async def _fake_send_direct_message_once(slack_user_id: str, text: str):
         attempts.append(f"{slack_user_id}:{text}")
@@ -195,11 +210,20 @@ def test_send_direct_message_raises_when_all_alternate_slack_identities_fail(mon
         assert slack_user_id == "U123"
         return ["U456"]
 
+    async def _fake_demote(*, organization_id: str, slack_user_id: str):
+        assert organization_id == "00000000-0000-0000-0000-000000000001"
+        demotions.append(slack_user_id)
+
+    async def _fake_promote(*, organization_id: str, slack_user_id: str):
+        raise AssertionError("Should not promote any Slack identity when all attempts fail")
+
     monkeypatch.setattr(connector, "_send_direct_message_once", _fake_send_direct_message_once)
     monkeypatch.setattr(
         "services.slack_identity.get_alternate_slack_user_ids_for_identity",
         _fake_get_alternates,
     )
+    monkeypatch.setattr("services.slack_identity.demote_slack_user_id_preference", _fake_demote)
+    monkeypatch.setattr("services.slack_identity.mark_slack_user_id_preferred", _fake_promote)
 
     try:
         asyncio.run(connector.send_direct_message("U123", "Hello there"))
@@ -208,3 +232,4 @@ def test_send_direct_message_raises_when_all_alternate_slack_identities_fail(mon
         assert "user_not_found:U456" in str(exc)
 
     assert attempts == ["U123:Hello there", "U456:Hello there"]
+    assert demotions == ["U123", "U456"]
