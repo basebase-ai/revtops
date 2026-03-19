@@ -1257,12 +1257,12 @@ Send a message to a Slack channel, DM, or user.
             raise ValueError(f"Empty response downloading Slack file: {url_private}")
         return data
 
-    async def send_direct_message(
+    async def _send_direct_message_once(
         self,
         slack_user_id: str,
         text: str,
     ) -> dict[str, Any]:
-        """Open a DM channel and send a direct message."""
+        """Open a DM channel for one Slack user ID and send a message."""
         logger.info("[SlackConnector] Opening DM for slack_user_id=%s", slack_user_id)
         try:
             open_data = await self._make_request(
@@ -1290,3 +1290,59 @@ Send a message to a Slack channel, DM, or user.
             channel_id,
         )
         return await self.post_message(channel=channel_id, text=text)
+
+    async def send_direct_message(
+        self,
+        slack_user_id: str,
+        text: str,
+    ) -> dict[str, Any]:
+        """Open a DM channel and send a direct message.
+
+        If Slack rejects the provided user ID with ``user_not_found``, try any
+        sibling Slack identities we know for the same person before letting the
+        caller fall back to a broader channel announcement.
+        """
+        normalized_slack_user_id = str(slack_user_id).strip().upper()
+        try:
+            return await self._send_direct_message_once(normalized_slack_user_id, text)
+        except ValueError as exc:
+            if "user_not_found" not in str(exc):
+                raise
+            logger.warning(
+                "[SlackConnector] DM target user_not_found for slack_user_id=%s org=%s; checking alternate identities",
+                normalized_slack_user_id,
+                self.organization_id,
+            )
+
+        from services.slack_identity import get_alternate_slack_user_ids_for_identity
+
+        alternate_user_ids = await get_alternate_slack_user_ids_for_identity(
+            organization_id=self.organization_id,
+            slack_user_id=normalized_slack_user_id,
+        )
+        last_error: Exception = ValueError(f"Slack API error: user_not_found ({normalized_slack_user_id})")
+        for idx, alternate_user_id in enumerate(alternate_user_ids, start=1):
+            try:
+                logger.info(
+                    "[SlackConnector] Retrying DM via alternate Slack identity org=%s original=%s alternate=%s attempt=%d/%d",
+                    self.organization_id,
+                    normalized_slack_user_id,
+                    alternate_user_id,
+                    idx,
+                    len(alternate_user_ids),
+                )
+                return await self._send_direct_message_once(alternate_user_id, text)
+            except Exception as exc:  # noqa: BLE001 - keep trying alternates
+                last_error = exc
+                logger.warning(
+                    "[SlackConnector] Alternate Slack DM failed org=%s original=%s alternate=%s attempt=%d/%d error=%s",
+                    self.organization_id,
+                    normalized_slack_user_id,
+                    alternate_user_id,
+                    idx,
+                    len(alternate_user_ids),
+                    exc,
+                    exc_info=True,
+                )
+
+        raise last_error

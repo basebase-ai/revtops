@@ -151,3 +151,60 @@ def test_post_message_retries_with_org_credentials_on_channel_not_found(monkeypa
     assert result["ok"] is True
     assert calls == ["11111111-1111-1111-1111-111111111111", None]
     assert connector.user_id == "11111111-1111-1111-1111-111111111111"
+
+
+def test_send_direct_message_retries_other_slack_identities_on_user_not_found(monkeypatch) -> None:
+    connector = SlackConnector(organization_id="00000000-0000-0000-0000-000000000001")
+
+    attempts: list[str] = []
+
+    async def _fake_send_direct_message_once(slack_user_id: str, text: str):
+        attempts.append(f"{slack_user_id}:{text}")
+        if slack_user_id == "U123":
+            raise ValueError("Slack API error: user_not_found")
+        return {"ok": True, "channel": "D456", "sent_to": slack_user_id}
+
+    async def _fake_get_alternates(*, organization_id: str, slack_user_id: str):
+        assert organization_id == "00000000-0000-0000-0000-000000000001"
+        assert slack_user_id == "U123"
+        return ["U456", "U789"]
+
+    monkeypatch.setattr(connector, "_send_direct_message_once", _fake_send_direct_message_once)
+    monkeypatch.setattr(
+        "services.slack_identity.get_alternate_slack_user_ids_for_identity",
+        _fake_get_alternates,
+    )
+
+    result = asyncio.run(connector.send_direct_message("u123", "Hello there"))
+
+    assert result == {"ok": True, "channel": "D456", "sent_to": "U456"}
+    assert attempts == ["U123:Hello there", "U456:Hello there"]
+
+
+def test_send_direct_message_raises_when_all_alternate_slack_identities_fail(monkeypatch) -> None:
+    connector = SlackConnector(organization_id="00000000-0000-0000-0000-000000000001")
+
+    attempts: list[str] = []
+
+    async def _fake_send_direct_message_once(slack_user_id: str, text: str):
+        attempts.append(f"{slack_user_id}:{text}")
+        raise ValueError(f"Slack API error: user_not_found:{slack_user_id}")
+
+    async def _fake_get_alternates(*, organization_id: str, slack_user_id: str):
+        assert organization_id == "00000000-0000-0000-0000-000000000001"
+        assert slack_user_id == "U123"
+        return ["U456"]
+
+    monkeypatch.setattr(connector, "_send_direct_message_once", _fake_send_direct_message_once)
+    monkeypatch.setattr(
+        "services.slack_identity.get_alternate_slack_user_ids_for_identity",
+        _fake_get_alternates,
+    )
+
+    try:
+        asyncio.run(connector.send_direct_message("U123", "Hello there"))
+        raise AssertionError("Expected ValueError")
+    except ValueError as exc:
+        assert "user_not_found:U456" in str(exc)
+
+    assert attempts == ["U123:Hello there", "U456:Hello there"]
