@@ -600,7 +600,9 @@ Send a message to a Slack channel, DM, or user.
             status="syncing",
         )
         
-        # Get channels, then filter out archived, empty, and stale ones
+        # Get channels, then filter out archived and empty ones.
+        # For incremental syncs, also skip channels with no recent messages
+        # by peeking at the most recent message via conversations.history.
         all_channels = await self.get_channels()
         oldest_ts: float = self.sync_since.timestamp() if self.sync_since else (datetime.utcnow().timestamp() - 7 * 24 * 60 * 60)
         channels = []
@@ -609,11 +611,19 @@ Send a message to a Slack channel, DM, or user.
                 continue
             if (ch.get("num_members") or 0) == 0:
                 continue
-            updated = ch.get("updated", 0)
-            if updated > 1_000_000_000_000:
-                updated = updated / 1000
-            if updated and updated < oldest_ts:
-                continue
+            # On incremental syncs, peek at the latest message to skip
+            # channels with no activity since the last sync.  The channel
+            # metadata ``updated`` field only reflects topic/membership
+            # changes and misses new messages.
+            if self.sync_since:
+                try:
+                    peek = await self.get_channel_messages(
+                        ch["id"], oldest=oldest_ts, limit=1,
+                    )
+                    if not peek:
+                        continue
+                except Exception:
+                    pass  # on error, include the channel to be safe
             channels.append(ch)
         logger.info(
             "[Slack Sync] Retrieved %d channels (%d active/recent) for org=%s",

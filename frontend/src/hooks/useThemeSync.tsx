@@ -16,6 +16,7 @@ function shouldUseDarkClass(theme: UITheme, prefersDark: boolean): boolean {
 /**
  * Subscribes to `theme` in uiStore and toggles `class="dark"` on `<html>`.
  */
+// eslint-disable-next-line react-refresh/only-export-components
 export function useThemeSync(): void {
   const theme: UITheme = useUIStore((s) => s.theme);
 
