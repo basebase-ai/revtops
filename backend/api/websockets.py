@@ -214,7 +214,11 @@ class ConversationBroadcaster:
         self._user_connections[user_id].discard(websocket)
         if not self._user_connections[user_id]:
             del self._user_connections[user_id]
-    
+
+    def get_user_websockets(self, user_id: str) -> Set[WebSocket]:
+        """Return a copy of the set of websockets for a user (for subscription use)."""
+        return self._user_connections.get(user_id, set()).copy()
+
     async def broadcast_to_users(
         self,
         user_ids: list[str],
@@ -721,11 +725,30 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 await task_manager.subscribe(task_id, websocket)
 
                 # Notify client that task started
-                await websocket.send_text(json.dumps({
+                task_started_payload = json.dumps({
                     "type": "task_started",
                     "task_id": task_id,
                     "conversation_id": conversation_id,
-                }))
+                })
+                await websocket.send_text(task_started_payload)
+
+                # Auto-subscribe other participants in shared conversations
+                async with get_session(organization_id=organization_id) as session:
+                    conv_row = await session.execute(
+                        select(Conversation.scope, Conversation.participating_user_ids).where(
+                            Conversation.id == UUID(conversation_id)
+                        )
+                    )
+                    row = conv_row.one_or_none()
+                if row and row[0] == "shared" and row[1]:
+                    participant_ids: list[str] = [str(uid) for uid in row[1]]
+                    for other_user_id in participant_ids:
+                        if other_user_id == user_id_str:
+                            continue
+                        other_websockets = conversation_broadcaster.get_user_websockets(other_user_id)
+                        for other_ws in other_websockets:
+                            await task_manager.subscribe(task_id, other_ws)
+                            await _send_with_timeout(other_ws, task_started_payload)
 
             # Handle subscribe - client wants to subscribe to a task (e.g., after reconnect)
             elif message_type == "subscribe":

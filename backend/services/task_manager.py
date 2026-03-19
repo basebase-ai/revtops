@@ -17,10 +17,12 @@ from typing import Any, Callable, Coroutine
 from uuid import UUID, uuid4
 
 from fastapi import WebSocket
-from sqlalchemy import select, update
+from sqlalchemy import and_, or_, select, update
 
 from agents.orchestrator import ChatOrchestrator
 from models.agent_task import AgentTask
+from models.chat_message import ChatMessage
+from models.conversation import Conversation
 from models.database import get_admin_session, get_session
 
 logger = logging.getLogger(__name__)
@@ -281,6 +283,15 @@ class TaskManager:
             
             logger.info("Task %s completed successfully", task_id)
 
+            # Broadcast final assistant message to other participants in shared conversations
+            asyncio.create_task(
+                self._broadcast_assistant_message_to_participants(
+                    conversation_id=conversation_id,
+                    organization_id=organization_id,
+                    exclude_user_id=user_id,
+                )
+            )
+
             # Fire-and-forget: generate conversation summary in background
             asyncio.create_task(
                 self._generate_and_broadcast_summary(conversation_id, organization_id)
@@ -358,7 +369,56 @@ class TaskManager:
                 .values(**values)
             )
             await session.commit()
-    
+
+    async def _broadcast_assistant_message_to_participants(
+        self,
+        conversation_id: str,
+        organization_id: str,
+        exclude_user_id: str,
+    ) -> None:
+        """Broadcast the latest assistant message to other participants in shared conversations."""
+        try:
+            from api.websockets import broadcast_conversation_message
+
+            async with get_session(organization_id=organization_id) as session:
+                conv_row = await session.execute(
+                    select(Conversation.scope, Conversation.participating_user_ids).where(
+                        Conversation.id == UUID(conversation_id)
+                    )
+                )
+                row = conv_row.one_or_none()
+            if not row or row[0] != "shared" or not row[1]:
+                return
+            scope: str = row[0]
+            participant_ids: list[str] = [str(uid) for uid in row[1]]
+
+            async with get_session(organization_id=organization_id) as session:
+                msg_result = await session.execute(
+                    select(ChatMessage)
+                    .where(
+                        ChatMessage.conversation_id == UUID(conversation_id),
+                        ChatMessage.role == "assistant",
+                    )
+                    .order_by(ChatMessage.created_at.desc())
+                    .limit(1)
+                )
+                latest: ChatMessage | None = msg_result.scalars().one_or_none()
+            if not latest:
+                return
+            await broadcast_conversation_message(
+                conversation_id=conversation_id,
+                scope=scope,
+                participant_user_ids=participant_ids,
+                message_data=latest.to_dict(),
+                sender_user_id=exclude_user_id,
+            )
+        except Exception:
+            logger.warning(
+                "Broadcast assistant message to participants failed for conversation %s",
+                conversation_id,
+                exc_info=True,
+            )
+
     async def _generate_and_broadcast_summary(
         self,
         conversation_id: str,
@@ -496,11 +556,20 @@ class TaskManager:
         async with get_session(organization_id=organization_id) as session:
             result = await session.execute(
                 select(AgentTask)
-                .where(AgentTask.user_id == UUID(user_id))
+                .join(Conversation, AgentTask.conversation_id == Conversation.id)
                 .where(AgentTask.status == "running")
+                .where(
+                    or_(
+                        AgentTask.user_id == UUID(user_id),
+                        and_(
+                            Conversation.scope == "shared",
+                            Conversation.participating_user_ids.contains([UUID(user_id)]),
+                        ),
+                    )
+                )
                 .order_by(AgentTask.started_at.desc())
             )
-            tasks = result.scalars().all()
+            tasks = result.scalars().unique().all()
             return [task.to_state_dict() for task in tasks]
     
     async def get_task(self, task_id: str, organization_id: str | None = None) -> dict[str, Any] | None:

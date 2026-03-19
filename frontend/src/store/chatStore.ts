@@ -433,6 +433,9 @@ export const useChatStore = create<ChatState>()(
       const current = conversations[conversationId] ?? {
         ...defaultConversationState,
       };
+      if (current.messages.some((m) => m.id === message.id)) {
+        return;
+      }
       console.log(
         "[Store] Adding message to conversation:",
         conversationId,
