@@ -3760,7 +3760,9 @@ async def disconnect_integration(
             )
             integration = result.scalar_one_or_none()
 
-        # Fallback for org-scoped integrations: any org member can disconnect
+        # Fallback for org-scoped integrations: any org member can disconnect.
+        # Collect ALL matching rows so duplicate integrations are cleaned up in one pass.
+        extra_integrations: list[Integration] = []
         if not integration:
             scope_by_provider = _get_scope_by_provider()
             if scope_by_provider.get(provider) == "organization":
@@ -3770,29 +3772,34 @@ async def disconnect_integration(
                         Integration.connector == provider,
                     )
                 )
-                integration = result.scalar_one_or_none()
+                all_org_integrations: list[Integration] = list(result.scalars().all())
+                if all_org_integrations:
+                    integration = all_org_integrations[0]
+                    extra_integrations = all_org_integrations[1:]
 
         if not integration:
             print(f"Disconnect: Integration not found for org={org_uuid}, provider={provider}, user={current_user_uuid}")
             raise HTTPException(status_code=404, detail="Integration not found")
 
-        print(f"Disconnect: Found integration id={integration.id}, nango_conn_id={integration.nango_connection_id}")
+        all_to_delete: list[Integration] = [integration] + extra_integrations
+        print(f"Disconnect: Found {len(all_to_delete)} integration(s) to delete: {[str(i.id) for i in all_to_delete]}")
 
-        # Delete from Nango
-        if integration.nango_connection_id:
-            try:
-                nango = get_nango_client()
-                nango_integration_id = get_nango_integration_id(provider)
-                print(f"Disconnect: Deleting from Nango: integration={nango_integration_id}, conn_id={integration.nango_connection_id}")
-                await nango.delete_connection(
-                    nango_integration_id,
-                    integration.nango_connection_id,
-                )
-                print("Disconnect: Nango deletion successful")
-            except Exception as e:
-                print(f"Disconnect: Failed to delete Nango connection: {e}")
-        else:
-            print("Disconnect: No nango_connection_id, skipping Nango deletion")
+        # Delete from Nango for every integration
+        nango = get_nango_client()
+        nango_integration_id = get_nango_integration_id(provider)
+        for integ in all_to_delete:
+            if integ.nango_connection_id:
+                try:
+                    print(f"Disconnect: Deleting from Nango: integration={nango_integration_id}, conn_id={integ.nango_connection_id}")
+                    await nango.delete_connection(
+                        nango_integration_id,
+                        integ.nango_connection_id,
+                    )
+                    print("Disconnect: Nango deletion successful")
+                except Exception as e:
+                    print(f"Disconnect: Failed to delete Nango connection {integ.nango_connection_id}: {e}")
+            else:
+                print(f"Disconnect: No nango_connection_id for {integ.id}, skipping Nango deletion")
 
         # Always delete rows that reference this integration so we can delete the integration row.
         # 1) Tracker tables (Linear/Jira/Asana): tracker_teams.integration_id -> integrations.id
@@ -3827,29 +3834,31 @@ async def disconnect_integration(
             params_tracker,
         )
         # 2) GitHub: github_repositories.integration_id -> integrations.id
-        integration_id_param: dict[str, Any] = {"integration_id": str(integration.id)}
-        await db_session.execute(
-            text("""
-                DELETE FROM github_commits
-                WHERE repository_id IN (
-                    SELECT id FROM github_repositories WHERE integration_id = :integration_id
-                )
-            """),
-            integration_id_param,
-        )
-        await db_session.execute(
-            text("""
-                DELETE FROM github_pull_requests
-                WHERE repository_id IN (
-                    SELECT id FROM github_repositories WHERE integration_id = :integration_id
-                )
-            """),
-            integration_id_param,
-        )
-        await db_session.execute(
-            text("DELETE FROM github_repositories WHERE integration_id = :integration_id"),
-            integration_id_param,
-        )
+        all_integration_ids: list[str] = [str(i.id) for i in all_to_delete]
+        for iid in all_integration_ids:
+            integration_id_param: dict[str, Any] = {"integration_id": iid}
+            await db_session.execute(
+                text("""
+                    DELETE FROM github_commits
+                    WHERE repository_id IN (
+                        SELECT id FROM github_repositories WHERE integration_id = :integration_id
+                    )
+                """),
+                integration_id_param,
+            )
+            await db_session.execute(
+                text("""
+                    DELETE FROM github_pull_requests
+                    WHERE repository_id IN (
+                        SELECT id FROM github_repositories WHERE integration_id = :integration_id
+                    )
+                """),
+                integration_id_param,
+            )
+            await db_session.execute(
+                text("DELETE FROM github_repositories WHERE integration_id = :integration_id"),
+                integration_id_param,
+            )
 
         # Optionally delete all synced data from this provider
         deleted_activities: int = 0
@@ -4002,8 +4011,9 @@ async def disconnect_integration(
                     exc,
                 )
 
-        print(f"Disconnect: Deleting integration from database")
-        await db_session.delete(integration)
+        print(f"Disconnect: Deleting {len(all_to_delete)} integration(s) from database")
+        for integ in all_to_delete:
+            await db_session.delete(integ)
         await db_session.commit()
         print(f"Disconnect: Database deletion successful")
 
