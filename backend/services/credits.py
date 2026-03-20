@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 
 
 ACTIVE_SUBSCRIPTION_STATUSES: frozenset[str] = frozenset({"active", "trialing"})
+PENDING_BILLING_STATUSES: frozenset[str] = frozenset({"incomplete", "past_due", "unpaid"})
 
 
 async def get_balance(organization_id: str) -> int:
@@ -54,10 +55,41 @@ MIN_CREDITS_TO_START: int = 5
 
 
 async def can_use_credits(organization_id: str) -> bool:
-    """Return True if the org has an active subscription and enough credits to start a task."""
-    if not await has_active_subscription(organization_id):
-        return False
-    return await get_balance(organization_id) >= MIN_CREDITS_TO_START
+    """Return True when the org can spend existing credits to start a task."""
+    async with get_admin_session() as session:
+        result = await session.execute(
+            select(
+                Organization.subscription_status,
+                Organization.credits_balance,
+            ).where(Organization.id == UUID(organization_id))
+        )
+        row = result.one_or_none()
+        if row is None:
+            logger.warning(
+                "[Credits] can_use_credits: organization %s not found",
+                organization_id,
+            )
+            return False
+
+        status: str = (row.subscription_status or "").strip().lower()
+        balance: int = int(row.credits_balance or 0)
+        has_minimum_balance = balance >= MIN_CREDITS_TO_START
+        status_allows_queries = (
+            status in ACTIVE_SUBSCRIPTION_STATUSES
+            or (status in PENDING_BILLING_STATUSES and has_minimum_balance)
+        )
+        logger.info(
+            (
+                "[Credits] can_use_credits: org=%s status=%s balance=%d "
+                "has_minimum_balance=%s status_allows_queries=%s"
+            ),
+            organization_id,
+            status or "<none>",
+            balance,
+            has_minimum_balance,
+            status_allows_queries,
+        )
+        return status_allows_queries and has_minimum_balance
 
 
 async def check_sufficient(organization_id: str, amount: int) -> bool:
@@ -159,7 +191,10 @@ async def deduct_with_grace(
         )
         org: Organization | None = result.scalar_one_or_none()
         if org is None:
-            logger.warning("[Credits] deduct_with_grace: organization %s not found", organization_id)
+            logger.warning(
+                "[Credits] deduct_with_grace: organization %s not found",
+                organization_id,
+            )
             return False, False
 
         current: int = int(org.credits_balance)
