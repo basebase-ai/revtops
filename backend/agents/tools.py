@@ -31,6 +31,7 @@ from openai import AsyncOpenAI
 from sqlalchemy import select, text
 
 from config import settings
+from connectors.code_sandbox import get_blocked_package_install_reason
 from models.account import Account
 from models.conversation import Conversation
 from models.contact import Contact
@@ -6579,12 +6580,16 @@ async def _execute_command(
 ) -> dict[str, Any]:
     """Execute a shell command in a persistent E2B sandbox."""
 
-    if not settings.E2B_API_KEY:
-        return {"error": "E2B_API_KEY is not configured. Cannot run sandboxed commands."}
-
     command: str = params.get("command", "").strip()
     if not command:
         return {"error": "No command provided."}
+
+    blocked_reason: str | None = get_blocked_package_install_reason(command)
+    if blocked_reason:
+        return {"error": blocked_reason}
+
+    if not settings.E2B_API_KEY:
+        return {"error": "E2B_API_KEY is not configured. Cannot run sandboxed commands."}
 
     conversation_id: str | None = (context or {}).get("conversation_id")
     if not conversation_id:

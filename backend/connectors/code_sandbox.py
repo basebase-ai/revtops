@@ -7,6 +7,7 @@ The sandbox persists across calls within a conversation.
 
 import asyncio
 import logging
+import re
 from typing import Any
 
 from config import settings
@@ -24,6 +25,43 @@ logger = logging.getLogger(__name__)
 _SANDBOX_TIMEOUT_SECONDS: int = 1800
 _COMMAND_TIMEOUT_SECONDS: float = 120
 _MAX_OUTPUT_LENGTH: int = 50_000
+
+_PACKAGE_INSTALL_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"(^|[;&|()\s])npm\s+(?:install|i)\b", re.IGNORECASE), "npm install"),
+    (re.compile(r"(^|[;&|()\s])yarn\s+(?:global\s+add|add|install)\b", re.IGNORECASE), "yarn add/install"),
+    (re.compile(r"(^|[;&|()\s])pnpm\s+(?:add|install)\b", re.IGNORECASE), "pnpm add/install"),
+    (re.compile(r"(^|[;&|()\s])bun\s+(?:add|install)\b", re.IGNORECASE), "bun add/install"),
+    (re.compile(r"(^|[;&|()\s])pip(?:3)?\s+install\b", re.IGNORECASE), "pip install"),
+    (re.compile(r"(^|[;&|()\s])python(?:3)?\s+-m\s+pip\s+install\b", re.IGNORECASE), "python -m pip install"),
+    (re.compile(r"(^|[;&|()\s])uv\s+(?:pip\s+install|add)\b", re.IGNORECASE), "uv pip install/add"),
+    (re.compile(r"(^|[;&|()\s])poetry\s+(?:add|install)\b", re.IGNORECASE), "poetry add/install"),
+    (re.compile(r"(^|[;&|()\s])pipx\s+install\b", re.IGNORECASE), "pipx install"),
+    (re.compile(r"(^|[;&|()\s])apt(?:-get)?\s+install\b", re.IGNORECASE), "apt install"),
+    (re.compile(r"(^|[;&|()\s])apk\s+add\b", re.IGNORECASE), "apk add"),
+    (re.compile(r"(^|[;&|()\s])yum\s+install\b", re.IGNORECASE), "yum install"),
+    (re.compile(r"(^|[;&|()\s])dnf\s+install\b", re.IGNORECASE), "dnf install"),
+    (re.compile(r"(^|[;&|()\s])brew\s+install\b", re.IGNORECASE), "brew install"),
+    (re.compile(r"(^|[;&|()\s])pacman\s+-S\b", re.IGNORECASE), "pacman -S"),
+)
+
+_PACKAGE_INSTALL_BLOCK_MESSAGE: str = (
+    "Installing packages inside the code sandbox is disabled. "
+    "Use the preinstalled runtimes and libraries only."
+)
+
+
+def get_blocked_package_install_reason(command: str) -> str | None:
+    """Return a user-facing reason when a sandbox command installs packages."""
+    normalized_command: str = command.strip()
+    if not normalized_command:
+        return None
+
+    for pattern, label in _PACKAGE_INSTALL_PATTERNS:
+        if pattern.search(normalized_command):
+            logger.info("[Sandbox] Blocked package installation attempt via %s", label)
+            return f"{_PACKAGE_INSTALL_BLOCK_MESSAGE} Blocked command pattern: {label}."
+
+    return None
 
 _SANDBOX_DB_HELPER_TEMPLATE: str = """
 import os
@@ -56,7 +94,7 @@ class CodeSandboxConnector(BaseConnector):
             ConnectorAction(
                 name="execute_command",
                 description=(
-                    "Run a shell command in a persistent Linux sandbox (Debian, Python3, Node, pip). "
+                    "Run a shell command in a persistent Linux sandbox (Debian, Python3, Node, preinstalled libraries). "
                     "Files in /home/user/output/ are returned as artifacts. "
                     "A read-only DB connection is at $DATABASE_URL. Use `from db import get_connection`."
                 ),
@@ -94,12 +132,16 @@ class CodeSandboxConnector(BaseConnector):
         return await self._execute_command(params)
 
     async def _execute_command(self, params: dict[str, Any]) -> dict[str, Any]:
-        if not settings.E2B_API_KEY:
-            return {"error": "E2B_API_KEY is not configured. Cannot run sandboxed commands."}
-
         command: str = (params.get("command") or "").strip()
         if not command:
             return {"error": "No command provided."}
+
+        blocked_reason: str | None = get_blocked_package_install_reason(command)
+        if blocked_reason:
+            return {"error": blocked_reason}
+
+        if not settings.E2B_API_KEY:
+            return {"error": "E2B_API_KEY is not configured. Cannot run sandboxed commands."}
 
         conversation_id: str | None = params.get("conversation_id")
         if not conversation_id:
