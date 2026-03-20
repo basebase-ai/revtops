@@ -97,6 +97,24 @@ interface ToolApprovalState {
   result: WsToolApprovalResult | null;
 }
 
+/**
+ * Slack-like message thread typography & layout.
+ * NOTE: :root light mode uses an inverted surface scale (see index.css): low numbers = dark ink,
+ * high numbers = light fills. Never use text-surface-900 for body text in light mode — it is ~white.
+ */
+const CHAT_MSG_ROW: string =
+  'group/msg flex items-start gap-3 px-5 -mx-5 hover:bg-black/[0.035] dark:hover:bg-surface-800/40 transition-colors';
+const CHAT_MSG_AVATAR: string = 'flex-shrink-0 !w-9 !h-9 !rounded-md mt-px';
+const CHAT_MSG_AVATAR_SPACER: string = 'w-9 flex-shrink-0 mt-px';
+const CHAT_MSG_NAME: string =
+  'text-[15px] font-extrabold leading-tight text-surface-50 dark:text-surface-50 tracking-[-0.015em]';
+const CHAT_MSG_TIME: string =
+  'text-[10px] tabular-nums font-normal text-surface-500 dark:text-surface-500 leading-none';
+const CHAT_MSG_APP_BADGE: string =
+  'inline-flex items-center rounded-[3px] border border-surface-300 dark:border-surface-600 bg-surface-800 dark:bg-surface-800/90 px-[5px] py-px text-[9px] font-bold uppercase tracking-wide text-surface-600 dark:text-surface-400';
+const CHAT_MSG_BODY: string =
+  'text-[15px] leading-[1.466] text-surface-100 dark:text-surface-200 whitespace-pre-wrap break-words';
+
 function isSlackIdentitySource(source: string): boolean {
   return source.toLowerCase().includes('slack');
 }
@@ -144,6 +162,14 @@ function preprocessSlackMentionsForMarkdown(text: string, slackIdToName: Readonl
   return result;
 }
 
+/**
+ * Model output often includes 3+ consecutive newlines; markdown turns those into empty <p> nodes,
+ * each with prose margins — huge vertical gaps. One blank line is enough for a paragraph break.
+ */
+function collapseExcessiveMarkdownBlankLines(text: string): string {
+  return text.replace(/\n{3,}/g, '\n\n').trimEnd();
+}
+
 function createSlackMentionRegex(): RegExp {
   return /<@([A-Z0-9]+)(?:\|([^>\n]*))?>|<!channel>|<!here>|<!everyone>/gi;
 }
@@ -184,14 +210,14 @@ function UserMessageTextWithMentions({
     nodes.push(
       <span
         key={`mention-${key++}`}
-        className="inline-flex items-center rounded bg-primary-500/15 text-primary-700 dark:text-primary-300 px-1 py-px text-[12.5px] font-semibold align-baseline mx-px"
+        className="inline-flex items-center rounded bg-primary-500/15 text-primary-700 dark:text-primary-300 px-1 py-px text-[14px] font-semibold align-baseline mx-px"
       >
         {display}
       </span>,
     );
     lastIndex = start + full.length;
   }
-  const bodyClasses: string = `text-[13px] leading-relaxed text-surface-200 whitespace-pre-wrap break-words ${bodyClassName}`;
+  const bodyClasses: string = `${CHAT_MSG_BODY} ${bodyClassName}`;
   if (nodes.length === 0) {
     return <div className={bodyClasses}>{text}</div>;
   }
@@ -1683,11 +1709,11 @@ export function Chat({
                 {isThinking && <ThinkingIndicator />}
 
                 {isWorkflowPolling && messages.length > 0 && !isThinking && (
-                  <div className="flex items-center gap-2.5 px-5 py-1.5 -mx-5 text-surface-400">
-                    <div className="w-8 h-8 flex items-center justify-center flex-shrink-0">
-                      <div className="w-4 h-4 border-2 border-surface-600 border-t-primary-500 rounded-full animate-spin" />
+                  <div className="group/msg flex items-center gap-3 px-5 -mx-5 py-1 text-surface-500">
+                    <div className={`${CHAT_MSG_AVATAR} flex items-center justify-center`}>
+                      <div className="w-4 h-4 border-2 border-surface-500 border-t-primary-500 rounded-full animate-spin" />
                     </div>
-                    <span className="text-sm">Workflow running...</span>
+                    <span className="text-[15px] leading-[1.466]">Workflow running...</span>
                   </div>
                 )}
 
@@ -2113,9 +2139,7 @@ function MessageWithBlocks({
     return <></>;
   }
 
-  const rowPad: string = isGroupedWithPrevious ? 'py-0.5' : 'py-1.5';
-  const rowHover: string =
-    'group/msg flex items-start gap-2.5 px-5 -mx-5 hover:bg-surface-800/40 dark:hover:bg-surface-800/40 transition-colors';
+  const rowPad: string = isGroupedWithPrevious ? 'py-[3px]' : 'py-1';
 
   // For user messages, use the simple Message component (with attachment cards if any)
   if (isUser) {
@@ -2141,18 +2165,18 @@ function MessageWithBlocks({
       };
       
       return (
-        <div className={`${rowHover} ${rowPad} animate-slide-up`}>
+        <div className={`${CHAT_MSG_ROW} ${rowPad} animate-slide-up`}>
           {isGroupedWithPrevious ? (
-            <div className="w-8 flex-shrink-0 mt-0.5" aria-hidden />
+            <div className={`${CHAT_MSG_AVATAR_SPACER}`} aria-hidden />
           ) : (
-            <Avatar user={senderUser} size="md" className="flex-shrink-0 rounded-lg mt-0.5" />
+            <Avatar user={senderUser} size="md" className={CHAT_MSG_AVATAR} />
           )}
 
           <div className="flex-1 min-w-0 overflow-hidden">
             {!isGroupedWithPrevious && (
-              <div className="flex items-baseline gap-2">
-                <span className="text-[13px] font-bold text-surface-100">{senderName}</span>
-                <span className="text-[11px] text-surface-500">
+              <div className="flex flex-wrap items-baseline gap-x-1.5 gap-y-0">
+                <span className={CHAT_MSG_NAME}>{senderName}</span>
+                <span className={CHAT_MSG_TIME}>
                   {message.timestamp.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}
                 </span>
               </div>
@@ -2160,7 +2184,7 @@ function MessageWithBlocks({
             <UserMessageTextWithMentions
               text={textContent}
               slackIdToName={slackUserIdToName}
-              bodyClassName={isGroupedWithPrevious ? 'mt-0' : 'mt-0.5'}
+              bodyClassName={isGroupedWithPrevious ? 'mt-0' : 'mt-px'}
             />
             {attachments.length > 0 && (
               <div className="flex flex-wrap gap-2 mt-1.5">
@@ -2199,14 +2223,14 @@ function MessageWithBlocks({
       : null;
     const displayName: string = currentUser?.name ?? currentUser?.email ?? 'You';
     return (
-      <div className={`${rowHover} ${rowPad} animate-slide-up`}>
+      <div className={`${CHAT_MSG_ROW} ${rowPad} animate-slide-up`}>
         {isGroupedWithPrevious ? (
-          <div className="w-8 flex-shrink-0 mt-0.5" aria-hidden />
+          <div className={CHAT_MSG_AVATAR_SPACER} aria-hidden />
         ) : meUser ? (
-          <Avatar user={meUser} size="md" className="flex-shrink-0 rounded-lg mt-0.5" />
+          <Avatar user={meUser} size="md" className={CHAT_MSG_AVATAR} />
         ) : (
-          <div className="flex-shrink-0 w-8 h-8 rounded-lg flex items-center justify-center bg-primary-500 mt-0.5">
-            <svg className="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <div className={`${CHAT_MSG_AVATAR} flex items-center justify-center bg-primary-500`}>
+            <svg className="w-[18px] h-[18px] text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
             </svg>
           </div>
@@ -2214,9 +2238,9 @@ function MessageWithBlocks({
 
         <div className="flex-1 min-w-0 overflow-hidden">
           {!isGroupedWithPrevious && (
-            <div className="flex items-baseline gap-2">
-              <span className="text-[13px] font-bold text-surface-100">{displayName}</span>
-              <span className="text-[11px] text-surface-500">
+            <div className="flex flex-wrap items-baseline gap-x-1.5 gap-y-0">
+              <span className={CHAT_MSG_NAME}>{displayName}</span>
+              <span className={CHAT_MSG_TIME}>
                 {message.timestamp.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}
               </span>
             </div>
@@ -2224,7 +2248,7 @@ function MessageWithBlocks({
           <UserMessageTextWithMentions
             text={textContent}
             slackIdToName={slackUserIdToName}
-            bodyClassName={isGroupedWithPrevious ? 'mt-0' : 'mt-0.5'}
+            bodyClassName={isGroupedWithPrevious ? 'mt-0' : 'mt-px'}
           />
           {attachments.length > 0 && (
             <div className="flex flex-wrap gap-2 mt-1.5">
@@ -2309,96 +2333,110 @@ function MessageWithBlocks({
   };
 
   return (
-    <div className={`${rowHover} ${rowPad}`}>
+    <div className={`${CHAT_MSG_ROW} ${rowPad}`}>
       {isGroupedWithPrevious ? (
-        <div className="w-8 flex-shrink-0 mt-0.5" aria-hidden />
+        <div className={CHAT_MSG_AVATAR_SPACER} aria-hidden />
       ) : (
-        <div className="flex-shrink-0 w-8 h-8 rounded-lg bg-surface-800 flex items-center justify-center overflow-hidden mt-0.5">
-          <img
-            src={LOGO_PATH}
-            alt={APP_NAME}
-            className="w-4 h-4 object-contain"
-          />
+        <div
+          className={`${CHAT_MSG_AVATAR} flex items-center justify-center overflow-hidden border border-surface-200/90 dark:border-surface-600 bg-white dark:bg-surface-850 shadow-[0_1px_0_rgba(0,0,0,0.04)] dark:shadow-none`}
+        >
+          <img src={LOGO_PATH} alt={APP_NAME} className="w-[22px] h-[22px] object-contain" />
         </div>
       )}
 
       <div className="flex-1 min-w-0 overflow-hidden">
         {!isGroupedWithPrevious && (
-          <div className="flex items-baseline gap-2">
-            <span className="text-[13px] font-bold text-surface-100">{APP_NAME}</span>
-            <span className="inline-flex items-center px-1 py-px rounded text-[10px] font-medium bg-surface-700 text-surface-400">APP</span>
-            <span className="text-[11px] text-surface-500">
+          <div className="flex flex-wrap items-baseline gap-x-1.5 gap-y-0">
+            <span className={CHAT_MSG_NAME}>{APP_NAME}</span>
+            <span className={CHAT_MSG_APP_BADGE}>AGENT</span>
+            <span className={CHAT_MSG_TIME}>
               {message.timestamp.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}
             </span>
           </div>
         )}
-        {blocks.map((block, index) => {
-          if (block.type === 'thinking') {
-            if (!block.text && !block.isStreaming) return null;
-            return (
-              <div key={`thinking-${index}`} className={index > 0 ? 'mt-1' : ''}>
-                <ThinkingBlockIndicator block={block} />
-              </div>
-            );
-          }
-          if (block.type === 'text') {
-            const isLast: boolean = index === lastTextIndex;
-            const textTop: string =
-              index > 0
-                ? 'mt-1'
-                : isGroupedWithPrevious && index === firstTextBlockIndex
-                  ? 'mt-0'
-                  : 'mt-0.5';
-            return (
-              <div key={`text-${index}`} className={textTop}>
-                <AssistantTextBlock
-                  text={block.text}
-                  isStreaming={isLast && message.isStreaming}
-                  slackUserIdToName={slackUserIdToName}
-                />
-              </div>
-            );
-          }
-          if (block.type === 'tool_use') {
-            const toolBlock = block as ToolUseBlock;
-            if (!toolBlock.status && !toolBlock.result) {
-              return null;
+        {(() => {
+          const elements: JSX.Element[] = [];
+          let toolRunStart: number = -1;
+
+          const flushToolRun = (endBefore: number): void => {
+            if (toolRunStart < 0) return;
+            const toolBlocks: ToolUseBlock[] = [];
+            for (let j = toolRunStart; j < endBefore; j++) {
+              const b = blocks[j];
+              if (b?.type !== 'tool_use') continue;
+              const tb = b as ToolUseBlock;
+              if (!tb.status && !tb.result) continue;
+              toolBlocks.push(tb);
             }
-            return (
-              <div key={block.id} className="my-0.5">
-                {renderToolBlock(toolBlock)}
-              </div>
-            );
+            if (toolBlocks.length > 0) {
+              elements.push(
+                <div key={`tools-${toolRunStart}`} className="flex flex-wrap items-center gap-1 my-1">
+                  {toolBlocks.map((tb) => renderToolBlock(tb))}
+                </div>,
+              );
+            }
+            toolRunStart = -1;
+          };
+
+          for (let index = 0; index < blocks.length; index++) {
+            const block = blocks[index]!;
+
+            if (block.type === 'tool_use') {
+              const tb = block as ToolUseBlock;
+              if (!tb.status && !tb.result) continue;
+              if (toolRunStart < 0) toolRunStart = index;
+              continue;
+            }
+
+            flushToolRun(index);
+
+            if (block.type === 'thinking') {
+              if (!block.text && !block.isStreaming) continue;
+              elements.push(
+                <div key={`thinking-${index}`} className={index > 0 ? 'mt-1' : ''}>
+                  <ThinkingBlockIndicator block={block} />
+                </div>,
+              );
+            } else if (block.type === 'text') {
+              const isLast: boolean = index === lastTextIndex;
+              const textTop: string =
+                index > 0
+                  ? 'mt-1'
+                  : isGroupedWithPrevious && index === firstTextBlockIndex
+                    ? 'mt-0'
+                    : 'mt-px';
+              elements.push(
+                <div key={`text-${index}`} className={textTop}>
+                  <AssistantTextBlock
+                    text={block.text}
+                    isStreaming={isLast && message.isStreaming}
+                    slackUserIdToName={slackUserIdToName}
+                  />
+                </div>,
+              );
+            } else if (block.type === 'error') {
+              elements.push(
+                <div key={`error-${index}`} className="my-0.5">
+                  <ErrorBlockIndicator block={block} onRetry={onRetry} />
+                </div>,
+              );
+            } else if (block.type === 'artifact') {
+              elements.push(
+                <div key={`artifact-${block.artifact.id}`} className="my-2">
+                  <ArtifactTile artifact={block.artifact} onClick={() => onArtifactClick(block.artifact)} />
+                </div>,
+              );
+            } else if (block.type === 'app') {
+              elements.push(
+                <div key={`app-${block.app.id}`} className="my-2">
+                  <AppTile app={block.app} onClick={() => onAppClick(block.app)} />
+                </div>,
+              );
+            }
           }
-          if (block.type === 'error') {
-            return (
-              <div key={`error-${index}`} className="my-0.5">
-                <ErrorBlockIndicator block={block} onRetry={onRetry} />
-              </div>
-            );
-          }
-          if (block.type === 'artifact') {
-            return (
-              <div key={`artifact-${block.artifact.id}`} className="my-2">
-                <ArtifactTile
-                  artifact={block.artifact}
-                  onClick={() => onArtifactClick(block.artifact)}
-                />
-              </div>
-            );
-          }
-          if (block.type === 'app') {
-            return (
-              <div key={`app-${block.app.id}`} className="my-2">
-                <AppTile
-                  app={block.app}
-                  onClick={() => onAppClick(block.app)}
-                />
-              </div>
-            );
-          }
-          return null;
-        })}
+          flushToolRun(blocks.length);
+          return elements;
+        })()}
       </div>
     </div>
   );
@@ -2458,13 +2496,20 @@ function ThinkingBlockIndicator({
   );
 }
 
-/** Renders Slack-style @mentions embedded as markdown links with href `mention:…`. */
+/** Renders Slack-style @mentions and tight paragraph spacing (bypasses typography plugin defaults). */
 const ASSISTANT_MARKDOWN_COMPONENTS: Components = {
+  p({ children }) {
+    return (
+      <p className="!mt-0 !mb-1.5 text-[15px] leading-[1.466] text-surface-100 dark:text-surface-200 last:!mb-0">
+        {children}
+      </p>
+    );
+  },
   a({ href, children, node, ...rest }) {
     void node;
     if (href?.startsWith('mention:')) {
       return (
-        <span className="inline-flex items-center rounded bg-primary-500/15 text-primary-700 dark:text-primary-300 px-1 py-px text-[13px] font-semibold align-baseline mx-px">
+        <span className="inline-flex items-center rounded bg-primary-500/15 text-primary-700 dark:text-primary-300 px-1 py-px text-[14px] font-semibold align-baseline mx-px">
           {children}
         </span>
       );
@@ -2490,19 +2535,39 @@ function AssistantTextBlock({
   slackUserIdToName: ReadonlyMap<string, string>;
 }): JSX.Element {
   const raw: string = isStreaming ? text.trimEnd() : text;
-  const displayText: string = useMemo(
-    () => preprocessSlackMentionsForMarkdown(raw, slackUserIdToName),
-    [raw, slackUserIdToName],
-  );
+  const displayText: string = useMemo(() => {
+    const withMentions: string = preprocessSlackMentionsForMarkdown(raw, slackUserIdToName);
+    return collapseExcessiveMarkdownBlankLines(withMentions);
+  }, [raw, slackUserIdToName]);
+
+  /** Tight Slack-like vertical rhythm: single-direction margins, no empty-p gaps, smaller heading/table gaps than default prose-sm. */
+  const proseBody: string = [
+    'prose prose-sm max-w-none overflow-x-auto',
+    '[&>:first-child]:mt-0 [&>:last-child]:mb-0',
+    '[&_p:empty]:hidden',
+    '[&>p+p]:!mt-0',
+    'prose-headings:scroll-mt-4 prose-headings:font-extrabold prose-headings:text-surface-50 dark:prose-headings:text-surface-50',
+    'prose-h1:mt-0 prose-h1:mb-2 prose-h2:mt-3 prose-h2:mb-1 prose-h3:mt-2 prose-h3:mb-1 prose-h4:mt-2 prose-h4:mb-1',
+    'prose-ul:mt-0 prose-ul:mb-2 prose-ol:mt-0 prose-ol:mb-2 prose-ul:pl-5 prose-ol:pl-5',
+    'prose-li:my-0 prose-li:py-0.5 prose-li:text-surface-100 dark:prose-li:text-surface-200',
+    'prose-pre:my-2',
+    'prose-code:text-primary-600 dark:prose-code:text-primary-300 prose-code:bg-surface-800 dark:prose-code:bg-surface-800/70 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-code:text-xs',
+    'prose-pre:bg-surface-800 dark:prose-pre:bg-surface-800/70 prose-pre:text-xs prose-pre:border prose-pre:border-surface-300 dark:prose-pre:border-surface-700',
+    'prose-strong:text-surface-50 dark:prose-strong:text-surface-100',
+    'prose-table:mt-0 prose-table:mb-2 prose-table:text-[15px] prose-table:text-surface-100 dark:prose-table:text-surface-200',
+    'prose-th:text-surface-50 dark:prose-th:text-surface-200 prose-th:bg-surface-800/80 dark:prose-th:bg-surface-700/50 prose-th:px-2 prose-th:py-1',
+    'prose-td:text-surface-100 dark:prose-td:text-surface-200 prose-td:px-2 prose-td:py-1 prose-td:border-surface-300 dark:prose-td:border-surface-700 prose-th:border-surface-300 dark:prose-th:border-surface-700',
+    '[&_a]:text-primary-600 dark:[&_a]:text-primary-400 [&_a:hover]:text-primary-500 dark:[&_a:hover]:text-primary-300',
+  ].join(' ');
 
   return (
-    <div className="max-w-full text-[13px] leading-relaxed text-surface-200">
-      <div className={`prose prose-sm max-w-none overflow-x-auto text-surface-200 dark:prose-invert prose-p:my-1 prose-headings:my-2 prose-headings:text-surface-200 prose-ul:my-1 prose-ol:my-1 prose-li:my-0.5 prose-pre:my-2 prose-code:text-primary-300 prose-code:bg-surface-800/70 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-code:text-xs prose-pre:bg-surface-800/70 prose-pre:text-xs prose-pre:border prose-pre:border-surface-700 prose-a:text-primary-400 prose-a:no-underline hover:prose-a:text-primary-300 prose-strong:text-surface-100 prose-table:text-xs prose-table:text-surface-200 prose-th:text-surface-200 prose-th:bg-surface-700/50 prose-th:px-2 prose-th:py-1 prose-td:text-surface-200 prose-td:px-2 prose-td:py-1 prose-td:border-surface-700 prose-th:border-surface-700 [&_a]:text-primary-400 [&_a:hover]:text-primary-300 ${isStreaming ? '[&>p:last-of-type]:inline [&>p:last-of-type]:mb-0' : ''}`}>
+    <div className="max-w-full text-[15px] leading-[1.466] text-surface-100 dark:text-surface-200">
+      <div className={`${proseBody} ${isStreaming ? '[&>p:last-of-type]:inline [&>p:last-of-type]:mb-0' : ''}`}>
         <ReactMarkdown remarkPlugins={[remarkGfm]} components={ASSISTANT_MARKDOWN_COMPONENTS}>
           {displayText}
         </ReactMarkdown>
         {isStreaming && (
-          <span className="inline-block w-1.5 h-3 bg-current animate-pulse ml-0.5 align-middle" />
+          <span className="inline-block w-1.5 h-3 bg-surface-600 dark:bg-surface-200 animate-pulse ml-0.5 align-middle" />
         )}
       </div>
     </div>
@@ -2529,31 +2594,36 @@ function ToolBlockIndicator({
     block.statusText,
   );
 
+  const pillBg: string = isComplete
+    ? hasError
+      ? 'bg-red-500/10 dark:bg-red-500/10 border-red-400/30 dark:border-red-400/20'
+      : 'bg-surface-800 dark:bg-surface-800/60 border-surface-200/80 dark:border-surface-700'
+    : 'bg-primary-500/10 dark:bg-primary-500/10 border-primary-400/30 dark:border-primary-500/20';
+
   return (
     <button
       onClick={onClick}
-      className="flex items-center gap-1.5 py-0.5 text-xs text-surface-500 hover:text-surface-300 transition-colors cursor-pointer group text-left"
+      className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] leading-tight transition-colors cursor-pointer group ${pillBg} hover:brightness-95 dark:hover:brightness-110`}
     >
       {isComplete ? (
         hasError ? (
-          <svg className="w-3.5 h-3.5 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+          <svg className="w-3 h-3 text-red-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
           </svg>
         ) : (
-          <svg className="w-3.5 h-3.5 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+          <svg className="w-3 h-3 text-green-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
           </svg>
         )
       ) : (
-        <svg className="w-3.5 h-3.5 text-surface-600 animate-spin" fill="none" viewBox="0 0 24 24">
+        <svg className="w-3 h-3 text-primary-500 dark:text-primary-400 animate-spin shrink-0" fill="none" viewBox="0 0 24 24">
           <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
           <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
         </svg>
       )}
-      <span className={`italic group-hover:text-surface-300 ${hasError ? 'text-red-400/80' : 'text-surface-500'}`}>{statusText}</span>
-      <svg className="w-3 h-3 text-surface-600 opacity-0 group-hover:opacity-100 transition-opacity" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-      </svg>
+      <span className={`truncate max-w-[200px] ${hasError ? 'text-red-400/90 dark:text-red-400/80' : isComplete ? 'text-surface-500 dark:text-surface-400' : 'text-primary-600 dark:text-primary-400'}`}>
+        {statusText}
+      </span>
     </button>
   );
 }
@@ -2945,15 +3015,17 @@ function ToolCallModal({
  */
 function ThinkingIndicator(): JSX.Element {
   return (
-    <div className="flex items-start gap-2.5 px-5 py-1.5 -mx-5">
-      <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-surface-700 to-surface-800 flex items-center justify-center flex-shrink-0 overflow-hidden mt-0.5">
-        <img src={LOGO_PATH} alt={APP_NAME} className="w-4 h-4 object-contain opacity-90" />
+    <div className={`${CHAT_MSG_ROW} py-1`}>
+      <div
+        className={`${CHAT_MSG_AVATAR} flex items-center justify-center overflow-hidden border border-surface-200/90 dark:border-surface-600 bg-white dark:bg-surface-850 shadow-[0_1px_0_rgba(0,0,0,0.04)] dark:shadow-none`}
+      >
+        <img src={LOGO_PATH} alt={APP_NAME} className="w-[22px] h-[22px] object-contain opacity-90" />
       </div>
 
       <div className="flex-1 min-w-0">
-        <div className="flex items-baseline gap-2">
-          <span className="text-[13px] font-bold text-surface-100">{APP_NAME}</span>
-          <span className="inline-flex items-center px-1 py-px rounded text-[10px] font-medium bg-surface-700 text-surface-400">APP</span>
+        <div className="flex flex-wrap items-baseline gap-x-1.5 gap-y-0">
+          <span className={CHAT_MSG_NAME}>{APP_NAME}</span>
+          <span className={CHAT_MSG_APP_BADGE}>AGENT</span>
         </div>
         <div className="flex items-center gap-1 mt-1">
           <div className="w-1.5 h-1.5 bg-surface-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
