@@ -2,9 +2,11 @@
  * Grid of workstream cards replacing the old bubble map.
  * Sorted by activity (messages + participants in window). Each card shows
  * a human-readable label, scrollable recent chats, and overlapping avatars.
+ * Labels are editable inline; renames propagate to all clients via workstreams_stale.
  */
 
 import { useMemo, useState } from "react";
+import { renameWorkstream } from "../api/workstreams";
 import type { WorkstreamConversation, WorkstreamItem } from "../store/types";
 import { WorkstreamDetailView } from "./WorkstreamDetailView";
 
@@ -70,6 +72,10 @@ function WorkstreamCard({
   onSelectConversation: (id: string) => void;
   onOpenDetail: (ws: WorkstreamItem) => void;
 }): JSX.Element {
+  const [isEditing, setIsEditing] = useState<boolean>(false);
+  const [draftLabel, setDraftLabel] = useState<string>(workstream.label);
+  const [saving, setSaving] = useState<boolean>(false);
+
   const participants = useMemo(
     () => collectParticipants(workstream),
     [workstream]
@@ -82,6 +88,37 @@ function WorkstreamCard({
     (sum, c) => sum + (c.messages_in_window ?? 0),
     0
   );
+
+  const handleStartEdit = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setDraftLabel(workstream.label);
+    setIsEditing(true);
+  };
+
+  const saveRename = async (): Promise<void> => {
+    const trimmed = draftLabel.trim();
+    if (!trimmed || trimmed === workstream.label) {
+      setIsEditing(false);
+      return;
+    }
+    setSaving(true);
+    const { error } = await renameWorkstream(workstream.id, trimmed);
+    setSaving(false);
+    if (!error) {
+      setIsEditing(false);
+    }
+  };
+
+  const handleSaveRename = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    void saveRename();
+  };
+
+  const handleCancelEdit = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setDraftLabel(workstream.label);
+    setIsEditing(false);
+  };
 
   return (
     <div
@@ -97,22 +134,77 @@ function WorkstreamCard({
       }}
     >
       {/* Header */}
-      <div className="px-4 pt-4 pb-2">
-        <h3 className="text-sm font-semibold text-surface-100 leading-tight truncate">
-          {workstream.label}
-        </h3>
-        {workstream.description && (
-          <p className="text-xs text-surface-400 mt-1 line-clamp-2">
-            {workstream.description}
-          </p>
+      <div className="px-4 pt-4 pb-2" onClick={(e) => isEditing && e.stopPropagation()}>
+        {isEditing ? (
+          <div className="space-y-2">
+            <input
+              type="text"
+              value={draftLabel}
+              onChange={(e) => setDraftLabel(e.target.value)}
+              onKeyDown={(e) => {
+                e.stopPropagation();
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  void saveRename();
+                }
+                if (e.key === "Escape") {
+                  setDraftLabel(workstream.label);
+                  setIsEditing(false);
+                }
+              }}
+              className="w-full px-2 py-1 text-sm bg-surface-800 border border-surface-600 rounded text-surface-100"
+              autoFocus
+            />
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={handleSaveRename}
+                disabled={saving || !draftLabel.trim()}
+                className="px-2 py-1 text-xs font-medium bg-primary-600 text-white rounded hover:bg-primary-500 disabled:opacity-50"
+              >
+                {saving ? "Saving…" : "Save"}
+              </button>
+              <button
+                type="button"
+                onClick={handleCancelEdit}
+                disabled={saving}
+                className="px-2 py-1 text-xs font-medium text-surface-400 hover:text-surface-200 rounded"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        ) : (
+          <>
+            <div className="flex items-start gap-2">
+              <h3 className="text-sm font-semibold text-surface-100 leading-tight truncate flex-1 min-w-0">
+                {workstream.label}
+              </h3>
+              <button
+                type="button"
+                onClick={handleStartEdit}
+                className="flex-shrink-0 p-0.5 rounded text-surface-500 hover:text-surface-300 hover:bg-surface-700 transition-colors"
+                aria-label="Rename workstream"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                </svg>
+              </button>
+            </div>
+            {workstream.description && (
+              <p className="text-xs text-surface-400 mt-1 line-clamp-2">
+                {workstream.description}
+              </p>
+            )}
+            <div className="flex items-center gap-3 mt-2 text-xs text-surface-500">
+              <span>{workstream.conversations.length} chats</span>
+              <span className="w-px h-3 bg-surface-700" />
+              <span>{totalMessages} messages</span>
+              <span className="w-px h-3 bg-surface-700" />
+              <span>{participants.length} people</span>
+            </div>
+          </>
         )}
-        <div className="flex items-center gap-3 mt-2 text-xs text-surface-500">
-          <span>{workstream.conversations.length} chats</span>
-          <span className="w-px h-3 bg-surface-700" />
-          <span>{totalMessages} messages</span>
-          <span className="w-px h-3 bg-surface-700" />
-          <span>{participants.length} people</span>
-        </div>
       </div>
 
       {/* Recent chats (scrollable) */}

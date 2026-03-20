@@ -13,3 +13,13 @@ export async function fetchWorkstreams(
   const endpoint = `${WORKSTREAMS_PATH}?window=${windowHours}`;
   return apiRequest<WorkstreamsResponse>(endpoint);
 }
+
+export async function renameWorkstream(
+  workstreamId: string,
+  label: string
+): Promise<{ data: { id: string; label: string } | null; error: string | null }> {
+  return apiRequest<{ id: string; label: string }>(`${WORKSTREAMS_PATH}/${workstreamId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ label: label.trim() }),
+  });
+}

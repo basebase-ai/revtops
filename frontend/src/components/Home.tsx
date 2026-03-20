@@ -36,9 +36,6 @@ const WORKSTREAM_WINDOW_OPTIONS: { value: number; label: string }[] = [
 
 export function Home(): JSX.Element {
   const organization = useAppStore((state) => state.organization);
-  const startNewChat = useAppStore((state) => state.startNewChat);
-  const setPendingChatInput = useAppStore((state) => state.setPendingChatInput);
-  const setPendingChatAutoSend = useAppStore((state) => state.setPendingChatAutoSend);
   const setCurrentView = useAppStore((state) => state.setCurrentView);
   const setCurrentChatId = useAppStore((state) => state.setCurrentChatId);
 

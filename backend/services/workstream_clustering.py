@@ -2,7 +2,8 @@
 Workstream clustering: HDBSCAN + UMAP + LLM labels for semantic Home.
 
 Clusters shared conversations by embedding similarity, projects to 2D for layout,
-and generates human-readable workstream labels.
+and generates human-readable workstream labels. Persists to Workstream rows and
+matches existing rows by Jaccard overlap so user-edited names survive recompute.
 """
 
 import json
@@ -18,8 +19,11 @@ from sqlalchemy import select
 from config import settings
 from models.conversation import Conversation
 from models.database import get_session
+from models.workstream import Workstream
 
 logger = logging.getLogger(__name__)
+
+_JACCARD_MATCH_THRESHOLD = 0.5
 
 _MIN_CLUSTER_SIZE = 2
 _MULTI_CLUSTER_SIMILARITY_THRESHOLD = 0.75
@@ -57,6 +61,15 @@ async def _fetch_embeddings_for_window(
 
     matrix = np.array(vectors, dtype=np.float64)
     return ids, matrix
+
+
+def _jaccard_similarity(a: set[str], b: set[str]) -> float:
+    """Jaccard similarity |A ∩ B| / |A ∪ B|; 1.0 if both empty."""
+    if not a and not b:
+        return 1.0
+    inter = len(a & b)
+    union = len(a | b)
+    return inter / union if union else 0.0
 
 
 def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
@@ -107,7 +120,21 @@ async def _generate_cluster_labels(
                 max_tokens=150,
                 messages=[{"role": "user", "content": prompt}],
             )
-            raw = response.content[0].text.strip() if response.content else "{}"
+            raw: str = ""
+            for block in response.content:
+                if hasattr(block, "text") and block.text:
+                    raw = block.text.strip()
+                    break
+            logger.info("Cluster %s raw response (%d blocks): %r", i, len(response.content), raw[:300] if raw else "(empty)")
+            if raw.startswith("```"):
+                raw = raw.split("\n", 1)[-1] if "\n" in raw else raw[3:]
+            if raw.endswith("```"):
+                raw = raw[: raw.rfind("```")]
+            raw = raw.strip()
+            if not raw:
+                logger.warning("Cluster %s: no text in response, block types: %s", i, [getattr(b, "type", "?") for b in response.content])
+                results.append((f"Workstream {i + 1}", ""))
+                continue
             parsed = json.loads(raw)
             label = parsed.get("label", f"Workstream {i + 1}")
             desc = parsed.get("description", "")
@@ -188,29 +215,62 @@ async def compute_workstream_clusters(
             if sim >= _MULTI_CLUSTER_SIMILARITY_THRESHOLD:
                 cluster_id_to_conv_ids[lbl].append(conv_ids[i])
 
-    # Build workstream list with positions (centroid of 2D positions)
-    workstreams: list[dict[str, Any]] = []
+    # Build cluster list: conversation_ids + position (no id/label yet)
+    clusters: list[dict[str, Any]] = []
     for lbl in unique_labels:
         cids = cluster_id_to_conv_ids[lbl]
         if not cids:
             continue
         positions = [positions_2d[conv_ids.index(cid)] for cid in cids]
         centroid_2d = np.mean(positions, axis=0).tolist()
-        workstreams.append({
-            "id": str(uuid.uuid4()),
-            "label": "",
-            "description": "",
-            "position": centroid_2d,
+        clusters.append({
             "conversation_ids": cids,
+            "position": centroid_2d,
         })
 
-    # Fetch titles/summaries for label generation
+    unclustered_ids = [conv_ids[i] for i in range(len(conv_ids)) if labels[i] == -1]
+
+    # Load existing workstreams and match each cluster by Jaccard
+    existing_list: list[Workstream] = []
+    if clusters:
+        async with get_session(organization_id=organization_id) as session:
+            existing_result = await session.execute(
+                select(Workstream).where(
+                    Workstream.organization_id == uuid.UUID(organization_id),
+                    Workstream.window_hours == window_hours,
+                    Workstream.is_active.is_(True),
+                )
+            )
+            existing_list = list(existing_result.scalars().all())
+
+    cluster_match_ids: list[uuid.UUID | None] = []
+    for cluster in clusters:
+        c_set = set(cluster["conversation_ids"])
+        best: tuple[float, uuid.UUID | None] = (0.0, None)
+        for ex in existing_list:
+            ex_set = {str(x) for x in (ex.conversation_ids or [])}
+            j = _jaccard_similarity(c_set, ex_set)
+            if j >= _JACCARD_MATCH_THRESHOLD and j > best[0]:
+                best = (j, ex.id)
+        cluster_match_ids.append(best[1])
+
+    existing_by_id = {ex.id: ex for ex in existing_list}
+
+    # Which clusters need an AI-generated label? (no match, or match with label_overridden=False)
+    need_label_clusters: list[dict[str, Any]] = []
+    need_label_indices: list[int] = []
+    for i, (cluster, match_id) in enumerate(zip(clusters, cluster_match_ids)):
+        if match_id is None or not existing_by_id[match_id].label_overridden:
+            need_label_clusters.append(cluster)
+            need_label_indices.append(i)
+
+    # Fetch titles/summaries for label generation (only for clusters that need labels)
+    cluster_conversations_for_labels: list[dict[str, Any]] = []
     async with get_session(organization_id=organization_id) as session:
-        cluster_conversations: list[dict[str, Any]] = []
-        for ws in workstreams:
+        for cluster in need_label_clusters:
             titles: list[str] = []
             summaries: list[str] = []
-            for cid in ws["conversation_ids"]:
+            for cid in cluster["conversation_ids"]:
                 conv = await session.get(Conversation, cid)
                 if conv:
                     titles.append(conv.title or "")
@@ -222,17 +282,98 @@ async def compute_workstream_clusters(
                         except (json.JSONDecodeError, TypeError):
                             pass
                     summaries.append(overall)
-            cluster_conversations.append({"titles": titles, "summaries": summaries})
+            cluster_conversations_for_labels.append({"titles": titles, "summaries": summaries})
 
-    label_tuples = await _generate_cluster_labels(organization_id, cluster_conversations)
-    for ws, (label, desc) in zip(workstreams, label_tuples):
-        ws["label"] = label
-        ws["description"] = desc
+    label_tuples = await _generate_cluster_labels(organization_id, cluster_conversations_for_labels)
+    label_by_need_index: dict[int, tuple[str, str]] = {
+        need_label_indices[j]: label_tuples[j] for j in range(len(label_tuples))
+    }
 
-    unclustered_ids = [conv_ids[i] for i in range(len(conv_ids)) if labels[i] == -1]
+    # Upsert: update matched rows, insert new, deactivate unmatched existing
+    matched_existing_ids: set[uuid.UUID] = set()
+    workstream_out_tuples: list[tuple[str, str, str, list[float], list[str]]] = []
+    org_uuid = uuid.UUID(organization_id)
+
+    async with get_session(organization_id=organization_id) as session:
+        for i, (cluster, match_id) in enumerate(zip(clusters, cluster_match_ids)):
+            cids_uuid = [uuid.UUID(cid) for cid in cluster["conversation_ids"]]
+            pos = cluster["position"]
+            if match_id is not None:
+                matched_existing_ids.add(match_id)
+                row = await session.get(Workstream, match_id)
+                if row:
+                    row.conversation_ids = cids_uuid
+                    row.position = pos
+                    if i in label_by_need_index:
+                        label, desc = label_by_need_index[i]
+                        row.label = label
+                        row.description = desc or ""
+                    await session.flush()
+                    workstream_out_tuples.append((
+                        str(row.id),
+                        row.label,
+                        row.description or "",
+                        row.position or [0.5, 0.5],
+                        [str(cid) for cid in (row.conversation_ids or [])],
+                    ))
+                else:
+                    label, desc = label_by_need_index.get(i, ("Workstream", ""))
+                    new_ws = Workstream(
+                        organization_id=org_uuid,
+                        window_hours=window_hours,
+                        label=label,
+                        description=desc or "",
+                        label_overridden=False,
+                        conversation_ids=cids_uuid,
+                        is_active=True,
+                        position=pos,
+                    )
+                    session.add(new_ws)
+                    await session.flush()
+                    workstream_out_tuples.append((
+                        str(new_ws.id),
+                        new_ws.label,
+                        new_ws.description or "",
+                        new_ws.position or [0.5, 0.5],
+                        [str(cid) for cid in new_ws.conversation_ids],
+                    ))
+            else:
+                label, desc = label_by_need_index.get(i, ("Workstream", ""))
+                new_ws = Workstream(
+                    organization_id=org_uuid,
+                    window_hours=window_hours,
+                    label=label,
+                    description=desc or "",
+                    label_overridden=False,
+                    conversation_ids=cids_uuid,
+                    is_active=True,
+                    position=pos,
+                )
+                session.add(new_ws)
+                await session.flush()
+                workstream_out_tuples.append((
+                    str(new_ws.id),
+                    new_ws.label,
+                    new_ws.description or "",
+                    new_ws.position or [0.5, 0.5],
+                    [str(cid) for cid in new_ws.conversation_ids],
+                ))
+
+        for ex in existing_list:
+            if ex.id not in matched_existing_ids:
+                row = await session.get(Workstream, ex.id)
+                if row:
+                    row.is_active = False
+
+        await session.commit()
+
+    workstreams_out = [
+        {"id": wid, "label": lbl, "description": desc, "position": pos, "conversation_ids": cids}
+        for wid, lbl, desc, pos, cids in workstream_out_tuples
+    ]
 
     return {
-        "workstreams": workstreams,
+        "workstreams": workstreams_out,
         "unclustered_ids": unclustered_ids,
         "conversation_positions": conversation_positions,
         "computed_at": datetime.now(timezone.utc).isoformat(),

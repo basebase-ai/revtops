@@ -5,15 +5,17 @@ Workstreams API for semantic Home: clusters of shared conversations by topic.
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import func, select
 
 from api.auth_middleware import AuthContext, get_current_auth, require_organization
+from api.websockets import sync_broadcaster
 from models.chat_message import ChatMessage
 from models.conversation import Conversation
 from models.database import get_session
 from models.user import User
+from models.workstream import Workstream
 from models.workstream_snapshot import WorkstreamSnapshot
 from services.workstream_clustering import compute_workstream_clusters
 
@@ -196,3 +198,45 @@ async def get_workstreams(
         unclustered=unclustered_out,
         computed_at=data.get("computed_at", now.isoformat()),
     )
+
+
+class WorkstreamRenameBody(BaseModel):
+    label: str
+
+
+@router.patch("/{workstream_id}")
+async def rename_workstream(
+    workstream_id: UUID,
+    body: WorkstreamRenameBody,
+    auth: AuthContext = Depends(require_organization),
+) -> dict[str, str]:
+    """Update workstream label; propagates to all clients via workstreams_stale broadcast."""
+    org_id: str = auth.organization_id_str or ""
+    label = (body.label or "").strip()
+    if not label:
+        raise HTTPException(status_code=400, detail="label is required and cannot be empty")
+
+    async with get_session(organization_id=org_id) as session:
+        row = await session.get(Workstream, workstream_id)
+        if not row or str(row.organization_id) != org_id:
+            raise HTTPException(status_code=404, detail="Workstream not found")
+        row.label = label
+        row.label_overridden = True
+        session.add(row)
+
+        # Mark snapshot stale so next GET recomputes and returns updated label
+        snap_result = await session.execute(
+            select(WorkstreamSnapshot).where(
+                WorkstreamSnapshot.organization_id == UUID(org_id),
+                WorkstreamSnapshot.window_hours == row.window_hours,
+            )
+        )
+        snap = snap_result.scalar_one_or_none()
+        if snap:
+            snap.stale_since = datetime.now(timezone.utc)
+            session.add(snap)
+
+        await session.commit()
+
+    await sync_broadcaster.broadcast(org_id, "workstreams_stale", {})
+    return {"id": str(workstream_id), "label": label}
