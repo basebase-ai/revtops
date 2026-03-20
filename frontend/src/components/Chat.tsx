@@ -99,7 +99,7 @@ function SummaryCard({ summary }: { summary: ConversationSummaryData }): JSX.Ele
   const [expanded, setExpanded] = useState(false);
 
   return (
-    <div className="mx-auto max-w-3xl mb-3">
+    <div className="mx-auto max-w-4xl mb-3">
       <button
         type="button"
         onClick={() => setExpanded((v) => !v)}
@@ -1243,7 +1243,7 @@ export function Chat({
         </header>
 
         <div className="flex-1 overflow-hidden p-3 md:p-6">
-          <div className="max-w-3xl mx-auto space-y-6">
+          <div className="max-w-4xl mx-auto space-y-6">
             <div className="flex gap-3">
               <div className="w-7 h-7 rounded-full bg-surface-700 animate-pulse flex-shrink-0 mt-0.5" />
               <div className="space-y-2 flex-1 max-w-[65%]">
@@ -1278,7 +1278,7 @@ export function Chat({
         </div>
 
         <div className="flex-shrink-0 border-t border-surface-800 p-3 md:p-4">
-          <div className="max-w-3xl mx-auto">
+          <div className="max-w-4xl mx-auto">
             <div className="h-11 rounded-xl bg-surface-800 animate-pulse" />
           </div>
         </div>
@@ -1512,7 +1512,7 @@ export function Chat({
                 <EmptyState onSuggestionClick={handleSuggestionClick} />
               )
             ) : (
-              <div className="max-w-3xl mx-auto space-y-3">
+              <div className="max-w-4xl mx-auto">
                 {hasMoreMessages && (
                   <div className="flex justify-center py-2">
                     <button
@@ -1525,36 +1525,42 @@ export function Chat({
                     </button>
                   </div>
                 )}
-                {messages.map((msg) => (
-                  <MessageWithBlocks
-                    key={msg.id}
-                    message={msg}
-                    toolApprovals={toolApprovals}
-                    onArtifactClick={(a) => { setCurrentArtifactId(a.id); setCurrentAttachmentId(null); setCurrentAttachmentMeta(null); }}
-                    onAttachmentClick={(id, meta) => { setCurrentAttachmentId(id); setCurrentAttachmentMeta(meta); setCurrentArtifactId(null); }}
-                    onAppClick={(app: AppBlock["app"]) => { setPreviewAppId(app.id); setPreviewCollapsed(false); setPreviewDismissed(false); setCurrentArtifactId(null); setCurrentAttachmentId(null); setCurrentAttachmentMeta(null); }}
-                    onToolApprove={handleToolApprove}
-                    onToolCancel={handleToolCancel}
-                    onToolClick={(block) => setSelectedToolCall({
-                      toolName: block.name,
-                      toolId: block.id,
-                      input: block.input,
-                      result: block.result,
-                      status: block.status === 'complete' ? 'complete' : 'running',
-                    })}
-                    onRetry={handleRetry}
-                    conversationScope={conversationScope}
-                    currentUserId={userId}
-                  />
-                ))}
+                {messages.map((msg, idx) => {
+                  const prevMsg: ChatMessage | undefined = idx > 0 ? messages[idx - 1] : undefined;
+                  const showDivider: boolean = !!prevMsg && prevMsg.role !== msg.role;
+                  return (
+                    <div key={msg.id}>
+                      {showDivider && <div className="h-2" />}
+                      <MessageWithBlocks
+                        message={msg}
+                        toolApprovals={toolApprovals}
+                        onArtifactClick={(a) => { setCurrentArtifactId(a.id); setCurrentAttachmentId(null); setCurrentAttachmentMeta(null); }}
+                        onAttachmentClick={(id, meta) => { setCurrentAttachmentId(id); setCurrentAttachmentMeta(meta); setCurrentArtifactId(null); }}
+                        onAppClick={(app: AppBlock["app"]) => { setPreviewAppId(app.id); setPreviewCollapsed(false); setPreviewDismissed(false); setCurrentArtifactId(null); setCurrentAttachmentId(null); setCurrentAttachmentMeta(null); }}
+                        onToolApprove={handleToolApprove}
+                        onToolCancel={handleToolCancel}
+                        onToolClick={(block) => setSelectedToolCall({
+                          toolName: block.name,
+                          toolId: block.id,
+                          input: block.input,
+                          result: block.result,
+                          status: block.status === 'complete' ? 'complete' : 'running',
+                        })}
+                        onRetry={handleRetry}
+                        conversationScope={conversationScope}
+                        currentUserId={userId}
+                      />
+                    </div>
+                  );
+                })}
 
-                {/* Thinking indicator */}
                 {isThinking && <ThinkingIndicator />}
 
-                {/* Workflow polling spinner - shows at bottom while workflow is running */}
                 {isWorkflowPolling && messages.length > 0 && !isThinking && (
-                  <div className="flex items-center justify-center gap-2 py-4 text-surface-400">
-                    <div className="w-4 h-4 border-2 border-surface-600 border-t-primary-500 rounded-full animate-spin" />
+                  <div className="flex items-center gap-2.5 px-5 py-1.5 -mx-5 text-surface-400">
+                    <div className="w-8 h-8 flex items-center justify-center flex-shrink-0">
+                      <div className="w-4 h-4 border-2 border-surface-600 border-t-primary-500 rounded-full animate-spin" />
+                    </div>
                     <span className="text-sm">Workflow running...</span>
                   </div>
                 )}
@@ -1614,10 +1620,9 @@ export function Chat({
         )}
       </div>
 
-      {/* Input */}
-      <div className="border-t border-surface-800 p-2 md:p-3">
-        <div className="max-w-3xl mx-auto">
-          {/* Credits warnings */}
+      {/* Composer */}
+      <div className="px-3 md:px-5 pb-3 pt-1">
+        <div className="max-w-4xl mx-auto">
           {outOfCredits && (
             <div className="mb-2 px-3 py-2 rounded-lg bg-red-500/10 border border-red-500/30 text-red-300 text-sm flex items-center gap-2">
               <svg className="w-4 h-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -1634,7 +1639,6 @@ export function Chat({
               Running low on credits ({creditsInfo?.balance} remaining).
             </div>
           )}
-          {/* Hidden file input */}
           <input
             ref={fileInputRef}
             type="file"
@@ -1644,25 +1648,24 @@ export function Chat({
             onChange={handleFileSelect}
           />
 
-          {/* Single container that looks like one input box */}
           <div
             onDrop={(e) => void handleDrop(e)}
             onDragOver={handleDragOver}
             onDragLeave={handleDragLeave}
-            className={`relative rounded-2xl border bg-surface-900 transition-all duration-150 ${
+            className={`relative rounded-lg border transition-all duration-150 ${
               isDragOver
-                ? 'border-primary-500 ring-2 ring-primary-500/40'
-                : (!isConnected || outOfCredits) ? 'border-surface-700 opacity-50' : 'border-surface-700 focus-within:ring-2 focus-within:ring-primary-500 focus-within:border-transparent'
+                ? 'border-primary-500 ring-1 ring-primary-500/40 bg-surface-850'
+                : (!isConnected || outOfCredits)
+                  ? 'border-surface-700 opacity-50 bg-surface-900'
+                  : 'border-surface-600 focus-within:border-surface-500 bg-surface-900'
             }`}
           >
-            {/* Drop zone overlay */}
             {isDragOver && (
-              <div className="absolute inset-0 rounded-2xl bg-primary-500/10 flex items-center justify-center z-10 pointer-events-none">
+              <div className="absolute inset-0 rounded-lg bg-primary-500/10 flex items-center justify-center z-10 pointer-events-none">
                 <span className="text-sm font-medium text-primary-400">Drop files here</span>
               </div>
             )}
 
-            {/* Attachment cards */}
             {pendingAttachments.length > 0 && (
               <div className="flex flex-wrap gap-2 px-3 pt-3">
                 {pendingAttachments.map((att) => (
@@ -1677,58 +1680,59 @@ export function Chat({
               </div>
             )}
 
-            {/* Textarea — no border/bg of its own */}
             <textarea
               ref={inputRef}
               value={input}
               onChange={(e) => {
                 setInput(e.target.value);
-                // Auto-resize textarea
                 e.target.style.height = 'auto';
                 e.target.style.height = `${Math.min(e.target.scrollHeight, 240)}px`;
               }}
               onKeyDown={handleKeyDown}
               onPaste={(e) => void handlePaste(e)}
-              placeholder={outOfCredits ? 'Out of credits — upgrade to continue' : agentRunning ? 'Agent working...' : 'Ask about your pipeline...'}
-              className="w-full resize-none bg-transparent text-surface-100 px-4 pt-3 pb-1 text-sm placeholder-surface-500 focus:outline-none leading-5 scrollbar-none disabled:cursor-not-allowed"
+              placeholder={outOfCredits ? 'Out of credits — upgrade to continue' : agentRunning ? 'Agent working...' : 'Message...'}
+              className="w-full resize-none bg-transparent text-surface-100 px-3.5 pt-2.5 pb-2 text-[13px] placeholder-surface-500 focus:outline-none leading-[1.46] scrollbar-none disabled:cursor-not-allowed"
               style={{ minHeight: '36px', maxHeight: '240px' }}
               rows={1}
               disabled={!isConnected || outOfCredits}
               autoFocus={chatId === null}
             />
 
-            {/* Bottom row: attach on left, scope toggle (for new chats), send/stop on right */}
-            <div className="flex items-center justify-between px-2 pb-2">
-              <div className="flex items-center gap-2">
-                {/* Attach button */}
+            {/* Toolbar — separated by a thin border, like Slack */}
+            <div className="flex items-center justify-between border-t border-surface-700/60 px-1.5 py-1">
+              <div className="flex items-center gap-0.5">
+                {/* Attach / plus button */}
                 <button
                   type="button"
                   onClick={() => fileInputRef.current?.click()}
                   disabled={isUploading || agentRunning}
-                  className="flex w-8 h-8 rounded-full text-surface-400 hover:text-surface-200 hover:bg-surface-800 items-center justify-center transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                  className="flex w-7 h-7 rounded text-surface-400 hover:text-surface-200 hover:bg-surface-700 items-center justify-center transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                   title="Attach file"
                 >
                   {isUploading ? (
                     <div className="w-4 h-4 border-2 border-surface-600 border-t-primary-500 rounded-full animate-spin" />
                   ) : (
-                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                    <svg className="w-[18px] h-[18px]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
                     </svg>
                   )}
                 </button>
 
-                {/* Scope toggle - only for new conversations */}
+                {/* Divider */}
+                <div className="w-px h-4 bg-surface-700 mx-0.5" />
+
+                {/* Scope toggle — new conversations only */}
                 {!chatId && !localConversationId && (
                   <button
                     type="button"
                     onClick={() => setNewConversationScope(prev => prev === 'shared' ? 'private' : 'shared')}
-                    className={`flex items-center gap-1.5 px-2 py-1 rounded-full text-xs font-medium transition-colors ${
+                    className={`flex items-center gap-1 px-1.5 py-1 rounded text-[11px] font-medium transition-colors ${
                       newConversationScope === 'shared'
-                        ? 'bg-primary-500/20 text-primary-400 hover:bg-primary-500/30'
-                        : 'bg-surface-700 text-surface-400 hover:bg-surface-600'
+                        ? 'text-primary-400 hover:bg-primary-500/10'
+                        : 'text-surface-400 hover:bg-surface-700'
                     }`}
-                    title={newConversationScope === 'shared' 
-                      ? 'Shared: Teammates can join this conversation' 
+                    title={newConversationScope === 'shared'
+                      ? 'Shared: Teammates can join this conversation'
                       : 'Private: Only you can see this conversation'}
                   >
                     {newConversationScope === 'shared' ? (
@@ -1750,11 +1754,11 @@ export function Chat({
                 )}
               </div>
 
-              {/* Send/Stop button */}
+              {/* Send / Stop */}
               {agentRunning ? (
                 <button
                   onClick={handleStop}
-                  className="flex-shrink-0 w-8 h-8 rounded-lg bg-red-600 text-white hover:bg-red-500 flex items-center justify-center transition-colors"
+                  className="flex-shrink-0 w-7 h-7 rounded bg-red-600 text-white hover:bg-red-500 flex items-center justify-center transition-colors"
                   title="Stop"
                 >
                   <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24">
@@ -1765,10 +1769,14 @@ export function Chat({
                 <button
                   onClick={handleSend}
                   disabled={(!input.trim() && pendingAttachments.length === 0) || !isConnected || outOfCredits}
-                  className="flex-shrink-0 w-8 h-8 rounded-lg bg-primary-600 text-white hover:bg-primary-500 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center transition-colors"
+                  className={`flex-shrink-0 w-7 h-7 rounded flex items-center justify-center transition-colors ${
+                    (input.trim() || pendingAttachments.length > 0) && isConnected && !outOfCredits
+                      ? 'bg-primary-600 text-white hover:bg-primary-500'
+                      : 'text-surface-500 cursor-default'
+                  }`}
                 >
-                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 10l7-7m0 0l7 7m-7-7v18" />
+                  <svg className="w-[18px] h-[18px]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M6 12L3 21l18-9L3 3l3 9zm0 0h8" />
                   </svg>
                 </button>
               )}
@@ -1989,7 +1997,6 @@ function MessageWithBlocks({
     const isOwnMessage = !message.userId || message.userId === currentUserId;
     const showSenderInfo = conversationScope === 'shared' && !isOwnMessage;
     
-    // For other users' messages in shared conversations, show on the left like assistant
     if (showSenderInfo) {
       const senderName = message.senderName ?? message.senderEmail ?? 'Unknown';
       const senderUser = {
@@ -2000,16 +2007,17 @@ function MessageWithBlocks({
       };
       
       return (
-        <div className="flex items-start gap-2 animate-slide-up">
-          {/* Avatar */}
-          <Avatar user={senderUser} size="md" className="flex-shrink-0 rounded-full" />
+        <div className="group/msg flex items-start gap-2.5 px-5 py-1.5 -mx-5 hover:bg-surface-800/40 dark:hover:bg-surface-800/40 transition-colors animate-slide-up">
+          <Avatar user={senderUser} size="md" className="flex-shrink-0 rounded-lg mt-0.5" />
 
-          {/* Content */}
-          <div className="flex-1 max-w-[85%] overflow-hidden">
-            <div className="text-xs text-surface-400 mb-0.5">{senderName}</div>
-            <div className="inline-block max-w-full px-3 py-2 rounded-xl rounded-tl-sm bg-surface-700 text-surface-100 text-[13px] leading-relaxed">
-              <div className="whitespace-pre-wrap break-words">{textContent}</div>
+          <div className="flex-1 min-w-0 overflow-hidden">
+            <div className="flex items-baseline gap-2">
+              <span className="text-[13px] font-bold text-surface-100">{senderName}</span>
+              <span className="text-[11px] text-surface-500">
+                {message.timestamp.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}
+              </span>
             </div>
+            <div className="text-[13px] leading-relaxed text-surface-200 whitespace-pre-wrap break-words mt-0.5">{textContent}</div>
             {attachments.length > 0 && (
               <div className="flex flex-wrap gap-2 mt-1.5">
                 {attachments.map((att, i) => {
@@ -2032,17 +2040,11 @@ function MessageWithBlocks({
                 })}
               </div>
             )}
-            <div className="mt-0.5">
-              <span className="text-[10px] text-surface-500">
-                {message.timestamp.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}
-              </span>
-            </div>
           </div>
         </div>
       );
     }
     
-    // Own messages (or private conversation) - right-aligned
     const meUser = currentUser
       ? {
           id: currentUser.id,
@@ -2051,26 +2053,29 @@ function MessageWithBlocks({
           avatarUrl: currentUser.avatarUrl ?? null,
         }
       : null;
+    const displayName: string = currentUser?.name ?? currentUser?.email ?? 'You';
     return (
-      <div className="flex items-start gap-2 flex-row-reverse animate-slide-up">
-        {/* Avatar - use profile photo when available */}
+      <div className="group/msg flex items-start gap-2.5 px-5 py-1.5 -mx-5 hover:bg-surface-800/40 dark:hover:bg-surface-800/40 transition-colors animate-slide-up">
         {meUser ? (
-          <Avatar user={meUser} size="md" className="flex-shrink-0 rounded-full" />
+          <Avatar user={meUser} size="md" className="flex-shrink-0 rounded-lg mt-0.5" />
         ) : (
-          <div className="flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center bg-primary-500">
+          <div className="flex-shrink-0 w-8 h-8 rounded-lg flex items-center justify-center bg-primary-500 mt-0.5">
             <svg className="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
             </svg>
           </div>
         )}
 
-        {/* Content: bubble + attachments + timestamp, all right-aligned */}
-        <div className="flex-1 max-w-[85%] overflow-hidden text-right">
-          <div className="inline-block max-w-full px-3 py-2 rounded-xl rounded-tr-sm bg-primary-500 text-white text-[13px] leading-relaxed">
-            <div className="whitespace-pre-wrap break-words text-left">{textContent}</div>
+        <div className="flex-1 min-w-0 overflow-hidden">
+          <div className="flex items-baseline gap-2">
+            <span className="text-[13px] font-bold text-surface-100">{displayName}</span>
+            <span className="text-[11px] text-surface-500">
+              {message.timestamp.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}
+            </span>
           </div>
+          <div className="text-[13px] leading-relaxed text-surface-200 whitespace-pre-wrap break-words mt-0.5">{textContent}</div>
           {attachments.length > 0 && (
-            <div className="flex flex-wrap gap-2 justify-end mt-1.5">
+            <div className="flex flex-wrap gap-2 mt-1.5">
               {attachments.map((att, i) => {
                 const attId: string | undefined =
                   att.attachmentId ?? (att as { attachment_id?: string }).attachment_id;
@@ -2091,11 +2096,6 @@ function MessageWithBlocks({
               })}
             </div>
           )}
-          <div className="mt-0.5">
-            <span className="text-[10px] text-surface-500">
-              {message.timestamp.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}
-            </span>
-          </div>
         </div>
       </div>
     );
@@ -2157,9 +2157,8 @@ function MessageWithBlocks({
   };
 
   return (
-    <div className="flex items-start gap-2">
-      {/* Avatar */}
-      <div className="flex-shrink-0 w-8 h-8 rounded-full bg-surface-800 flex items-center justify-center overflow-hidden">
+    <div className="group/msg flex items-start gap-2.5 px-5 py-1.5 -mx-5 hover:bg-surface-800/40 dark:hover:bg-surface-800/40 transition-colors">
+      <div className="flex-shrink-0 w-8 h-8 rounded-lg bg-surface-800 flex items-center justify-center overflow-hidden mt-0.5">
         <img 
           src={LOGO_PATH} 
           alt={APP_NAME} 
@@ -2167,8 +2166,14 @@ function MessageWithBlocks({
         />
       </div>
 
-      {/* Content blocks in order */}
-      <div className="flex-1 max-w-[85%] overflow-hidden">
+      <div className="flex-1 min-w-0 overflow-hidden">
+        <div className="flex items-baseline gap-2">
+          <span className="text-[13px] font-bold text-surface-100">{APP_NAME}</span>
+          <span className="inline-flex items-center px-1 py-px rounded text-[10px] font-medium bg-surface-700 text-surface-400">APP</span>
+          <span className="text-[11px] text-surface-500">
+            {message.timestamp.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}
+          </span>
+        </div>
         {blocks.map((block, index) => {
           if (block.type === 'thinking') {
             if (!block.text && !block.isStreaming) return null;
@@ -2181,7 +2186,7 @@ function MessageWithBlocks({
           if (block.type === 'text') {
             const isLast = index === lastTextIndex;
             return (
-              <div key={`text-${index}`} className={index > 0 ? 'mt-2' : ''}>
+              <div key={`text-${index}`} className={index > 0 ? 'mt-1' : 'mt-0.5'}>
                 <AssistantTextBlock 
                   text={block.text} 
                   isStreaming={isLast && message.isStreaming}
@@ -2190,10 +2195,6 @@ function MessageWithBlocks({
             );
           }
           if (block.type === 'tool_use') {
-            // Hide tool blocks that haven't started yet (no status, no result).
-            // The orchestrator saves all tool_use blocks from Claude's response
-            // in one early save before executing them sequentially, so without
-            // this check they'd all show as "running" simultaneously.
             const toolBlock = block as ToolUseBlock;
             if (!toolBlock.status && !toolBlock.result) {
               return null;
@@ -2233,13 +2234,6 @@ function MessageWithBlocks({
           }
           return null;
         })}
-        
-        {/* Timestamp at the end */}
-        <div className="mt-0.5">
-          <span className="text-[10px] text-surface-500">
-            {message.timestamp.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}
-          </span>
-        </div>
       </div>
     </div>
   );
@@ -2313,8 +2307,8 @@ function AssistantTextBlock({
   const displayText: string = isStreaming ? text.trimEnd() : text;
   
   return (
-    <div className="inline-block max-w-full px-3 py-2 rounded-xl rounded-tl-sm bg-surface-700/90 text-surface-200 text-[13px] leading-relaxed">
-      <div className={`prose prose-sm max-w-none overflow-x-auto text-surface-200 dark:prose-invert prose-p:my-1 prose-headings:my-2 prose-headings:text-surface-200 prose-ul:my-1 prose-ol:my-1 prose-li:my-0.5 prose-pre:my-2 prose-code:text-primary-300 prose-code:bg-surface-900/50 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-code:text-xs prose-pre:bg-surface-900/80 prose-pre:text-xs prose-a:text-primary-400 prose-a:no-underline hover:prose-a:text-primary-300 prose-strong:text-surface-100 prose-table:text-xs prose-table:text-surface-200 prose-th:text-surface-200 prose-th:bg-surface-700/50 prose-th:px-2 prose-th:py-1 prose-td:text-surface-200 prose-td:px-2 prose-td:py-1 prose-td:border-surface-700 prose-th:border-surface-700 [&_a]:text-primary-400 [&_a:hover]:text-primary-300 ${isStreaming ? '[&>p:last-of-type]:inline [&>p:last-of-type]:mb-0' : ''}`}>
+    <div className="max-w-full text-[13px] leading-relaxed text-surface-200">
+      <div className={`prose prose-sm max-w-none overflow-x-auto text-surface-200 dark:prose-invert prose-p:my-1 prose-headings:my-2 prose-headings:text-surface-200 prose-ul:my-1 prose-ol:my-1 prose-li:my-0.5 prose-pre:my-2 prose-code:text-primary-300 prose-code:bg-surface-800/70 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-code:text-xs prose-pre:bg-surface-800/70 prose-pre:text-xs prose-pre:border prose-pre:border-surface-700 prose-a:text-primary-400 prose-a:no-underline hover:prose-a:text-primary-300 prose-strong:text-surface-100 prose-table:text-xs prose-table:text-surface-200 prose-th:text-surface-200 prose-th:bg-surface-700/50 prose-th:px-2 prose-th:py-1 prose-td:text-surface-200 prose-td:px-2 prose-td:py-1 prose-td:border-surface-700 prose-th:border-surface-700 [&_a]:text-primary-400 [&_a:hover]:text-primary-300 ${isStreaming ? '[&>p:last-of-type]:inline [&>p:last-of-type]:mb-0' : ''}`}>
         <ReactMarkdown remarkPlugins={[remarkGfm]}>{displayText}</ReactMarkdown>
         {isStreaming && (
           <span className="inline-block w-1.5 h-3 bg-current animate-pulse ml-0.5 align-middle" />
@@ -2760,15 +2754,17 @@ function ToolCallModal({
  */
 function ThinkingIndicator(): JSX.Element {
   return (
-    <div className="flex items-start gap-2">
-      {/* Avatar */}
-      <div className="w-8 h-8 rounded-full bg-gradient-to-br from-surface-700 to-surface-800 flex items-center justify-center flex-shrink-0 overflow-hidden">
+    <div className="flex items-start gap-2.5 px-5 py-1.5 -mx-5">
+      <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-surface-700 to-surface-800 flex items-center justify-center flex-shrink-0 overflow-hidden mt-0.5">
         <img src={LOGO_PATH} alt={APP_NAME} className="w-4 h-4 object-contain opacity-90" />
       </div>
 
-      {/* Thinking dots */}
-      <div className="bg-surface-800/50 rounded-xl rounded-tl-sm px-3 py-2">
-        <div className="flex items-center gap-1">
+      <div className="flex-1 min-w-0">
+        <div className="flex items-baseline gap-2">
+          <span className="text-[13px] font-bold text-surface-100">{APP_NAME}</span>
+          <span className="inline-flex items-center px-1 py-px rounded text-[10px] font-medium bg-surface-700 text-surface-400">APP</span>
+        </div>
+        <div className="flex items-center gap-1 mt-1">
           <div className="w-1.5 h-1.5 bg-surface-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
           <div className="w-1.5 h-1.5 bg-surface-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
           <div className="w-1.5 h-1.5 bg-surface-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
