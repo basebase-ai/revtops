@@ -3,14 +3,14 @@
  * or the semantic workstream map (clusters of team conversations by topic).
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { fetchWorkstreams } from '../api/workstreams';
 import { apiRequest } from '../lib/api';
 import { useAppStore, useIntegrations } from '../store';
 import type { WorkstreamsResponse } from '../store/types';
 import { SandpackAppRenderer } from './apps/SandpackAppRenderer';
 import { HomeAppPicker } from './apps/HomeAppPicker';
-import { WorkstreamMap } from './WorkstreamMap';
+import { WorkstreamGrid } from './WorkstreamGrid';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -53,8 +53,6 @@ export function Home(): JSX.Element {
   const [workstreamData, setWorkstreamData] = useState<WorkstreamsResponse | null>(null);
   const [workstreamLoading, setWorkstreamLoading] = useState<boolean>(false);
   const [workstreamError, setWorkstreamError] = useState<string | null>(null);
-  const mapContainerRef = useRef<HTMLDivElement>(null);
-  const [mapSize, setMapSize] = useState({ width: 800, height: 500 });
 
   
   const integrations = useIntegrations();
@@ -104,18 +102,6 @@ export function Home(): JSX.Element {
     window.addEventListener('workstreams-stale', handler);
     return () => window.removeEventListener('workstreams-stale', handler);
   }, [fetchWorkstreamsData]);
-
-  // Measure map container for WorkstreamMap dimensions
-  useEffect(() => {
-    const el = mapContainerRef.current;
-    if (!el) return;
-    const ro = new ResizeObserver((entries) => {
-      const { width, height } = entries[0]?.contentRect ?? { width: 800, height: 500 };
-      setMapSize({ width: Math.max(200, width), height: Math.max(300, height) });
-    });
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
 
   const handleSelectConversation = useCallback(
     (conversationId: string) => {
@@ -343,8 +329,8 @@ export function Home(): JSX.Element {
           </div>
         )}
 
-        {/* Workstream map */}
-        <div ref={mapContainerRef} className="flex-1 min-h-[400px] rounded-xl border border-surface-700 bg-surface-900/50 overflow-hidden">
+        {/* Workstream grid */}
+        <div className="flex-1 min-h-[400px] rounded-xl border border-surface-700 bg-surface-900/50 overflow-hidden">
           {workstreamLoading && !workstreamData ? (
             <div className="flex items-center justify-center h-full min-h-[400px]">
               <div className="flex items-center gap-3 text-surface-400">
@@ -356,12 +342,10 @@ export function Home(): JSX.Element {
               </div>
             </div>
           ) : workstreamData && (workstreamData.workstreams.length > 0 || workstreamData.unclustered.length > 0) ? (
-            <WorkstreamMap
+            <WorkstreamGrid
               workstreams={workstreamData.workstreams}
               unclustered={workstreamData.unclustered}
               onSelectConversation={handleSelectConversation}
-              width={mapSize.width}
-              height={mapSize.height}
             />
           ) : (
             <div className="flex flex-col items-center justify-center h-full min-h-[400px] text-center px-4">

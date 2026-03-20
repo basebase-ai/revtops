@@ -70,7 +70,7 @@ async def get_workstreams(
     """Get workstream clusters for the org. Recomputed if snapshot is stale or missing."""
     org_id: str = auth.organization_id_str or ""
     window_hours = window
-    now = datetime.now(timezone.utc)
+    now = datetime.utcnow()
 
     async with get_session(organization_id=org_id) as session:
         result = await session.execute(
