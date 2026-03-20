@@ -451,6 +451,8 @@ Send a message to a Slack channel, DM, or user.
         channel_id: str,
         oldest: Optional[float] = None,
         limit: int = 100,
+        latest: Optional[str] = None,
+        inclusive: bool = False,
     ) -> list[dict[str, Any]]:
         """Get messages from a specific channel."""
         messages: list[dict[str, Any]] = []
@@ -463,11 +465,45 @@ Send a message to a Slack channel, DM, or user.
             }
             if oldest:
                 params["oldest"] = oldest
+            if latest:
+                params["latest"] = latest
+                params["inclusive"] = inclusive
             if cursor:
                 params["cursor"] = cursor
 
             data = await self._make_request(
                 "GET", "conversations.history", params=params
+            )
+            messages.extend(data.get("messages", []))
+
+            cursor = data.get("response_metadata", {}).get("next_cursor")
+            if not cursor:
+                break
+
+        return messages
+
+    async def get_thread_messages(
+        self,
+        channel_id: str,
+        thread_ts: str,
+        limit: int = 1000,
+    ) -> list[dict[str, Any]]:
+        """Get messages from a specific Slack thread."""
+        messages: list[dict[str, Any]] = []
+        cursor: Optional[str] = None
+
+        while len(messages) < limit:
+            params: dict[str, Any] = {
+                "channel": channel_id,
+                "ts": thread_ts,
+                "limit": min(100, limit - len(messages)),
+                "inclusive": True,
+            }
+            if cursor:
+                params["cursor"] = cursor
+
+            data = await self._make_request(
+                "GET", "conversations.replies", params=params
             )
             messages.extend(data.get("messages", []))
 

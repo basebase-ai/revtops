@@ -1,9 +1,8 @@
-
 import asyncio
+from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import uuid4
+
 import pytest
-from unittest.mock import AsyncMock, patch, MagicMock
-from uuid import uuid4, UUID
-from datetime import datetime
 
 from messengers.slack import SlackMessenger
 from messengers.base import InboundMessage, MessageType
@@ -142,3 +141,56 @@ async def test_resolve_channel_name_failure_caching():
         name2 = await messenger.resolve_channel_name(workspace_id, channel_id)
         assert name2 is None
         assert mock_connector.get_channel_info.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_post_message_skips_duplicate_thread_message_when_whitespace_only_differs():
+    messenger = SlackMessenger()
+    mock_connector = AsyncMock()
+    mock_connector.get_thread_messages.return_value = [
+        {"ts": "1710711600.001", "text": "_Writing to Linear…_"}
+    ]
+
+    with patch.object(messenger, "_get_connector", return_value=mock_connector):
+        result = await messenger.post_message(
+            channel_id="C456",
+            text="_Writing to  Linear…_",
+            thread_id="1710711600.000",
+            workspace_id="T123",
+            organization_id=str(uuid4()),
+        )
+
+    assert result is None
+    mock_connector.get_thread_messages.assert_awaited_once_with(
+        channel_id="C456",
+        thread_ts="1710711600.000",
+        limit=1000,
+    )
+    mock_connector.post_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_post_message_sends_when_last_thread_message_differs():
+    messenger = SlackMessenger()
+    mock_connector = AsyncMock()
+    mock_connector.get_thread_messages.return_value = [
+        {"ts": "1710711600.001", "text": "_Looking up data in Github…_"}
+    ]
+    mock_connector.post_message.return_value = {"ts": "1710711600.002"}
+
+    with patch.object(messenger, "_get_connector", return_value=mock_connector):
+        result = await messenger.post_message(
+            channel_id="C456",
+            text="_Writing to Linear…_",
+            thread_id="1710711600.000",
+            workspace_id="T123",
+            organization_id=str(uuid4()),
+        )
+
+    assert result == "1710711600.002"
+    mock_connector.post_message.assert_awaited_once_with(
+        channel="C456",
+        text="_Writing to Linear…_",
+        thread_ts="1710711600.000",
+        blocks=None,
+    )

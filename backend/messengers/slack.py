@@ -9,6 +9,7 @@ and formatting.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 from connectors.slack import SlackConnector, markdown_to_mrkdwn
@@ -16,6 +17,11 @@ from messengers._workspace import WorkspaceMessenger
 from messengers.base import InboundMessage, MessengerMeta, ResponseMode
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_slack_dedupe_text(text: str) -> str:
+    """Normalize Slack message text for duplicate detection."""
+    return re.sub(r"\s+", "", text or "")
 
 
 class SlackMessenger(WorkspaceMessenger):
@@ -79,6 +85,20 @@ class SlackMessenger(WorkspaceMessenger):
         connector: SlackConnector = await self._get_connector(
             workspace_id, organization_id=organization_id,
         )
+        if await self._should_skip_duplicate_thread_message(
+            connector=connector,
+            channel_id=channel_id,
+            thread_id=thread_id,
+            text=text,
+        ):
+            logger.info(
+                "[slack] Skipping duplicate outbound message channel=%s thread_id=%s text=%s",
+                channel_id,
+                thread_id,
+                text[:120],
+            )
+            return None
+
         result: dict[str, Any] = await connector.post_message(
             channel=channel_id,
             text=text,
@@ -86,6 +106,66 @@ class SlackMessenger(WorkspaceMessenger):
             blocks=blocks,
         )
         return result.get("ts")
+
+    async def _should_skip_duplicate_thread_message(
+        self,
+        *,
+        connector: SlackConnector,
+        channel_id: str,
+        thread_id: str | None,
+        text: str,
+    ) -> bool:
+        """Return True when the next Slack message matches the latest thread message."""
+        normalized_candidate: str = _normalize_slack_dedupe_text(text)
+        if not normalized_candidate:
+            return False
+
+        try:
+            if thread_id:
+                messages = await connector.get_thread_messages(
+                    channel_id=channel_id,
+                    thread_ts=thread_id,
+                    limit=1000,
+                )
+                latest_message = next(
+                    (
+                        msg for msg in reversed(messages)
+                        if (msg.get("text") or "").strip()
+                    ),
+                    None,
+                )
+            else:
+                messages = await connector.get_channel_messages(
+                    channel_id,
+                    limit=1,
+                )
+                latest_message = next(
+                    (msg for msg in messages if (msg.get("text") or "").strip()),
+                    None,
+                )
+        except Exception as exc:
+            logger.debug(
+                "[slack] Duplicate message check failed channel=%s thread_id=%s: %s",
+                channel_id,
+                thread_id,
+                exc,
+            )
+            return False
+
+        if latest_message is None:
+            return False
+
+        latest_text: str = latest_message.get("text") or ""
+        normalized_latest: str = _normalize_slack_dedupe_text(latest_text)
+        is_duplicate: bool = normalized_latest == normalized_candidate
+        logger.debug(
+            "[slack] Duplicate message check channel=%s thread_id=%s duplicate=%s latest_ts=%s",
+            channel_id,
+            thread_id,
+            is_duplicate,
+            latest_message.get("ts"),
+        )
+        return is_duplicate
 
     async def download_file(
         self,
