@@ -178,6 +178,7 @@ function OrgSwitcherSection({
   onOpenOrgPanel,
   onOpenBilling,
   onCreateNewOrg,
+  isMobile,
 }: {
   organization: OrganizationInfo;
   members: AvatarUser[];
@@ -185,6 +186,7 @@ function OrgSwitcherSection({
   onOpenOrgPanel: () => void;
   onOpenBilling: () => void;
   onCreateNewOrg: () => void;
+  isMobile: boolean;
 }): JSX.Element {
   const organizations: UserOrganization[] = useAppStore((state) => state.organizations);
   const switchActiveOrganization = useAppStore((state) => state.switchActiveOrganization);
@@ -264,9 +266,11 @@ function OrgSwitcherSection({
               </div>
             )}
           </div>
-          <svg className="w-4 h-4 text-surface-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-          </svg>
+          {!isMobile && (
+            <svg className="w-4 h-4 text-surface-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+            </svg>
+          )}
         </button>
 
         {/* Org switcher dropdown — rendered in portal to escape overflow clipping */}
@@ -577,6 +581,7 @@ export function Sidebar({
           onOpenOrgPanel={onOpenOrgPanel}
           onOpenBilling={onOpenBilling}
           onCreateNewOrg={onCreateNewOrg}
+          isMobile={isMobile}
         />
       </div>
 
@@ -1007,4 +1012,3 @@ function ChatAccordion({
     </div>
   );
 }
-
