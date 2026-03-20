@@ -350,6 +350,7 @@ export function DataSources(): JSX.Element {
   const [showSlackVerificationModal, setShowSlackVerificationModal] = useState(false);
   const [showConnectModal, setShowConnectModal] = useState(false);
   const [connectSearch, setConnectSearch] = useState('');
+  const [showCodeSandboxWarning, setShowCodeSandboxWarning] = useState(false);
 
   // MCP connect form state
   const [showMcpForm, setShowMcpForm] = useState(false);
@@ -778,7 +779,7 @@ export function DataSources(): JSX.Element {
     };
   });
 
-  const handleConnect = useCallback(async (provider: string): Promise<void> => {
+  const connectProvider = useCallback(async (provider: string): Promise<void> => {
     if (connectingProvider || !organizationId || !userId) return;
 
     setConnectingProvider(provider);
@@ -888,6 +889,24 @@ export function DataSources(): JSX.Element {
       setConnectingProvider(null);
     }
   }, [canConnectCodeSandbox, connectBuiltinConnector, connectingProvider, fetchIntegrations, getConnectorDisplay, organizationId, userId]);
+
+  const handleConnect = useCallback(async (provider: string): Promise<void> => {
+    if (provider === 'code_sandbox') {
+      if (!canConnectCodeSandbox) {
+        console.warn('[DataSources] Blocked non-admin Code Sandbox connection attempt');
+        return;
+      }
+      setShowCodeSandboxWarning(true);
+      return;
+    }
+
+    await connectProvider(provider);
+  }, [canConnectCodeSandbox, connectProvider]);
+
+  const handleConfirmCodeSandboxConnect = useCallback(async (): Promise<void> => {
+    setShowCodeSandboxWarning(false);
+    await connectProvider('code_sandbox');
+  }, [connectProvider]);
 
   const handleMcpConnect = useCallback(async (): Promise<void> => {
     if (!organizationId || !userId || mcpConnecting) return;
@@ -1967,6 +1986,56 @@ export function DataSources(): JSX.Element {
                 We&apos;ll validate the connection and discover available tools from the MCP server.
               </p>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Code Sandbox Risk Warning Modal */}
+      {showCodeSandboxWarning && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+          <div className="w-full max-w-lg rounded-2xl border border-amber-500/30 bg-surface-900 shadow-2xl">
+            <div className="border-b border-surface-700/60 p-5">
+              <div className="flex items-start gap-3">
+                <div className="mt-0.5 rounded-xl bg-amber-500/15 p-2 text-amber-300">
+                  <HiLightningBolt className="h-5 w-5" />
+                </div>
+                <div>
+                  <h2 className="text-lg font-semibold text-surface-100">
+                    Warning: Code Sandbox can run insecure code
+                  </h2>
+                  <p className="mt-1 text-sm text-surface-400">
+                    This connector can execute arbitrary code and shell commands. If misused, it may
+                    expose secrets, enable data exfiltration, or lead to a data breach.
+                  </p>
+                </div>
+              </div>
+            </div>
+            <div className="space-y-4 p-5">
+              <div className="rounded-xl border border-amber-500/20 bg-amber-500/10 p-4 text-sm text-amber-100">
+                <p className="font-medium text-amber-200">Admin-only connector</p>
+                <p className="mt-1 text-amber-100/90">
+                  Only organization admins or global admins should connect Code Sandbox. Continue
+                  only if you understand the risk and explicitly want to enable it for your org.
+                </p>
+              </div>
+              <p className="text-sm text-surface-400">
+                Use this connector only at your own risk.
+              </p>
+              <div className="flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
+                <button
+                  onClick={() => setShowCodeSandboxWarning(false)}
+                  className="rounded-lg border border-surface-600 px-4 py-2 text-sm font-medium text-surface-200 transition-colors hover:bg-surface-800"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={() => void handleConfirmCodeSandboxConnect()}
+                  className="rounded-lg bg-amber-500 px-4 py-2 text-sm font-semibold text-surface-950 transition-colors hover:bg-amber-400"
+                >
+                  Connect at my own risk
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}

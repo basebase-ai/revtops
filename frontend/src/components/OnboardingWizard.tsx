@@ -98,7 +98,7 @@ const SKIP_MESSAGES: Record<number, string> = {
 export function OnboardingWizard({ emailDomain, isInvitedMode = false, isCreatingNewOrg = false, onComplete: rawOnComplete, onBack }: OnboardingWizardProps): JSX.Element {
   const TOTAL_STEPS: number = isInvitedMode ? TOTAL_STEPS_INVITED : TOTAL_STEPS_NORMAL;
 
-  const { user, organization, setOrganization, setIntegrations, syncUserToBackend, fetchUserOrganizations, fetchIntegrations, switchActiveOrganization } =
+  const { user, organization, organizations, setOrganization, setIntegrations, syncUserToBackend, fetchUserOrganizations, fetchIntegrations, switchActiveOrganization } =
     useAppStore();
 
   const orgId: string | null = organization?.id ?? null;
@@ -130,6 +130,7 @@ export function OnboardingWizard({ emailDomain, isInvitedMode = false, isCreatin
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [connectingProvider, setConnectingProvider] = useState<string | null>(null);
+  const [showCodeSandboxWarning, setShowCodeSandboxWarning] = useState<boolean>(false);
   const [inviteEmail, setInviteEmail] = useState<string>('');
   const [isInviting, setIsInviting] = useState<boolean>(false);
   const [invitedEmails, setInvitedEmails] = useState<ReadonlyArray<string>>([]);
@@ -141,6 +142,8 @@ export function OnboardingWizard({ emailDomain, isInvitedMode = false, isCreatin
   const isMobile = useIsMobile();
 
   const userId: string | null = user?.id ?? null;
+  const activeMembership = organizations.find((org) => org.id === orgId);
+  const canConnectCodeSandbox = (user?.roles.includes('global_admin') ?? false) || activeMembership?.role === 'admin';
 
   useEffect(() => {
     localStorage.setItem('onboarding_step', String(step));
@@ -324,7 +327,7 @@ export function OnboardingWizard({ emailDomain, isInvitedMode = false, isCreatin
     }
   };
 
-  const handleConnect = async (provider: string): Promise<void> => {
+  const connectProvider = async (provider: string): Promise<void> => {
     if (connectingProvider || !orgId || !userId) return;
     setConnectingProvider(provider);
     try {
@@ -392,6 +395,16 @@ export function OnboardingWizard({ emailDomain, isInvitedMode = false, isCreatin
     } catch {
       setConnectingProvider(null);
     }
+  };
+
+  const handleConnect = async (provider: string): Promise<void> => {
+    if (provider === 'code_sandbox') {
+      if (!canConnectCodeSandbox) return;
+      setShowCodeSandboxWarning(true);
+      return;
+    }
+
+    await connectProvider(provider);
   };
 
   const handleInvite = async (): Promise<void> => {
@@ -489,6 +502,59 @@ export function OnboardingWizard({ emailDomain, isInvitedMode = false, isCreatin
 
   return (
     <div className="min-h-screen flex items-center justify-center p-4">
+      {showCodeSandboxWarning && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+          <div className="w-full max-w-lg rounded-2xl border border-amber-500/30 bg-surface-900 shadow-2xl">
+            <div className="border-b border-surface-700/60 p-5">
+              <div className="flex items-start gap-3">
+                <div className="mt-0.5 rounded-xl bg-amber-500/15 p-2 text-amber-300">
+                  <HiLightningBolt className="h-5 w-5" />
+                </div>
+                <div>
+                  <h2 className="text-lg font-semibold text-surface-100">
+                    Warning: Code Sandbox can run insecure code
+                  </h2>
+                  <p className="mt-1 text-sm text-surface-400">
+                    This connector can execute arbitrary code and shell commands. If it is abused,
+                    it could expose secrets, exfiltrate data, or contribute to a data breach.
+                  </p>
+                </div>
+              </div>
+            </div>
+            <div className="space-y-4 p-5">
+              <div className="rounded-xl border border-amber-500/20 bg-amber-500/10 p-4 text-sm text-amber-100">
+                <p className="font-medium text-amber-200">Admin approval required</p>
+                <p className="mt-1 text-amber-100/90">
+                  Only an organization admin or global admin should connect Code Sandbox. Continue
+                  only if you understand the security risk and still want to enable it.
+                </p>
+              </div>
+              <p className="text-sm text-surface-400">
+                Use this connector only at your own risk.
+              </p>
+              <div className="flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
+                <button
+                  type="button"
+                  onClick={() => setShowCodeSandboxWarning(false)}
+                  className="rounded-lg border border-surface-600 px-4 py-2 text-sm font-medium text-surface-200 transition-colors hover:bg-surface-800"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowCodeSandboxWarning(false);
+                    void connectProvider('code_sandbox');
+                  }}
+                  className="rounded-lg bg-amber-500 px-4 py-2 text-sm font-semibold text-surface-950 transition-colors hover:bg-amber-400"
+                >
+                  Connect at my own risk
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
       <div className="fixed inset-0 overflow-hidden pointer-events-none">
         <div className="absolute -top-1/3 -right-1/4 w-[900px] h-[900px] rounded-full bg-gradient-to-br from-primary-600/15 via-primary-500/10 to-transparent blur-3xl" />
         <div className="absolute -bottom-1/4 -left-1/4 w-[700px] h-[700px] rounded-full bg-gradient-to-tr from-purple-600/10 to-transparent blur-3xl" />
@@ -767,7 +833,8 @@ export function OnboardingWizard({ emailDomain, isInvitedMode = false, isCreatin
                     && !!matchedIntegration
                     && matchedIntegration.teamConnections.length > 0
                     && !connected;
-                  const isClickable: boolean = !connected && !orgConnected;
+                  const codeSandboxBlocked: boolean = key === 'code_sandbox' && !canConnectCodeSandbox;
+                  const isClickable: boolean = !connected && !orgConnected && !codeSandboxBlocked;
                   return (
                     <button
                       key={key}
@@ -794,6 +861,8 @@ export function OnboardingWizard({ emailDomain, isInvitedMode = false, isCreatin
                             ? 'Connected'
                             : orgConnected
                               ? `Connected for your team`
+                              : codeSandboxBlocked
+                                ? 'Admin access required'
                               : teamConnected
                                 ? `By ${matchedIntegration!.teamConnections[0]?.userName ?? 'team'}`
                                 : config.description
