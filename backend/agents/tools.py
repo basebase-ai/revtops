@@ -4936,18 +4936,23 @@ async def _trigger_sync(
     if not provider:
         return {"error": "Provider is required (e.g., 'hubspot', 'gmail', 'salesforce')."}
     
-    # Check for active integration
+    # Active integrations (often multiple user-scoped rows per org + connector)
     async with get_session(organization_id=organization_id) as session:
         result = await session.execute(
-            select(Integration).where(
+            select(Integration)
+            .where(
                 Integration.organization_id == UUID(organization_id),
                 Integration.connector == provider,
-                Integration.is_active == True,
+                Integration.is_active == True,  # noqa: E712
+            )
+            .order_by(
+                Integration.last_sync_at.desc().nullslast(),
+                Integration.updated_at.desc().nullslast(),
             )
         )
-        integration = result.scalar_one_or_none()
-        
-        if not integration:
+        integrations: list[Integration] = list(result.scalars().all())
+
+        if not integrations:
             return {
                 "error": f"No active {provider} integration found.",
                 "suggestion": f"Go to Data Sources and connect {provider}.",
@@ -4964,17 +4969,36 @@ async def _trigger_sync(
         return {"error": dp_result.deny_reason or "Connector sync not allowed"}
 
     try:
-        # Queue sync via Celery
         from workers.tasks.sync import sync_integration
-        task = sync_integration.delay(organization_id, provider)
-        
+
+        task_ids: list[str] = []
+        for integration in integrations:
+            owner_id: str | None = (
+                str(integration.user_id) if integration.user_id else None
+            )
+            task = sync_integration.delay(organization_id, provider, user_id=owner_id)
+            task_ids.append(task.id)
+
+        if len(task_ids) == 1:
+            msg = (
+                f"Sync for {provider} has been queued. "
+                "It may take a few minutes to complete."
+            )
+        else:
+            msg = (
+                f"Queued {len(task_ids)} {provider} sync tasks (one per connected account). "
+                "They may take a few minutes to complete."
+            )
+
         return {
             "status": "queued",
-            "message": f"Sync for {provider} has been queued. It may take a few minutes to complete.",
-            "task_id": task.id,
+            "message": msg,
+            "task_id": task_ids[0],
+            "task_ids": task_ids,
             "provider": provider,
+            "integration_count": len(integrations),
         }
-        
+
     except Exception as e:
         logger.error(f"[Tools._trigger_sync] Failed: {str(e)}")
         return {"error": f"Failed to trigger sync: {str(e)}"}
