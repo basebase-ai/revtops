@@ -148,7 +148,8 @@ async def get_workstreams(
     all_conv_ids = list(dict.fromkeys(all_conv_ids))
     positions = data.get("conversation_positions", {})
 
-    since = now - timedelta(hours=window_hours)
+    # chat_messages.created_at is TIMESTAMP WITHOUT TIME ZONE (naive UTC); asyncpg errors if bound value is tz-aware.
+    since: datetime = (now - timedelta(hours=window_hours)).replace(tzinfo=None)
     conv_details: dict[str, WorkstreamConversation] = {}
     convs: dict[str, Conversation] = {}
 
