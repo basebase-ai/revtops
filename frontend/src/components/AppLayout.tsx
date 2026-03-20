@@ -1584,7 +1584,7 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
   };
 
   return (
-    <div className="h-screen flex flex-col bg-surface-950 overflow-hidden">
+    <div className="h-full flex flex-col bg-surface-950 overflow-hidden">
       {/* Masquerade Banner */}
       {masquerade && (
         <div className="bg-amber-500/20 border-b border-amber-500/30 px-4 py-2 flex items-center justify-between flex-shrink-0">

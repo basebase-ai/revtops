@@ -45,6 +45,8 @@
 
   body {
     @apply bg-surface-950 text-surface-100 antialiased;
+    position: fixed;
+    width: 100%;
     font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
   }
 
