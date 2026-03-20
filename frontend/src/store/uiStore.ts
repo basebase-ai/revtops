@@ -53,7 +53,7 @@ export const useUIStore = create<UIState>()(
   persist(
     (set, get) => ({
       // Initial state
-      theme: "dark",
+      theme: "system",
       sidebarCollapsed: false,
       sidebarWidth: 256,
       currentView: "home",
