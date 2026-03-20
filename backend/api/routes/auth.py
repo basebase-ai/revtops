@@ -1407,7 +1407,7 @@ async def get_organization_members(
         if not requester_check.scalar_one_or_none():
             raise HTTPException(status_code=403, detail="Not authorized to view this organization's members")
 
-        # Load org to check guest_user_enabled (hide guest from list when disabled)
+        # Load org so the response can still report guest-user toggle state.
         org = await session.get(Organization, org_uuid)
         guest_user_enabled: bool = bool(org and org.guest_user_enabled)
 
@@ -1444,10 +1444,6 @@ async def get_organization_members(
             # Skip crm_only stub users entirely — they shouldn't appear in the team list
             if u.status == "crm_only":
                 continue
-            # Hide guest user until enabled (avoids confusing "Guest user" for new orgs without Slack)
-            if u.is_guest and not guest_user_enabled:
-                continue
-
             user_mappings: list[ExternalIdentityMapping] = mappings_by_user.get(u.id, [])
             identities: list[IdentityMappingResponse] = [
                 IdentityMappingResponse(
