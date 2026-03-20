@@ -571,6 +571,7 @@ class WorkspaceMessenger(BaseMessenger):
         current_text: str = ""
         total_length: int = 0
         last_flush_at: float = time.monotonic()
+        posted_tool_statuses: dict[str, tuple[str, str]] = {}
 
         async def _flush(*, reason: str, force: bool = False) -> None:
             nonlocal current_text, total_length, last_flush_at
@@ -604,7 +605,14 @@ class WorkspaceMessenger(BaseMessenger):
             ):
                 if chunk.startswith("{"):
                     await _flush(reason="tool_boundary", force=True)
-                    await self._handle_json_chunk(chunk, channel_id, thread_id, workspace_id, organization_id)
+                    await self._handle_json_chunk(
+                        chunk,
+                        channel_id,
+                        thread_id,
+                        workspace_id,
+                        organization_id,
+                        posted_tool_statuses=posted_tool_statuses,
+                    )
                 else:
                     current_text += chunk
                     buf_len: int = len(current_text)
@@ -630,6 +638,8 @@ class WorkspaceMessenger(BaseMessenger):
         thread_id: str | None,
         workspace_id: str | None,
         organization_id: str | None,
+        *,
+        posted_tool_statuses: dict[str, tuple[str, str]] | None = None,
     ) -> None:
         """Process a JSON orchestrator chunk (artifacts, apps, etc.). Post tool status when present."""
         try:
@@ -641,7 +651,30 @@ class WorkspaceMessenger(BaseMessenger):
         status_text: str | None = data.get("status_text") if isinstance(data.get("status_text"), str) else None
         if not status_text or not status_text.strip():
             return
-        message: str = self.format_tool_status_for_display(status_text.strip())
+        normalized_status_text: str = status_text.strip()
+        tool_status: str = data.get("status") if isinstance(data.get("status"), str) else "running"
+        dedup_key: str = (
+            data.get("tool_id")
+            if isinstance(data.get("tool_id"), str) and data.get("tool_id")
+            else data.get("tool_name")
+            if isinstance(data.get("tool_name"), str) and data.get("tool_name")
+            else normalized_status_text
+        )
+        last_posted_status: tuple[str, str] | None = None
+        if posted_tool_statuses is not None:
+            last_posted_status = posted_tool_statuses.get(dedup_key)
+        if last_posted_status == (tool_status, normalized_status_text):
+            logger.info(
+                "[%s] Skipping duplicate tool status message key=%s status=%s text=%s",
+                self.meta.slug,
+                dedup_key,
+                tool_status,
+                normalized_status_text,
+            )
+            return
+        message: str = self.format_tool_status_for_display(normalized_status_text)
+        if posted_tool_statuses is not None:
+            posted_tool_statuses[dedup_key] = (tool_status, normalized_status_text)
 
         async def _post() -> None:
             try:
