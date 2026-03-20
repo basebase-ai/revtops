@@ -1,11 +1,12 @@
 /**
  * Syncs document root `dark` class with persisted UI theme (light / dark / system).
  */
+/* eslint-disable react-refresh/only-export-components */
 
 import { useEffect } from "react";
 import { useUIStore, type UITheme } from "../store/uiStore";
 
-const DARK_MEDIA_QUERY: string = "(prefers-color-scheme: dark)";
+const DARK_MEDIA_QUERY = "(prefers-color-scheme: dark)" as const;
 
 function shouldUseDarkClass(theme: UITheme, prefersDark: boolean): boolean {
   if (theme === "dark") return true;

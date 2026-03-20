@@ -139,7 +139,7 @@ export function ArtifactViewer({
         blobUrlRef.current = null;
       }
     };
-  }, [isAttachmentMode, attachmentId, attachmentMeta?.filename, attachmentMeta?.mimeType]);
+  }, [isAttachmentMode, attachmentId, attachmentMeta]);
 
   // Fetch content for file artifacts (existing behavior)
   useEffect(() => {
