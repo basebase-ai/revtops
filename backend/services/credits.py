@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 
 ACTIVE_SUBSCRIPTION_STATUSES: frozenset[str] = frozenset({"active", "trialing"})
 PENDING_BILLING_STATUSES: frozenset[str] = frozenset({"incomplete", "past_due", "unpaid"})
+BALANCE_ONLY_SUBSCRIPTION_STATUSES: frozenset[str] = frozenset({"canceled"})
 
 
 async def get_balance(organization_id: str) -> int:
@@ -77,6 +78,7 @@ async def can_use_credits(organization_id: str) -> bool:
         status_allows_queries = (
             status in ACTIVE_SUBSCRIPTION_STATUSES
             or (status in PENDING_BILLING_STATUSES and has_minimum_balance)
+            or (status in BALANCE_ONLY_SUBSCRIPTION_STATUSES and has_minimum_balance)
         )
         logger.info(
             (
