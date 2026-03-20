@@ -245,57 +245,6 @@ export function Home(): JSX.Element {
       </header>
 
       <div className="flex-1 overflow-auto p-4 md:p-6 flex flex-col">
-        {/* Banner: "Choose App" when org has apps, "Ask Basebase" when none */}
-        {orgAppCount > 0 ? (
-          <div className="mb-4 md:mb-6 bg-surface-800/60 border border-surface-700 rounded-xl p-4">
-            <div className="flex items-center gap-3">
-              <div className="flex-shrink-0 w-9 h-9 rounded-lg bg-primary-500/20 flex items-center justify-center">
-                <svg className="w-4.5 h-4.5 text-primary-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
-                </svg>
-              </div>
-              <div className="flex-1 min-w-0">
-                <p className="text-surface-300 text-sm">
-                  <span className="font-medium text-surface-200">Customize your Home tab</span>
-                  {' '}— replace this view with any app from the Apps gallery.
-                </p>
-              </div>
-              <button
-                onClick={() => setShowPicker(true)}
-                className="flex-shrink-0 px-3 py-1.5 bg-primary-600 hover:bg-primary-500 text-white text-xs font-medium rounded-lg transition-colors"
-              >
-                Choose App
-              </button>
-            </div>
-          </div>
-        ) : (
-          <div className="mb-4 md:mb-6 bg-surface-800/60 border border-surface-700 rounded-xl p-4">
-            <div className="flex items-center gap-3">
-              <div className="flex-shrink-0 w-9 h-9 rounded-lg bg-primary-500/20 flex items-center justify-center">
-                <svg className="w-4.5 h-4.5 text-primary-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
-                </svg>
-              </div>
-              <div className="flex-1 min-w-0">
-                <p className="text-surface-300 text-sm">
-                  <span className="font-medium text-surface-200">Make this Home tab your own</span>
-                  {' '}— ask Basebase to build a custom dashboard and it will appear here for your whole team.
-                </p>
-              </div>
-              <button
-                onClick={() => {
-                  setPendingChatInput('Create a dashboard app for our Home tab with key pipeline metrics, deals by stage, and upcoming closes.');
-                  setPendingChatAutoSend(false);
-                  startNewChat();
-                  setCurrentView('chat');
-                }}
-                className="flex-shrink-0 px-3 py-1.5 bg-primary-600 hover:bg-primary-500 text-white text-xs font-medium rounded-lg transition-colors"
-              >
-                Ask Basebase
-              </button>
-            </div>
-          </div>
-        )}
 
         {/* Connect data sources banner */}
         {!hasConnectedSources && (
@@ -330,7 +279,7 @@ export function Home(): JSX.Element {
         )}
 
         {/* Workstream grid */}
-        <div className="flex-1 min-h-[400px] rounded-xl border border-surface-700 bg-surface-900/50 overflow-hidden">
+        <div className="flex-1 min-h-[400px] overflow-hidden">
           {workstreamLoading && !workstreamData ? (
             <div className="flex items-center justify-center h-full min-h-[400px]">
               <div className="flex items-center gap-3 text-surface-400">
