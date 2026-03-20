@@ -60,7 +60,7 @@ async def main() -> None:
         print(f"\nFailed: {r1['error']}")
         return
 
-    print("\n=== Test 2: Install pandas + query DB ===")
+    print("\n=== Test 2: Package installs are blocked ===")
     r2 = await execute_tool(
         "execute_command",
         {"command": "pip install -q pandas psycopg2-binary"},
@@ -68,7 +68,7 @@ async def main() -> None:
         user_id=None,
         context=context,
     )
-    print(f"exit_code={r2.get('exit_code')}")
+    print(json.dumps(r2, indent=2, default=str))
 
     print("\n=== Test 3: Run Python with DB access ===")
     r3 = await execute_tool(
