@@ -580,7 +580,7 @@ export function OnboardingWizard({ emailDomain, isInvitedMode = false, isCreatin
                 <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-gradient-to-br from-primary-500 to-primary-700 mb-5 shadow-lg shadow-primary-500/20">
                   <span className="text-3xl">&#x1F44B;</span>
                 </div>
-                <h1 className="text-2xl font-bold text-white leading-tight">
+                <h1 className="text-2xl font-bold text-surface-50 leading-tight">
                   Meet Basebase, your new<br />AI teammate
                 </h1>
                 <p className="text-surface-300 mt-3 text-[15px] leading-relaxed max-w-sm mx-auto">
@@ -666,7 +666,7 @@ export function OnboardingWizard({ emailDomain, isInvitedMode = false, isCreatin
                     <span className="text-3xl">&#x1F44B;</span>
                   </div>
                 )}
-                <h1 className="text-2xl font-bold text-white leading-tight">
+                <h1 className="text-2xl font-bold text-surface-50 leading-tight">
                   Welcome to {organization?.name ?? 'your team'}!
                 </h1>
                 <p className="text-surface-300 mt-3 text-[15px] leading-relaxed max-w-sm mx-auto">
@@ -750,7 +750,7 @@ export function OnboardingWizard({ emailDomain, isInvitedMode = false, isCreatin
                 <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-white mb-4 shadow-lg shadow-surface-900/20">
                   <SlackLogo className="w-8 h-8" />
                 </div>
-                <h2 className="text-xl font-bold text-white">
+                <h2 className="text-xl font-bold text-surface-50">
                   {slackSatisfied && !slackConnected
                     ? 'Slack is ready'
                     : isInvitedMode ? 'Connect your Slack account' : 'Bring Basebase where your team already works'}
@@ -805,7 +805,7 @@ export function OnboardingWizard({ emailDomain, isInvitedMode = false, isCreatin
           {contentStep === 3 && (
             <>
               <div className="mb-6">
-                <h2 className="text-xl font-bold text-white">
+                <h2 className="text-xl font-bold text-surface-50">
                   {isInvitedMode ? 'Connect your data sources' : 'Give Basebase superpowers'}
                 </h2>
                 <p className="text-surface-300 mt-2 text-sm leading-relaxed">
@@ -855,7 +855,7 @@ export function OnboardingWizard({ emailDomain, isInvitedMode = false, isCreatin
                         <Icon className="w-4 h-4" />
                       </div>
                       <div className="min-w-0 flex-1">
-                        <div className="font-medium text-surface-100 truncate">{config.name}</div>
+                                <div className="font-medium text-surface-100 truncate">{config.name}</div>
                         <div className="text-xs text-surface-500 truncate">
                           {connected
                             ? 'Connected'
@@ -897,7 +897,7 @@ export function OnboardingWizard({ emailDomain, isInvitedMode = false, isCreatin
                 <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-gradient-to-br from-blue-500 to-indigo-600 mb-4 shadow-lg shadow-blue-500/20">
                   <HiUserGroup className="w-7 h-7 text-white" />
                 </div>
-                <h2 className="text-xl font-bold text-white">Better together</h2>
+                <h2 className="text-xl font-bold text-surface-50">Better together</h2>
                 <p className="text-surface-300 mt-3 text-sm leading-relaxed">
                   Invite your teammates and watch the magic happen! Basebase gets smarter with
                   every person who joins. Meeting briefs, deal updates, customer insights
@@ -945,9 +945,9 @@ export function OnboardingWizard({ emailDomain, isInvitedMode = false, isCreatin
                 <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-gradient-to-br from-primary-500 to-primary-700 mb-5 shadow-lg shadow-primary-500/20">
                   <span className="text-3xl">&#x1F389;</span>
                 </div>
-                <h2 className="text-2xl font-bold text-white">You&apos;re ready to roll</h2>
+                <h2 className="text-2xl font-bold text-surface-50">You&apos;re ready to roll</h2>
                 <p className="text-surface-300 mt-3 text-sm leading-relaxed max-w-sm mx-auto">
-                  Your free plan includes <span className="text-white font-semibold">100 credits/month</span> &mdash;
+                  Your free plan includes <span className="text-surface-50 font-semibold">100 credits/month</span> &mdash;
                   enough to explore everything Basebase can do. Upgrade anytime if you want more.
                 </p>
               </div>
@@ -979,7 +979,7 @@ export function OnboardingWizard({ emailDomain, isInvitedMode = false, isCreatin
                 <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-gradient-to-br from-emerald-500 to-emerald-700 mb-5 shadow-lg shadow-emerald-500/20">
                   <span className="text-3xl">&#x1F680;</span>
                 </div>
-                <h2 className="text-2xl font-bold text-white">Setup complete!</h2>
+                <h2 className="text-2xl font-bold text-surface-50">Setup complete!</h2>
                 <p className="text-surface-300 mt-2 text-sm">
                   While you were setting up, Basebase got a head start.
                 </p>

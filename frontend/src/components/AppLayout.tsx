@@ -1631,8 +1631,8 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
     <div className="h-full flex flex-col bg-surface-950 overflow-hidden">
       {/* Masquerade Banner */}
       {masquerade && (
-        <div className="bg-amber-500/20 border-b border-amber-500/30 px-4 py-2 flex items-center justify-between flex-shrink-0">
-          <div className="flex items-center gap-2 text-amber-400">
+        <div className="bg-amber-500/20 dark:bg-amber-500/20 border-b border-amber-500/30 px-4 py-2 flex items-center justify-between flex-shrink-0">
+          <div className="flex items-center gap-2 text-amber-700 dark:text-amber-400">
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
@@ -1640,13 +1640,13 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
             <span className="text-sm font-medium">
               Viewing as <strong>{masquerade.masqueradingAs.email}</strong>
               {masquerade.masqueradeOrganization && (
-                <span className="text-amber-400/70"> ({masquerade.masqueradeOrganization.name})</span>
+                <span className="text-amber-600/80 dark:text-amber-400/70"> ({masquerade.masqueradeOrganization.name})</span>
               )}
             </span>
           </div>
           <button
             onClick={exitMasquerade}
-            className="px-3 py-1 rounded-lg bg-amber-500/30 hover:bg-amber-500/40 text-amber-300 text-sm font-medium transition-colors"
+            className="px-3 py-1 rounded-lg bg-amber-500/30 hover:bg-amber-500/40 text-amber-800 dark:text-amber-300 text-sm font-medium transition-colors"
           >
             Exit Masquerade
           </button>

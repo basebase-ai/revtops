@@ -729,14 +729,17 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     participant_ids: list[str] = (
                         [str(uid) for uid in (row[0] or [])] if row else []
                     )
-                    await create_mention_notifications(
-                        conversation_id=conversation_id,
-                        message_id=message_id,
-                        actor_user_id=user_id_str,
-                        organization_id=organization_id,
-                        mentions=mentions,
-                        participant_user_ids=participant_ids,
-                    )
+                    try:
+                        await create_mention_notifications(
+                            conversation_id=conversation_id,
+                            message_id=message_id,
+                            actor_user_id=user_id_str,
+                            organization_id=organization_id,
+                            mentions=mentions,
+                            participant_user_ids=participant_ids,
+                        )
+                    except Exception:
+                        logger.exception("Failed to create mention notifications for conversation %s", conversation_id)
                     await websocket.send_text(json.dumps({
                         "type": "message_sent",
                         "conversation_id": conversation_id,

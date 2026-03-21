@@ -1014,29 +1014,34 @@ export function Chat({
     // Get current conversation ID
     const currentConvId = localConversationId || chatId;
 
+    const hasAgentMention: boolean = messageMentions.some((m) => m.type === 'agent');
+    const hasUserMention: boolean = messageMentions.some((m) => m.type === 'user');
+    const expectAgentResponse: boolean = hasAgentMention || (!hasUserMention && conversationState?.agentResponding !== false);
+
     if (currentConvId) {
-      // Add message to existing conversation
       addConversationMessage(currentConvId, userMessage);
-      setConversationThinking(currentConvId, true);
+      if (expectAgentResponse) {
+        setConversationThinking(currentConvId, true);
+      }
+      if (hasAgentMention || hasUserMention) {
+        setConversationAgentResponding(currentConvId, expectAgentResponse);
+      }
       if (crossTab.isAvailable) {
-        console.log('[Chat] Broadcasting optimistic message to other tabs', {
-          conversationId: currentConvId,
-          messageId: userMessage.id,
-        });
         crossTab.postMessage({
           kind: 'optimistic_message',
           payload: {
             conversationId: currentConvId,
             message: userMessage,
-            setThinking: true,
+            setThinking: expectAgentResponse,
           },
         });
       }
     } else {
-      // New conversation - store in pending state
       pendingTitleRef.current = generateTitle(message);
       setPendingMessages(prev => [...prev, userMessage]);
-      setPendingThinking(true);
+      if (expectAgentResponse) {
+        setPendingThinking(true);
+      }
     }
 
     // Send message with conversation context, timezone info, and attachment IDs
@@ -1080,9 +1085,11 @@ export function Chat({
     chatId,
     addConversationMessage,
     setConversationThinking,
+    setConversationAgentResponding,
     pendingAttachments,
     newConversationScope,
     messageMentions,
+    conversationState?.agentResponding,
   ]);
 
   // Handle retry: re-send the last user message
