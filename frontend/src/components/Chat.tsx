@@ -21,6 +21,7 @@ import { AppPreviewPanel } from './apps/AppPreviewPanel';
 import { Avatar } from './Avatar';
 import { PendingApprovalCard, type ApprovalResult } from './PendingApprovalCard';
 import { getConversation, updateConversation, uploadChatFile, type UploadResponse } from '../api/client';
+import { useIsMobile } from '../hooks';
 import { useTeamMembers, type TeamMember } from '../hooks/useOrganization';
 import { API_BASE, apiRequest } from '../lib/api';
 import { supabase } from '../lib/supabase';
@@ -293,6 +294,8 @@ export function Chat({
   onConversationNotFound,
   creditsInfo,
 }: ChatProps): JSX.Element {
+  const isMobile = useIsMobile();
+
   // Credits status
   const creditsPct = creditsInfo && creditsInfo.included > 0 ? creditsInfo.balance / creditsInfo.included : 1;
   const outOfCredits = creditsInfo != null && creditsInfo.balance <= 0;
@@ -1810,7 +1813,8 @@ export function Chat({
           />
 
           {(() => {
-            const composerExpanded: boolean = composerFocused || input.trim().length > 0 || pendingAttachments.length > 0;
+            const composerExpanded: boolean =
+              isMobile || composerFocused || input.trim().length > 0 || pendingAttachments.length > 0;
 
             const handleComposerBlur = (e: React.FocusEvent<HTMLDivElement>): void => {
               if (composerRef.current?.contains(e.relatedTarget as Node)) return;
@@ -1905,7 +1909,7 @@ export function Chat({
                     : (!isConnected || outOfCredits)
                       ? 'border-surface-700 opacity-50 bg-surface-900'
                       : 'border-surface-600 focus-within:border-surface-500 bg-surface-900'
-                }`}
+                } w-full min-w-0 overflow-hidden`}
               >
                 {isDragOver && (
                   <div className="absolute inset-0 rounded-lg bg-primary-500/10 flex items-center justify-center z-10 pointer-events-none">
@@ -1948,8 +1952,8 @@ export function Chat({
                       autoFocus={chatId === null}
                     />
 
-                    <div className="flex items-center justify-between border-t border-surface-700/60 px-1.5 py-1">
-                      <div className="flex items-center gap-0.5">
+                    <div className="flex items-center justify-between gap-2 border-t border-surface-700/60 px-1.5 py-1 min-w-0">
+                      <div className="flex min-w-0 items-center gap-0.5">
                         {attachButton}
                         {scopeToggle && (
                           <>
@@ -1962,32 +1966,34 @@ export function Chat({
                     </div>
                   </>
                 ) : (
-                  <div className="flex items-center gap-1 px-1.5 py-1">
-                    {attachButton}
-                    {scopeToggle && (
-                      <>
-                        <div className="w-px h-4 bg-surface-700 mx-0.5" />
-                        {scopeToggle}
-                      </>
-                    )}
-                    <textarea
-                      ref={inputRef}
-                      value={input}
-                      onChange={(e) => {
-                        setInput(e.target.value);
-                        e.target.style.height = 'auto';
-                        e.target.style.height = `${Math.min(e.target.scrollHeight, 240)}px`;
-                      }}
-                      onKeyDown={handleKeyDown}
-                      onPaste={(e) => void handlePaste(e)}
-                      onFocus={() => setComposerFocused(true)}
-                      placeholder={outOfCredits ? 'Out of credits — upgrade to continue' : agentRunning ? 'Agent working...' : 'Message...'}
-                      className="flex-1 min-w-0 resize-none bg-transparent text-surface-100 py-1 text-[13px] placeholder-surface-500 focus:outline-none leading-[1.46] scrollbar-none disabled:cursor-not-allowed"
-                      style={{ height: '28px' }}
-                      rows={1}
-                      disabled={!isConnected || outOfCredits}
-                      autoFocus={chatId === null}
-                    />
+                  <div className="flex items-center gap-1 px-1.5 py-1 min-w-0">
+                    <div className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden">
+                      {attachButton}
+                      {scopeToggle && (
+                        <>
+                          <div className="w-px h-4 bg-surface-700 mx-0.5 shrink-0" />
+                          {scopeToggle}
+                        </>
+                      )}
+                      <textarea
+                        ref={inputRef}
+                        value={input}
+                        onChange={(e) => {
+                          setInput(e.target.value);
+                          e.target.style.height = 'auto';
+                          e.target.style.height = `${Math.min(e.target.scrollHeight, 240)}px`;
+                        }}
+                        onKeyDown={handleKeyDown}
+                        onPaste={(e) => void handlePaste(e)}
+                        onFocus={() => setComposerFocused(true)}
+                        placeholder={outOfCredits ? 'Out of credits — upgrade to continue' : agentRunning ? 'Agent working...' : 'Message...'}
+                        className="flex-1 min-w-0 resize-none bg-transparent text-surface-100 py-1 text-[13px] placeholder-surface-500 focus:outline-none leading-[1.46] scrollbar-none disabled:cursor-not-allowed"
+                        style={{ height: '28px' }}
+                        rows={1}
+                        disabled={!isConnected || outOfCredits}
+                        autoFocus={chatId === null}
+                      />
+                    </div>
                     {sendStopButton}
                   </div>
                 )}
