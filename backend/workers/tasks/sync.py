@@ -361,6 +361,9 @@ async def _check_huddle_recording(
         title = meeting.title or "Huddle"
         start_time = meeting.scheduled_start
         organizer_email = meeting.organizer_email
+        stored_participant_emails = [
+            p["email"] for p in (meeting.participants or []) if p.get("email")
+        ]
 
     # ── Get an OAuth token (Calendar integration — same token works for Meet & Drive) ──
     token = await _get_google_token(task, organization_id, organizer_email)
@@ -456,8 +459,15 @@ async def _check_huddle_recording(
                         })
 
                 # Fetch Gemini meeting summary doc from "Meet Recordings" in Drive
+                # Merge live participant emails with any stored from calendar sync
+                all_participant_emails = list({
+                    e for e in
+                    [p.get("email", "") for p in participant_data] + stored_participant_emails
+                    if e
+                })
                 gemini_summary, summary_doc_id = await _fetch_gemini_summary(
-                    client, organization_id, organizer_email, title, start_time, meeting_id
+                    client, organization_id, organizer_email, title, start_time, meeting_id,
+                    participant_emails=all_participant_emails,
                 )
 
         except Exception as e:
@@ -533,7 +543,8 @@ async def _check_huddle_recording(
         try:
             async with httpx.AsyncClient() as client:
                 gemini_summary, summary_doc_id = await _fetch_gemini_summary(
-                    client, organization_id, organizer_email, title, start_time, meeting_id
+                    client, organization_id, organizer_email, title, start_time, meeting_id,
+                    participant_emails=stored_participant_emails,
                 )
         except Exception as e:
             logger.warning("Drive summary fetch failed for calendared meeting %s: %s", meeting_id, e)
@@ -644,6 +655,75 @@ async def _check_huddle_recording(
     }
 
 
+async def _share_gemini_doc(
+    client: "httpx.AsyncClient",
+    drive_headers: dict[str, str],
+    doc_id: str,
+    organizer_email: str,
+    participant_emails: list[str],
+    meeting_id: str,
+) -> None:
+    """Share a Gemini summary doc with the organizer's domain and all participants.
+
+    - Shares with the whole Google Workspace domain (reader) so anyone in the
+      org can access the notes.
+    - Shares individually with external participants (email domain differs from
+      the organizer's) so they also get access.
+
+    Failures are logged but never raised — sharing is best-effort and must not
+    block the summary from being saved.
+    """
+    DRIVE_API = "https://www.googleapis.com/drive/v3"
+    domain = organizer_email.rsplit("@", 1)[-1] if "@" in organizer_email else ""
+
+    if not domain:
+        logger.warning("Cannot share Gemini doc %s — no domain in organizer email", doc_id)
+        return
+
+    # 1. Share with the organizer's domain
+    try:
+        resp = await client.post(
+            f"{DRIVE_API}/files/{doc_id}/permissions",
+            headers=drive_headers,
+            params={"sendNotificationEmail": "false"},
+            json={"type": "domain", "role": "reader", "domain": domain},
+            timeout=15.0,
+        )
+        if resp.status_code < 300:
+            logger.info("Shared Gemini doc %s with domain %s for meeting %s", doc_id, domain, meeting_id)
+        else:
+            logger.warning(
+                "Domain share failed for doc %s (meeting %s): %d %s",
+                doc_id, meeting_id, resp.status_code, resp.text[:200],
+            )
+    except Exception as e:
+        logger.warning("Domain share request failed for doc %s (meeting %s): %s", doc_id, meeting_id, e)
+
+    # 2. Share individually with external participants (different domain)
+    external_emails = [
+        e for e in participant_emails
+        if "@" in e and e.rsplit("@", 1)[-1].lower() != domain.lower() and e.lower() != organizer_email.lower()
+    ]
+    for email in external_emails:
+        try:
+            resp = await client.post(
+                f"{DRIVE_API}/files/{doc_id}/permissions",
+                headers=drive_headers,
+                params={"sendNotificationEmail": "false"},
+                json={"type": "user", "role": "reader", "emailAddress": email},
+                timeout=15.0,
+            )
+            if resp.status_code < 300:
+                logger.info("Shared Gemini doc %s with %s for meeting %s", doc_id, email, meeting_id)
+            else:
+                logger.warning(
+                    "User share failed for doc %s → %s (meeting %s): %d %s",
+                    doc_id, email, meeting_id, resp.status_code, resp.text[:200],
+                )
+        except Exception as e:
+            logger.warning("User share request failed for doc %s → %s (meeting %s): %s", doc_id, email, meeting_id, e)
+
+
 async def _fetch_gemini_summary(
     client: "httpx.AsyncClient",
     organization_id: str,
@@ -651,12 +731,16 @@ async def _fetch_gemini_summary(
     title: str,
     start_time: datetime,
     meeting_id: str,
+    participant_emails: list[str] | None = None,
 ) -> tuple[str, str]:
     """Search Drive's 'Meet Recordings' folder for a Gemini-generated summary doc.
 
     For named meetings, Gemini uses the meeting title as the doc name.
     For huddles (title='Huddle'), the doc is named like 'Meeting started <timestamp>'.
     Returns (plain-text content, doc_id) or ("", "") if not found.
+
+    When a doc is found, it is shared with the organizer's domain and all
+    meeting participants so everyone has access to the notes.
     """
     # Get a Drive-scoped token (Calendar token won't have Drive access)
     drive_token = await _get_google_token(
@@ -755,6 +839,14 @@ async def _fetch_gemini_summary(
         summary_text = export_resp.text.strip()
 
         logger.info("Fetched Gemini summary (%d chars) for meeting %s", len(summary_text), meeting_id)
+
+        # Share the doc with the org domain and all participants
+        if organizer_email:
+            await _share_gemini_doc(
+                client, drive_headers, doc_id, organizer_email,
+                participant_emails or [], meeting_id,
+            )
+
         return summary_text, doc_id
 
     except Exception as e:
