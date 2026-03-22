@@ -26,9 +26,10 @@ async def resolve_agent_responding(
     """
     Determine whether the agent should respond and update conversation state.
 
+    - Any {"type": "user", "user_id": "..."} is merged into participating_user_ids (invite-by-mention),
+      including when combined with @agent so mixed messages still add participants.
     - If mentions contains {"type": "agent"} -> set agent_responding=True, return True.
-    - If mentions contains any {"type": "user", "user_id": "..."} -> set agent_responding=False,
-      add mentioned users to participating_user_ids, return False.
+    - Else if any user mention -> set agent_responding=False, return False.
     - If no mentions -> return current conversation.agent_responding.
 
     Returns True if the agent should run, False if human-only.
@@ -53,18 +54,23 @@ async def resolve_agent_responding(
         current_agent_responding: bool = conv_row[0]
         participating: list[UUID] = list(conv_row[1] or [])
 
+        mentioned_ids: list[UUID] = [
+            UUID(m["user_id"]) for m in user_mentions if m.get("user_id")
+        ]
+        for uid in mentioned_ids:
+            if uid not in participating:
+                participating.append(uid)
+
         if has_agent_mention:
             await session.execute(
-                update(Conversation).where(Conversation.id == conv_uuid).values(agent_responding=True)
+                update(Conversation)
+                .where(Conversation.id == conv_uuid)
+                .values(agent_responding=True, participating_user_ids=participating)
             )
             await session.commit()
             return True
 
         if user_mentions:
-            mentioned_ids = [UUID(m["user_id"]) for m in user_mentions if m.get("user_id")]
-            for uid in mentioned_ids:
-                if uid not in participating:
-                    participating.append(uid)
             await session.execute(
                 update(Conversation)
                 .where(Conversation.id == conv_uuid)
