@@ -122,6 +122,7 @@ async def save_user_message(
             organization_id=org_uuid,
             role="user",
             content_blocks=blocks,
+            created_at=datetime.utcnow(),
         )
         session.add(message)
         await session.execute(

@@ -457,6 +457,42 @@ export const useChatStore = create<ChatState>()(
       if (current.messages.some((m) => m.id === message.id)) {
         return;
       }
+
+      // Reconcile streaming duplicates: other participants in shared
+      // conversations receive assistant messages twice — once via task
+      // streaming (client-generated "assistant-*" ID) and again via the
+      // new_message broadcast (DB UUID).  When the broadcast copy arrives,
+      // upgrade the existing streaming message's ID to the DB UUID instead
+      // of appending a duplicate.
+      if (
+        message.role === "assistant" &&
+        !message.id.startsWith("assistant-")
+      ) {
+        let reconcileIdx = -1;
+        for (let i = current.messages.length - 1; i >= 0; i--) {
+          const m: ChatMessage = current.messages[i] as ChatMessage;
+          if (m.role === "assistant" && m.id.startsWith("assistant-")) {
+            reconcileIdx = i;
+            break;
+          }
+        }
+        if (reconcileIdx !== -1) {
+          const updated: ChatMessage[] = [...current.messages];
+          updated[reconcileIdx] = {
+            ...(updated[reconcileIdx] as ChatMessage),
+            id: message.id,
+            timestamp: message.timestamp,
+          };
+          set({
+            conversations: {
+              ...conversations,
+              [conversationId]: { ...current, messages: updated },
+            },
+          });
+          return;
+        }
+      }
+
       console.log(
         "[Store] Adding message to conversation:",
         conversationId,

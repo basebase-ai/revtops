@@ -378,7 +378,12 @@ export function Chat({
 
   const mentionSuggestions = useMemo(() => {
     const members = teamMembersData?.members ?? [];
-    const q = mentionPopover.query.toLowerCase();
+    const q: string = mentionPopover.query.toLowerCase();
+    // Only offer @Basebase when query is empty (bare "@") or prefixes the agent name,
+    // so e.g. "@Cyn" + Enter selects Cynthia, not Basebase at index 0.
+    const agentCanonical: string = 'basebase';
+    const showAgentOption: boolean = q.length === 0 || agentCanonical.startsWith(q);
+
     const agentOption = { type: 'agent' as const, displayName: 'Basebase', userId: null };
     const userOptions = members
       .filter((m) => {
@@ -392,7 +397,7 @@ export function Chat({
         displayName: (m.name ?? m.email).trim() || m.email,
         userId: m.id,
       }));
-    return [agentOption, ...userOptions];
+    return showAgentOption ? [agentOption, ...userOptions] : userOptions;
   }, [teamMembersData?.members, mentionPopover.query]);
 
   // Attachment state
@@ -663,18 +668,20 @@ export function Chat({
   useEffect(() => {
     if (localConversationId && pendingMessages.length > 0) {
       console.log('[Chat] Moving pending messages to conversation:', localConversationId);
-      // Add pending messages to the new conversation
       for (const msg of pendingMessages) {
         addConversationMessage(localConversationId, msg);
       }
       if (pendingThinking) {
         setConversationThinking(localConversationId, true);
       }
+      // Propagate agentResponding so subsequent messages before `message_sent`
+      // arrives see the correct state instead of `undefined`.
+      setConversationAgentResponding(localConversationId, pendingThinking);
       // Clear pending state
       setPendingMessages([]);
       setPendingThinking(false);
     }
-  }, [localConversationId, pendingMessages, pendingThinking, addConversationMessage, setConversationThinking]);
+  }, [localConversationId, pendingMessages, pendingThinking, addConversationMessage, setConversationThinking, setConversationAgentResponding]);
 
   // Listen for conversation_created in parent and update localConversationId
   // This happens via the store update from AppLayout
