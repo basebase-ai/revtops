@@ -194,7 +194,7 @@ class SlackMessenger(WorkspaceMessenger):
 
         try:
             import httpx
-            token: str = await connector.get_oauth_token()
+            token, _connection_id = await connector.get_oauth_token()
             auth_headers: dict[str, str] = {"Authorization": f"Bearer {token}"}
             async with httpx.AsyncClient(timeout=30.0) as client:
                 # Don't auto-follow redirects — httpx strips the Authorization
