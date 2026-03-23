@@ -195,14 +195,39 @@ class SlackMessenger(WorkspaceMessenger):
         try:
             import httpx
             token: str = await connector.get_oauth_token()
-            async with httpx.AsyncClient() as client:
+            auth_headers: dict[str, str] = {"Authorization": f"Bearer {token}"}
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                # Don't auto-follow redirects — httpx strips the Authorization
+                # header on cross-origin redirects (e.g. files.slack.com →
+                # basebase-ai.slack.com), which returns an HTML login page
+                # instead of the actual file.
                 resp = await client.get(
                     url_private,
-                    headers={"Authorization": f"Bearer {token}"},
-                    follow_redirects=True,
-                    timeout=30.0,
+                    headers=auth_headers,
+                    follow_redirects=False,
                 )
+                redirects_followed: int = 0
+                while resp.is_redirect and redirects_followed < 5:
+                    redirect_url: str | None = resp.headers.get("location")
+                    if not redirect_url:
+                        break
+                    resp = await client.get(
+                        redirect_url,
+                        headers=auth_headers,
+                        follow_redirects=False,
+                    )
+                    redirects_followed += 1
                 resp.raise_for_status()
+
+                # Guard against HTML login pages returned on auth failure
+                resp_ct: str = resp.headers.get("content-type", "")
+                if "text/html" in resp_ct and not content_type.startswith("text/"):
+                    logger.error(
+                        "[slack] File download returned HTML instead of %s for %s",
+                        content_type, filename,
+                    )
+                    return None
+
                 return resp.content, filename, content_type
         except Exception as exc:
             logger.error("[slack] Failed to download file %s: %s", filename, exc)

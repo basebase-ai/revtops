@@ -257,7 +257,34 @@ def build_claude_content_blocks(
     return blocks
 
 
+_IMAGE_MAGIC: dict[str, list[bytes]] = {
+    "image/jpeg": [b"\xff\xd8\xff"],
+    "image/png": [b"\x89PNG\r\n\x1a\n"],
+    "image/gif": [b"GIF87a", b"GIF89a"],
+    "image/webp": [b"RIFF"],
+}
+
+
+def _validate_image_bytes(data: bytes, mime: str) -> bool:
+    """Return True if *data* starts with a magic header matching *mime*."""
+    signatures: list[bytes] | None = _IMAGE_MAGIC.get(mime)
+    if signatures is None:
+        return True  # unknown mime — assume OK
+    return any(data[:len(sig)] == sig for sig in signatures)
+
+
 def _image_block(sf: StoredFile) -> dict[str, Any]:
+    if not _validate_image_bytes(sf.data, sf.mime_type):
+        logger.warning(
+            "Image %s (%s) failed magic-byte validation — sending as text note",
+            sf.filename, sf.mime_type,
+        )
+        return {
+            "type": "text",
+            "text": f"[Attached image '{sf.filename}' could not be processed — "
+                    f"the file data does not appear to be a valid {sf.mime_type}]",
+        }
+
     b64: str = base64.standard_b64encode(sf.data).decode("ascii")
     return {
         "type": "image",
