@@ -13,6 +13,7 @@
  */
 
 import { useEffect, useRef, useState } from "react";
+import type { Components } from "react-markdown";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { apiRequest, API_BASE } from "../lib/api";
@@ -384,10 +385,21 @@ function TextViewer({
   );
 }
 
+const ARTIFACT_MARKDOWN_COMPONENTS: Components = {
+  a({ href, children, node, ...rest }) {
+    void node;
+    return (
+      <a href={href} rel="noopener noreferrer" target="_blank" {...rest}>
+        {children}
+      </a>
+    );
+  },
+};
+
 function MarkdownViewer({ content }: { content: string }): JSX.Element {
   return (
     <div className="prose prose-sm prose-invert max-w-none prose-p:my-2 prose-headings:my-3 prose-ul:my-2 prose-ol:my-2 prose-li:my-1 prose-pre:my-3 prose-code:text-primary-300 prose-code:bg-surface-800 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-pre:bg-surface-800 prose-table:text-sm prose-th:bg-surface-700/50 prose-th:px-3 prose-th:py-2 prose-td:px-3 prose-td:py-2 prose-td:border-surface-700 prose-th:border-surface-700">
-      <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={ARTIFACT_MARKDOWN_COMPONENTS}>{content}</ReactMarkdown>
     </div>
   );
 }

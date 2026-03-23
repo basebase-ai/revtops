@@ -104,6 +104,7 @@ interface ToolApprovalState {
  * NOTE: :root light mode uses an inverted surface scale (see index.css): low numbers = dark ink,
  * high numbers = light fills. Never use text-surface-900 for body text in light mode — it is ~white.
  */
+const AGENT_AVATAR_PATH: string = '/basebase_logo_reverse-256.png';
 const CHAT_MSG_ROW: string =
   'group/msg flex items-start gap-3 px-5 -mx-5 hover:bg-black/[0.035] dark:hover:bg-surface-800/40 transition-colors';
 const CHAT_MSG_AVATAR: string = 'flex-shrink-0 !w-9 !h-9 !rounded-md mt-px';
@@ -2635,11 +2636,7 @@ function MessageWithBlocks({
       {isGroupedWithPrevious ? (
         <div className={CHAT_MSG_AVATAR_SPACER} aria-hidden />
       ) : (
-        <div
-          className={`${CHAT_MSG_AVATAR} flex items-center justify-center overflow-hidden border border-surface-200/90 dark:border-surface-600 bg-white dark:bg-surface-850 shadow-[0_1px_0_rgba(0,0,0,0.04)] dark:shadow-none`}
-        >
-          <img src={LOGO_PATH} alt={APP_NAME} className="w-[22px] h-[22px] object-contain" />
-        </div>
+        <img src={AGENT_AVATAR_PATH} alt={APP_NAME} className={`${CHAT_MSG_AVATAR} object-cover`} />
       )}
 
       <div className="flex-1 min-w-0 overflow-hidden">
@@ -3346,11 +3343,7 @@ function HumanTypingIndicator({
         <div className="flex flex-wrap items-baseline gap-x-1.5 gap-y-0">
           <span className={CHAT_MSG_NAME}>{label}</span>
         </div>
-        <div className="flex items-center gap-1 mt-1">
-          <div className="w-1.5 h-1.5 bg-surface-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-          <div className="w-1.5 h-1.5 bg-surface-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-          <div className="w-1.5 h-1.5 bg-surface-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
-        </div>
+        <span className="text-xs text-surface-400 animate-shimmer">Typing…</span>
       </div>
     </div>
   );
@@ -3362,22 +3355,14 @@ function HumanTypingIndicator({
 function ThinkingIndicator(): JSX.Element {
   return (
     <div className={`${CHAT_MSG_ROW} py-1`}>
-      <div
-        className={`${CHAT_MSG_AVATAR} flex items-center justify-center overflow-hidden border border-surface-200/90 dark:border-surface-600 bg-white dark:bg-surface-850 shadow-[0_1px_0_rgba(0,0,0,0.04)] dark:shadow-none`}
-      >
-        <img src={LOGO_PATH} alt={APP_NAME} className="w-[22px] h-[22px] object-contain opacity-90" />
-      </div>
+      <img src={AGENT_AVATAR_PATH} alt={APP_NAME} className={`${CHAT_MSG_AVATAR} object-cover`} />
 
       <div className="flex-1 min-w-0">
         <div className="flex flex-wrap items-baseline gap-x-1.5 gap-y-0">
           <span className={CHAT_MSG_NAME}>{APP_NAME}</span>
           <span className={CHAT_MSG_APP_BADGE}>AGENT</span>
         </div>
-        <div className="flex items-center gap-1 mt-1">
-          <div className="w-1.5 h-1.5 bg-surface-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-          <div className="w-1.5 h-1.5 bg-surface-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-          <div className="w-1.5 h-1.5 bg-surface-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
-        </div>
+        <span className="text-xs text-surface-400 animate-shimmer">Getting ready…</span>
       </div>
     </div>
   );
