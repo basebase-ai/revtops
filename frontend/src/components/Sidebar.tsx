@@ -19,6 +19,7 @@ import { updateConversation } from '../api/client';
 import { apiRequest } from '../lib/api';
 import { FaLifeRing } from 'react-icons/fa';
 import { Avatar, type AvatarUser } from './Avatar';
+import { ScopeLockIcon } from './ScopeVisibilityIcons';
 import { APP_NAME, LOGO_PATH, RELEASE_STAGE } from '../lib/brand';
 
 /** Help button and modal for support requests. */
@@ -467,7 +468,7 @@ function NavItem({
     <button
       onClick={() => onViewChange(view)}
       title={collapsed ? label : undefined}
-      className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${isActive ? activeClass : inactiveClass} ${collapsed ? 'justify-center' : ''}`}
+      className={`w-full flex items-center gap-2 px-3 py-1.5 rounded-lg transition-colors ${isActive ? activeClass : inactiveClass} ${collapsed ? 'justify-center' : ''}`}
     >
       {badge != null && badge > 0 ? (
         <div className="relative">
@@ -477,7 +478,9 @@ function NavItem({
           </span>
         </div>
       ) : icon}
-      {!collapsed && <span className={fontWeight === 'medium' ? 'font-medium' : ''}>{label}</span>}
+      {!collapsed && (
+        <span className={fontWeight === 'medium' ? 'text-sm font-medium' : 'text-sm'}>{label}</span>
+      )}
     </button>
   );
 }
@@ -587,10 +590,10 @@ export function Sidebar({
       </div>
 
       {/* New Chat Button */}
-      <div className="p-2">
+      <div className="px-2 py-1">
         <button
           onClick={onNewChat}
-          className={`w-full flex items-center gap-2 px-3 py-2.5 rounded-lg bg-primary-600 hover:bg-primary-700 text-white font-medium transition-colors ${collapsed ? 'justify-center' : ''}`}
+          className={`w-full flex items-center gap-2 px-3 py-1.5 rounded-lg bg-primary-600 hover:bg-primary-700 text-white font-medium text-sm transition-colors ${collapsed ? 'justify-center' : ''}`}
         >
           <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
@@ -605,7 +608,7 @@ export function Sidebar({
         className="overflow-y-auto scrollbar-thin flex-shrink-0"
         style={navHeight != null ? { height: navHeight } : undefined}
       >
-        <nav className="px-2 space-y-1">
+        <nav className="px-2 space-y-0.5">
           <NavItem view="home" label="Home" collapsed={collapsed} currentView={currentView} onViewChange={onViewChange} icon={
             <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" />
@@ -647,7 +650,7 @@ export function Sidebar({
             <button
               onClick={() => onViewChange('admin')}
               title={collapsed ? 'Global Admin' : undefined}
-              className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${
+              className={`w-full flex items-center gap-2 px-3 py-1.5 rounded-lg transition-colors ${
                 currentView === 'admin'
                   ? 'bg-surface-800 text-surface-100'
                   : 'text-surface-400 hover:text-surface-200 hover:bg-surface-800/50'
@@ -657,7 +660,7 @@ export function Sidebar({
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
               </svg>
-              {!collapsed && <span>Global Admin</span>}
+              {!collapsed && <span className="text-sm">Global Admin</span>}
             </button>
           )}
         </nav>
@@ -666,12 +669,12 @@ export function Sidebar({
       {/* Draggable divider between nav and chat history */}
       <div
         onMouseDown={handleNavDividerMouseDown}
-        className="mx-3 h-2 cursor-ns-resize flex-shrink-0 group flex items-center justify-center"
+        className="mx-3 h-1.5 cursor-ns-resize flex-shrink-0 group flex items-center justify-center"
       >
         <div className="w-full border-t border-surface-800 group-hover:border-surface-600 group-active:border-primary-500 transition-colors" />
       </div>
 
-      {/* Recent Chats - Accordion with Shared and Private sections */}
+      {/* Recent chats (single list) */}
       <ChatAccordion
         collapsed={collapsed}
         orderedChats={orderedChats}
@@ -730,7 +733,7 @@ function formatRelativeTime(date: Date): string {
   return date.toLocaleDateString();
 }
 
-/** Accordion for chat sections - only one section open at a time */
+/** Recent chats: shared + private in one list (recency), pinned first; lock marks private. */
 function ChatAccordion({
   collapsed,
   orderedChats,
@@ -756,7 +759,6 @@ function ChatAccordion({
   togglePinChat: (id: string) => void;
   onViewAll: () => void;
 }): JSX.Element | null {
-  const [expandedSection, setExpandedSection] = useState<'shared' | 'private'>('shared');
   const [editingChatId, setEditingChatId] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState('');
   const editInputRef = useRef<HTMLInputElement>(null);
@@ -803,12 +805,21 @@ function ChatAccordion({
     }
   }, [editingChatId]);
 
+  const recentSidebarChats = useMemo(() => {
+    const pinnedSet = new Set(pinnedChatIds);
+    const sorted = [...orderedChats].sort(
+      (a, b) => b.lastMessageAt.getTime() - a.lastMessageAt.getTime(),
+    );
+    const pinned = sorted.filter((c) => pinnedSet.has(c.id));
+    const unpinned = sorted.filter((c) => !pinnedSet.has(c.id));
+    const merged = [...pinned, ...unpinned];
+    const limit = 15;
+    return merged.slice(0, limit);
+  }, [orderedChats, pinnedChatIds]);
+
   if (collapsed) return null;
 
-  const sharedChats = orderedChats.filter(c => c.scope === 'shared').slice(0, 10);
-  const privateChats = orderedChats.filter(c => c.scope === 'private').slice(0, 10);
-
-  const renderChatItem = (chat: ChatSummary, showLockIcon: boolean) => {
+  const renderChatItem = (chat: ChatSummary) => {
     const hasActiveTask = chat.id in activeTasksByConversation;
     const isUnread = unreadConversationIds.has(chat.id);
     const isPinned = pinnedChatIds.includes(chat.id);
@@ -818,7 +829,7 @@ function ChatAccordion({
     return (
       <div
         key={chat.id}
-        className={`relative w-full text-left px-3 py-2 rounded-lg transition-colors group cursor-pointer ${
+        className={`relative w-full text-left px-2 py-1 rounded-md transition-colors group cursor-pointer leading-tight ${
           currentChatId === chat.id
             ? 'bg-surface-800 text-surface-100'
             : 'text-surface-400 hover:text-surface-200 hover:bg-surface-800/50'
@@ -832,11 +843,11 @@ function ChatAccordion({
           if (hoverTimerRef.current) { clearTimeout(hoverTimerRef.current); hoverTimerRef.current = null; }
         }}
       >
-        <div className="flex items-center gap-1.5 pr-14">
-          {showLockIcon && (
-            <svg className="w-3 h-3 text-surface-500 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
-            </svg>
+        <div className="flex items-center gap-1 pr-14">
+          {chat.scope === 'private' && (
+            <span className="flex shrink-0 text-surface-500" title="Private">
+              <ScopeLockIcon className="w-3 h-3" />
+            </span>
           )}
           {chat.type === 'workflow' && (
             <svg className="w-3.5 h-3.5 text-amber-500 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -855,12 +866,12 @@ function ChatAccordion({
               }}
               onBlur={() => void saveTitle(chat.id)}
               onClick={(e) => e.stopPropagation()}
-              className="truncate text-sm flex-1 bg-transparent border-b border-primary-500 outline-none text-surface-100 py-0 px-0"
+              className="truncate text-sm flex-1 bg-transparent border-b border-primary-500 outline-none text-surface-100 py-0 px-0 leading-tight"
               maxLength={100}
             />
           ) : (
             <div
-              className="truncate text-sm flex-1"
+              className="truncate text-sm flex-1 leading-tight"
               onDoubleClick={(e) => { e.stopPropagation(); startEditing(chat); }}
             >
               {chat.title}
@@ -876,8 +887,8 @@ function ChatAccordion({
             </svg>
           )}
         </div>
-        <div className="flex items-center gap-2 mt-0.5">
-          {!showLockIcon && chat.participants && chat.participants.length > 0 && (
+        <div className="flex items-center gap-1 mt-0 leading-none">
+          {chat.scope === 'shared' && chat.participants && chat.participants.length > 0 && (
             <div className="flex -space-x-1.5">
               {chat.participants.slice(0, 3).map((p, idx) => (
                 <Avatar
@@ -909,7 +920,7 @@ function ChatAccordion({
               e.stopPropagation();
               startEditing(chat);
             }}
-            className="absolute right-12 top-1/2 -translate-y-1/2 p-1 rounded opacity-0 group-hover:opacity-100 hover:bg-surface-700 text-surface-500 hover:text-surface-300 transition-all"
+            className="absolute right-12 top-1/2 -translate-y-1/2 p-0.5 rounded opacity-0 group-hover:opacity-100 hover:bg-surface-700 text-surface-500 hover:text-surface-300 transition-all"
             title="Rename conversation"
           >
             <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -922,7 +933,7 @@ function ChatAccordion({
             e.stopPropagation();
             togglePinChat(chat.id);
           }}
-          className={`absolute right-7 top-1/2 -translate-y-1/2 p-1 rounded ${
+          className={`absolute right-7 top-1/2 -translate-y-1/2 p-0.5 rounded ${
             isPinned ? 'opacity-100 text-primary-400' : 'opacity-0 text-surface-500'
           } group-hover:opacity-100 hover:bg-surface-700 hover:text-surface-300 transition-all`}
           title={isPinned ? "Unpin conversation" : "Pin conversation"}
@@ -936,7 +947,7 @@ function ChatAccordion({
             e.stopPropagation();
             onDeleteChat(chat.id);
           }}
-          className="absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded opacity-0 group-hover:opacity-100 hover:bg-surface-700 text-surface-500 hover:text-surface-300 transition-all"
+          className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 rounded opacity-0 group-hover:opacity-100 hover:bg-surface-700 text-surface-500 hover:text-surface-300 transition-all"
           title="Delete conversation"
         >
           <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -948,9 +959,9 @@ function ChatAccordion({
   };
   
   return (
-    <div className="flex-1 flex flex-col min-h-0 px-2">
+    <div className="flex-1 flex flex-col min-h-0 px-1.5">
       {/* Chat History header with View All link */}
-      <div className="flex-shrink-0 flex items-center justify-between px-3 py-2">
+      <div className="flex-shrink-0 flex items-center justify-between px-2 py-0.5">
         <span className="text-xs font-semibold text-surface-200 uppercase tracking-wider">Chat History</span>
         <button
           onClick={onViewAll}
@@ -960,63 +971,15 @@ function ChatAccordion({
         </button>
       </div>
 
-      {/* Shared Section Header */}
-      <button
-        onClick={() => setExpandedSection(expandedSection === 'shared' ? 'private' : 'shared')}
-        className="flex-shrink-0 w-full flex items-center justify-between px-3 py-2 text-xs font-medium text-surface-400 hover:text-surface-200 transition-colors"
-      >
-        <span className="uppercase tracking-wider">Shared ({sharedChats.length})</span>
-        <svg
-          className={`w-4 h-4 transition-transform ${expandedSection === 'shared' ? 'rotate-180' : ''}`}
-          fill="none"
-          viewBox="0 0 24 24"
-          stroke="currentColor"
-        >
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-        </svg>
-      </button>
-      
-      {/* Shared Section Content - scrollable */}
-      {expandedSection === 'shared' && (
-        <div className="flex-1 overflow-y-auto scrollbar-thin space-y-0.5 min-h-0">
-          {sharedChats.length > 0 ? (
-            sharedChats.map((chat) => renderChatItem(chat, false))
-          ) : (
-            <div className="px-3 py-4 text-xs text-surface-500 text-center">
-              No shared conversations yet
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Private Section Header */}
-      <button
-        onClick={() => setExpandedSection(expandedSection === 'private' ? 'shared' : 'private')}
-        className="flex-shrink-0 w-full flex items-center justify-between px-3 py-2 text-xs font-medium text-surface-400 hover:text-surface-200 transition-colors border-t border-surface-800 mt-1"
-      >
-        <span className="uppercase tracking-wider">Private ({privateChats.length})</span>
-        <svg
-          className={`w-4 h-4 transition-transform ${expandedSection === 'private' ? 'rotate-180' : ''}`}
-          fill="none"
-          viewBox="0 0 24 24"
-          stroke="currentColor"
-        >
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-        </svg>
-      </button>
-
-      {/* Private Section Content - scrollable */}
-      {expandedSection === 'private' && (
-        <div className="flex-1 overflow-y-auto scrollbar-thin space-y-0.5 min-h-0">
-          {privateChats.length > 0 ? (
-            privateChats.map((chat) => renderChatItem(chat, true))
-          ) : (
-            <div className="px-3 py-4 text-xs text-surface-500 text-center">
-              No private conversations yet
-            </div>
-          )}
-        </div>
-      )}
+      <div className="flex-1 overflow-y-auto scrollbar-thin space-y-0 min-h-0">
+        {recentSidebarChats.length > 0 ? (
+          recentSidebarChats.map((chat) => renderChatItem(chat))
+        ) : (
+          <div className="px-2 py-1.5 text-xs text-surface-500 text-center">
+            No conversations yet
+          </div>
+        )}
+      </div>
     </div>
   );
 }
