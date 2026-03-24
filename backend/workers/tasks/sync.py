@@ -96,6 +96,7 @@ async def _sync_integration(
                 "error": dp_result.deny_reason or "Connector sync not allowed",
             }
 
+        await connector.mark_sync_started()
         counts = await connector.sync_all()
         await connector.update_last_sync(counts)
 
@@ -130,6 +131,10 @@ async def _sync_integration(
     except SyncCancelledError as e:
         cancel_msg = str(e)
         logger.info(f"Sync cancelled for {provider} in org {organization_id}: {cancel_msg}")
+        try:
+            await connector.clear_sync_started()
+        except Exception:
+            pass
         return {
             "status": "cancelled",
             "organization_id": organization_id,
@@ -141,9 +146,10 @@ async def _sync_integration(
         error_msg = str(e)
         logger.error(f"Sync failed for {provider} in org {organization_id}: {error_msg}")
 
-        # Record error in database
+        # Record error in database and clear in-progress flag
         try:
             connector = connector_class(organization_id, user_id=user_id)
+            await connector.clear_sync_started()
             await connector.record_error(error_msg)
         except Exception:
             pass

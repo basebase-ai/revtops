@@ -21,6 +21,12 @@ class CancelledConnector:
     async def sync_all(self) -> dict[str, int]:
         raise SyncCancelledError("hubspot integration disconnected during sync (sync_all:after_accounts)")
 
+    async def mark_sync_started(self) -> None:
+        return None
+
+    async def clear_sync_started(self) -> None:
+        return None
+
     async def update_last_sync(self, counts: dict[str, int]) -> None:
         return None
 

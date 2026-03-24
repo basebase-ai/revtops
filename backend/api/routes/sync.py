@@ -8,7 +8,7 @@ Endpoints:
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import ast
 import logging
 from typing import Any, Optional
@@ -859,53 +859,77 @@ async def get_sync_status(organization_id: str, provider: str) -> SyncStatusResp
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid customer ID")
 
-    status_key = _get_status_key(organization_id, provider)
-    status = _sync_status.get(status_key)
-
-    if not status:
-        # Check database for last sync time
-        async with get_session(organization_id=organization_id) as session:
-            result = await session.execute(
-                select(Integration).where(
-                    Integration.organization_id == UUID(organization_id),
-                    Integration.connector == provider,
-                )
+    # DB is the primary source of truth — check sync_started_at first
+    async with get_session(organization_id=organization_id) as session:
+        result = await session.execute(
+            select(Integration).where(
+                Integration.organization_id == UUID(organization_id),
+                Integration.connector == provider,
             )
-            integration = result.scalar_one_or_none()
+        )
+        integration: Integration | None = result.scalar_one_or_none()
 
-            if integration and integration.last_sync_at:
-                return SyncStatusResponse(
-                    organization_id=organization_id,
-                    provider=provider,
-                    status="completed",
-                    started_at=None,
-                    completed_at=f"{integration.last_sync_at.isoformat()}Z",
-                    error=integration.last_error,
-                    counts=None,
-                )
+    if integration:
+        stats: dict[str, Any] | None = integration.sync_stats
+        sync_started_raw: str | None = (
+            stats.get("sync_started_at") if isinstance(stats, dict) else None
+        )
 
+        if sync_started_raw:
+            try:
+                sync_started: datetime = datetime.fromisoformat(sync_started_raw)
+                stale_cutoff: timedelta = timedelta(hours=2)
+                if datetime.utcnow() - sync_started < stale_cutoff:
+                    return SyncStatusResponse(
+                        organization_id=organization_id,
+                        provider=provider,
+                        status="syncing",
+                        started_at=f"{sync_started.isoformat()}Z",
+                        completed_at=None,
+                        error=None,
+                        counts=None,
+                    )
+            except (ValueError, TypeError):
+                pass
+
+    # Fall back to in-memory status (set by API-initiated syncs in this process)
+    status_key: str = _get_status_key(organization_id, provider)
+    status: dict[str, Any] | None = _sync_status.get(status_key)
+
+    if status:
+        started_at = status.get("started_at")
+        completed_at = status.get("completed_at")
+        counts = status.get("counts")
         return SyncStatusResponse(
             organization_id=organization_id,
             provider=provider,
-            status="never_synced",
-            started_at=None,
-            completed_at=None,
-            error=None,
-            counts=None,
+            status=str(status.get("status", "unknown")),
+            started_at=f"{started_at.isoformat()}Z" if isinstance(started_at, datetime) else None,
+            completed_at=f"{completed_at.isoformat()}Z" if isinstance(completed_at, datetime) else None,
+            error=str(status["error"]) if status.get("error") else None,
+            counts=counts if isinstance(counts, dict) else None,
         )
 
-    started_at = status.get("started_at")
-    completed_at = status.get("completed_at")
-    counts = status.get("counts")
+    # No in-memory status — use DB last_sync_at / never_synced
+    if integration and integration.last_sync_at:
+        return SyncStatusResponse(
+            organization_id=organization_id,
+            provider=provider,
+            status="completed",
+            started_at=None,
+            completed_at=f"{integration.last_sync_at.isoformat()}Z",
+            error=integration.last_error,
+            counts=None,
+        )
 
     return SyncStatusResponse(
         organization_id=organization_id,
         provider=provider,
-        status=str(status.get("status", "unknown")),
-        started_at=f"{started_at.isoformat()}Z" if isinstance(started_at, datetime) else None,
-        completed_at=f"{completed_at.isoformat()}Z" if isinstance(completed_at, datetime) else None,
-        error=str(status["error"]) if status.get("error") else None,
-        counts=counts if isinstance(counts, dict) else None,
+        status="never_synced",
+        started_at=None,
+        completed_at=None,
+        error=None,
+        counts=None,
     )
 
 
@@ -942,6 +966,7 @@ async def sync_integration_data(
             user_id=user_id,
             sync_since_override=sync_since_override,
         )
+        await connector.mark_sync_started()
         counts = await connector.sync_all()
         print(f"[Sync] sync_all returned counts: {counts}")
         await connector.update_last_sync(counts)
@@ -986,6 +1011,11 @@ async def sync_integration_data(
         _sync_status[status_key]["error"] = cancel_msg
         _sync_status[status_key]["completed_at"] = datetime.utcnow()
 
+        try:
+            await connector.clear_sync_started()
+        except Exception:
+            pass
+
         # Emit sync cancelled event (best effort)
         try:
             from workers.events import emit_event
@@ -1012,13 +1042,14 @@ async def sync_integration_data(
         _sync_status[status_key]["error"] = error_msg
         _sync_status[status_key]["completed_at"] = datetime.utcnow()
 
-        # Record error in database
+        # Record error in database and clear in-progress flag
         try:
             connector = connector_class(
                 organization_id,
                 user_id=user_id,
                 sync_since_override=sync_since_override,
             )
+            await connector.clear_sync_started()
             await connector.record_error(error_msg)
         except Exception as record_err:
             print(f"[Sync] Failed to record error to DB: {record_err}")
