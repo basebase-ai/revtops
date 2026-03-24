@@ -419,32 +419,31 @@ class GoogleCalendarConnector(BaseConnector):
 
             await session.commit()
             
-            # Cleanup orphaned meetings (meetings with no linked activities)
-            # These can occur when calendar events are rescheduled
-            # Wrapped in try/except: concurrent user syncs can race and link
-            # activities between our check and the delete
+            # Cleanup orphaned meetings (meetings with no linked activities).
+            # These can occur when calendar events are rescheduled. Use a single
+            # DELETE ... NOT EXISTS so each row is re-checked at delete time; the
+            # previous SELECT-then-DELETE flow raced with concurrent syncs and caused
+            # ForeignKeyViolationError on activities.meeting_id.
             try:
-                from sqlalchemy import func
+                from sqlalchemy import delete, exists
 
-                orphaned_result = await session.execute(
-                    select(Meeting).where(
-                        Meeting.organization_id == uuid.UUID(self.organization_id),
-                        Meeting.status == "completed",  # Only cleanup past meetings
-                        ~Meeting.id.in_(
-                            select(Activity.meeting_id).where(Activity.meeting_id.isnot(None))
-                        )
+                org_uuid = uuid.UUID(self.organization_id)
+                stmt = (
+                    delete(Meeting)
+                    .where(
+                        Meeting.organization_id == org_uuid,
+                        Meeting.status == "completed",
+                        ~exists().where(Activity.meeting_id == Meeting.id),
                     )
+                    .execution_options(synchronize_session=False)
                 )
-                orphaned_meetings = orphaned_result.scalars().all()
-
-                if orphaned_meetings:
-                    print(f"[GCal Sync] Cleaning up {len(orphaned_meetings)} orphaned meetings")
-                    for meeting in orphaned_meetings:
-                        print(f"[GCal Sync]   Deleting orphaned meeting: {meeting.title} at {meeting.scheduled_start}")
-                        await session.delete(meeting)
-                    await session.commit()
+                result = await session.execute(stmt)
+                deleted_count: int = result.rowcount or 0
+                if deleted_count > 0:
+                    print(f"[GCal Sync] Cleaned up {deleted_count} orphaned completed meetings (atomic delete)")
+                await session.commit()
             except Exception as e:
-                logger.warning("[GCal Sync] Orphan cleanup failed (likely race condition): %s", e)
+                logger.warning("[GCal Sync] Orphan cleanup failed: %s", e)
 
         # Schedule Gemini summary fetch for completed meetings that have
         # a meeting_code OR a title but no summary yet
