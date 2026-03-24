@@ -1966,7 +1966,6 @@ export function Chat({
                           status: block.status === 'complete' ? 'complete' : 'running',
                         })}
                         onRetry={handleRetry}
-                        conversationScope={conversationScope}
                         currentUserId={userId}
                       />
                     </div>
@@ -2603,7 +2602,6 @@ function MessageWithBlocks({
   onToolCancel,
   onToolClick,
   onRetry,
-  conversationScope,
   currentUserId,
 }: {
   message: ChatMessage;
@@ -2617,7 +2615,6 @@ function MessageWithBlocks({
   onToolCancel: (operationId: string) => void;
   onToolClick: (block: ToolUseBlock) => void;
   onRetry?: () => void;
-  conversationScope: 'private' | 'shared';
   currentUserId?: string | null;
 }): JSX.Element {
   const blocks = message.contentBlocks ?? [];
@@ -2641,9 +2638,11 @@ function MessageWithBlocks({
       (b): b is AttachmentBlock => b.type === 'attachment',
     );
     
-    // In shared conversations, check if this is from the current user or another participant
-    const isOwnMessage = !message.userId || message.userId === currentUserId;
-    const showSenderInfo = conversationScope === 'shared' && !isOwnMessage;
+    // Own vs other human: for any scope, messages from another user must use message sender fields,
+    // not the viewer's profile (private multi-participant used to wrongly show the logged-in user's avatar).
+    const isOwnMessage: boolean =
+      Boolean(currentUserId) && (!message.userId || message.userId === currentUserId);
+    const showSenderInfo: boolean = !isOwnMessage && Boolean(message.userId);
     
     if (showSenderInfo) {
       const senderName = message.senderName ?? message.senderEmail ?? 'Unknown';
