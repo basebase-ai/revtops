@@ -804,7 +804,7 @@ function ChatAccordion({
           </div>
           {isUnread && (
             <span
-              className="w-3 h-3 rounded-full bg-primary-500 flex-shrink-0 ring-2 ring-primary-500/25"
+              className="h-3 w-3 shrink-0 rounded-full bg-primary-500 [background-image:none]"
               title="Unread"
               aria-label="Unread"
             />
