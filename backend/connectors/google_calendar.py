@@ -19,7 +19,7 @@ import httpx
 from connectors.base import BaseConnector
 from connectors.registry import AuthType, Capability, ConnectorAction, ConnectorMeta, ConnectorScope
 from models.activity import Activity
-from models.database import get_session
+from models.database import get_admin_session, get_session
 from services.meeting_dedup import find_or_create_meeting
 
 logger = logging.getLogger(__name__)
@@ -234,7 +234,10 @@ class GoogleCalendarConnector(BaseConnector):
         resolver = await build_activity_resolver(self.organization_id)
 
         count: int = 0
-        async with get_session(organization_id=self.organization_id) as session:
+        # Bypass RLS so we see activities written by other users' calendar integrations.
+        # Otherwise owner_only rows from teammate syncs are invisible and we hit
+        # uq_activities_org_source on INSERT for the same Google event id.
+        async with get_admin_session() as session:
             from models.meeting import Meeting
             from sqlalchemy import select
 
