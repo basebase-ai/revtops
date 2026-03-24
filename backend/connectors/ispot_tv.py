@@ -67,8 +67,16 @@ class ISpotTvConnector(BaseConnector):
         ],
     )
 
-    def __init__(self, organization_id: str, user_id: str | None = None) -> None:
-        super().__init__(organization_id, user_id)
+    def __init__(
+        self,
+        organization_id: str,
+        user_id: str | None = None,
+        *,
+        sync_since_override: datetime | None = None,
+    ) -> None:
+        super().__init__(
+            organization_id, user_id, sync_since_override=sync_since_override
+        )
         self._token_expires_at: datetime | None = None
 
     async def _get_credentials(self) -> tuple[str, str]:

@@ -206,6 +206,8 @@ Send a message to a Slack channel, DM, or user.
         organization_id: str,
         user_id: str | None = None,
         team_id: str | None = None,
+        *,
+        sync_since_override: datetime | None = None,
     ) -> None:
         """Initialize Slack connector.
 
@@ -214,8 +216,13 @@ Send a message to a Slack channel, DM, or user.
             user_id: Optional owner user UUID.
             team_id: Optional Slack team/workspace ID used to disambiguate
                 between multiple Slack integrations in the same org.
+            sync_since_override: Optional manual resync-from cutoff (naive UTC).
         """
-        super().__init__(organization_id=organization_id, user_id=user_id)
+        super().__init__(
+            organization_id=organization_id,
+            user_id=user_id,
+            sync_since_override=sync_since_override,
+        )
         self.team_id = (team_id or "").strip() or None
 
     async def _select_integration(

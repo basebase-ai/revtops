@@ -14,7 +14,7 @@ import logging
 from typing import Any, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import select
 
@@ -33,6 +33,26 @@ logger = logging.getLogger(__name__)
 
 # Connector registry – auto-discovered from backend/connectors/ + entry_points
 CONNECTORS = discover_connectors()
+
+
+def parse_sync_since_param(since: str | None) -> datetime | None:
+    """Parse optional ``since`` query into naive UTC for ``sync_since_override``."""
+    if since is None:
+        return None
+    stripped: str = since.strip()
+    if not stripped:
+        return None
+    norm: str = stripped[:-1] + "+00:00" if stripped.endswith("Z") else stripped
+    try:
+        parsed: datetime = datetime.fromisoformat(norm)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid since parameter: expected ISO8601 datetime",
+        ) from exc
+    if parsed.tzinfo is not None:
+        return parsed.astimezone(timezone.utc).replace(tzinfo=None)
+    return parsed
 
 # Simple in-memory sync status tracking (use Redis in production)
 _sync_status: dict[str, dict[str, str | datetime | None | dict[str, int]]] = {}
@@ -662,13 +682,22 @@ async def cancel_admin_running_job(
 
 @router.post("/{organization_id}/{provider}", response_model=SyncTriggerResponse)
 async def trigger_sync(
-    organization_id: str, provider: str, background_tasks: BackgroundTasks
+    organization_id: str,
+    provider: str,
+    background_tasks: BackgroundTasks,
+    since: str | None = Query(
+        default=None,
+        description="ISO8601 UTC start time for manual resync (overrides last_sync_at for this run)",
+    ),
 ) -> SyncTriggerResponse:
     """Trigger a sync for a specific integration.
 
     Per-user integrations (Gmail, Calendar, etc.) may have multiple rows per
     provider.  We sync each one individually so every connected user gets
     updated.
+
+    Optional ``since`` (ISO8601) temporarily overrides the incremental window
+    for this run only (e.g. resync last 7 days).
     """
     try:
         customer_uuid = UUID(organization_id)
@@ -704,6 +733,8 @@ async def trigger_sync(
                 detail=f"No active {provider} integration found",
             )
 
+    sync_since_override: datetime | None = parse_sync_since_param(since)
+
     # Initialize sync status
     status_key: str = _get_status_key(organization_id, provider)
     _sync_status[status_key] = {
@@ -718,7 +749,11 @@ async def trigger_sync(
     for integration in integrations:
         user_id: str | None = str(integration.user_id) if integration.user_id else None
         background_tasks.add_task(
-            sync_integration_data, organization_id, provider, user_id
+            sync_integration_data,
+            organization_id,
+            provider,
+            user_id,
+            sync_since_override,
         )
 
     return SyncTriggerResponse(
@@ -839,6 +874,7 @@ async def sync_integration_data(
     organization_id: str,
     provider: str,
     user_id: str | None = None,
+    sync_since_override: datetime | None = None,
 ) -> None:
     """Background task to sync data for a specific integration.
 
@@ -847,6 +883,8 @@ async def sync_integration_data(
         provider: Integration provider name.
         user_id: Optional UUID of the user who owns this integration
                  (for per-user providers like Gmail, Calendar, etc.).
+        sync_since_override: When set, passed to the connector as the incremental
+            cutoff instead of ``last_sync_at`` (manual resync from a chosen time).
     """
     status_key: str = _get_status_key(organization_id, provider)
     connector_class = CONNECTORS.get(provider)
@@ -860,7 +898,11 @@ async def sync_integration_data(
     try:
         user_label: str = f" user={user_id}" if user_id else ""
         print(f"[Sync] Starting sync for {provider} in org {organization_id}{user_label}")
-        connector = connector_class(organization_id, user_id=user_id)
+        connector = connector_class(
+            organization_id,
+            user_id=user_id,
+            sync_since_override=sync_since_override,
+        )
         counts = await connector.sync_all()
         print(f"[Sync] sync_all returned counts: {counts}")
         await connector.update_last_sync(counts)
@@ -933,7 +975,11 @@ async def sync_integration_data(
 
         # Record error in database
         try:
-            connector = connector_class(organization_id, user_id=user_id)
+            connector = connector_class(
+                organization_id,
+                user_id=user_id,
+                sync_since_override=sync_since_override,
+            )
             await connector.record_error(error_msg)
         except Exception as record_err:
             print(f"[Sync] Failed to record error to DB: {record_err}")

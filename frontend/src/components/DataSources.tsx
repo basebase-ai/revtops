@@ -26,7 +26,7 @@ import {
   SiJira,
   SiAsana,
 } from 'react-icons/si';
-import { HiOutlineCalendar, HiOutlineMail, HiGlobeAlt, HiUserGroup, HiDeviceMobile, HiMicrophone, HiLightningBolt, HiX, HiCog, HiShare, HiLockClosed, HiDocumentText, HiCube, HiLink } from 'react-icons/hi';
+import { HiOutlineCalendar, HiOutlineMail, HiGlobeAlt, HiUserGroup, HiDeviceMobile, HiMicrophone, HiLightningBolt, HiX, HiCog, HiShare, HiLockClosed, HiDocumentText, HiCube, HiLink, HiChevronDown } from 'react-icons/hi';
 // Custom Apollo.io icon - 8-ray starburst matching their brand
 const ApolloIcon: IconType = ({ className, ...props }) => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className={className} {...props}>
@@ -166,6 +166,17 @@ interface DisplayIntegration extends Integration {
   color: string;
   connected: boolean;
 }
+
+/** ISO8601 UTC timestamp for ``since`` query (manual resync from). */
+function isoUtcSubtractMs(offsetMs: number): string {
+  return new Date(Date.now() - offsetMs).toISOString();
+}
+
+const RESYNC_OFFSET_MS = {
+  hours24: 24 * 60 * 60 * 1000,
+  days7: 7 * 24 * 60 * 60 * 1000,
+  days30: 30 * 24 * 60 * 60 * 1000,
+} as const;
 
 interface SlackUserMapping {
   id: string;
@@ -487,6 +498,8 @@ export function DataSources(): JSX.Element {
   }
   const [disconnectModal, setDisconnectModal] = useState<DisconnectModalState | null>(null);
   const [syncError, setSyncError] = useState<string | null>(null);
+  /** Which integration tile id has the "resync from" dropdown open (null = closed). */
+  const [resyncMenuOpenForId, setResyncMenuOpenForId] = useState<string | null>(null);
   const [disconnectError, setDisconnectError] = useState<string | null>(null);
   const [disconnectSuccess, setDisconnectSuccess] = useState<string | null>(null);
   const [sharingError, setSharingError] = useState<string | null>(null);
@@ -495,6 +508,17 @@ export function DataSources(): JSX.Element {
   const userId = user?.id ?? '';
   const activeMembership = organizations.find((org) => org.id === organizationId);
   const canConnectCodeSandbox = (user?.roles.includes('global_admin') ?? false) || activeMembership?.role === 'admin';
+
+  useEffect(() => {
+    if (resyncMenuOpenForId === null) return;
+    const onPointerDown = (e: PointerEvent): void => {
+      const t = e.target as HTMLElement | null;
+      if (t?.closest('[data-resync-menu-root]')) return;
+      setResyncMenuOpenForId(null);
+    };
+    document.addEventListener('pointerdown', onPointerDown);
+    return () => document.removeEventListener('pointerdown', onPointerDown);
+  }, [resyncMenuOpenForId]);
 
   const connectBuiltinConnector = useCallback(
     async (
@@ -1107,7 +1131,7 @@ export function DataSources(): JSX.Element {
     });
   };
 
-  const handleSync = async (provider: string): Promise<void> => {
+  const handleSync = async (provider: string, sinceIso?: string): Promise<void> => {
     if (syncingProviders.has(provider) || !organizationId) return;
 
     setSyncError(null);
@@ -1131,7 +1155,12 @@ export function DataSources(): JSX.Element {
         return;
       }
 
-      const response = await fetch(`${API_BASE}/sync/${organizationId}/${provider}`, {
+      const syncUrl: string =
+        sinceIso !== undefined && sinceIso.length > 0
+          ? `${API_BASE}/sync/${organizationId}/${provider}?since=${encodeURIComponent(sinceIso)}`
+          : `${API_BASE}/sync/${organizationId}/${provider}`;
+
+      const response = await fetch(syncUrl, {
         method: 'POST',
       });
 
@@ -1701,21 +1730,113 @@ export function DataSources(): JSX.Element {
                 <HiCog className="w-5 h-5" />
               </button>
             )}
-            {!buttonConfig.hidden && (
-              <button
-                onClick={buttonConfig.action}
-                disabled={buttonConfig.disabled}
-                className={`${buttonConfig.className} flex items-center justify-center gap-2 flex-1 sm:flex-initial`}
-              >
-                {(isConnecting || isSyncing) && !isMobile && (
-                  <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                  </svg>
-                )}
-                {buttonConfig.text}
-              </button>
-            )}
+            {!buttonConfig.hidden && (() => {
+              const showResyncSplit: boolean =
+                (state === 'connected' || state === 'org-connected') &&
+                integration.provider !== 'google_drive' &&
+                getConnectorDisplay(integration.provider).hasSync !== false;
+
+              if (showResyncSplit) {
+                const baseBtn: string =
+                  'text-sm font-medium text-surface-200 bg-surface-800 hover:bg-surface-700 disabled:opacity-50 transition-colors flex items-center justify-center gap-2';
+                return (
+                  <div
+                    data-resync-menu-root
+                    className="relative z-10 flex flex-1 sm:flex-initial rounded-lg border border-surface-700 overflow-visible"
+                  >
+                    <button
+                      type="button"
+                      onClick={() => void handleSync(integration.provider)}
+                      disabled={buttonConfig.disabled}
+                      className={`${baseBtn} px-3 sm:px-4 py-2 flex-1 sm:flex-initial rounded-l-lg border-0`}
+                    >
+                      {(isConnecting || isSyncing) && !isMobile && (
+                        <svg className="w-4 h-4 animate-spin shrink-0" fill="none" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                        </svg>
+                      )}
+                      {isSyncing ? 'Syncing...' : 'Sync'}
+                    </button>
+                    <div className="relative flex">
+                      <button
+                        type="button"
+                        title="Resync from earlier time"
+                        disabled={buttonConfig.disabled}
+                        onPointerDown={(e) => {
+                          e.stopPropagation();
+                        }}
+                        onClick={() =>
+                          setResyncMenuOpenForId((cur) =>
+                            cur === integration.id ? null : integration.id,
+                          )}
+                        className={`${baseBtn} px-2 py-2 border-l border-surface-700 rounded-r-lg`}
+                        aria-expanded={resyncMenuOpenForId === integration.id}
+                        aria-haspopup="menu"
+                      >
+                        <HiChevronDown className="w-4 h-4" />
+                      </button>
+                      {resyncMenuOpenForId === integration.id && (
+                        <div
+                          role="menu"
+                          className="absolute right-0 top-full mt-1 z-[200] min-w-[11rem] rounded-lg border border-surface-700 bg-surface-900 py-1 shadow-lg"
+                        >
+                          <button
+                            type="button"
+                            role="menuitem"
+                            className="w-full text-left px-3 py-2 text-sm text-surface-200 hover:bg-surface-800"
+                            onClick={() => {
+                              setResyncMenuOpenForId(null);
+                              void handleSync(integration.provider, isoUtcSubtractMs(RESYNC_OFFSET_MS.hours24));
+                            }}
+                          >
+                            Last 24 hours
+                          </button>
+                          <button
+                            type="button"
+                            role="menuitem"
+                            className="w-full text-left px-3 py-2 text-sm text-surface-200 hover:bg-surface-800"
+                            onClick={() => {
+                              setResyncMenuOpenForId(null);
+                              void handleSync(integration.provider, isoUtcSubtractMs(RESYNC_OFFSET_MS.days7));
+                            }}
+                          >
+                            Last 7 days
+                          </button>
+                          <button
+                            type="button"
+                            role="menuitem"
+                            className="w-full text-left px-3 py-2 text-sm text-surface-200 hover:bg-surface-800"
+                            onClick={() => {
+                              setResyncMenuOpenForId(null);
+                              void handleSync(integration.provider, isoUtcSubtractMs(RESYNC_OFFSET_MS.days30));
+                            }}
+                          >
+                            Last 30 days
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              }
+
+              return (
+                <button
+                  onClick={buttonConfig.action}
+                  disabled={buttonConfig.disabled}
+                  className={`${buttonConfig.className} flex items-center justify-center gap-2 flex-1 sm:flex-initial`}
+                >
+                  {(isConnecting || isSyncing) && !isMobile && (
+                    <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                    </svg>
+                  )}
+                  {buttonConfig.text}
+                </button>
+              );
+            })()}
             {((state === 'connected' && integration.isOwner) || state === 'org-connected') && (
               <button
                 onClick={() => void handleDisconnect(integration.provider)}

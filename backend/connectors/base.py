@@ -93,28 +93,40 @@ class BaseConnector(ABC):
     # due to clock skew or eventual consistency in upstream APIs.
     _SYNC_SINCE_BUFFER: timedelta = timedelta(minutes=5)
 
-    def __init__(self, organization_id: str, user_id: str | None = None) -> None:
+    def __init__(
+        self,
+        organization_id: str,
+        user_id: str | None = None,
+        *,
+        sync_since_override: datetime | None = None,
+    ) -> None:
         """
         Initialize the connector.
 
         Args:
             organization_id: UUID of the organization to sync data for
             user_id: UUID of the user who owns this integration (required for all connectors)
+            sync_since_override: When set (e.g. manual "resync from"), used as incremental
+                cutoff instead of ``last_sync_at``. Naive UTC recommended.
         """
         self.organization_id = organization_id
         self.user_id = user_id
         self._token: str | None = None
         self._credentials: dict[str, Any] | None = None
         self._integration: Integration | None = None
+        self._sync_since_override: datetime | None = sync_since_override
 
     @property
     def sync_since(self) -> datetime | None:
         """Return the cutoff time for incremental sync, or None for first sync.
 
+        When ``sync_since_override`` was set at construction (manual resync), returns that.
         When a previous successful sync timestamp exists, returns that time
         minus a small safety buffer. Connectors should fall back to their
         default window (e.g. 30 days) when this returns None.
         """
+        if self._sync_since_override is not None:
+            return self._sync_since_override
         if self._integration and self._integration.last_sync_at:
             return self._integration.last_sync_at - self._SYNC_SINCE_BUFFER
         return None

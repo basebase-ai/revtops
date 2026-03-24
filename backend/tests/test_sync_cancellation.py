@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime
 from typing import Optional
 
 from api.routes import sync as sync_routes
@@ -7,7 +8,13 @@ from workers.tasks import sync as sync_tasks
 
 
 class CancelledConnector:
-    def __init__(self, organization_id: str, user_id: Optional[str] = None) -> None:
+    def __init__(
+        self,
+        organization_id: str,
+        user_id: Optional[str] = None,
+        *,
+        sync_since_override: datetime | None = None,
+    ) -> None:
         self.organization_id = organization_id
         self.user_id = user_id
 

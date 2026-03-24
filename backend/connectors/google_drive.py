@@ -481,8 +481,16 @@ Call via `run_on_connector(connector='google_drive', action='edit_file', params=
 """,
     )
 
-    def __init__(self, organization_id: str, user_id: str) -> None:
-        super().__init__(organization_id, user_id=user_id)
+    def __init__(
+        self,
+        organization_id: str,
+        user_id: str,
+        *,
+        sync_since_override: datetime | None = None,
+    ) -> None:
+        super().__init__(
+            organization_id, user_id=user_id, sync_since_override=sync_since_override
+        )
 
     # -------------------------------------------------------------------------
     # OAuth – overrides BaseConnector to handle legacy connection-id format

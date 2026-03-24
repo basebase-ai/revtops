@@ -195,9 +195,15 @@ Use `run_sql_query` on `github_repositories`, `github_commits`, `github_pull_req
     )
 
     def __init__(
-        self, organization_id: str, user_id: Optional[str] = None
+        self,
+        organization_id: str,
+        user_id: Optional[str] = None,
+        *,
+        sync_since_override: datetime | None = None,
     ) -> None:
-        super().__init__(organization_id, user_id)
+        super().__init__(
+            organization_id, user_id, sync_since_override=sync_since_override
+        )
         # Cache: GitHub login → internal user UUID (or None)
         self._login_cache: dict[str, UUID | None] = {}
         # Cache: email → internal user UUID (or None)
