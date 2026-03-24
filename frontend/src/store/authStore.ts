@@ -28,6 +28,7 @@ export interface AuthState {
   organizations: UserOrganization[];
   isAuthenticated: boolean;
   masquerade: MasqueradeState | null;
+  isSwitchingOrg: boolean;
 
   // Actions
   setUser: (user: UserProfile | null) => void;
@@ -57,6 +58,7 @@ export const useAuthStore = create<AuthState>()(
       organizations: [],
       isAuthenticated: false,
       masquerade: null,
+      isSwitchingOrg: false,
 
       // Actions
       setUser: (user) =>

@@ -14,7 +14,7 @@
 import { useMemo, useState, useRef, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import type { View, ChatSummary, OrganizationInfo } from './AppLayout';
-import { useAppStore, useChatStore, useIsGlobalAdmin, useActiveTasksByConversation, type UserOrganization } from '../store';
+import { useAppStore, useAuthStore, useChatStore, useIsGlobalAdmin, useActiveTasksByConversation, type UserOrganization } from '../store';
 import { updateConversation } from '../api/client';
 import { apiRequest } from '../lib/api';
 import { FaLifeRing } from 'react-icons/fa';
@@ -231,8 +231,13 @@ function OrgSwitcherSection({
 
   const handleSwitchOrg = async (orgId: string): Promise<void> => {
     setShowDropdown(false);
-    await switchActiveOrganization(orgId);
-    await Promise.all([fetchConversations(), fetchIntegrations()]);
+    useAuthStore.setState({ isSwitchingOrg: true });
+    try {
+      await switchActiveOrganization(orgId);
+      await Promise.all([fetchConversations(), fetchIntegrations()]);
+    } finally {
+      useAuthStore.setState({ isSwitchingOrg: false });
+    }
   };
 
   return (
