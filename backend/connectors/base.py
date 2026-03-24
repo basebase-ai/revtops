@@ -597,6 +597,43 @@ class BaseConnector(ABC):
                 await session.commit()
                 print(f"[Sync] Committed update_last_sync for {self.source_system}")
 
+    async def mark_sync_started(self) -> None:
+        """Persist a ``sync_started_at`` timestamp in ``sync_stats`` so any
+        process (API server, Celery worker) can detect an in-flight sync."""
+        from datetime import datetime
+        from sqlalchemy.orm.attributes import flag_modified
+
+        if not self._integration:
+            await self._load_integration()
+        if not self._integration:
+            return
+
+        async with get_session(organization_id=self.organization_id) as session:
+            integration: Integration | None = await session.get(Integration, self._integration.id)
+            if integration:
+                stats: dict[str, Any] = dict(integration.sync_stats or {})
+                stats["sync_started_at"] = datetime.utcnow().isoformat()
+                integration.sync_stats = stats
+                flag_modified(integration, "sync_stats")
+                integration.last_error = None
+                await session.commit()
+
+    async def clear_sync_started(self) -> None:
+        """Remove the ``sync_started_at`` flag (e.g. after a failure)."""
+        from sqlalchemy.orm.attributes import flag_modified
+
+        if not self._integration:
+            return
+
+        async with get_session(organization_id=self.organization_id) as session:
+            integration: Integration | None = await session.get(Integration, self._integration.id)
+            if integration and isinstance(integration.sync_stats, dict) and "sync_started_at" in integration.sync_stats:
+                stats: dict[str, Any] = dict(integration.sync_stats)
+                del stats["sync_started_at"]
+                integration.sync_stats = stats
+                flag_modified(integration, "sync_stats")
+                await session.commit()
+
     async def record_error(self, error: str) -> None:
         """Record an error for this integration."""
         if not self._integration:

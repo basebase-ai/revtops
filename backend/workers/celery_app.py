@@ -116,50 +116,47 @@ celery_app.conf.update(
     task_default_routing_key="default",
 )
 
-# Beat schedule for periodic tasks
-celery_app.conf.beat_schedule = {
-    # Hourly sync for all organizations - runs at the top of every hour
-    "hourly-sync-all-organizations": {
-        "task": "workers.tasks.sync.sync_all_organizations",
-        "schedule": crontab(minute=0),  # Every hour at :00
-    },
-    
-    # Check for scheduled workflows every minute
-    "check-scheduled-workflows": {
-        "task": "workers.tasks.workflows.check_scheduled_workflows",
-        "schedule": timedelta(minutes=1),
-    },
-    
-    # Process event-triggered workflows (check queue every 10 seconds)
-    "process-workflow-events": {
-        "task": "workers.tasks.workflows.process_pending_events",
-        "schedule": timedelta(seconds=10),
-    },
+# Beat schedule for periodic tasks.
+# Only enabled when ENABLE_CELERY_BEAT=true (set in production only) so that
+# local dev servers never accidentally run hourly syncs against shared APIs.
+_ENABLE_BEAT: bool = os.environ.get("ENABLE_CELERY_BEAT", "").lower() in ("true", "1", "yes")
 
-    # Check critical infrastructure and create PagerDuty incidents when down
-    "monitor-critical-dependencies": {
-        "task": "workers.tasks.monitoring.monitor_dependencies",
-        "schedule": timedelta(minutes=15),
-    },
-
-    # Sweep active huddles every 5 minutes — ends stale conferences, triggers recording check
-    "sweep-active-huddles": {
-        "task": "workers.tasks.sync.sweep_active_huddles",
-        "schedule": timedelta(minutes=5),
-    },
-
-    # Sweep completed calendared Meet meetings every 5 minutes for missing Gemini summaries
-    "sweep-completed-meetings": {
-        "task": "workers.tasks.sync.sweep_completed_meetings",
-        "schedule": timedelta(minutes=5),
-    },
-
-    # Ensure monitor task itself keeps running; incident if no heartbeat for 30m
-    "monitoring-heartbeat-watchdog": {
-        "task": "workers.tasks.monitoring.monitoring_heartbeat_watchdog",
-        "schedule": timedelta(minutes=5),
-    },
-}
+if _ENABLE_BEAT:
+    celery_app.conf.beat_schedule = {
+        "hourly-sync-all-organizations": {
+            "task": "workers.tasks.sync.sync_all_organizations",
+            "schedule": crontab(minute=0),
+        },
+        "check-scheduled-workflows": {
+            "task": "workers.tasks.workflows.check_scheduled_workflows",
+            "schedule": timedelta(minutes=1),
+        },
+        "process-workflow-events": {
+            "task": "workers.tasks.workflows.process_pending_events",
+            "schedule": timedelta(seconds=10),
+        },
+        "monitor-critical-dependencies": {
+            "task": "workers.tasks.monitoring.monitor_dependencies",
+            "schedule": timedelta(minutes=15),
+        },
+        "sweep-active-huddles": {
+            "task": "workers.tasks.sync.sweep_active_huddles",
+            "schedule": timedelta(minutes=5),
+        },
+        "sweep-completed-meetings": {
+            "task": "workers.tasks.sync.sweep_completed_meetings",
+            "schedule": timedelta(minutes=5),
+        },
+        "monitoring-heartbeat-watchdog": {
+            "task": "workers.tasks.monitoring.monitoring_heartbeat_watchdog",
+            "schedule": timedelta(minutes=5),
+        },
+    }
+else:
+    celery_app.conf.beat_schedule = {}
+    logging.getLogger(__name__).info(
+        "Celery beat schedule DISABLED (set ENABLE_CELERY_BEAT=true to enable)"
+    )
 
 
 @worker_process_init.connect
