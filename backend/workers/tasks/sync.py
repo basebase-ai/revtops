@@ -939,39 +939,10 @@ def sync_all_organizations(self: Any) -> dict[str, Any]:
     async def _sync_all() -> dict[str, Any]:
         import time as _time
 
-        _LOG_PATH = Path(__file__).resolve().parent.parent.parent.parent / ".cursor" / "debug-ec9d6a.log"
-
-        def _dbg(msg: str, **data: Any) -> None:
-            """Write debug NDJSON to local file + Python logger."""
-            import json as _json
-            payload: dict[str, Any] = {
-                "sessionId": "ec9d6a",
-                "timestamp": int(_time.time() * 1000),
-                "location": "sync.py:sync_all_organizations",
-                "message": msg,
-                "data": data,
-            }
-            logger.info(f"[DEBUG-ec9d6a] {msg} | {data}")
-            try:
-                with open(_LOG_PATH, "a") as _f:
-                    _f.write(_json.dumps(payload) + "\n")
-            except Exception:
-                pass
-
         run_start: float = _time.monotonic()
         now = datetime.utcnow()
         all_integrations: list[dict[str, str | None]] = await _get_all_active_integrations()
 
-        # #region agent log
-        _dbg(
-            "sync_all_start",
-            total_integrations=len(all_integrations),
-            utc_now=now.isoformat(),
-            task_id=str(self.request.id),
-            hypothesisId="H1",
-        )
-        # #endregion
-        
         # Group by organization
         orgs: dict[str, list[dict[str, str | None]]] = {}
         for integration in all_integrations:
@@ -980,21 +951,11 @@ def sync_all_organizations(self: Any) -> dict[str, Any]:
                 orgs[org_id] = []
             orgs[org_id].append(integration)
 
-        # #region agent log
-        _dbg(
-            "orgs_grouped",
-            org_count=len(orgs),
-            integrations_per_org={k: len(v) for k, v in orgs.items()},
-            hypothesisId="H1",
-        )
-        # #endregion
-        
         results: dict[str, dict[str, Any]] = {}
         total_synced: int = 0
         total_failed: int = 0
         total_skipped_cadence: int = 0
-        sync_index: int = 0
-        
+
         for org_id, entries in orgs.items():
             results[org_id] = {}
             for entry in entries:
@@ -1004,37 +965,8 @@ def sync_all_organizations(self: Any) -> dict[str, Any]:
                 provider: str = entry["connector"]  # type: ignore[assignment]
                 uid: str | None = entry["user_id"]
                 key: str = f"{provider}:{uid}" if uid else provider
-                sync_index += 1
-                elapsed_so_far: float = _time.monotonic() - run_start
 
-                # #region agent log
-                _dbg(
-                    "sync_integration_start",
-                    sync_index=sync_index,
-                    provider=provider,
-                    org_id=org_id,
-                    user_id=uid,
-                    elapsed_seconds=round(elapsed_so_far, 1),
-                    hypothesisId="H1,H5",
-                )
-                # #endregion
-
-                integration_start: float = _time.monotonic()
                 result = await _sync_integration(org_id, provider, user_id=uid)
-                integration_duration: float = _time.monotonic() - integration_start
-
-                # #region agent log
-                _dbg(
-                    "sync_integration_done",
-                    sync_index=sync_index,
-                    provider=provider,
-                    org_id=org_id,
-                    status=result.get("status"),
-                    duration_seconds=round(integration_duration, 1),
-                    total_elapsed_seconds=round(_time.monotonic() - run_start, 1),
-                    hypothesisId="H1,H5",
-                )
-                # #endregion
 
                 results[org_id][key] = result
                 if result["status"] == "completed":
@@ -1044,17 +976,6 @@ def sync_all_organizations(self: Any) -> dict[str, Any]:
 
         total_elapsed: float = _time.monotonic() - run_start
 
-        # #region agent log
-        _dbg(
-            "sync_all_complete",
-            total_synced=total_synced,
-            total_failed=total_failed,
-            total_skipped_cadence=total_skipped_cadence,
-            total_elapsed_seconds=round(total_elapsed, 1),
-            hypothesisId="H1,H2,H3",
-        )
-        # #endregion
-        
         summary: dict[str, Any] = {
             "total_organizations": len(orgs),
             "total_integrations_synced": total_synced,

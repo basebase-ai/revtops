@@ -13,6 +13,7 @@ to augment data from other sources (HubSpot, Salesforce, etc.).
 
 import asyncio
 import logging
+from datetime import datetime
 from typing import Any, Optional
 
 import httpx
@@ -52,9 +53,17 @@ class ApolloConnector(BaseConnector):
         description="Apollo.io data enrichment – contacts and company data",
     )
 
-    def __init__(self, organization_id: str) -> None:
+    def __init__(
+        self,
+        organization_id: str,
+        user_id: Optional[str] = None,
+        *,
+        sync_since_override: datetime | None = None,
+    ) -> None:
         """Initialize Apollo connector."""
-        super().__init__(organization_id)
+        super().__init__(
+            organization_id, user_id, sync_since_override=sync_since_override
+        )
 
     async def _get_api_key(self) -> str:
         """Get the Apollo API key from Nango."""

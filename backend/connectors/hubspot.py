@@ -236,9 +236,17 @@ Notes are activities attached to deals (or contacts/companies). Use HubSpot **so
 """,
     )
 
-    def __init__(self, organization_id: str, user_id: Optional[str] = None) -> None:
+    def __init__(
+        self,
+        organization_id: str,
+        user_id: Optional[str] = None,
+        *,
+        sync_since_override: datetime | None = None,
+    ) -> None:
         """Initialize connector with owner and pipeline caches."""
-        super().__init__(organization_id, user_id=user_id)
+        super().__init__(
+            organization_id, user_id=user_id, sync_since_override=sync_since_override
+        )
         # Cache for HubSpot owner ID -> internal user ID mapping
         self._owner_cache: dict[str, Optional[uuid.UUID]] = {}
         # Cache for HubSpot pipeline ID -> internal pipeline ID mapping

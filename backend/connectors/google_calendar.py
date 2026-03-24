@@ -19,7 +19,7 @@ import httpx
 from connectors.base import BaseConnector
 from connectors.registry import AuthType, Capability, ConnectorAction, ConnectorMeta, ConnectorScope
 from models.activity import Activity
-from models.database import get_session
+from models.database import get_admin_session, get_session
 from services.meeting_dedup import find_or_create_meeting
 
 logger = logging.getLogger(__name__)
@@ -234,103 +234,82 @@ class GoogleCalendarConnector(BaseConnector):
         resolver = await build_activity_resolver(self.organization_id)
 
         count: int = 0
-        async with get_session(organization_id=self.organization_id) as session:
+        # Bypass RLS so we see activities written by other users' calendar integrations.
+        # Otherwise owner_only rows from teammate syncs are invisible and we hit
+        # uq_activities_org_source on INSERT for the same Google event id.
+        async with get_admin_session() as session:
+            from models.meeting import Meeting
             from sqlalchemy import select
-            
+
             for event in events:
                 try:
-                    parsed: Optional[dict[str, Any]] = self._parse_event(event)
-                    if not parsed:
-                        continue
-                    
-                    # Convert activity_date to UTC for storage
-                    activity_date: Optional[datetime] = parsed["activity_date"]
-                    if activity_date and activity_date.tzinfo is not None:
-                        activity_date = activity_date.astimezone(timezone.utc).replace(tzinfo=None)
+                    async with session.begin_nested():
+                        parsed: Optional[dict[str, Any]] = self._parse_event(event)
+                        if not parsed:
+                            continue
 
-                    # Resolve attendee emails to CRM entities
-                    attendee_emails: list[str] = parsed.get("attendee_emails") or []
-                    resolved = resolver.resolve(attendee_emails)
-                    
-                    # Check if we already have an activity for this calendar event
-                    # This handles rescheduled meetings - same event ID, different time
-                    existing_activity_result = await session.execute(
-                        select(Activity).where(
-                            Activity.source_system == self.source_system,
-                            Activity.source_id == parsed["event_id"],
-                            Activity.organization_id == uuid.UUID(self.organization_id),
-                        )
-                    )
-                    existing_activity: Activity | None = existing_activity_result.scalar_one_or_none()
-                    
-                    if existing_activity and existing_activity.meeting_id:
-                        # Event was previously synced - check if time changed (rescheduled)
-                        from models.meeting import Meeting
-                        existing_meeting = await session.get(Meeting, existing_activity.meeting_id)
-                        
-                        if existing_meeting and existing_meeting.scheduled_start != activity_date:
-                            # Meeting was rescheduled! Update the meeting time
-                            print(f"[GCal Sync] Event {parsed['event_id']} rescheduled: {existing_meeting.scheduled_start} -> {activity_date}")
-                            existing_meeting.scheduled_start = activity_date
-                            if parsed["end_time"]:
-                                end_time: datetime = parsed["end_time"]
-                                if end_time.tzinfo is not None:
-                                    end_time = end_time.astimezone(timezone.utc).replace(tzinfo=None)
-                                existing_meeting.scheduled_end = end_time
-                            existing_meeting.duration_minutes = parsed["duration_minutes"]
-                            existing_meeting.status = parsed["meeting_status"]
-                        
-                        # Update the activity with latest data + resolved FKs
-                        existing_activity.activity_date = activity_date
-                        existing_activity.subject = parsed["summary"] or "Untitled Event"
-                        existing_activity.description = parsed["description"]
-                        existing_activity.contact_id = resolved.contact_id
-                        existing_activity.account_id = resolved.account_id
-                        existing_activity.deal_id = resolved.deal_id
-                        existing_activity.custom_fields = {
-                            "calendar_id": parsed["calendar_id"],
-                            "location": parsed["location"],
-                            "attendee_count": parsed["attendee_count"],
-                            "attendee_emails": parsed["attendee_emails"],
-                            "duration_minutes": parsed["duration_minutes"],
-                            "is_recurring": parsed["is_recurring"],
-                            "conference_link": parsed["conference_link"],
-                            "status": parsed["event_status"],
-                            "visibility": parsed["visibility"],
-                        }
-                        meeting = existing_meeting
-                    else:
-                        # New event - find or create canonical Meeting
-                        meeting = await find_or_create_meeting(
-                            organization_id=self.organization_id,
-                            scheduled_start=activity_date,
-                            scheduled_end=parsed["end_time"],
-                            participants=parsed["participants_normalized"],
-                            title=parsed["summary"],
-                            duration_minutes=parsed["duration_minutes"],
-                            organizer_email=parsed["organizer_email"],
-                            status=parsed["meeting_status"],
-                        )
-                        # Re-attach to outer session so meeting_code etc. persist
-                        meeting = await session.merge(meeting)
+                        # Convert activity_date to UTC for storage
+                        activity_date: Optional[datetime] = parsed["activity_date"]
+                        if activity_date and activity_date.tzinfo is not None:
+                            activity_date = activity_date.astimezone(timezone.utc).replace(tzinfo=None)
 
-                        # Create new Activity record linked to the Meeting
-                        vis: dict[str, Any] = self._activity_visibility_fields()
-                        activity: Activity = Activity(
-                            id=uuid.uuid4(),
-                            organization_id=uuid.UUID(self.organization_id),
-                            source_system=self.source_system,
-                            source_id=parsed["event_id"],
-                            meeting_id=meeting.id,
-                            contact_id=resolved.contact_id,
-                            account_id=resolved.account_id,
-                            deal_id=resolved.deal_id,
-                            type=parsed["meeting_type"],
-                            subject=parsed["summary"] or "Untitled Event",
-                            description=parsed["description"],
-                            activity_date=activity_date,
-                            **vis,
-                            custom_fields={
+                        # Resolve attendee emails to CRM entities
+                        attendee_emails: list[str] = parsed.get("attendee_emails") or []
+                        resolved = resolver.resolve(attendee_emails)
+
+                        # Check if we already have an activity for this calendar event
+                        # (unique uq_activities_org_source on org + source_system + source_id)
+                        existing_activity_result = await session.execute(
+                            select(Activity).where(
+                                Activity.source_system == self.source_system,
+                                Activity.source_id == parsed["event_id"],
+                                Activity.organization_id == uuid.UUID(self.organization_id),
+                            )
+                        )
+                        existing_activity: Activity | None = existing_activity_result.scalar_one_or_none()
+
+                        meeting: Meeting | None = None
+
+                        if existing_activity:
+                            # Update path: never INSERT a second row for the same Google event id.
+                            if existing_activity.meeting_id:
+                                existing_meeting = await session.get(Meeting, existing_activity.meeting_id)
+                                if existing_meeting and existing_meeting.scheduled_start != activity_date:
+                                    print(
+                                        f"[GCal Sync] Event {parsed['event_id']} rescheduled: "
+                                        f"{existing_meeting.scheduled_start} -> {activity_date}"
+                                    )
+                                    existing_meeting.scheduled_start = activity_date
+                                    if parsed["end_time"]:
+                                        end_time: datetime = parsed["end_time"]
+                                        if end_time.tzinfo is not None:
+                                            end_time = end_time.astimezone(timezone.utc).replace(tzinfo=None)
+                                        existing_meeting.scheduled_end = end_time
+                                    existing_meeting.duration_minutes = parsed["duration_minutes"]
+                                    existing_meeting.status = parsed["meeting_status"]
+                                meeting = existing_meeting
+
+                            if meeting is None:
+                                meeting = await find_or_create_meeting(
+                                    organization_id=self.organization_id,
+                                    scheduled_start=activity_date,
+                                    scheduled_end=parsed["end_time"],
+                                    participants=parsed["participants_normalized"],
+                                    title=parsed["summary"],
+                                    duration_minutes=parsed["duration_minutes"],
+                                    organizer_email=parsed["organizer_email"],
+                                    status=parsed["meeting_status"],
+                                )
+                                meeting = await session.merge(meeting)
+                                existing_activity.meeting_id = meeting.id
+
+                            existing_activity.activity_date = activity_date
+                            existing_activity.subject = parsed["summary"] or "Untitled Event"
+                            existing_activity.description = parsed["description"]
+                            existing_activity.contact_id = resolved.contact_id
+                            existing_activity.account_id = resolved.account_id
+                            existing_activity.deal_id = resolved.deal_id
+                            existing_activity.custom_fields = {
                                 "calendar_id": parsed["calendar_id"],
                                 "location": parsed["location"],
                                 "attendee_count": parsed["attendee_count"],
@@ -340,58 +319,99 @@ class GoogleCalendarConnector(BaseConnector):
                                 "conference_link": parsed["conference_link"],
                                 "status": parsed["event_status"],
                                 "visibility": parsed["visibility"],
-                            },
-                        )
-                        session.add(activity)
-                    
-                    # Set Meet conference fields on the meeting if available
-                    if meeting and parsed.get("conference_id") and parsed["meeting_type"] == "google_meet":
-                        if not meeting.meeting_code:
-                            meeting.meeting_code = parsed["conference_id"]
-                        if not meeting.conference_link and parsed.get("conference_link"):
-                            meeting.conference_link = parsed["conference_link"]
-                        if not meeting.google_event_id:
-                            meeting.google_event_id = parsed["event_id"]
-                        if not meeting.organizer_email and parsed.get("organizer_email"):
-                            meeting.organizer_email = parsed["organizer_email"]
-                        # If Gemini attached notes directly, fetch the summary now
-                        gemini_doc_id = parsed.get("gemini_doc_id", "")
-                        if gemini_doc_id and not meeting.has_notes_from("gemini"):
-                            try:
-                                summary = await self._fetch_gemini_doc(gemini_doc_id)
-                                if summary and meeting.set_notes("gemini", summary, doc_id=gemini_doc_id):
-                                    from workers.tasks.sync import generate_meeting_summary, _SUMMARY_DELAY
-                                    generate_meeting_summary.apply_async(
-                                        args=[str(meeting.id), self.organization_id],
-                                        countdown=_SUMMARY_DELAY,
-                                    )
-                                    logger.info(
-                                        "[GCal Sync] Saved Gemini summary (%d chars) from attachment for meeting %s",
-                                        len(summary), meeting.id,
-                                    )
-                            except Exception as e:
-                                logger.warning("[GCal Sync] Failed to fetch Gemini doc %s: %s", gemini_doc_id, e)
+                            }
+                        else:
+                            meeting = await find_or_create_meeting(
+                                organization_id=self.organization_id,
+                                scheduled_start=activity_date,
+                                scheduled_end=parsed["end_time"],
+                                participants=parsed["participants_normalized"],
+                                title=parsed["summary"],
+                                duration_minutes=parsed["duration_minutes"],
+                                organizer_email=parsed["organizer_email"],
+                                status=parsed["meeting_status"],
+                            )
+                            meeting = await session.merge(meeting)
 
-                    await session.flush()
-                    count += 1
+                            vis: dict[str, Any] = self._activity_visibility_fields()
+                            activity: Activity = Activity(
+                                id=uuid.uuid4(),
+                                organization_id=uuid.UUID(self.organization_id),
+                                source_system=self.source_system,
+                                source_id=parsed["event_id"],
+                                meeting_id=meeting.id,
+                                contact_id=resolved.contact_id,
+                                account_id=resolved.account_id,
+                                deal_id=resolved.deal_id,
+                                type=parsed["meeting_type"],
+                                subject=parsed["summary"] or "Untitled Event",
+                                description=parsed["description"],
+                                activity_date=activity_date,
+                                **vis,
+                                custom_fields={
+                                    "calendar_id": parsed["calendar_id"],
+                                    "location": parsed["location"],
+                                    "attendee_count": parsed["attendee_count"],
+                                    "attendee_emails": parsed["attendee_emails"],
+                                    "duration_minutes": parsed["duration_minutes"],
+                                    "is_recurring": parsed["is_recurring"],
+                                    "conference_link": parsed["conference_link"],
+                                    "status": parsed["event_status"],
+                                    "visibility": parsed["visibility"],
+                                },
+                            )
+                            session.add(activity)
 
-                    # Broadcast progress every 5 events
-                    if count % 5 == 0:
-                        await broadcast_sync_progress(
-                            organization_id=self.organization_id,
-                            provider=self.source_system,
-                            count=count,
-                            status="syncing",
-                        )
-                    
-                    logger.debug(
-                        "Synced calendar event %s linked to meeting %s",
-                        parsed["event_id"],
-                        meeting.id,
-                    )
-                    
+                        # Set Meet conference fields on the meeting if available
+                        if meeting and parsed.get("conference_id") and parsed["meeting_type"] == "google_meet":
+                            if not meeting.meeting_code:
+                                meeting.meeting_code = parsed["conference_id"]
+                            if not meeting.conference_link and parsed.get("conference_link"):
+                                meeting.conference_link = parsed["conference_link"]
+                            if not meeting.google_event_id:
+                                meeting.google_event_id = parsed["event_id"]
+                            if not meeting.organizer_email and parsed.get("organizer_email"):
+                                meeting.organizer_email = parsed["organizer_email"]
+                            gemini_doc_id = parsed.get("gemini_doc_id", "")
+                            if gemini_doc_id and not meeting.has_notes_from("gemini"):
+                                try:
+                                    summary = await self._fetch_gemini_doc(gemini_doc_id)
+                                    if summary and meeting.set_notes("gemini", summary, doc_id=gemini_doc_id):
+                                        from workers.tasks.sync import generate_meeting_summary, _SUMMARY_DELAY
+
+                                        generate_meeting_summary.apply_async(
+                                            args=[str(meeting.id), self.organization_id],
+                                            countdown=_SUMMARY_DELAY,
+                                        )
+                                        logger.info(
+                                            "[GCal Sync] Saved Gemini summary (%d chars) from attachment for meeting %s",
+                                            len(summary),
+                                            meeting.id,
+                                        )
+                                except Exception as e:
+                                    logger.warning("[GCal Sync] Failed to fetch Gemini doc %s: %s", gemini_doc_id, e)
+
+                        await session.flush()
+                        count += 1
+
+                        if count % 5 == 0:
+                            await broadcast_sync_progress(
+                                organization_id=self.organization_id,
+                                provider=self.source_system,
+                                count=count,
+                                status="syncing",
+                            )
+
+                        if meeting is not None:
+                            logger.debug(
+                                "Synced calendar event %s linked to meeting %s",
+                                parsed["event_id"],
+                                meeting.id,
+                            )
+
                 except Exception as e:
                     import traceback
+
                     print(f"[GCal Sync] Error syncing event: {e}")
                     print(f"[GCal Sync] Traceback: {traceback.format_exc()}")
                     logger.error("Error syncing calendar event: %s", e)
@@ -399,33 +419,31 @@ class GoogleCalendarConnector(BaseConnector):
 
             await session.commit()
             
-            # Cleanup orphaned meetings (meetings with no linked activities)
-            # These can occur when calendar events are rescheduled
-            # Wrapped in try/except: concurrent user syncs can race and link
-            # activities between our check and the delete
+            # Cleanup orphaned meetings (meetings with no linked activities).
+            # These can occur when calendar events are rescheduled. Use a single
+            # DELETE ... NOT EXISTS so each row is re-checked at delete time; the
+            # previous SELECT-then-DELETE flow raced with concurrent syncs and caused
+            # ForeignKeyViolationError on activities.meeting_id.
             try:
-                from models.meeting import Meeting
-                from sqlalchemy import func
+                from sqlalchemy import delete, exists
 
-                orphaned_result = await session.execute(
-                    select(Meeting).where(
-                        Meeting.organization_id == uuid.UUID(self.organization_id),
-                        Meeting.status == "completed",  # Only cleanup past meetings
-                        ~Meeting.id.in_(
-                            select(Activity.meeting_id).where(Activity.meeting_id.isnot(None))
-                        )
+                org_uuid = uuid.UUID(self.organization_id)
+                stmt = (
+                    delete(Meeting)
+                    .where(
+                        Meeting.organization_id == org_uuid,
+                        Meeting.status == "completed",
+                        ~exists().where(Activity.meeting_id == Meeting.id),
                     )
+                    .execution_options(synchronize_session=False)
                 )
-                orphaned_meetings = orphaned_result.scalars().all()
-
-                if orphaned_meetings:
-                    print(f"[GCal Sync] Cleaning up {len(orphaned_meetings)} orphaned meetings")
-                    for meeting in orphaned_meetings:
-                        print(f"[GCal Sync]   Deleting orphaned meeting: {meeting.title} at {meeting.scheduled_start}")
-                        await session.delete(meeting)
-                    await session.commit()
+                result = await session.execute(stmt)
+                deleted_count: int = result.rowcount or 0
+                if deleted_count > 0:
+                    print(f"[GCal Sync] Cleaned up {deleted_count} orphaned completed meetings (atomic delete)")
+                await session.commit()
             except Exception as e:
-                logger.warning("[GCal Sync] Orphan cleanup failed (likely race condition): %s", e)
+                logger.warning("[GCal Sync] Orphan cleanup failed: %s", e)
 
         # Schedule Gemini summary fetch for completed meetings that have
         # a meeting_code OR a title but no summary yet

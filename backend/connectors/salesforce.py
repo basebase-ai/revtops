@@ -46,9 +46,17 @@ class SalesforceConnector(BaseConnector):
         description="Salesforce CRM – opportunities, accounts, contacts, and activities",
     )
 
-    def __init__(self, organization_id: str) -> None:
+    def __init__(
+        self,
+        organization_id: str,
+        user_id: Optional[str] = None,
+        *,
+        sync_since_override: datetime | None = None,
+    ) -> None:
         """Initialize the connector."""
-        super().__init__(organization_id)
+        super().__init__(
+            organization_id, user_id, sync_since_override=sync_since_override
+        )
         self._instance_url: Optional[str] = None
 
     async def _get_instance_url(self) -> str:
