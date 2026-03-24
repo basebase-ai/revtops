@@ -845,10 +845,12 @@ async def update_scope(
         if not conversation:
             raise HTTPException(status_code=404, detail="Conversation not found")
 
-        # Only the creator can make a shared conversation private
-        if request.scope == "private" and conversation.scope == "shared":
-            if str(conversation.user_id) != str(auth.user_id):
-                raise HTTPException(status_code=403, detail="Only the chat creator can make a shared conversation private")
+        # Only the conversation creator may change visibility (private ↔ shared)
+        if conversation.user_id is None or str(conversation.user_id) != str(auth.user_id):
+            raise HTTPException(
+                status_code=403,
+                detail="Only the chat creator can change conversation visibility",
+            )
 
         if conversation.scope == request.scope:
             # Already in the requested state, just return current state

@@ -82,6 +82,7 @@ interface WsConversationCreated {
   type: 'conversation_created';
   conversation_id: string;
   title?: string;
+  scope?: 'private' | 'shared';
 }
 
 interface WsCatchup {
@@ -1124,15 +1125,18 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
         }
         
         case 'conversation_created': {
-          const title = parsed.title || 'New Chat';
-          console.log('[AppLayout] Conversation created:', parsed.conversation_id, 'title:', title);
-          addConversation(parsed.conversation_id, title);
+          const created = parsed as WsConversationCreated;
+          const title = created.title || 'New Chat';
+          const scope: 'private' | 'shared' =
+            created.scope === 'private' ? 'private' : 'shared';
+          console.log('[AppLayout] Conversation created:', created.conversation_id, 'title:', title);
+          addConversation(created.conversation_id, title, scope);
           if (source === 'ws') {
             // Only update currentChatId when on new chat (null) - we're waiting for the backend
             // to assign an ID. Don't overwrite when user has selected an existing conversation.
             const currentId = useAppStore.getState().currentChatId;
             if (currentId === null) {
-              setCurrentChatId(parsed.conversation_id);
+              setCurrentChatId(created.conversation_id);
             }
           }
           break;

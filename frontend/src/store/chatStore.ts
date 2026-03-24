@@ -216,6 +216,7 @@ export const useChatStore = create<ChatState>()(
         console.log("[Store] Conversation already exists:", id);
         return;
       }
+      const creatorId = useAuthStore.getState().user?.id;
       console.log("[Store] Adding conversation:", id, title, scope);
       set({
         recentChats: [
@@ -225,6 +226,7 @@ export const useChatStore = create<ChatState>()(
             lastMessageAt: new Date(),
             previewText: "",
             scope: scope ?? "shared",
+            userId: creatorId,
           },
           ...recentChats.slice(0, 9),
         ],
@@ -296,6 +298,7 @@ export const useChatStore = create<ChatState>()(
         type ConversationApiResponse = {
           conversations: Array<{
             id: string;
+            user_id?: string | null;
             title: string | null;
             updated_at: string;
             last_message_preview: string | null;
@@ -342,6 +345,7 @@ export const useChatStore = create<ChatState>()(
           type: (conv.type ?? "agent") as "agent" | "workflow",
           workflowId: conv.workflow_id,
           scope: (conv.scope ?? "shared") as "private" | "shared",
+          userId: conv.user_id ?? undefined,
           agentResponding: conv.agent_responding ?? true,
           participants: conv.participants?.map((p) => ({
             id: p.id,
