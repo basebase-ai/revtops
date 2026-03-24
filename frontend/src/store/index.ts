@@ -166,6 +166,8 @@ export const useIsGlobalAdmin = () =>
 export const useMasquerade = () => useAuthStore((state) => state.masquerade);
 export const useIsMasquerading = () =>
   useAuthStore((state) => state.masquerade !== null);
+export const useIsSwitchingOrg = () =>
+  useAuthStore((state) => state.isSwitchingOrg);
 
 // Get the real admin user ID when masquerading (for API headers)
 export const getAdminUserId = (): string | null => {

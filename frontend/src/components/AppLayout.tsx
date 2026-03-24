@@ -39,7 +39,7 @@ const ArtifactFullView = lazy(() => import('./ArtifactFullView').then(m => ({ de
 const DocumentsGallery = lazy(() => import('./documents/DocumentsGallery').then(m => ({ default: m.DocumentsGallery })));
 import { APP_NAME, LOGO_PATH, RELEASE_STAGE } from '../lib/brand';
 import { ProfilePanel } from './ProfilePanel';
-import { useAppStore, useChatStore, useUIStore, useMasquerade, useIntegrations, type ActiveTask, type ToolCallData, type ChatMessage, type ContentBlock } from '../store';
+import { useAppStore, useChatStore, useUIStore, useMasquerade, useIntegrations, useIsSwitchingOrg, type ActiveTask, type ToolCallData, type ChatMessage, type ContentBlock } from '../store';
 import { useTeamMembers, useWebSocket } from '../hooks';
 import { apiRequest } from '../lib/api';
 
@@ -200,6 +200,8 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
       recentChats: state.recentChats,
     }))
   );
+
+  const isSwitchingOrg: boolean = useIsSwitchingOrg();
 
   // Zustand: Get integrations for connected count badge
   const integrations = useIntegrations();
@@ -1615,7 +1617,7 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
   }, [currentView, isGlobalAdmin, setCurrentView]);
 
   // Guard against missing user/org (shouldn't happen, but be safe)
-  if (!user || !organization) {
+  if (!user || !organization || isSwitchingOrg) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center bg-surface-950">
         <div className="flex flex-col items-center gap-6">
@@ -1626,8 +1628,8 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
             </div>
           </div>
           <div className="flex flex-col items-center gap-1">
-            <p className="text-surface-200 font-medium">Loading</p>
-            <p className="text-surface-500 text-sm">Preparing your workspace…</p>
+            <p className="text-surface-200 font-medium">{isSwitchingOrg ? 'Switching team' : 'Loading'}</p>
+            <p className="text-surface-500 text-sm">{isSwitchingOrg ? 'Loading your workspace…' : 'Preparing your workspace…'}</p>
           </div>
         </div>
       </div>
