@@ -817,6 +817,12 @@ async def trigger_sync(
                 detail=f"No active {provider} integration found",
             )
 
+        # Clear stale errors so the UI doesn't show a previous failure while syncing
+        for integration in integrations:
+            if integration.last_error is not None:
+                integration.last_error = None
+        await session.commit()
+
     sync_since_override: datetime | None = parse_sync_since_param(since)
 
     # Initialize sync status

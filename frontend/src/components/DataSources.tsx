@@ -357,6 +357,44 @@ export function DataSources(): JSX.Element {
   const [syncingProviders, setSyncingProviders] = useState<Set<string>>(new Set());
   /** True while org-wide "Sync all" is running (until all provider polls finish). */
   const [syncingAll, setSyncingAll] = useState<boolean>(false);
+
+  // On mount/org change, check if any syncs are already in-flight (survives page reload)
+  useEffect(() => {
+    if (!organization?.id) return;
+    const orgId: string = organization.id;
+    const syncableProviders: string[] = rawIntegrations
+      .filter((i) => i.isActive)
+      .map((i) => i.provider);
+    if (syncableProviders.length === 0) return;
+
+    let cancelled = false;
+    const checkInFlight = async (): Promise<void> => {
+      const inFlight = new Set<string>();
+      await Promise.all(
+        syncableProviders.map(async (provider: string) => {
+          try {
+            const res: Response = await fetch(`${API_BASE}/sync/${orgId}/${provider}/status`);
+            if (!res.ok) return;
+            const data = (await res.json()) as { status: string };
+            if (data.status === 'syncing') {
+              inFlight.add(provider);
+            }
+          } catch {
+            // ignore — status check is best-effort
+          }
+        }),
+      );
+      if (!cancelled && inFlight.size > 0) {
+        setSyncingProviders((prev) => {
+          const next = new Set(prev);
+          for (const p of inFlight) next.add(p);
+          return next;
+        });
+      }
+    };
+    void checkInFlight();
+    return () => { cancelled = true; };
+  }, [organization?.id, rawIntegrations]);
   const [disconnectingProviders, setDisconnectingProviders] = useState<Set<string>>(new Set());
   const [connectingProvider, setConnectingProvider] = useState<string | null>(null);
   const [slackMappings, setSlackMappings] = useState<SlackUserMapping[]>([]);
@@ -1754,7 +1792,7 @@ export function DataSources(): JSX.Element {
                   Connected by {integration.connectedBy}
                 </p>
               )}
-              {(state === 'connected' || state === 'org-connected') && integration.lastSyncAt && (
+              {(state === 'connected' || state === 'org-connected') && integration.lastSyncAt && !isSyncing && (
                 <p className="text-xs text-surface-500 mt-1 hidden sm:block">
                   Last synced: {new Date(integration.lastSyncAt).toLocaleString()}
                 </p>
@@ -1772,7 +1810,7 @@ export function DataSources(): JSX.Element {
                   ) : null}
                 </p>
               )}
-              {(state === 'connected' || state === 'org-connected') && integration.lastError && (
+              {(state === 'connected' || state === 'org-connected') && integration.lastError && !isSyncing && (
                 <p className="text-xs text-red-400 mt-1">Error: {integration.lastError}</p>
               )}
               {state === 'org-connected' && (

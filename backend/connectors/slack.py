@@ -376,6 +376,19 @@ Send a message to a Slack channel, DM, or user.
                     await asyncio.sleep(retry_after)
                     continue
 
+                if response.status_code >= 500 and attempt < self._MAX_RETRIES:
+                    backoff: float = float(2 ** attempt)
+                    logger.warning(
+                        "[Slack API] %d server error on %s (attempt %d/%d), retrying in %.1fs",
+                        response.status_code,
+                        endpoint,
+                        attempt + 1,
+                        self._MAX_RETRIES,
+                        backoff,
+                    )
+                    await asyncio.sleep(backoff)
+                    continue
+
                 response.raise_for_status()
                 data: dict[str, Any] = response.json()
 
@@ -397,7 +410,7 @@ Send a message to a Slack channel, DM, or user.
                 return data
 
         raise httpx.HTTPStatusError(
-            "Rate limited after max retries",
+            f"Slack API request failed after {self._MAX_RETRIES} retries (last status {response.status_code})",
             request=response.request,
             response=response,
         )
