@@ -682,7 +682,7 @@ async def add_participant(
     request: AddParticipantRequest,
     auth: AuthContext = Depends(get_current_auth),
 ) -> AddParticipantResponse:
-    """Add a participant to a shared conversation."""
+    """Add a participant to a conversation (shared or private)."""
     try:
         conv_uuid = UUID(conversation_id)
     except ValueError:
@@ -705,9 +705,6 @@ async def add_participant(
 
         if not conversation:
             raise HTTPException(status_code=404, detail="Conversation not found")
-
-        if conversation.scope == "private":
-            raise HTTPException(status_code=400, detail="Cannot add participants to a private conversation")
 
         # Find the user to add
         if request.user_id:
@@ -769,7 +766,7 @@ async def remove_participant(
     user_id: str,
     auth: AuthContext = Depends(get_current_auth),
 ) -> dict[str, bool]:
-    """Remove a participant from a shared conversation."""
+    """Remove a participant from a conversation (shared or private)."""
     try:
         conv_uuid = UUID(conversation_id)
         target_user_uuid = UUID(user_id)
@@ -789,9 +786,6 @@ async def remove_participant(
 
         if not conversation:
             raise HTTPException(status_code=404, detail="Conversation not found")
-
-        if conversation.scope == "private":
-            raise HTTPException(status_code=400, detail="Cannot remove participants from a private conversation")
 
         # Cannot remove yourself if you're the only participant
         current_participants = list(conversation.participating_user_ids or [])
