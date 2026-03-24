@@ -10,7 +10,7 @@
  * Uses React Query for server state (integrations list).
  */
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import Nango from '@nangohq/frontend';
 import type { IconType } from 'react-icons';
 import {
@@ -331,6 +331,7 @@ async function getResponseErrorMessage(response: Response, fallback: string): Pr
 export function DataSources(): JSX.Element {
   // Get user/org from Zustand (auth state)
   const { user, organization, organizations } = useAppStore();
+  const fetchUserOrganizations = useAppStore((state) => state.fetchUserOrganizations);
   
   // Check if on mobile device
   const isMobile = useIsMobile();
@@ -347,7 +348,15 @@ export function DataSources(): JSX.Element {
     }
   }, [organization?.id, user?.id, fetchIntegrations]);
 
+  useEffect(() => {
+    if (user?.id) {
+      void fetchUserOrganizations();
+    }
+  }, [user?.id, fetchUserOrganizations]);
+
   const [syncingProviders, setSyncingProviders] = useState<Set<string>>(new Set());
+  /** True while org-wide "Sync all" is running (until all provider polls finish). */
+  const [syncingAll, setSyncingAll] = useState<boolean>(false);
   const [disconnectingProviders, setDisconnectingProviders] = useState<Set<string>>(new Set());
   const [connectingProvider, setConnectingProvider] = useState<string | null>(null);
   const [slackMappings, setSlackMappings] = useState<SlackUserMapping[]>([]);
@@ -508,6 +517,11 @@ export function DataSources(): JSX.Element {
   const userId = user?.id ?? '';
   const activeMembership = organizations.find((org) => org.id === organizationId);
   const canConnectCodeSandbox = (user?.roles.includes('global_admin') ?? false) || activeMembership?.role === 'admin';
+  const canSyncAllConnectors: boolean = useMemo((): boolean => {
+    const isGlobalAdmin: boolean = user?.roles.includes('global_admin') ?? false;
+    if (isGlobalAdmin) return true;
+    return activeMembership?.role === 'admin';
+  }, [user?.roles, activeMembership?.role]);
 
   useEffect(() => {
     if (resyncMenuOpenForId === null) return;
@@ -1212,6 +1226,83 @@ export function DataSources(): JSX.Element {
     }
   };
 
+  const handleSyncAll = useCallback(async (): Promise<void> => {
+    if (!organizationId || !canSyncAllConnectors || syncingAll) return;
+
+    setSyncError(null);
+    setSyncingAll(true);
+
+    const { data, error } = await apiRequest<{
+      status: string;
+      organization_id: string;
+      integrations: string[];
+    }>(`/sync/${organizationId}/all`, { method: 'POST' });
+
+    if (error !== null || data === null) {
+      setSyncError(error ?? 'Failed to start sync');
+      setTimeout(() => setSyncError(null), 8000);
+      setSyncingAll(false);
+      return;
+    }
+
+    const providers: readonly string[] = data.integrations;
+    if (providers.length === 0) {
+      setSyncingAll(false);
+      return;
+    }
+
+    setSyncingProviders((prev) => {
+      const next: Set<string> = new Set(prev);
+      for (const p of providers) {
+        next.add(p);
+      }
+      return next;
+    });
+
+    const maxAttempts: number = 150;
+    const pollOne = async (provider: string): Promise<void> => {
+      let attempts: number = 0;
+      for (;;) {
+        const statusRes: Response = await fetch(`${API_BASE}/sync/${organizationId}/${provider}/status`);
+        const status: { status: string; error?: string } = (await statusRes.json()) as {
+          status: string;
+          error?: string;
+        };
+        if (status.status === 'completed' || status.status === 'failed' || attempts >= maxAttempts) {
+          setSyncingProviders((prev) => {
+            const next: Set<string> = new Set(prev);
+            next.delete(provider);
+            return next;
+          });
+          if (status.status === 'failed') {
+            const providerName: string = getConnectorDisplay(provider).name;
+            const detail: string =
+              typeof status.error === 'string' && status.error.trim().length > 0
+                ? status.error
+                : `Failed to sync ${providerName}`;
+            setSyncError(detail);
+            setTimeout(() => setSyncError(null), 8000);
+          }
+          return;
+        }
+        attempts += 1;
+        await new Promise<void>((resolve) => {
+          setTimeout(resolve, 2000);
+        });
+      }
+    };
+
+    await Promise.all(providers.map((p: string) => pollOne(p)));
+    void fetchIntegrations();
+    setSyncingAll(false);
+  }, [
+    organizationId,
+    canSyncAllConnectors,
+    syncingAll,
+    fetchIntegrations,
+    getConnectorDisplay,
+  ]);
+
   const handleSlackRequestCode = async (): Promise<void> => {
     if (!organizationId || !userId || !slackEmailInput.trim()) return;
     setSlackMappingStatus(null);
@@ -1888,22 +1979,46 @@ export function DataSources(): JSX.Element {
     <div className="flex-1 overflow-y-auto overflow-x-hidden">
       {/* Header - hidden on mobile since AppLayout has mobile header */}
       <header className="hidden md:block sticky top-0 z-20 bg-surface-950 border-b border-surface-800 px-4 md:px-8 py-4 md:py-6">
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between gap-4">
           <div>
             <h1 className="text-xl md:text-2xl font-bold text-surface-50">Connectors</h1>
             <p className="text-surface-400 mt-1 text-sm md:text-base">
               Connect your sales tools to unlock AI-powered insights
             </p>
           </div>
-          <button
-            onClick={() => { setShowConnectModal(true); setConnectSearch(''); }}
-            className="px-5 py-2.5 text-sm font-semibold text-white bg-primary-600 hover:bg-primary-500 rounded-lg transition-colors flex items-center gap-2 shadow-lg shadow-primary-600/20"
-          >
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
-            </svg>
-            Add Source
-          </button>
+          <div className="flex items-center gap-2 flex-shrink-0">
+            {canSyncAllConnectors && (
+              <button
+                type="button"
+                onClick={() => void handleSyncAll()}
+                disabled={syncingAll}
+                className="px-4 py-2.5 text-sm font-semibold text-surface-100 bg-surface-800 hover:bg-surface-700 border border-surface-600 rounded-lg transition-colors flex items-center gap-2 disabled:opacity-50"
+                title="Sync every connected integration for this organization"
+              >
+                {syncingAll ? (
+                  <>
+                    <span className="w-4 h-4 border-2 border-surface-400 border-t-transparent rounded-full animate-spin" />
+                    Syncing…
+                  </>
+                ) : (
+                  <>
+                    <HiLightningBolt className="w-4 h-4 text-amber-400" />
+                    Sync all
+                  </>
+                )}
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => { setShowConnectModal(true); setConnectSearch(''); }}
+              className="px-5 py-2.5 text-sm font-semibold text-white bg-primary-600 hover:bg-primary-500 rounded-lg transition-colors flex items-center gap-2 shadow-lg shadow-primary-600/20"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+              </svg>
+              Add Source
+            </button>
+          </div>
         </div>
       </header>
 
@@ -2260,17 +2375,35 @@ export function DataSources(): JSX.Element {
       )}
 
       <div className="max-w-4xl mx-auto px-4 md:px-8 py-4 md:py-8 space-y-6 md:space-y-10">
-        {/* Mobile: Connect Source button (since header is hidden) */}
+        {/* Mobile: Connect Source (+ Sync all for org admins; header is hidden) */}
         {isMobile && (
-          <button
-            onClick={() => { setShowConnectModal(true); setConnectSearch(''); }}
-            className="w-full px-5 py-3 text-sm font-semibold text-white bg-primary-600 hover:bg-primary-500 rounded-lg transition-colors flex items-center justify-center gap-2 shadow-lg shadow-primary-600/20"
-          >
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
-            </svg>
-            Connect Source
-          </button>
+          <div className={`grid gap-2 ${canSyncAllConnectors ? 'grid-cols-2' : 'grid-cols-1'}`}>
+            {canSyncAllConnectors && (
+              <button
+                type="button"
+                onClick={() => void handleSyncAll()}
+                disabled={syncingAll}
+                className="px-4 py-3 text-sm font-semibold text-surface-100 bg-surface-800 hover:bg-surface-700 border border-surface-600 rounded-lg transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
+              >
+                {syncingAll ? (
+                  <span className="w-4 h-4 border-2 border-surface-400 border-t-transparent rounded-full animate-spin" />
+                ) : (
+                  <HiLightningBolt className="w-4 h-4 text-amber-400" />
+                )}
+                {syncingAll ? 'Syncing…' : 'Sync all'}
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => { setShowConnectModal(true); setConnectSearch(''); }}
+              className="w-full px-5 py-3 text-sm font-semibold text-white bg-primary-600 hover:bg-primary-500 rounded-lg transition-colors flex items-center justify-center gap-2 shadow-lg shadow-primary-600/20"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+              </svg>
+              Connect Source
+            </button>
+          </div>
         )}
 
         {/* Mobile notice banner */}

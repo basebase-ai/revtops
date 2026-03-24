@@ -4,7 +4,7 @@ Sync trigger endpoints for all integrations.
 Endpoints:
 - POST /api/sync/{organization_id}/{provider} - Trigger sync for specific integration
 - GET /api/sync/{organization_id}/{provider}/status - Get sync status
-- POST /api/sync/{organization_id}/all - Sync all active integrations
+- POST /api/sync/{organization_id}/all - Sync all active integrations (org admin or global_admin; JWT required)
 """
 from __future__ import annotations
 
@@ -14,14 +14,17 @@ import logging
 from typing import Any, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import select
 
 from connectors.base import SyncCancelledError
 from connectors.github import GitHubConnector
 from connectors.registry import Capability, discover_connectors
-from models.database import get_session
+from api.auth_middleware import AuthContext, get_current_auth
+from api.routes.auth import _can_administer_org
+from models.database import get_admin_session, get_session
+from models.user import User
 from models.integration import Integration
 from models.organization import Organization
 from models.agent_task import AgentTask
@@ -680,6 +683,87 @@ async def cancel_admin_running_job(
 # =============================================================================
 
 
+async def _ensure_org_admin_can_sync_all(organization_id: str, auth: AuthContext) -> None:
+    """Require authenticated org admin (or global admin) for bulk sync."""
+    if auth.user_id is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    try:
+        customer_uuid = UUID(organization_id)
+        requester_uuid = UUID(str(auth.user_id))
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid customer ID") from None
+
+    async with get_admin_session() as session:
+        db_user: User | None = await session.get(User, requester_uuid)
+        if db_user is None:
+            raise HTTPException(status_code=401, detail="User not found")
+        allowed: bool = await _can_administer_org(session, db_user, customer_uuid)
+        if not allowed:
+            raise HTTPException(
+                status_code=403,
+                detail="Org admin or global admin required to sync all integrations",
+            )
+
+
+async def _execute_sync_all_integrations(
+    organization_id: str, background_tasks: BackgroundTasks
+) -> SyncAllResponse:
+    """Enqueue background sync for every active integration that supports SYNC."""
+    try:
+        customer_uuid = UUID(organization_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid customer ID")
+
+    async with get_session(organization_id=organization_id) as session:
+        result = await session.execute(
+            select(Integration).where(
+                Integration.organization_id == customer_uuid,
+                Integration.is_active == True,
+            )
+        )
+        integrations = result.scalars().all()
+
+    if not integrations:
+        raise HTTPException(status_code=404, detail="No active integrations found")
+
+    syncing_providers: list[str] = []
+    for integration in integrations:
+        prov: str = integration.connector
+        connector_cls = CONNECTORS.get(prov)
+        if connector_cls is not None and Capability.SYNC in connector_cls.meta.capabilities:
+            if prov not in syncing_providers:
+                syncing_providers.append(prov)
+            status_key: str = _get_status_key(organization_id, prov)
+            _sync_status[status_key] = {
+                "status": "syncing",
+                "started_at": datetime.utcnow(),
+                "completed_at": None,
+                "error": None,
+                "counts": None,
+            }
+            uid: str | None = str(integration.user_id) if integration.user_id else None
+            background_tasks.add_task(
+                sync_integration_data, organization_id, prov, uid
+            )
+
+    return SyncAllResponse(
+        status="syncing",
+        organization_id=organization_id,
+        integrations=syncing_providers,
+    )
+
+
+@router.post("/{organization_id}/all", response_model=SyncAllResponse)
+async def trigger_sync_all(
+    organization_id: str,
+    background_tasks: BackgroundTasks,
+    auth: AuthContext = Depends(get_current_auth),
+) -> SyncAllResponse:
+    """Trigger sync for all active integrations (org admin or global admin only)."""
+    await _ensure_org_admin_can_sync_all(organization_id, auth)
+    return await _execute_sync_all_integrations(organization_id, background_tasks)
+
+
 @router.post("/{organization_id}/{provider}", response_model=SyncTriggerResponse)
 async def trigger_sync(
     organization_id: str,
@@ -816,57 +900,6 @@ async def get_sync_status(organization_id: str, provider: str) -> SyncStatusResp
         completed_at=f"{completed_at.isoformat()}Z" if isinstance(completed_at, datetime) else None,
         error=str(status["error"]) if status.get("error") else None,
         counts=counts if isinstance(counts, dict) else None,
-    )
-
-
-@router.post("/{organization_id}/all", response_model=SyncAllResponse)
-async def trigger_sync_all(
-    organization_id: str, background_tasks: BackgroundTasks
-) -> SyncAllResponse:
-    """Trigger sync for all active integrations."""
-    try:
-        customer_uuid = UUID(organization_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid customer ID")
-
-    # Get all active integrations
-    async with get_session(organization_id=organization_id) as session:
-        result = await session.execute(
-            select(Integration).where(
-                Integration.organization_id == customer_uuid,
-                Integration.is_active == True,
-            )
-        )
-        integrations = result.scalars().all()
-
-    if not integrations:
-        raise HTTPException(status_code=404, detail="No active integrations found")
-
-    syncing_providers: list[str] = []
-    # Trigger sync for each integration (including per-user variants); skip query-only connectors
-    for integration in integrations:
-        prov: str = integration.connector
-        connector_cls = CONNECTORS.get(prov)
-        if connector_cls is not None and Capability.SYNC in connector_cls.meta.capabilities:
-            if prov not in syncing_providers:
-                syncing_providers.append(prov)
-            status_key: str = _get_status_key(organization_id, prov)
-            _sync_status[status_key] = {
-                "status": "syncing",
-                "started_at": datetime.utcnow(),
-                "completed_at": None,
-                "error": None,
-                "counts": None,
-            }
-            uid: str | None = str(integration.user_id) if integration.user_id else None
-            background_tasks.add_task(
-                sync_integration_data, organization_id, prov, uid
-            )
-
-    return SyncAllResponse(
-        status="syncing",
-        organization_id=organization_id,
-        integrations=syncing_providers,
     )
 
 
@@ -1264,10 +1297,13 @@ async def match_github_users(
 # Legacy endpoint for backwards compatibility
 @router.post("/{organization_id}")
 async def trigger_sync_legacy(
-    organization_id: str, background_tasks: BackgroundTasks
+    organization_id: str,
+    background_tasks: BackgroundTasks,
+    auth: AuthContext = Depends(get_current_auth),
 ) -> SyncAllResponse:
-    """Legacy endpoint - triggers sync for all integrations."""
-    return await trigger_sync_all(organization_id, background_tasks)
+    """Legacy endpoint - triggers sync for all integrations (same auth as /all)."""
+    await _ensure_org_admin_can_sync_all(organization_id, auth)
+    return await _execute_sync_all_integrations(organization_id, background_tasks)
 
 
 # ============================================================================
