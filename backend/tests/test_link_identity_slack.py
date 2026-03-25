@@ -13,7 +13,14 @@ class _FakeScalars:
         return self._rows
 
 
+class _FakeMembershipResult:
+    """Returned by the first execute call (_get_org_membership)."""
+    def scalar_one_or_none(self) -> object:
+        return True  # Simulate active org membership
+
+
 class _FakeExecuteResult:
+    """Returned by subsequent execute calls (related-mapping queries)."""
     def __init__(self, rows):
         self._rows = rows
 
@@ -38,6 +45,8 @@ class _FakeSession:
 
     async def execute(self, _query):
         self.execute_calls += 1
+        if self.execute_calls == 1:
+            return _FakeMembershipResult()
         return _FakeExecuteResult(self.related_rows)
 
     async def commit(self):
@@ -107,7 +116,7 @@ def test_link_identity_links_related_slack_mappings(monkeypatch):
     assert related_mapping.user_id == target_user_id
     assert related_mapping.revtops_email == "owner@acme.com"
     assert related_mapping.match_source == "admin_manual_link"
-    assert fake_session.execute_calls == 1
+    assert fake_session.execute_calls == 2  # 1 membership check + 1 related-mapping query
     assert fake_session.committed
 
 
@@ -146,5 +155,5 @@ def test_link_identity_non_slack_does_not_attempt_related_linking(monkeypatch):
     assert result == {"status": "linked"}
     assert selected_mapping.user_id == target_user_id
     assert selected_mapping.match_source == "admin_manual_link"
-    assert fake_session.execute_calls == 0
+    assert fake_session.execute_calls == 1  # only the membership check
     assert fake_session.committed
