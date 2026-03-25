@@ -7,7 +7,7 @@
 
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import { API_BASE, apiRequest } from "../lib/api";
+import { API_BASE, apiRequest, getAuthenticatedRequestHeaders } from "../lib/api";
 import type {
   UserProfile,
   OrganizationInfo,
@@ -96,6 +96,7 @@ export const useAuthStore = create<AuthState>()(
           return;
         }
 
+        const activeOrgId: string | undefined = get().organization?.id;
         const organizations: UserOrganization[] = data.organizations.map(
           (o) => ({
             id: o.id,
@@ -103,7 +104,7 @@ export const useAuthStore = create<AuthState>()(
             logoUrl: o.logo_url,
             handle: o.handle ?? null,
             role: o.role,
-            isActive: o.is_active,
+            isActive: o.id === activeOrgId,
           }),
         );
 
@@ -116,71 +117,51 @@ export const useAuthStore = create<AuthState>()(
       },
 
       switchActiveOrganization: async (orgId: string) => {
-        const { user, organizations } = get();
+        const { user } = get();
         if (!user) return;
 
-        const { data, error } = await apiRequest<{
-          organization: {
-            id: string;
-            name: string;
-            logo_url: string | null;
-            handle?: string | null;
-          } | null;
-        }>("/auth/users/me/active-organization", {
-          method: "PATCH",
-          body: JSON.stringify({ organization_id: orgId }),
-        });
-
-        if (error) {
-          console.error("[Store] Failed to switch org:", error);
-          alert(error);
+        let organizations: UserOrganization[] = get().organizations;
+        let orgInList: UserOrganization | undefined = organizations.find(
+          (o) => o.id === orgId,
+        );
+        if (!orgInList) {
+          await get().fetchUserOrganizations();
+          organizations = get().organizations;
+          orgInList = organizations.find((o) => o.id === orgId);
+        }
+        if (!orgInList) {
+          console.error("[Store] Failed to switch org: not a member", orgId);
+          alert("You don't have access to that organization.");
           return;
         }
 
-        if (data?.organization) {
-          const orgHandle: string | null =
-            data.organization.handle ??
-            organizations.find((o) => o.id === orgId)?.handle ??
-            null;
-          const orgInList = organizations.find((o) => o.id === orgId);
-          const updatedOrgs: UserOrganization[] = orgInList
-            ? organizations.map((o) => ({ ...o, isActive: o.id === orgId }))
-            : [
-                ...organizations.map((o) => ({ ...o, isActive: false })),
-                {
-                  id: data.organization.id,
-                  name: data.organization.name,
-                  logoUrl: data.organization.logo_url,
-                  handle: orgHandle,
-                  role: "admin",
-                  isActive: true,
-                },
-              ];
+        const updatedOrgs: UserOrganization[] = organizations.map((o) => ({
+          ...o,
+          isActive: o.id === orgId,
+        }));
 
-          set({
-            organization: {
-              id: data.organization.id,
-              name: data.organization.name,
-              logoUrl: data.organization.logo_url,
-              handle: orgHandle,
-            },
-            organizations: updatedOrgs,
-          });
+        set({
+          organization: {
+            id: orgInList.id,
+            name: orgInList.name,
+            logoUrl: orgInList.logoUrl,
+            handle: orgInList.handle,
+          },
+          organizations: updatedOrgs,
+        });
 
-          // Clear org-scoped state in other stores
-          useChatStore.setState({
-            currentChatId: null,
-            recentChats: [],
-            conversations: {},
-            activeTasksByConversation: {},
-            integrations: [],
-          });
-          useUIStore.setState({
-            currentView: "home",
-            currentAppId: null,
-            currentArtifactId: null,
-          });
-        }
+        useChatStore.setState({
+          currentChatId: null,
+          recentChats: [],
+          conversations: {},
+          activeTasksByConversation: {},
+          integrations: [],
+        });
+        useUIStore.setState({
+          currentView: "home",
+          currentAppId: null,
+          currentArtifactId: null,
+        });
 
         console.log("[Store] Switched active organization to:", orgId);
       },
@@ -281,9 +262,14 @@ export const useAuthStore = create<AuthState>()(
             user.email,
             organization?.id,
           );
+          const authHeaders: Record<string, string> =
+            await getAuthenticatedRequestHeaders();
           const response = await fetch(`${API_BASE}/auth/users/sync`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: {
+              "Content-Type": "application/json",
+              ...authHeaders,
+            },
             body: JSON.stringify({
               id: user.id,
               email: user.email,

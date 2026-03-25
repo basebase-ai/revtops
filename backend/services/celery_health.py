@@ -14,6 +14,37 @@ DEFAULT_STARTUP_PING_ATTEMPTS = 3
 DEFAULT_STARTUP_RETRY_DELAY_SECONDS = 2.0
 
 
+def _env_override_truthy(name: str) -> bool | None:
+    """If env is set to a known on/off value, return that; else None (inherit default)."""
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return None
+    v = raw.strip().lower()
+    if v in ("1", "true", "yes", "force", "on"):
+        return True
+    if v in ("0", "false", "no", "skip", "off"):
+        return False
+    return None
+
+
+def celery_startup_check_enabled() -> bool:
+    """Whether the API should ping Celery workers before accepting traffic.
+
+    Disabled in development by default so local uvicorn restarts are not blocked
+    by missing Redis/workers (each failed ping can take up to several seconds).
+
+    Override: ``CELERY_STARTUP_CHECK=true`` (or ``force``) to enable in dev;
+    ``CELERY_STARTUP_CHECK=false`` (or ``skip``) to disable in any environment.
+    """
+    override = _env_override_truthy("CELERY_STARTUP_CHECK")
+    if override is False:
+        return False
+    if override is True:
+        return True
+    env = os.getenv("ENVIRONMENT", "development").strip().lower()
+    return env != "development"
+
+
 def _emit_startup_incident_nonblocking(*, title: str, details: str) -> None:
     """Trigger startup incident creation without blocking API startup."""
 
@@ -60,6 +91,13 @@ async def _inspect_celery_workers(timeout_seconds: float = 5.0) -> dict[str, Any
 
 async def ensure_celery_workers_available() -> bool:
     """Verify Celery worker availability and raise PagerDuty incident if unavailable."""
+    if not celery_startup_check_enabled():
+        logger.info(
+            "Skipping Celery worker startup check (development default, or "
+            "CELERY_STARTUP_CHECK disabled). Set CELERY_STARTUP_CHECK=true to enable."
+        )
+        return True
+
     max_attempts = max(1, int(os.getenv("CELERY_STARTUP_PING_ATTEMPTS", DEFAULT_STARTUP_PING_ATTEMPTS)))
     retry_delay_seconds = max(
         0.0,

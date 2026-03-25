@@ -17,8 +17,11 @@ from connectors.slack import SlackConnector
 from models.database import get_admin_session, get_session
 from models.integration import Integration
 from models.external_identity_mapping import ExternalIdentityMapping
+from models.org_member import OrgMember
 from models.user import User
 from services import slack_identity
+
+_SLACK_MAPPING_ACTIVE_MEMBERSHIPS: tuple[str, ...] = ("active", "onboarding")
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -72,22 +75,38 @@ async def _resolve_org_and_user(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="Invalid user ID") from exc
 
-    org_uuid: UUID | None = None
-    if organization_id:
-        try:
-            org_uuid = UUID(organization_id)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail="Invalid organization ID") from exc
+    if not organization_id:
+        raise HTTPException(status_code=400, detail="organization_id is required")
+
+    try:
+        org_uuid = UUID(organization_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid organization ID") from exc
 
     async with get_admin_session() as session:
         user = await session.get(User, user_uuid)
-        if not user or not user.organization_id:
+        if not user:
             raise HTTPException(status_code=404, detail="User not found")
 
-        if org_uuid and user.organization_id != org_uuid:
+        if getattr(user, "is_guest", False):
+            if (
+                not user.guest_organization_id
+                or user.guest_organization_id != org_uuid
+            ):
+                raise HTTPException(status_code=403, detail="User not authorized")
+            return org_uuid, user.id
+
+        membership_result = await session.execute(
+            select(OrgMember).where(
+                OrgMember.user_id == user_uuid,
+                OrgMember.organization_id == org_uuid,
+                OrgMember.status.in_(_SLACK_MAPPING_ACTIVE_MEMBERSHIPS),
+            )
+        )
+        if membership_result.scalar_one_or_none() is None:
             raise HTTPException(status_code=403, detail="User not authorized")
 
-        return user.organization_id, user.id
+        return org_uuid, user.id
 
 
 async def _require_slack_integration(organization_id: UUID) -> Integration:

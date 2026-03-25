@@ -6,7 +6,11 @@
  */
 
 import { create } from "zustand";
-import { API_BASE, apiRequest } from "../lib/api";
+import {
+  API_BASE,
+  apiRequest,
+  getAuthenticatedRequestHeaders,
+} from "../lib/api";
 import type {
   ChatSummary,
   ChatMessage,
@@ -1291,8 +1295,11 @@ export const useChatStore = create<ChatState>()(
           "[Store] Fetching integrations for org:",
           organization.id,
         );
+        const authHeaders: Record<string, string> =
+          await getAuthenticatedRequestHeaders();
         const response = await fetch(
           `${API_BASE}/auth/integrations?organization_id=${organization.id}&user_id=${user.id}`,
+          { headers: authHeaders },
         );
 
         if (!response.ok) {

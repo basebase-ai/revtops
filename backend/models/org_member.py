@@ -2,7 +2,8 @@
 Organization member model for multi-org support.
 
 Tracks which organizations a user belongs to and their role in each.
-User.organization_id remains the "active org" for the current session.
+Active org for API requests is sent by the client (X-Organization-Id) and validated
+against this table. Guest users also have users.guest_organization_id for their home org.
 """
 from __future__ import annotations
 

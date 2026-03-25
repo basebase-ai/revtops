@@ -3,11 +3,13 @@ Authentication middleware for JWT verification.
 
 This module provides secure authentication by:
 1. Extracting and verifying Supabase JWT tokens from Authorization headers
-2. Looking up the user in our database to get their organization_id
-3. Returning a verified AuthContext that routes can trust
+2. Looking up the user in our database
+3. Resolving active organization from X-Organization-Id (validated via org_members)
+   or guest default from users.guest_organization_id
+4. Returning a verified AuthContext that routes can trust
 
-SECURITY: Never trust user_id or organization_id from client query parameters.
-Always use the AuthContext returned by these dependencies.
+SECURITY: Never trust user_id from client query parameters alone.
+Organization scope from X-Organization-Id is validated against org_members (or guest org).
 """
 from __future__ import annotations
 
@@ -26,7 +28,7 @@ from jose.constants import ALGORITHMS
 from sqlalchemy import select
 
 from config import settings
-from models.database import get_session
+from models.org_member import OrgMember
 from models.user import User
 from services.incident_throttling import evaluate_incident_creation
 from services.pagerduty import create_pagerduty_incident
@@ -46,10 +48,11 @@ _JWKS_CACHE_TTL_SECONDS = 60 * 60
 class AuthContext:
     """
     Verified authentication context.
-    
-    All values are cryptographically verified from the JWT token
-    and looked up from our database. Routes should ONLY use these
-    values, never client-provided parameters.
+
+    user_id and email come from the verified JWT + DB user lookup.
+    organization_id is resolved from X-Organization-Id (or WebSocket org_id query)
+    when present and validated against org_members; guests default to
+    users.guest_organization_id when the header is omitted.
     """
     user_id: UUID
     organization_id: Optional[UUID]
@@ -376,10 +379,71 @@ async def _get_user_from_token(payload: dict) -> User:
         return user
 
 
+async def _resolve_active_organization_id(
+    user: User,
+    requested_org_id_raw: Optional[str],
+) -> Optional[UUID]:
+    """
+    Resolve the active organization for this request.
+
+    If the client sends a non-empty org id (header or WebSocket query), validate it:
+    - Guest users: must match user.guest_organization_id (their single org).
+    - Regular users: must have an active org_members row for that org.
+
+    If the client omits the hint: guests default to guest_organization_id; others None.
+    """
+    trimmed: str = (requested_org_id_raw or "").strip()
+    if not trimmed:
+        if user.is_guest:
+            return user.guest_organization_id
+        return None
+
+    try:
+        requested: UUID = UUID(trimmed)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid organization id",
+        )
+
+    if user.is_guest:
+        if user.guest_organization_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Guest user has no organization context",
+            )
+        if requested != user.guest_organization_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Organization does not match guest context",
+            )
+        return user.guest_organization_id
+
+    from models.database import get_admin_session
+
+    async with get_admin_session() as session:
+        result = await session.execute(
+            select(OrgMember).where(
+                OrgMember.user_id == user.id,
+                OrgMember.organization_id == requested,
+                OrgMember.status == "active",
+            )
+        )
+        membership: Optional[OrgMember] = result.scalar_one_or_none()
+
+    if membership is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not a member of this organization or membership inactive",
+        )
+    return requested
+
+
 async def get_current_auth(
     authorization: Optional[str] = Header(None, alias="Authorization"),
     masquerade_user_id: Optional[str] = Header(None, alias="X-Masquerade-User-Id"),
     admin_user_id: Optional[str] = Header(None, alias="X-Admin-User-Id"),
+    x_organization_id: Optional[str] = Header(None, alias="X-Organization-Id"),
 ) -> AuthContext:
     """
     FastAPI dependency that verifies the JWT and returns AuthContext.
@@ -447,9 +511,11 @@ async def get_current_auth(
 
     is_global_admin = user.role == "global_admin" or "global_admin" in (user.roles or [])
 
+    resolved_org_id: Optional[UUID] = await _resolve_active_organization_id(user, x_organization_id)
+
     return AuthContext(
         user_id=user.id,
-        organization_id=user.organization_id,
+        organization_id=resolved_org_id,
         email=user.email,
         role=user.role or "user",
         is_global_admin=is_global_admin,
@@ -458,6 +524,7 @@ async def get_current_auth(
 
 async def get_optional_auth(
     authorization: Optional[str] = Header(None, alias="Authorization"),
+    x_organization_id: Optional[str] = Header(None, alias="X-Organization-Id"),
 ) -> Optional[AuthContext]:
     """
     Optional authentication - returns None if no valid auth provided.
@@ -480,9 +547,12 @@ async def get_optional_auth(
         payload = await _verify_jwt(token)
         user = await _get_user_from_token(payload)
         is_global_admin = user.role == "global_admin" or "global_admin" in (user.roles or [])
+        resolved_org_id: Optional[UUID] = await _resolve_active_organization_id(
+            user, x_organization_id
+        )
         return AuthContext(
             user_id=user.id,
-            organization_id=user.organization_id,
+            organization_id=resolved_org_id,
             email=user.email,
             role=user.role or "user",
             is_global_admin=is_global_admin,
@@ -575,10 +645,14 @@ async def verify_websocket_token(websocket: WebSocket) -> AuthContext:
     try:
         payload = await _verify_jwt(token)
         user = await _get_user_from_token(payload)
-        
+        org_id_param: Optional[str] = websocket.query_params.get("org_id")
+        resolved_org_id: Optional[UUID] = await _resolve_active_organization_id(
+            user, org_id_param
+        )
+
         return AuthContext(
             user_id=user.id,
-            organization_id=user.organization_id,
+            organization_id=resolved_org_id,
             email=user.email,
             role=user.role or "user",
             is_global_admin=user.role == "global_admin",

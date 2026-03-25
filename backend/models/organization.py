@@ -85,8 +85,10 @@ class Organization(Base):
     credits_included: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     # Relationships
-    users: Mapped[list["User"]] = relationship(
-        "User", back_populates="organization", foreign_keys="User.organization_id"
+    guest_users: Mapped[list["User"]] = relationship(
+        "User",
+        back_populates="guest_organization",
+        foreign_keys="User.guest_organization_id",
     )
     token_owner: Mapped[Optional["User"]] = relationship(
         "User", foreign_keys=[token_owner_user_id]

@@ -650,9 +650,13 @@ export function DataSources(): JSX.Element {
   }, [fetchIntegrations]);
   
   // Connect to WebSocket for sync progress updates - authenticated via JWT token
-  useWebSocket(userId ? '/ws/chat' : '', {
-    onMessage: handleWsMessage,
-  });
+  useWebSocket(
+    userId ? '/ws/chat' : '',
+    {
+      onMessage: handleWsMessage,
+    },
+    organizationId || undefined,
+  );
 
   const fetchSlackMappings = useCallback(async (): Promise<void> => {
     if (!organizationId || !userId) return;

@@ -12,42 +12,27 @@ from typing import Any, Optional
 logger: logging.Logger = logging.getLogger(__name__)
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import select
 
+from api.auth_middleware import AuthContext, get_current_auth
 from models.change_session import ChangeSession
 from models.conversation import Conversation
 from models.record_snapshot import RecordSnapshot
-from models.user import User
 
 from models.workflow import Workflow
-from models.database import get_admin_session, get_session
+from models.database import get_session
 
 
 router = APIRouter(prefix="/change-sessions", tags=["change-sessions"])
 logger = logging.getLogger(__name__)
 
 
-async def _get_user(user_id: Optional[str]) -> User:
-    """Get and validate user from user_id query parameter."""
-    if not user_id:
-        logger.warning("[change_sessions] Missing user_id query parameter")
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    
-    try:
-        user_uuid = UUID(user_id)
-    except ValueError:
-        logger.warning("[change_sessions] Invalid user_id provided: %s", user_id)
-        raise HTTPException(status_code=400, detail="Invalid user ID")
-    
-    logger.debug("[change_sessions] Looking up user %s with admin session", user_id)
-    async with get_admin_session() as session:
-        user = await session.get(User, user_uuid)
-        if not user:
-            logger.warning("[change_sessions] User not found: %s", user_id)
-            raise HTTPException(status_code=404, detail="User not found")
-        return user
+def _require_matching_user_id(auth: AuthContext, user_id: Optional[str]) -> None:
+    """When frontend passes user_id, it must match the JWT subject."""
+    if user_id is not None and user_id != auth.user_id_str:
+        raise HTTPException(status_code=403, detail="user_id does not match authenticated user")
 
 
 class ChangeSessionSummary(BaseModel):
@@ -91,6 +76,7 @@ class ActionResponse(BaseModel):
 
 @router.get("/pending", response_model=PendingChangesResponse)
 async def get_pending_changes(
+    auth: AuthContext = Depends(get_current_auth),
     user_id: Optional[str] = Query(None),
 ) -> PendingChangesResponse:
     """
@@ -98,21 +84,21 @@ async def get_pending_changes(
     
     Returns a summary of pending local changes that can be committed or discarded.
     """
-    user = await _get_user(user_id)
-    if not user.organization_id:
-        logger.warning("[change_sessions] User %s has no organization", user.id)
+    _require_matching_user_id(auth, user_id)
+    if not auth.organization_id:
+        logger.warning("[change_sessions] User %s has no organization context", auth.user_id)
         raise HTTPException(status_code=400, detail="User not associated with an organization")
     
     logger.debug(
         "[change_sessions] Fetching pending change sessions for org %s",
-        user.organization_id,
+        auth.organization_id,
     )
-    async with get_session(str(user.organization_id)) as session:
+    async with get_session(str(auth.organization_id)) as session:
         # Get all pending change sessions for this org
         result = await session.execute(
             select(ChangeSession)
             .where(
-                ChangeSession.organization_id == user.organization_id,
+                ChangeSession.organization_id == auth.organization_id,
                 ChangeSession.status == "pending",
             )
             .order_by(ChangeSession.created_at.desc())
@@ -121,7 +107,7 @@ async def get_pending_changes(
         logger.info(
             "[change_sessions] Found %d pending change session(s) for org %s",
             len(change_sessions),
-            user.organization_id,
+            auth.organization_id,
         )
         
         sessions_summary: list[ChangeSessionSummary] = []
@@ -253,6 +239,7 @@ async def get_pending_changes(
 @router.post("/{session_id}/commit", response_model=ActionResponse)
 async def commit_change_session(
     session_id: str,
+    auth: AuthContext = Depends(get_current_auth),
     user_id: Optional[str] = Query(None),
 ) -> ActionResponse:
     """
@@ -260,25 +247,27 @@ async def commit_change_session(
     """
     from agents.tools import commit_change_session as do_commit
     
-    user = await _get_user(user_id)
-    if not user.organization_id:
-        logger.warning("[change_sessions] User %s has no organization", user.id)
+    _require_matching_user_id(auth, user_id)
+    if not auth.organization_id:
+        logger.warning("[change_sessions] User %s has no organization context", auth.user_id)
         raise HTTPException(status_code=400, detail="User not associated with an organization")
     
     # Verify the session belongs to this org
-    async with get_session(str(user.organization_id)) as session:
+    async with get_session(str(auth.organization_id)) as session:
         cs = await session.get(ChangeSession, UUID(session_id))
         if not cs:
             logger.warning("[change_sessions] Change session not found: %s", session_id)
             raise HTTPException(status_code=404, detail="Change session not found")
-        if cs.organization_id != user.organization_id:
+        if cs.organization_id != auth.organization_id:
             logger.warning(
                 "[change_sessions] Access denied for session %s (org mismatch)",
                 session_id,
             )
             raise HTTPException(status_code=403, detail="Access denied")
     
-    result = await do_commit(session_id, str(user.id), organization_id=str(user.organization_id))
+    result = await do_commit(
+        session_id, auth.user_id_str, organization_id=str(auth.organization_id)
+    )
     
     return ActionResponse(
         status=result.get("status", "unknown"),
@@ -292,6 +281,7 @@ async def commit_change_session(
 @router.post("/{session_id}/discard", response_model=ActionResponse)
 async def discard_change_session(
     session_id: str,
+    auth: AuthContext = Depends(get_current_auth),
     user_id: Optional[str] = Query(None),
 ) -> ActionResponse:
     """
@@ -299,25 +289,25 @@ async def discard_change_session(
     """
     from agents.tools import discard_change_session as do_discard
     
-    user = await _get_user(user_id)
-    if not user.organization_id:
-        logger.warning("[change_sessions] User %s has no organization", user.id)
+    _require_matching_user_id(auth, user_id)
+    if not auth.organization_id:
+        logger.warning("[change_sessions] User %s has no organization context", auth.user_id)
         raise HTTPException(status_code=400, detail="User not associated with an organization")
     
     # Verify the session belongs to this org
-    async with get_session(str(user.organization_id)) as session:
+    async with get_session(str(auth.organization_id)) as session:
         cs = await session.get(ChangeSession, UUID(session_id))
         if not cs:
             logger.warning("[change_sessions] Change session not found: %s", session_id)
             raise HTTPException(status_code=404, detail="Change session not found")
-        if cs.organization_id != user.organization_id:
+        if cs.organization_id != auth.organization_id:
             logger.warning(
                 "[change_sessions] Access denied for session %s (org mismatch)",
                 session_id,
             )
             raise HTTPException(status_code=403, detail="Access denied")
     
-    result = await do_discard(session_id, str(user.id))
+    result = await do_discard(session_id, auth.user_id_str)
     
     return ActionResponse(
         status=result.get("status", "unknown"),
@@ -328,6 +318,7 @@ async def discard_change_session(
 
 @router.post("/commit-all", response_model=ActionResponse)
 async def commit_all_pending(
+    auth: AuthContext = Depends(get_current_auth),
     user_id: Optional[str] = Query(None),
 ) -> ActionResponse:
     """
@@ -335,16 +326,16 @@ async def commit_all_pending(
     """
     from agents.tools import commit_change_session as do_commit
     
-    user = await _get_user(user_id)
-    if not user.organization_id:
-        logger.warning("[change_sessions] User %s has no organization", user.id)
+    _require_matching_user_id(auth, user_id)
+    if not auth.organization_id:
+        logger.warning("[change_sessions] User %s has no organization context", auth.user_id)
         raise HTTPException(status_code=400, detail="User not associated with an organization")
     
-    async with get_session(str(user.organization_id)) as session:
+    async with get_session(str(auth.organization_id)) as session:
         result = await session.execute(
             select(ChangeSession)
             .where(
-                ChangeSession.organization_id == user.organization_id,
+                ChangeSession.organization_id == auth.organization_id,
                 ChangeSession.status == "pending",
             )
         )
@@ -352,16 +343,18 @@ async def commit_all_pending(
         logger.info(
             "[change_sessions] Committing %d pending session(s) for org %s",
             len(pending_sessions),
-            user.organization_id,
+            auth.organization_id,
         )
     
     total_synced = 0
     total_errors = 0
     all_errors: list[dict[str, Any]] = []
     
-    org_id_str: str = str(user.organization_id)
+    org_id_str: str = str(auth.organization_id)
     for cs in pending_sessions:
-        commit_result = await do_commit(str(cs.id), str(user.id), organization_id=org_id_str)
+        commit_result = await do_commit(
+            str(cs.id), auth.user_id_str, organization_id=org_id_str
+        )
         total_synced += commit_result.get("synced_count", 0)
         total_errors += commit_result.get("error_count", 0)
         if commit_result.get("errors"):
@@ -378,6 +371,7 @@ async def commit_all_pending(
 
 @router.post("/discard-all", response_model=ActionResponse)
 async def discard_all_pending(
+    auth: AuthContext = Depends(get_current_auth),
     user_id: Optional[str] = Query(None),
 ) -> ActionResponse:
     """
@@ -385,16 +379,16 @@ async def discard_all_pending(
     """
     from agents.tools import discard_change_session as do_discard
     
-    user = await _get_user(user_id)
-    if not user.organization_id:
-        logger.warning("[change_sessions] User %s has no organization", user.id)
+    _require_matching_user_id(auth, user_id)
+    if not auth.organization_id:
+        logger.warning("[change_sessions] User %s has no organization context", auth.user_id)
         raise HTTPException(status_code=400, detail="User not associated with an organization")
     
-    async with get_session(str(user.organization_id)) as session:
+    async with get_session(str(auth.organization_id)) as session:
         result = await session.execute(
             select(ChangeSession)
             .where(
-                ChangeSession.organization_id == user.organization_id,
+                ChangeSession.organization_id == auth.organization_id,
                 ChangeSession.status == "pending",
             )
         )
@@ -402,13 +396,13 @@ async def discard_all_pending(
         logger.info(
             "[change_sessions] Discarding %d pending session(s) for org %s",
             len(pending_sessions),
-            user.organization_id,
+            auth.organization_id,
         )
     
     total_deleted = 0
     
     for cs in pending_sessions:
-        discard_result = await do_discard(str(cs.id), str(user.id))
+        discard_result = await do_discard(str(cs.id), auth.user_id_str)
         total_deleted += discard_result.get("deleted_count", 0)
     
     return ActionResponse(

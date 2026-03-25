@@ -10,7 +10,7 @@
 
 import { useEffect, useState } from 'react';
 import type { UserProfile } from './AppLayout';
-import { API_BASE } from '../lib/api';
+import { API_BASE, getAuthenticatedRequestHeaders } from '../lib/api';
 import { useUIStore, type UITheme } from '../store/uiStore';
 import { Memories } from './Memories';
 
@@ -46,16 +46,20 @@ function PhoneVerifyModal({ userId, initialNumber, onVerified, onClose }: PhoneV
     setBusy(true);
     setError(null);
     try {
+      const authHeaders: Record<string, string> = await getAuthenticatedRequestHeaders();
       const saveRes = await fetch(`${API_BASE}/auth/me?user_id=${userId}`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
         body: JSON.stringify({ phone_number: e164 }),
       });
       if (!saveRes.ok) {
         const d = await saveRes.json().catch(() => ({})) as { detail?: string };
         throw new Error(d.detail ?? 'Failed to save number');
       }
-      const res = await fetch(`${API_BASE}/auth/me/request-phone-verification?user_id=${userId}`, { method: 'POST' });
+      const res = await fetch(
+        `${API_BASE}/auth/me/request-phone-verification?user_id=${userId}`,
+        { method: 'POST', headers: authHeaders },
+      );
       const data = await res.json().catch(() => ({})) as { detail?: string };
       if (!res.ok) throw new Error(data.detail ?? 'Failed to send code');
       setNormalizedPhone(e164);
@@ -72,9 +76,10 @@ function PhoneVerifyModal({ userId, initialNumber, onVerified, onClose }: PhoneV
     setBusy(true);
     setError(null);
     try {
+      const verifyHeaders: Record<string, string> = await getAuthenticatedRequestHeaders();
       const res = await fetch(`${API_BASE}/auth/me/verify-phone?user_id=${userId}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...verifyHeaders },
         body: JSON.stringify({ code: code.trim() }),
       });
       const data = await res.json().catch(() => ({})) as { detail?: string };
@@ -205,9 +210,10 @@ export function ProfilePanel({ user, onClose, onLogout, onUpdateUser }: ProfileP
     setIsSaving(true);
     setError(null);
     try {
+      const profileHeaders: Record<string, string> = await getAuthenticatedRequestHeaders();
       const response = await fetch(`${API_BASE}/auth/me?user_id=${user.id}`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...profileHeaders },
         body: JSON.stringify({
           name: name || null,
           avatar_url: avatarPreview,
@@ -277,9 +283,10 @@ export function ProfilePanel({ user, onClose, onLogout, onUpdateUser }: ProfileP
     if (!window.confirm('Remove this phone number? You can add a new one later.')) return;
     setRemovePhoneLoading(true);
     try {
+      const removeHeaders: Record<string, string> = await getAuthenticatedRequestHeaders();
       const res = await fetch(`${API_BASE}/auth/me?user_id=${user.id}`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...removeHeaders },
         body: JSON.stringify({ phone_number: '' }),
       });
       if (!res.ok) {

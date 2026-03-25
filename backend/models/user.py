@@ -28,9 +28,11 @@ class User(Base):
     __table_args__ = (
         Index(
             "uq_users_one_guest_per_org",
-            "organization_id",
+            "guest_organization_id",
             unique=True,
-            postgresql_where=text("is_guest = true AND organization_id IS NOT NULL"),
+            postgresql_where=text(
+                "is_guest = true AND guest_organization_id IS NOT NULL"
+            ),
         ),
     )
 
@@ -39,7 +41,7 @@ class User(Base):
     )
     email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
     name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    organization_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+    guest_organization_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=True
     )
     role: Mapped[Optional[str]] = mapped_column(
@@ -75,8 +77,10 @@ class User(Base):
     last_login: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
     # Relationships
-    organization: Mapped[Optional["Organization"]] = relationship(
-        "Organization", back_populates="users", foreign_keys=[organization_id]
+    guest_organization: Mapped[Optional["Organization"]] = relationship(
+        "Organization",
+        back_populates="guest_users",
+        foreign_keys=[guest_organization_id],
     )
     deals: Mapped[list["Deal"]] = relationship(
         "Deal", back_populates="owner", foreign_keys="Deal.owner_id"
@@ -106,5 +110,9 @@ class User(Base):
             "sms_consent": self.sms_consent,
             "whatsapp_consent": self.whatsapp_consent,
             "is_guest": self.is_guest,
-            "organization_id": str(self.organization_id) if self.organization_id else None,
+            "organization_id": (
+                str(self.guest_organization_id)
+                if self.guest_organization_id
+                else None
+            ),
         }

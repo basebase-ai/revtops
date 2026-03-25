@@ -27,7 +27,7 @@ from fastapi.responses import RedirectResponse
 
 from api.auth_middleware import AuthContext, get_current_auth
 from pydantic import BaseModel, Field
-from sqlalchemy import func, or_, select, text
+from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.exc import IntegrityError
 
 from config import (
@@ -161,15 +161,46 @@ async def _get_org_membership(session: Any, user_id: UUID, org_id: UUID) -> Opti
     return result.scalar_one_or_none()
 
 
-async def _get_user_role_for_active_org(session: Any, user: Optional[User]) -> Optional[str]:
-    """Resolve the user's org-scoped role for their active organization."""
-    if not user or not user.organization_id:
+async def _get_user_role_for_active_org(
+    session: Any,
+    user: Optional[User],
+    active_org_id: Optional[UUID],
+) -> Optional[str]:
+    """Resolve the user's org-scoped role for the given organization."""
+    if not user or not active_org_id:
         return None
 
-    membership = await _get_org_membership(session, user.id, user.organization_id)
+    membership = await _get_org_membership(session, user.id, active_org_id)
     if membership:
         return membership.role
     return None
+
+
+async def _resolve_sync_response_org_id(
+    session: Any,
+    user_id: UUID,
+    preferred_org_id: Optional[UUID],
+) -> Optional[UUID]:
+    """Org to return from sync: preferred if user is an active member, else first active org."""
+    from models.org_member import OrgMember
+
+    if preferred_org_id is not None:
+        if await _get_org_membership(session, user_id, preferred_org_id):
+            return preferred_org_id
+    active_result = await session.execute(
+        select(OrgMember.organization_id)
+        .where(
+            OrgMember.user_id == user_id,
+            OrgMember.status.in_(MEMBER_ACTIVE_STATUSES),
+        )
+        .order_by(
+            OrgMember.joined_at.asc().nulls_last(),
+            OrgMember.created_at.asc().nulls_last(),
+        )
+        .limit(1)
+    )
+    row: tuple[UUID] | None = active_result.first()
+    return row[0] if row else None
 
 
 async def _can_administer_org(session: Any, user: Optional[User], org_id: UUID) -> bool:
@@ -428,30 +459,30 @@ class AvailableIntegrationsResponse(BaseModel):
 
 
 @router.get("/me", response_model=UserResponse)
-async def get_current_user(user_id: Optional[str] = None) -> UserResponse:
+async def get_current_user(
+    auth: AuthContext = Depends(get_current_auth),
+    user_id: Optional[str] = None,
+) -> UserResponse:
     """Get current authenticated user."""
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-
-    try:
-        user_uuid = UUID(user_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid user ID")
+    if user_id is not None and user_id != auth.user_id_str:
+        raise HTTPException(
+            status_code=403, detail="user_id does not match authenticated user"
+        )
 
     from models.org_member import OrgMember
 
     async with get_admin_session() as session:
-        user = await session.get(User, user_uuid)
+        user = await session.get(User, auth.user_id)
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
 
-        # Look up job title from organization membership
+        active_org: Optional[UUID] = auth.organization_id
         job_title: Optional[str] = None
-        if user.organization_id:
+        if active_org:
             membership_result = await session.execute(
                 select(OrgMember.title).where(
-                    OrgMember.user_id == user_uuid,
-                    OrgMember.organization_id == user.organization_id,
+                    OrgMember.user_id == auth.user_id,
+                    OrgMember.organization_id == active_org,
                 )
             )
             job_title = membership_result.scalar_one_or_none()
@@ -460,11 +491,11 @@ async def get_current_user(user_id: Optional[str] = None) -> UserResponse:
             id=str(user.id),
             email=user.email,
             name=user.name,
-            role=await _get_user_role_for_active_org(session, user),
+            role=await _get_user_role_for_active_org(session, user, active_org),
             avatar_url=user.avatar_url,
             phone_number=user.phone_number,
             job_title=job_title,
-            organization_id=str(user.organization_id) if user.organization_id else None,
+            organization_id=str(active_org) if active_org else None,
             sms_consent=user.sms_consent,
             whatsapp_consent=user.whatsapp_consent,
             phone_number_verified=user.phone_number_verified_at is not None,
@@ -485,21 +516,19 @@ class UpdateProfileRequest(BaseModel):
 @router.patch("/me", response_model=UserResponse)
 async def update_profile(
     request: UpdateProfileRequest,
+    auth: AuthContext = Depends(get_current_auth),
     user_id: Optional[str] = None,
 ) -> UserResponse:
     """Update current user's profile."""
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-
-    try:
-        user_uuid = UUID(user_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid user ID")
+    if user_id is not None and user_id != auth.user_id_str:
+        raise HTTPException(
+            status_code=403, detail="user_id does not match authenticated user"
+        )
 
     from models.org_member import OrgMember
 
     async with get_admin_session() as session:
-        user = await session.get(User, user_uuid)
+        user = await session.get(User, auth.user_id)
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
 
@@ -529,14 +558,15 @@ async def update_profile(
 
         # Update job title on org_members
         job_title: Optional[str] = None
-        if user.organization_id:
+        active_org_patch: Optional[UUID] = auth.organization_id
+        if active_org_patch:
             membership_result = await session.execute(
                 select(OrgMember).where(
-                    OrgMember.user_id == user_uuid,
-                    OrgMember.organization_id == user.organization_id,
+                    OrgMember.user_id == auth.user_id,
+                    OrgMember.organization_id == active_org_patch,
                 )
             )
-            membership: Optional[OrgMember] = membership_result.scalar_one_or_none()
+            membership = membership_result.scalar_one_or_none()
             if membership:
                 if request.job_title is not None:
                     membership.title = request.job_title or None
@@ -549,11 +579,11 @@ async def update_profile(
             id=str(user.id),
             email=user.email,
             name=user.name,
-            role=await _get_user_role_for_active_org(session, user),
+            role=await _get_user_role_for_active_org(session, user, active_org_patch),
             avatar_url=user.avatar_url,
             phone_number=user.phone_number,
             job_title=job_title,
-            organization_id=str(user.organization_id) if user.organization_id else None,
+            organization_id=str(active_org_patch) if active_org_patch else None,
             sms_consent=user.sms_consent,
             whatsapp_consent=user.whatsapp_consent,
             phone_number_verified=user.phone_number_verified_at is not None,
@@ -725,8 +755,17 @@ async def sync_user(request: SyncUserRequest) -> SyncUserResponse:
         if existing:
             if existing.is_guest:
                 raise HTTPException(status_code=403, detail="Guest users cannot sign in")
-            # Capture user's org before we update it — skip Drive sync when switching orgs (e.g. new org creation)
-            user_org_before_sync: Optional[UUID] = existing.organization_id
+            from models.org_member import OrgMember
+
+            prior_org_ids_result = await session.execute(
+                select(OrgMember.organization_id).where(
+                    OrgMember.user_id == existing.id,
+                    OrgMember.status.in_(MEMBER_ACTIVE_STATUSES),
+                )
+            )
+            prior_org_ids: set[UUID] = {
+                row[0] for row in prior_org_ids_result.all()
+            }
             # If the user was found by email but has a different DB ID than the
             # Supabase ID, migrate the ID so JWT auth works without fallback.
             # This happens for waitlist/invited users who later sign in via OAuth.
@@ -759,15 +798,11 @@ async def sync_user(request: SyncUserRequest) -> SyncUserResponse:
                     f"Successfully migrated user ID from {old_id} to {user_uuid}"
                 )
 
-            from models.org_member import OrgMember
-
             # Always update last_login on sync (user just logged in)
             existing.last_login = datetime.utcnow()
-            
-            # Update organization if provided and different
-            if org_uuid and existing.organization_id != org_uuid:
-                existing.organization_id = org_uuid
-                # Ensure a membership exists for the new org
+
+            # Ensure membership for client-selected org (active org is client state, not users.organization_id)
+            if org_uuid:
                 existing_membership_result = await session.execute(
                     select(OrgMember).where(
                         OrgMember.user_id == existing.id,
@@ -775,13 +810,15 @@ async def sync_user(request: SyncUserRequest) -> SyncUserResponse:
                     )
                 )
                 if not existing_membership_result.scalar_one_or_none():
-                    session.add(OrgMember(
-                        user_id=existing.id,
-                        organization_id=org_uuid,
-                        role=existing.role or "member",
-                        status="active",
-                        joined_at=datetime.utcnow(),
-                    ))
+                    session.add(
+                        OrgMember(
+                            user_id=existing.id,
+                            organization_id=org_uuid,
+                            role=existing.role or "member",
+                            status="active",
+                            joined_at=datetime.utcnow(),
+                        )
+                    )
             
             # If user was invited or a CRM stub, upgrade to active on signin
             if existing.status in ("invited", "crm_only"):
@@ -817,50 +854,39 @@ async def sync_user(request: SyncUserRequest) -> SyncUserResponse:
                     existing.id,
                     pm.organization_id,
                 )
-                # If user has no active org, set this one as active
-                if not existing.organization_id:
-                    existing.organization_id = pm.organization_id
-                    existing.role = pm.role
+                existing.role = pm.role
 
             org_ids_to_validate: set[UUID] = set()
             if org_uuid:
                 org_ids_to_validate.add(org_uuid)
             org_ids_to_validate.update(pm.organization_id for pm in pending_memberships)
-            if existing.organization_id:
-                org_ids_to_validate.add(existing.organization_id)
+            active_orgs_for_validate = await session.execute(
+                select(OrgMember.organization_id).where(
+                    OrgMember.user_id == existing.id,
+                    OrgMember.status.in_(MEMBER_ACTIVE_STATUSES),
+                )
+            )
+            org_ids_to_validate.update(row[0] for row in active_orgs_for_validate.all())
             for candidate_org_id in org_ids_to_validate:
                 await _ensure_org_has_admin(session, candidate_org_id)
 
-            if not existing.organization_id:
-                active_membership_result = await session.execute(
-                    select(OrgMember)
-                    .where(
-                        OrgMember.user_id == existing.id,
-                        OrgMember.status.in_(MEMBER_ACTIVE_STATUSES),
-                    )
-                    .order_by(OrgMember.joined_at.asc().nulls_last(), OrgMember.created_at.asc())
-                    .limit(1)
-                )
-                active_membership: Optional[OrgMember] = active_membership_result.scalar_one_or_none()
-                if active_membership:
-                    existing.organization_id = active_membership.organization_id
-                    existing.role = active_membership.role
-                    logger.info(
-                        "Bound user=%s to existing active membership org=%s during sync",
-                        existing.id,
-                        active_membership.organization_id,
-                    )
-            
             await session.commit()
             await session.refresh(existing)
 
-            # Trigger a user-scoped Google Drive sync on login (throttled to >=5 min).
-            # Skip when switching orgs (e.g. new org creation) — avoids flooding Celery and DB during onboarding
-            is_switching_org: bool = org_uuid is not None and user_org_before_sync is not None and org_uuid != user_org_before_sync
-            if existing.organization_id and not is_switching_org:
+            response_org_id: Optional[UUID] = await _resolve_sync_response_org_id(
+                session, existing.id, org_uuid
+            )
+
+            # Skip Drive login sync when adding membership in a new org (e.g. onboarding) while already in another.
+            is_switching_org: bool = (
+                org_uuid is not None
+                and bool(prior_org_ids)
+                and org_uuid not in prior_org_ids
+            )
+            if response_org_id and not is_switching_org:
                 drive_integration_result = await session.execute(
                     select(Integration).where(
-                        Integration.organization_id == existing.organization_id,
+                        Integration.organization_id == response_org_id,
                         Integration.connector == "google_drive",
                         Integration.user_id == existing.id,
                         Integration.is_active == True,
@@ -869,16 +895,15 @@ async def sync_user(request: SyncUserRequest) -> SyncUserResponse:
                 drive_integration = drive_integration_result.scalar_one_or_none()
                 if drive_integration:
                     _enqueue_google_drive_login_sync(
-                        existing.organization_id,
+                        response_org_id,
                         existing.id,
                         drive_integration,
                     )
 
-            # Load organization data and job title if user has an org
             org_data: Optional[SyncOrganizationData] = None
             sync_job_title: Optional[str] = None
-            if existing.organization_id:
-                org = await session.get(Organization, existing.organization_id)
+            if response_org_id:
+                org = await session.get(Organization, response_org_id)
                 if org:
                     _sub_ok = (org.subscription_status or "") in ("active", "trialing")
                     org_data = SyncOrganizationData(
@@ -891,18 +916,18 @@ async def sync_user(request: SyncUserRequest) -> SyncUserResponse:
                 title_result = await session.execute(
                     select(OrgMember.title).where(
                         OrgMember.user_id == existing.id,
-                        OrgMember.organization_id == existing.organization_id,
+                        OrgMember.organization_id == response_org_id,
                     )
                 )
                 sync_job_title = title_result.scalar_one_or_none()
-            
+
             sync_needs_onboarding: bool = False
             sync_onboarding_mode: Optional[str] = None
-            if existing.organization_id:
+            if response_org_id:
                 ob_result = await session.execute(
                     select(OrgMember).where(
                         OrgMember.user_id == existing.id,
-                        OrgMember.organization_id == existing.organization_id,
+                        OrgMember.organization_id == response_org_id,
                         OrgMember.status == "onboarding",
                     )
                 )
@@ -920,7 +945,7 @@ async def sync_user(request: SyncUserRequest) -> SyncUserResponse:
                 avatar_url=existing.avatar_url,
                 phone_number=existing.phone_number,
                 job_title=sync_job_title,
-                organization_id=str(existing.organization_id) if existing.organization_id else None,
+                organization_id=str(response_org_id) if response_org_id else None,
                 organization=org_data,
                 status=existing.status,
                 roles=existing.roles or [],
@@ -958,11 +983,17 @@ async def sync_user(request: SyncUserRequest) -> SyncUserResponse:
                 existing.last_login = datetime.utcnow()
                 await session.commit()
                 await session.refresh(existing)
+                retry_org_id: Optional[UUID] = await _resolve_sync_response_org_id(
+                    session, existing.id, org_uuid
+                )
                 org_data_retry: Optional[SyncOrganizationData] = None
-                if existing.organization_id:
-                    org_retry = await session.get(Organization, existing.organization_id)
+                if retry_org_id:
+                    org_retry = await session.get(Organization, retry_org_id)
                     if org_retry:
-                        _sub_ok = (org_retry.subscription_status or "") in ("active", "trialing")
+                        _sub_ok = (org_retry.subscription_status or "") in (
+                            "active",
+                            "trialing",
+                        )
                         org_data_retry = SyncOrganizationData(
                             id=str(org_retry.id),
                             name=org_retry.name,
@@ -977,7 +1008,7 @@ async def sync_user(request: SyncUserRequest) -> SyncUserResponse:
                     avatar_url=existing.avatar_url,
                     phone_number=existing.phone_number,
                     job_title=None,
-                    organization_id=str(existing.organization_id) if existing.organization_id else None,
+                    organization_id=str(retry_org_id) if retry_org_id else None,
                     organization=org_data_retry,
                     status=existing.status,
                     roles=existing.roles or [],
@@ -1161,7 +1192,7 @@ async def create_organization(
         guest_user = User(
             email=f"guest+{org_uuid}@guest.basebase.local",
             name="Guest user",
-            organization_id=org_uuid,
+            guest_organization_id=org_uuid,
             status="active",
             role="member",
             is_guest=True,
@@ -1569,10 +1600,20 @@ async def link_identity(
         raise HTTPException(status_code=400, detail="Invalid ID format")
 
     async with get_session() as session:
-        # Verify target user belongs to this org
+        # Verify target user belongs to this org (membership or guest home org)
         target_user: User | None = await session.get(User, target_uuid)
-        if not target_user or target_user.organization_id != org_uuid:
-            raise HTTPException(status_code=404, detail="Target user not found in this organization")
+        if not target_user:
+            raise HTTPException(
+                status_code=404, detail="Target user not found in this organization"
+            )
+        in_org: bool = await _get_org_membership(session, target_uuid, org_uuid) is not None
+        if not in_org and not (
+            getattr(target_user, "is_guest", False)
+            and target_user.guest_organization_id == org_uuid
+        ):
+            raise HTTPException(
+                status_code=404, detail="Target user not found in this organization"
+            )
         if getattr(target_user, "is_guest", False):
             logger.warning(
                 "Blocked manual identity link to guest user org=%s target_user=%s mapping=%s by_user=%s",
@@ -1673,7 +1714,7 @@ async def unlink_identity(
 
     async with get_session() as session:
         requester: User | None = await session.get(User, requester_uuid)
-        if not requester or requester.organization_id != org_uuid:
+        if not requester or await _get_org_membership(session, requester_uuid, org_uuid) is None:
             raise HTTPException(status_code=403, detail="Not authorized to modify this organization")
 
         mapping: ExternalIdentityMapping | None = await session.get(ExternalIdentityMapping, mapping_uuid)
@@ -2120,91 +2161,13 @@ async def list_user_organizations(
                 logo_url=org.logo_url,
                 handle=org.handle,
                 role=membership.role,
-                is_active=(user.organization_id == org.id),
+                # Active org is client state (X-Organization-Id); kept for API compatibility.
+                is_active=False,
             )
             for membership, org in rows
         ]
 
         return UserOrganizationsListResponse(organizations=orgs)
-
-
-class SwitchActiveOrgRequest(BaseModel):
-    """Request to switch the user's active organization."""
-
-    organization_id: str
-
-
-@router.patch("/users/me/active-organization", response_model=SyncUserResponse)
-async def switch_active_organization(
-    request: SwitchActiveOrgRequest,
-    auth: AuthContext = Depends(get_current_auth),
-) -> SyncUserResponse:
-    """Switch the user's active organization.
-
-    Validates that the user (from JWT) has an active membership in the target org,
-    then updates User.organization_id.
-    """
-    from models.org_member import OrgMember
-
-    try:
-        user_uuid = auth.user_id
-        target_org_uuid = UUID(request.organization_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid organization ID format")
-
-    async with get_admin_session() as session:
-        user: Optional[User] = await session.get(User, user_uuid)
-        if not user:
-            raise HTTPException(status_code=404, detail="User not found")
-
-        # Validate membership
-        result = await session.execute(
-            select(OrgMember).where(
-                OrgMember.user_id == user_uuid,
-                OrgMember.organization_id == target_org_uuid,
-                OrgMember.status.in_(MEMBER_ACTIVE_STATUSES),
-            )
-        )
-        membership: Optional[OrgMember] = result.scalar_one_or_none()
-        if not membership:
-            raise HTTPException(
-                status_code=403,
-                detail="You are not an active member of this organization",
-            )
-
-        # Update active org
-        user.organization_id = target_org_uuid
-        await session.commit()
-        await session.refresh(user)
-
-        # Load org data
-        org: Optional[Organization] = await session.get(Organization, target_org_uuid)
-        org_data: Optional[SyncOrganizationData] = None
-        if org:
-            _sub_ok = (org.subscription_status or "") in ("active", "trialing")
-            org_data = SyncOrganizationData(
-                id=str(org.id),
-                name=org.name,
-                logo_url=org.logo_url,
-                handle=org.handle,
-                subscription_required=not _sub_ok,
-            )
-
-        return SyncUserResponse(
-            id=str(user.id),
-            email=user.email,
-            name=user.name,
-            avatar_url=user.avatar_url,
-            phone_number=user.phone_number,
-            job_title=membership.title if membership else None,
-            organization_id=str(user.organization_id) if user.organization_id else None,
-            organization=org_data,
-            status=user.status,
-            roles=user.roles or [],
-            sms_consent=user.sms_consent,
-            whatsapp_consent=user.whatsapp_consent,
-            phone_number_verified=user.phone_number_verified_at is not None,
-        )
 
 
 class UpdateMemberRoleRequest(BaseModel):
@@ -2329,9 +2292,6 @@ async def remove_organization_member(
             mapping.user_id = None
             mapping.revtops_email = None
             mapping.match_source = "manual_unlink"
-
-        if target_user and target_user.organization_id == org_uuid:
-            target_user.organization_id = None
 
         await _ensure_org_has_admin(session, org_uuid)
         await session.commit()
@@ -2531,23 +2491,15 @@ async def delete_organization(
             )
 
         deleted_guest_users = await session.execute(
-            text("DELETE FROM users WHERE organization_id = :org_id AND is_guest IS TRUE"),
+            text(
+                "DELETE FROM users WHERE guest_organization_id = :org_id AND is_guest IS TRUE"
+            ),
             {"org_id": org_uuid},
         )
         logger.info(
             "Deleted guest users for organization org=%s count=%s",
             org_uuid,
             deleted_guest_users.rowcount,
-        )
-
-        detached_users = await session.execute(
-            text("UPDATE users SET organization_id = NULL WHERE organization_id = :org_id AND is_guest IS NOT TRUE"),
-            {"org_id": org_uuid},
-        )
-        logger.info(
-            "Detached non-guest users from organization org=%s count=%s",
-            org_uuid,
-            detached_users.rowcount,
         )
 
         await session.delete(org)
@@ -2585,7 +2537,11 @@ async def update_guest_user(
             raise HTTPException(status_code=409, detail="Guest user is not configured for this organization")
 
         guest_user = await session.get(User, org.guest_user_id)
-        if not guest_user or guest_user.organization_id != org_uuid or not guest_user.is_guest:
+        if (
+            not guest_user
+            or guest_user.guest_organization_id != org_uuid
+            or not guest_user.is_guest
+        ):
             logger.warning(
                 "Refusing to toggle guest user for org=%s because configured guest_user_id=%s is invalid",
                 org_uuid,
@@ -2653,10 +2609,25 @@ async def get_masquerade_user(
         if getattr(target_user, "is_guest", False):
             raise HTTPException(status_code=403, detail="Guest users cannot be masqueraded as")
         
-        # Fetch target user's organization if they have one
+        # Fetch one of the target user's organizations (for impersonation UI)
         org_data: Optional[SyncOrganizationData] = None
-        if target_user.organization_id:
-            org = await session.get(Organization, target_user.organization_id)
+        from models.org_member import OrgMember
+
+        first_org_row = await session.execute(
+            select(OrgMember.organization_id)
+            .where(
+                OrgMember.user_id == target_user.id,
+                OrgMember.status.in_(MEMBER_ACTIVE_STATUSES),
+            )
+            .order_by(
+                OrgMember.joined_at.asc().nulls_last(),
+                OrgMember.created_at.asc().nulls_last(),
+            )
+            .limit(1)
+        )
+        first_org_id: UUID | None = first_org_row.scalar_one_or_none()
+        if first_org_id:
+            org = await session.get(Organization, first_org_id)
             if org:
                 _sub_ok = (org.subscription_status or "") in ("active", "trialing")
                 org_data = SyncOrganizationData(
@@ -2732,13 +2703,20 @@ async def get_connect_url(
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid user ID")
 
-        async with get_session() as session:
+        async with get_admin_session() as session:
             user = await session.get(User, user_uuid)
-            if not user or not user.organization_id:
+            if not user:
                 raise HTTPException(status_code=404, detail="User not found")
             if user.is_guest:
-                raise HTTPException(status_code=403, detail="Guest users cannot connect integrations")
-            org_id_str = str(user.organization_id)
+                raise HTTPException(
+                    status_code=403, detail="Guest users cannot connect integrations"
+                )
+            resolved_org: Optional[UUID] = await _resolve_sync_response_org_id(
+                session, user_uuid, None
+            )
+            if not resolved_org:
+                raise HTTPException(status_code=404, detail="User not found")
+            org_id_str = str(resolved_org)
     else:
         raise HTTPException(status_code=400, detail="Either user_id or organization_id required")
 
@@ -2793,13 +2771,20 @@ async def get_connect_session(
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid user ID")
 
-        async with get_session() as db_session:
+        async with get_admin_session() as db_session:
             user = await db_session.get(User, user_uuid)
-            if not user or not user.organization_id:
+            if not user:
                 raise HTTPException(status_code=404, detail="User not found")
             if user.is_guest:
-                raise HTTPException(status_code=403, detail="Guest users cannot connect integrations")
-            org_id_str = str(user.organization_id)
+                raise HTTPException(
+                    status_code=403, detail="Guest users cannot connect integrations"
+                )
+            resolved_org_session: Optional[UUID] = await _resolve_sync_response_org_id(
+                db_session, user_uuid, None
+            )
+            if not resolved_org_session:
+                raise HTTPException(status_code=404, detail="User not found")
+            org_id_str = str(resolved_org_session)
 
     if not org_id_str:
         raise HTTPException(status_code=400, detail="Either user_id or organization_id required")
@@ -2875,7 +2860,9 @@ async def confirm_integration(
 
     async with get_admin_session() as guard_session:
         requesting_user = await guard_session.get(User, user_uuid)
-        if not requesting_user or requesting_user.organization_id != org_uuid:
+        if not requesting_user:
+            raise HTTPException(status_code=403, detail="Not authorized for this organization")
+        if await _get_org_membership(guard_session, user_uuid, org_uuid) is None:
             raise HTTPException(status_code=403, detail="Not authorized for this organization")
         if requesting_user.is_guest:
             raise HTTPException(status_code=403, detail="Guest users cannot connect integrations")
@@ -3298,7 +3285,9 @@ async def connect_builtin(
 
     async with get_admin_session() as guard_session:
         requesting_user = await guard_session.get(User, user_uuid)
-        if not requesting_user or requesting_user.organization_id != org_uuid:
+        if not requesting_user:
+            raise HTTPException(status_code=403, detail="Not authorized for this organization")
+        if await _get_org_membership(guard_session, user_uuid, org_uuid) is None:
             raise HTTPException(status_code=403, detail="Not authorized for this organization")
         if requesting_user.is_guest:
             raise HTTPException(status_code=403, detail="Guest users cannot connect integrations")
@@ -3532,8 +3521,11 @@ async def nango_callback(
         )
 
         user = await session.get(User, user_uuid)
-        if not user or user.organization_id != org_uuid:
+        if not user:
             raise HTTPException(status_code=403, detail="User not authorized")
+        async with get_admin_session() as guard_cb:
+            if await _get_org_membership(guard_cb, user_uuid, org_uuid) is None:
+                raise HTTPException(status_code=403, detail="User not authorized")
 
         result = await session.execute(
             select(Integration).where(
@@ -3586,36 +3578,31 @@ async def nango_callback(
 
 @router.get("/integrations", response_model=IntegrationsListResponse)
 async def list_integrations(
-    user_id: Optional[str] = None, organization_id: Optional[str] = None
+    auth: AuthContext = Depends(get_current_auth),
+    user_id: Optional[str] = None,
+    organization_id: Optional[str] = None,
 ) -> IntegrationsListResponse:
     """List all integrations for a user's organization.
 
     Returns integrations grouped by provider, showing the current user's
     integration (if any), team connections, and connector scope.
     """
-    org_uuid: UUID | None = None
-    current_user_uuid: UUID | None = None
+    if user_id is not None and user_id != auth.user_id_str:
+        raise HTTPException(
+            status_code=403, detail="user_id does not match authenticated user"
+        )
+    if not auth.organization_id:
+        raise HTTPException(
+            status_code=400, detail="User not associated with an organization"
+        )
+    if organization_id is not None and organization_id != str(auth.organization_id):
+        raise HTTPException(
+            status_code=403,
+            detail="organization_id does not match active organization",
+        )
 
-    if organization_id:
-        try:
-            org_uuid = UUID(organization_id)
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid organization ID")
-
-    if user_id:
-        try:
-            current_user_uuid = UUID(user_id)
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid user ID")
-
-        async with get_admin_session() as db_session:
-            user = await db_session.get(User, current_user_uuid)
-            if not user or not user.organization_id:
-                raise HTTPException(status_code=404, detail="User not found")
-            org_uuid = user.organization_id
-
-    if not org_uuid:
-        raise HTTPException(status_code=400, detail="Either user_id or organization_id required")
+    org_uuid: UUID = auth.organization_id
+    current_user_uuid: Optional[UUID] = auth.user_id
 
     from connectors.registry import ConnectorScope
 
@@ -3634,9 +3621,20 @@ async def list_integrations(
                 integrations_by_provider[i.connector] = []
             integrations_by_provider[i.connector].append(i)
 
-        # Get team members
+        # Team members: org_members (and guest users homed on this org)
+        from models.org_member import OrgMember
+
+        membership_uid_subq = select(OrgMember.user_id).where(
+            OrgMember.organization_id == org_uuid,
+            OrgMember.status.in_(MEMBER_ACTIVE_STATUSES),
+        )
         team_result = await db_session.execute(
-            select(User).where(User.organization_id == org_uuid)
+            select(User).where(
+                or_(
+                    User.id.in_(membership_uid_subq),
+                    and_(User.is_guest.is_(True), User.guest_organization_id == org_uuid),
+                )
+            )
         )
         team_members: dict[UUID, User] = {u.id: u for u in team_result.scalars().all()}
         team_total = len(team_members)
@@ -3754,11 +3752,26 @@ async def disconnect_integration(
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid user ID")
 
-        async with get_session() as db_session:
+        async with get_admin_session() as db_session:
             user = await db_session.get(User, current_user_uuid)
-            if not user or not user.organization_id:
+            if not user:
                 raise HTTPException(status_code=404, detail="User not found")
-            org_uuid = user.organization_id
+            if org_uuid is None:
+                resolved_disconnect_org: Optional[UUID] = (
+                    await _resolve_sync_response_org_id(
+                        db_session, current_user_uuid, None
+                    )
+                )
+                if not resolved_disconnect_org:
+                    raise HTTPException(status_code=404, detail="User not found")
+                org_uuid = resolved_disconnect_org
+            elif (
+                await _get_org_membership(db_session, current_user_uuid, org_uuid)
+                is None
+            ):
+                raise HTTPException(
+                    status_code=403, detail="User not authorized for this organization"
+                )
 
     if not org_uuid:
         raise HTTPException(status_code=400, detail="Either user_id or organization_id required")
@@ -4178,9 +4191,12 @@ async def register_user(request: CreateUserRequest) -> CreateUserResponse:
         existing_user = result.scalar_one_or_none()
 
         if existing_user:
+            existing_org_id: Optional[UUID] = await _resolve_sync_response_org_id(
+                session, existing_user.id, None
+            )
             return CreateUserResponse(
                 user_id=str(existing_user.id),
-                organization_id=str(existing_user.organization_id) if existing_user.organization_id else "",
+                organization_id=str(existing_org_id) if existing_org_id else "",
             )
 
         from models.org_member import OrgMember
@@ -4196,7 +4212,7 @@ async def register_user(request: CreateUserRequest) -> CreateUserResponse:
         user = User(
             email=request.email,
             name=request.name,
-            organization_id=organization.id,
+            organization_id=None,
             role="member",
         )
         session.add(user)

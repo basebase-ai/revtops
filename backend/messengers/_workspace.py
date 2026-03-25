@@ -23,7 +23,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select, or_, text
+from sqlalchemy import and_, or_, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from config import settings
@@ -284,8 +284,11 @@ class WorkspaceMessenger(BaseMessenger):
                 select(User)
                 .where(
                     or_(
-                        User.organization_id == org_uuid,
                         User.id.in_(membership_subq),
+                        and_(
+                            User.is_guest.is_(True),
+                            User.guest_organization_id == org_uuid,
+                        ),
                     )
                 )
                 .where(User.email == email)

@@ -17,7 +17,7 @@ from typing import Any, Optional
 from uuid import UUID
 
 import httpx
-from sqlalchemy import func, select, update
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from connectors.base import BaseConnector
@@ -29,7 +29,10 @@ from models.github_commit import GitHubCommit
 from models.github_pull_request import GitHubPullRequest
 from models.github_repository import GitHubRepository
 from models.external_identity_mapping import ExternalIdentityMapping
+from models.org_member import OrgMember
 from models.user import User
+
+_GITHUB_ORG_MEMBER_ACTIVE: tuple[str, ...] = ("active", "onboarding")
 
 logger = logging.getLogger(__name__)
 
@@ -358,10 +361,20 @@ Use `run_sql_query` on `github_repositories`, `github_commits`, `github_pull_req
         # 2. Try email match against users table (tolerate duplicate emails)
         if email:
             async with get_session(organization_id=self.organization_id) as session:
+                m_sub = select(OrgMember.user_id).where(
+                    OrgMember.organization_id == org_uuid,
+                    OrgMember.status.in_(_GITHUB_ORG_MEMBER_ACTIVE),
+                )
                 result = await session.execute(
                     select(User.id)
                     .where(
-                        User.organization_id == org_uuid,
+                        or_(
+                            User.id.in_(m_sub),
+                            and_(
+                                User.is_guest.is_(True),
+                                User.guest_organization_id == org_uuid,
+                            ),
+                        ),
                         User.email == email,
                     )
                     .limit(1)
@@ -462,9 +475,19 @@ Use `run_sql_query` on `github_repositories`, `github_commits`, `github_pull_req
 
         # Load all org users for email matching
         async with get_session(organization_id=self.organization_id) as session:
+            m_sub = select(OrgMember.user_id).where(
+                OrgMember.organization_id == org_uuid,
+                OrgMember.status.in_(_GITHUB_ORG_MEMBER_ACTIVE),
+            )
             user_result = await session.execute(
                 select(User).where(
-                    User.organization_id == org_uuid,
+                    or_(
+                        User.id.in_(m_sub),
+                        and_(
+                            User.is_guest.is_(True),
+                            User.guest_organization_id == org_uuid,
+                        ),
+                    ),
                     User.status != "crm_only",
                 )
             )

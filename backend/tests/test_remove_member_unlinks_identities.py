@@ -104,7 +104,9 @@ def test_remove_member_unlinks_all_identities(monkeypatch):
 
     membership = SimpleNamespace(user_id=target_user_id, organization_id=org_id, status="active")
     requester = SimpleNamespace(id=requester_id, is_guest=False, role="member", roles=[])
-    target_user = SimpleNamespace(id=target_user_id, is_guest=False, organization_id=org_id)
+    target_user = SimpleNamespace(
+        id=target_user_id, is_guest=False, guest_organization_id=None
+    )
     mappings = [
         SimpleNamespace(user_id=target_user_id, revtops_email="one@example.com", match_source="auto"),
         SimpleNamespace(user_id=target_user_id, revtops_email="two@example.com", match_source="auto"),
@@ -135,7 +137,7 @@ def test_remove_member_unlinks_all_identities(monkeypatch):
 
     assert result["status"] == "removed"
     assert membership.status == "deactivated"
-    assert target_user.organization_id is None
+    assert target_user.guest_organization_id is None  # unchanged for non-guest
     assert fake_session.committed
     for mapping in mappings:
         assert mapping.user_id is None

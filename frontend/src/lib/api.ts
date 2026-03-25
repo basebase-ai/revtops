@@ -4,9 +4,9 @@
  * Single source of truth for API URLs and common request helpers.
  * Includes JWT authentication and masquerade support for admin impersonation.
  *
- * SECURITY: All API requests include the Supabase JWT token in the
- * Authorization header. The backend verifies this token to authenticate
- * the user - never trust user_id or organization_id from query parameters.
+ * SECURITY: JWT authenticates the user. Active org is sent as X-Organization-Id;
+ * the backend validates membership (org_members) and must not trust org id from
+ * query params alone for authorization.
  */
 
 import { getAdminUserId, getMasqueradeUserId } from "../store";
@@ -55,6 +55,40 @@ async function getAccessToken(): Promise<string | null> {
   return session?.access_token ?? null;
 }
 
+/** Active org for API scope; dynamic import avoids authStore ↔ api circular dependency. */
+async function getActiveOrganizationIdForRequest(): Promise<string | null> {
+  const { useAuthStore } = await import("../store/authStore");
+  const orgId: string | undefined = useAuthStore.getState().organization?.id;
+  return orgId ?? null;
+}
+
+/**
+ * Headers for authenticated fetch() calls that bypass apiRequest.
+ * Includes JWT, optional X-Organization-Id (membership-validated server-side), masquerade.
+ */
+export async function getAuthenticatedRequestHeaders(): Promise<
+  Record<string, string>
+> {
+  const headers: Record<string, string> = {};
+  const accessToken: string | null = await getAccessToken();
+  if (accessToken) {
+    headers.Authorization = `Bearer ${accessToken}`;
+  }
+  const activeOrgId: string | null = await getActiveOrganizationIdForRequest();
+  if (activeOrgId) {
+    headers["X-Organization-Id"] = activeOrgId;
+  }
+  const adminUserId: string | null = getAdminUserId();
+  if (adminUserId) {
+    headers["X-Admin-User-Id"] = adminUserId;
+  }
+  const masqueradeUserId: string | null = getMasqueradeUserId();
+  if (masqueradeUserId) {
+    headers["X-Masquerade-User-Id"] = masqueradeUserId;
+  }
+  return headers;
+}
+
 /**
  * Build WebSocket URL with authentication token.
  * Use this instead of manually constructing WS URLs.
@@ -67,8 +101,13 @@ export async function getAuthenticatedWsUrl(path: string): Promise<string | null
   if (!token) {
     return null;
   }
+  const orgId: string | null = await getActiveOrganizationIdForRequest();
   const baseUrl = `${WS_BASE}${path}`;
-  return `${baseUrl}?token=${encodeURIComponent(token)}`;
+  const params = new URLSearchParams({ token });
+  if (orgId) {
+    params.set("org_id", orgId);
+  }
+  return `${baseUrl}?${params.toString()}`;
 }
 
 /**
@@ -77,32 +116,18 @@ export async function getAuthenticatedWsUrl(path: string): Promise<string | null
  * - Authorization header with Supabase JWT token
  * - X-Admin-User-Id header when masquerading
  * - X-Masquerade-User-Id header when masquerading
+ * - X-Organization-Id when the user has a selected organization (validated server-side)
  */
 export async function apiRequest<T>(
   endpoint: string,
   options: RequestInit = {}
 ): Promise<ApiResponse<T>> {
+  const authHeaders: Record<string, string> = await getAuthenticatedRequestHeaders();
   const headers: HeadersInit = {
     "Content-Type": "application/json",
+    ...authHeaders,
     ...options.headers,
   };
-
-  // Add Authorization header with Supabase JWT token
-  const accessToken = await getAccessToken();
-  if (accessToken) {
-    (headers as Record<string, string>)["Authorization"] = `Bearer ${accessToken}`;
-  }
-
-  // Add admin user ID header when masquerading
-  const adminUserId = getAdminUserId();
-  if (adminUserId) {
-    (headers as Record<string, string>)["X-Admin-User-Id"] = adminUserId;
-  }
-
-  const masqueradeUserId = getMasqueradeUserId();
-  if (masqueradeUserId) {
-    (headers as Record<string, string>)["X-Masquerade-User-Id"] = masqueradeUserId;
-  }
 
   try {
     const response = await fetch(`${API_BASE}${endpoint}`, {

@@ -3,11 +3,53 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+import pytest
+
 from services import celery_health
 
 
 async def _drain_scheduled_tasks() -> None:
     await asyncio.sleep(0)
+
+
+@pytest.fixture(autouse=True)
+def _non_development_for_celery_check(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tests exercise the ping path; development skips checks by default."""
+    monkeypatch.setenv("ENVIRONMENT", "production")
+
+
+def test_celery_startup_check_skipped_in_development(monkeypatch: Any) -> None:
+    monkeypatch.setenv("ENVIRONMENT", "development")
+    called = False
+
+    async def _fake_inspect() -> dict[str, Any] | None:
+        nonlocal called
+        called = True
+        return None
+
+    monkeypatch.setattr(celery_health, "_inspect_celery_workers", _fake_inspect)
+
+    ok = asyncio.run(celery_health.ensure_celery_workers_available())
+    assert ok is True
+    assert called is False
+
+
+def test_celery_startup_check_forced_in_development(monkeypatch: Any) -> None:
+    monkeypatch.setenv("ENVIRONMENT", "development")
+    monkeypatch.setenv("CELERY_STARTUP_CHECK", "true")
+
+    async def _fake_inspect() -> dict[str, Any] | None:
+        return {"worker@a": {"ok": "pong"}}
+
+    monkeypatch.setattr(celery_health, "_inspect_celery_workers", _fake_inspect)
+    monkeypatch.setattr(
+        celery_health,
+        "create_pagerduty_incident_with_details",
+        lambda **_: (_ for _ in ()).throw(AssertionError("no incident")),
+    )
+
+    ok = asyncio.run(celery_health.ensure_celery_workers_available())
+    assert ok is True
 
 
 def test_ensure_celery_workers_available_success(monkeypatch: Any) -> None:

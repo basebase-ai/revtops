@@ -15,7 +15,7 @@ from decimal import Decimal
 from typing import Any, Optional
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 
 from connectors.base import BaseConnector
 from connectors.registry import AuthType, Capability, ConnectorMeta, ConnectorScope
@@ -25,6 +25,7 @@ from models.contact import Contact
 from models.database import get_session
 from models.deal import Deal
 from models.external_identity_mapping import ExternalIdentityMapping
+from models.org_member import OrgMember
 from models.user import User
 
 # Salesforce API version
@@ -577,12 +578,24 @@ class SalesforceConnector(BaseConnector):
                 return mapping.user_id
 
             # Fallback: return first user in organization (for MVP)
-            result = await session.execute(
-                select(User).where(
-                    User.organization_id == org_uuid,
-                )
+            m_sub_sf = select(OrgMember.user_id).where(
+                OrgMember.organization_id == org_uuid,
+                OrgMember.status.in_(("active", "onboarding")),
             )
-            user: User | None = result.scalars().first()
+            result = await session.execute(
+                select(User)
+                .where(
+                    or_(
+                        User.id.in_(m_sub_sf),
+                        and_(
+                            User.is_guest.is_(True),
+                            User.guest_organization_id == org_uuid,
+                        ),
+                    )
+                )
+                .limit(1)
+            )
+            user = result.scalars().first()
             return user.id if user else None
 
     async def _map_sf_account_to_our_account(

@@ -725,7 +725,7 @@ async def add_participant(
         if not target_user:
             raise HTTPException(status_code=404, detail="User not found")
 
-        # Match team roster: org membership (multi-org users may have a different User.organization_id)
+        # Match team roster: membership in the conversation's org (not users.guest_organization_id alone)
         conv_org_id = conversation.organization_id
         if conv_org_id is None:
             raise HTTPException(status_code=400, detail="Conversation has no organization")
@@ -736,7 +736,10 @@ async def add_participant(
                 OrgMember.status.in_(("active", "onboarding", "invited")),
             )
         )
-        if membership_row.scalar_one_or_none() is None:
+        if membership_row.scalar_one_or_none() is None and not (
+            getattr(target_user, "is_guest", False)
+            and target_user.guest_organization_id == conv_org_id
+        ):
             raise HTTPException(status_code=403, detail="User is not in your organization")
 
         # Check if already a participant

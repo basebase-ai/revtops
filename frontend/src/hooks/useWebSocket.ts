@@ -18,8 +18,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { WS_BASE, isProduction } from '../lib/api';
-import { supabase } from '../lib/supabase';
+import { getAuthenticatedWsUrl, isProduction } from '../lib/api';
 
 interface UseWebSocketOptions {
   /** Callback called immediately for each message received */
@@ -71,19 +70,14 @@ export function useWebSocket(path: string, options?: UseWebSocketOptions, reconn
 
     setConnectionState('connecting');
 
-    // Get authentication token from Supabase session
-    const { data: { session } } = await supabase.auth.getSession();
-    const token = session?.access_token;
-    
-    if (!token) {
+    const wsUrl: string | null = await getAuthenticatedWsUrl(path);
+    if (!wsUrl) {
       console.error('[WebSocket] No authentication token available');
       setConnectionState('error');
       return;
     }
 
-    // Build WebSocket URL with authentication token
-    const wsUrl = `${WS_BASE}${path}?token=${encodeURIComponent(token)}`;
-    console.log('[WebSocket] Connecting:', isProduction ? 'production' : 'dev', `${WS_BASE}${path}`);
+    console.log('[WebSocket] Connecting:', isProduction ? 'production' : 'dev', path);
     
     const ws = new WebSocket(wsUrl);
 

@@ -452,7 +452,7 @@ async def list_admin_users(
         # Get all users who are not on the waitlist (active or invited)
         query = (
             select(User)
-            .options(selectinload(User.organization))
+            .options(selectinload(User.guest_organization))
             .where(User.status.in_(["active", "invited"]))
             .order_by(User.created_at.desc())
         )
@@ -461,11 +461,11 @@ async def list_admin_users(
         users = result.scalars().all()
 
         user_ids = [u.id for u in users]
-        memberships_by_user: dict[UUID, list[str]] = {}
+        memberships_by_user: dict[UUID, list[tuple[UUID, str]]] = {}
 
         if user_ids:
             memberships_result = await session.execute(
-                select(OrgMember.user_id, Organization.name)
+                select(OrgMember.user_id, Organization.id, Organization.name)
                 .join(Organization, OrgMember.organization_id == Organization.id)
                 .where(
                     OrgMember.user_id.in_(user_ids),
@@ -473,8 +473,10 @@ async def list_admin_users(
                 )
                 .order_by(Organization.name.asc())
             )
-            for user_id, organization_name in memberships_result.all():
-                memberships_by_user.setdefault(user_id, []).append(organization_name)
+            for row_uid, row_oid, organization_name in memberships_result.all():
+                memberships_by_user.setdefault(row_uid, []).append(
+                    (row_oid, organization_name)
+                )
 
         def split_name(full_name: Optional[str]) -> tuple[Optional[str], Optional[str]]:
             """Split a full name into first and last name."""
@@ -489,10 +491,18 @@ async def list_admin_users(
         for u in users:
             first_name, last_name = split_name(u.name)
             org_name: Optional[str] = None
-            if u.organization:
-                org_name = u.organization.name
-            
-            organizations = memberships_by_user.get(u.id, [])
+            org_id_out: Optional[str] = None
+            if u.guest_organization:
+                org_name = u.guest_organization.name
+            membership_rows: list[tuple[UUID, str]] = memberships_by_user.get(u.id, [])
+            if u.is_guest and u.guest_organization_id:
+                org_id_out = str(u.guest_organization_id)
+            elif membership_rows:
+                org_id_out = str(membership_rows[0][0])
+                if not org_name:
+                    org_name = membership_rows[0][1]
+
+            organizations: list[str] = [row[1] for row in membership_rows]
             user_responses.append(
                 AdminUserResponse(
                     id=str(u.id),
@@ -502,7 +512,7 @@ async def list_admin_users(
                     status=u.status,
                     last_login=f"{u.last_login.isoformat()}Z" if u.last_login else None,
                     created_at=f"{u.created_at.isoformat()}Z" if u.created_at else None,
-                    organization_id=str(u.organization_id) if u.organization_id else None,
+                    organization_id=org_id_out,
                     organization_name=org_name,
                     organizations=organizations,
                     is_guest=bool(u.is_guest),

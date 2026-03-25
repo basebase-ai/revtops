@@ -22,7 +22,7 @@ from typing import Any
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -939,8 +939,11 @@ async def refresh_slack_user_mappings_from_directory(
         users_result = await session.execute(
             select(User).where(
                 or_(
-                    User.organization_id == org_uuid,
                     User.id.in_(membership_subq),
+                    and_(
+                        User.is_guest.is_(True),
+                        User.guest_organization_id == org_uuid,
+                    ),
                 )
             )
         )
@@ -1074,8 +1077,11 @@ async def resolve_revtops_user_for_slack_actor(
         users_result = await session.execute(
             select(User).where(
                 or_(
-                    User.organization_id == org_uuid,
                     User.id.in_(membership_subq),
+                    and_(
+                        User.is_guest.is_(True),
+                        User.guest_organization_id == org_uuid,
+                    ),
                 )
             )
         )

@@ -16,7 +16,7 @@ from decimal import Decimal
 from typing import Any, Optional
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 
@@ -37,6 +37,8 @@ from models.external_identity_mapping import ExternalIdentityMapping
 from models.user import User
 
 HUBSPOT_API_BASE = "https://api.hubapi.com"
+
+_HUBSPOT_ORG_MEMBER_ACTIVE: tuple[str, ...] = ("active", "onboarding")
 
 
 class HubSpotConnector(BaseConnector):
@@ -1594,23 +1596,22 @@ Notes are activities attached to deals (or contacts/companies). Use HubSpot **so
         user: Optional[User] = existing_result.scalar_one_or_none()
 
         if user:
-            if user.organization_id == org_uuid:
-                return user.id
             member_result = await session.execute(
                 select(OrgMember).where(
                     OrgMember.user_id == user.id,
                     OrgMember.organization_id == org_uuid,
                 )
             )
-            if not member_result.scalar_one_or_none():
-                session.add(
-                    OrgMember(
-                        user_id=user.id,
-                        organization_id=org_uuid,
-                        role="member",
-                        status="active",
-                    )
+            if member_result.scalar_one_or_none():
+                return user.id
+            session.add(
+                OrgMember(
+                    user_id=user.id,
+                    organization_id=org_uuid,
+                    role="member",
+                    status="active",
                 )
+            )
             return user.id
 
         # 2. Create new user
@@ -1618,7 +1619,6 @@ Notes are activities attached to deals (or contacts/companies). Use HubSpot **so
             new_user: User = User(
                 email=email,
                 name=name,
-                organization_id=org_uuid,
                 status="crm_only",
                 role="member",
             )
@@ -1638,23 +1638,22 @@ Notes are activities attached to deals (or contacts/companies). Use HubSpot **so
             retry_result = await session.execute(select(User).where(User.email == email))
             u: Optional[User] = retry_result.scalar_one_or_none()
             if u:
-                if u.organization_id == org_uuid:
-                    return u.id
                 member_retry = await session.execute(
                     select(OrgMember).where(
                         OrgMember.user_id == u.id,
                         OrgMember.organization_id == org_uuid,
                     )
                 )
-                if not member_retry.scalar_one_or_none():
-                    session.add(
-                        OrgMember(
-                            user_id=u.id,
-                            organization_id=org_uuid,
-                            role="member",
-                            status="active",
-                        )
+                if member_retry.scalar_one_or_none():
+                    return u.id
+                session.add(
+                    OrgMember(
+                        user_id=u.id,
+                        organization_id=org_uuid,
+                        role="member",
+                        status="active",
                     )
+                )
                 return u.id
             return None
 
@@ -1684,11 +1683,22 @@ Notes are activities attached to deals (or contacts/companies). Use HubSpot **so
             return None
 
         # Look up user by email within the organization
+        org_uuid_hs: uuid.UUID = uuid.UUID(self.organization_id)
+        m_sub_hs = select(OrgMember.user_id).where(
+            OrgMember.organization_id == org_uuid_hs,
+            OrgMember.status.in_(_HUBSPOT_ORG_MEMBER_ACTIVE),
+        )
         async with get_session(organization_id=self.organization_id) as session:
             result = await session.execute(
                 select(User).where(
                     User.email == owner_email,
-                    User.organization_id == uuid.UUID(self.organization_id),
+                    or_(
+                        User.id.in_(m_sub_hs),
+                        and_(
+                            User.is_guest.is_(True),
+                            User.guest_organization_id == org_uuid_hs,
+                        ),
+                    ),
                 )
             )
             user: User | None = result.scalar_one_or_none()
@@ -1845,11 +1855,22 @@ Notes are activities attached to deals (or contacts/companies). Use HubSpot **so
         results: list[dict[str, Any]] = []
         matched_owner_ids: set[str] = set()
 
+        org_uuid_match: uuid.UUID = uuid.UUID(self.organization_id)
+        m_sub_match = select(OrgMember.user_id).where(
+            OrgMember.organization_id == org_uuid_match,
+            OrgMember.status.in_(_HUBSPOT_ORG_MEMBER_ACTIVE),
+        )
         async with get_session(organization_id=self.organization_id) as session:
             # Match local users to HubSpot owners
             db_result = await session.execute(
                 select(User).where(
-                    User.organization_id == uuid.UUID(self.organization_id),
+                    or_(
+                        User.id.in_(m_sub_match),
+                        and_(
+                            User.is_guest.is_(True),
+                            User.guest_organization_id == org_uuid_match,
+                        ),
+                    ),
                     User.status != "crm_only",
                 )
             )
