@@ -1,7 +1,7 @@
 """Guest home org on guest_organization_id; drop users.organization_id.
 
 Revision ID: 116_guest_org
-Revises: 115_fix_notifications_rls_policy
+Revises: 116_add_app_widget_config
 Create Date: 2026-03-24
 """
 from __future__ import annotations
@@ -13,12 +13,15 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision: str = "116_guest_org"
-down_revision: Union[str, None] = "115_fix_notifications_rls_policy"
+down_revision: Union[str, None] = "116_add_app_widget_config"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    bind = op.get_bind()
+    bind.execute(sa.text("DROP POLICY IF EXISTS org_isolation ON users"))
+
     op.add_column(
         "users",
         sa.Column(
@@ -51,7 +54,34 @@ def upgrade() -> None:
     )
     op.drop_column("users", "organization_id")
 
-    bind = op.get_bind()
+    bind.execute(
+        sa.text(
+            """
+            CREATE POLICY org_isolation ON users
+            FOR ALL
+            USING (
+                EXISTS (
+                    SELECT 1
+                    FROM org_members m
+                    WHERE m.user_id = users.id
+                    AND m.organization_id::text = COALESCE(
+                        NULLIF(current_setting('app.current_org_id', true), ''),
+                        '00000000-0000-0000-0000-000000000000'
+                    )
+                )
+                OR (
+                    users.is_guest IS TRUE
+                    AND users.guest_organization_id IS NOT NULL
+                    AND users.guest_organization_id::text = COALESCE(
+                        NULLIF(current_setting('app.current_org_id', true), ''),
+                        '00000000-0000-0000-0000-000000000000'
+                    )
+                )
+            )
+            """
+        )
+    )
+
     bind.execute(
         sa.text(
             """
@@ -78,6 +108,9 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    bind = op.get_bind()
+    bind.execute(sa.text("DROP POLICY IF EXISTS org_isolation ON users"))
+
     op.add_column(
         "users",
         sa.Column(
@@ -105,7 +138,21 @@ def downgrade() -> None:
     )
     op.drop_column("users", "guest_organization_id")
 
-    bind = op.get_bind()
+    bind.execute(
+        sa.text(
+            """
+            CREATE POLICY org_isolation ON users
+            FOR ALL
+            USING (
+                organization_id::text = COALESCE(
+                    NULLIF(current_setting('app.current_org_id', true), ''),
+                    '00000000-0000-0000-0000-000000000000'
+                )
+            )
+            """
+        )
+    )
+
     bind.execute(
         sa.text(
             """
