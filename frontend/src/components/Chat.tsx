@@ -315,9 +315,7 @@ export function Chat({
   const addConversationMessage = useAppStore((s) => s.addConversationMessage);
   const setConversationMessages = useAppStore((s) => s.setConversationMessages);
   const setConversationTitle = useAppStore((s) => s.setConversationTitle);
-  const setConversationSummary = useAppStore((s) => s.setConversationSummary);
   const setConversationThinking = useAppStore((s) => s.setConversationThinking);
-  const setConversationHasMore = useAppStore((s) => s.setConversationHasMore);
   const setConversationAgentResponding = useAppStore((s) => s.setConversationAgentResponding);
   const fetchOlderMessages = useAppStore((s) => s.fetchOlderMessages);
   const clearUnreadConversation = useAppStore((s) => s.clearUnreadConversation);
@@ -428,7 +426,6 @@ export function Chat({
   const pendingAutoSendRef = useRef<string | null>(null);
   const messagesRef = useRef<ChatMessage[]>([]); // Track current messages for polling comparison
   const workflowDoneRef = useRef<boolean>(false); // Prevents polling restart after workflow completes
-  const loadInFlightChatIdRef = useRef<string | null>(null); // Dedupe load requests for same chatId
   const prevAppCountRef = useRef(0); // Track app count for auto-switching preview
   const dragContainerRef = useRef<HTMLDivElement>(null); // Container for drag-resize
   const lastTypingSentRef = useRef<number>(0);
@@ -747,55 +744,28 @@ export function Chat({
       return;
     }
 
-    // Avoid duplicate in-flight requests (e.g. React Strict Mode or unstable callback deps)
-    if (loadInFlightChatIdRef.current === chatId) {
-      return;
-    }
-    loadInFlightChatIdRef.current = chatId;
-
+    // Use the store's deduplicating fetcher — reuses the in-flight promise
+    // if a hover-prefetch already started the same request.
     let cancelled = false;
+    setIsLoading(true);
 
     const loadConversation = async (): Promise<void> => {
       console.log('[Chat] Loading conversation:', chatId);
-      setIsLoading(true);
-
       try {
-        const { data, error } = await getConversation(chatId);
+        const fetchConversationData = useAppStore.getState().fetchConversationData;
+        const data = await fetchConversationData(chatId);
 
         if (cancelled) {
           console.log('[Chat] Load cancelled - chatId changed');
           return;
         }
 
-        if (data && !error) {
-          // Convert API messages to store format (content_blocks)
-          const loadedMessages: ChatMessage[] = data.messages.map((msg) => ({
-            id: msg.id,
-            role: msg.role as 'user' | 'assistant',
-            contentBlocks: msg.content_blocks,
-            timestamp: new Date(msg.created_at),
-            userId: msg.user_id ?? undefined,
-            senderName: msg.sender_name ?? undefined,
-            senderEmail: msg.sender_email ?? undefined,
-            senderAvatarUrl: msg.sender_avatar_url ?? undefined,
-          }));
-
-          // Set conversation state
-          setConversationMessages(chatId, loadedMessages);
-          setConversationHasMore(chatId, data.has_more);
-          setConversationTitle(chatId, data.title ?? 'New Chat');
-          if (data.summary) {
-            try {
-              const parsed = JSON.parse(data.summary) as ConversationSummaryData;
-              setConversationSummary(chatId, parsed);
-            } catch {
-              // Invalid summary JSON, ignore
-            }
-          }
+        if (data) {
+          // fetchConversationData already applied messages/title/hasMore/summary/
+          // agentResponding to the store. Set local-only metadata here.
           setConversationType(data.type ?? null);
           setConversationScope((data.scope ?? 'shared') as 'private' | 'shared');
           setConversationCreatorId(data.user_id ?? null);
-          setConversationAgentResponding(chatId, data.agent_responding ?? true);
           setConversationParticipants(
             (data.participants ?? []).map((p: { id: string; name: string | null; email: string; avatar_url?: string | null }) => ({
               id: p.id,
@@ -804,30 +774,30 @@ export function Chat({
               avatarUrl: p.avatar_url,
             }))
           );
-          console.log('[Chat] Loaded', loadedMessages.length, 'messages, has_more:', data.has_more, 'type:', data.type, 'scope:', data.scope);
+          console.log('[Chat] Loaded conversation, type:', data.type, 'scope:', data.scope);
 
-          // Scroll to bottom immediately after loading
           setTimeout(() => {
             messagesEndRef.current?.scrollIntoView({ behavior: 'instant' });
           }, 50);
         } else {
-          const is404 =
-            error != null &&
-            (String(error).includes('404') || String(error).toLowerCase().includes('not found'));
-          if (is404 && onConversationNotFound) {
-            onConversationNotFound();
-          } else {
-            console.error('[Chat] Failed to load conversation:', error);
+          // null = already loaded (prefetch beat us). Set local metadata from recentChats.
+          const chatInfo = useAppStore.getState().recentChats.find(c => c.id === chatId);
+          if (chatInfo) {
+            setConversationScope(chatInfo.scope);
+            setConversationCreatorId(chatInfo.userId ?? null);
           }
         }
       } catch (err) {
-        console.error('[Chat] Exception loading conversation:', err);
+        const errStr: string = err instanceof Error ? err.message : String(err);
+        const is404: boolean = errStr.includes('404') || errStr.toLowerCase().includes('not found');
+        if (is404 && onConversationNotFound) {
+          onConversationNotFound();
+        } else {
+          console.error('[Chat] Failed to load conversation:', errStr);
+        }
       } finally {
         if (!cancelled) {
           setIsLoading(false);
-        }
-        if (loadInFlightChatIdRef.current === chatId) {
-          loadInFlightChatIdRef.current = null;
         }
       }
     };
@@ -836,10 +806,9 @@ export function Chat({
 
     return () => {
       cancelled = true;
-      loadInFlightChatIdRef.current = null; // Allow re-run to start load (e.g. Strict Mode)
       setIsLoading(false);
     };
-  }, [chatId, userId, setConversationMessages, setConversationTitle, setConversationSummary, setConversationHasMore, setConversationAgentResponding, onConversationNotFound]);
+  }, [chatId, userId, onConversationNotFound]);
 
   // Mark notifications as read when opening a conversation
   useEffect(() => {

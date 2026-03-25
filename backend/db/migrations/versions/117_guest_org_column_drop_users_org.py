@@ -1,6 +1,6 @@
 """Guest home org on guest_organization_id; drop users.organization_id.
 
-Revision ID: 116_guest_org
+Revision ID: 117_guest_org
 Revises: 116_add_app_widget_config
 Create Date: 2026-03-24
 """
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-revision: str = "116_guest_org"
+revision: str = "117_guest_org"
 down_revision: Union[str, None] = "116_add_app_widget_config"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None

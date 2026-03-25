@@ -8,6 +8,10 @@ from fastapi import HTTPException
 from api.routes import auth
 
 
+class _FakeMembershipResult:
+    def scalar_one_or_none(self) -> object:
+        return True  # Simulate active org membership
+
 class _FakeSession:
     def __init__(self, *, users, mapping):
         self._users = users
@@ -18,6 +22,9 @@ class _FakeSession:
         if model_id == self._mapping.id:
             return self._mapping
         return self._users.get(model_id)
+
+    async def execute(self, _query, _params=None):
+        return _FakeMembershipResult()
 
     async def commit(self):
         self.committed = True

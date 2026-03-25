@@ -9,12 +9,19 @@ from api.auth_middleware import AuthContext
 from api.routes import auth
 
 
+class _FakeMembershipResult:
+    def scalar_one_or_none(self) -> object:
+        return True  # Simulate active org membership
+
 class _FakeSession:
     def __init__(self, *, users):
         self._users = users
 
     async def get(self, _model, model_id):
         return self._users.get(model_id)
+
+    async def execute(self, _query, _params=None):
+        return _FakeMembershipResult()
 
 
 class _FakeSessionContext:

@@ -43,6 +43,55 @@ _jwks_cache_lock = asyncio.Lock()
 # Keep JWKS warm in memory and avoid per-request network calls.
 _JWKS_CACHE_TTL_SECONDS = 60 * 60
 
+# ---------------------------------------------------------------------------
+# In-memory auth cache — avoids 2 admin DB sessions (~6 SQL round trips) per
+# request by caching User lookups and org-membership checks.  Each entry
+# expires after _AUTH_CACHE_TTL_SECONDS so role/membership changes propagate
+# within that window.
+# ---------------------------------------------------------------------------
+_AUTH_CACHE_TTL_SECONDS: int = 60
+_AUTH_CACHE_MAX_ENTRIES: int = 500
+
+# {user_uuid: (User, monotonic_timestamp)}
+_user_cache: dict[UUID, tuple[User, float]] = {}
+# {(user_uuid, org_uuid): (is_active_member, monotonic_timestamp)}
+_org_membership_cache: dict[tuple[UUID, UUID], tuple[bool, float]] = {}
+
+
+def _cache_get_user(user_id: UUID) -> User | None:
+    entry: tuple[User, float] | None = _user_cache.get(user_id)
+    if entry is not None and (time.monotonic() - entry[1]) < _AUTH_CACHE_TTL_SECONDS:
+        return entry[0]
+    _user_cache.pop(user_id, None)
+    return None
+
+
+def _cache_set_user(user_id: UUID, user: User) -> None:
+    if len(_user_cache) >= _AUTH_CACHE_MAX_ENTRIES:
+        # Evict oldest quarter
+        to_evict: list[UUID] = list(_user_cache.keys())[: _AUTH_CACHE_MAX_ENTRIES // 4]
+        for k in to_evict:
+            del _user_cache[k]
+    _user_cache[user_id] = (user, time.monotonic())
+
+
+def _cache_get_org_membership(user_id: UUID, org_id: UUID) -> bool | None:
+    entry: tuple[bool, float] | None = _org_membership_cache.get((user_id, org_id))
+    if entry is not None and (time.monotonic() - entry[1]) < _AUTH_CACHE_TTL_SECONDS:
+        return entry[0]
+    _org_membership_cache.pop((user_id, org_id), None)
+    return None
+
+
+def _cache_set_org_membership(user_id: UUID, org_id: UUID, is_member: bool) -> None:
+    if len(_org_membership_cache) >= _AUTH_CACHE_MAX_ENTRIES:
+        to_evict: list[tuple[UUID, UUID]] = list(_org_membership_cache.keys())[
+            : _AUTH_CACHE_MAX_ENTRIES // 4
+        ]
+        for k in to_evict:
+            del _org_membership_cache[k]
+    _org_membership_cache[(user_id, org_id)] = (is_member, time.monotonic())
+
 
 @dataclass
 class AuthContext:
@@ -340,8 +389,18 @@ async def _get_user_from_token(payload: dict) -> User:
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid token: malformed subject",
         )
-    
-    # Use admin session to bypass RLS for user lookup
+
+    # Fast-path: return cached user (avoids an admin DB session = ~3 round trips)
+    cached: User | None = _cache_get_user(user_uuid)
+    if cached is not None:
+        if cached.status == "crm_only":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Please sign up to use Revtops",
+            )
+        return cached
+
+    # Cache miss — hit DB
     from models.database import get_admin_session
     async with get_admin_session() as session:
         user: Optional[User] = await session.get(User, user_uuid)
@@ -375,7 +434,8 @@ async def _get_user_from_token(payload: dict) -> User:
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Please sign up to use Revtops",
             )
-        
+
+        _cache_set_user(user.id, user)
         return user
 
 
@@ -419,6 +479,16 @@ async def _resolve_active_organization_id(
             )
         return user.guest_organization_id
 
+    # Fast-path: cached membership check (avoids an admin DB session = ~3 round trips)
+    cached_membership: bool | None = _cache_get_org_membership(user.id, requested)
+    if cached_membership is True:
+        return requested
+    if cached_membership is False:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not a member of this organization or membership inactive",
+        )
+
     from models.database import get_admin_session
 
     async with get_admin_session() as session:
@@ -431,7 +501,10 @@ async def _resolve_active_organization_id(
         )
         membership: Optional[OrgMember] = result.scalar_one_or_none()
 
-    if membership is None:
+    is_member: bool = membership is not None
+    _cache_set_org_membership(user.id, requested, is_member)
+
+    if not is_member:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not a member of this organization or membership inactive",

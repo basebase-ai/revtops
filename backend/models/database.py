@@ -256,22 +256,18 @@ async def get_session(
                 # The postgres superuser bypasses RLS entirely, so we must switch roles
                 await session.execute(text("SET ROLE revtops_app"))
 
-                # Set RLS context if organization_id provided
-                if organization_id:
-                    await session.execute(
-                        text("SELECT set_config('app.current_org_id', :org_id, false)"),
-                        {"org_id": str(organization_id)}
-                    )
-                # Set user context for activity visibility (owner_only vs team)
-                if user_id:
-                    await session.execute(
-                        text("SELECT set_config('app.current_user_id', :uid, false)"),
-                        {"uid": str(user_id)}
-                    )
-                else:
-                    await session.execute(
-                        text("SELECT set_config('app.current_user_id', '', false)")
-                    )
+                # Set both RLS context vars in a single round trip (each
+                # set_config is a separate Supavisor round trip otherwise).
+                await session.execute(
+                    text(
+                        "SELECT set_config('app.current_org_id', :org_id, false),"
+                        " set_config('app.current_user_id', :uid, false)"
+                    ),
+                    {
+                        "org_id": str(organization_id) if organization_id else "",
+                        "uid": str(user_id) if user_id else "",
+                    },
+                )
                 break
             except DBAPIError as exc:
                 await session.close()
@@ -304,11 +300,15 @@ async def get_session(
         if session is not None:
             # Reset role AND org context before returning connection to pool.
             # Without this, a pooled connection could leak one org's RLS context to another.
-            # Must run as separate statements: prepared statements (e.g. Supavisor) allow only one command.
             try:
                 logger.debug("Session cleanup: resetting RLS context (set_config + RESET ROLE)")
-                await session.execute(text("SELECT set_config('app.current_org_id', '', false)"))
-                await session.execute(text("SELECT set_config('app.current_user_id', '', false)"))
+                # Batch both set_config resets into one round trip
+                await session.execute(
+                    text(
+                        "SELECT set_config('app.current_org_id', '', false),"
+                        " set_config('app.current_user_id', '', false)"
+                    )
+                )
                 await session.execute(text("RESET ROLE"))
             except Exception:
                 logger.warning("Failed to reset RLS context during session cleanup", exc_info=True)

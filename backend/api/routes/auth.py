@@ -3608,11 +3608,19 @@ async def list_integrations(
 
     scope_by_provider: dict[str, str] = _get_scope_by_provider()
 
+    # #region agent log
+    import json as _json_dbg; open("/Users/teg/Documents/basebase/basebase/.cursor/debug-145f20.log","a").write(_json_dbg.dumps({"sessionId":"145f20","hypothesisId":"H1-H2","location":"auth.py:list_integrations","message":"list_integrations called","data":{"org_uuid":str(org_uuid),"current_user_uuid":str(current_user_uuid),"auth_org_id":str(auth.organization_id),"query_param_org_id":organization_id},"timestamp":__import__("time").time()})+"\n")
+    # #endregion
+
     async with get_session(organization_id=str(org_uuid)) as db_session:
         result = await db_session.execute(
             select(Integration).where(Integration.organization_id == org_uuid)
         )
         all_integrations = list(result.scalars().all())
+
+        # #region agent log
+        open("/Users/teg/Documents/basebase/basebase/.cursor/debug-145f20.log","a").write(_json_dbg.dumps({"sessionId":"145f20","hypothesisId":"H2-H4-H5","location":"auth.py:list_integrations:after_query","message":"integrations query result","data":{"count":len(all_integrations),"integrations":[{"id":str(i.id),"connector":i.connector,"is_active":i.is_active,"user_id":str(i.user_id) if i.user_id else None} for i in all_integrations]},"timestamp":__import__("time").time()})+"\n")
+        # #endregion
 
         # Group integrations by provider
         integrations_by_provider: dict[str, list[Integration]] = {}
