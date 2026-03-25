@@ -372,7 +372,7 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
 
       const orgPrefixMatch = path.match(/^\/([a-z0-9-]+)(?:\/(.*))?$/);
     const orgHandleFromPath: string | null =
-      orgPrefixMatch && orgPrefixMatch[1] && !/^(auth|admin|embed|chat|apps|documents|artifact|artifacts|sources|data|workflows|memory|changes)$/i.test(orgPrefixMatch[1])
+      orgPrefixMatch && orgPrefixMatch[1] && !/^(auth|admin|embed|chat|apps|documents|artifact|artifacts|connectors|data|workflows|memory|changes)$/i.test(orgPrefixMatch[1])
         ? orgPrefixMatch[1]
         : null;
 
@@ -426,7 +426,7 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
       }
       const viewMap: Record<string, typeof currentView> = {
         chats: "chats",
-        sources: "data-sources",
+        connectors: "data-sources",
         data: "data",
         workflows: "workflows",
         memory: "memory",
@@ -466,7 +466,7 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
       "/": "home",
       "/chat": "chat",
       "/chats": "chats",
-      "/sources": "data-sources",
+      "/connectors": "data-sources",
       "/data": "data",
       "/workflows": "workflows",
       "/memory": "memory",
@@ -533,7 +533,7 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
         home: "/",
         chat: "/chat",
         chats: "/chats",
-        "data-sources": "/sources",
+        "data-sources": "/connectors",
         data: "/data",
         workflows: "/workflows",
         apps: "/apps",

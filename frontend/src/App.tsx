@@ -92,8 +92,11 @@ function App(): JSX.Element {
             console.log('[Auth] Masquerade active, preserving masquerade state');
             // Don't call handleAuthenticatedUser - keep the masqueraded user/org
           } else {
-            // Always sync with backend to get fresh data (including avatar_url)
-            await handleAuthenticatedUser(session.user);
+            // Always sync with backend to get fresh data (including avatar_url).
+            // When the app is already visible (persisted-user fast path), skip org
+            // updates — the URL sync in AppLayout is the source of truth for which
+            // org should be active.
+            await handleAuthenticatedUser(session.user, !!hasPersistedUser);
             // Refresh user's org list in background
             void useAppStore.getState().fetchUserOrganizations();
           }
@@ -173,7 +176,7 @@ function App(): JSX.Element {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const handleAuthenticatedUser = async (supabaseUser: User): Promise<void> => {
+  const handleAuthenticatedUser = async (supabaseUser: User, skipOrgUpdate = false): Promise<void> => {
     const email = supabaseUser.email ?? '';
     const domain = getEmailDomain(email);
     setEmailDomain(domain);
@@ -263,12 +266,14 @@ function App(): JSX.Element {
         // If sync returned an organization, set it and route based on onboarding status
         if (userData.organization) {
           const org = userData.organization as { id: string; name: string; logo_url: string | null; handle?: string | null };
-          setOrganization({
-            id: org.id,
-            name: org.name,
-            logoUrl: org.logo_url ?? null,
-            handle: org.handle ?? null,
-          });
+          if (!skipOrgUpdate) {
+            setOrganization({
+              id: org.id,
+              name: org.name,
+              logoUrl: org.logo_url ?? null,
+              handle: org.handle ?? null,
+            });
+          }
           await fetchUserOrganizations();
           if (userData.needs_onboarding) {
             setOnboardingMode(userData.onboarding_mode);
@@ -287,14 +292,16 @@ function App(): JSX.Element {
     await fetchUserOrganizations();
     const organizations = useAppStore.getState().organizations;
     if (organizations.length > 0) {
-      const activeOrg = organizations.find((o) => o.isActive) ?? organizations[0];
-      if (activeOrg) {
-        setOrganization({
-          id: activeOrg.id,
-          name: activeOrg.name,
-          logoUrl: activeOrg.logoUrl ?? null,
-          handle: activeOrg.handle ?? null,
-        });
+      if (!skipOrgUpdate) {
+        const activeOrg = organizations.find((o) => o.isActive) ?? organizations[0];
+        if (activeOrg) {
+          setOrganization({
+            id: activeOrg.id,
+            name: activeOrg.name,
+            logoUrl: activeOrg.logoUrl ?? null,
+            handle: activeOrg.handle ?? null,
+          });
+        }
       }
       setScreen('app');
       return;
