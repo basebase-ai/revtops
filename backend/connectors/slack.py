@@ -340,6 +340,17 @@ Send a message to a Slack channel, DM, or user.
         }
 
     _MAX_RETRIES: int = 5
+    _MIN_REQUEST_INTERVAL: float = 1.5  # seconds between Slack API calls (Tier 3 ≈ 50/min)
+    _last_request_time: float = 0.0
+
+    async def _throttle(self) -> None:
+        """Pre-emptive throttle to stay under Slack's per-minute rate limit."""
+        import time
+        now: float = time.monotonic()
+        elapsed: float = now - self._last_request_time
+        if elapsed < self._MIN_REQUEST_INTERVAL:
+            await asyncio.sleep(self._MIN_REQUEST_INTERVAL - elapsed)
+        self._last_request_time = time.monotonic()
 
     async def _make_request(
         self,
@@ -349,6 +360,7 @@ Send a message to a Slack channel, DM, or user.
         json_data: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         """Make an authenticated request to Slack API with rate-limit retry."""
+        await self._throttle()
         headers: dict[str, str] = await self._get_headers()
         url: str = f"{SLACK_API_BASE}/{endpoint}"
 
@@ -367,14 +379,16 @@ Send a message to a Slack channel, DM, or user.
                     retry_after: float = float(
                         response.headers.get("Retry-After", str(2 ** attempt))
                     )
+                    wait_time: float = retry_after + 10.0
                     logger.warning(
-                        "[Slack API] 429 rate-limited on %s (attempt %d/%d), retrying in %.1fs",
+                        "[Slack API] 429 rate-limited on %s (attempt %d/%d), retrying in %.1fs (Retry-After: %.0fs + 10s buffer)",
                         endpoint,
                         attempt + 1,
                         self._MAX_RETRIES,
+                        wait_time,
                         retry_after,
                     )
-                    await asyncio.sleep(retry_after)
+                    await asyncio.sleep(wait_time)
                     continue
 
                 if response.status_code >= 500 and attempt < self._MAX_RETRIES:
@@ -789,6 +803,7 @@ Send a message to a Slack channel, DM, or user.
 
         count = 0
         channels_with_messages = 0
+        channels_skipped = 0
         session_user_id: str | None = None
         if self.user_id:
             session_user_id = self.user_id
@@ -807,9 +822,45 @@ Send a message to a Slack channel, DM, or user.
             organization_id=self.organization_id,
             user_id=session_user_id,
         ) as session:
+            already_synced_channel_ids: set[str] = set()
+            if self.sync_since:
+                from models.activity import Activity as ActivityModel
+                rows = await session.execute(
+                    select(
+                        ActivityModel.custom_fields["channel_id"].astext
+                    ).where(
+                        ActivityModel.organization_id == uuid.UUID(self.organization_id),
+                        ActivityModel.source_system == "slack",
+                        ActivityModel.synced_at > self.sync_since,
+                    ).distinct()
+                )
+                already_synced_channel_ids = {r[0] for r in rows if r[0]}
+                channels_to_fetch: int = len(channels) - len(
+                    already_synced_channel_ids & {ch.get("id", "") for ch in channels}
+                )
+                logger.info(
+                    "[Slack Sync] Channel skip check: %d/%d channels already synced since %s, %d channels need fetching org=%s",
+                    len(already_synced_channel_ids & {ch.get("id", "") for ch in channels}),
+                    len(channels),
+                    self.sync_since.isoformat(),
+                    channels_to_fetch,
+                    self.organization_id,
+                )
+
             for channel in channels:
                 channel_id = channel.get("id", "")
                 channel_name = channel.get("name", "unknown")
+
+                if channel_id in already_synced_channel_ids:
+                    channels_skipped += 1
+                    logger.debug(
+                        "[Slack Sync] Skipping channel=%s (%s) — already synced since %s org=%s",
+                        channel_name,
+                        channel_id,
+                        self.sync_since.isoformat() if self.sync_since else "n/a",
+                        self.organization_id,
+                    )
+                    continue
                 last_message_ts: str | None = None
                 last_message_user_id: str | None = None
                 last_source_id: str | None = None
@@ -956,6 +1007,13 @@ Send a message to a Slack channel, DM, or user.
 
             await session.commit()
 
+        logger.info(
+            "[Slack Sync] Finished: %d activities from %d channels (%d skipped as already synced) org=%s",
+            count,
+            channels_with_messages,
+            channels_skipped,
+            self.organization_id,
+        )
         return count, channels_with_messages
 
     def _extract_sender_fields(self, slack_msg: dict[str, Any]) -> dict[str, Any]:
