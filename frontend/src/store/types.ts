@@ -74,6 +74,8 @@ export interface SyncStats {
   teams?: number;
   projects?: number;
   issues?: number;
+  // Set by mark_sync_started() while a sync is in progress
+  sync_started_at?: string;
 }
 
 export interface Integration {

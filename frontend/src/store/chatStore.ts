@@ -1326,9 +1326,6 @@ export const useChatStore = create<ChatState>()(
           "[Store] Fetching integrations for org:",
           organization.id,
         );
-        // #region agent log
-        fetch('http://127.0.0.1:7249/ingest/bbad8696-7c16-4021-b7f0-8afa9db11c4a',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'145f20'},body:JSON.stringify({sessionId:'145f20',location:'chatStore.ts:fetchIntegrations',message:'frontend fetchIntegrations called',data:{orgId:organization.id,orgName:organization.name,userId:user.id},timestamp:Date.now()})}).catch(()=>{});
-        // #endregion
         const authHeaders: Record<string, string> =
           await getAuthenticatedRequestHeaders();
         const response = await fetch(

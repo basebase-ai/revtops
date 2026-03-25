@@ -131,7 +131,7 @@ class AdminIntegration(BaseModel):
     is_active: bool
     last_sync_at: str | None
     last_error: str | None
-    sync_stats: dict[str, int] | None
+    sync_stats: dict[str, int | str] | None
     created_at: str | None
 
 
@@ -867,7 +867,7 @@ async def get_sync_status(organization_id: str, provider: str) -> SyncStatusResp
                 Integration.connector == provider,
             )
         )
-        integration: Integration | None = result.scalar_one_or_none()
+        integration: Integration | None = result.scalars().first()
 
     if integration:
         stats: dict[str, Any] | None = integration.sync_stats
@@ -1112,7 +1112,7 @@ async def match_hubspot_owners(organization_id: str) -> OwnerMatchResponse:
                 Integration.is_active == True,
             )
         )
-        integration: Integration | None = result.scalar_one_or_none()
+        integration: Integration | None = result.scalars().first()
         if not integration:
             raise HTTPException(
                 status_code=404, detail="No active HubSpot integration found"
