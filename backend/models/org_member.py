@@ -17,6 +17,9 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from models.database import Base
 
+# Statuses that count as "in this org" for org-scoped API (X-Organization-Id), admin user list, masquerade.
+ORG_MEMBER_SCOPING_STATUSES: tuple[str, ...] = ("active", "onboarding", "invited")
+
 if TYPE_CHECKING:
     from models.user import User
     from models.organization import Organization
