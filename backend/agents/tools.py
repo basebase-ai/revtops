@@ -762,14 +762,31 @@ async def _get_connector_docs(
 
     if meta.oauth_scopes:
         scope_list = "\n".join(f"- `{s}`" for s in meta.oauth_scopes)
-        sections.append(
-            "## OAuth scopes (Nango + Google Cloud)\n\n"
-            "These URLs must be requested by the Nango integration for this connector and added under "
-            "**Google Cloud Console → APIs & Services → OAuth consent screen → Scopes**. "
-            "The **Google Calendar API** must be enabled for the OAuth client’s project. "
-            "After changing scopes in Nango, users need to **reconnect** the integration to obtain a new access token.\n\n"
-            f"{scope_list}"
-        )
+        if slug == "hubspot":
+            sections.append(
+                "## OAuth scopes (Nango + HubSpot)\n\n"
+                "Add these scopes to your **HubSpot private app** and mirror them in the **Nango** "
+                "HubSpot integration so requested OAuth scopes match. "
+                "After changing scopes in HubSpot or Nango, users must **reconnect** the integration "
+                "to obtain a new access token.\n\n"
+                f"{scope_list}"
+            )
+        elif slug in ("google_calendar", "gmail", "google_drive"):
+            sections.append(
+                "## OAuth scopes (Nango + Google Cloud)\n\n"
+                "These URLs must be requested by the Nango integration for this connector and added under "
+                "**Google Cloud Console → APIs & Services → OAuth consent screen → Scopes**. "
+                "The **Google Calendar API** must be enabled for the OAuth client’s project. "
+                "After changing scopes in Nango, users need to **reconnect** the integration to obtain a new access token.\n\n"
+                f"{scope_list}"
+            )
+        else:
+            sections.append(
+                "## OAuth scopes (Nango + provider)\n\n"
+                "Configure the scopes below in your **provider developer console** and in **Nango** for this "
+                "integration. After changing scopes, users should **reconnect** to refresh tokens.\n\n"
+                f"{scope_list}"
+            )
 
     param_lines: list[str] = []
 

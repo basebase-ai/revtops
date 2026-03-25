@@ -23,7 +23,12 @@ from sqlalchemy.exc import IntegrityError
 from api.websockets import broadcast_sync_progress
 from connectors.base import BaseConnector
 from connectors.registry import (
-    AuthType, Capability, ConnectorMeta, ConnectorScope, WriteOperation,
+    AuthType,
+    Capability,
+    ConnectorAction,
+    ConnectorMeta,
+    ConnectorScope,
+    WriteOperation,
 )
 from models.account import Account
 from models.activity import Activity
@@ -40,6 +45,28 @@ HUBSPOT_API_BASE = "https://api.hubapi.com"
 
 _HUBSPOT_ORG_MEMBER_ACTIVE: tuple[str, ...] = ("active", "onboarding")
 
+_HUBSPOT_EMAIL_EVENTS_QUERY_KEYS: frozenset[str] = frozenset({
+    "appId",
+    "campaignId",
+    "recipient",
+    "eventType",
+    "startTimestamp",
+    "endTimestamp",
+    "offset",
+    "limit",
+    "excludeFilteredEvents",
+})
+
+_DEFAULT_HUBSPOT_CONTACT_READ_PROPERTIES: tuple[str, ...] = (
+    "email",
+    "firstname",
+    "lastname",
+    "company",
+    "phone",
+    "jobtitle",
+    "lifecyclestage",
+)
+
 
 class HubSpotConnector(BaseConnector):
     """Connector for HubSpot CRM."""
@@ -51,7 +78,155 @@ class HubSpotConnector(BaseConnector):
         auth_type=AuthType.OAUTH2,
         scope=ConnectorScope.USER,
         entity_types=["deals", "accounts", "contacts", "activities", "pipelines", "goals"],
-        capabilities=[Capability.SYNC, Capability.QUERY, Capability.WRITE],
+        capabilities=[Capability.SYNC, Capability.QUERY, Capability.WRITE, Capability.ACTION],
+        oauth_scopes=[
+            "content",
+            "email",
+            "crm.objects.contacts.read",
+        ],
+        actions=[
+            ConnectorAction(
+                name="list_marketing_emails",
+                description=(
+                    "List marketing emails (Marketing Hub). Requires the `content` scope. "
+                    "Returns HubSpot's paginated response (`results`, `paging`)."
+                ),
+                parameters=[
+                    {
+                        "name": "limit",
+                        "type": "integer",
+                        "required": False,
+                        "description": "Page size (HubSpot default applies if omitted)",
+                    },
+                    {
+                        "name": "after",
+                        "type": "string",
+                        "required": False,
+                        "description": "Pagination cursor from the previous response's paging.next.after",
+                    },
+                ],
+            ),
+            ConnectorAction(
+                name="get_marketing_email",
+                description="Get a single marketing email by HubSpot ID. Requires the `content` scope.",
+                parameters=[
+                    {
+                        "name": "id",
+                        "type": "string",
+                        "required": True,
+                        "description": "Marketing email ID from list_marketing_emails or HubSpot UI",
+                    },
+                ],
+            ),
+            ConnectorAction(
+                name="list_email_events",
+                description=(
+                    "Query marketing email analytics events (sends, opens, clicks, etc.). "
+                    "Requires the `email` scope. See HubSpot Email Analytics API query parameters."
+                ),
+                parameters=[
+                    {
+                        "name": "recipient",
+                        "type": "string",
+                        "required": False,
+                        "description": "Filter by recipient email address",
+                    },
+                    {
+                        "name": "campaignId",
+                        "type": "integer",
+                        "required": False,
+                        "description": "Filter by HubSpot campaign ID",
+                    },
+                    {
+                        "name": "appId",
+                        "type": "integer",
+                        "required": False,
+                        "description": "Filter by HubSpot application ID",
+                    },
+                    {
+                        "name": "eventType",
+                        "type": "string",
+                        "required": False,
+                        "description": "Filter by event type (case-sensitive)",
+                    },
+                    {
+                        "name": "startTimestamp",
+                        "type": "integer",
+                        "required": False,
+                        "description": "Only events at or after this time (ms since epoch)",
+                    },
+                    {
+                        "name": "endTimestamp",
+                        "type": "integer",
+                        "required": False,
+                        "description": "Only events at or before this time (ms since epoch)",
+                    },
+                    {
+                        "name": "limit",
+                        "type": "integer",
+                        "required": False,
+                        "description": "Max events (1–1000, default 10)",
+                    },
+                    {
+                        "name": "offset",
+                        "type": "string",
+                        "required": False,
+                        "description": "Pagination offset token from a previous response",
+                    },
+                    {
+                        "name": "excludeFilteredEvents",
+                        "type": "boolean",
+                        "required": False,
+                        "description": "If true, omit events filtered by customer settings (default false)",
+                    },
+                ],
+            ),
+            ConnectorAction(
+                name="get_contact",
+                description=(
+                    "Read a CRM contact by HubSpot object ID with optional property selection "
+                    "(contact enrichment). Requires `crm.objects.contacts.read`."
+                ),
+                parameters=[
+                    {
+                        "name": "id",
+                        "type": "string",
+                        "required": True,
+                        "description": "HubSpot contact ID (source_id from contacts table)",
+                    },
+                    {
+                        "name": "properties",
+                        "type": "array",
+                        "required": False,
+                        "description": (
+                            "Property internal names to return (e.g. email, firstname, lastname, company, phone). "
+                            "Omit for a default set."
+                        ),
+                    },
+                ],
+            ),
+            ConnectorAction(
+                name="find_contact_by_email",
+                description=(
+                    "Search CRM for a contact by email (up to one match). "
+                    "Requires `crm.objects.contacts.read` (and search permission on the token)."
+                ),
+                parameters=[
+                    {
+                        "name": "email",
+                        "type": "string",
+                        "required": True,
+                        "description": "Email address to match (exact)",
+                    },
+                    {
+                        "name": "properties",
+                        "type": "array",
+                        "required": False,
+                        "description": "Extra contact properties to include in the result",
+                    },
+                ],
+            ),
+        ],
         write_operations=[
             WriteOperation(
                 name="create_deal", entity_type="deal",
@@ -149,10 +324,53 @@ class HubSpotConnector(BaseConnector):
             ),
         ],
         nango_integration_id="hubspot",
-        description="HubSpot CRM – deals, contacts, companies, and activities",
+        description=(
+            "HubSpot CRM – deals, contacts, companies, activities; live actions for marketing emails, "
+            "email events, and contact lookup"
+        ),
         usage_guide="""# HubSpot Usage Guide
 
-## Write operations (write_on_connector)
+## OAuth scopes
+
+These scopes must be enabled on your **HubSpot private app** and requested by the **Nango** `hubspot` integration: `content` (Marketing Emails API), `email` (Email Events API), `crm.objects.contacts.read` (contact read / enrichment). After adding scopes, users must **reconnect** HubSpot to obtain a new access token.
+
+## Live reads (`run_on_connector`)
+
+Use `run_on_connector(connector='hubspot', action='...', params={...})` for Marketing Emails, email analytics events, and CRM contact lookups. Actions use the same OAuth connection as sync; teammates need **write sharing** enabled on the integration to run actions on another user’s connection (same rule as `write_on_connector`).
+
+| Action | Params (examples) |
+|--------|-------------------|
+| `list_marketing_emails` | `{}` or `{"limit": 20, "after": "<cursor>"}` |
+| `get_marketing_email` | `{"id": "123"}` |
+| `list_email_events` | `{"recipient": "a@b.com", "limit": 50}` or `{"startTimestamp": 1700000000000, "endTimestamp": 1700086400000}` |
+| `get_contact` | `{"id": "12345"}` or `{"id": "12345", "properties": ["email", "jobtitle", "lifecyclestage"]}` |
+| `find_contact_by_email` | `{"email": "jane@acme.com"}` or with `properties` array for extra fields |
+
+**Examples:**
+
+```json
+{"connector": "hubspot", "action": "list_marketing_emails", "params": {"limit": 10}}
+```
+
+```json
+{"connector": "hubspot", "action": "get_marketing_email", "params": {"id": "987654"}}
+```
+
+```json
+{"connector": "hubspot", "action": "list_email_events", "params": {"recipient": "lead@example.com", "limit": 100}}
+```
+
+```json
+{"connector": "hubspot", "action": "get_contact", "params": {"id": "501", "properties": ["email", "firstname", "lastname", "phone"]}}
+```
+
+```json
+{"connector": "hubspot", "action": "find_contact_by_email", "params": {"email": "jane@acme.com"}}
+```
+
+For mutating CRM records, use **write** operations below.
+
+## Write operations (`write_on_connector`)
 
 Use `write_on_connector(connector='hubspot', operation='...', data={...})` with one of: `create_deal`, `update_deal`, `create_contact`, `update_contact`, `create_company`, `update_company`, `create_note`, `update_note`, `delete_note`.
 
@@ -234,7 +452,7 @@ Notes are activities attached to deals (or contacts/companies). Use HubSpot **so
 {"operation": "create_contact", "record": {"email": "jane@acme.com", "firstname": "Jane", "lastname": "Doe", "company": "Acme Inc"}}
 ```
 
-**Querying data:** Use `run_sql_query` on `deals`, `contacts`, `accounts`, `activities` — all synced from HubSpot.
+**Querying data:** Use `run_sql_query` on `deals`, `contacts`, `accounts`, `activities` — all synced from HubSpot. Use **actions** above when you need live HubSpot API data not present in the warehouse (marketing emails, email events, contact enrichment).
 """,
     )
 
@@ -1934,6 +2152,130 @@ Notes are activities attached to deals (or contacts/companies). Use HubSpot **so
         return deal.to_dict()
 
     # =========================================================================
+    # Connector actions (run_on_connector)
+    # =========================================================================
+
+    @staticmethod
+    def _hubspot_properties_query_value(properties: list[str] | str | None) -> str | None:
+        if properties is None:
+            return None
+        if isinstance(properties, str):
+            s = properties.strip()
+            return s if s else None
+        parts: list[str] = [str(p).strip() for p in properties if str(p).strip()]
+        if not parts:
+            return None
+        return ",".join(parts)
+
+    async def list_marketing_emails(
+        self,
+        *,
+        limit: int | None = None,
+        after: str | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {}
+        if limit is not None:
+            params["limit"] = limit
+        if after:
+            params["after"] = after
+        return await self._make_request(
+            "GET", "/marketing/v3/emails", params=params if params else None
+        )
+
+    async def get_marketing_email(self, email_id: str) -> dict[str, Any]:
+        eid: str = str(email_id).strip()
+        if not eid:
+            raise ValueError("get_marketing_email requires a non-empty id")
+        return await self._make_request("GET", f"/marketing/v3/emails/{eid}")
+
+    async def list_email_events(self, query: dict[str, Any]) -> dict[str, Any]:
+        q: dict[str, Any] = {}
+        for key in _HUBSPOT_EMAIL_EVENTS_QUERY_KEYS:
+            if key not in query:
+                continue
+            val: Any = query[key]
+            if val is None:
+                continue
+            q[key] = val
+        return await self._make_request(
+            "GET", "/email/public/v1/events", params=q if q else None
+        )
+
+    async def get_contact(
+        self,
+        contact_id: str,
+        properties: list[str] | str | None = None,
+    ) -> dict[str, Any]:
+        cid: str = str(contact_id).strip()
+        if not cid:
+            raise ValueError("get_contact requires a non-empty id")
+        pv: str | None = self._hubspot_properties_query_value(properties)
+        prop_param: str = (
+            pv if pv is not None else ",".join(_DEFAULT_HUBSPOT_CONTACT_READ_PROPERTIES)
+        )
+        return await self._make_request(
+            "GET",
+            f"/crm/v3/objects/contacts/{cid}",
+            params={"properties": prop_param},
+        )
+
+    async def execute_action(self, action: str, params: dict[str, Any]) -> dict[str, Any]:
+        raw: dict[str, Any] = dict(params or {})
+        if action == "list_marketing_emails":
+            lim_raw: Any = raw.get("limit")
+            limit_val: int | None
+            if lim_raw is None or lim_raw == "":
+                limit_val = None
+            else:
+                limit_val = int(lim_raw)
+            after_raw: Any = raw.get("after")
+            after_val: str | None = (
+                str(after_raw).strip() if after_raw not in (None, "") else None
+            )
+            return await self.list_marketing_emails(limit=limit_val, after=after_val)
+        if action == "get_marketing_email":
+            mid: str = str(raw.get("id", "")).strip()
+            if not mid:
+                raise ValueError("get_marketing_email requires params.id")
+            return await self.get_marketing_email(mid)
+        if action == "list_email_events":
+            return await self.list_email_events(raw)
+        if action == "get_contact":
+            cid2: str = str(raw.get("id", "")).strip()
+            if not cid2:
+                raise ValueError("get_contact requires params.id")
+            props_raw: Any = raw.get("properties")
+            props_norm: list[str] | str | None
+            if props_raw is None:
+                props_norm = None
+            elif isinstance(props_raw, str):
+                props_norm = props_raw
+            elif isinstance(props_raw, list):
+                props_norm = [str(x) for x in props_raw]
+            else:
+                raise ValueError("get_contact params.properties must be a string or array of strings")
+            return await self.get_contact(cid2, props_norm)
+        if action == "find_contact_by_email":
+            em: str = str(raw.get("email", "")).strip()
+            if not em:
+                raise ValueError("find_contact_by_email requires params.email")
+            extras_raw: Any = raw.get("properties")
+            extra_list: list[str] | None = None
+            if extras_raw is not None:
+                if not isinstance(extras_raw, list):
+                    raise ValueError(
+                        "find_contact_by_email params.properties must be an array when provided"
+                    )
+                extra_list = [str(x) for x in extras_raw]
+            found: dict[str, Any] | None = await self.find_contact_by_email(
+                em, properties=extra_list
+            )
+            if found is None:
+                return {"found": False, "contact": None}
+            return {"found": True, "contact": found}
+        raise ValueError(f"Unknown HubSpot action: {action}")
+
+    # =========================================================================
     # Write Operations
     # =========================================================================
 
@@ -2145,16 +2487,34 @@ Notes are activities attached to deals (or contacts/companies). Use HubSpot **so
             "errors": data.get("errors", []),
         }
 
-    async def find_contact_by_email(self, email: str) -> dict[str, Any] | None:
+    async def find_contact_by_email(
+        self,
+        email: str,
+        *,
+        properties: list[str] | None = None,
+    ) -> dict[str, Any] | None:
         """
         Search for a contact by email address.
 
         Args:
             email: Email address to search for
+            properties: Optional extra HubSpot property internal names to include in the result
 
         Returns:
             Contact data if found, None otherwise
         """
+        base_props: list[str] = ["email", "firstname", "lastname", "company"]
+        prop_list: list[str]
+        if properties:
+            seen: set[str] = set()
+            prop_list = []
+            for p in base_props + list(properties):
+                ps = str(p).strip()
+                if ps and ps not in seen:
+                    seen.add(ps)
+                    prop_list.append(ps)
+        else:
+            prop_list = base_props
         try:
             data = await self._make_request(
                 "POST",
@@ -2171,7 +2531,7 @@ Notes are activities attached to deals (or contacts/companies). Use HubSpot **so
                             ]
                         }
                     ],
-                    "properties": ["email", "firstname", "lastname", "company"],
+                    "properties": prop_list,
                     "limit": 1,
                 },
             )
