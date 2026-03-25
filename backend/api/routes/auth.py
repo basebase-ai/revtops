@@ -2590,7 +2590,9 @@ async def get_masquerade_user(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid user ID format")
 
-    async with get_session() as session:
+    # Admin session: masquerade runs without X-Organization-Id; get_session() would set
+    # empty app.current_org_id and org_members RLS would hide all membership rows.
+    async with get_admin_session() as session:
         # Verify admin has global_admin role
         admin_user = await session.get(User, admin_uuid)
         if not admin_user:
@@ -2611,13 +2613,13 @@ async def get_masquerade_user(
         
         # Fetch one of the target user's organizations (for impersonation UI)
         org_data: Optional[SyncOrganizationData] = None
-        from models.org_member import OrgMember
+        from models.org_member import OrgMember, ORG_MEMBER_SCOPING_STATUSES
 
         first_org_row = await session.execute(
             select(OrgMember.organization_id)
             .where(
                 OrgMember.user_id == target_user.id,
-                OrgMember.status.in_(MEMBER_ACTIVE_STATUSES),
+                OrgMember.status.in_(ORG_MEMBER_SCOPING_STATUSES),
             )
             .order_by(
                 OrgMember.joined_at.asc().nulls_last(),
