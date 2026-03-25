@@ -159,10 +159,14 @@ export const useIsAuthenticated = () =>
 export const useSidebarCollapsed = () =>
   useUIStore((state) => state.sidebarCollapsed);
 export const useCurrentView = () => useUIStore((state) => state.currentView);
-export const useIsGlobalAdmin = () =>
-  useAuthStore(
-    (state) => state.user?.roles?.includes("global_admin") ?? false,
-  );
+/** True if the signed-in user or the pre-masquerade admin is global_admin (UI access while impersonating). */
+export const useIsGlobalAdmin = (): boolean =>
+  useAuthStore((state) => {
+    if (state.user?.roles?.includes("global_admin")) return true;
+    if (state.masquerade?.originalUser.roles?.includes("global_admin"))
+      return true;
+    return false;
+  });
 export const useMasquerade = () => useAuthStore((state) => state.masquerade);
 export const useIsMasquerading = () =>
   useAuthStore((state) => state.masquerade !== null);

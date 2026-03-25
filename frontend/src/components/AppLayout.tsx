@@ -39,7 +39,7 @@ const ArtifactFullView = lazy(() => import('./ArtifactFullView').then(m => ({ de
 const DocumentsGallery = lazy(() => import('./documents/DocumentsGallery').then(m => ({ default: m.DocumentsGallery })));
 import { APP_NAME, LOGO_PATH, RELEASE_STAGE } from '../lib/brand';
 import { ProfilePanel } from './ProfilePanel';
-import { useAppStore, useChatStore, useUIStore, useMasquerade, useIntegrations, useIsSwitchingOrg, type ActiveTask, type ToolCallData, type ChatMessage, type ContentBlock } from '../store';
+import { useAppStore, useChatStore, useUIStore, useMasquerade, useIntegrations, useIsSwitchingOrg, useIsGlobalAdmin, type ActiveTask, type ToolCallData, type ChatMessage, type ContentBlock } from '../store';
 import { useTeamMembers, useWebSocket } from '../hooks';
 import { apiRequest } from '../lib/api';
 
@@ -1604,7 +1604,7 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
     setCurrentChatId(null);
   }, [setCurrentChatId]);
 
-  const isGlobalAdmin: boolean = user?.roles.includes('global_admin') ?? false;
+  const isGlobalAdmin: boolean = useIsGlobalAdmin();
 
   useEffect(() => {
     if (currentView === 'admin' && !isGlobalAdmin) {

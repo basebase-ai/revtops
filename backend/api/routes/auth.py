@@ -2144,12 +2144,14 @@ async def list_user_organizations(
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
 
+        from models.org_member import ORG_MEMBER_SCOPING_STATUSES
+
         result = await session.execute(
             select(OrgMember, Organization)
             .join(Organization, OrgMember.organization_id == Organization.id)
             .where(
                 OrgMember.user_id == user_uuid,
-                OrgMember.status.in_(MEMBER_ACTIVE_STATUSES),
+                OrgMember.status.in_(ORG_MEMBER_SCOPING_STATUSES),
             )
         )
         rows = result.all()
@@ -2639,7 +2641,7 @@ async def get_masquerade_user(
                     handle=org.handle,
                     subscription_required=not _sub_ok,
                 )
-        
+
         return MasqueradeUserResponse(
             id=str(target_user.id),
             email=target_user.email,

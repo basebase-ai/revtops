@@ -140,15 +140,29 @@ export const useAuthStore = create<AuthState>()(
           isActive: o.id === orgId,
         }));
 
-        set({
-          organization: {
-            id: orgInList.id,
-            name: orgInList.name,
-            logoUrl: orgInList.logoUrl,
-            handle: orgInList.handle,
-          },
-          organizations: updatedOrgs,
-        });
+        const nextOrganization: OrganizationInfo = {
+          id: orgInList.id,
+          name: orgInList.name,
+          logoUrl: orgInList.logoUrl,
+          handle: orgInList.handle,
+        };
+
+        const masq = get().masquerade;
+        if (masq) {
+          set({
+            organization: nextOrganization,
+            organizations: updatedOrgs,
+            masquerade: {
+              ...masq,
+              masqueradeOrganization: nextOrganization,
+            },
+          });
+        } else {
+          set({
+            organization: nextOrganization,
+            organizations: updatedOrgs,
+          });
+        }
 
         useChatStore.setState({
           currentChatId: null,

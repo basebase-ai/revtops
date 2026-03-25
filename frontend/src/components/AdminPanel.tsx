@@ -10,7 +10,7 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { API_BASE, apiRequest } from '../lib/api';
 import { useDeleteOrganization } from '../hooks';
-import { useAppStore, type UserProfile, type OrganizationInfo } from '../store';
+import { useAppStore, useAuthStore, type UserProfile, type OrganizationInfo } from '../store';
 
 type AdminTab = 'waitlist' | 'users' | 'organizations' | 'sources' | 'jobs';
 
@@ -149,6 +149,10 @@ function OrgRowActions({
     createPortal(
       <div
         ref={menuRef as React.RefObject<HTMLDivElement>}
+        onMouseDown={(e: React.MouseEvent) => {
+          // Keep document-level mousedown listeners from treating in-menu clicks as "outside".
+          e.stopPropagation();
+        }}
         className="fixed z-[9999] py-1 min-w-[120px] bg-surface-800 border border-surface-700 rounded-lg shadow-xl"
         style={{
           bottom: window.innerHeight - menuRect.top + 4,
@@ -234,6 +238,9 @@ function UserRowActions({
     createPortal(
       <div
         ref={menuRef as React.RefObject<HTMLDivElement>}
+        onMouseDown={(e: React.MouseEvent) => {
+          e.stopPropagation();
+        }}
         className="fixed z-[9999] py-1 min-w-[140px] bg-surface-800 border border-surface-700 rounded-lg shadow-xl"
         style={{
           bottom: window.innerHeight - menuRect.top + 4,
@@ -631,7 +638,11 @@ export function AdminPanel(): JSX.Element {
   };
 
   const handleMasquerade = async (targetUserId: string): Promise<void> => {
-    if (!user) return;
+    const actor = useAuthStore.getState().user;
+    if (!actor) {
+      alert('You must be signed in to masquerade. Try refreshing the page.');
+      return;
+    }
 
     setMasquerading(targetUserId);
 
@@ -651,7 +662,7 @@ export function AdminPanel(): JSX.Element {
       };
 
       const { data, error } = await apiRequest<MasqueradeApiResponse>(
-        `/auth/masquerade/${encodeURIComponent(targetUserId)}?admin_user_id=${encodeURIComponent(user.id)}`,
+        `/auth/masquerade/${encodeURIComponent(targetUserId)}?admin_user_id=${encodeURIComponent(actor.id)}`,
         { method: 'GET' },
       );
 
@@ -686,6 +697,7 @@ export function AdminPanel(): JSX.Element {
       };
 
       startMasquerade(targetUser, targetOrg);
+      await fetchUserOrganizations();
       setCurrentView('home');
     } catch (err) {
       console.error('Failed to masquerade:', err);
