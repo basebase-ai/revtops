@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 from connectors.slack import SlackConnector
@@ -24,6 +25,52 @@ def test_execute_action_send_message_can_initiate_dm_with_user_id(monkeypatch) -
 
     assert result == {"ok": True}
     assert captured == {"slack_user_id": "U123", "text": "Hi from Basebase"}
+
+
+def test_execute_action_fetch_channel_history_returns_normalized_messages(monkeypatch) -> None:
+    connector = SlackConnector(organization_id="00000000-0000-0000-0000-000000000001")
+
+    async def _fake_fetch(
+        channel: str,
+        since: str,
+        *,
+        limit: int = 1000,
+    ) -> dict[str, object]:
+        assert channel == "#general"
+        assert since == "2025-01-01T00:00:00Z"
+        assert limit == 500
+        return {
+            "ok": True,
+            "channel_id": "C1",
+            "channel_name": "general",
+            "count": 1,
+            "messages": [
+                {
+                    "source_id": "C1:1.0",
+                    "type": "slack_message",
+                    "subject": "#general",
+                    "description": "hi",
+                    "activity_date": datetime(2025, 1, 2, 0, 0, tzinfo=timezone.utc).isoformat(),
+                    "custom_fields": {},
+                }
+            ],
+        }
+
+    monkeypatch.setattr(connector, "fetch_channel_history", _fake_fetch)
+
+    result = asyncio.run(
+        connector.execute_action(
+            "fetch_channel_history",
+            {
+                "channel": "#general",
+                "since": "2025-01-01T00:00:00Z",
+                "limit": 500,
+            },
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["count"] == 1
 
 
 def test_execute_action_send_message_accepts_legacy_message_param(monkeypatch) -> None:

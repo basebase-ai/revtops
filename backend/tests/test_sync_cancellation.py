@@ -1,8 +1,7 @@
 import asyncio
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 
-from api.routes import sync as sync_routes
 from connectors.base import SyncCancelledError
 from workers.tasks import sync as sync_tasks
 
@@ -36,6 +35,12 @@ class CancelledConnector:
 
 def test_celery_sync_returns_cancelled_when_connector_disconnects(monkeypatch) -> None:
     """Patch discover_connectors so _sync_integration uses CancelledConnector for hubspot."""
+    emitted_events: list[tuple[str, str, dict[str, Any]]] = []
+
+    async def _emit_event(event_type: str, organization_id: str, data: dict[str, Any]) -> None:
+        emitted_events.append((event_type, organization_id, data))
+
+    monkeypatch.setattr("workers.events.emit_event", _emit_event)
     monkeypatch.setattr(
         "connectors.registry.discover_connectors",
         lambda: {"hubspot": CancelledConnector},
@@ -46,33 +51,4 @@ def test_celery_sync_returns_cancelled_when_connector_disconnects(monkeypatch) -
     assert result["status"] == "cancelled"
     assert result["provider"] == "hubspot"
     assert "disconnected during sync" in result["error"]
-
-
-def test_api_sync_status_marks_cancelled_when_connector_disconnects(monkeypatch) -> None:
-    provider = "test_cancel"
-    org_id = "11111111-1111-1111-1111-111111111111"
-    status_key = f"{org_id}:{provider}"
-
-    monkeypatch.setitem(sync_routes.CONNECTORS, provider, CancelledConnector)
-
-    emitted_events: list[tuple[str, str, dict[str, str]]] = []
-
-    async def _emit_event(event_type: str, organization_id: str, data: dict[str, str]) -> None:
-        emitted_events.append((event_type, organization_id, data))
-
-    monkeypatch.setattr("workers.events.emit_event", _emit_event)
-
-    sync_routes._sync_status[status_key] = {
-        "status": "syncing",
-        "started_at": None,
-        "completed_at": None,
-        "error": None,
-        "counts": None,
-    }
-
-    asyncio.run(sync_routes.sync_integration_data(org_id, provider))
-
-    assert sync_routes._sync_status[status_key]["status"] == "cancelled"
-    assert "disconnected during sync" in str(sync_routes._sync_status[status_key]["error"])
-    assert emitted_events
-    assert emitted_events[0][0] == "sync.cancelled"
+    assert any(event[0] == "sync.cancelled" for event in emitted_events)

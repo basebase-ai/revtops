@@ -3,8 +3,9 @@ Slack connector implementation.
 
 Responsibilities:
 - Authenticate with Slack using OAuth token
-- Fetch channels, messages, and user activity
-- Normalize Slack data to activity records
+- Periodic sync: join public channels so the Events API delivers messages
+- On-demand: fetch_channel_history for a single channel (agent/tool use)
+- Normalize Slack payloads to activity-shaped dicts when fetching history
 - Handle pagination and rate limits
 """
 
@@ -17,7 +18,6 @@ from typing import Any, Optional
 
 import httpx
 from sqlalchemy import select
-from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 
 _SEPARATOR_ROW_RE: re.Pattern[str] = re.compile(
@@ -107,14 +107,17 @@ SLACK_API_BASE = "https://slack.com/api"
 logger = logging.getLogger(__name__)
 
 
-def _is_row_level_security_error(exc: Exception) -> bool:
-    """Return True when an exception message looks like a Postgres RLS failure."""
-    message = str(exc).lower()
-    return (
-        "row-level security" in message
-        or "row level security" in message
-        or "violates row-level security policy" in message
-    )
+def _parse_since_iso_to_utc_timestamp(raw: str) -> float:
+    """Parse an ISO 8601 datetime string to a UTC Unix timestamp for Slack ``oldest``."""
+    s: str = raw.strip()
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    dt: datetime = datetime.fromisoformat(s)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    else:
+        dt = dt.astimezone(timezone.utc)
+    return dt.timestamp()
 
 
 class SlackConnector(BaseConnector):
@@ -137,6 +140,15 @@ class SlackConnector(BaseConnector):
                     {"name": "user_id", "type": "string", "required": False, "description": "Slack user ID (e.g. 'U123'). If provided without channel, Basebase opens a DM to this user and sends the message."},
                     {"name": "text", "type": "string", "required": True, "description": "Message text in Slack mrkdwn format"},
                     {"name": "thread_ts", "type": "string", "required": False, "description": "Thread timestamp to reply in-thread (when channel is provided)"},
+                ],
+            ),
+            ConnectorAction(
+                name="fetch_channel_history",
+                description="Fetch message history for a single channel since a datetime (on-demand; periodic sync does not backfill). Uses conversations.history with rate limiting.",
+                parameters=[
+                    {"name": "channel", "type": "string", "required": True, "description": "Channel ID or name (e.g. '#general' or 'C123')"},
+                    {"name": "since", "type": "string", "required": True, "description": "ISO 8601 datetime; only messages after this time are returned"},
+                    {"name": "limit", "type": "integer", "required": False, "description": "Max messages to return (default 1000, max 5000)"},
                 ],
             ),
         ],
@@ -198,6 +210,18 @@ Send a message to a Slack channel, DM, or user.
 ```json
 {"channel": "C01234ABCD", "text": "Got it, will follow up.", "thread_ts": "1234567890.123456"}
 ```
+
+## Action: fetch_channel_history
+
+Call via `run_on_connector(connector='slack', action='fetch_channel_history', params={...})`.
+
+Returns normalized messages for one channel since a cutoff (does not write to the DB).
+
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| channel | string | Yes | Channel ID or `#name` |
+| since | string | Yes | ISO 8601 datetime (e.g. `2025-03-01T00:00:00Z`) |
+| limit | integer | No | Max messages (default 1000, max 5000) |
 """,
     )
 
@@ -452,30 +476,6 @@ Send a message to a Slack channel, DM, or user.
 
         return channels
 
-    async def get_user_channels(self, user_id: str) -> list[dict[str, Any]]:
-        """Get channels a specific Slack user is a member of."""
-        channels: list[dict[str, Any]] = []
-        cursor: Optional[str] = None
-
-        while True:
-            params: dict[str, Any] = {
-                "user": user_id,
-                "types": "public_channel,private_channel",
-                "exclude_archived": "true",
-                "limit": 200,
-            }
-            if cursor:
-                params["cursor"] = cursor
-
-            data = await self._make_request("GET", "users.conversations", params=params)
-            channels.extend(data.get("channels", []))
-
-            cursor = data.get("response_metadata", {}).get("next_cursor")
-            if not cursor:
-                break
-
-        return channels
-
     async def get_channel_info(self, channel_id: str) -> dict[str, Any] | None:
         """Fetch channel metadata via ``conversations.info``. Returns the channel dict or None."""
         try:
@@ -571,6 +571,84 @@ Send a message to a Slack channel, DM, or user.
                 break
 
         return messages
+
+    async def fetch_channel_history(
+        self,
+        channel: str,
+        since: str,
+        *,
+        limit: int = 1000,
+    ) -> dict[str, Any]:
+        """Fetch normalized message history for one channel since an ISO 8601 cutoff.
+
+        Does not persist to the database; use for on-demand/agent backfill. Respects
+        Slack rate limits via :meth:`_make_request`. Joins the channel if needed
+        (public channels only).
+        """
+        channel_stripped: str = channel.strip()
+        since_stripped: str = since.strip()
+        if not channel_stripped:
+            raise ValueError("fetch_channel_history requires a non-empty channel")
+        if not since_stripped:
+            raise ValueError("fetch_channel_history requires a non-empty since (ISO 8601 datetime)")
+
+        oldest_ts: float = _parse_since_iso_to_utc_timestamp(since_stripped)
+        channel_id: str = await self._resolve_channel_for_post(channel_stripped)
+        info: dict[str, Any] | None = await self.get_channel_info(channel_id)
+        channel_name: str = str((info or {}).get("name") or channel_stripped).lstrip("#")
+
+        cap: int = max(1, min(limit, 5000))
+
+        try:
+            messages: list[dict[str, Any]] = await self.get_channel_messages(
+                channel_id, oldest=oldest_ts, limit=cap
+            )
+        except ValueError as exc:
+            if "not_in_channel" not in str(exc):
+                raise
+            await self.join_channel(channel_id)
+            messages = await self.get_channel_messages(
+                channel_id, oldest=oldest_ts, limit=cap
+            )
+
+        rows: list[dict[str, Any]] = []
+        for msg in messages:
+            uid_slack: Any = msg.get("user")
+            if isinstance(uid_slack, str) and uid_slack and not msg.get("user_profile"):
+                if uid_slack not in self._user_info_cache:
+                    try:
+                        self._user_info_cache[uid_slack] = await self.get_user_info(uid_slack)
+                    except Exception:
+                        self._user_info_cache[uid_slack] = {}
+                profile: dict[str, Any] = (
+                    (self._user_info_cache.get(uid_slack) or {}).get("profile") or {}
+                )
+                if profile:
+                    msg["user_profile"] = profile
+
+            activity: Activity | None = self._normalize_message(msg, channel_id, channel_name)
+            if activity is None:
+                continue
+            rows.append(
+                {
+                    "source_id": activity.source_id,
+                    "type": activity.type,
+                    "subject": activity.subject,
+                    "description": activity.description,
+                    "activity_date": activity.activity_date.isoformat()
+                    if activity.activity_date
+                    else None,
+                    "custom_fields": activity.custom_fields,
+                }
+            )
+
+        return {
+            "ok": True,
+            "channel_id": channel_id,
+            "channel_name": channel_name,
+            "count": len(rows),
+            "messages": rows,
+        }
 
     async def get_users(self) -> list[dict[str, Any]]:
         """Get list of workspace users."""
@@ -689,332 +767,84 @@ Send a message to a Slack channel, DM, or user.
         """Slack doesn't have contacts in the traditional sense - return 0."""
         return 0
 
-    async def _get_mapped_user_channels(self) -> list[dict[str, Any]]:
-        """Get deduplicated channels for all mapped Slack users in the org.
+    async def ensure_channel_membership(self) -> dict[str, int]:
+        """List workspace channels and join public channels the bot is not yet in.
 
-        Uses ``users.conversations`` per user instead of the global
-        ``conversations.list``, drastically reducing API calls for large
-        workspaces.
-        """
-        from sqlalchemy import select as sa_select
-        from models.external_identity_mapping import ExternalIdentityMapping
-        from models.database import get_session
-
-        async with get_session(organization_id=self.organization_id) as session:
-            result = await session.execute(
-                sa_select(ExternalIdentityMapping.external_userid)
-                .where(
-                    ExternalIdentityMapping.organization_id == uuid.UUID(self.organization_id),
-                    ExternalIdentityMapping.source == "slack",
-                    ExternalIdentityMapping.external_userid.is_not(None),
-                    ExternalIdentityMapping.user_id.is_not(None),
-                )
-                .distinct()
-            )
-            slack_user_ids: list[str] = [row[0] for row in result.all()]
-
-        logger.info(
-            "[Slack Sync] Incremental sync: fetching channels for %d mapped users org=%s",
-            len(slack_user_ids),
-            self.organization_id,
-        )
-
-        seen_channel_ids: set[str] = set()
-        channels: list[dict[str, Any]] = []
-
-        for slack_uid in slack_user_ids:
-            try:
-                user_channels: list[dict[str, Any]] = await self.get_user_channels(slack_uid)
-                for ch in user_channels:
-                    cid: str = ch.get("id", "")
-                    if cid and cid not in seen_channel_ids:
-                        seen_channel_ids.add(cid)
-                        channels.append(ch)
-            except Exception as exc:
-                logger.warning(
-                    "[Slack Sync] Failed to fetch channels for user=%s org=%s: %s",
-                    slack_uid,
-                    self.organization_id,
-                    exc,
-                )
-
-        logger.info(
-            "[Slack Sync] Incremental sync: %d unique channels from %d mapped users org=%s",
-            len(channels),
-            len(slack_user_ids),
-            self.organization_id,
-        )
-        return channels
-
-    async def sync_activities(self) -> tuple[int, int]:
-        """
-        Sync Slack messages as activities.
+        Ongoing message ingestion uses the Slack Events API webhook; periodic sync
+        only ensures the bot is a member of public channels so events are delivered.
+        Private channels cannot be self-joined and require a manual invite.
 
         Returns:
-            Tuple of (activities_count, channels_with_messages_count).
+            Counts: joined, already_member, skipped_private, skipped_archived, total_listed.
         """
-        logger.info("[Slack Sync] Starting Slack activity sync for org=%s", self.organization_id)
-        if self._integration:
-            logger.info(
-                "[Slack Sync] Activity sync context org=%s integration=%s integration_user_id=%s connected_by_user_id=%s connector_user_id=%s share_synced_data=%s visibility=%s team_id=%s",
-                self.organization_id,
-                self._integration.id,
-                self._integration.user_id,
-                self._integration.connected_by_user_id,
-                self.user_id,
-                self._integration.share_synced_data,
-                "team" if self._integration.share_synced_data else "owner_only",
-                self.team_id,
-            )
-            if not self._integration.share_synced_data and not self.user_id:
-                logger.warning(
-                    "[Slack Sync] Owner-only activity sync is running without connector user_id org=%s integration=%s integration_user_id=%s; RLS writes may fail",
-                    self.organization_id,
-                    self._integration.id,
-                    self._integration.user_id,
-                )
-        # Broadcast that we're starting
+        logger.info(
+            "[Slack Sync] Starting channel membership pass for org=%s",
+            self.organization_id,
+        )
         await broadcast_sync_progress(
             organization_id=self.organization_id,
             provider=self.source_system,
             count=0,
             status="syncing",
         )
-        
-        oldest_ts: float = self.sync_since.replace(tzinfo=timezone.utc).timestamp() if self.sync_since else (datetime.now(timezone.utc).timestamp() - 7 * 24 * 60 * 60)
 
-        if self.sync_since:
-            # Incremental sync: only fetch channels the org's mapped users
-            # are in, instead of listing every channel in the workspace.
-            channels = await self._get_mapped_user_channels()
-        else:
-            # First sync: scan all workspace channels.
-            all_channels: list[dict[str, Any]] = await self.get_channels()
-            channels = [
-                ch for ch in all_channels
-                if not ch.get("is_archived") and (ch.get("num_members") or 0) > 0
-            ]
-            logger.info(
-                "[Slack Sync] First sync: %d channels (%d non-archived with members) for org=%s",
-                len(all_channels),
-                len(channels),
-                self.organization_id,
-            )
+        all_channels: list[dict[str, Any]] = await self.get_channels()
+        joined: int = 0
+        already_member: int = 0
+        skipped_private: int = 0
+        skipped_archived: int = 0
 
-        count = 0
-        channels_with_messages = 0
-        channels_skipped = 0
-        session_user_id: str | None = None
-        if self.user_id:
-            session_user_id = self.user_id
-        elif self._integration and self._integration.user_id:
-            session_user_id = str(self._integration.user_id)
-        elif self._integration and self._integration.connected_by_user_id:
-            session_user_id = str(self._integration.connected_by_user_id)
-        logger.info(
-            "[Slack Sync] Opening activity sync DB session org=%s session_user_id=%s connector_user_id=%s integration_id=%s",
-            self.organization_id,
-            session_user_id,
-            self.user_id,
-            self._integration.id if self._integration else None,
-        )
-        async with get_session(
-            organization_id=self.organization_id,
-            user_id=session_user_id,
-        ) as session:
-            already_synced_channel_ids: set[str] = set()
-            if self.sync_since:
-                from models.activity import Activity as ActivityModel
-                rows = await session.execute(
-                    select(
-                        ActivityModel.custom_fields["channel_id"].astext
-                    ).where(
-                        ActivityModel.organization_id == uuid.UUID(self.organization_id),
-                        ActivityModel.source_system == "slack",
-                        ActivityModel.synced_at > self.sync_since,
-                    ).distinct()
-                )
-                already_synced_channel_ids = {r[0] for r in rows if r[0]}
-                channels_to_fetch: int = len(channels) - len(
-                    already_synced_channel_ids & {ch.get("id", "") for ch in channels}
-                )
+        for ch in all_channels:
+            if ch.get("is_archived"):
+                skipped_archived += 1
+                continue
+            if ch.get("is_private"):
+                skipped_private += 1
+                continue
+            cid: str = str(ch.get("id") or "").strip()
+            if not cid:
+                continue
+            if ch.get("is_member"):
+                already_member += 1
+                continue
+            if await self.join_channel(cid):
+                joined += 1
                 logger.info(
-                    "[Slack Sync] Channel skip check: %d/%d channels already synced since %s, %d channels need fetching org=%s",
-                    len(already_synced_channel_ids & {ch.get("id", "") for ch in channels}),
-                    len(channels),
-                    self.sync_since.isoformat(),
-                    channels_to_fetch,
+                    "[Slack Sync] Joined public channel id=%s name=%s org=%s",
+                    cid,
+                    ch.get("name", ""),
+                    self.organization_id,
+                )
+            else:
+                logger.warning(
+                    "[Slack Sync] conversations.join did not succeed for id=%s name=%s org=%s",
+                    cid,
+                    ch.get("name", ""),
                     self.organization_id,
                 )
 
-            for channel in channels:
-                channel_id = channel.get("id", "")
-                channel_name = channel.get("name", "unknown")
-
-                if channel_id in already_synced_channel_ids:
-                    channels_skipped += 1
-                    logger.debug(
-                        "[Slack Sync] Skipping channel=%s (%s) — already synced since %s org=%s",
-                        channel_name,
-                        channel_id,
-                        self.sync_since.isoformat() if self.sync_since else "n/a",
-                        self.organization_id,
-                    )
-                    continue
-                last_message_ts: str | None = None
-                last_message_user_id: str | None = None
-                last_source_id: str | None = None
-                last_visibility: str | None = None
-                logger.debug(
-                    "[Slack Sync] Fetching messages for channel=%s (%s)",
-                    channel_name,
-                    channel_id,
-                )
-
-                try:
-                    # Try to read history directly; only join if Slack says not_in_channel
-                    try:
-                        messages = await self.get_channel_messages(
-                            channel_id, oldest=oldest_ts, limit=100
-                        )
-                    except ValueError as hist_exc:
-                        if "not_in_channel" not in str(hist_exc):
-                            raise
-                        await self.join_channel(channel_id)
-                        messages = await self.get_channel_messages(
-                            channel_id, oldest=oldest_ts, limit=100
-                        )
-                    if messages:
-                        channels_with_messages += 1
-
-                    for msg in messages:
-                        user_id = msg.get("user")
-                        if user_id and not msg.get("user_profile"):
-                            if user_id not in self._user_info_cache:
-                                try:
-                                    self._user_info_cache[user_id] = await self.get_user_info(user_id)
-                                except Exception as exc:
-                                    logger.warning(
-                                        "[Slack Sync] Failed users.info lookup for user=%s channel=%s: %s",
-                                        user_id,
-                                        channel_id,
-                                        exc,
-                                        exc_info=True,
-                                    )
-                                    self._user_info_cache[user_id] = {}
-                            profile = (self._user_info_cache[user_id] or {}).get("profile") or {}
-                            if profile:
-                                msg["user_profile"] = profile
-
-                        activity = self._normalize_message(msg, channel_id, channel_name)
-                        if activity:
-                            last_message_ts = str(msg.get("ts")) if msg.get("ts") is not None else None
-                            last_message_user_id = (
-                                str(msg.get("user")) if msg.get("user") is not None else None
-                            )
-                            last_source_id = activity.source_id
-                            last_visibility = str(getattr(activity, "visibility", None))
-                            now: datetime = datetime.utcnow()
-                            logger.debug(
-                                "[Slack Sync] Upserting message source_id=%s channel=%s ts=%s",
-                                activity.source_id,
-                                channel_id,
-                                msg.get("ts"),
-                            )
-                            stmt = (
-                                pg_insert(Activity)
-                                .values(
-                                    id=activity.id,
-                                    organization_id=activity.organization_id,
-                                    integration_id=activity.integration_id,
-                                    owner_user_id=activity.owner_user_id,
-                                    visibility=activity.visibility,
-                                    source_system=activity.source_system,
-                                    source_id=activity.source_id,
-                                    type=activity.type,
-                                    subject=activity.subject,
-                                    description=activity.description,
-                                    activity_date=activity.activity_date,
-                                    custom_fields=activity.custom_fields,
-                                    synced_at=now,
-                                )
-                                .on_conflict_do_update(
-                                    index_elements=[
-                                        "organization_id",
-                                        "source_system",
-                                        "source_id",
-                                    ],
-                                    index_where=Activity.source_id.is_not(None),
-                                    set_={
-                                        "integration_id": activity.integration_id,
-                                        "owner_user_id": activity.owner_user_id,
-                                        "visibility": activity.visibility,
-                                        "subject": activity.subject,
-                                        "description": activity.description,
-                                        "custom_fields": activity.custom_fields,
-                                        "activity_date": activity.activity_date,
-                                        "synced_at": now,
-                                    },
-                                )
-                            )
-                            await session.execute(stmt)
-                            count += 1
-                            
-                            # Broadcast progress every 10 messages
-                            if count % 10 == 0:
-                                await broadcast_sync_progress(
-                                    organization_id=self.organization_id,
-                                    provider=self.source_system,
-                                    count=count,
-                                    status="syncing",
-                                )
-
-                    # Commit after each channel so progress is saved
-                    await session.commit()
-
-                except Exception as e:
-                    # Rollback so the session is usable for the next channel
-                    await session.rollback()
-                    if _is_row_level_security_error(e):
-                        logger.error(
-                            "[Slack Sync] RLS error while syncing channel org=%s integration=%s integration_user_id=%s connected_by_user_id=%s connector_user_id=%s session_user_id=%s share_synced_data=%s channel=%s channel_id=%s is_private=%s is_member=%s oldest_ts=%s last_message_ts=%s last_message_user_id=%s last_source_id=%s last_visibility=%s",
-                            self.organization_id,
-                            self._integration.id if self._integration else None,
-                            self._integration.user_id if self._integration else None,
-                            self._integration.connected_by_user_id if self._integration else None,
-                            self.user_id,
-                            session_user_id,
-                            self._integration.share_synced_data if self._integration else None,
-                            channel_name,
-                            channel_id,
-                            channel.get("is_private"),
-                            channel.get("is_member"),
-                            oldest_ts,
-                            last_message_ts,
-                            last_message_user_id,
-                            last_source_id,
-                            last_visibility,
-                            exc_info=True,
-                        )
-                    logger.warning(
-                        "[Slack Sync] Error fetching messages from channel=%s (%s): %s",
-                        channel_name,
-                        channel_id,
-                        e,
-                        exc_info=True,
-                    )
-                    continue
-
-            await session.commit()
-
         logger.info(
-            "[Slack Sync] Finished: %d activities from %d channels (%d skipped as already synced) org=%s",
-            count,
-            channels_with_messages,
-            channels_skipped,
+            "[Slack Sync] Channel membership: joined=%d already_member=%d "
+            "skipped_private=%d skipped_archived=%d total_listed=%d org=%s",
+            joined,
+            already_member,
+            skipped_private,
+            skipped_archived,
+            len(all_channels),
             self.organization_id,
         )
-        return count, channels_with_messages
+        return {
+            "joined": joined,
+            "already_member": already_member,
+            "skipped_private": skipped_private,
+            "skipped_archived": skipped_archived,
+            "total_listed": len(all_channels),
+        }
+
+    async def sync_activities(self) -> int:
+        """Satisfy BaseConnector: periodic Slack work is channel membership only."""
+        stats: dict[str, int] = await self.ensure_channel_membership()
+        return int(stats.get("joined", 0))
 
     def _extract_sender_fields(self, slack_msg: dict[str, Any]) -> dict[str, Any]:
         user_id = slack_msg.get("user")
@@ -1216,13 +1046,15 @@ Send a message to a Slack channel, DM, or user.
                 exc_info=True,
             )
 
-        activities_count, channels_count = await self.sync_activities()
+        membership: dict[str, int] = await self.ensure_channel_membership()
+        joined_count: int = int(membership.get("joined", 0))
+        already_member_count: int = int(membership.get("already_member", 0))
 
-        # Broadcast completion
+        # Broadcast completion (joined = new channels this run; total in workspace = joined + already_member public)
         await broadcast_sync_progress(
             organization_id=self.organization_id,
             provider=self.source_system,
-            count=activities_count,
+            count=joined_count,
             status="completed",
         )
 
@@ -1230,8 +1062,8 @@ Send a message to a Slack channel, DM, or user.
             "accounts": 0,
             "deals": 0,
             "contacts": 0,
-            "activities": activities_count,
-            "channels": channels_count,
+            "activities": 0,
+            "channels": already_member_count + joined_count,
         }
 
     async def fetch_deal(self, deal_id: str) -> dict[str, Any]:
@@ -1330,6 +1162,20 @@ Send a message to a Slack channel, DM, or user.
             if channel:
                 return await self.post_message(channel, text, thread_ts=thread_ts)
             raise ValueError("send_message requires 'channel' or 'user_id' and non-empty text")
+        if action == "fetch_channel_history":
+            ch: str | None = params.get("channel")
+            since_val: str | None = params.get("since")
+            if not ch or not str(ch).strip():
+                raise ValueError("fetch_channel_history requires 'channel'")
+            if not since_val or not str(since_val).strip():
+                raise ValueError("fetch_channel_history requires 'since' (ISO 8601 datetime)")
+            limit_raw: Any = params.get("limit", 1000)
+            limit_val: int = int(limit_raw) if limit_raw is not None else 1000
+            return await self.fetch_channel_history(
+                str(ch).strip(),
+                str(since_val).strip(),
+                limit=limit_val,
+            )
         raise ValueError(f"Unknown action: {action}")
 
     async def post_message(

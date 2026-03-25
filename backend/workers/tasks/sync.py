@@ -15,7 +15,7 @@ if str(_backend_dir) not in sys.path:
     sys.path.insert(0, str(_backend_dir))
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID
 
@@ -34,10 +34,61 @@ PROVIDER_SYNC_INTERVALS: dict[str, timedelta] = {
 DEFAULT_SYNC_INTERVAL: timedelta = timedelta(hours=1)
 
 
+def _parse_sync_since_iso(iso_str: str | None) -> datetime | None:
+    """Parse optional ISO8601 string to naive UTC (for connector sync_since_override)."""
+    if iso_str is None:
+        return None
+    stripped: str = iso_str.strip()
+    if not stripped:
+        return None
+    norm: str = stripped[:-1] + "+00:00" if stripped.endswith("Z") else stripped
+    try:
+        parsed: datetime = datetime.fromisoformat(norm)
+    except ValueError:
+        return None
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+    return parsed
+
+
+async def _clear_last_errors_for_integration(
+    organization_id: str,
+    provider: str,
+    user_id: str | None,
+) -> None:
+    """Clear integration.last_error for matching rows (matches API trigger_sync behavior)."""
+    from sqlalchemy import select
+
+    from models.database import get_session
+    from models.integration import Integration
+
+    org_uuid: UUID = UUID(organization_id)
+    async with get_session(organization_id=organization_id) as session:
+        stmt = select(Integration).where(
+            Integration.organization_id == org_uuid,
+            Integration.connector == provider,
+            Integration.is_active == True,  # noqa: E712
+        )
+        if user_id is not None:
+            stmt = stmt.where(Integration.user_id == UUID(user_id))
+        else:
+            stmt = stmt.where(Integration.user_id.is_(None))
+        result = await session.execute(stmt)
+        rows: list[Integration] = list(result.scalars().all())
+        changed: bool = False
+        for integ in rows:
+            if integ.last_error is not None:
+                integ.last_error = None
+                changed = True
+        if changed:
+            await session.commit()
+
+
 async def _sync_integration(
     organization_id: str,
     provider: str,
     user_id: str | None = None,
+    sync_since_override_iso: str | None = None,
 ) -> dict[str, Any]:
     """
     Internal async function to sync a single integration.
@@ -47,6 +98,7 @@ async def _sync_integration(
         provider: Integration provider name.
         user_id: Optional UUID of the user who owns this integration
                  (for per-user providers like Gmail, Calendar, etc.).
+        sync_since_override_iso: Optional ISO8601 manual resync cutoff (serialized for Celery).
 
     Returns sync results including counts and any errors.
     """
@@ -74,10 +126,17 @@ async def _sync_integration(
             "provider": provider,
         }
 
+    sync_since_dt: datetime | None = _parse_sync_since_iso(sync_since_override_iso)
+    connector: Any | None = None
+
     try:
         user_label: str = f" user={user_id}" if user_id else ""
         logger.info(f"Starting sync for {provider} in org {organization_id}{user_label}")
-        connector = connector_class(organization_id, user_id=user_id)
+        connector = connector_class(
+            organization_id,
+            user_id=user_id,
+            sync_since_override=sync_since_dt,
+        )
 
         from access_control import ConnectorContext, check_connector_call
 
@@ -95,6 +154,8 @@ async def _sync_integration(
                 "provider": provider,
                 "error": dp_result.deny_reason or "Connector sync not allowed",
             }
+
+        await _clear_last_errors_for_integration(organization_id, provider, user_id)
 
         await connector.mark_sync_started()
         counts = await connector.sync_all()
@@ -132,7 +193,20 @@ async def _sync_integration(
         cancel_msg = str(e)
         logger.info(f"Sync cancelled for {provider} in org {organization_id}: {cancel_msg}")
         try:
-            await connector.clear_sync_started()
+            if connector is not None:
+                await connector.clear_sync_started()
+        except Exception:
+            pass
+        try:
+            await emit_event(
+                event_type="sync.cancelled",
+                organization_id=organization_id,
+                data={
+                    "provider": provider,
+                    "message": cancel_msg,
+                    "cancelled_at": datetime.utcnow().isoformat(),
+                },
+            )
         except Exception:
             pass
         return {
@@ -148,9 +222,13 @@ async def _sync_integration(
 
         # Record error in database and clear in-progress flag
         try:
-            connector = connector_class(organization_id, user_id=user_id)
-            await connector.clear_sync_started()
-            await connector.record_error(error_msg)
+            err_connector = connector_class(
+                organization_id,
+                user_id=user_id,
+                sync_since_override=sync_since_dt,
+            )
+            await err_connector.clear_sync_started()
+            await err_connector.record_error(error_msg)
         except Exception:
             pass
 
@@ -267,53 +345,79 @@ def sync_integration(
     organization_id: str,
     provider: str,
     user_id: str | None = None,
+    sync_since_override_iso: str | None = None,
 ) -> dict[str, Any]:
     """
     Celery task to sync a single integration.
-    
+
     Args:
         organization_id: UUID of the organization
         provider: Integration provider name (e.g., 'hubspot', 'salesforce')
         user_id: Optional UUID of the user who owns this integration
-    
+        sync_since_override_iso: Optional ISO8601 manual resync cutoff
+
     Returns:
         Dict with sync status, counts, and any errors
     """
     user_label: str = f" user={user_id}" if user_id else ""
     logger.info(f"Task {self.request.id}: Syncing {provider} for org {organization_id}{user_label}")
-    return run_async(_sync_integration(organization_id, provider, user_id=user_id))
+    return run_async(
+        _sync_integration(
+            organization_id,
+            provider,
+            user_id=user_id,
+            sync_since_override_iso=sync_since_override_iso,
+        )
+    )
 
 
 @celery_app.task(bind=True, name="workers.tasks.sync.sync_organization")
 def sync_organization(self: Any, organization_id: str) -> dict[str, Any]:
     """
-    Celery task to sync all integrations for a single organization.
-    
+    Celery task: enqueue one sync_integration child task per SYNC-capable integration.
+
     Args:
         organization_id: UUID of the organization
-    
+
     Returns:
-        Dict with results for each integration
+        Summary with dispatched task ids and counts
     """
-    logger.info(f"Task {self.request.id}: Syncing all integrations for org {organization_id}")
-    
-    async def _sync_all_for_org() -> dict[str, Any]:
+    logger.info(f"Task {self.request.id}: Queueing per-integration syncs for org {organization_id}")
+
+    async def _dispatch_org_syncs() -> dict[str, Any]:
+        from connectors.registry import Capability, discover_connectors
+
+        connectors = discover_connectors()
         integration_entries: list[dict[str, str | None]] = await _get_org_integrations(organization_id)
-        results: dict[str, Any] = {}
-        
+        task_ids: list[str] = []
+        skipped: int = 0
+
         for entry in integration_entries:
             provider: str = entry["connector"]  # type: ignore[assignment]
+            connector_cls = connectors.get(provider)
+            meta = getattr(connector_cls, "meta", None) if connector_cls else None
+            if (
+                connector_cls is None
+                or meta is None
+                or not hasattr(meta, "capabilities")
+                or Capability.SYNC not in meta.capabilities
+            ):
+                skipped += 1
+                continue
             uid: str | None = entry["user_id"]
-            key: str = f"{provider}:{uid}" if uid else provider
-            results[key] = await _sync_integration(organization_id, provider, user_id=uid)
-        
+            async_result = sync_integration.delay(organization_id, provider, uid)
+            task_ids.append(str(async_result.id))
+
         return {
             "organization_id": organization_id,
-            "integrations": results,
+            "status": "dispatched",
+            "child_tasks_dispatched": len(task_ids),
+            "child_task_ids": task_ids,
+            "skipped_non_sync": skipped,
             "completed_at": datetime.utcnow().isoformat(),
         }
-    
-    return run_async(_sync_all_for_org())
+
+    return run_async(_dispatch_org_syncs())
 
 
 @celery_app.task(
@@ -933,70 +1037,70 @@ async def _get_google_token(
 @celery_app.task(bind=True, name="workers.tasks.sync.sync_all_organizations")
 def sync_all_organizations(self: Any) -> dict[str, Any]:
     """
-    Celery task to sync all integrations for all organizations.
-    
-    This is the hourly sync task that runs via Beat schedule.
-    
+    Celery task: enqueue one sync_integration child task per due integration (hourly beat).
+
     Returns:
-        Dict with summary of all sync operations
+        Dict with dispatch counts (each child runs independently on workers).
     """
-    logger.info(f"Task {self.request.id}: Starting hourly sync for all organizations")
-    
-    async def _sync_all() -> dict[str, Any]:
+    logger.info(f"Task {self.request.id}: Starting hourly sync dispatch for all organizations")
+
+    async def _dispatch_all() -> dict[str, Any]:
         import time as _time
+
+        from connectors.registry import Capability, discover_connectors
 
         run_start: float = _time.monotonic()
         now = datetime.utcnow()
         all_integrations: list[dict[str, str | None]] = await _get_all_active_integrations()
+        connectors = discover_connectors()
 
-        # Group by organization
-        orgs: dict[str, list[dict[str, str | None]]] = {}
-        for integration in all_integrations:
-            org_id: str = integration["organization_id"]  # type: ignore[assignment]
-            if org_id not in orgs:
-                orgs[org_id] = []
-            orgs[org_id].append(integration)
-
-        results: dict[str, dict[str, Any]] = {}
-        total_synced: int = 0
-        total_failed: int = 0
+        child_task_ids: list[str] = []
         total_skipped_cadence: int = 0
+        total_skipped_non_sync: int = 0
 
-        for org_id, entries in orgs.items():
-            results[org_id] = {}
-            for entry in entries:
-                if not _should_sync_in_periodic_run(entry, now):
-                    total_skipped_cadence += 1
-                    continue
-                provider: str = entry["connector"]  # type: ignore[assignment]
-                uid: str | None = entry["user_id"]
-                key: str = f"{provider}:{uid}" if uid else provider
-
-                result = await _sync_integration(org_id, provider, user_id=uid)
-
-                results[org_id][key] = result
-                if result["status"] == "completed":
-                    total_synced += 1
-                else:
-                    total_failed += 1
+        for entry in all_integrations:
+            org_id: str = entry["organization_id"]  # type: ignore[assignment]
+            provider: str = entry["connector"]  # type: ignore[assignment]
+            connector_cls = connectors.get(provider)
+            meta = getattr(connector_cls, "meta", None) if connector_cls else None
+            if (
+                connector_cls is None
+                or meta is None
+                or not hasattr(meta, "capabilities")
+                or Capability.SYNC not in meta.capabilities
+            ):
+                total_skipped_non_sync += 1
+                continue
+            if not _should_sync_in_periodic_run(entry, now):
+                total_skipped_cadence += 1
+                continue
+            uid: str | None = entry["user_id"]
+            async_result = sync_integration.delay(org_id, provider, uid)
+            child_task_ids.append(str(async_result.id))
 
         total_elapsed: float = _time.monotonic() - run_start
+        dispatched: int = len(child_task_ids)
 
         summary: dict[str, Any] = {
-            "total_organizations": len(orgs),
-            "total_integrations_synced": total_synced,
-            "total_integrations_failed": total_failed,
+            "status": "dispatched",
+            "child_tasks_dispatched": dispatched,
+            "skipped_due_to_cadence": total_skipped_cadence,
+            "skipped_non_sync_connector": total_skipped_non_sync,
             "started_at": datetime.utcnow().isoformat(),
-            "results": results,
+            "elapsed_seconds": round(total_elapsed, 3),
         }
-        
+
         logger.info(
-            f"Hourly sync complete: {total_synced} succeeded, {total_failed} failed "
-            f"({total_skipped_cadence} skipped cadence) in {total_elapsed:.1f}s"
+            "Hourly sync dispatch complete: %d child tasks queued, %d skipped cadence, "
+            "%d skipped non-sync in %.1fs",
+            dispatched,
+            total_skipped_cadence,
+            total_skipped_non_sync,
+            total_elapsed,
         )
         return summary
-    
-    return run_async(_sync_all())
+
+    return run_async(_dispatch_all())
 
 
 @celery_app.task(bind=True, name="workers.tasks.sync.sweep_active_huddles")

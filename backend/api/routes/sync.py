@@ -1,10 +1,12 @@
 """
 Sync trigger endpoints for all integrations.
 
+Work runs on Celery workers (``sync_integration`` task), not in the API process.
+
 Endpoints:
-- POST /api/sync/{organization_id}/{provider} - Trigger sync for specific integration
-- GET /api/sync/{organization_id}/{provider}/status - Get sync status
-- POST /api/sync/{organization_id}/all - Sync all active integrations (org admin or global_admin; JWT required)
+- POST /api/sync/{organization_id}/{provider} - Queue sync for specific integration
+- GET /api/sync/{organization_id}/{provider}/status - Get sync status (DB-backed)
+- POST /api/sync/{organization_id}/all - Queue sync for all integrations (org admin or global_admin; JWT required)
 """
 from __future__ import annotations
 
@@ -14,11 +16,10 @@ import logging
 from typing import Any, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import select
 
-from connectors.base import SyncCancelledError
 from connectors.github import GitHubConnector
 from connectors.registry import Capability, discover_connectors
 from api.auth_middleware import AuthContext, get_current_auth
@@ -57,10 +58,6 @@ def parse_sync_since_param(since: str | None) -> datetime | None:
         return parsed.astimezone(timezone.utc).replace(tzinfo=None)
     return parsed
 
-# Simple in-memory sync status tracking (use Redis in production)
-_sync_status: dict[str, dict[str, str | datetime | None | dict[str, int]]] = {}
-
-
 class SyncStatusResponse(BaseModel):
     """Response model for sync status."""
 
@@ -87,11 +84,6 @@ class SyncAllResponse(BaseModel):
     status: str
     organization_id: str
     integrations: list[str]
-
-
-def _get_status_key(organization_id: str, provider: str) -> str:
-    """Generate a unique key for sync status tracking."""
-    return f"{organization_id}:{provider}"
 
 
 # =============================================================================
@@ -705,10 +697,8 @@ async def _ensure_org_admin_can_sync_all(organization_id: str, auth: AuthContext
             )
 
 
-async def _execute_sync_all_integrations(
-    organization_id: str, background_tasks: BackgroundTasks
-) -> SyncAllResponse:
-    """Enqueue background sync for every active integration that supports SYNC."""
+async def _execute_sync_all_integrations(organization_id: str) -> SyncAllResponse:
+    """Enqueue Celery sync for every active integration that supports SYNC."""
     try:
         customer_uuid = UUID(organization_id)
     except ValueError:
@@ -726,6 +716,8 @@ async def _execute_sync_all_integrations(
     if not integrations:
         raise HTTPException(status_code=404, detail="No active integrations found")
 
+    from workers.tasks.sync import sync_integration
+
     syncing_providers: list[str] = []
     for integration in integrations:
         prov: str = integration.connector
@@ -733,21 +725,11 @@ async def _execute_sync_all_integrations(
         if connector_cls is not None and Capability.SYNC in connector_cls.meta.capabilities:
             if prov not in syncing_providers:
                 syncing_providers.append(prov)
-            status_key: str = _get_status_key(organization_id, prov)
-            _sync_status[status_key] = {
-                "status": "syncing",
-                "started_at": datetime.utcnow(),
-                "completed_at": None,
-                "error": None,
-                "counts": None,
-            }
             uid: str | None = str(integration.user_id) if integration.user_id else None
-            background_tasks.add_task(
-                sync_integration_data, organization_id, prov, uid
-            )
+            sync_integration.delay(organization_id, prov, uid)
 
     return SyncAllResponse(
-        status="syncing",
+        status="queued",
         organization_id=organization_id,
         integrations=syncing_providers,
     )
@@ -756,19 +738,17 @@ async def _execute_sync_all_integrations(
 @router.post("/{organization_id}/all", response_model=SyncAllResponse)
 async def trigger_sync_all(
     organization_id: str,
-    background_tasks: BackgroundTasks,
     auth: AuthContext = Depends(get_current_auth),
 ) -> SyncAllResponse:
     """Trigger sync for all active integrations (org admin or global admin only)."""
     await _ensure_org_admin_can_sync_all(organization_id, auth)
-    return await _execute_sync_all_integrations(organization_id, background_tasks)
+    return await _execute_sync_all_integrations(organization_id)
 
 
 @router.post("/{organization_id}/{provider}", response_model=SyncTriggerResponse)
 async def trigger_sync(
     organization_id: str,
     provider: str,
-    background_tasks: BackgroundTasks,
     since: str | None = Query(
         default=None,
         description="ISO8601 UTC start time for manual resync (overrides last_sync_at for this run)",
@@ -817,37 +797,24 @@ async def trigger_sync(
                 detail=f"No active {provider} integration found",
             )
 
-        # Clear stale errors so the UI doesn't show a previous failure while syncing
-        for integration in integrations:
-            if integration.last_error is not None:
-                integration.last_error = None
-        await session.commit()
-
     sync_since_override: datetime | None = parse_sync_since_param(since)
+    since_iso: str | None = (
+        sync_since_override.isoformat() if sync_since_override is not None else None
+    )
 
-    # Initialize sync status
-    status_key: str = _get_status_key(organization_id, provider)
-    _sync_status[status_key] = {
-        "status": "syncing",
-        "started_at": datetime.utcnow(),
-        "completed_at": None,
-        "error": None,
-        "counts": None,
-    }
+    from workers.tasks.sync import sync_integration
 
-    # Queue a background sync for each per-user integration
     for integration in integrations:
         user_id: str | None = str(integration.user_id) if integration.user_id else None
-        background_tasks.add_task(
-            sync_integration_data,
+        sync_integration.delay(
             organization_id,
             provider,
             user_id,
-            sync_since_override,
+            sync_since_override_iso=since_iso,
         )
 
     return SyncTriggerResponse(
-        status="syncing", organization_id=organization_id, provider=provider
+        status="queued", organization_id=organization_id, provider=provider
     )
 
 
@@ -892,25 +859,7 @@ async def get_sync_status(organization_id: str, provider: str) -> SyncStatusResp
             except (ValueError, TypeError):
                 pass
 
-    # Fall back to in-memory status (set by API-initiated syncs in this process)
-    status_key: str = _get_status_key(organization_id, provider)
-    status: dict[str, Any] | None = _sync_status.get(status_key)
-
-    if status:
-        started_at = status.get("started_at")
-        completed_at = status.get("completed_at")
-        counts = status.get("counts")
-        return SyncStatusResponse(
-            organization_id=organization_id,
-            provider=provider,
-            status=str(status.get("status", "unknown")),
-            started_at=f"{started_at.isoformat()}Z" if isinstance(started_at, datetime) else None,
-            completed_at=f"{completed_at.isoformat()}Z" if isinstance(completed_at, datetime) else None,
-            error=str(status["error"]) if status.get("error") else None,
-            counts=counts if isinstance(counts, dict) else None,
-        )
-
-    # No in-memory status — use DB last_sync_at / never_synced
+    # Use DB last_sync_at / never_synced
     if integration and integration.last_sync_at:
         return SyncStatusResponse(
             organization_id=organization_id,
@@ -931,144 +880,6 @@ async def get_sync_status(organization_id: str, provider: str) -> SyncStatusResp
         error=None,
         counts=None,
     )
-
-
-async def sync_integration_data(
-    organization_id: str,
-    provider: str,
-    user_id: str | None = None,
-    sync_since_override: datetime | None = None,
-) -> None:
-    """Background task to sync data for a specific integration.
-
-    Args:
-        organization_id: UUID of the organization.
-        provider: Integration provider name.
-        user_id: Optional UUID of the user who owns this integration
-                 (for per-user providers like Gmail, Calendar, etc.).
-        sync_since_override: When set, passed to the connector as the incremental
-            cutoff instead of ``last_sync_at`` (manual resync from a chosen time).
-    """
-    status_key: str = _get_status_key(organization_id, provider)
-    connector_class = CONNECTORS.get(provider)
-
-    if not connector_class:
-        _sync_status[status_key]["status"] = "failed"
-        _sync_status[status_key]["error"] = f"Unknown provider: {provider}"
-        _sync_status[status_key]["completed_at"] = datetime.utcnow()
-        return
-
-    try:
-        user_label: str = f" user={user_id}" if user_id else ""
-        print(f"[Sync] Starting sync for {provider} in org {organization_id}{user_label}")
-        connector = connector_class(
-            organization_id,
-            user_id=user_id,
-            sync_since_override=sync_since_override,
-        )
-        await connector.mark_sync_started()
-        counts = await connector.sync_all()
-        print(f"[Sync] sync_all returned counts: {counts}")
-        await connector.update_last_sync(counts)
-        print(f"[Sync] Completed sync for {provider}, saved sync_stats: {counts}")
-
-        _sync_status[status_key]["status"] = "completed"
-        _sync_status[status_key]["completed_at"] = datetime.utcnow()
-        _sync_status[status_key]["counts"] = counts
-
-        # Generate embeddings for newly synced activities (non-blocking)
-        try:
-            from services.embedding_sync import generate_embeddings_for_organization
-            embedded_count = await generate_embeddings_for_organization(
-                organization_id, limit=500  # Limit per sync to avoid timeout
-            )
-            if embedded_count > 0:
-                print(f"Generated embeddings for {embedded_count} activities")
-        except Exception as embed_err:
-            # Don't fail sync if embedding generation fails
-            print(f"Warning: Embedding generation failed: {embed_err}")
-
-        # Emit sync completed event for workflow triggers
-        try:
-            from workers.events import emit_event
-            await emit_event(
-                event_type="sync.completed",
-                organization_id=organization_id,
-                data={
-                    "provider": provider,
-                    "counts": counts,
-                    "completed_at": datetime.utcnow().isoformat(),
-                },
-            )
-        except Exception as event_err:
-            print(f"Warning: Event emission failed: {event_err}")
-
-    except SyncCancelledError as e:
-        cancel_msg = str(e)
-        print(f"[Sync] CANCELLED syncing {provider} for org {organization_id}: {cancel_msg}")
-
-        _sync_status[status_key]["status"] = "cancelled"
-        _sync_status[status_key]["error"] = cancel_msg
-        _sync_status[status_key]["completed_at"] = datetime.utcnow()
-
-        try:
-            await connector.clear_sync_started()
-        except Exception:
-            pass
-
-        # Emit sync cancelled event (best effort)
-        try:
-            from workers.events import emit_event
-            await emit_event(
-                event_type="sync.cancelled",
-                organization_id=organization_id,
-                data={
-                    "provider": provider,
-                    "message": cancel_msg,
-                    "cancelled_at": datetime.utcnow().isoformat(),
-                },
-            )
-        except Exception:
-            pass
-
-    except Exception as e:
-        import traceback
-        error_msg = str(e)
-        full_traceback = traceback.format_exc()
-        print(f"[Sync] ERROR syncing {provider} for org {organization_id}: {error_msg}")
-        print(f"[Sync] Traceback:\n{full_traceback}")
-        
-        _sync_status[status_key]["status"] = "failed"
-        _sync_status[status_key]["error"] = error_msg
-        _sync_status[status_key]["completed_at"] = datetime.utcnow()
-
-        # Record error in database and clear in-progress flag
-        try:
-            connector = connector_class(
-                organization_id,
-                user_id=user_id,
-                sync_since_override=sync_since_override,
-            )
-            await connector.clear_sync_started()
-            await connector.record_error(error_msg)
-        except Exception as record_err:
-            print(f"[Sync] Failed to record error to DB: {record_err}")
-
-        # Emit sync failed event
-        try:
-            from workers.events import emit_event
-            await emit_event(
-                event_type="sync.failed",
-                organization_id=organization_id,
-                data={
-                    "provider": provider,
-                    "error": error_msg,
-                    "failed_at": datetime.utcnow().isoformat(),
-                },
-            )
-        except Exception:
-            pass
-
 
 class OwnerMatchResult(BaseModel):
     """Single owner match result."""
@@ -1335,109 +1146,8 @@ async def match_github_users(
 @router.post("/{organization_id}")
 async def trigger_sync_legacy(
     organization_id: str,
-    background_tasks: BackgroundTasks,
     auth: AuthContext = Depends(get_current_auth),
 ) -> SyncAllResponse:
     """Legacy endpoint - triggers sync for all integrations (same auth as /all)."""
     await _ensure_org_admin_can_sync_all(organization_id, auth)
-    return await _execute_sync_all_integrations(organization_id, background_tasks)
-
-
-# ============================================================================
-# Celery-based sync endpoints (queued execution)
-# ============================================================================
-
-
-class QueuedSyncResponse(BaseModel):
-    """Response model for queued sync."""
-
-    status: str
-    task_id: str
-    organization_id: str
-    provider: Optional[str] = None
-
-
-@router.post("/{organization_id}/{provider}/queue", response_model=QueuedSyncResponse)
-async def queue_sync(organization_id: str, provider: str) -> QueuedSyncResponse:
-    """
-    Queue a sync for execution via Celery worker.
-    
-    This is the preferred method for scheduled syncs as it:
-    - Handles retries automatically
-    - Doesn't block the API server
-    - Can be monitored via task_id
-    """
-    try:
-        customer_uuid = UUID(organization_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid customer ID")
-
-    if provider not in CONNECTORS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unknown provider: {provider}. Available: {list(CONNECTORS.keys())}",
-        )
-
-    # Verify at least one integration exists
-    async with get_session(organization_id=organization_id) as session:
-        result = await session.execute(
-            select(Integration).where(
-                Integration.organization_id == customer_uuid,
-                Integration.connector == provider,
-                Integration.is_active == True,
-            )
-        )
-        integrations = result.scalars().all()
-
-        if not integrations:
-            raise HTTPException(
-                status_code=404,
-                detail=f"No active {provider} integration found",
-            )
-
-    # Queue a Celery task for each per-user integration
-    from workers.tasks.sync import sync_integration
-    last_task_id: str = ""
-    for integration in integrations:
-        uid: str | None = str(integration.user_id) if integration.user_id else None
-        task = sync_integration.delay(organization_id, provider, uid)
-        last_task_id = task.id
-
-    return QueuedSyncResponse(
-        status="queued",
-        task_id=last_task_id,
-        organization_id=organization_id,
-        provider=provider,
-    )
-
-
-@router.post("/{organization_id}/all/queue", response_model=QueuedSyncResponse)
-async def queue_sync_all(organization_id: str) -> QueuedSyncResponse:
-    """Queue sync for all integrations via Celery worker."""
-    try:
-        customer_uuid = UUID(organization_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid customer ID")
-
-    # Verify org has integrations
-    async with get_session(organization_id=organization_id) as session:
-        result = await session.execute(
-            select(Integration).where(
-                Integration.organization_id == customer_uuid,
-                Integration.is_active == True,
-            )
-        )
-        integrations = result.scalars().all()
-
-    if not integrations:
-        raise HTTPException(status_code=404, detail="No active integrations found")
-
-    # Queue task via Celery
-    from workers.tasks.sync import sync_organization
-    task = sync_organization.delay(organization_id)
-
-    return QueuedSyncResponse(
-        status="queued",
-        task_id=task.id,
-        organization_id=organization_id,
-    )
+    return await _execute_sync_all_integrations(organization_id)
