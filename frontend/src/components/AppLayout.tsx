@@ -39,7 +39,7 @@ const ArtifactFullView = lazy(() => import('./ArtifactFullView').then(m => ({ de
 const DocumentsGallery = lazy(() => import('./documents/DocumentsGallery').then(m => ({ default: m.DocumentsGallery })));
 import { APP_NAME, LOGO_PATH, RELEASE_STAGE } from '../lib/brand';
 import { ProfilePanel } from './ProfilePanel';
-import { useAppStore, useChatStore, useUIStore, useMasquerade, useIntegrations, useIsSwitchingOrg, useIsGlobalAdmin, type ActiveTask, type ToolCallData, type ChatMessage, type ContentBlock } from '../store';
+import { useAppStore, useChatStore, useUIStore, useMasquerade, useIntegrations, useIsSwitchingOrg, useIsGlobalAdmin, type ActiveTask, type ToolCallData, type ChatMessage, type ContentBlock, type View } from '../store';
 import { useTeamMembers, useWebSocket } from '../hooks';
 import { apiRequest } from '../lib/api';
 
@@ -519,33 +519,37 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
   useEffect(() => {
     if (!urlInitialized || isSyncingFromUrlRef.current) return;
 
-    const prefix = orgHandle ? `/${orgHandle}` : "";
     let newPath: string;
-
-    if (currentChatId) {
-      newPath = `${prefix}/chat/${currentChatId}`;
-    } else if (currentView === "app-view" && currentAppId) {
-      newPath = `${prefix}/apps/${currentAppId}`;
-    } else if (currentView === "artifact-view" && currentArtifactId) {
-      newPath = `${prefix}/artifacts/${currentArtifactId}`;
+    if (currentView === "admin") {
+      newPath = "/admin";
     } else {
-      const viewPaths: Record<typeof currentView, string> = {
-        home: "/",
-        chat: "/chat",
-        chats: "/chats",
-        "data-sources": "/connectors",
-        data: "/data",
-        workflows: "/workflows",
-        apps: "/apps",
-        "app-view": "/apps",
-        documents: "/documents",
-        "artifact-view": "/chat",
-        admin: "/admin",
-        memory: "/memory",
-        "pending-changes": "/changes",
-      };
-      const base = viewPaths[currentView] || "/";
-      newPath = prefix ? `${prefix}${base === "/" ? "" : base}` : base;
+      const prefix: string = orgHandle ? `/${orgHandle}` : "";
+
+      if (currentChatId) {
+        newPath = `${prefix}/chat/${currentChatId}`;
+      } else if (currentView === "app-view" && currentAppId) {
+        newPath = `${prefix}/apps/${currentAppId}`;
+      } else if (currentView === "artifact-view" && currentArtifactId) {
+        newPath = `${prefix}/artifacts/${currentArtifactId}`;
+      } else {
+        const viewPaths: Record<View, string> = {
+          home: "/",
+          chat: "/chat",
+          chats: "/chats",
+          "data-sources": "/connectors",
+          data: "/data",
+          workflows: "/workflows",
+          memory: "/memory",
+          apps: "/apps",
+          "app-view": "/apps",
+          documents: "/documents",
+          "artifact-view": "/chat",
+          admin: "/admin",
+          "pending-changes": "/changes",
+        };
+        const base: string = viewPaths[currentView];
+        newPath = prefix ? `${prefix}${base === "/" ? "" : base}` : base;
+      }
     }
 
     if (window.location.pathname !== newPath) {

@@ -317,3 +317,11 @@ export type View =
   | "artifact-view"
   | "admin"
   | "pending-changes";
+
+/** Global Admin panel sections (sidebar + AdminPanel content). */
+export type AdminPanelTab =
+  | "waitlist"
+  | "users"
+  | "organizations"
+  | "sources"
+  | "jobs";

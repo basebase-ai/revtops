@@ -12,8 +12,6 @@ import { API_BASE, apiRequest } from '../lib/api';
 import { useDeleteOrganization } from '../hooks';
 import { useAppStore, useAuthStore, type UserProfile, type OrganizationInfo } from '../store';
 
-type AdminTab = 'waitlist' | 'users' | 'organizations' | 'sources' | 'jobs';
-
 interface WaitlistEntry {
   id: string;
   email: string;
@@ -297,7 +295,7 @@ export function AdminPanel(): JSX.Element {
   const fetchUserOrganizations = useAppStore((state) => state.fetchUserOrganizations);
   const switchActiveOrganization = useAppStore((state) => state.switchActiveOrganization);
   const deleteOrganizationMutation = useDeleteOrganization();
-  const [activeTab, setActiveTab] = useState<AdminTab>('waitlist');
+  const activeTab = useAppStore((state) => state.adminPanelTab);
   const [masquerading, setMasquerading] = useState<string | null>(null);
   const [entries, setEntries] = useState<WaitlistEntry[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
@@ -874,14 +872,6 @@ export function AdminPanel(): JSX.Element {
     );
   };
 
-  const tabs: { id: AdminTab; label: string; available: boolean }[] = [
-    { id: 'waitlist', label: 'Waitlist', available: true },
-    { id: 'users', label: 'Users', available: true },
-    { id: 'organizations', label: 'Teams', available: true },
-    { id: 'sources', label: 'Sources', available: true },
-    { id: 'jobs', label: 'Running Jobs', available: true },
-  ];
-
   // Filter users by search term (in-memory)
   const filteredUsers = adminUsers.filter((u) => {
     if (!userSearch.trim()) return true;
@@ -959,31 +949,6 @@ export function AdminPanel(): JSX.Element {
       </header>
 
       <div className="mx-auto max-w-6xl px-4 py-4 md:px-8 md:py-6">
-        {/* Tab Navigation */}
-        <div className="-mx-4 mb-6 overflow-x-auto border-b border-surface-800 px-4 md:mx-0 md:px-0">
-          <div className="flex min-w-max gap-1">
-          {tabs.map((tab) => (
-            <button
-              key={tab.id}
-              onClick={() => tab.available && setActiveTab(tab.id)}
-              disabled={!tab.available}
-              className={`-mb-px whitespace-nowrap border-b-2 px-3 py-2.5 text-sm font-medium transition-colors sm:px-4 ${
-                activeTab === tab.id
-                  ? 'border-primary-500 text-primary-400'
-                  : tab.available
-                    ? 'border-transparent text-surface-400 hover:text-surface-200'
-                    : 'border-transparent text-surface-600 cursor-not-allowed'
-              }`}
-            >
-              {tab.label}
-              {!tab.available && (
-                <span className="ml-1.5 text-xs text-surface-600">(soon)</span>
-              )}
-            </button>
-          ))}
-          </div>
-        </div>
-
         {/* Waitlist Tab Content */}
         {activeTab === 'waitlist' && (
           <div className="space-y-6">

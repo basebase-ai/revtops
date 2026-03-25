@@ -7,7 +7,7 @@
 
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import type { View } from "./types";
+import type { AdminPanelTab, View } from "./types";
 import { useChatStore } from "./chatStore";
 
 /** User-selected color theme; `system` follows OS preference. */
@@ -29,6 +29,8 @@ export interface UIState {
   pinnedChatIds: string[];
   /** Last artifact id that was updated (from stream). Cleared after consumed. */
   lastArtifactUpdateId: string | null;
+  /** Active section in Global Admin (sidebar + main panel). */
+  adminPanelTab: AdminPanelTab;
 
   // Actions
   setSidebarCollapsed: (collapsed: boolean) => void;
@@ -43,6 +45,7 @@ export interface UIState {
   startNewChat: () => void;
   togglePinChat: (id: string) => void;
   setTheme: (theme: UITheme) => void;
+  setAdminPanelTab: (tab: AdminPanelTab) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -61,6 +64,7 @@ export const useUIStore = create<UIState>()(
       currentArtifactId: null,
       pinnedChatIds: [],
       lastArtifactUpdateId: null,
+      adminPanelTab: "waitlist",
 
       // Actions
       notifyArtifactUpdated: (artifactId) => set({ lastArtifactUpdateId: artifactId }),
@@ -112,6 +116,7 @@ export const useUIStore = create<UIState>()(
         set({ pinnedChatIds: updated });
       },
       setTheme: (theme) => set({ theme }),
+      setAdminPanelTab: (adminPanelTab) => set({ adminPanelTab }),
     }),
     {
       name: "revtops-ui-store",

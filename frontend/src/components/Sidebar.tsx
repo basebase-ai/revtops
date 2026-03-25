@@ -14,7 +14,7 @@
 import { useMemo, useState, useRef, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import type { View, ChatSummary, OrganizationInfo } from './AppLayout';
-import { useAppStore, useAuthStore, useChatStore, useIsGlobalAdmin, useActiveTasksByConversation, type UserOrganization } from '../store';
+import { useAppStore, useAuthStore, useChatStore, useIsGlobalAdmin, useActiveTasksByConversation, type UserOrganization, type AdminPanelTab } from '../store';
 import { apiRequest } from '../lib/api';
 import { FaLifeRing } from 'react-icons/fa';
 import { Avatar, type AvatarUser } from './Avatar';
@@ -170,6 +170,15 @@ function CreditDonut({ balance, total }: { balance: number; total: number }): JS
   );
 }
 
+/** Shield icon for global admin console identity in the org switcher. */
+function GlobalAdminShieldIcon({ className }: { className?: string }): JSX.Element {
+  return (
+    <svg className={className ?? 'w-5 h-5'} fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden>
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+    </svg>
+  );
+}
+
 /** Organization switcher — displayed prominently at the top of the sidebar. */
 function OrgSwitcherSection({
   organization,
@@ -179,6 +188,8 @@ function OrgSwitcherSection({
   onOpenBilling,
   onCreateNewOrg,
   isMobile,
+  currentView,
+  onViewChange,
 }: {
   organization: OrganizationInfo;
   members: AvatarUser[];
@@ -187,7 +198,11 @@ function OrgSwitcherSection({
   onOpenBilling: () => void;
   onCreateNewOrg: () => void;
   isMobile: boolean;
+  currentView: View;
+  onViewChange: (view: View) => void;
 }): JSX.Element {
+  const isGlobalAdmin: boolean = useIsGlobalAdmin();
+  const isAdminConsole: boolean = currentView === 'admin';
   const organizations: UserOrganization[] = useAppStore((state) => state.organizations);
   const switchActiveOrganization = useAppStore((state) => state.switchActiveOrganization);
   const fetchConversations = useAppStore((state) => state.fetchConversations);
@@ -239,6 +254,11 @@ function OrgSwitcherSection({
     }
   };
 
+  const handleEnterGlobalAdmin = (): void => {
+    setShowDropdown(false);
+    onViewChange('admin');
+  };
+
   return (
     <div className="relative">
       {/* Org identity row */}
@@ -248,29 +268,44 @@ function OrgSwitcherSection({
           onClick={() => setShowDropdown((prev) => !prev)}
           className="w-full flex items-center gap-3 px-3 pt-3 pb-1 hover:bg-surface-800/50 transition-colors"
         >
-          {organization.logoUrl ? (
-            <img
-              src={organization.logoUrl}
-              alt={organization.name}
-              className="w-9 h-9 rounded-lg object-cover flex-shrink-0 self-start mt-0.5"
-            />
-          ) : (
-            <div className="w-9 h-9 rounded-lg bg-surface-800 flex items-center justify-center flex-shrink-0 self-start mt-0.5">
-              <img src={LOGO_PATH} alt={APP_NAME} className="w-6 h-6" />
-            </div>
-          )}
-          <div className="flex-1 min-w-0 text-left">
-            <div className="text-lg font-semibold text-surface-100 truncate leading-tight">
-              {organization.name}
-            </div>
-            {RELEASE_STAGE.stage && (
-              <div className="">
-                <span className="px-1.5 py-0.5 rounded bg-primary-500/15 text-primary-400/80 font-medium text-[10px] uppercase tracking-wide" title={RELEASE_STAGE.description}>
-                  {RELEASE_STAGE.message}
-                </span>
+          {isAdminConsole ? (
+            <>
+              <div className="w-9 h-9 rounded-lg bg-surface-800 flex items-center justify-center flex-shrink-0 self-start mt-0.5 text-amber-400">
+                <GlobalAdminShieldIcon className="w-6 h-6" />
               </div>
-            )}
-          </div>
+              <div className="flex-1 min-w-0 text-left">
+                <div className="text-lg font-semibold text-surface-100 truncate leading-tight">
+                  Global Admin
+                </div>
+              </div>
+            </>
+          ) : (
+            <>
+              {organization.logoUrl ? (
+                <img
+                  src={organization.logoUrl}
+                  alt={organization.name}
+                  className="w-9 h-9 rounded-lg object-cover flex-shrink-0 self-start mt-0.5"
+                />
+              ) : (
+                <div className="w-9 h-9 rounded-lg bg-surface-800 flex items-center justify-center flex-shrink-0 self-start mt-0.5">
+                  <img src={LOGO_PATH} alt={APP_NAME} className="w-6 h-6" />
+                </div>
+              )}
+              <div className="flex-1 min-w-0 text-left">
+                <div className="text-lg font-semibold text-surface-100 truncate leading-tight">
+                  {organization.name}
+                </div>
+                {RELEASE_STAGE.stage && (
+                  <div className="">
+                    <span className="px-1.5 py-0.5 rounded bg-primary-500/15 text-primary-400/80 font-medium text-[10px] uppercase tracking-wide" title={RELEASE_STAGE.description}>
+                      {RELEASE_STAGE.message}
+                    </span>
+                  </div>
+                )}
+              </div>
+            </>
+          )}
           {!isMobile && (
             <svg className="w-4 h-4 text-surface-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
@@ -338,6 +373,30 @@ function OrgSwitcherSection({
                   + Create
                 </button>
               </div>
+              {isGlobalAdmin && (
+                <>
+                  <div className="border-t border-surface-700 my-1" />
+                  <button
+                    type="button"
+                    onClick={handleEnterGlobalAdmin}
+                    className={`w-full flex items-center gap-3 px-3 py-2.5 text-left transition-colors ${
+                      isAdminConsole
+                        ? 'bg-primary-500/10 text-primary-400'
+                        : 'text-surface-300 hover:bg-surface-700'
+                    }`}
+                  >
+                    <div className="w-6 h-6 rounded bg-surface-700 flex items-center justify-center flex-shrink-0 text-amber-400">
+                      <GlobalAdminShieldIcon className="w-4 h-4" />
+                    </div>
+                    <span className="text-sm truncate flex-1">Global Admin</span>
+                    {isAdminConsole && (
+                      <svg className="w-4 h-4 text-primary-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                      </svg>
+                    )}
+                  </button>
+                </>
+              )}
             </div>
           </div>,
           document.body
@@ -345,7 +404,7 @@ function OrgSwitcherSection({
       </div>
 
       {/* Team members row */}
-      {members.length > 0 && (
+      {!isAdminConsole && members.length > 0 && (
         <div className="flex items-center gap-2 px-3 py-1.5">
           <button
             onClick={onOpenOrgPanel}
@@ -377,7 +436,7 @@ function OrgSwitcherSection({
       )}
 
       {/* Credits row */}
-      {creditsDisplay != null && (() => {
+      {!isAdminConsole && creditsDisplay != null && (() => {
         const balance: number = creditsDisplay.balance;
         const isOut: boolean = balance <= 0;
         const pct: number = creditsDisplay.included > 0 ? balance / creditsDisplay.included : 1;
@@ -488,6 +547,86 @@ function NavItem({
   );
 }
 
+function GlobalAdminSidebarNavItem({
+  label,
+  collapsed,
+  active,
+  onClick,
+  icon,
+}: {
+  label: string;
+  collapsed: boolean;
+  active: boolean;
+  onClick: () => void;
+  icon: JSX.Element;
+}): JSX.Element {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={collapsed ? label : undefined}
+      className={`w-full flex items-center gap-2 px-3 py-1.5 rounded-lg transition-colors ${
+        active ? 'bg-surface-800 text-surface-100' : 'text-surface-400 hover:text-surface-200 hover:bg-surface-800/50'
+      } ${collapsed ? 'justify-center' : ''}`}
+    >
+      {icon}
+      {!collapsed && <span className="text-sm">{label}</span>}
+    </button>
+  );
+}
+
+const GLOBAL_ADMIN_NAV_ITEMS: ReadonlyArray<{
+  id: AdminPanelTab;
+  label: string;
+  icon: JSX.Element;
+}> = [
+  {
+    id: 'waitlist',
+    label: 'Waitlist',
+    icon: (
+      <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden>
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01" />
+      </svg>
+    ),
+  },
+  {
+    id: 'users',
+    label: 'Users',
+    icon: (
+      <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden>
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" />
+      </svg>
+    ),
+  },
+  {
+    id: 'organizations',
+    label: 'Teams',
+    icon: (
+      <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden>
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
+      </svg>
+    ),
+  },
+  {
+    id: 'sources',
+    label: 'Sources',
+    icon: (
+      <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden>
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4" />
+      </svg>
+    ),
+  },
+  {
+    id: 'jobs',
+    label: 'Running Jobs',
+    icon: (
+      <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden>
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+      </svg>
+    ),
+  },
+];
+
 export function Sidebar({
   collapsed,
   // onToggleCollapse — kept in SidebarProps for future re-introduction
@@ -513,6 +652,8 @@ export function Sidebar({
   // Read user directly from store to ensure we always have the latest value
   const user = useAppStore((state) => state.user);
   const pinnedChatIds = useAppStore((state) => state.pinnedChatIds);
+  const adminPanelTab = useAppStore((state) => state.adminPanelTab);
+  const setAdminPanelTab = useAppStore((state) => state.setAdminPanelTab);
   const isGlobalAdmin = useIsGlobalAdmin();
   const activeTasksByConversation = useActiveTasksByConversation();
   const storedWidth = useAppStore((state) => state.sidebarWidth);
@@ -586,9 +727,13 @@ export function Sidebar({
           onOpenBilling={onOpenBilling}
           onCreateNewOrg={onCreateNewOrg}
           isMobile={isMobile}
+          currentView={currentView}
+          onViewChange={onViewChange}
         />
       </div>
 
+      {currentView !== 'admin' && (
+      <>
       {/* New Chat Button */}
       <div className="px-2 py-1">
         <button
@@ -646,23 +791,6 @@ export function Sidebar({
               </svg>
             } />
           )}
-          {isGlobalAdmin && (
-            <button
-              onClick={() => onViewChange('admin')}
-              title={collapsed ? 'Global Admin' : undefined}
-              className={`w-full flex items-center gap-2 px-3 py-1.5 rounded-lg transition-colors ${
-                currentView === 'admin'
-                  ? 'bg-surface-800 text-surface-100'
-                  : 'text-surface-400 hover:text-surface-200 hover:bg-surface-800/50'
-              } ${collapsed ? 'justify-center' : ''}`}
-            >
-              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-              </svg>
-              {!collapsed && <span className="text-sm">Global Admin</span>}
-            </button>
-          )}
         </nav>
       </div>
 
@@ -685,6 +813,27 @@ export function Sidebar({
       />
 
       {collapsed && <div className="flex-1" />}
+      </>
+      )}
+
+      {currentView === 'admin' && isGlobalAdmin && (
+        <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+          <div className="px-2 py-2 overflow-y-auto scrollbar-thin flex-1">
+            <nav className="space-y-0.5" aria-label="Global Admin sections">
+              {GLOBAL_ADMIN_NAV_ITEMS.map((item) => (
+                <GlobalAdminSidebarNavItem
+                  key={item.id}
+                  label={item.label}
+                  collapsed={collapsed}
+                  active={adminPanelTab === item.id}
+                  onClick={() => setAdminPanelTab(item.id)}
+                  icon={item.icon}
+                />
+              ))}
+            </nav>
+          </div>
+        </div>
+      )}
 
       {/* Bottom Section */}
       <div className="mt-auto border-t border-surface-800">

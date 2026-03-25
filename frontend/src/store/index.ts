@@ -47,6 +47,7 @@ export type {
   TypingUserEntry,
   ActiveTask,
   View,
+  AdminPanelTab,
 } from "./types";
 
 // Re-export sub-stores for direct use by performance-conscious components
