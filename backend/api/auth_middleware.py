@@ -512,6 +512,31 @@ async def _resolve_active_organization_id(
     return requested
 
 
+async def _resolve_default_org_for_masquerade_user(user: User) -> Optional[UUID]:
+    """Return the earliest active membership org for a masqueraded user.
+
+    This avoids requests running without org context (and thus without RLS)
+    when global admins impersonate regular users but the client has not yet
+    hydrated and sent X-Organization-Id.
+    """
+    from models.database import get_admin_session
+
+    async with get_admin_session() as session:
+        first_org_row = await session.execute(
+            select(OrgMember.organization_id)
+            .where(
+                OrgMember.user_id == user.id,
+                OrgMember.status == "active",
+            )
+            .order_by(
+                OrgMember.joined_at.asc().nulls_last(),
+                OrgMember.created_at.asc().nulls_last(),
+            )
+            .limit(1)
+        )
+        return first_org_row.scalar_one_or_none()
+
+
 async def get_current_auth(
     authorization: Optional[str] = Header(None, alias="Authorization"),
     masquerade_user_id: Optional[str] = Header(None, alias="X-Masquerade-User-Id"),
@@ -585,6 +610,8 @@ async def get_current_auth(
     is_global_admin = user.role == "global_admin" or "global_admin" in (user.roles or [])
 
     resolved_org_id: Optional[UUID] = await _resolve_active_organization_id(user, x_organization_id)
+    if masquerade_user_id and resolved_org_id is None and not user.is_guest:
+        resolved_org_id = await _resolve_default_org_for_masquerade_user(user)
 
     return AuthContext(
         user_id=user.id,
