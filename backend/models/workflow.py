@@ -1,5 +1,5 @@
 """
-Workflow models for user-defined automations.
+Workflow models for user-defined workflows.
 
 Workflows allow users to create automated actions that:
 - Run on a schedule (cron-based)

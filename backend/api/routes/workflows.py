@@ -1,7 +1,7 @@
 """
 Workflow management API endpoints.
 
-Provides CRUD operations for user-defined workflow automations.
+Provides CRUD operations for user-defined workflows.
 """
 from __future__ import annotations
 

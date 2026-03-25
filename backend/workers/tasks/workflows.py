@@ -1070,7 +1070,7 @@ async def _execute_step(
     import warnings
     warnings.warn(
         "Legacy workflow step execution is deprecated. "
-        "Use prompt-based workflows for new automations.",
+        "Use prompt-based workflows for new workflows.",
         DeprecationWarning,
     )
     action = step.get("action")

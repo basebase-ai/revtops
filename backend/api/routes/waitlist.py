@@ -42,7 +42,7 @@ class WaitlistSubmitRequest(BaseModel):
     company_name: str
     num_employees: str  # e.g., "1-10", "11-50", "51-200", "201-500", "500+"
     apps_of_interest: list[str]  # e.g., ["salesforce", "hubspot", "slack"]
-    core_needs: list[str]  # e.g., ["query_crm", "insights", "automations"]
+    core_needs: list[str]  # e.g., ["query_crm", "insights", "workflows"]
 
 
 class WaitlistSubmitResponse(BaseModel):
