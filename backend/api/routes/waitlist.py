@@ -17,7 +17,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, EmailStr, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from api.auth_middleware import AuthContext, require_global_admin
 from models.database import get_admin_session
@@ -701,30 +701,38 @@ async def list_admin_organizations(
     logger.info("Admin organizations list requested by user_id=%s", auth.user_id)
 
     from models.organization import Organization
-    from sqlalchemy.orm import selectinload
+    from models.org_member import OrgMember
 
     async with get_admin_session() as session:
-        # Get all organizations with their users loaded
+        # Members are org_members → users (Organization.users was removed with users.organization_id)
+        member_counts = (
+            select(
+                OrgMember.organization_id.label("org_id"),
+                func.count(User.id).label("user_count"),
+            )
+            .select_from(OrgMember)
+            .join(User, User.id == OrgMember.user_id)
+            .where(User.status.in_(("active", "invited")))
+            .group_by(OrgMember.organization_id)
+        ).subquery()
+
         query = (
-            select(Organization)
-            .options(selectinload(Organization.users))
+            select(Organization, func.coalesce(member_counts.c.user_count, 0))
+            .outerjoin(member_counts, member_counts.c.org_id == Organization.id)
             .order_by(Organization.created_at.desc())
         )
-        
+
         result = await session.execute(query)
-        organizations = result.scalars().all()
+        rows: list[tuple[Organization, int]] = list(result.all())
 
         org_responses: list[AdminOrganizationResponse] = []
-        for org in organizations:
-            # Count only active/invited users (not waitlisted)
-            active_user_count = len([u for u in org.users if u.status in ("active", "invited")])
-            
+        for org, active_user_count in rows:
             org_responses.append(
                 AdminOrganizationResponse(
                     id=str(org.id),
                     name=org.name,
                     email_domain=org.email_domain,
-                    user_count=active_user_count,
+                    user_count=int(active_user_count),
                     created_at=f"{org.created_at.isoformat()}Z" if org.created_at else None,
                     last_sync_at=f"{org.last_sync_at.isoformat()}Z" if org.last_sync_at else None,
                 )

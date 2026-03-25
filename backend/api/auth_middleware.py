@@ -28,7 +28,7 @@ from jose.constants import ALGORITHMS
 from sqlalchemy import select
 
 from config import settings
-from models.org_member import OrgMember
+from models.org_member import OrgMember, ORG_MEMBER_SCOPING_STATUSES
 from models.user import User
 from services.incident_throttling import evaluate_incident_creation
 from services.pagerduty import create_pagerduty_incident
@@ -426,7 +426,7 @@ async def _resolve_active_organization_id(
             select(OrgMember).where(
                 OrgMember.user_id == user.id,
                 OrgMember.organization_id == requested,
-                OrgMember.status == "active",
+                OrgMember.status.in_(ORG_MEMBER_SCOPING_STATUSES),
             )
         )
         membership: Optional[OrgMember] = result.scalar_one_or_none()
@@ -512,6 +512,15 @@ async def get_current_auth(
     is_global_admin = user.role == "global_admin" or "global_admin" in (user.roles or [])
 
     resolved_org_id: Optional[UUID] = await _resolve_active_organization_id(user, x_organization_id)
+
+    if masquerade_user_id and resolved_org_id is None and not user.is_guest:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "X-Organization-Id is required when masquerading as a non-guest user "
+                "(use the masquerade bootstrap response to set the impersonated user's org)"
+            ),
+        )
 
     return AuthContext(
         user_id=user.id,

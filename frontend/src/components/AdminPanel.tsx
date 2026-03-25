@@ -603,29 +603,39 @@ export function AdminPanel(): JSX.Element {
 
   const handleMasquerade = async (targetUserId: string): Promise<void> => {
     if (!user) return;
-    
+
     setMasquerading(targetUserId);
 
     try {
-      const response = await fetch(
-        `${API_BASE}/auth/masquerade/${targetUserId}?admin_user_id=${user.id}`
-      );
-
-      if (!response.ok) {
-        const data = await response.json() as { detail?: string };
-        throw new Error(data.detail ?? 'Failed to masquerade');
-      }
-
-      const data = await response.json() as {
+      type MasqueradeApiResponse = {
         id: string;
         email: string;
         name: string | null;
         avatar_url: string | null;
         roles: string[];
-        organization: { id: string; name: string; logo_url: string | null } | null;
+        organization: {
+          id: string;
+          name: string;
+          logo_url: string | null;
+          handle?: string | null;
+        } | null;
       };
 
-      // Build user profile for masquerade
+      const { data, error } = await apiRequest<MasqueradeApiResponse>(
+        `/auth/masquerade/${encodeURIComponent(targetUserId)}?admin_user_id=${encodeURIComponent(user.id)}`,
+        { method: 'GET' },
+      );
+
+      if (error || !data) {
+        throw new Error(error ?? 'Failed to masquerade');
+      }
+
+      if (!data.organization) {
+        throw new Error(
+          'This user has no team membership (active, onboarding, or invited). Add them to an organization before masquerading.',
+        );
+      }
+
       const targetUser: UserProfile = {
         id: data.id,
         email: data.email,
@@ -639,15 +649,13 @@ export function AdminPanel(): JSX.Element {
         phoneNumberVerified: false,
       };
 
-      const targetOrg: OrganizationInfo | null = data.organization
-        ? {
-            id: data.organization.id,
-            name: data.organization.name,
-            logoUrl: data.organization.logo_url,
-          }
-        : null;
+      const targetOrg: OrganizationInfo = {
+        id: data.organization.id,
+        name: data.organization.name,
+        logoUrl: data.organization.logo_url,
+        handle: data.organization.handle ?? null,
+      };
 
-      // Start masquerade and navigate to home
       startMasquerade(targetUser, targetOrg);
       setCurrentView('home');
     } catch (err) {
@@ -1170,9 +1178,9 @@ export function AdminPanel(): JSX.Element {
                         <td className="px-4 py-3">
                           {(u.organizations ?? []).length > 0 ? (
                             <div className="flex flex-wrap gap-1.5">
-                              {(u.organizations ?? []).map((organizationName) => (
+                              {(u.organizations ?? []).map((organizationName, orgIdx) => (
                                 <span
-                                  key={`${u.id}-${organizationName}`}
+                                  key={`${u.id}-org-${orgIdx}-${organizationName}`}
                                   className="px-2 py-0.5 rounded-full text-xs border border-primary-500/30 bg-primary-500/10 text-primary-300"
                                 >
                                   {organizationName}

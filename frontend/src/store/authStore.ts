@@ -200,6 +200,12 @@ export const useAuthStore = create<AuthState>()(
       startMasquerade: (targetUser, targetOrg) => {
         const { user, organization } = get();
         if (!user) return;
+        if (!targetOrg) {
+          console.error(
+            "[Store] startMasquerade refused: targetOrg is required so API requests include X-Organization-Id",
+          );
+          return;
+        }
 
         console.log("[Store] Starting masquerade as:", targetUser.email);
         set({
