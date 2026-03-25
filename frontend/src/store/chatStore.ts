@@ -29,6 +29,14 @@ import { useAuthStore } from "./authStore";
 import { useUIStore } from "./uiStore";
 
 // ---------------------------------------------------------------------------
+// In-flight fetch deduplication — shared across prefetch (hover) and load
+// (click) so only one HTTP request fires per conversation.
+// ---------------------------------------------------------------------------
+import type { ConversationDetailResponse } from "../api/client";
+
+const _inflightFetches = new Map<string, Promise<ConversationDetailResponse | null>>();
+
+// ---------------------------------------------------------------------------
 // Helper: Default conversation state
 // ---------------------------------------------------------------------------
 
@@ -90,8 +98,9 @@ export interface ChatState {
   fetchConversations: () => Promise<void>;
   deleteConversation: (id: string) => Promise<void>;
 
-  // Actions - Prefetch
+  // Actions - Prefetch / fetch with deduplication
   prefetchConversation: (conversationId: string) => void;
+  fetchConversationData: (conversationId: string) => Promise<ConversationDetailResponse | null>;
 
   // Actions - Per-conversation state
   getConversationState: (conversationId: string) => ConversationState;
@@ -237,20 +246,30 @@ export const useChatStore = create<ChatState>()(
       });
     },
 
-    prefetchConversation: (conversationId) => {
-      // Skip if already loaded
+    fetchConversationData: (conversationId) => {
+      // Already loaded — resolve immediately
       const existing = get().conversations[conversationId];
-      if (existing && existing.messages.length > 0) return;
+      if (existing && existing.messages.length > 0) {
+        return Promise.resolve(null);
+      }
 
-      void (async () => {
+      // Reuse in-flight request if one exists (dedup hover-prefetch vs click-load)
+      const inflight: Promise<ConversationDetailResponse | null> | undefined =
+        _inflightFetches.get(conversationId);
+      if (inflight) return inflight;
+
+      const promise: Promise<ConversationDetailResponse | null> = (async () => {
         try {
           const { getConversation } = await import("../api/client");
           const { data, error } = await getConversation(conversationId);
-          if (error || !data) return;
+          if (error || !data) {
+            const errStr: string = error ? String(error) : "Unknown error";
+            throw new Error(errStr);
+          }
 
           // Another load may have raced — re-check
           const latest = get().conversations[conversationId];
-          if (latest && latest.messages.length > 0) return;
+          if (latest && latest.messages.length > 0) return data;
 
           const messages: ChatMessage[] = data.messages.map((msg) => ({
             id: msg.id,
@@ -282,10 +301,22 @@ export const useChatStore = create<ChatState>()(
               },
             },
           });
+          return data;
         } catch {
-          // Prefetch is best-effort; swallow errors
+          return null;
+        } finally {
+          _inflightFetches.delete(conversationId);
         }
       })();
+
+      _inflightFetches.set(conversationId, promise);
+      return promise;
+    },
+
+    prefetchConversation: (conversationId) => {
+      get().fetchConversationData(conversationId).catch(() => {
+        // Prefetch is best-effort; swallow errors
+      });
     },
 
     fetchConversations: async () => {
