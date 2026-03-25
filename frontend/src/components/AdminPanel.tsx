@@ -86,6 +86,35 @@ function ThreeDotsIcon(): JSX.Element {
   );
 }
 
+function AdminMobileCard({
+  children,
+  className = '',
+}: {
+  children: React.ReactNode;
+  className?: string;
+}): JSX.Element {
+  return (
+    <div className={`rounded-xl border border-surface-800 bg-surface-900 p-4 ${className}`.trim()}>
+      {children}
+    </div>
+  );
+}
+
+function AdminMobileField({
+  label,
+  value,
+}: {
+  label: string;
+  value: React.ReactNode;
+}): JSX.Element {
+  return (
+    <div className="space-y-1">
+      <div className="text-xs font-medium uppercase tracking-wide text-surface-500">{label}</div>
+      <div className="text-sm text-surface-200">{value}</div>
+    </div>
+  );
+}
+
 function OrgRowActions({
   org,
   orgMenuOpenId,
@@ -894,8 +923,8 @@ export function AdminPanel(): JSX.Element {
   return (
     <div className="flex-1 overflow-y-auto">
       {/* Header */}
-      <header className="sticky top-0 z-10 bg-surface-950 border-b border-surface-800 px-8 py-6">
-        <div className="flex items-center gap-3">
+      <header className="sticky top-0 z-10 border-b border-surface-800 bg-surface-950 px-4 py-5 md:px-8 md:py-6">
+        <div className="flex items-start gap-3 sm:items-center">
           <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-amber-500 to-orange-600 flex items-center justify-center">
             <svg className="w-5 h-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
@@ -909,15 +938,16 @@ export function AdminPanel(): JSX.Element {
         </div>
       </header>
 
-      <div className="max-w-6xl mx-auto px-8 py-6">
+      <div className="mx-auto max-w-6xl px-4 py-4 md:px-8 md:py-6">
         {/* Tab Navigation */}
-        <div className="flex gap-1 mb-6 border-b border-surface-800">
+        <div className="-mx-4 mb-6 overflow-x-auto border-b border-surface-800 px-4 md:mx-0 md:px-0">
+          <div className="flex min-w-max gap-1">
           {tabs.map((tab) => (
             <button
               key={tab.id}
               onClick={() => tab.available && setActiveTab(tab.id)}
               disabled={!tab.available}
-              className={`px-4 py-2.5 text-sm font-medium transition-colors border-b-2 -mb-px ${
+              className={`-mb-px whitespace-nowrap border-b-2 px-3 py-2.5 text-sm font-medium transition-colors sm:px-4 ${
                 activeTab === tab.id
                   ? 'border-primary-500 text-primary-400'
                   : tab.available
@@ -931,14 +961,15 @@ export function AdminPanel(): JSX.Element {
               )}
             </button>
           ))}
+          </div>
         </div>
 
         {/* Waitlist Tab Content */}
         {activeTab === 'waitlist' && (
           <div className="space-y-6">
             {/* Filters & Actions */}
-            <div className="flex items-center justify-between">
-              <div className="flex gap-2">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex flex-wrap gap-2">
                 {(['waitlist', 'invited', 'all'] as const).map((f) => (
                   <button
                     key={f}
@@ -956,7 +987,7 @@ export function AdminPanel(): JSX.Element {
               <button
                 onClick={() => void fetchWaitlist()}
                 disabled={loading}
-                className="px-4 py-2 rounded-lg bg-surface-800 border border-surface-700 text-surface-300 hover:bg-surface-700 transition-colors disabled:opacity-50 flex items-center gap-2"
+                className="flex w-full items-center justify-center gap-2 rounded-lg border border-surface-700 bg-surface-800 px-4 py-2 text-surface-300 transition-colors hover:bg-surface-700 disabled:opacity-50 sm:w-auto"
               >
                 <svg className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
@@ -994,7 +1025,8 @@ export function AdminPanel(): JSX.Element {
 
             {/* Table */}
             {!loading && !error && entries.length > 0 && (
-              <div className="bg-surface-900 rounded-xl border border-surface-800 overflow-hidden">
+              <>
+              <div className="hidden overflow-x-auto rounded-xl border border-surface-800 bg-surface-900 md:block">
                 <table className="w-full">
                   <thead>
                     <tr className="border-b border-surface-800 text-left">
@@ -1071,6 +1103,85 @@ export function AdminPanel(): JSX.Element {
                   </tbody>
                 </table>
               </div>
+              <div className="space-y-3 md:hidden">
+                {entries.map((entry) => (
+                  <AdminMobileCard key={entry.id}>
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="font-medium text-surface-100">{entry.name ?? 'Unknown'}</div>
+                        <div className="break-all text-sm text-surface-400">{entry.email}</div>
+                        {entry.waitlist_data?.title && (
+                          <div className="mt-1 text-xs text-surface-500">{entry.waitlist_data.title}</div>
+                        )}
+                      </div>
+                      <div className="shrink-0">{getStatusBadge(entry.status)}</div>
+                    </div>
+                    <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
+                      <AdminMobileField
+                        label="Company"
+                        value={
+                          <>
+                            <div>{entry.waitlist_data?.company_name ?? '—'}</div>
+                            {entry.waitlist_data?.num_employees && (
+                              <div className="text-xs text-surface-500">{entry.waitlist_data.num_employees} employees</div>
+                            )}
+                          </>
+                        }
+                      />
+                      <AdminMobileField label="Signed up" value={formatDate(entry.waitlisted_at)} />
+                      <AdminMobileField
+                        label="Apps"
+                        value={
+                          <div className="flex flex-wrap gap-1">
+                            {entry.waitlist_data?.apps_of_interest?.length ? (
+                              <>
+                                {entry.waitlist_data.apps_of_interest.slice(0, 3).map((app) => (
+                                  <span key={app} className="rounded bg-surface-700 px-1.5 py-0.5 text-xs text-surface-300">
+                                    {app}
+                                  </span>
+                                ))}
+                                {entry.waitlist_data.apps_of_interest.length > 3 && (
+                                  <span className="px-1.5 py-0.5 text-xs text-surface-500">
+                                    +{entry.waitlist_data.apps_of_interest.length - 3}
+                                  </span>
+                                )}
+                              </>
+                            ) : '—'}
+                          </div>
+                        }
+                      />
+                      <AdminMobileField
+                        label="Action"
+                        value={
+                          entry.status === 'waitlist' ? (
+                            <button
+                              onClick={() => void handleInvite(entry.id)}
+                              disabled={inviting === entry.id}
+                              className="rounded-lg bg-primary-500 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-primary-600 disabled:opacity-50"
+                            >
+                              {inviting === entry.id ? 'Inviting...' : 'Invite'}
+                            </button>
+                          ) : entry.status === 'invited' ? (
+                            <div className="flex flex-col items-start gap-2">
+                              <span className="text-sm text-surface-500">Invited {formatDate(entry.invited_at)}</span>
+                              <button
+                                onClick={() => void handleResendInvite(entry.id)}
+                                disabled={resendingInviteId === entry.id}
+                                className="self-start rounded-lg bg-surface-700 px-3 py-1 text-sm font-medium text-surface-300 transition-colors hover:bg-surface-600 disabled:opacity-50"
+                              >
+                                {resendingInviteId === entry.id ? 'Sending...' : 'Resend'}
+                              </button>
+                            </div>
+                          ) : (
+                            <span className="text-sm text-emerald-400">Active</span>
+                          )
+                        }
+                      />
+                    </div>
+                  </AdminMobileCard>
+                ))}
+              </div>
+              </>
             )}
 
             {/* Stats */}
@@ -1086,8 +1197,8 @@ export function AdminPanel(): JSX.Element {
         {activeTab === 'users' && (
           <div className="space-y-6">
             {/* Search & Actions */}
-            <div className="flex items-center justify-between gap-4">
-              <div className="relative flex-1 max-w-md">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="relative w-full flex-1 sm:max-w-md">
                 <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-surface-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
                 </svg>
@@ -1102,7 +1213,7 @@ export function AdminPanel(): JSX.Element {
               <button
                 onClick={() => void fetchUsers()}
                 disabled={usersLoading}
-                className="px-4 py-2 rounded-lg bg-surface-800 border border-surface-700 text-surface-300 hover:bg-surface-700 transition-colors disabled:opacity-50 flex items-center gap-2"
+                className="flex w-full items-center justify-center gap-2 rounded-lg border border-surface-700 bg-surface-800 px-4 py-2 text-surface-300 transition-colors hover:bg-surface-700 disabled:opacity-50 sm:w-auto"
               >
                 <svg className={`w-4 h-4 ${usersLoading ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
@@ -1142,7 +1253,8 @@ export function AdminPanel(): JSX.Element {
 
             {/* Table */}
             {!usersLoading && !usersError && filteredUsers.length > 0 && (
-              <div className="bg-surface-900 rounded-xl border border-surface-800 overflow-hidden">
+              <>
+              <div className="hidden overflow-x-auto rounded-xl border border-surface-800 bg-surface-900 md:block">
                 <table className="w-full">
                   <thead>
                     <tr className="border-b border-surface-800 text-left">
@@ -1237,6 +1349,82 @@ export function AdminPanel(): JSX.Element {
                   </tbody>
                 </table>
               </div>
+              <div className="space-y-3 md:hidden">
+                {filteredNonGuestUsers.map((u) => (
+                  <AdminMobileCard key={u.id}>
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="font-medium text-surface-100">
+                          {u.first_name || u.last_name
+                            ? `${u.first_name ?? ''} ${u.last_name ?? ''}`.trim()
+                            : 'Unknown'}
+                        </div>
+                        <div className="break-all text-sm text-surface-400">{u.email}</div>
+                      </div>
+                      <div className="shrink-0">
+                        <UserRowActions
+                          u={u}
+                          currentUserId={user?.id}
+                          userMenuOpenId={userMenuOpenId}
+                          setUserMenuOpenId={setUserMenuOpenId}
+                          menuRef={userMenuRef}
+                          onMasquerade={handleMasquerade}
+                          onDeleteUser={handleDeleteUser}
+                          masquerading={masquerading}
+                        />
+                      </div>
+                    </div>
+                    <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
+                      <AdminMobileField
+                        label="Teams"
+                        value={
+                          (u.organizations ?? []).length > 0 ? (
+                            <div className="flex flex-wrap gap-1.5">
+                              {(u.organizations ?? []).map((organizationName) => (
+                                <span
+                                  key={`${u.id}-${organizationName}`}
+                                  className="rounded-full border border-primary-500/30 bg-primary-500/10 px-2 py-0.5 text-xs text-primary-300"
+                                >
+                                  {organizationName}
+                                </span>
+                              ))}
+                            </div>
+                          ) : (
+                            u.organization_name ?? '—'
+                          )
+                        }
+                      />
+                      <AdminMobileField label="Status" value={getStatusBadge(u.status)} />
+                      <AdminMobileField label="Last login" value={u.last_login ? formatDate(u.last_login) : 'Never'} />
+                      <AdminMobileField label="Joined" value={formatDate(u.created_at)} />
+                    </div>
+                  </AdminMobileCard>
+                ))}
+                {filteredGuestUsers.length > 0 && (
+                  <AdminMobileCard className="bg-surface-900/70">
+                    <button
+                      onClick={() => setShowGuestUsers((prev) => !prev)}
+                      className="flex w-full items-center gap-2 text-left text-surface-300 transition-colors hover:text-surface-100"
+                    >
+                      <span className="text-xs text-surface-500">{showGuestUsers ? '▼' : '▶'}</span>
+                      <span>{filteredGuestUsers.length} guest {filteredGuestUsers.length === 1 ? 'user' : 'users'}</span>
+                    </button>
+                  </AdminMobileCard>
+                )}
+                {showGuestUsers && filteredGuestUsers.map((u) => (
+                  <AdminMobileCard key={u.id} className="bg-surface-900/70">
+                    <div className="font-medium text-surface-200">Guest user</div>
+                    <div className="mt-1 break-all text-xs text-surface-500">{u.email}</div>
+                    <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
+                      <AdminMobileField label="Team" value={u.organization_name ?? '—'} />
+                      <AdminMobileField label="Status" value={getStatusBadge(u.status)} />
+                      <AdminMobileField label="Last login" value={u.last_login ? formatDate(u.last_login) : 'Never'} />
+                      <AdminMobileField label="Joined" value={formatDate(u.created_at)} />
+                    </div>
+                  </AdminMobileCard>
+                ))}
+              </div>
+              </>
             )}
 
             {/* Stats */}
@@ -1253,8 +1441,8 @@ export function AdminPanel(): JSX.Element {
         {activeTab === 'organizations' && (
           <div className="space-y-6">
             {/* Search & Actions */}
-            <div className="flex items-center justify-between gap-4">
-              <div className="relative flex-1 max-w-md">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="relative w-full flex-1 sm:max-w-md">
                 <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-surface-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
                 </svg>
@@ -1266,7 +1454,7 @@ export function AdminPanel(): JSX.Element {
                   className="w-full pl-10 pr-4 py-2 rounded-lg bg-surface-800 border border-surface-700 text-surface-100 placeholder-surface-500 focus:outline-none focus:border-primary-500"
                 />
               </div>
-              <div className="flex gap-2">
+              <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
                 <button
                   onClick={() => {
                     setInviteModalOrg(null);
@@ -1279,7 +1467,7 @@ export function AdminPanel(): JSX.Element {
                     setCreateOrgInvitees([{ email: '', name: '' }]);
                     setCreateOrgError(null);
                   }}
-                  className="px-4 py-2 rounded-lg bg-primary-500/20 border border-primary-500/30 text-primary-400 hover:bg-primary-500/30 transition-colors flex items-center gap-2"
+                  className="flex w-full items-center justify-center gap-2 rounded-lg border border-primary-500/30 bg-primary-500/20 px-4 py-2 text-primary-400 transition-colors hover:bg-primary-500/30 sm:w-auto"
                 >
                   <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
@@ -1289,7 +1477,7 @@ export function AdminPanel(): JSX.Element {
                 <button
                   onClick={() => void fetchOrganizations()}
                   disabled={orgsLoading}
-                  className="px-4 py-2 rounded-lg bg-surface-800 border border-surface-700 text-surface-300 hover:bg-surface-700 transition-colors disabled:opacity-50 flex items-center gap-2"
+                  className="flex w-full items-center justify-center gap-2 rounded-lg border border-surface-700 bg-surface-800 px-4 py-2 text-surface-300 transition-colors hover:bg-surface-700 disabled:opacity-50 sm:w-auto"
                 >
                   <svg className={`w-4 h-4 ${orgsLoading ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
@@ -1330,7 +1518,8 @@ export function AdminPanel(): JSX.Element {
 
             {/* Table */}
             {!orgsLoading && !orgsError && filteredOrgs.length > 0 && (
-              <div className="bg-surface-900 rounded-xl border border-surface-800 overflow-hidden">
+              <>
+              <div className="hidden overflow-x-auto rounded-xl border border-surface-800 bg-surface-900 md:block">
                 <table className="w-full">
                   <thead>
                     <tr className="border-b border-surface-800 text-left">
@@ -1383,6 +1572,45 @@ export function AdminPanel(): JSX.Element {
                   </tbody>
                 </table>
               </div>
+              <div className="space-y-3 md:hidden">
+                {filteredOrgs.map((o) => (
+                  <AdminMobileCard key={o.id}>
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="font-medium text-surface-100">{o.name}</div>
+                        <div className="mt-1 break-all text-sm text-surface-400">{o.email_domain ?? '—'}</div>
+                      </div>
+                      <OrgRowActions
+                        org={o}
+                        orgMenuOpenId={orgMenuOpenId}
+                        setOrgMenuOpenId={setOrgMenuOpenId}
+                        menuRef={orgMenuRef}
+                        onInvite={() => {
+                          setInviteModalOrg({ id: o.id, name: o.name });
+                          setCreateOrgStep(2);
+                          setCreateOrgInvitees([{ email: '', name: '' }]);
+                          setCreateOrgError(null);
+                          setShowCreateOrgModal(true);
+                        }}
+                        onDeleteOrg={handleDeleteOrg}
+                      />
+                    </div>
+                    <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
+                      <AdminMobileField
+                        label="Users"
+                        value={
+                          <span className="rounded-full bg-surface-700 px-2 py-0.5 text-xs text-surface-300">
+                            {o.user_count} {o.user_count === 1 ? 'user' : 'users'}
+                          </span>
+                        }
+                      />
+                      <AdminMobileField label="Last sync" value={o.last_sync_at ? formatDate(o.last_sync_at) : 'Never'} />
+                      <AdminMobileField label="Created" value={formatDate(o.created_at)} />
+                    </div>
+                  </AdminMobileCard>
+                ))}
+              </div>
+              </>
             )}
 
             {/* Stats */}
@@ -1468,7 +1696,7 @@ export function AdminPanel(): JSX.Element {
                         <p className="text-sm text-surface-400 mb-4">Add one or more invitees. They will receive an email invitation.</p>
                         <div className="space-y-3 max-h-48 overflow-y-auto">
                           {createOrgInvitees.map((row, idx) => (
-                            <div key={idx} className="flex gap-2 items-center">
+                            <div key={idx} className="flex flex-col items-stretch gap-2 sm:flex-row sm:items-center">
                               <input
                                 type="email"
                                 value={row.email}
@@ -1491,7 +1719,7 @@ export function AdminPanel(): JSX.Element {
                                   setCreateOrgInvitees(next);
                                 }}
                                 placeholder="Name (optional)"
-                                className="w-32 px-3 py-2 rounded-lg bg-surface-800 border border-surface-700 text-surface-100 placeholder-surface-500 focus:outline-none focus:border-primary-500 text-sm"
+                                className="w-full rounded-lg border border-surface-700 bg-surface-800 px-3 py-2 text-sm text-surface-100 placeholder-surface-500 focus:border-primary-500 focus:outline-none sm:w-32"
                               />
                               <button
                                 type="button"
@@ -1551,8 +1779,8 @@ export function AdminPanel(): JSX.Element {
         {activeTab === 'sources' && (
           <div className="space-y-6">
             {/* Search & Actions */}
-            <div className="flex items-center justify-between gap-4">
-              <div className="relative flex-1 max-w-md">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="relative w-full flex-1 sm:max-w-md">
                 <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-surface-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
                 </svg>
@@ -1564,11 +1792,11 @@ export function AdminPanel(): JSX.Element {
                   className="w-full pl-10 pr-4 py-2 rounded-lg bg-surface-800 border border-surface-700 text-surface-100 placeholder-surface-500 focus:outline-none focus:border-primary-500"
                 />
               </div>
-              <div className="flex gap-2">
+              <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
                 <button
                   onClick={() => void handleRunDependencyChecks()}
                   disabled={runningDependencyChecks}
-                  className="px-4 py-2 rounded-lg bg-blue-500/20 border border-blue-500/30 text-blue-400 hover:bg-blue-500/30 transition-colors disabled:opacity-50 flex items-center gap-2"
+                  className="flex w-full items-center justify-center gap-2 rounded-lg border border-blue-500/30 bg-blue-500/20 px-4 py-2 text-blue-400 transition-colors hover:bg-blue-500/30 disabled:opacity-50 sm:w-auto"
                   title="Run dependency checks immediately"
                 >
                   <svg className={`w-4 h-4 ${runningDependencyChecks ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -1579,7 +1807,7 @@ export function AdminPanel(): JSX.Element {
                 <button
                   onClick={() => void handleFireIncident()}
                   disabled={firingIncident}
-                  className="px-4 py-2 rounded-lg bg-red-500/20 border border-red-500/30 text-red-400 hover:bg-red-500/30 transition-colors disabled:opacity-50 flex items-center gap-2"
+                  className="flex w-full items-center justify-center gap-2 rounded-lg border border-red-500/30 bg-red-500/20 px-4 py-2 text-red-400 transition-colors hover:bg-red-500/30 disabled:opacity-50 sm:w-auto"
                   title="Fire a test PagerDuty incident"
                 >
                   <svg className={`w-4 h-4 ${firingIncident ? 'animate-pulse' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -1590,7 +1818,7 @@ export function AdminPanel(): JSX.Element {
                 <button
                   onClick={() => void handleGlobalSync()}
                   disabled={syncing}
-                  className="px-4 py-2 rounded-lg bg-emerald-500/20 border border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/30 transition-colors disabled:opacity-50 flex items-center gap-2"
+                  className="flex w-full items-center justify-center gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/20 px-4 py-2 text-emerald-400 transition-colors hover:bg-emerald-500/30 disabled:opacity-50 sm:w-auto"
                   title="Trigger sync for all teams (same as hourly scheduled sync)"
                 >
                   <svg className={`w-4 h-4 ${syncing ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -1601,7 +1829,7 @@ export function AdminPanel(): JSX.Element {
                 <button
                   onClick={() => void fetchIntegrations()}
                   disabled={integrationsLoading}
-                  className="px-4 py-2 rounded-lg bg-surface-800 border border-surface-700 text-surface-300 hover:bg-surface-700 transition-colors disabled:opacity-50 flex items-center gap-2"
+                  className="flex w-full items-center justify-center gap-2 rounded-lg border border-surface-700 bg-surface-800 px-4 py-2 text-surface-300 transition-colors hover:bg-surface-700 disabled:opacity-50 sm:w-auto"
                 >
                   <svg className={`w-4 h-4 ${integrationsLoading ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
@@ -1699,7 +1927,8 @@ export function AdminPanel(): JSX.Element {
 
             {/* Table */}
             {!integrationsLoading && !integrationsError && filteredIntegrations.length > 0 && (
-              <div className="bg-surface-900 rounded-xl border border-surface-800 overflow-hidden">
+              <>
+              <div className="hidden overflow-x-auto rounded-xl border border-surface-800 bg-surface-900 md:block">
                 <table className="w-full">
                   <thead>
                     <tr className="border-b border-surface-800 text-left">
@@ -1751,6 +1980,44 @@ export function AdminPanel(): JSX.Element {
                   </tbody>
                 </table>
               </div>
+              <div className="space-y-3 md:hidden">
+                {filteredIntegrations.map((i) => (
+                  <AdminMobileCard key={i.id}>
+                    <div className="font-medium text-surface-100">{i.organization_name}</div>
+                    <div className="mt-1 text-sm text-surface-400">{providerNames[i.provider] ?? i.provider}</div>
+                    <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
+                      <AdminMobileField
+                        label="Status"
+                        value={
+                          i.is_active ? (
+                            i.last_error ? (
+                              <span className="rounded-full border border-red-500/30 bg-red-500/20 px-2 py-0.5 text-xs text-red-400" title={i.last_error}>
+                                Error
+                              </span>
+                            ) : (
+                              <span className="rounded-full border border-emerald-500/30 bg-emerald-500/20 px-2 py-0.5 text-xs text-emerald-400">
+                                Active
+                              </span>
+                            )
+                          ) : (
+                            <span className="rounded-full bg-surface-700 px-2 py-0.5 text-xs text-surface-400">
+                              Inactive
+                            </span>
+                          )
+                        }
+                      />
+                      <AdminMobileField label="Last sync" value={i.last_sync_at ? formatDate(i.last_sync_at) : 'Never'} />
+                      <AdminMobileField
+                        label="Records"
+                        value={i.sync_stats
+                          ? Object.values(i.sync_stats).reduce((a, b) => a + b, 0).toLocaleString()
+                          : '—'}
+                      />
+                    </div>
+                  </AdminMobileCard>
+                ))}
+              </div>
+              </>
             )}
 
             {/* Stats */}
@@ -1765,11 +2032,11 @@ export function AdminPanel(): JSX.Element {
 
         {activeTab === 'jobs' && (
           <div className="space-y-4">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <p className="text-sm text-surface-400">Manage currently running chat, workflow, and connector sync jobs.</p>
               <button
                 onClick={() => void fetchRunningJobs()}
-                className="px-3 py-1.5 text-sm bg-surface-800 hover:bg-surface-700 text-surface-200 rounded-lg border border-surface-700"
+                className="rounded-lg border border-surface-700 bg-surface-800 px-3 py-1.5 text-sm text-surface-200 hover:bg-surface-700 sm:self-auto self-start"
               >
                 Refresh
               </button>
@@ -1790,7 +2057,8 @@ export function AdminPanel(): JSX.Element {
             )}
 
             {!jobsLoading && !jobsError && runningJobs.length > 0 && (
-              <div className="bg-surface-900 rounded-xl border border-surface-800 overflow-hidden">
+              <>
+              <div className="hidden overflow-x-auto rounded-xl border border-surface-800 bg-surface-900 md:block">
                 <table className="w-full">
                   <thead>
                     <tr className="border-b border-surface-800 text-left">
@@ -1825,6 +2093,38 @@ export function AdminPanel(): JSX.Element {
                   </tbody>
                 </table>
               </div>
+              <div className="space-y-3 md:hidden">
+                {runningJobs.map((job) => (
+                  <AdminMobileCard key={`${job.type}:${job.id}`}>
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <div className="font-medium text-surface-100">{job.title}</div>
+                        <div className="mt-1 text-sm text-surface-400">{job.description}</div>
+                      </div>
+                      <span className="rounded-full bg-surface-700 px-2 py-0.5 text-xs text-surface-300">
+                        {jobTypeLabel[job.type]}
+                      </span>
+                    </div>
+                    <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
+                      <AdminMobileField label="Team" value={job.organization_name ?? '—'} />
+                      <AdminMobileField label="Started" value={formatDate(job.started_at)} />
+                      <AdminMobileField
+                        label="Action"
+                        value={
+                          <button
+                            onClick={() => void handleCancelJob(job)}
+                            disabled={cancellingJobId === job.id}
+                            className="rounded-lg border border-red-500/30 bg-red-500/15 px-3 py-1.5 text-xs font-medium text-red-300 hover:bg-red-500/25 disabled:opacity-50"
+                          >
+                            {cancellingJobId === job.id ? 'Cancelling...' : 'Cancel'}
+                          </button>
+                        }
+                      />
+                    </div>
+                  </AdminMobileCard>
+                ))}
+              </div>
+              </>
             )}
           </div>
         )}
