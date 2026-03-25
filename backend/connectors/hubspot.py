@@ -28,7 +28,7 @@ from connectors.registry import (
 from models.account import Account
 from models.activity import Activity
 from models.contact import Contact
-from models.database import get_session
+from models.database import get_admin_session, get_session
 from models.deal import Deal
 from models.goal import Goal
 from models.org_member import OrgMember
@@ -1688,7 +1688,7 @@ Notes are activities attached to deals (or contacts/companies). Use HubSpot **so
             OrgMember.organization_id == org_uuid_hs,
             OrgMember.status.in_(_HUBSPOT_ORG_MEMBER_ACTIVE),
         )
-        async with get_session(organization_id=self.organization_id) as session:
+        async with get_admin_session() as session:
             result = await session.execute(
                 select(User).where(
                     User.email == owner_email,
@@ -1704,7 +1704,6 @@ Notes are activities attached to deals (or contacts/companies). Use HubSpot **so
             user: User | None = result.scalar_one_or_none()
 
             if user:
-                # Matched — persist identity mapping with user_id
                 await self._ensure_identity_mapping(
                     session,
                     hs_owner_id=hs_owner_id,
