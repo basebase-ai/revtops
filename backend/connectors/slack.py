@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 
 _SEPARATOR_ROW_RE: re.Pattern[str] = re.compile(
@@ -932,6 +932,33 @@ Returns normalized messages for one channel since a cutoff (does not write to th
             },
         )
 
+    async def _count_slack_activity_stats(self) -> tuple[int, int]:
+        """Return (message_count, distinct_channel_count) for Slack activities in this org.
+
+        Uses admin session so counts reflect all rows in the database (webhook + any
+        historical sync), not RLS-filtered subsets.
+        """
+        from models.activity import Activity as ActivityModel
+        from models.database import get_admin_session
+
+        org_uuid: uuid.UUID = uuid.UUID(self.organization_id)
+        channel_id_text = ActivityModel.custom_fields["channel_id"].astext
+
+        async with get_admin_session() as session:
+            result = await session.execute(
+                select(
+                    func.count(ActivityModel.id),
+                    func.count(func.distinct(channel_id_text)),
+                ).where(
+                    ActivityModel.organization_id == org_uuid,
+                    ActivityModel.source_system == "slack",
+                )
+            )
+            row = result.one()
+            message_count: int = int(row[0] or 0)
+            distinct_channels: int = int(row[1] or 0)
+        return message_count, distinct_channels
+
     async def sync_all(self) -> dict[str, int]:
         """Run all sync operations."""
         from services.slack_identity import (
@@ -1049,8 +1076,28 @@ Returns normalized messages for one channel since a cutoff (does not write to th
         membership: dict[str, int] = await self.ensure_channel_membership()
         joined_count: int = int(membership.get("joined", 0))
         already_member_count: int = int(membership.get("already_member", 0))
+        channels_joined: int = already_member_count + joined_count
 
-        # Broadcast completion (joined = new channels this run; total in workspace = joined + already_member public)
+        activity_count: int = 0
+        channels_with_messages: int = 0
+        try:
+            activity_count, channels_with_messages = await self._count_slack_activity_stats()
+            logger.info(
+                "[Slack Sync] DB activity stats org=%s messages=%d distinct_channels=%d channels_joined=%d",
+                self.organization_id,
+                activity_count,
+                channels_with_messages,
+                channels_joined,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[Slack Sync] Failed to count Slack activities in DB org=%s: %s",
+                self.organization_id,
+                exc,
+                exc_info=True,
+            )
+
+        # Broadcast completion (joined = new channels this run)
         await broadcast_sync_progress(
             organization_id=self.organization_id,
             provider=self.source_system,
@@ -1062,8 +1109,9 @@ Returns normalized messages for one channel since a cutoff (does not write to th
             "accounts": 0,
             "deals": 0,
             "contacts": 0,
-            "activities": 0,
-            "channels": already_member_count + joined_count,
+            "activities": activity_count,
+            "channels": channels_with_messages,
+            "channels_joined": channels_joined,
         }
 
     async def fetch_deal(self, deal_id: str) -> dict[str, Any]:
