@@ -180,7 +180,19 @@ async def list_workflows(
     """List all workflows for an organization."""
     org_uuid = _enforce_workflow_org_scope(organization_id, auth)
 
-    async with get_session(organization_id=organization_id) as session:
+    async with get_session(
+        organization_id=organization_id,
+        user_id=str(auth.user_id),
+    ) as session:
+        logger.info(
+            "[Workflows API] Listing workflows",
+            extra={
+                "organization_id": organization_id,
+                "user_id": str(auth.user_id),
+                "archived": archived,
+                "enabled_only": enabled_only,
+            },
+        )
         query = select(Workflow).where(Workflow.organization_id == org_uuid)
         if archived:
             query = query.where(Workflow.archived_at.isnot(None))
@@ -192,6 +204,14 @@ async def list_workflows(
 
         result = await session.execute(query)
         workflows = result.scalars().all()
+        logger.info(
+            "[Workflows API] Retrieved workflows for listing",
+            extra={
+                "organization_id": organization_id,
+                "user_id": str(auth.user_id),
+                "workflow_count": len(workflows),
+            },
+        )
 
         # Fetch latest run status for each workflow in one query
         workflow_ids: list[UUID] = [w.id for w in workflows]
@@ -245,7 +265,10 @@ async def get_workflow(
         raise HTTPException(status_code=400, detail="Invalid ID format")
     org_uuid = _enforce_workflow_org_scope(organization_id, auth)
 
-    async with get_session(organization_id=organization_id) as session:
+    async with get_session(
+        organization_id=organization_id,
+        user_id=str(auth.user_id),
+    ) as session:
         result = await session.execute(
             select(Workflow).where(
                 and_(
@@ -275,7 +298,10 @@ async def archive_workflow(
         raise HTTPException(status_code=400, detail="Invalid ID format")
     org_uuid = _enforce_workflow_org_scope(organization_id, auth)
 
-    async with get_session(organization_id=organization_id) as session:
+    async with get_session(
+        organization_id=organization_id,
+        user_id=str(auth.user_id),
+    ) as session:
         result = await session.execute(
             select(Workflow).where(
                 and_(
@@ -340,7 +366,10 @@ async def unarchive_workflow(
         raise HTTPException(status_code=400, detail="Invalid ID format")
     org_uuid = _enforce_workflow_org_scope(organization_id, auth)
 
-    async with get_session(organization_id=organization_id) as session:
+    async with get_session(
+        organization_id=organization_id,
+        user_id=str(auth.user_id),
+    ) as session:
         result = await session.execute(
             select(Workflow).where(
                 and_(
@@ -406,7 +435,10 @@ async def create_workflow(
                 detail=f"Invalid cron expression: {e}",
             )
 
-    async with get_session(organization_id=organization_id) as session:
+    async with get_session(
+        organization_id=organization_id,
+        user_id=str(auth.user_id),
+    ) as session:
         workflow = Workflow(
             organization_id=org_uuid,
             created_by_user_id=user_uuid,
@@ -444,7 +476,10 @@ async def update_workflow(
         raise HTTPException(status_code=400, detail="Invalid ID format")
     org_uuid = _enforce_workflow_org_scope(organization_id, auth)
 
-    async with get_session(organization_id=organization_id) as session:
+    async with get_session(
+        organization_id=organization_id,
+        user_id=str(auth.user_id),
+    ) as session:
         result = await session.execute(
             select(Workflow).where(
                 and_(
@@ -504,7 +539,10 @@ async def delete_workflow(
         raise HTTPException(status_code=400, detail="Invalid ID format")
     org_uuid = _enforce_workflow_org_scope(organization_id, auth)
 
-    async with get_session(organization_id=organization_id) as session:
+    async with get_session(
+        organization_id=organization_id,
+        user_id=str(auth.user_id),
+    ) as session:
         result = await session.execute(
             select(Workflow).where(
                 and_(
@@ -562,7 +600,10 @@ async def trigger_workflow(
         raise HTTPException(status_code=400, detail="Invalid ID format")
     org_uuid = _enforce_workflow_org_scope(organization_id, auth)
 
-    async with get_session(organization_id=organization_id) as session:
+    async with get_session(
+        organization_id=organization_id,
+        user_id=str(auth.user_id),
+    ) as session:
         result = await session.execute(
             select(Workflow).where(
                 and_(
@@ -638,7 +679,10 @@ async def list_workflow_runs(
         raise HTTPException(status_code=400, detail="Invalid ID format")
     org_uuid = _enforce_workflow_org_scope(organization_id, auth)
 
-    async with get_session(organization_id=organization_id) as session:
+    async with get_session(
+        organization_id=organization_id,
+        user_id=str(auth.user_id),
+    ) as session:
         result = await session.execute(
             select(WorkflowRun)
             .where(
@@ -670,7 +714,10 @@ async def delete_workflow_run(
         raise HTTPException(status_code=400, detail="Invalid ID format")
     org_uuid = _enforce_workflow_org_scope(organization_id, auth)
 
-    async with get_session(organization_id=organization_id) as session:
+    async with get_session(
+        organization_id=organization_id,
+        user_id=str(auth.user_id),
+    ) as session:
         # Find the run
         result = await session.execute(
             select(WorkflowRun)
