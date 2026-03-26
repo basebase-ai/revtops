@@ -651,6 +651,11 @@ async def _execute_workflow(
                 "status": "skipped",
                 "reason": "Workflow is disabled",
             }
+
+        existing_run_count_result = await session.execute(
+            select(WorkflowRun.id).where(WorkflowRun.workflow_id == workflow.id).limit(1)
+        )
+        is_first_run_attempt = existing_run_count_result.scalar_one_or_none() is None
         
         # Create run record
         run = WorkflowRun(
@@ -670,15 +675,21 @@ async def _execute_workflow(
             from services.credits import can_use_credits
             org_id_str = str(workflow.organization_id)
             if not await can_use_credits(org_id_str):
-                run.status = "failed"
-                run.error_message = "Insufficient credits or no active subscription. Please add a payment method in Basebase."
-                run.completed_at = datetime.utcnow()
-                await session.commit()
+                await _fail_workflow_run(
+                    session=session,
+                    workflow=workflow,
+                    run=run,
+                    error_message="Insufficient credits or no active subscription. Please add a payment method in Basebase.",
+                    is_first_run_attempt=is_first_run_attempt,
+                )
                 return {
                     "status": "failed",
                     "workflow_id": workflow_id,
                     "run_id": str(run_id),
-                    "error": "Insufficient credits or no active subscription.",
+                    "error": _format_workflow_error_for_response(
+                        base_error="Insufficient credits or no active subscription.",
+                        workflow_disabled=is_first_run_attempt,
+                    ),
                 }
             # NEW: Execute via agent conversation
             try:
@@ -688,6 +699,7 @@ async def _execute_workflow(
                     triggered_by=triggered_by,
                     trigger_data=trigger_data,
                     session=session,
+                    is_first_run_attempt=is_first_run_attempt,
                     existing_conversation_id=conversation_id,
                     triggered_by_user_id=triggered_by_user_id,
                 )
@@ -695,21 +707,75 @@ async def _execute_workflow(
             except Exception as e:
                 error_msg = str(e)
                 logger.error(f"Workflow {workflow_id} agent execution failed: {error_msg}")
-                
-                run.status = "failed"
-                run.error_message = error_msg
-                run.completed_at = datetime.utcnow()
-                await session.commit()
-                
+
+                await _fail_workflow_run(
+                    session=session,
+                    workflow=workflow,
+                    run=run,
+                    error_message=error_msg,
+                    is_first_run_attempt=is_first_run_attempt,
+                )
                 return {
                     "status": "failed",
                     "workflow_id": workflow_id,
                     "run_id": str(run_id),
-                    "error": error_msg,
+                    "error": _format_workflow_error_for_response(
+                        base_error=error_msg,
+                        workflow_disabled=is_first_run_attempt,
+                    ),
                 }
         
         # LEGACY: Fall back to step-by-step execution for workflows without prompts
-        return await _execute_workflow_legacy(workflow, run, trigger_data, session)
+        return await _execute_workflow_legacy(
+            workflow,
+            run,
+            trigger_data,
+            session,
+            is_first_run_attempt=is_first_run_attempt,
+        )
+
+
+def _format_workflow_error_for_response(base_error: str, workflow_disabled: bool) -> str:
+    """Format workflow execution errors for API/task responses."""
+    if not workflow_disabled:
+        return base_error
+    return (
+        f"{base_error} First run failed, so this workflow has been disabled. "
+        "Please manually re-enable it after fixing the issue."
+    )
+
+
+async def _fail_workflow_run(
+    *,
+    session: Any,
+    workflow: Any,
+    run: Any,
+    error_message: str,
+    is_first_run_attempt: bool,
+) -> None:
+    """
+    Mark a workflow run as failed, and disable workflow when first run fails.
+    """
+    run.status = "failed"
+    run.error_message = _format_workflow_error_for_response(
+        base_error=error_message,
+        workflow_disabled=is_first_run_attempt,
+    )
+    run.completed_at = datetime.utcnow()
+
+    workflow.last_error = run.error_message
+    workflow.updated_at = datetime.utcnow()
+
+    if is_first_run_attempt:
+        workflow.is_enabled = False
+        logger.warning(
+            "[Workflow] Disabled workflow after first-run failure workflow_id=%s run_id=%s error=%s",
+            workflow.id,
+            run.id,
+            error_message,
+        )
+
+    await session.commit()
 
 
 async def _execute_workflow_via_agent(
@@ -718,6 +784,7 @@ async def _execute_workflow_via_agent(
     triggered_by: str,
     trigger_data: dict[str, Any] | None,
     session: Any,
+    is_first_run_attempt: bool,
     existing_conversation_id: str | None = None,
     triggered_by_user_id: str | None = None,
 ) -> dict[str, Any]:
@@ -828,15 +895,21 @@ async def _execute_workflow_via_agent(
     if input_schema is not None:
         is_valid, error_msg = validate_workflow_input(user_trigger_data, input_schema)
         if not is_valid:
-            run.status = "failed"
-            run.error_message = error_msg
-            run.completed_at = datetime.utcnow()
-            await session.commit()
+            await _fail_workflow_run(
+                session=session,
+                workflow=workflow,
+                run=run,
+                error_message=error_msg or "Input validation failed.",
+                is_first_run_attempt=is_first_run_attempt,
+            )
             return {
                 "status": "failed",
                 "workflow_id": str(workflow.id),
                 "run_id": str(run.id),
-                "error": error_msg,
+                "error": _format_workflow_error_for_response(
+                    base_error=error_msg or "Input validation failed.",
+                    workflow_disabled=is_first_run_attempt,
+                ),
             }
     
     # Build execution and persisted prompts separately so internal execution
@@ -977,6 +1050,7 @@ async def _execute_workflow_legacy(
     run: Any,
     trigger_data: dict[str, Any] | None,
     session: Any,
+    is_first_run_attempt: bool = False,
 ) -> dict[str, Any]:
     """
     Legacy step-by-step workflow execution.
@@ -1030,19 +1104,24 @@ async def _execute_workflow_legacy(
     except Exception as e:
         error_msg = str(e)
         logger.error(f"[Workflow] Legacy workflow {workflow.id} failed: {error_msg}")
-        
-        run.status = "failed"
-        run.error_message = error_msg
+
         run.steps_completed = steps_completed
-        run.completed_at = datetime.utcnow()
-        
-        await session.commit()
+        await _fail_workflow_run(
+            session=session,
+            workflow=workflow,
+            run=run,
+            error_message=error_msg,
+            is_first_run_attempt=is_first_run_attempt,
+        )
         
         return {
             "status": "failed",
             "workflow_id": str(workflow.id),
             "run_id": str(run.id),
-            "error": error_msg,
+            "error": _format_workflow_error_for_response(
+                base_error=error_msg,
+                workflow_disabled=is_first_run_attempt,
+            ),
             "steps_completed": len(steps_completed),
             "execution_type": "legacy",
         }
