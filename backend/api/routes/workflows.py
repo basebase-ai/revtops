@@ -10,18 +10,40 @@ from datetime import datetime
 from typing import Any, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Body, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select, and_, func, or_
 
 from models.database import get_session
 from models.workflow import Workflow, WorkflowRun
+from api.auth_middleware import AuthContext, require_organization
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
 DISALLOWED_WORKFLOW_TOOLS = {"manage_memory"}
+
+
+def _enforce_workflow_org_scope(organization_id: str, auth: AuthContext) -> UUID:
+    """Ensure non-admin users can only access workflows in their active organization."""
+    try:
+        org_uuid = UUID(organization_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid organization ID") from exc
+
+    if auth.organization_id != org_uuid and not auth.is_global_admin:
+        logger.warning(
+            "[Workflows API] Cross-org workflow access denied",
+            extra={
+                "requested_org_id": organization_id,
+                "auth_org_id": str(auth.organization_id),
+                "user_id": str(auth.user_id),
+            },
+        )
+        raise HTTPException(status_code=403, detail="Forbidden organization scope")
+
+    return org_uuid
 
 
 def _sanitize_workflow_auto_approve_tools(tools: list[str] | None) -> list[str]:
@@ -153,12 +175,10 @@ async def list_workflows(
     organization_id: str,
     enabled_only: bool = False,
     archived: bool = False,
+    auth: AuthContext = Depends(require_organization),
 ) -> WorkflowListResponse:
     """List all workflows for an organization."""
-    try:
-        org_uuid = UUID(organization_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid organization ID")
+    org_uuid = _enforce_workflow_org_scope(organization_id, auth)
 
     async with get_session(organization_id=organization_id) as session:
         query = select(Workflow).where(Workflow.organization_id == org_uuid)
@@ -213,13 +233,17 @@ async def list_workflows(
 
 
 @router.get("/{organization_id}/{workflow_id}", response_model=WorkflowResponse)
-async def get_workflow(organization_id: str, workflow_id: str) -> WorkflowResponse:
+async def get_workflow(
+    organization_id: str,
+    workflow_id: str,
+    auth: AuthContext = Depends(require_organization),
+) -> WorkflowResponse:
     """Get a specific workflow."""
     try:
-        org_uuid = UUID(organization_id)
         wf_uuid = UUID(workflow_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid ID format")
+    org_uuid = _enforce_workflow_org_scope(organization_id, auth)
 
     async with get_session(organization_id=organization_id) as session:
         result = await session.execute(
@@ -239,13 +263,17 @@ async def get_workflow(organization_id: str, workflow_id: str) -> WorkflowRespon
 
 
 @router.post("/{organization_id}/{workflow_id}/archive")
-async def archive_workflow(organization_id: str, workflow_id: str) -> dict[str, str]:
+async def archive_workflow(
+    organization_id: str,
+    workflow_id: str,
+    auth: AuthContext = Depends(require_organization),
+) -> dict[str, str]:
     """Archive a workflow (hide from default list)."""
     try:
-        org_uuid = UUID(organization_id)
         wf_uuid = UUID(workflow_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid ID format")
+    org_uuid = _enforce_workflow_org_scope(organization_id, auth)
 
     async with get_session(organization_id=organization_id) as session:
         result = await session.execute(
@@ -300,13 +328,17 @@ async def archive_workflow(organization_id: str, workflow_id: str) -> dict[str, 
 
 
 @router.post("/{organization_id}/{workflow_id}/unarchive")
-async def unarchive_workflow(organization_id: str, workflow_id: str) -> dict[str, str]:
+async def unarchive_workflow(
+    organization_id: str,
+    workflow_id: str,
+    auth: AuthContext = Depends(require_organization),
+) -> dict[str, str]:
     """Unarchive a workflow."""
     try:
-        org_uuid = UUID(organization_id)
         wf_uuid = UUID(workflow_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid ID format")
+    org_uuid = _enforce_workflow_org_scope(organization_id, auth)
 
     async with get_session(organization_id=organization_id) as session:
         result = await session.execute(
@@ -335,13 +367,14 @@ async def create_workflow(
     organization_id: str,
     user_id: str,  # TODO: Get from auth context
     request: CreateWorkflowRequest,
+    auth: AuthContext = Depends(require_organization),
 ) -> WorkflowResponse:
     """Create a new workflow."""
     try:
-        org_uuid = UUID(organization_id)
         user_uuid = UUID(user_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid ID format")
+    org_uuid = _enforce_workflow_org_scope(organization_id, auth)
 
     # Validate trigger type
     if request.trigger_type not in ("schedule", "event", "manual"):
@@ -402,13 +435,14 @@ async def update_workflow(
     organization_id: str,
     workflow_id: str,
     request: UpdateWorkflowRequest,
+    auth: AuthContext = Depends(require_organization),
 ) -> WorkflowResponse:
     """Update a workflow."""
     try:
-        org_uuid = UUID(organization_id)
         wf_uuid = UUID(workflow_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid ID format")
+    org_uuid = _enforce_workflow_org_scope(organization_id, auth)
 
     async with get_session(organization_id=organization_id) as session:
         result = await session.execute(
@@ -458,13 +492,17 @@ async def update_workflow(
 
 
 @router.delete("/{organization_id}/{workflow_id}")
-async def delete_workflow(organization_id: str, workflow_id: str) -> dict[str, str]:
+async def delete_workflow(
+    organization_id: str,
+    workflow_id: str,
+    auth: AuthContext = Depends(require_organization),
+) -> dict[str, str]:
     """Delete a workflow."""
     try:
-        org_uuid = UUID(organization_id)
         wf_uuid = UUID(workflow_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid ID format")
+    org_uuid = _enforce_workflow_org_scope(organization_id, auth)
 
     async with get_session(organization_id=organization_id) as session:
         result = await session.execute(
@@ -507,6 +545,7 @@ async def trigger_workflow(
     workflow_id: str,
     body: TriggerWorkflowRequest | None = Body(default=None),
     user_id: str | None = None,
+    auth: AuthContext = Depends(require_organization),
 ) -> TriggerWorkflowResponseV2:
     """Manually trigger a workflow execution."""
     from models.conversation import Conversation
@@ -518,10 +557,10 @@ async def trigger_workflow(
     trigger_data: dict[str, Any] | None = req.trigger_data
 
     try:
-        org_uuid = UUID(organization_id)
         wf_uuid = UUID(workflow_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid ID format")
+    org_uuid = _enforce_workflow_org_scope(organization_id, auth)
 
     async with get_session(organization_id=organization_id) as session:
         result = await session.execute(
@@ -590,13 +629,14 @@ async def list_workflow_runs(
     organization_id: str,
     workflow_id: str,
     limit: int = 20,
+    auth: AuthContext = Depends(require_organization),
 ) -> list[WorkflowRunResponse]:
     """List recent runs for a workflow."""
     try:
-        org_uuid = UUID(organization_id)
         wf_uuid = UUID(workflow_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid ID format")
+    org_uuid = _enforce_workflow_org_scope(organization_id, auth)
 
     async with get_session(organization_id=organization_id) as session:
         result = await session.execute(
@@ -619,15 +659,16 @@ async def list_workflow_runs(
 async def delete_workflow_run(
     organization_id: str,
     run_id: str,
+    auth: AuthContext = Depends(require_organization),
 ) -> dict[str, str]:
     """Delete a workflow run and its associated conversation."""
     from models.conversation import Conversation
     
     try:
-        org_uuid = UUID(organization_id)
         run_uuid = UUID(run_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid ID format")
+    org_uuid = _enforce_workflow_org_scope(organization_id, auth)
 
     async with get_session(organization_id=organization_id) as session:
         # Find the run
