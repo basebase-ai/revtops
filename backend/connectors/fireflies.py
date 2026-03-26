@@ -21,7 +21,7 @@ from api.websockets import broadcast_sync_progress
 from connectors.base import BaseConnector
 from connectors.registry import AuthType, Capability, ConnectorMeta, ConnectorScope
 from models.activity import Activity
-from models.database import get_session
+from models.database import get_admin_session
 from services.meeting_dedup import find_or_create_meeting
 
 logger = logging.getLogger(__name__)
@@ -63,11 +63,6 @@ class FirefliesConnector(BaseConnector):
         if variables:
             payload["variables"] = variables
 
-        # Debug: print query being sent
-        import json
-        print(f"[Fireflies] Sending GraphQL query:")
-        print(json.dumps(payload, indent=2))
-
         async with httpx.AsyncClient() as client:
             response = await client.post(
                 FIREFLIES_API_BASE,
@@ -75,11 +70,6 @@ class FirefliesConnector(BaseConnector):
                 json=payload,
                 timeout=30.0,
             )
-            
-            # Log response for debugging
-            print(f"[Fireflies] Response status: {response.status_code}")
-            print(f"[Fireflies] Response body: {response.text[:1000]}")
-            
             response.raise_for_status()
             data: dict[str, Any] = response.json()
 
@@ -198,9 +188,8 @@ class FirefliesConnector(BaseConnector):
             status="syncing",
         )
         
-        print(f"[Fireflies] Fetching transcripts for org {self.organization_id}")
         transcripts: list[dict[str, Any]] = await self.get_transcripts(limit=50)
-        print(f"[Fireflies] Got {len(transcripts)} transcripts")
+        logger.info("Fetched %d transcripts for org %s", len(transcripts), self.organization_id)
 
         if self.sync_since:
             cutoff_ms: float = self.sync_since.timestamp() * 1000
@@ -208,94 +197,86 @@ class FirefliesConnector(BaseConnector):
                 t for t in transcripts
                 if (t.get("date") or 0) >= cutoff_ms
             ]
-            print(f"[Fireflies] After incremental filter: {len(transcripts)} transcripts since {self.sync_since}")
+            logger.info("After incremental filter: %d transcripts since %s", len(transcripts), self.sync_since)
 
-        count = 0
-        # Pass user_id for RLS: activities with owner_only visibility require
-        # app.current_user_id to match owner_user_id for INSERT to succeed
-        async with get_session(
-            organization_id=self.organization_id,
-            user_id=self.user_id,
-        ) as session:
+        count: int = 0
+        org_uuid: uuid.UUID = uuid.UUID(self.organization_id)
+
+        # Bypass RLS so we see activities written by other users' integrations.
+        # Otherwise owner_only rows from teammate syncs are invisible and we hit
+        # uq_activities_org_source on INSERT for the same Fireflies transcript id.
+        async with get_admin_session() as session:
             for transcript in transcripts:
                 try:
-                    # Parse transcript data
-                    parsed = self._parse_transcript(transcript)
-                    if not parsed:
-                        continue
-                    
-                    # Find or create the canonical Meeting
-                    meeting = await find_or_create_meeting(
-                        organization_id=self.organization_id,
-                        scheduled_start=parsed["activity_date"],
-                        participants=parsed["participants_normalized"],
-                        title=parsed["title"],
-                        duration_minutes=parsed["duration_minutes"],
-                        organizer_email=parsed["organizer_email"],
-                        notes_source="fireflies",
-                        notes_text=parsed["overview"],
-                        action_items=parsed["action_items_structured"],
-                        key_topics=parsed["keywords"],
-                        status="completed",  # Transcripts are for completed meetings
-                    )
-                    
-                    org_uuid = uuid.UUID(self.organization_id)
+                    async with session.begin_nested():
+                        parsed: dict[str, Any] | None = self._parse_transcript(transcript)
+                        if not parsed:
+                            continue
 
-                    existing_result = await session.execute(
-                        select(Activity).where(
-                            Activity.organization_id == org_uuid,
-                            Activity.source_system == self.source_system,
-                            Activity.source_id == parsed["transcript_id"],
+                        meeting = await find_or_create_meeting(
+                            organization_id=self.organization_id,
+                            scheduled_start=parsed["activity_date"],
+                            participants=parsed["participants_normalized"],
+                            title=parsed["title"],
+                            duration_minutes=parsed["duration_minutes"],
+                            organizer_email=parsed["organizer_email"],
+                            notes_source="fireflies",
+                            notes_text=parsed["overview"],
+                            action_items=parsed["action_items_structured"],
+                            key_topics=parsed["keywords"],
+                            status="completed",
                         )
-                    )
-                    activity: Activity | None = existing_result.scalar_one_or_none()
 
-                    if activity is None:
-                        vis: dict[str, Any] = self._activity_visibility_fields()
-                        activity = Activity(
-                            id=uuid.uuid4(),
-                            organization_id=org_uuid,
-                            source_system=self.source_system,
-                            source_id=parsed["transcript_id"],
-                            **vis,
+                        existing_result = await session.execute(
+                            select(Activity).where(
+                                Activity.organization_id == org_uuid,
+                                Activity.source_system == self.source_system,
+                                Activity.source_id == parsed["transcript_id"],
+                            )
                         )
-                        session.add(activity)
+                        activity: Activity | None = existing_result.scalar_one_or_none()
 
-                    activity.meeting_id = meeting.id
-                    activity.type = "meeting_transcript"
-                    activity.subject = parsed["title"]
-                    activity.description = parsed["description"]
-                    activity.activity_date = parsed["activity_date"]
-                    activity.custom_fields = {
-                        "duration_minutes": parsed["duration_minutes"],
-                        "participant_count": parsed["participant_count"],
-                        "participants": parsed["participants_raw"],
-                        "organizer_email": parsed["organizer_email"],
-                        "keywords": parsed["keywords"],
-                        "has_action_items": parsed["has_action_items"],
-                    }
-                    activity.synced_at = datetime.utcnow()
-                    count += 1
-                    
-                    # Broadcast progress
+                        if activity is None:
+                            vis: dict[str, Any] = self._activity_visibility_fields()
+                            activity = Activity(
+                                id=uuid.uuid4(),
+                                organization_id=org_uuid,
+                                source_system=self.source_system,
+                                source_id=parsed["transcript_id"],
+                                **vis,
+                            )
+                            session.add(activity)
+
+                        activity.meeting_id = meeting.id
+                        activity.type = "meeting_transcript"
+                        activity.subject = parsed["title"]
+                        activity.description = parsed["description"]
+                        activity.activity_date = parsed["activity_date"]
+                        activity.custom_fields = {
+                            "duration_minutes": parsed["duration_minutes"],
+                            "participant_count": parsed["participant_count"],
+                            "participants": parsed["participants_raw"],
+                            "organizer_email": parsed["organizer_email"],
+                            "keywords": parsed["keywords"],
+                            "has_action_items": parsed["has_action_items"],
+                        }
+                        activity.synced_at = datetime.utcnow()
+                        count += 1
+
                     await broadcast_sync_progress(
                         organization_id=self.organization_id,
                         provider=self.source_system,
                         count=count,
                         status="syncing",
                     )
-                    
-                    print(f"[Fireflies] Synced transcript {parsed['transcript_id']} -> meeting {meeting.id}")
+
                     logger.debug(
                         "Synced transcript %s linked to meeting %s",
                         parsed["transcript_id"],
                         meeting.id,
                     )
-                    
+
                 except Exception as e:
-                    import traceback
-                    print(f"[Fireflies] Error syncing transcript: {e}")
-                    print(f"[Fireflies] Traceback:\n{traceback.format_exc()}")
                     logger.error("Error syncing transcript: %s", e)
                     continue
 

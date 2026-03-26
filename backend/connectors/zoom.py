@@ -18,7 +18,7 @@ import httpx
 from connectors.base import BaseConnector
 from connectors.registry import AuthType, Capability, ConnectorMeta, ConnectorScope
 from models.activity import Activity
-from models.database import get_session
+from models.database import get_admin_session
 from services.meeting_dedup import find_or_create_meeting
 
 ZOOM_API_BASE = "https://api.zoom.us/v2"
@@ -167,21 +167,27 @@ class ZoomConnector(BaseConnector):
         meetings = await self._fetch_recordings(start_date, end_date)
         logger.info("Processing Zoom recordings", extra={"count": len(meetings)})
 
-        count = 0
+        count: int = 0
+        org_uuid: uuid.UUID = uuid.UUID(self.organization_id)
         token, _ = await self.get_oauth_token()
 
         async with httpx.AsyncClient() as client:
-            async with get_session(organization_id=self.organization_id) as session:
-                for meeting in meetings:
-                    meeting_id = meeting.get("id")
-                    meeting_uuid = meeting.get("uuid")
-                    topic = meeting.get("topic") or "Zoom Meeting"
-                    start_time = self._parse_datetime(meeting.get("start_time"))
-                    duration_minutes = meeting.get("duration")
-                    host_email = meeting.get("host_email") or meeting.get("host_id")
+            # Bypass RLS so we see activities written by other users' integrations.
+            # Otherwise owner_only rows from teammate syncs are invisible and we hit
+            # uq_activities_org_source on INSERT for the same Zoom transcript id.
+            async with get_admin_session() as session:
+                from sqlalchemy import select
 
-                    recording_files = meeting.get("recording_files", [])
-                    transcript_files = [
+                for meeting in meetings:
+                    meeting_id: Any = meeting.get("id")
+                    meeting_uuid: Any = meeting.get("uuid")
+                    topic: str = meeting.get("topic") or "Zoom Meeting"
+                    start_time: datetime | None = self._parse_datetime(meeting.get("start_time"))
+                    duration_minutes: Any = meeting.get("duration")
+                    host_email: Any = meeting.get("host_email") or meeting.get("host_id")
+
+                    recording_files: list[dict[str, Any]] = meeting.get("recording_files", [])
+                    transcript_files: list[dict[str, Any]] = [
                         f for f in recording_files
                         if f.get("file_type") in TRANSCRIPT_FILE_TYPES
                     ]
@@ -231,7 +237,7 @@ class ZoomConnector(BaseConnector):
                     )
 
                     for transcript_file in transcript_files:
-                        download_url = transcript_file.get("download_url")
+                        download_url: str | None = transcript_file.get("download_url")
                         if not download_url:
                             logger.warning(
                                 "Missing download URL for transcript",
@@ -240,8 +246,8 @@ class ZoomConnector(BaseConnector):
                             continue
 
                         try:
-                            raw_text = await self._download_transcript(client, download_url, token)
-                            transcript_text = self._normalize_transcript_text(raw_text)
+                            raw_text: str = await self._download_transcript(client, download_url, token)
+                            transcript_text: str = self._normalize_transcript_text(raw_text)
                         except Exception as exc:
                             logger.exception(
                                 "Failed to download Zoom transcript",
@@ -256,35 +262,55 @@ class ZoomConnector(BaseConnector):
                             )
                             continue
 
-                        source_id = f"{meeting_uuid}:{transcript_file.get('id') or transcript_file.get('file_id')}"
-                        vis: dict[str, Any] = self._activity_visibility_fields()
-                        activity = Activity(
-                            id=uuid.uuid4(),
-                            organization_id=uuid.UUID(self.organization_id),
-                            source_system=self.source_system,
-                            source_id=source_id,
-                            meeting_id=meeting_record.id,
-                            type="zoom_transcript",
-                            subject=topic,
-                            description=transcript_text[:MAX_TRANSCRIPT_LENGTH],
-                            activity_date=start_time,
-                            **vis,
-                            custom_fields={
-                                "meeting_id": meeting_id,
-                                "meeting_uuid": meeting_uuid,
-                                "recording_id": transcript_file.get("recording_id"),
-                                "file_id": transcript_file.get("id"),
-                                "file_type": transcript_file.get("file_type"),
-                                "file_size": transcript_file.get("file_size"),
-                                "duration_minutes": meeting.get("duration"),
-                                "host_id": meeting.get("host_id"),
-                                "start_time": meeting.get("start_time"),
-                                "transcript_length": len(transcript_text),
-                            },
-                        )
+                        source_id: str = f"{meeting_uuid}:{transcript_file.get('id') or transcript_file.get('file_id')}"
 
-                        await session.merge(activity)
-                        count += 1
+                        try:
+                            async with session.begin_nested():
+                                existing_result = await session.execute(
+                                    select(Activity).where(
+                                        Activity.organization_id == org_uuid,
+                                        Activity.source_system == self.source_system,
+                                        Activity.source_id == source_id,
+                                    )
+                                )
+                                activity: Activity | None = existing_result.scalar_one_or_none()
+
+                                if activity is None:
+                                    vis: dict[str, Any] = self._activity_visibility_fields()
+                                    activity = Activity(
+                                        id=uuid.uuid4(),
+                                        organization_id=org_uuid,
+                                        source_system=self.source_system,
+                                        source_id=source_id,
+                                        **vis,
+                                    )
+                                    session.add(activity)
+
+                                activity.meeting_id = meeting_record.id
+                                activity.type = "zoom_transcript"
+                                activity.subject = topic
+                                activity.description = transcript_text[:MAX_TRANSCRIPT_LENGTH]
+                                activity.activity_date = start_time
+                                activity.custom_fields = {
+                                    "meeting_id": meeting_id,
+                                    "meeting_uuid": meeting_uuid,
+                                    "recording_id": transcript_file.get("recording_id"),
+                                    "file_id": transcript_file.get("id"),
+                                    "file_type": transcript_file.get("file_type"),
+                                    "file_size": transcript_file.get("file_size"),
+                                    "duration_minutes": meeting.get("duration"),
+                                    "host_id": meeting.get("host_id"),
+                                    "start_time": meeting.get("start_time"),
+                                    "transcript_length": len(transcript_text),
+                                }
+                                activity.synced_at = datetime.utcnow()
+                                count += 1
+                        except Exception as exc:
+                            logger.exception(
+                                "Error upserting Zoom transcript activity",
+                                extra={"meeting_id": meeting_id, "source_id": source_id},
+                            )
+                            continue
 
                 await session.commit()
 

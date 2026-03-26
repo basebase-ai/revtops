@@ -27,7 +27,7 @@ from api.websockets import broadcast_sync_progress
 from connectors.base import BaseConnector
 from connectors.registry import AuthType, Capability, ConnectorMeta, ConnectorScope
 from models.activity import Activity
-from models.database import get_session
+from models.database import get_admin_session, get_session
 from services.meeting_dedup import find_or_create_meeting
 
 logger = logging.getLogger(__name__)
@@ -435,111 +435,103 @@ class GranolaConnector(BaseConnector):
             )
             meetings_list = filtered
 
-        for i, stub in enumerate(meetings_list):
-            print(f"[Granola] Meeting stub {i}: {json.dumps(stub, default=str)[:2000]}")
-
         count: int = 0
-        async with get_session(
-            organization_id=self.organization_id,
-            user_id=self.user_id,
-        ) as session:
+        org_uuid: uuid.UUID = uuid.UUID(self.organization_id)
+
+        # Bypass RLS so we see activities written by other users' integrations.
+        # Otherwise owner_only rows from teammate syncs are invisible and we hit
+        # uq_activities_org_source on INSERT for the same Granola meeting id.
+        async with get_admin_session() as session:
             for meeting_stub in meetings_list:
                 try:
-                    parsed: dict[str, Any] | None = self._parse_meeting(
-                        meeting_stub
-                    )
-                    if not parsed:
-                        print(f"[Granola] _parse_meeting returned None for: {json.dumps(meeting_stub, default=str)[:500]}")
-                        continue
-
-                    notes_text: str = ""
-                    transcript_text: str | None = None
-                    meeting_id: str | None = parsed.get("meeting_id")
-                    if meeting_id:
-                        notes_text = await mcp.get_meetings(
-                            meeting_ids=[meeting_id],
+                    async with session.begin_nested():
+                        parsed: dict[str, Any] | None = self._parse_meeting(
+                            meeting_stub
                         )
-                        print(f"[Granola] get_meetings({meeting_id}) returned {len(notes_text)} chars")
+                        if not parsed:
+                            continue
 
-                        transcript_text = await mcp.get_meeting_transcript(
-                            meeting_id
-                        )
-                        if transcript_text:
-                            parsed["has_transcript"] = True
-                            print(f"[Granola] transcript({meeting_id}) returned {len(transcript_text)} chars")
-                            if not notes_text:
-                                notes_text = transcript_text[:MAX_DESCRIPTION_LENGTH]
+                        notes_text: str = ""
+                        transcript_text: str | None = None
+                        meeting_id: str | None = parsed.get("meeting_id")
+                        if meeting_id:
+                            notes_text = await mcp.get_meetings(
+                                meeting_ids=[meeting_id],
+                            )
 
-                    meeting = await find_or_create_meeting(
-                        organization_id=self.organization_id,
-                        scheduled_start=parsed["activity_date"],
-                        participants=parsed["participants_normalized"],
-                        title=parsed["title"],
-                        duration_minutes=parsed.get("duration_minutes"),
-                        organizer_email=parsed.get("organizer_email"),
-                        notes_source="granola",
-                        notes_text=notes_text[:500] if notes_text else None,
-                        action_items=parsed.get("action_items_structured"),
-                        key_topics=parsed.get("keywords"),
-                        status="completed",
-                    )
+                            transcript_text = await mcp.get_meeting_transcript(
+                                meeting_id
+                            )
+                            if transcript_text:
+                                parsed["has_transcript"] = True
+                                if not notes_text:
+                                    notes_text = transcript_text[:MAX_DESCRIPTION_LENGTH]
 
-                    if transcript_text and meeting:
-                        from models.meeting import Meeting as MeetingModel
-                        async with get_session(
+                        meeting = await find_or_create_meeting(
                             organization_id=self.organization_id,
-                        ) as meeting_session:
-                            meeting_row: MeetingModel | None = await meeting_session.get(
+                            scheduled_start=parsed["activity_date"],
+                            participants=parsed["participants_normalized"],
+                            title=parsed["title"],
+                            duration_minutes=parsed.get("duration_minutes"),
+                            organizer_email=parsed.get("organizer_email"),
+                            notes_source="granola",
+                            notes_text=notes_text[:500] if notes_text else None,
+                            action_items=parsed.get("action_items_structured"),
+                            key_topics=parsed.get("keywords"),
+                            status="completed",
+                        )
+
+                        if transcript_text and meeting:
+                            from models.meeting import Meeting as MeetingModel
+                            meeting_row: MeetingModel | None = await session.get(
                                 MeetingModel, meeting.id
                             )
                             if meeting_row:
                                 meeting_row.transcript = transcript_text
-                                await meeting_session.commit()
 
-                    org_uuid: uuid.UUID = uuid.UUID(self.organization_id)
-                    source_id: str = parsed["source_id"]
+                        source_id: str = parsed["source_id"]
 
-                    existing_result = await session.execute(
-                        select(Activity).where(
-                            Activity.organization_id == org_uuid,
-                            Activity.source_system == self.source_system,
-                            Activity.source_id == source_id,
+                        existing_result = await session.execute(
+                            select(Activity).where(
+                                Activity.organization_id == org_uuid,
+                                Activity.source_system == self.source_system,
+                                Activity.source_id == source_id,
+                            )
                         )
-                    )
-                    activity: Activity | None = (
-                        existing_result.scalar_one_or_none()
-                    )
-
-                    if activity is None:
-                        vis: dict[str, Any] = self._activity_visibility_fields()
-                        activity = Activity(
-                            id=uuid.uuid4(),
-                            organization_id=org_uuid,
-                            source_system=self.source_system,
-                            source_id=source_id,
-                            **vis,
+                        activity: Activity | None = (
+                            existing_result.scalar_one_or_none()
                         )
-                        session.add(activity)
 
-                    description: str = notes_text[:MAX_DESCRIPTION_LENGTH] if notes_text else ""
+                        if activity is None:
+                            vis: dict[str, Any] = self._activity_visibility_fields()
+                            activity = Activity(
+                                id=uuid.uuid4(),
+                                organization_id=org_uuid,
+                                source_system=self.source_system,
+                                source_id=source_id,
+                                **vis,
+                            )
+                            session.add(activity)
 
-                    activity.meeting_id = meeting.id
-                    activity.type = "meeting_notes"
-                    activity.subject = parsed["title"]
-                    activity.description = description
-                    activity.activity_date = parsed["activity_date"]
-                    activity.custom_fields = {
-                        "granola_meeting_id": meeting_id,
-                        "duration_minutes": parsed.get("duration_minutes"),
-                        "participant_count": parsed.get("participant_count", 0),
-                        "participants": parsed.get("participants_raw", []),
-                        "organizer_email": parsed.get("organizer_email"),
-                        "has_transcript": parsed.get("has_transcript", False),
-                        "keywords": parsed.get("keywords", []),
-                        "has_action_items": parsed.get("has_action_items", False),
-                    }
-                    activity.synced_at = datetime.utcnow()
-                    count += 1
+                        description: str = notes_text[:MAX_DESCRIPTION_LENGTH] if notes_text else ""
+
+                        activity.meeting_id = meeting.id
+                        activity.type = "meeting_notes"
+                        activity.subject = parsed["title"]
+                        activity.description = description
+                        activity.activity_date = parsed["activity_date"]
+                        activity.custom_fields = {
+                            "granola_meeting_id": meeting_id,
+                            "duration_minutes": parsed.get("duration_minutes"),
+                            "participant_count": parsed.get("participant_count", 0),
+                            "participants": parsed.get("participants_raw", []),
+                            "organizer_email": parsed.get("organizer_email"),
+                            "has_transcript": parsed.get("has_transcript", False),
+                            "keywords": parsed.get("keywords", []),
+                            "has_action_items": parsed.get("has_action_items", False),
+                        }
+                        activity.synced_at = datetime.utcnow()
+                        count += 1
 
                     await broadcast_sync_progress(
                         organization_id=self.organization_id,
@@ -554,8 +546,6 @@ class GranolaConnector(BaseConnector):
                     )
 
                 except Exception as exc:
-                    import traceback
-                    print(f"[Granola] Error syncing meeting: {exc}\n{traceback.format_exc()}")
                     logger.exception("Error syncing Granola meeting")
                     continue
 

@@ -19,7 +19,7 @@ import httpx
 from connectors.base import BaseConnector
 from connectors.registry import AuthType, Capability, ConnectorMeta, ConnectorScope
 from models.activity import Activity
-from models.database import get_session
+from models.database import get_admin_session
 from services.meeting_dedup import find_or_create_meeting
 
 logger = logging.getLogger(__name__)
@@ -180,40 +180,59 @@ class MicrosoftCalendarConnector(BaseConnector):
             max_results=500,
         )
 
-        count = 0
-        async with get_session(organization_id=self.organization_id) as session:
+        count: int = 0
+        org_uuid: uuid.UUID = uuid.UUID(self.organization_id)
+
+        # Bypass RLS so we see activities written by other users' calendar integrations.
+        # Otherwise owner_only rows from teammate syncs are invisible and we hit
+        # uq_activities_org_source on INSERT for the same Outlook event id.
+        async with get_admin_session() as session:
+            from sqlalchemy import select
+
             for event in events:
                 try:
-                    parsed = self._parse_event(event)
-                    if not parsed:
-                        continue
-                    
-                    # Find or create the canonical Meeting
-                    meeting = await find_or_create_meeting(
-                        organization_id=self.organization_id,
-                        scheduled_start=parsed["activity_date"],
-                        scheduled_end=parsed["end_time"],
-                        participants=parsed["participants_normalized"],
-                        title=parsed["subject"],
-                        duration_minutes=parsed["duration_minutes"],
-                        organizer_email=parsed["organizer_email"],
-                        status=parsed["meeting_status"],
-                    )
-                    
-                    # Create the Activity record linked to the Meeting
-                    vis: dict[str, Any] = self._activity_visibility_fields()
-                    activity = Activity(
-                        id=uuid.uuid4(),
-                        organization_id=uuid.UUID(self.organization_id),
-                        source_system=self.source_system,
-                        source_id=parsed["event_id"],
-                        meeting_id=meeting.id,
-                        type=parsed["meeting_type"],
-                        subject=parsed["subject"] or "Untitled Event",
-                        description=parsed["body_preview"],
-                        activity_date=parsed["activity_date"],
-                        **vis,
-                        custom_fields={
+                    async with session.begin_nested():
+                        parsed: dict[str, Any] | None = self._parse_event(event)
+                        if not parsed:
+                            continue
+
+                        meeting = await find_or_create_meeting(
+                            organization_id=self.organization_id,
+                            scheduled_start=parsed["activity_date"],
+                            scheduled_end=parsed["end_time"],
+                            participants=parsed["participants_normalized"],
+                            title=parsed["subject"],
+                            duration_minutes=parsed["duration_minutes"],
+                            organizer_email=parsed["organizer_email"],
+                            status=parsed["meeting_status"],
+                        )
+
+                        existing_result = await session.execute(
+                            select(Activity).where(
+                                Activity.organization_id == org_uuid,
+                                Activity.source_system == self.source_system,
+                                Activity.source_id == parsed["event_id"],
+                            )
+                        )
+                        activity: Activity | None = existing_result.scalar_one_or_none()
+
+                        if activity is None:
+                            vis: dict[str, Any] = self._activity_visibility_fields()
+                            activity = Activity(
+                                id=uuid.uuid4(),
+                                organization_id=org_uuid,
+                                source_system=self.source_system,
+                                source_id=parsed["event_id"],
+                                **vis,
+                            )
+                            session.add(activity)
+
+                        activity.meeting_id = meeting.id
+                        activity.type = parsed["meeting_type"]
+                        activity.subject = parsed["subject"] or "Untitled Event"
+                        activity.description = parsed["body_preview"]
+                        activity.activity_date = parsed["activity_date"]
+                        activity.custom_fields = {
                             "organizer_email": parsed["organizer_email"],
                             "location": parsed["location"],
                             "attendee_count": parsed["attendee_count"],
@@ -223,18 +242,16 @@ class MicrosoftCalendarConnector(BaseConnector):
                             "conference_link": parsed["conference_link"],
                             "show_as": parsed["show_as"],
                             "importance": parsed["importance"],
-                        },
-                    )
-                    
-                    await session.merge(activity)
-                    count += 1
-                    
+                        }
+                        activity.synced_at = datetime.utcnow()
+                        count += 1
+
                     logger.debug(
                         "Synced calendar event %s linked to meeting %s",
                         parsed["event_id"],
                         meeting.id,
                     )
-                    
+
                 except Exception as e:
                     logger.error("Error syncing calendar event: %s", e)
                     continue
