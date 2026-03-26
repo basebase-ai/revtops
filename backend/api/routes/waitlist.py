@@ -6,12 +6,13 @@ Endpoints:
 - GET /api/waitlist/admin - List waitlist entries (admin only)
 - POST /api/waitlist/admin/{user_id}/invite - Approve and invite user
 - POST /api/waitlist/admin/{user_id}/resend-invite - Resend invite email (invited only)
+- POST /api/waitlist/admin/organizations/{organization_id}/grant-credits - Partner tier + credits (global admin)
 """
 from __future__ import annotations
 
 import logging
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 from uuid import UUID
 
@@ -557,6 +558,8 @@ class AdminOrganizationResponse(BaseModel):
     name: str
     email_domain: Optional[str]
     user_count: int
+    credits_balance: int
+    credits_included: int
     created_at: Optional[str]
     last_sync_at: Optional[str]
 
@@ -566,6 +569,26 @@ class AdminOrganizationsListResponse(BaseModel):
 
     organizations: list[AdminOrganizationResponse]
     total: int
+
+
+class GrantFreeCreditsRequest(BaseModel):
+    """Same billing fields as scripts/grant_free_credits.py (partner tier, period, credits)."""
+
+    credits: int = Field(default=2000, ge=1, le=10_000_000)
+    months: int = Field(default=12, ge=1, le=120)
+
+
+class GrantFreeCreditsResponse(BaseModel):
+    """Confirmation after granting free credits."""
+
+    success: bool
+    organization_id: str
+    organization_name: str
+    credits_balance: int
+    credits_included: int
+    subscription_tier: Optional[str]
+    subscription_status: Optional[str]
+    current_period_end: Optional[str]
 
 
 class AdminCreateOrganizationRequest(BaseModel):
@@ -683,6 +706,8 @@ async def create_admin_organization(
             name=new_org.name,
             email_domain=new_org.email_domain,
             user_count=1,
+            credits_balance=new_org.credits_balance,
+            credits_included=new_org.credits_included,
             created_at=f"{new_org.created_at.isoformat()}Z" if new_org.created_at else None,
             last_sync_at=f"{new_org.last_sync_at.isoformat()}Z" if new_org.last_sync_at else None,
         )
@@ -733,9 +758,74 @@ async def list_admin_organizations(
                     name=org.name,
                     email_domain=org.email_domain,
                     user_count=int(active_user_count),
+                    credits_balance=org.credits_balance,
+                    credits_included=org.credits_included,
                     created_at=f"{org.created_at.isoformat()}Z" if org.created_at else None,
                     last_sync_at=f"{org.last_sync_at.isoformat()}Z" if org.last_sync_at else None,
                 )
             )
 
         return AdminOrganizationsListResponse(organizations=org_responses, total=len(org_responses))
+
+
+@router.post(
+    "/admin/organizations/{organization_id}/grant-credits",
+    response_model=GrantFreeCreditsResponse,
+)
+async def grant_organization_free_credits(
+    organization_id: UUID,
+    body: GrantFreeCreditsRequest,
+    auth: AuthContext = Depends(require_global_admin),
+) -> GrantFreeCreditsResponse:
+    """
+    Grant partner-tier access with free credits and a fixed billing period.
+
+    Mirrors backend/scripts/grant_free_credits.py. Requires global_admin.
+    """
+    from models.organization import Organization
+
+    logger.info(
+        "Admin grant free credits org_id=%s credits=%s months=%s by user_id=%s",
+        organization_id,
+        body.credits,
+        body.months,
+        auth.user_id,
+    )
+
+    now = datetime.now(timezone.utc)
+    period_end = now + timedelta(days=30 * body.months)
+
+    async with get_admin_session() as session:
+        result = await session.execute(
+            select(Organization).where(Organization.id == organization_id)
+        )
+        org: Organization | None = result.scalar_one_or_none()
+        if org is None:
+            raise HTTPException(status_code=404, detail="Organization not found")
+
+        org.subscription_tier = "partner"
+        org.subscription_status = "active"
+        org.credits_balance = body.credits
+        org.credits_included = body.credits
+        org.current_period_start = now
+        org.current_period_end = period_end
+        org.stripe_customer_id = None
+        org.stripe_subscription_id = None
+
+        await session.commit()
+        await session.refresh(org)
+
+    period_end_str: Optional[str] = (
+        org.current_period_end.isoformat() if org.current_period_end else None
+    )
+
+    return GrantFreeCreditsResponse(
+        success=True,
+        organization_id=str(org.id),
+        organization_name=org.name,
+        credits_balance=org.credits_balance,
+        credits_included=org.credits_included,
+        subscription_tier=org.subscription_tier,
+        subscription_status=org.subscription_status,
+        current_period_end=period_end_str,
+    )

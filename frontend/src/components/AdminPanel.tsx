@@ -48,8 +48,21 @@ interface AdminOrganization {
   name: string;
   email_domain: string | null;
   user_count: number;
+  credits_balance: number;
+  credits_included: number;
   created_at: string | null;
   last_sync_at: string | null;
+}
+
+interface GrantFreeCreditsApiResponse {
+  success: boolean;
+  organization_id: string;
+  organization_name: string;
+  credits_balance: number;
+  credits_included: number;
+  subscription_tier: string | null;
+  subscription_status: string | null;
+  current_period_end: string | null;
 }
 
 interface AdminIntegration {
@@ -119,6 +132,7 @@ function OrgRowActions({
   setOrgMenuOpenId,
   menuRef,
   onInvite,
+  onAddCredits,
   onDeleteOrg,
 }: {
   org: AdminOrganization;
@@ -126,6 +140,7 @@ function OrgRowActions({
   setOrgMenuOpenId: (id: string | null) => void;
   menuRef: React.RefObject<HTMLDivElement | null>;
   onInvite: () => void;
+  onAddCredits: () => void;
   onDeleteOrg: (orgId: string, orgName: string) => void;
 }): JSX.Element {
   const buttonRef = useRef<HTMLButtonElement>(null);
@@ -166,6 +181,16 @@ function OrgRowActions({
           className="w-full px-3 py-2 text-left text-sm text-surface-200 hover:bg-surface-700"
         >
           Invite
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setOrgMenuOpenId(null);
+            onAddCredits();
+          }}
+          className="w-full px-3 py-2 text-left text-sm text-surface-200 hover:bg-surface-700"
+        >
+          Add credits
         </button>
         <button
           type="button"
@@ -328,6 +353,11 @@ export function AdminPanel(): JSX.Element {
   const [createOrgSubmitting, setCreateOrgSubmitting] = useState<boolean>(false);
   const [createOrgError, setCreateOrgError] = useState<string | null>(null);
   const [inviteModalOrg, setInviteModalOrg] = useState<{ id: string; name: string } | null>(null);
+  const [grantCreditsOrg, setGrantCreditsOrg] = useState<AdminOrganization | null>(null);
+  const [grantCreditsAmount, setGrantCreditsAmount] = useState<number>(2000);
+  const [grantCreditsMonths, setGrantCreditsMonths] = useState<number>(12);
+  const [grantCreditsSubmitting, setGrantCreditsSubmitting] = useState<boolean>(false);
+  const [grantCreditsError, setGrantCreditsError] = useState<string | null>(null);
   const [orgMenuOpenId, setOrgMenuOpenId] = useState<string | null>(null);
   const [userMenuOpenId, setUserMenuOpenId] = useState<string | null>(null);
   const orgMenuRef = useRef<HTMLDivElement>(null);
@@ -633,6 +663,36 @@ export function AdminPanel(): JSX.Element {
     setShowCreateOrgModal(false);
     setInviteModalOrg(null);
     void fetchOrganizations();
+  };
+
+  const handleGrantCreditsSubmit = async (): Promise<void> => {
+    if (!grantCreditsOrg) return;
+    const credits: number = Math.floor(Number(grantCreditsAmount));
+    const months: number = Math.floor(Number(grantCreditsMonths));
+    if (!Number.isFinite(credits) || credits < 1) {
+      setGrantCreditsError('Credits must be at least 1.');
+      return;
+    }
+    if (!Number.isFinite(months) || months < 1) {
+      setGrantCreditsError('Months must be at least 1.');
+      return;
+    }
+    setGrantCreditsSubmitting(true);
+    setGrantCreditsError(null);
+    try {
+      const { data, error: reqError } = await apiRequest<GrantFreeCreditsApiResponse>(
+        `/waitlist/admin/organizations/${encodeURIComponent(grantCreditsOrg.id)}/grant-credits`,
+        { method: 'POST', body: JSON.stringify({ credits, months }) }
+      );
+      if (reqError || !data?.success) {
+        setGrantCreditsError(reqError ?? 'Failed to add credits');
+        return;
+      }
+      setGrantCreditsOrg(null);
+      void fetchOrganizations();
+    } finally {
+      setGrantCreditsSubmitting(false);
+    }
   };
 
   const handleMasquerade = async (targetUserId: string): Promise<void> => {
@@ -1511,6 +1571,7 @@ export function AdminPanel(): JSX.Element {
                       <th className="px-4 py-3 text-sm font-medium text-surface-400">Team</th>
                       <th className="px-4 py-3 text-sm font-medium text-surface-400">Domain</th>
                       <th className="px-4 py-3 text-sm font-medium text-surface-400">Users</th>
+                      <th className="px-4 py-3 text-sm font-medium text-surface-400">Credits</th>
                       <th className="px-4 py-3 text-sm font-medium text-surface-400">Last Sync</th>
                       <th className="px-4 py-3 text-sm font-medium text-surface-400">Created</th>
                       <th className="px-4 py-3 text-sm font-medium text-surface-400 w-12"></th>
@@ -1530,6 +1591,9 @@ export function AdminPanel(): JSX.Element {
                             {o.user_count} {o.user_count === 1 ? 'user' : 'users'}
                           </span>
                         </td>
+                        <td className="px-4 py-3 font-mono text-sm tabular-nums text-surface-300">
+                          {o.credits_balance.toLocaleString()} / {o.credits_included.toLocaleString()}
+                        </td>
                         <td className="px-4 py-3 text-sm text-surface-400">
                           {o.last_sync_at ? formatDate(o.last_sync_at) : 'Never'}
                         </td>
@@ -1548,6 +1612,12 @@ export function AdminPanel(): JSX.Element {
                               setCreateOrgInvitees([{ email: '', name: '' }]);
                               setCreateOrgError(null);
                               setShowCreateOrgModal(true);
+                            }}
+                            onAddCredits={() => {
+                              setGrantCreditsOrg(o);
+                              setGrantCreditsAmount(2000);
+                              setGrantCreditsMonths(12);
+                              setGrantCreditsError(null);
                             }}
                             onDeleteOrg={handleDeleteOrg}
                           />
@@ -1577,6 +1647,12 @@ export function AdminPanel(): JSX.Element {
                           setCreateOrgError(null);
                           setShowCreateOrgModal(true);
                         }}
+                        onAddCredits={() => {
+                          setGrantCreditsOrg(o);
+                          setGrantCreditsAmount(2000);
+                          setGrantCreditsMonths(12);
+                          setGrantCreditsError(null);
+                        }}
                         onDeleteOrg={handleDeleteOrg}
                       />
                     </div>
@@ -1586,6 +1662,14 @@ export function AdminPanel(): JSX.Element {
                         value={
                           <span className="rounded-full bg-surface-700 px-2 py-0.5 text-xs text-surface-300">
                             {o.user_count} {o.user_count === 1 ? 'user' : 'users'}
+                          </span>
+                        }
+                      />
+                      <AdminMobileField
+                        label="Credits (rem. / total)"
+                        value={
+                          <span className="font-mono text-sm tabular-nums text-surface-200">
+                            {o.credits_balance.toLocaleString()} / {o.credits_included.toLocaleString()}
                           </span>
                         }
                       />
@@ -1753,6 +1837,82 @@ export function AdminPanel(): JSX.Element {
                         </div>
                       </>
                     )}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {grantCreditsOrg && (
+              <div
+                className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+                onClick={() => {
+                  if (!grantCreditsSubmitting) setGrantCreditsOrg(null);
+                }}
+              >
+                <div
+                  className="max-h-[90vh] w-full max-w-md overflow-y-auto rounded-xl border border-surface-700 bg-surface-900 shadow-xl"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <div className="p-6">
+                    <h3 className="mb-2 text-lg font-semibold text-surface-100">
+                      Add credits — {grantCreditsOrg.name}
+                    </h3>
+                    <p className="mb-4 text-sm text-surface-400">
+                      Sets partner tier, billing period, credit balance and included credits (same behavior as the grant_free_credits script). Stripe customer and subscription IDs are cleared.
+                    </p>
+                    {grantCreditsError && (
+                      <div className="mb-4 rounded-lg border border-red-500/20 bg-red-500/10 p-3 text-sm text-red-400">
+                        {grantCreditsError}
+                      </div>
+                    )}
+                    <div className="space-y-4">
+                      <div>
+                        <label className="mb-1 block text-sm font-medium text-surface-400">Credits</label>
+                        <input
+                          type="number"
+                          min={1}
+                          max={10_000_000}
+                          value={grantCreditsAmount}
+                          onChange={(e) => {
+                            const n: number = parseInt(e.target.value, 10);
+                            setGrantCreditsAmount(Number.isNaN(n) ? 0 : n);
+                          }}
+                          className="w-full rounded-lg border border-surface-700 bg-surface-800 px-3 py-2 text-surface-100 focus:border-primary-500 focus:outline-none"
+                        />
+                      </div>
+                      <div>
+                        <label className="mb-1 block text-sm font-medium text-surface-400">Period (months)</label>
+                        <input
+                          type="number"
+                          min={1}
+                          max={120}
+                          value={grantCreditsMonths}
+                          onChange={(e) => {
+                            const n: number = parseInt(e.target.value, 10);
+                            setGrantCreditsMonths(Number.isNaN(n) ? 0 : n);
+                          }}
+                          className="w-full rounded-lg border border-surface-700 bg-surface-800 px-3 py-2 text-surface-100 focus:border-primary-500 focus:outline-none"
+                        />
+                      </div>
+                    </div>
+                    <div className="mt-6 flex justify-end gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setGrantCreditsOrg(null)}
+                        disabled={grantCreditsSubmitting}
+                        className="rounded-lg bg-surface-800 px-4 py-2 text-surface-300 hover:bg-surface-700 disabled:opacity-50"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void handleGrantCreditsSubmit()}
+                        disabled={grantCreditsSubmitting}
+                        className="flex items-center gap-2 rounded-lg bg-primary-500 px-4 py-2 font-medium text-surface-900 hover:bg-primary-400 disabled:opacity-50"
+                      >
+                        {grantCreditsSubmitting ? 'Adding…' : 'Add Credits'}
+                      </button>
+                    </div>
                   </div>
                 </div>
               </div>

@@ -39,12 +39,30 @@ const ArtifactFullView = lazy(() => import('./ArtifactFullView').then(m => ({ de
 const DocumentsGallery = lazy(() => import('./documents/DocumentsGallery').then(m => ({ default: m.DocumentsGallery })));
 import { APP_NAME, LOGO_PATH, RELEASE_STAGE } from '../lib/brand';
 import { ProfilePanel } from './ProfilePanel';
-import { useAppStore, useChatStore, useUIStore, useMasquerade, useIntegrations, useIsSwitchingOrg, useIsGlobalAdmin, type ActiveTask, type ToolCallData, type ChatMessage, type ContentBlock, type View } from '../store';
+import { useAppStore, useChatStore, useUIStore, useMasquerade, useIntegrations, useIsSwitchingOrg, useIsGlobalAdmin, type ActiveTask, type AdminPanelTab, type ToolCallData, type ChatMessage, type ContentBlock, type View } from '../store';
 import { useTeamMembers, useWebSocket } from '../hooks';
 import { apiRequest } from '../lib/api';
 
 // Re-export types from store for backwards compatibility
 export type { UserProfile, OrganizationInfo, ChatSummary, View } from '../store';
+
+function adminTabFromPathSegment(segment: string): AdminPanelTab {
+  const s: string = segment.toLowerCase();
+  if (s === '' || s === 'waitlist') return 'waitlist';
+  if (s === 'users') return 'users';
+  if (s === 'teams') return 'organizations';
+  if (s === 'sources') return 'sources';
+  if (s === 'jobs') return 'jobs';
+  return 'waitlist';
+}
+
+const ADMIN_TAB_TO_PATH: Record<AdminPanelTab, string> = {
+  waitlist: '/admin/waitlist',
+  users: '/admin/users',
+  organizations: '/admin/teams',
+  sources: '/admin/sources',
+  jobs: '/admin/jobs',
+};
 
 // WebSocket message types
 interface WsActiveTasks {
@@ -364,6 +382,7 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
   const openArtifact = useAppStore((state) => state.openArtifact);
   const fetchUserOrganizations = useAppStore((state) => state.fetchUserOrganizations);
   const switchActiveOrganization = useAppStore((state) => state.switchActiveOrganization);
+  const setAdminPanelTab = useAppStore((state) => state.setAdminPanelTab);
 
   const syncStateFromUrl = useCallback(async (): Promise<void> => {
     isSyncingFromUrlRef.current = true;
@@ -424,6 +443,14 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
         setCurrentView("app-view");
         return;
       }
+      const adminOrgSubMatch = subPath.match(/^admin(?:\/([a-z0-9-]+))?$/i);
+      if (adminOrgSubMatch) {
+        setCurrentChatId(null);
+        setCurrentView("admin");
+        const segment: string = adminOrgSubMatch[1] ?? "";
+        setAdminPanelTab(adminTabFromPathSegment(segment));
+        return;
+      }
       const viewMap: Record<string, typeof currentView> = {
         chats: "chats",
         connectors: "data-sources",
@@ -432,7 +459,6 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
         memory: "memory",
         apps: "apps",
         documents: "documents",
-        admin: "admin",
         changes: "pending-changes",
       };
       const view = viewMap[subPath];
@@ -462,6 +488,15 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
       return;
     }
 
+    const adminPathMatch = path.match(/^\/admin(?:\/([a-z0-9-]+))?$/i);
+    if (adminPathMatch) {
+      setCurrentChatId(null);
+      setCurrentView("admin");
+      const segment: string = adminPathMatch[1] ?? "";
+      setAdminPanelTab(adminTabFromPathSegment(segment));
+      return;
+    }
+
     const viewPaths: Record<string, typeof currentView> = {
       "/": "home",
       "/chat": "chat",
@@ -472,7 +507,6 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
       "/memory": "memory",
       "/apps": "apps",
       "/documents": "documents",
-      "/admin": "admin",
       "/changes": "pending-changes",
     };
     const matchedView = viewPaths[path];
@@ -487,6 +521,7 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
     setCurrentChatId,
     setCurrentAppId,
     setCurrentView,
+    setAdminPanelTab,
     openArtifact,
     fetchUserOrganizations,
     switchActiveOrganization,
@@ -516,12 +551,13 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
     organization?.handle ??
     (organization?.id ? organizations.find((o) => o.id === organization.id)?.handle ?? null : null) ??
     null;
+  const adminPanelTab = useAppStore((state) => state.adminPanelTab);
   useEffect(() => {
     if (!urlInitialized || isSyncingFromUrlRef.current) return;
 
     let newPath: string;
     if (currentView === "admin") {
-      newPath = "/admin";
+      newPath = ADMIN_TAB_TO_PATH[adminPanelTab];
     } else {
       const prefix: string = orgHandle ? `/${orgHandle}` : "";
 
@@ -555,7 +591,7 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
     if (window.location.pathname !== newPath) {
       window.history.pushState({}, "", newPath);
     }
-  }, [currentChatId, currentAppId, currentArtifactId, currentView, urlInitialized, orgHandle, organization?.id, organization?.handle, organizations]);
+  }, [currentChatId, currentAppId, currentArtifactId, currentView, adminPanelTab, urlInitialized, orgHandle, organization?.id, organization?.handle, organizations]);
   
   // Panels
   const [showOrgPanel, setShowOrgPanel] = useState(false);
