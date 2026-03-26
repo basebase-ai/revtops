@@ -92,6 +92,28 @@ def _merge_participating_user_ids(
     return current
 
 
+def _build_workflow_context_for_message(
+    platform_slug: str,
+    ctx: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Build workflow_context for orchestrator from inbound messenger context."""
+    workflow_context: dict[str, Any] = dict(ctx.get("workflow_context") or {})
+
+    if platform_slug == "slack":
+        slack_channel_id: str | None = ctx.get("channel_id")
+        slack_thread_ts: str | None = ctx.get("thread_id") or ctx.get("thread_ts")
+        slack_channel_name: str | None = ctx.get("channel_name")
+
+        if slack_channel_id and not workflow_context.get("slack_channel_id"):
+            workflow_context["slack_channel_id"] = slack_channel_id
+        if slack_thread_ts and not workflow_context.get("slack_thread_ts"):
+            workflow_context["slack_thread_ts"] = slack_thread_ts
+        if slack_channel_name and not workflow_context.get("slack_channel_name"):
+            workflow_context["slack_channel_name"] = slack_channel_name
+
+    return workflow_context or None
+
+
 
 # ===========================================================================
 # WorkspaceMessenger
@@ -745,6 +767,10 @@ class WorkspaceMessenger(BaseMessenger):
 
         ctx: dict[str, Any] = message.messenger_context
         slack_user_email: str | None = ctx.get("user_email")
+        workflow_context: dict[str, Any] | None = _build_workflow_context_for_message(
+            platform_slug=self.meta.slug,
+            ctx=ctx,
+        )
 
         orchestrator = ChatOrchestrator(
             user_id=str(user.id),
@@ -753,7 +779,7 @@ class WorkspaceMessenger(BaseMessenger):
             user_email=user.email,
             source_user_id=message.external_user_id,
             source_user_email=slack_user_email or user.email,
-            workflow_context=ctx.get("workflow_context"),
+            workflow_context=workflow_context,
             source=self.meta.slug,
             timezone=ctx.get("timezone"),
             local_time=ctx.get("local_time"),

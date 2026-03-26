@@ -37,7 +37,11 @@ logger = logging.getLogger(__name__)
 _TOOL_EXECUTION_TIMEOUT_SECONDS: float = 600.0  # 10 minutes
 
 
-def _format_slack_scope_context(slack_channel_id: str | None, slack_thread_ts: str | None) -> str:
+def _format_slack_scope_context(
+    slack_channel_id: str | None,
+    slack_thread_ts: str | None,
+    slack_channel_name: str | None = None,
+) -> str:
     """Build prompt guidance for Slack channel/thread query scoping."""
     if not slack_channel_id:
         return ""
@@ -53,10 +57,17 @@ def _format_slack_scope_context(slack_channel_id: str | None, slack_thread_ts: s
         else "AND custom_fields->>'thread_ts' = '<thread_ts>'"
     )
 
+    channel_name_line: str = (
+        f"This conversation is happening in Slack channel name: #{slack_channel_name}\n"
+        if slack_channel_name
+        else ""
+    )
+
     return f"""
 
 ## Slack Channel Context
 This conversation is happening in Slack channel ID: {slack_channel_id}
+{channel_name_line}
 {thread_line}
 When users refer to Slack scope, distinguish **thread/chat** vs **channel**:
 - "this chat", "this thread", "this conversation" → scope to the current thread when `thread_ts` is available.
@@ -980,7 +991,14 @@ class ChatOrchestrator:
 
         slack_channel_id: str | None = (self.workflow_context or {}).get("slack_channel_id")
         slack_thread_ts: str | None = (self.workflow_context or {}).get("slack_thread_ts")
-        system_prompt_parts.append(_format_slack_scope_context(slack_channel_id=slack_channel_id, slack_thread_ts=slack_thread_ts))
+        slack_channel_name: str | None = (self.workflow_context or {}).get("slack_channel_name")
+        system_prompt_parts.append(
+            _format_slack_scope_context(
+                slack_channel_id=slack_channel_id,
+                slack_thread_ts=slack_thread_ts,
+                slack_channel_name=slack_channel_name,
+            )
+        )
 
         # 4. Connected connectors (trimmed preamble)
         if self.organization_id:
