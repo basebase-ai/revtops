@@ -15,7 +15,7 @@ import hmac
 import logging
 import time
 from datetime import date, datetime
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 from uuid import UUID
 
 import httpx
@@ -26,6 +26,8 @@ from connectors.base import BaseConnector
 from connectors.registry import (
     AuthType, Capability, ConnectorMeta, ConnectorScope, WriteOperation,
 )
+from models.chat_attachment import ChatAttachment
+from models.conversation import Conversation
 from models.database import get_session
 from models.external_identity_mapping import ExternalIdentityMapping
 from models.tracker_issue import TrackerIssue
@@ -36,6 +38,19 @@ from models.user import User
 logger = logging.getLogger(__name__)
 
 LINEAR_API_URL: str = "https://api.linear.app/graphql"
+
+# Allowed keys for create_issue when unpacking write() data (ignores model hallucinations).
+_CREATE_ISSUE_KWARGS: frozenset[str] = frozenset({
+    "team_key",
+    "title",
+    "description",
+    "priority",
+    "assignee_name",
+    "project_name",
+    "labels",
+    "conversation_id",
+    "attachment_ids",
+})
 
 # Event type emitted when an issue is moved to Done (used by webhook route and handle_event)
 LINEAR_ISSUE_DONE_EVENT: str = "linear.issue.done"
@@ -48,6 +63,27 @@ PRIORITY_LABELS: dict[int, str] = {
     3: "Medium",
     4: "Low",
 }
+
+
+def _safe_markdown_alt_text(filename: str) -> str:
+    cleaned: str = filename.replace("[", "").replace("]", "").replace("\n", " ").strip()
+    return (cleaned[:500] if cleaned else "attachment")
+
+
+def _normalize_uuid_string_list(raw: Any) -> list[str]:
+    if raw is None:
+        return []
+    items: Sequence[Any] = [raw] if isinstance(raw, str) else raw
+    if not isinstance(items, list):
+        return []
+    out: list[str] = []
+    for item in items:
+        if item is None:
+            continue
+        s: str = str(item).strip()
+        if s:
+            out.append(s)
+    return out
 
 
 class LinearConnector(BaseConnector):
@@ -73,6 +109,13 @@ class LinearConnector(BaseConnector):
                     {"name": "assignee_name", "type": "string", "required": False, "description": "Assignee display name"},
                     {"name": "project_name", "type": "string", "required": False, "description": "Project name"},
                     {"name": "labels", "type": "array", "required": False, "description": "Label names to add"},
+                    {
+                        "name": "attachment_ids",
+                        "type": "array",
+                        "required": False,
+                        "description": "UUIDs of chat_attachments from the user message (see bracketed hint in the user turn). "
+                        "Requires conversation_id (injected automatically in chat). Files are uploaded to Linear and linked in the description.",
+                    },
                 ],
             ),
             WriteOperation(
@@ -108,6 +151,7 @@ Use `write_on_connector(connector='linear', operation='...', data={...})` with `
 | assignee_name | string | No | Assignee's display name (matched to Linear user) |
 | project_name | string | No | Project name (matched to project in the team) |
 | labels | array | No | Label names to add |
+| attachment_ids | array | No | UUID strings from the `[When creating a Linear issue…]` block in the user message. Uploads each file to Linear and appends markdown links to the issue description. `conversation_id` is injected for you in web/Slack chat — do not type it. |
 
 ### update_issue
 
@@ -548,12 +592,117 @@ Use `write_on_connector(connector='linear', operation='...', data={...})` with `
         logger.info("Synced %d Linear issues for org %s", count, self.organization_id)
         return count
 
+    async def _upload_bytes_to_linear(
+        self,
+        *,
+        data: bytes,
+        filename: str,
+        content_type: str,
+    ) -> str:
+        """Request a signed URL from Linear, PUT file bytes, return asset URL for markdown."""
+        mutation: str = """
+        mutation LinearFileUpload($contentType: String!, $filename: String!, $size: Int!) {
+            fileUpload(contentType: $contentType, filename: $filename, size: $size) {
+                success
+                uploadFile {
+                    uploadUrl
+                    assetUrl
+                    headers {
+                        key
+                        value
+                    }
+                }
+            }
+        }
+        """
+        size: int = len(data)
+        gql_result: dict[str, Any] = await self._gql(
+            mutation,
+            {
+                "contentType": content_type,
+                "filename": filename,
+                "size": size,
+            },
+        )
+        payload: dict[str, Any] = gql_result.get("fileUpload", {})
+        if not payload.get("success"):
+            raise RuntimeError("Linear fileUpload mutation was not successful")
+        uf: dict[str, Any] | None = payload.get("uploadFile")
+        if not uf or not uf.get("uploadUrl") or not uf.get("assetUrl"):
+            raise RuntimeError("Linear fileUpload missing upload URL or asset URL")
+
+        upload_url: str = str(uf["uploadUrl"])
+        asset_url: str = str(uf["assetUrl"])
+        put_headers: dict[str, str] = {
+            "Content-Type": content_type,
+            "Cache-Control": "public, max-age=31536000",
+        }
+        for h in uf.get("headers") or []:
+            if isinstance(h, dict) and h.get("key") is not None and h.get("value") is not None:
+                put_headers[str(h["key"])] = str(h["value"])
+
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            resp: httpx.Response = await client.put(
+                upload_url,
+                content=data,
+                headers=put_headers,
+            )
+            resp.raise_for_status()
+
+        return asset_url
+
+    async def _load_chat_attachments_for_issue(
+        self,
+        *,
+        conversation_id: str,
+        attachment_ids: list[str],
+    ) -> list[tuple[str, str, bytes]]:
+        """Load attachment bytes scoped to org and conversation; order matches ``attachment_ids``."""
+        org_uuid: UUID = UUID(self.organization_id)
+        conv_uuid: UUID = UUID(conversation_id)
+        id_list: list[UUID] = []
+        for aid in attachment_ids:
+            try:
+                id_list.append(UUID(aid))
+            except ValueError:
+                logger.warning("[linear] Skipping invalid attachment UUID: %s", aid)
+        if not id_list:
+            return []
+
+        async with get_session(organization_id=self.organization_id) as session:
+            stmt = (
+                select(ChatAttachment)
+                .join(Conversation, ChatAttachment.conversation_id == Conversation.id)
+                .where(Conversation.organization_id == org_uuid)
+                .where(ChatAttachment.conversation_id == conv_uuid)
+                .where(ChatAttachment.id.in_(id_list))
+            )
+            result = await session.execute(stmt)
+            rows_db: list[ChatAttachment] = list(result.scalars().all())
+
+        by_id: dict[UUID, ChatAttachment] = {r.id: r for r in rows_db}
+        ordered: list[tuple[str, str, bytes]] = []
+        for uid in id_list:
+            row: ChatAttachment | None = by_id.get(uid)
+            if row is None:
+                logger.warning(
+                    "[linear] Attachment %s not found or not in conversation %s",
+                    uid,
+                    conversation_id,
+                )
+                continue
+            ordered.append((row.filename, row.mime_type, row.content))
+        return ordered
+
     # ── Write: Dispatch ─────────────────────────────────────────────────
 
     async def write(self, operation: str, data: dict[str, Any]) -> dict[str, Any]:
         """Dispatch a record-level write operation."""
         if operation == "create_issue":
-            return await self.create_issue(**data)
+            filtered: dict[str, Any] = {
+                k: v for k, v in data.items() if k in _CREATE_ISSUE_KWARGS
+            }
+            return await self.create_issue(**filtered)
         if operation == "update_issue":
             return await self.update_issue(**data)
         raise ValueError(f"Unknown write operation: {operation}")
@@ -570,12 +719,55 @@ Use `write_on_connector(connector='linear', operation='...', data={...})` with `
         assignee_name: str | None = None,
         project_name: str | None = None,
         labels: list[str] | None = None,
+        conversation_id: str | None = None,
+        attachment_ids: Any | None = None,
     ) -> dict[str, Any]:
         """Create an issue in Linear via the issueCreate mutation.
 
         Accepts human-friendly parameters (team_key, assignee_name, etc.)
         and resolves them to Linear IDs internally.
+        Optional ``attachment_ids`` are persisted chat attachment UUIDs; bytes are
+        uploaded via Linear ``fileUpload`` and embedded in the description.
         """
+        description_out: str | None = description
+        norm_attachment_ids: list[str] = _normalize_uuid_string_list(attachment_ids)
+        if norm_attachment_ids:
+            if not conversation_id or not str(conversation_id).strip():
+                logger.warning(
+                    "[linear] attachment_ids provided without conversation_id; skipping uploads",
+                )
+            else:
+                rows: list[tuple[str, str, bytes]] = await self._load_chat_attachments_for_issue(
+                    conversation_id=str(conversation_id).strip(),
+                    attachment_ids=norm_attachment_ids,
+                )
+                if rows:
+                    asset_lines: list[str] = []
+                    for fname, mime, content in rows:
+                        try:
+                            asset_url: str = await self._upload_bytes_to_linear(
+                                data=content,
+                                filename=fname,
+                                content_type=mime or "application/octet-stream",
+                            )
+                        except Exception as exc:
+                            logger.error(
+                                "[linear] Failed to upload attachment %s: %s", fname, exc,
+                            )
+                            continue
+                        alt: str = _safe_markdown_alt_text(fname)
+                        if mime.lower().startswith("image/"):
+                            asset_lines.append(f"![{alt}]({asset_url})")
+                        else:
+                            asset_lines.append(f"[{alt}]({asset_url})")
+                    if asset_lines:
+                        block: str = "\n\n".join(asset_lines)
+                        description_out = (
+                            f"{description_out.rstrip()}\n\n{block}"
+                            if description_out
+                            else block
+                        )
+
         # Resolve team_key → team_id (required)
         team: dict[str, Any] | None = await self.resolve_team_by_key(team_key)
         if not team:
@@ -612,8 +804,8 @@ Use `write_on_connector(connector='linear', operation='...', data={...})` with `
             "teamId": team_id,
             "title": title,
         }
-        if description:
-            variables["description"] = description
+        if description_out:
+            variables["description"] = description_out
         if priority is not None:
             variables["priority"] = priority
         if assignee_id:

@@ -906,6 +906,16 @@ class ChatOrchestrator:
             message_to_persist = persisted_user_message if persisted_user_message is not None else user_message
             asyncio.create_task(self._save_user_message_safe(message_to_persist, attachment_meta, pre_generated_message_id))
 
+        text_for_model: str = user_message
+        if attachment_meta:
+            quoted_ids: str = ", ".join(f'"{m["attachment_id"]}"' for m in attachment_meta)
+            text_for_model = (
+                f"{user_message}\n\n[When creating a Linear issue that should include the user’s attached file(s), "
+                f"add to the `data` object of write_on_connector: `attachment_ids`: [{quoted_ids}]. "
+                'Use `connector`: "linear" and `operation`: "create_issue". '
+                "`conversation_id` is injected automatically in chat — include `attachment_ids` whenever those files belong on the issue.]"
+            )
+
         # Skip history DB call for new conversations (zero messages to load).
         if skip_history:
             history: list[dict[str, Any]] = []
@@ -916,7 +926,7 @@ class ChatOrchestrator:
 
         # Build user content — may include attachment blocks (images, PDFs, text)
         user_content: str | list[dict[str, Any]] = self._build_user_content(
-            user_message, attachment_ids,
+            text_for_model, attachment_ids,
         )
 
         # Add user message to context for Claude

@@ -901,6 +901,10 @@ async def _write_on_connector(
             data["conversation_id"] = ctx_apps["conversation_id"]
         if ctx_apps.get("message_id"):
             data["message_id"] = str(ctx_apps["message_id"]) if ctx_apps["message_id"] else None
+    if connector == "linear":
+        ctx_linear: dict[str, Any] = context or {}
+        if ctx_linear.get("conversation_id"):
+            data["conversation_id"] = ctx_linear["conversation_id"]
 
     if not connector:
         return {"error": "connector is required"}
@@ -2455,6 +2459,8 @@ async def _execute_linear_create(
         assignee_name=record.get("assignee_name"),
         project_name=record.get("project_name"),
         labels=record.get("labels"),
+        conversation_id=record.get("conversation_id"),
+        attachment_ids=record.get("attachment_ids"),
     )
     return issue
 
