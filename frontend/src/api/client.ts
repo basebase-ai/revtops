@@ -4,7 +4,7 @@
  * Uses centralized API configuration from lib/api.ts
  */
 
-import { API_BASE, apiRequest, type ApiResponse } from "../lib/api";
+import { API_BASE, apiRequest, getAuthenticatedRequestHeaders, type ApiResponse } from "../lib/api";
 
 // Re-export for backwards compatibility
 export { API_BASE, apiRequest };
@@ -340,23 +340,22 @@ export interface UploadResponse {
 export async function uploadChatFile(
   file: File,
 ): Promise<ApiResponse<UploadResponse>> {
-  const { supabase } = await import("../lib/supabase");
-  const {
-    data: { session },
-  } = await supabase.auth.getSession();
-  const token: string | undefined = session?.access_token;
-
-  if (!token) {
+  const authHeaders = await getAuthenticatedRequestHeaders();
+  if (!authHeaders.Authorization) {
     return { data: null, error: "Not authenticated" };
   }
 
   const formData = new FormData();
   formData.append("file", file);
 
+  // Remove Content-Type so browser sets multipart boundary automatically
+  const { "Content-Type": _contentType, ...uploadHeaders } = authHeaders as Record<string, string>;
+  void _contentType;
+
   try {
     const response = await fetch(`${API_BASE}/chat/upload`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${token}` },
+      headers: uploadHeaders,
       body: formData,
     });
 

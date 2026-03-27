@@ -24,8 +24,8 @@ import { ScopeLockIcon } from './ScopeVisibilityIcons';
 import { getConversation, updateConversation, uploadChatFile, type UploadResponse } from '../api/client';
 import { useIsMobile } from '../hooks';
 import { useTeamMembers, type TeamMember } from '../hooks/useOrganization';
-import { API_BASE, apiRequest } from '../lib/api';
-import { supabase } from '../lib/supabase';
+import { API_BASE, apiRequest, getAuthenticatedRequestHeaders } from '../lib/api';
+
 import { crossTab } from '../lib/crossTab';
 import { APP_NAME, LOGO_PATH } from '../lib/brand';
 import {
@@ -3789,11 +3789,10 @@ function ChatAttachmentImageThumbnail({
     let cancelled = false;
     void (async () => {
       try {
-        const { data: { session } } = await supabase.auth.getSession();
-        const token: string | undefined = session?.access_token ?? undefined;
+        const hdrs = await getAuthenticatedRequestHeaders();
         const response: Response = await fetch(
           `${API_BASE}/chat/attachments/${encodeURIComponent(attachmentId)}`,
-          { headers: token ? { Authorization: `Bearer ${token}` } : {} },
+          { headers: hdrs },
         );
         if (!response.ok || cancelled) throw new Error('attachment fetch failed');
         const blob: Blob = await response.blob();
