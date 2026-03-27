@@ -226,11 +226,9 @@ export const useChatStore = create<ChatState>()(
     addConversation: (id, title, scope?: "private" | "shared") => {
       const { recentChats } = get();
       if (recentChats.some((chat) => chat.id === id)) {
-        console.log("[Store] Conversation already exists:", id);
         return;
       }
       const creatorId = useAuthStore.getState().user?.id;
-      console.log("[Store] Adding conversation:", id, title, scope);
       set({
         recentChats: [
           {
@@ -323,13 +321,10 @@ export const useChatStore = create<ChatState>()(
       // Read user from authStore
       const user = useAuthStore.getState().user;
       if (!user) {
-        console.log("[Store] No user, skipping conversations fetch");
         return;
       }
 
       try {
-        console.log("[Store] Fetching conversations for user:", user.id);
-
         type ConversationApiResponse = {
           conversations: Array<{
             id: string;
@@ -351,7 +346,6 @@ export const useChatStore = create<ChatState>()(
           total: number;
         };
 
-        const requestStart = performance.now();
         const { data, error } = await apiRequest<ConversationApiResponse>(
           `/chat/conversations?limit=20`,
         );
@@ -361,14 +355,6 @@ export const useChatStore = create<ChatState>()(
           return;
         }
         const conversations = data?.conversations ?? [];
-
-        console.log(
-          "[Store] Conversations fetched:",
-          conversations.length,
-          "in",
-          Math.round(performance.now() - requestStart),
-          "ms",
-        );
 
         const mapConversation = (
           conv: ConversationApiResponse["conversations"][0],
@@ -418,10 +404,6 @@ export const useChatStore = create<ChatState>()(
       const pinnedChatIds = useUIStore.getState().pinnedChatIds;
 
       if (!recentChats.some((chat) => chat.id === id)) {
-        console.log(
-          "[Store] Conversation already removed, skipping delete:",
-          id,
-        );
         return;
       }
 
@@ -453,7 +435,6 @@ export const useChatStore = create<ChatState>()(
       });
 
       try {
-        console.log("[Store] Deleting conversation:", id);
         const { error } = await apiRequest<{ success: boolean }>(
           `/chat/conversations/${id}`,
           { method: "DELETE" },
@@ -461,8 +442,6 @@ export const useChatStore = create<ChatState>()(
 
         if (error) {
           console.error("[Store] Failed to delete conversation:", error);
-        } else {
-          console.log("[Store] Conversation deleted");
         }
       } catch (error) {
         console.error("[Store] Error deleting conversation:", error);
@@ -532,11 +511,6 @@ export const useChatStore = create<ChatState>()(
         }
       }
 
-      console.log(
-        "[Store] Adding message to conversation:",
-        conversationId,
-        message.role,
-      );
       set({
         conversations: {
           ...conversations,
@@ -655,10 +629,6 @@ export const useChatStore = create<ChatState>()(
             },
           });
         } else {
-          console.log(
-            `[Store] Buffering out-of-order chunk ${chunkIndex} (expected ${expectedIndex}) for conversation:`,
-            conversationId,
-          );
           set({
             conversations: {
               ...conversations,
@@ -683,13 +653,6 @@ export const useChatStore = create<ChatState>()(
       const current = conversations[conversationId] ?? {
         ...defaultConversationState,
       };
-      console.log(
-        "[Store] Starting streaming for conversation:",
-        conversationId,
-        messageId,
-        "at chunk index:",
-        chunkIndex,
-      );
       const newMessage: ChatMessage = {
         id: messageId,
         role: "assistant",
@@ -778,11 +741,6 @@ export const useChatStore = create<ChatState>()(
         ),
       );
       if (!hasStreamingMessages && !current.streamingMessageId && !hasInProgressTools) return;
-
-      console.log(
-        "[Store] Marking complete for conversation:",
-        conversationId,
-      );
 
       const streamingId: string | null = current.streamingMessageId;
       let messages: ChatMessage[] = current.messages;
@@ -1278,10 +1236,6 @@ export const useChatStore = create<ChatState>()(
         }
       }
 
-      console.log(
-        "[Store] Set active tasks:",
-        Object.keys(activeTasksByConversation).length,
-      );
       set({
         activeTasksByConversation,
         conversations: updatedConversations,
@@ -1315,17 +1269,12 @@ export const useChatStore = create<ChatState>()(
     fetchIntegrations: async () => {
       const { user, organization } = useAuthStore.getState();
       if (!user || !organization) {
-        console.log("[Store] No user/org, skipping integrations fetch");
         return;
       }
 
       set({ integrationsLoading: true, integrationsError: null });
 
       try {
-        console.log(
-          "[Store] Fetching integrations for org:",
-          organization.id,
-        );
         const authHeaders: Record<string, string> =
           await getAuthenticatedRequestHeaders();
         const response = await fetch(
@@ -1393,7 +1342,6 @@ export const useChatStore = create<ChatState>()(
           displayName: i.display_name ?? null,
         }));
 
-        console.log("[Store] Fetched", integrations.length, "integrations");
         set({ integrations, integrationsLoading: false });
       } catch (error) {
         console.error("[Store] Error fetching integrations:", error);
@@ -1421,11 +1369,6 @@ export const useChatStore = create<ChatState>()(
 
     addMessage: (message) => {
       const { messages } = get();
-      console.log(
-        "[Store] Adding message (legacy):",
-        message.role,
-        message.id,
-      );
       set({ messages: [...messages, message] });
     },
 
@@ -1454,7 +1397,6 @@ export const useChatStore = create<ChatState>()(
 
     startStreamingMessage: (id, initialContent) => {
       const { messages } = get();
-      console.log("[Store] Starting streaming message (legacy):", id);
       const newMessage: ChatMessage = {
         id,
         role: "assistant",
@@ -1473,10 +1415,6 @@ export const useChatStore = create<ChatState>()(
 
     markMessageComplete: () => {
       const { messages, streamingMessageId } = get();
-      console.log(
-        "[Store] Marking message complete (legacy):",
-        streamingMessageId,
-      );
       if (!streamingMessageId) return;
       const updated = messages.map((msg) =>
         msg.id === streamingMessageId

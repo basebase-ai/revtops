@@ -13,7 +13,7 @@ const EXPECTED_ENV_VARS: ExpectedEnvVar[] = [
 export function logMissingEnvVars(): void {
   EXPECTED_ENV_VARS.forEach(({ key, value }) => {
     if (value === undefined || value === '') {
-      console.debug(`[env] Warning: expected environment variable ${key} is not set.`);
+      console.warn(`[env] Expected environment variable ${key} is not set.`);
     }
   });
 }

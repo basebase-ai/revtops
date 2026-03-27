@@ -313,7 +313,6 @@ export const useConnectedIntegrations = () =>
 
     // Remove legacy key so migration only runs once
     localStorage.removeItem(LEGACY_KEY);
-    console.log("[Store] Migrated legacy revtops-store to split stores");
   } catch {
     // Ignore parse errors — legacy key may be corrupted
   }

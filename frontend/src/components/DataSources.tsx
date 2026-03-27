@@ -680,7 +680,6 @@ export function DataSources(): JSX.Element {
         }))
         .filter((mapping) => mapping.source.toLowerCase().includes('slack'));
       setSlackMappings(mappingsFromIdentityTable);
-      console.log('[DataSources] Loaded Slack mappings from user_mappings_for_identity:', mappingsFromIdentityTable.length);
     } catch (error) {
       console.error('[DataSources] Failed to load Slack mappings:', error);
       setSlackMappingsError(error instanceof Error ? error.message : 'Unknown error');
@@ -912,8 +911,6 @@ export function DataSources(): JSX.Element {
       nango.openConnectUI({
         sessionToken: session_token,
         onEvent: async (event) => {
-          console.log('Nango event:', event);
-
           // Handle different possible event types from Nango
           const eventType = event.type as string;
           if (
@@ -925,7 +922,6 @@ export function DataSources(): JSX.Element {
             const eventData = event as { type: string; connectionId?: string; connection_id?: string; payload?: { connectionId?: string } };
             const nangoConnectionId = eventData.connectionId || eventData.connection_id || eventData.payload?.connectionId || connection_id;
 
-            console.log('Connection successful, confirming integration with connectionId:', nangoConnectionId);
             try {
               const confirmResponse = await fetch(`${API_BASE}/auth/integrations/confirm`, {
                 method: 'POST',
@@ -945,13 +941,7 @@ export function DataSources(): JSX.Element {
                 return;
               }
 
-              const confirmData = await confirmResponse.json() as {
-                status: string;
-                integration_id: string;
-                sharing_defaults: { share_synced_data: boolean; share_query_access: boolean; share_write_access: boolean };
-              };
-
-              console.log('Integration confirmed (using default sharing):', confirmData);
+              await confirmResponse.json();
               await fetchIntegrations();
             } catch (confirmError) {
               console.error('Error confirming integration:', confirmError);
@@ -1161,7 +1151,6 @@ export function DataSources(): JSX.Element {
         throw new Error((err as { detail?: string }).detail ?? 'Failed to save sharing settings');
       }
 
-      console.log('Sharing settings saved successfully');
       setSharingModal(null);
       void fetchIntegrations();
     } catch (error) {

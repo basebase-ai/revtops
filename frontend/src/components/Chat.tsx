@@ -577,7 +577,6 @@ export function Chat({
 
   // Handle tool approval (generic for all tools)
   const handleToolApprove = useCallback((operationId: string, options?: Record<string, unknown>) => {
-    console.log('[Chat] Approving tool operation:', operationId, options);
     const existing = toolApprovals.get(operationId);
     setToolApprovals((prev) => {
       const newMap = new Map(prev);
@@ -601,7 +600,6 @@ export function Chat({
 
   // Handle tool cancel (generic for all tools)
   const handleToolCancel = useCallback((operationId: string) => {
-    console.log('[Chat] Canceling tool operation:', operationId);
     const existing = toolApprovals.get(operationId);
     setToolApprovals((prev) => {
       const newMap = new Map(prev);
@@ -674,7 +672,6 @@ export function Chat({
   // When a new conversation is created, move pending messages to it
   useEffect(() => {
     if (localConversationId && pendingMessages.length > 0) {
-      console.log('[Chat] Moving pending messages to conversation:', localConversationId);
       for (const msg of pendingMessages) {
         addConversationMessage(localConversationId, msg);
       }
@@ -722,7 +719,6 @@ export function Chat({
     // The pending messages will be moved to this conversation by another effect
     // Use ref to avoid re-running effect when pendingMessages changes
     if (pendingMessagesRef.current.length > 0) {
-      console.log('[Chat] Skipping load - have pending messages to move');
       // New conversation created by this user — set creator to self
       setConversationCreatorId(userId ?? null);
       setIsLoading(false);
@@ -733,7 +729,6 @@ export function Chat({
     // (This handles both active tasks populating via WebSocket AND cached state)
     const existingState = useAppStore.getState().conversations[chatId];
     if (existingState && existingState.messages.length > 0) {
-      console.log('[Chat] Using existing state for conversation:', chatId);
       // Still set conversation metadata from recentChats (skipping API fetch skips this otherwise)
       const chatInfo = useAppStore.getState().recentChats.find(c => c.id === chatId);
       if (chatInfo) {
@@ -750,13 +745,11 @@ export function Chat({
     setIsLoading(true);
 
     const loadConversation = async (): Promise<void> => {
-      console.log('[Chat] Loading conversation:', chatId);
       try {
         const fetchConversationData = useAppStore.getState().fetchConversationData;
         const data = await fetchConversationData(chatId);
 
         if (cancelled) {
-          console.log('[Chat] Load cancelled - chatId changed');
           return;
         }
 
@@ -774,7 +767,6 @@ export function Chat({
               avatarUrl: p.avatar_url,
             }))
           );
-          console.log('[Chat] Loaded conversation, type:', data.type, 'scope:', data.scope);
 
           setTimeout(() => {
             messagesEndRef.current?.scrollIntoView({ behavior: 'instant' });
@@ -833,7 +825,6 @@ export function Chat({
       return;
     }
 
-    console.log('[Chat] Starting polling for workflow conversation');
     setIsWorkflowPolling(true);
     let pollCount = 0;
     const maxPolls = 300; // Poll for up to 10 minutes (300 * 2 seconds)
@@ -841,7 +832,6 @@ export function Chat({
     const pollInterval = setInterval(async () => {
       pollCount++;
       if (pollCount > maxPolls) {
-        console.log('[Chat] Stopping polling - max polls reached');
         setIsWorkflowPolling(false);
         clearInterval(pollInterval);
         return;
@@ -861,18 +851,8 @@ export function Chat({
           // Use ref to get current messages (avoids stale closure)
           const currentContent = JSON.stringify(messagesRef.current.map(m => m.contentBlocks));
           const newContent = JSON.stringify(loadedMessages.map(m => m.contentBlocks));
-          
-          // Debug: Log tool call status from API response
-          for (const msg of loadedMessages) {
-            for (const block of msg.contentBlocks || []) {
-              if (block.type === 'tool_use') {
-                console.log(`[Chat] Poll: tool ${block.name} status=${block.status}, result=`, block.result);
-              }
-            }
-          }
-          
+
           if (newContent !== currentContent) {
-            console.log('[Chat] Poll found updated content, updating UI');
             setConversationMessages(chatId, loadedMessages);
 
             // If any completed tool is write_to_system_of_record, refresh
@@ -905,7 +885,6 @@ export function Chat({
           const endsWithText: boolean = lastBlock?.type === 'text' && typeof lastBlock.text === 'string' && lastBlock.text.length > 0;
           const workflowDone: boolean = loadedMessages.length >= 2 && lastMsg?.role === 'assistant' && !hasRunningTools && endsWithText;
           if (workflowDone) {
-            console.log('[Chat] Stopping polling - workflow complete (ends with text, no running tools)');
             workflowDoneRef.current = true;
             setIsWorkflowPolling(false);
             clearInterval(pollInterval);
@@ -917,7 +896,6 @@ export function Chat({
     }, 2000); // Poll every 2 seconds
 
     return () => {
-      console.log('[Chat] Cleaning up workflow polling');
       setIsWorkflowPolling(false);
       clearInterval(pollInterval);
     };
@@ -1007,13 +985,10 @@ export function Chat({
     }, 500);
   }, []);
 
-  const sendChatMessage = useCallback((message: string, source: 'input' | 'suggestion' | 'auto'): void => {
+  const sendChatMessage = useCallback((message: string): void => {
     if ((!message.trim() && pendingAttachments.length === 0) || !isConnected) {
-      console.log(`[Chat] sendChatMessage blocked (${source}) - empty or not connected`);
       return;
     }
-
-    console.log(`[Chat] Sending message (${source}):`, message.substring(0, 30) + '...');
 
     // Build content blocks for local display
     const contentBlocks: ChatMessage['contentBlocks'] = [];
@@ -1092,7 +1067,6 @@ export function Chat({
       ...(!currentConvId ? { scope: newConversationScope } : {}),
     });
 
-    console.log(`[Chat] Sent to WebSocket (${source}) with ${attachmentIds.length} attachment(s) ${mentionsPayload ? `mentions=${mentionsPayload.length}` : ''}`);
     setInput('');
     setMessageMentions([]);
     setPendingAttachments([]);
@@ -1125,7 +1099,7 @@ export function Chat({
           .map((b) => b.text)
           .join('');
         if (text.trim()) {
-          sendChatMessage(text, 'input');
+          sendChatMessage(text);
           return;
         }
       }
@@ -1135,9 +1109,6 @@ export function Chat({
   // Consume pending chat input (from Search "Ask about" button or pipeline deal click)
   useEffect(() => {
     if (!pendingChatInput) {
-      if (pendingAutoSendRef.current !== null) {
-        console.log('[Chat] Clearing pending auto-send guard');
-      }
       pendingAutoSendRef.current = null;
       return;
     }
@@ -1147,21 +1118,15 @@ export function Chat({
     }
 
     setInput(pendingChatInput);
-    console.log('[Chat] Pending chat input received', {
-      autoSend: pendingChatAutoSend,
-      connected: isConnected,
-    });
 
     if (pendingChatAutoSend) {
       if (pendingAutoSendRef.current === pendingChatInput) {
-        console.log('[Chat] Pending chat input already auto-sent, skipping duplicate send');
         return;
       }
 
       if (isConnected) {
-        console.log('[Chat] Auto-sending pending chat input');
         pendingAutoSendRef.current = pendingChatInput;
-        sendChatMessage(pendingChatInput, 'auto');
+        sendChatMessage(pendingChatInput);
         setPendingChatInput(null);
         setPendingChatAutoSend(false);
       } else {
@@ -1189,7 +1154,7 @@ export function Chat({
   ]);
 
   const handleSend = useCallback((): void => {
-    sendChatMessage(input, 'input');
+    sendChatMessage(input);
   }, [input, sendChatMessage]);
 
   const selectMention = useCallback(
@@ -1358,11 +1323,9 @@ export function Chat({
 
   const handleStop = useCallback((): void => {
     if (!activeTaskId) {
-      console.log('[Chat] handleStop blocked - no active task');
       return;
     }
-    
-    console.log('[Chat] Stopping task:', activeTaskId);
+
     sendMessage({
       type: 'cancel',
       task_id: activeTaskId,
@@ -1401,10 +1364,9 @@ export function Chat({
   }, [previewHeight]);
 
   const handleSuggestionClick = (text: string): void => {
-    console.log('[Chat] Suggestion clicked - sending immediately');
     setInput(text);
     inputRef.current?.focus();
-    sendChatMessage(text, 'suggestion');
+    sendChatMessage(text);
   };
 
   // Copy conversation to clipboard
@@ -2009,7 +1971,7 @@ export function Chat({
                   const activeApp = conversationApps.find((a) => a.id === previewAppId) ?? conversationApps[conversationApps.length - 1];
                   if (activeApp) {
                     const fixPrompt = `The app "${activeApp.title}" has a compile/runtime error. Please fix it and create an updated version.\n\nError:\n\`\`\`\n${errorMsg}\n\`\`\``;
-                    sendChatMessage(fixPrompt, 'input');
+                    sendChatMessage(fixPrompt);
                   }
                 }}
                 height={previewHeight}

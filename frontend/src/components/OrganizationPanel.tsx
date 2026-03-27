@@ -1489,7 +1489,6 @@ function CreditDetailsModal({ organizationHandle, details, loading, onClose }: C
                   <button
                     type="button"
                     onClick={() => {
-                      console.debug('[CreditDetails] Resetting credit usage chart range to billing period data range');
                       setChartRange(availableBillingPeriodRange);
                     }}
                     disabled={!availableBillingPeriodRange}

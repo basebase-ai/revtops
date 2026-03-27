@@ -625,7 +625,6 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
       const parsed = JSON.parse(message) as WsMessage;
       if (source === 'ws' && shouldBroadcastWebSocket(parsed.type)) {
         if (crossTab.isAvailable) {
-          console.log('[AppLayout] Broadcasting WebSocket event to other tabs:', parsed.type);
           crossTab.postMessage({
             kind: 'ws-event',
             payload: { message },
@@ -635,7 +634,6 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
       
       switch (parsed.type) {
         case 'active_tasks': {
-          console.log('[AppLayout] Received active tasks:', parsed.tasks.length);
           // Reconcile: clear any local active tasks the server no longer reports as running
           // (task completed while client was disconnected)
           const localActive = useAppStore.getState().activeTasksByConversation;
@@ -661,7 +659,6 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
         }
         
         case 'task_started': {
-          console.log('[AppLayout] Task started:', parsed.task_id, 'for conversation:', parsed.conversation_id);
           setConversationActiveTask(parsed.conversation_id, parsed.task_id);
           setConversationThinking(parsed.conversation_id, true);
           break;
@@ -1113,7 +1110,6 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
 
         case 'task_complete': {
           const taskComplete = parsed as WsTaskComplete;
-          console.log('[AppLayout] Task complete:', taskComplete.task_id, 'status:', taskComplete.status);
           setConversationActiveTask(taskComplete.conversation_id, null);
           setConversationThinking(taskComplete.conversation_id, false);
           markConversationMessageComplete(taskComplete.conversation_id);
@@ -1170,7 +1166,6 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
           const title = created.title || 'New Chat';
           const scope: 'private' | 'shared' =
             created.scope === 'private' ? 'private' : 'shared';
-          console.log('[AppLayout] Conversation created:', created.conversation_id, 'title:', title);
           addConversation(created.conversation_id, title, scope);
           if (source === 'ws') {
             // Only update currentChatId when on new chat (null) - we're waiting for the backend
@@ -1185,7 +1180,6 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
         
         case 'catchup': {
           const catchup = parsed as WsCatchup;
-          console.log('[AppLayout] Catchup for task:', catchup.task_id, 'chunks:', catchup.chunks.length);
           const conversationId: string | null =
             catchup.conversation_id ??
             Object.entries(useAppStore.getState().activeTasksByConversation).find(
@@ -1438,7 +1432,6 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
         
         case 'crm_approval_result':
         case 'tool_approval_result': {
-          console.log('[AppLayout] Tool approval result:', parsed.operation_id, parsed.type);
           setCrmApprovalResults((prev) => {
             const next = new Map(prev);
             next.set(parsed.operation_id, parsed);
@@ -1467,12 +1460,10 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
           
           // Skip if this is our own message (already added optimistically)
           if (sender_user_id === currentUserId) {
-            console.log('[AppLayout] Skipping own message broadcast');
             break;
           }
           
           if (conversation_id && message) {
-            console.log('[AppLayout] New message from participant:', sender_user_id, 'in conversation:', conversation_id);
             // Convert API message format to store format
             const chatMessage: ChatMessage = {
               id: message.id,
@@ -1555,12 +1546,10 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
   // Cross-tab sync for optimistic UI and streamed updates
   useEffect(() => {
     if (!crossTab.isAvailable) {
-      console.log('[AppLayout] Cross-tab sync unavailable (BroadcastChannel not supported)');
       return;
     }
     return subscribeCrossTab((event) => {
       if (event.kind === 'ws-event') {
-        console.log('[AppLayout] Cross-tab WebSocket event received:', event.payload.message);
         handleWebSocketMessage(event.payload.message, 'broadcast');
         return;
       }
@@ -1571,10 +1560,8 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
         const existingMessages = state.conversations[conversationId]?.messages ?? [];
         const alreadyPresent = existingMessages.some((msg) => msg.id === message.id);
         if (alreadyPresent) {
-          console.log('[AppLayout] Skipping duplicate optimistic message:', message.id);
           return;
         }
-        console.log('[AppLayout] Applying optimistic message from another tab:', message.id);
         addConversationMessage(conversationId, message);
         if (setThinking) {
           setConversationThinking(conversationId, true);
@@ -1589,8 +1576,6 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
     user ? '/ws/chat' : '',
     {
       onMessage: (message) => handleWebSocketMessage(message, 'ws'),
-      onConnect: () => console.log('[AppLayout] WebSocket connected'),
-      onDisconnect: () => console.log('[AppLayout] WebSocket disconnected'),
     },
     organization?.id ?? '',
   );

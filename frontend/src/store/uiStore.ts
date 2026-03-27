@@ -107,12 +107,6 @@ export const useUIStore = create<UIState>()(
         const updated = isPinned
           ? pinnedChatIds.filter((chatId) => chatId !== id)
           : [id, ...pinnedChatIds];
-        console.log(
-          "[Store] Toggling chat pin:",
-          id,
-          "Pinned:",
-          !isPinned,
-        );
         set({ pinnedChatIds: updated });
       },
       setTheme: (theme) => set({ theme }),

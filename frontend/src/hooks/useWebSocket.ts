@@ -18,7 +18,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { getAuthenticatedWsUrl, isProduction } from '../lib/api';
+import { getAuthenticatedWsUrl } from '../lib/api';
 
 interface UseWebSocketOptions {
   /** Callback called immediately for each message received */
@@ -77,12 +77,9 @@ export function useWebSocket(path: string, options?: UseWebSocketOptions, reconn
       return;
     }
 
-    console.log('[WebSocket] Connecting:', isProduction ? 'production' : 'dev', path);
-    
     const ws = new WebSocket(wsUrl);
 
     ws.onopen = (): void => {
-      console.log('[WebSocket] Connected');
       setIsConnected(true);
       setConnectionState('connected');
       reconnectAttemptsRef.current = 0;
@@ -100,7 +97,6 @@ export function useWebSocket(path: string, options?: UseWebSocketOptions, reconn
     };
 
     ws.onclose = (event): void => {
-      console.log('[WebSocket] Disconnected:', event.code, event.reason);
       setIsConnected(false);
       setConnectionState('disconnected');
       wsRef.current = null;
@@ -117,7 +113,6 @@ export function useWebSocket(path: string, options?: UseWebSocketOptions, reconn
         const delay = Math.min(1000 * Math.pow(2, reconnectAttemptsRef.current), 30000);
         reconnectAttemptsRef.current += 1;
 
-        console.log(`[WebSocket] Reconnecting in ${delay}ms (attempt ${reconnectAttemptsRef.current})`);
         reconnectTimeoutRef.current = window.setTimeout(() => {
           void connect();
         }, delay);

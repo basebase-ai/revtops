@@ -71,7 +71,6 @@ export function Data(): JSX.Element {
         if (apiError || !result) {
           throw new Error(apiError || 'Failed to fetch data summary');
         }
-        console.debug('[Data] Loaded table summary', result.tables.length);
         setTables(result.tables);
       } catch (err) {
         console.error('Error fetching data summary:', err);
@@ -128,7 +127,6 @@ export function Data(): JSX.Element {
         responses.forEach(([target, result]) => {
           nextDataByTarget[target] = result;
         });
-        console.debug('[Data] Loaded data targets', Object.keys(nextDataByTarget));
         setDataByTarget(nextDataByTarget);
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Unknown error');

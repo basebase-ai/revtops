@@ -108,11 +108,6 @@ export const useAuthStore = create<AuthState>()(
           }),
         );
 
-        console.log(
-          "[Store] Fetched",
-          organizations.length,
-          "user organizations",
-        );
         set({ organizations });
       },
 
@@ -177,7 +172,6 @@ export const useAuthStore = create<AuthState>()(
           currentArtifactId: null,
         });
 
-        console.log("[Store] Switched active organization to:", orgId);
       },
 
       logout: () => {
@@ -221,7 +215,6 @@ export const useAuthStore = create<AuthState>()(
           return;
         }
 
-        console.log("[Store] Starting masquerade as:", targetUser.email);
         set({
           masquerade: {
             originalUser: user,
@@ -249,10 +242,6 @@ export const useAuthStore = create<AuthState>()(
         const { masquerade } = get();
         if (!masquerade) return;
 
-        console.log(
-          "[Store] Exiting masquerade, returning to:",
-          masquerade.originalUser.email,
-        );
         set({
           user: masquerade.originalUser,
           organization: masquerade.originalOrganization,
@@ -276,12 +265,6 @@ export const useAuthStore = create<AuthState>()(
         if (!user) return null;
 
         try {
-          console.log(
-            "[Store] Syncing user to backend:",
-            user.id,
-            user.email,
-            organization?.id,
-          );
           const authHeaders: Record<string, string> =
             await getAuthenticatedRequestHeaders();
           const response = await fetch(`${API_BASE}/auth/users/sync`, {
@@ -301,7 +284,6 @@ export const useAuthStore = create<AuthState>()(
 
           if (!response.ok) {
             if (response.status === 403) {
-              console.log("[Store] User not on waitlist");
               return "not_registered";
             }
             const errorData = (await response.json().catch(() => ({}))) as {
@@ -328,11 +310,6 @@ export const useAuthStore = create<AuthState>()(
               handle?: string | null;
             } | null;
           };
-          console.log(
-            "[Store] User synced successfully, status:",
-            data.status,
-          );
-
           const newRoles = data.roles ?? [];
           const newSmsConsent = data.sms_consent ?? user.smsConsent;
           const newWhatsappConsent = data.whatsapp_consent ?? user.whatsappConsent;

@@ -77,7 +77,6 @@ function App(): JSX.Element {
         const hasPersistedUser = currentUser && currentOrg;
         
         if (hasPersistedUser) {
-          console.log('[Auth] User in store, showing app while syncing...');
           setScreen('app');
           setIsLoading(false);
         }
@@ -88,7 +87,6 @@ function App(): JSX.Element {
           // If masquerading, preserve the masquerade state - don't overwrite with Supabase user
           const masquerade = useAppStore.getState().masquerade;
           if (masquerade) {
-            console.log('[Auth] Masquerade active, preserving masquerade state');
             // Don't call handleAuthenticatedUser - keep the masqueraded user/org
           } else {
             // Always sync with backend to get fresh data (including avatar_url).
@@ -133,21 +131,17 @@ function App(): JSX.Element {
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       async (event: AuthChangeEvent, session: Session | null) => {
-        console.log('[Auth] Event:', event, 'hasSession:', !!session);
-        
         // Only handle actual sign-in/sign-out events, not token refreshes
         if (event === 'SIGNED_IN' && session?.user) {
           // Skip if masquerading - don't overwrite masquerade state
           const masquerade = useAppStore.getState().masquerade;
           if (masquerade) {
-            console.log('[Auth] Masquerade active, ignoring SIGNED_IN event');
             return;
           }
           
           // Skip if user is already authenticated (this is just a token refresh)
           const currentUser = useAppStore.getState().user;
           if (currentUser?.id === session.user.id) {
-            console.log('[Auth] Token refresh, skipping re-auth');
             return;
           }
           

@@ -76,7 +76,6 @@ interface WorkflowListResponse {
 
 // Fetch workflows for the organization
 async function fetchWorkflows(orgId: string, archived = false): Promise<Workflow[]> {
-  console.debug('[Workflows] Fetching workflows', { orgId, archived });
   const { data, error } = await apiRequest<WorkflowListResponse>(`/workflows/${orgId}?archived=${archived}`);
   if (error || !data) throw new Error(error ?? 'Failed to fetch workflows');
   return data.workflows;
@@ -708,7 +707,6 @@ function WorkflowModal({
   useEffect(() => {
     if (isEditMode) return;
 
-    console.debug('[Workflows] Persisting workflow create draft');
     saveWorkflowDraft(organization?.id, {
       name,
       description,
