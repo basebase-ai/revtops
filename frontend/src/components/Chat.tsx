@@ -3820,7 +3820,7 @@ function ChatAttachmentImageThumbnail({
   if (!objectUrl) {
     return (
       <div
-        className="flex-shrink-0 w-[72px] h-[72px] rounded-md bg-surface-700/80 animate-pulse border border-surface-600"
+        className="w-full aspect-[4/3] rounded-md bg-surface-700/80 animate-pulse border border-surface-600"
         aria-hidden
       />
     );
@@ -3829,7 +3829,7 @@ function ChatAttachmentImageThumbnail({
     <img
       src={objectUrl}
       alt=""
-      className="flex-shrink-0 w-[72px] h-[72px] rounded-md object-cover border border-surface-600"
+      className="w-full aspect-[4/3] rounded-md object-cover object-left-top"
     />
   );
 }
@@ -3872,50 +3872,78 @@ function AttachmentCard({
   const isClickable: boolean = Boolean(attachmentId && onClick);
   const showImageThumb: boolean = mimeType.startsWith('image/') && Boolean(attachmentId);
 
-  const baseClasses: string = showImageThumb
-    ? "relative group inline-flex items-center gap-3 rounded-xl bg-surface-800 border border-surface-700 px-3 py-2 max-w-[min(100%,300px)]"
-    : "relative group inline-flex items-center gap-2.5 rounded-xl bg-surface-800 border border-surface-700 px-3 py-2 max-w-[220px]";
-  const clickableClasses: string = isClickable
-    ? " cursor-pointer hover:bg-surface-750 hover:border-surface-600 transition-colors"
-    : "";
+  const clickHandler = isClickable ? onClick : undefined;
+  const keyHandler =
+    isClickable && onClick
+      ? (e: React.KeyboardEvent) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            onClick();
+          }
+        }
+      : undefined;
 
+  // Full-bleed image card: image fills the tile, filename overlaid
+  if (showImageThumb && attachmentId) {
+    return (
+      <div
+        className={`relative group rounded-xl overflow-hidden border border-surface-700 w-[180px] ${isClickable ? "cursor-pointer hover:border-surface-500 transition-colors" : ""}`}
+        role={isClickable ? "button" : undefined}
+        tabIndex={isClickable ? 0 : undefined}
+        onClick={clickHandler}
+        onKeyDown={keyHandler}
+      >
+        <ChatAttachmentImageThumbnail attachmentId={attachmentId} mimeType={mimeType} />
+        {/* Filename overlay with readable text treatment */}
+        <div className="absolute inset-x-0 bottom-0 px-2 py-1.5 bg-gradient-to-t from-black/70 to-transparent">
+          <span
+            className="text-[11px] font-medium text-white truncate block"
+            style={{ textShadow: '0 1px 3px rgba(0,0,0,0.8)' }}
+          >
+            {filename}
+          </span>
+          <span
+            className="text-[9px] text-white/70 block"
+            style={{ textShadow: '0 1px 2px rgba(0,0,0,0.8)' }}
+          >
+            {sizeStr}
+          </span>
+        </div>
+        {onRemove && (
+          <button
+            type="button"
+            onClick={(e: React.MouseEvent) => { e.stopPropagation(); onRemove(); }}
+            className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-surface-700 border border-surface-600 text-surface-400 hover:text-surface-100 hover:bg-surface-600 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+          >
+            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  // Non-image attachment card (unchanged layout)
   return (
     <div
-      className={baseClasses + clickableClasses}
+      className={`relative group inline-flex items-center gap-2.5 rounded-xl bg-surface-800 border border-surface-700 px-3 py-2 max-w-[220px]${isClickable ? " cursor-pointer hover:bg-surface-750 hover:border-surface-600 transition-colors" : ""}`}
       role={isClickable ? "button" : undefined}
       tabIndex={isClickable ? 0 : undefined}
-      onClick={isClickable ? onClick : undefined}
-      onKeyDown={
-        isClickable && onClick
-          ? (e: React.KeyboardEvent) => {
-              if (e.key === "Enter" || e.key === " ") {
-                e.preventDefault();
-                onClick();
-              }
-            }
-          : undefined
-      }
+      onClick={clickHandler}
+      onKeyDown={keyHandler}
     >
-      {showImageThumb && attachmentId ? (
-        <ChatAttachmentImageThumbnail attachmentId={attachmentId} mimeType={mimeType} />
-      ) : (
-        <div className={`flex-shrink-0 w-9 h-9 rounded-lg flex items-center justify-center text-[10px] font-bold ${iconColor}`}>
-          {label}
-        </div>
-      )}
-      {/* Name + size */}
+      <div className={`flex-shrink-0 w-9 h-9 rounded-lg flex items-center justify-center text-[10px] font-bold ${iconColor}`}>
+        {label}
+      </div>
       <div className="min-w-0 flex flex-col">
         <span className="text-xs text-surface-200 font-medium truncate">{filename}</span>
         <span className="text-[10px] text-surface-500">{sizeStr}</span>
       </div>
-      {/* Remove button (only for pending) */}
       {onRemove && (
         <button
           type="button"
-          onClick={(e: React.MouseEvent) => {
-            e.stopPropagation();
-            onRemove();
-          }}
+          onClick={(e: React.MouseEvent) => { e.stopPropagation(); onRemove(); }}
           className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-surface-700 border border-surface-600 text-surface-400 hover:text-surface-100 hover:bg-surface-600 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
         >
           <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
