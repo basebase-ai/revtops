@@ -52,6 +52,17 @@ _CREATE_ISSUE_KWARGS: frozenset[str] = frozenset({
     "attachment_ids",
 })
 
+_UPDATE_ISSUE_KWARGS: frozenset[str] = frozenset({
+    "issue_identifier",
+    "title",
+    "description",
+    "state_name",
+    "priority",
+    "assignee_name",
+    "conversation_id",
+    "attachment_ids",
+})
+
 # Event type emitted when an issue is moved to Done (used by webhook route and handle_event)
 LINEAR_ISSUE_DONE_EVENT: str = "linear.issue.done"
 
@@ -128,6 +139,13 @@ class LinearConnector(BaseConnector):
                     {"name": "state_name", "type": "string", "required": False, "description": "New state name"},
                     {"name": "priority", "type": "integer", "required": False, "description": "Priority 0-4"},
                     {"name": "assignee_name", "type": "string", "required": False, "description": "Assignee display name"},
+                    {
+                        "name": "attachment_ids",
+                        "type": "array",
+                        "required": False,
+                        "description": "UUIDs of chat_attachments; uploads to Linear and appends markdown to the issue description. "
+                        "conversation_id is injected in chat. Combine with description to replace body, or omit description to append to the current issue text.",
+                    },
                 ],
             ),
         ],
@@ -163,6 +181,7 @@ Use `write_on_connector(connector='linear', operation='...', data={...})` with `
 | state_name | string | No | New state (e.g. `Done`, `In Progress`) |
 | priority | integer | No | 0-4 |
 | assignee_name | string | No | New assignee display name |
+| attachment_ids | array | No | Same as `create_issue`: uploads chat files to Linear and **appends** markdown to the description. If you also pass `description`, that string is used as the base (then attachments are appended). If you omit `description`, the current issue description is fetched and attachments are appended. `conversation_id` is injected in chat. |
 
 ### Finding team keys and identifiers
 
@@ -694,6 +713,45 @@ Use `write_on_connector(connector='linear', operation='...', data={...})` with `
             ordered.append((row.filename, row.mime_type, row.content))
         return ordered
 
+    async def _markdown_block_from_chat_attachments(
+        self,
+        *,
+        conversation_id: str | None,
+        attachment_ids: Any | None,
+    ) -> str | None:
+        """Upload chat attachment bytes to Linear; return markdown (images/links) or None."""
+        norm_attachment_ids: list[str] = _normalize_uuid_string_list(attachment_ids)
+        if not norm_attachment_ids:
+            return None
+        if not conversation_id or not str(conversation_id).strip():
+            logger.warning(
+                "[linear] attachment_ids provided without conversation_id; skipping uploads",
+            )
+            return None
+        rows: list[tuple[str, str, bytes]] = await self._load_chat_attachments_for_issue(
+            conversation_id=str(conversation_id).strip(),
+            attachment_ids=norm_attachment_ids,
+        )
+        if not rows:
+            return None
+        asset_lines: list[str] = []
+        for fname, mime, content in rows:
+            try:
+                asset_url: str = await self._upload_bytes_to_linear(
+                    data=content,
+                    filename=fname,
+                    content_type=mime or "application/octet-stream",
+                )
+            except Exception as exc:
+                logger.error("[linear] Failed to upload attachment %s: %s", fname, exc)
+                continue
+            alt: str = _safe_markdown_alt_text(fname)
+            if mime.lower().startswith("image/"):
+                asset_lines.append(f"![{alt}]({asset_url})")
+            else:
+                asset_lines.append(f"[{alt}]({asset_url})")
+        return "\n\n".join(asset_lines) if asset_lines else None
+
     # ── Write: Dispatch ─────────────────────────────────────────────────
 
     async def write(self, operation: str, data: dict[str, Any]) -> dict[str, Any]:
@@ -704,7 +762,10 @@ Use `write_on_connector(connector='linear', operation='...', data={...})` with `
             }
             return await self.create_issue(**filtered)
         if operation == "update_issue":
-            return await self.update_issue(**data)
+            filtered_update: dict[str, Any] = {
+                k: v for k, v in data.items() if k in _UPDATE_ISSUE_KWARGS
+            }
+            return await self.update_issue(**filtered_update)
         raise ValueError(f"Unknown write operation: {operation}")
 
     # ── Write: Create Issue ──────────────────────────────────────────────
@@ -730,43 +791,16 @@ Use `write_on_connector(connector='linear', operation='...', data={...})` with `
         uploaded via Linear ``fileUpload`` and embedded in the description.
         """
         description_out: str | None = description
-        norm_attachment_ids: list[str] = _normalize_uuid_string_list(attachment_ids)
-        if norm_attachment_ids:
-            if not conversation_id or not str(conversation_id).strip():
-                logger.warning(
-                    "[linear] attachment_ids provided without conversation_id; skipping uploads",
-                )
-            else:
-                rows: list[tuple[str, str, bytes]] = await self._load_chat_attachments_for_issue(
-                    conversation_id=str(conversation_id).strip(),
-                    attachment_ids=norm_attachment_ids,
-                )
-                if rows:
-                    asset_lines: list[str] = []
-                    for fname, mime, content in rows:
-                        try:
-                            asset_url: str = await self._upload_bytes_to_linear(
-                                data=content,
-                                filename=fname,
-                                content_type=mime or "application/octet-stream",
-                            )
-                        except Exception as exc:
-                            logger.error(
-                                "[linear] Failed to upload attachment %s: %s", fname, exc,
-                            )
-                            continue
-                        alt: str = _safe_markdown_alt_text(fname)
-                        if mime.lower().startswith("image/"):
-                            asset_lines.append(f"![{alt}]({asset_url})")
-                        else:
-                            asset_lines.append(f"[{alt}]({asset_url})")
-                    if asset_lines:
-                        block: str = "\n\n".join(asset_lines)
-                        description_out = (
-                            f"{description_out.rstrip()}\n\n{block}"
-                            if description_out
-                            else block
-                        )
+        attach_block: str | None = await self._markdown_block_from_chat_attachments(
+            conversation_id=conversation_id,
+            attachment_ids=attachment_ids,
+        )
+        if attach_block:
+            description_out = (
+                f"{description_out.rstrip()}\n\n{attach_block}"
+                if description_out
+                else attach_block
+            )
 
         # Resolve team_key → team_id (required)
         team: dict[str, Any] | None = await self.resolve_team_by_key(team_key)
@@ -871,11 +905,15 @@ Use `write_on_connector(connector='linear', operation='...', data={...})` with `
         state_name: str | None = None,
         priority: int | None = None,
         assignee_name: str | None = None,
+        conversation_id: str | None = None,
+        attachment_ids: Any | None = None,
     ) -> dict[str, Any]:
         """Update an existing issue in Linear via the issueUpdate mutation.
 
         Accepts human-friendly parameters (issue_identifier, state_name, assignee_name)
         and resolves them to Linear IDs internally.
+        Optional ``attachment_ids`` upload chat files and append markdown to the description
+        (after any explicit ``description``, or after the current issue body if omitted).
         """
         # Resolve issue_identifier → issue_id
         issue_data: dict[str, Any] | None = await self.resolve_issue_by_identifier(issue_identifier)
@@ -883,6 +921,22 @@ Use `write_on_connector(connector='linear', operation='...', data={...})` with `
             raise ValueError(f"Issue '{issue_identifier}' not found")
         issue_id: str = issue_data["id"]
         team_id: str = issue_data["team"]["id"]
+
+        attach_block: str | None = await self._markdown_block_from_chat_attachments(
+            conversation_id=conversation_id,
+            attachment_ids=attachment_ids,
+        )
+        effective_description: str | None = description
+        if attach_block is not None:
+            base_desc: str = (
+                description
+                if description is not None
+                else (issue_data.get("description") or "")
+            )
+            if base_desc.strip():
+                effective_description = f"{base_desc.rstrip()}\n\n{attach_block}"
+            else:
+                effective_description = attach_block
 
         # Resolve optional state_name → state_id
         state_id: str | None = None
@@ -905,8 +959,8 @@ Use `write_on_connector(connector='linear', operation='...', data={...})` with `
         input_fields: dict[str, Any] = {}
         if title is not None:
             input_fields["title"] = title
-        if description is not None:
-            input_fields["description"] = description
+        if effective_description is not None:
+            input_fields["description"] = effective_description
         if state_id is not None:
             input_fields["stateId"] = state_id
         if priority is not None:
@@ -1366,6 +1420,7 @@ Use `write_on_connector(connector='linear', operation='...', data={...})` with `
                 issue(id: $identifier) {
                     id
                     identifier
+                    description
                     team { id key }
                 }
             }

@@ -3687,7 +3687,7 @@ function ThinkingIndicator(): JSX.Element {
           <span className={`${CHAT_MSG_NAME} !leading-none`}>{APP_NAME}</span>
           <span className={CHAT_MSG_APP_BADGE}>AGENT</span>
         </div>
-        <span className="text-xs leading-none text-surface-400 animate-shimmer mt-1">Getting ready…</span>
+        <span className="mt-px text-xs leading-none text-surface-400 animate-shimmer">Getting ready…</span>
       </div>
     </div>
   );

@@ -2476,9 +2476,22 @@ async def _execute_linear_update(
         raise ValueError("issue_identifier is required (e.g. 'ENG-123')")
 
     update_fields: list[str] = ["title", "description", "state_name", "priority", "assignee_name"]
-    has_update: bool = any(record.get(f) is not None for f in update_fields)
-    if not has_update:
-        raise ValueError("At least one field to update must be provided (title, description, state_name, priority, assignee_name)")
+    has_scalar_update: bool = any(record.get(f) is not None for f in update_fields)
+    raw_attachments: Any = record.get("attachment_ids")
+    has_attachments: bool
+    if raw_attachments is None:
+        has_attachments = False
+    elif isinstance(raw_attachments, list):
+        has_attachments = any(
+            x is not None and str(x).strip() for x in raw_attachments
+        )
+    else:
+        has_attachments = bool(str(raw_attachments).strip())
+    if not has_scalar_update and not has_attachments:
+        raise ValueError(
+            "At least one field to update must be provided "
+            "(title, description, state_name, priority, assignee_name, or attachment_ids)",
+        )
 
     logger.info(
         "[Tools._execute_linear_update] Updating Linear issue identifier=%s",
@@ -2491,6 +2504,8 @@ async def _execute_linear_update(
         state_name=record.get("state_name"),
         priority=record.get("priority"),
         assignee_name=record.get("assignee_name"),
+        conversation_id=record.get("conversation_id"),
+        attachment_ids=record.get("attachment_ids"),
     )
     return issue
 

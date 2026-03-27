@@ -15,7 +15,7 @@ import json
 import logging
 import re
 from datetime import UTC, datetime
-from typing import Any, AsyncGenerator
+from typing import Any, AsyncGenerator, Sequence
 from uuid import UUID, uuid4
 
 from anthropic import APIStatusError, AsyncAnthropic
@@ -24,6 +24,7 @@ from sqlalchemy import select, update
 from agents.registry import format_tool_status
 from agents.tools import execute_tool, get_tools
 from config import settings
+from models.chat_attachment import ChatAttachment
 from models.chat_message import ChatMessage
 from models.conversation import Conversation
 from models.database import get_session
@@ -34,6 +35,18 @@ logger = logging.getLogger(__name__)
 
 # Hard timeout for a single tool run so the UI always gets a result (no infinite "Running")
 _TOOL_EXECUTION_TIMEOUT_SECONDS: float = 600.0  # 10 minutes
+
+
+def _linear_attachment_tool_hint(attachment_ids: Sequence[str]) -> str:
+    """Instruction appended for the model so write_on_connector can pass Linear attachment_ids."""
+    quoted_ids: str = ", ".join(f'"{aid}"' for aid in attachment_ids)
+    return (
+        "\n\n[When a Linear issue should include the user's attached file(s), "
+        f"add to the `data` object of write_on_connector: `attachment_ids`: [{quoted_ids}]. "
+        'Use `connector`: "linear" and `operation`: "create_issue" (new issue) or "update_issue" '
+        "(with `issue_identifier`) to append files to an existing issue's description. "
+        "`conversation_id` is injected automatically in chat — include `attachment_ids` whenever those files belong on the issue.]"
+    )
 
 
 def _format_slack_scope_context(
@@ -867,7 +880,6 @@ class ChatOrchestrator:
         attachment_meta: list[dict[str, Any]] = []
         pre_generated_message_id: UUID | None = None
         if attachment_ids:
-            from models.chat_attachment import ChatAttachment
             from services.file_handler import retrieve_file, StoredFile
 
             pre_generated_message_id = uuid4()
@@ -908,13 +920,8 @@ class ChatOrchestrator:
 
         text_for_model: str = user_message
         if attachment_meta:
-            quoted_ids: str = ", ".join(f'"{m["attachment_id"]}"' for m in attachment_meta)
-            text_for_model = (
-                f"{user_message}\n\n[When creating a Linear issue that should include the user’s attached file(s), "
-                f"add to the `data` object of write_on_connector: `attachment_ids`: [{quoted_ids}]. "
-                'Use `connector`: "linear" and `operation`: "create_issue". '
-                "`conversation_id` is injected automatically in chat — include `attachment_ids` whenever those files belong on the issue.]"
-            )
+            meta_ids: list[str] = [str(m["attachment_id"]) for m in attachment_meta]
+            text_for_model = user_message + _linear_attachment_tool_hint(meta_ids)
 
         # Skip history DB call for new conversations (zero messages to load).
         if skip_history:
@@ -1720,12 +1727,77 @@ class ChatOrchestrator:
                 blocks = msg.content_blocks if msg.content_blocks else msg._legacy_to_blocks()
                 
                 if msg.role == "user":
-                    # User messages: extract text content
-                    text_content = ""
-                    for block in blocks:
-                        if block.get("type") == "text":
-                            text_content += block.get("text", "")
-                    if text_content:
+                    # User messages: preserve attachment metadata + reload bytes for multimodal context
+                    text_content: str = "".join(
+                        block.get("text", "")
+                        for block in blocks
+                        if block.get("type") == "text"
+                    )
+                    attachment_id_strings: list[str] = [
+                        str(block["attachment_id"])
+                        for block in blocks
+                        if block.get("type") == "attachment" and block.get("attachment_id")
+                    ]
+                    if attachment_id_strings and msg.conversation_id is not None:
+                        from services.file_handler import StoredFile, build_claude_content_blocks
+
+                        uuid_list: list[UUID] = []
+                        for s in attachment_id_strings:
+                            try:
+                                uuid_list.append(UUID(s))
+                            except ValueError:
+                                logger.warning(
+                                    "[_load_history] Invalid attachment_id on message %s: %s",
+                                    msg.id,
+                                    s,
+                                )
+                        media_blocks: list[dict[str, Any]] = []
+                        if uuid_list:
+                            stmt_att = (
+                                select(ChatAttachment)
+                                .where(ChatAttachment.conversation_id == msg.conversation_id)
+                                .where(ChatAttachment.id.in_(uuid_list))
+                            )
+                            att_result = await session.execute(stmt_att)
+                            by_att_id: dict[UUID, ChatAttachment] = {
+                                row.id: row for row in att_result.scalars().all()
+                            }
+                            stored_for_claude: list[StoredFile] = []
+                            for uid in uuid_list:
+                                row_att: ChatAttachment | None = by_att_id.get(uid)
+                                if row_att is None:
+                                    logger.warning(
+                                        "[_load_history] Missing ChatAttachment %s for message %s",
+                                        uid,
+                                        msg.id,
+                                    )
+                                    continue
+                                stored_for_claude.append(
+                                    StoredFile(
+                                        upload_id=str(row_att.id),
+                                        filename=row_att.filename,
+                                        mime_type=row_att.mime_type,
+                                        size=row_att.size,
+                                        data=row_att.content,
+                                    )
+                                )
+                            if stored_for_claude:
+                                media_blocks = build_claude_content_blocks(stored_for_claude)
+
+                        hint: str = _linear_attachment_tool_hint(attachment_id_strings)
+                        body_text: str = (
+                            text_content + hint
+                            if text_content.strip()
+                            else f"(see attached files){hint}"
+                        )
+                        if media_blocks:
+                            history.append({
+                                "role": "user",
+                                "content": media_blocks + [{"type": "text", "text": body_text}],
+                            })
+                        elif text_content.strip() or attachment_id_strings:
+                            history.append({"role": "user", "content": body_text})
+                    elif text_content.strip():
                         history.append({"role": "user", "content": text_content})
                 
                 elif msg.role == "assistant":

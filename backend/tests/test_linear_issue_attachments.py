@@ -169,3 +169,91 @@ async def test_create_issue_appends_uploaded_markdown(
     assert desc is not None
     assert "See screenshot" in desc
     assert "![shot.png](https://files.linear.app/x)" in desc
+
+
+@pytest.mark.asyncio
+async def test_write_update_issue_filters_keys_and_passes_conversation_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connector = LinearConnector(organization_id="00000000-0000-0000-0000-000000000001")
+    captured: dict[str, Any] = {}
+
+    async def fake_update(**kwargs: Any) -> dict[str, Any]:
+        captured.clear()
+        captured.update(kwargs)
+        return {
+            "linear_issue_id": "x",
+            "identifier": "BAS-497",
+            "title": "t",
+            "url": "u",
+            "state": None,
+            "priority": None,
+            "priority_label": None,
+        }
+
+    monkeypatch.setattr(connector, "update_issue", fake_update)
+    await connector.write(
+        "update_issue",
+        {
+            "issue_identifier": "BAS-497",
+            "state_name": "Canceled",
+            "conversation_id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+            "bogus": "nope",
+        },
+    )
+    assert "bogus" not in captured
+    assert captured.get("conversation_id") == "cccccccc-cccc-cccc-cccc-cccccccccccc"
+
+
+@pytest.mark.asyncio
+async def test_update_issue_attachment_only_appends_to_existing_description(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connector = LinearConnector(organization_id="00000000-0000-0000-0000-000000000001")
+    monkeypatch.setattr(
+        connector,
+        "resolve_issue_by_identifier",
+        AsyncMock(
+            return_value={
+                "id": "i1",
+                "identifier": "BAS-497",
+                "description": "Original body",
+                "team": {"id": "t1", "key": "BAS"},
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        connector,
+        "_markdown_block_from_chat_attachments",
+        AsyncMock(return_value="![](https://asset)"),
+    )
+    gql_calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def fake_gql(query: str, variables: dict[str, Any] | None = None) -> dict[str, Any]:
+        gql_calls.append((query, variables or {}))
+        if "issueUpdate" in query:
+            return {
+                "issueUpdate": {
+                    "success": True,
+                    "issue": {
+                        "id": "i1",
+                        "identifier": "BAS-497",
+                        "title": "T",
+                        "url": "u",
+                        "state": {"name": "Todo"},
+                        "priority": 1,
+                        "priorityLabel": "Urgent",
+                    },
+                },
+            }
+        return {}
+
+    monkeypatch.setattr(connector, "_gql", fake_gql)
+    await connector.update_issue(
+        issue_identifier="BAS-497",
+        conversation_id="22222222-2222-2222-2222-222222222222",
+        attachment_ids=["11111111-1111-1111-1111-111111111111"],
+    )
+    update_calls: list[dict[str, Any]] = [v for q, v in gql_calls if "issueUpdate" in q]
+    assert len(update_calls) == 1
+    assert update_calls[0].get("input_description") == "Original body\n\n![](https://asset)"
