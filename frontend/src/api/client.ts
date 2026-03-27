@@ -131,9 +131,17 @@ export interface SyncStatusResponse {
 export async function listConversations(
   limit = 50,
   offset = 0,
+  scope?: 'shared' | 'private' | 'mine',
 ): Promise<ApiResponse<ConversationListResponse>> {
+  const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  if (scope === 'shared' || scope === 'private') {
+    params.set('scope', scope);
+  }
+  if (scope === 'mine') {
+    params.set('mine', 'true');
+  }
   return apiRequest<ConversationListResponse>(
-    `/chat/conversations?limit=${limit}&offset=${offset}`,
+    `/chat/conversations?${params.toString()}`,
   );
 }
 

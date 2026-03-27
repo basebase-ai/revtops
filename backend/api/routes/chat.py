@@ -248,11 +248,13 @@ async def list_conversations(
     limit: int = 50,
     offset: int = 0,
     scope: Optional[str] = None,
+    mine: bool = False,
 ) -> ConversationListResponse:
     """List conversations for the authenticated user, ordered by most recent.
-    
+
     Args:
         scope: Optional filter - "shared" or "private". If not provided, returns all.
+        mine: If true, only return conversations created by the current user.
     """
     org_id = auth.organization_id_str
 
@@ -266,6 +268,9 @@ async def list_conversations(
 
         if scope in ("shared", "private"):
             query = query.where(Conversation.scope == scope)
+
+        if mine and auth.user_id:
+            query = query.where(Conversation.user_id == auth.user_id)
 
         result = await session.execute(
             query.order_by(Conversation.updated_at.desc())

@@ -35,8 +35,11 @@ function apiConvToChatSummary(conv: ConversationSummary): ChatSummary {
   };
 }
 
+type ScopeFilter = 'all' | 'shared' | 'private' | 'mine';
+
 export function ChatsList({ chats: sidebarChats, onSelectChat, onNewChat }: ChatsListProps): JSX.Element {
   const [searchQuery, setSearchQuery] = useState<string>('');
+  const [scopeFilter, setScopeFilter] = useState<ScopeFilter>('all');
   const [allChats, setAllChats] = useState<ChatSummary[]>([]);
   const [isLoadingMore, setIsLoadingMore] = useState<boolean>(false);
   const [hasMore, setHasMore] = useState<boolean>(true);
@@ -48,13 +51,15 @@ export function ChatsList({ chats: sidebarChats, onSelectChat, onNewChat }: Chat
   const activeTasksByConversation = useActiveTasksByConversation();
   const pinnedChatIds = useAppStore((state) => state.pinnedChatIds);
   const togglePinChat = useAppStore((state) => state.togglePinChat);
+  const currentUserId = useAppStore((state) => state.user?.id);
 
   const loadPage = useCallback(async (reset: boolean = false): Promise<void> => {
     if (isLoadingMore) return;
     setIsLoadingMore(true);
     const offset = reset ? 0 : offsetRef.current;
+    const apiScope = scopeFilter === 'all' ? undefined : scopeFilter;
     try {
-      const { data, error } = await listConversations(PAGE_SIZE, offset);
+      const { data, error } = await listConversations(PAGE_SIZE, offset, apiScope);
       if (error || !data) {
         setHasMore(false);
         return;
@@ -76,13 +81,13 @@ export function ChatsList({ chats: sidebarChats, onSelectChat, onNewChat }: Chat
       setIsLoadingMore(false);
       setInitialLoaded(true);
     }
-  }, [isLoadingMore]);
+  }, [isLoadingMore, scopeFilter]);
 
-  // Initial load
+  // Initial load + reload on filter change
   useEffect(() => {
     void loadPage(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [scopeFilter]);
 
   // Infinite scroll via IntersectionObserver
   useEffect(() => {
@@ -111,16 +116,29 @@ export function ChatsList({ chats: sidebarChats, onSelectChat, onNewChat }: Chat
     );
   }, [allChats, sidebarChats]);
 
-  // Client-side title search
+  // Client-side title search + scope filter for sidebar chats
   const filteredChats = useMemo((): ChatSummary[] => {
-    if (!searchQuery.trim()) return mergedChats;
-    const q = searchQuery.toLowerCase();
-    return mergedChats.filter(
-      (c) =>
-        c.title.toLowerCase().includes(q) ||
-        c.previewText.toLowerCase().includes(q),
-    );
-  }, [mergedChats, searchQuery]);
+    let result = mergedChats;
+
+    // Apply scope filter to sidebar-sourced chats (API chats already filtered server-side)
+    if (scopeFilter === 'shared') {
+      result = result.filter((c) => c.scope === 'shared');
+    } else if (scopeFilter === 'private') {
+      result = result.filter((c) => c.scope === 'private');
+    } else if (scopeFilter === 'mine') {
+      result = result.filter((c) => c.userId === currentUserId);
+    }
+
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase();
+      result = result.filter(
+        (c) =>
+          c.title.toLowerCase().includes(q) ||
+          c.previewText.toLowerCase().includes(q),
+      );
+    }
+    return result;
+  }, [mergedChats, searchQuery, scopeFilter, currentUserId]);
 
   // Pinned first
   const orderedChats = useMemo((): ChatSummary[] => {
@@ -153,8 +171,24 @@ export function ChatsList({ chats: sidebarChats, onSelectChat, onNewChat }: Chat
           </button>
         </div>
 
-        {/* Search */}
-        <div className="max-w-4xl mx-auto mt-4">
+        {/* Filters + Search */}
+        <div className="max-w-4xl mx-auto mt-4 flex flex-col gap-3">
+          <div className="flex items-center gap-1 rounded-lg border border-surface-700 p-0.5 w-fit bg-surface-900">
+            {(['all', 'shared', 'private', 'mine'] as const).map((f) => (
+              <button
+                key={f}
+                type="button"
+                onClick={() => setScopeFilter(f)}
+                className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${
+                  scopeFilter === f
+                    ? 'bg-surface-700 text-surface-100'
+                    : 'text-surface-400 hover:text-surface-200 hover:bg-surface-800'
+                }`}
+              >
+                {f === 'all' ? 'All' : f === 'shared' ? 'Shared' : f === 'private' ? 'Private' : 'Mine'}
+              </button>
+            ))}
+          </div>
           <div className="relative">
             <svg
               className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-surface-500"
