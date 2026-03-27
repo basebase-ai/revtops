@@ -53,6 +53,8 @@ logger = logging.getLogger(__name__)
 STREAM_FLUSH_CHAR_THRESHOLD: int = 240
 STREAM_FLUSH_INTERVAL_SECONDS: float = 0.7
 SLOW_REPLY_TIMEOUT_SECONDS: int = 30
+SLOW_REPLY_MIN_SECONDS_SINCE_LAST_MESSAGE: float = 5.0
+SLOW_REPLY_RETRY_BACKOFF_SECONDS: float = 5.0
 SLOW_REPLY_MESSAGE: str = "Still working on this, one moment…"
 
 # ---------------------------------------------------------------------------
@@ -579,6 +581,7 @@ class WorkspaceMessenger(BaseMessenger):
         message_text: str,
         attachment_ids: list[str] | None = None,
         organization_id: str | None = None,
+        on_message_posted: Any | None = None,
     ) -> int:
         """Stream orchestrator output and post text segments incrementally.
 
@@ -621,6 +624,8 @@ class WorkspaceMessenger(BaseMessenger):
                 workspace_id=workspace_id,
                 organization_id=organization_id,
             )
+            if callable(on_message_posted):
+                on_message_posted()
             total_length += len(text_to_send)
             last_flush_at = time.monotonic()
 
@@ -637,6 +642,7 @@ class WorkspaceMessenger(BaseMessenger):
                         workspace_id,
                         organization_id,
                         posted_tool_statuses=posted_tool_statuses,
+                        on_message_posted=on_message_posted,
                     )
                 else:
                     current_text += chunk
@@ -665,6 +671,7 @@ class WorkspaceMessenger(BaseMessenger):
         organization_id: str | None,
         *,
         posted_tool_statuses: dict[str, tuple[str, str]] | None = None,
+        on_message_posted: Any | None = None,
     ) -> None:
         """Process a JSON orchestrator chunk (artifacts, apps, etc.). Post tool status when present."""
         try:
@@ -710,10 +717,42 @@ class WorkspaceMessenger(BaseMessenger):
                     workspace_id=workspace_id,
                     organization_id=organization_id,
                 )
+                if callable(on_message_posted):
+                    on_message_posted()
             except Exception as exc:
                 logger.debug("[%s] Tool status message failed: %s", self.meta.slug, exc)
 
         asyncio.create_task(_post())
+
+    async def _wait_for_slow_reply_window(
+        self,
+        response_task: asyncio.Task[int],
+        get_last_message_sent_at: Any,
+    ) -> None:
+        """Delay slow-reply notice if we posted too recently, re-checking completion each cycle."""
+        while not response_task.done():
+            last_message_sent_at: float | None = (
+                get_last_message_sent_at() if callable(get_last_message_sent_at) else None
+            )
+            if last_message_sent_at is None:
+                return
+
+            elapsed_since_last_post: float = time.monotonic() - last_message_sent_at
+            if elapsed_since_last_post >= SLOW_REPLY_MIN_SECONDS_SINCE_LAST_MESSAGE:
+                return
+
+            logger.info(
+                "[%s] Delaying slow-reply message; %.2fs since last outbound message (minimum %.2fs)",
+                self.meta.slug,
+                elapsed_since_last_post,
+                SLOW_REPLY_MIN_SECONDS_SINCE_LAST_MESSAGE,
+            )
+            done, _ = await asyncio.wait(
+                {response_task},
+                timeout=SLOW_REPLY_RETRY_BACKOFF_SECONDS,
+            )
+            if response_task in done:
+                return
 
     # ------------------------------------------------------------------
     # Overridden process_inbound with streaming + typing indicator support
@@ -786,6 +825,12 @@ class WorkspaceMessenger(BaseMessenger):
         )
 
         if self.meta.response_mode.value == "streaming":
+            last_message_sent_at: float | None = None
+
+            def _mark_message_sent() -> None:
+                nonlocal last_message_sent_at
+                last_message_sent_at = time.monotonic()
+
             response_task: asyncio.Task[int] = asyncio.create_task(
                 self.stream_and_post_responses(
                     orchestrator=orchestrator,
@@ -793,6 +838,7 @@ class WorkspaceMessenger(BaseMessenger):
                     message_text=message_text,
                     attachment_ids=attachment_ids or None,
                     organization_id=organization_id,
+                    on_message_posted=_mark_message_sent,
                 )
             )
             done, _ = await asyncio.wait(
@@ -800,6 +846,19 @@ class WorkspaceMessenger(BaseMessenger):
             )
             if response_task in done:
                 total: int = response_task.result()
+                await self.remove_typing_indicator(message)
+                return {
+                    "status": "success",
+                    "conversation_id": str(conversation.id),
+                    "response_length": total,
+                }
+
+            await self._wait_for_slow_reply_window(
+                response_task=response_task,
+                get_last_message_sent_at=lambda: last_message_sent_at,
+            )
+            if response_task.done():
+                total = response_task.result()
                 await self.remove_typing_indicator(message)
                 return {
                     "status": "success",
@@ -817,6 +876,7 @@ class WorkspaceMessenger(BaseMessenger):
                 workspace_id=ctx.get("workspace_id"),
                 organization_id=organization_id,
             )
+            _mark_message_sent()
 
             async def _finish() -> None:
                 try:
