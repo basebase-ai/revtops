@@ -2970,10 +2970,12 @@ function MessageWithBlocks({
               continue;
             }
 
+            if (block.type === 'thinking' && !block.text && !block.isStreaming) continue;
+            if (block.type === 'text' && !block.text?.trim()) continue;
+
             flushToolRun(index);
 
             if (block.type === 'thinking') {
-              if (!block.text && !block.isStreaming) continue;
               elements.push(
                 <div key={`thinking-${index}`} className={index > 0 ? 'mt-1' : ''}>
                   <ThinkingBlockIndicator block={block} />
