@@ -2261,32 +2261,47 @@ export function Chat({
               </button>
             );
 
-            const scopeToggle: JSX.Element | null = (!chatId && !localConversationId) ? (
+            // Scope toggle: shown for new conversations and existing ones the user owns
+            const isNewConversation: boolean = !chatId && !localConversationId;
+            const activeScope: 'private' | 'shared' = isNewConversation ? newConversationScope : conversationScope;
+            const showScopeToggle: boolean = isNewConversation || canToggleChatScope;
+            const scopeToggle: JSX.Element | null = showScopeToggle ? (
               <div
                 className="flex shrink-0 rounded border border-surface-600 p-px gap-px bg-surface-900"
                 role="group"
-                aria-label="New conversation visibility"
+                aria-label="Conversation visibility"
+                onMouseDown={(e) => e.preventDefault()} // Prevent blur stealing click in Safari
               >
                 <button
                   type="button"
-                  onClick={() => setNewConversationScope('shared')}
+                  disabled={scopeToggleSaving || activeScope === 'shared'}
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => {
+                    if (isNewConversation) { setNewConversationScope('shared'); }
+                    else { void handleMakeShared(); }
+                  }}
                   className={`flex items-center justify-center gap-0.5 px-1.5 py-0.5 rounded-l-[3px] text-[11px] font-medium transition-colors ${
-                    newConversationScope === 'shared'
+                    activeScope === 'shared'
                       ? 'bg-primary-500/20 text-primary-400'
                       : 'text-surface-500 hover:bg-surface-800 hover:text-surface-300'
-                  }`}
+                  } disabled:opacity-40`}
                   title="Shared: teammates can join this conversation"
                 >
                   Shared
                 </button>
                 <button
                   type="button"
-                  onClick={() => setNewConversationScope('private')}
+                  disabled={scopeToggleSaving || activeScope === 'private'}
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => {
+                    if (isNewConversation) { setNewConversationScope('private'); }
+                    else { void handleMakePrivate(); }
+                  }}
                   className={`flex items-center justify-center gap-0.5 px-1.5 py-0.5 rounded-r-[3px] text-[11px] font-medium transition-colors ${
-                    newConversationScope === 'private'
+                    activeScope === 'private'
                       ? 'bg-primary-500/20 text-primary-400'
                       : 'text-surface-500 hover:bg-surface-800 hover:text-surface-300'
-                  }`}
+                  } disabled:opacity-40`}
                   title="Private: only you can see this conversation"
                 >
                   <ScopeLockIcon className="w-3 h-3 shrink-0" />
