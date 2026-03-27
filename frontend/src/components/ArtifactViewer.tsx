@@ -186,9 +186,6 @@ export function ArtifactViewer({
       }
 
       const blob = await response.blob();
-      // #region agent log
-      fetch('http://127.0.0.1:7249/ingest/bbad8696-7c16-4021-b7f0-8afa9db11c4a',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'fc2f88'},body:JSON.stringify({sessionId:'fc2f88',hypothesisId:'H1_H4',location:'ArtifactViewer.tsx:handleDownload',message:'Download response received',data:{requestedFormat:format,responseContentType:response.headers.get('content-type'),blobSize:blob.size,blobType:blob.type,responseStatus:response.status},timestamp:Date.now()})}).catch(()=>{});
-      // #endregion
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;

@@ -198,13 +198,6 @@ async def download_artifact(
 
         content_type: str = artifact.content_type or "text"
         filename: str = artifact.filename or f"artifact.{_get_extension(content_type)}"
-        
-        # #region agent log
-        import json as _json, time as _time
-        _log_path = "/Users/teg/Documents/basebase/basebase/.cursor/debug-fc2f88.log"
-        with open(_log_path, "a") as _f:
-            _f.write(_json.dumps({"sessionId":"fc2f88","hypothesisId":"H1","location":"artifacts.py:download","message":"download_artifact called","data":{"artifact_id":str(artifact.id),"stored_content_type":content_type,"requested_format":format,"filename":filename,"content_length":len(artifact.content) if artifact.content else 0},"timestamp":int(_time.time()*1000),"runId":"post-fix"}) + "\n")
-        # #endregion
 
         # When format=pdf is requested, generate PDF from any text-based content
         if format == "pdf" and content_type in ("markdown", "text", "pdf"):
@@ -212,10 +205,6 @@ async def download_artifact(
             pdf_filename: str = artifact.filename or "artifact.pdf"
             if not pdf_filename.endswith(".pdf"):
                 pdf_filename = pdf_filename.rsplit(".", 1)[0] + ".pdf"
-            # #region agent log
-            with open(_log_path, "a") as _f:
-                _f.write(_json.dumps({"sessionId":"fc2f88","hypothesisId":"H1_fix","location":"artifacts.py:format_pdf_branch","message":"PDF generated via format param","data":{"pdf_size":len(pdf_bytes),"starts_with_percent_pdf":pdf_bytes[:5] == b"%PDF-","pdf_filename":pdf_filename},"timestamp":int(_time.time()*1000),"runId":"post-fix"}) + "\n")
-            # #endregion
             return Response(
                 content=pdf_bytes,
                 media_type="application/pdf",
