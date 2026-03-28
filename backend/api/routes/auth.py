@@ -4251,99 +4251,57 @@ async def run_initial_sync(
 ) -> None:
     """
     Run initial data sync after OAuth connection.
-    
-    This runs in the background so the user isn't blocked waiting.
-    
-    Args:
-        organization_id: UUID of the organization
-        provider: Provider name (e.g., "gmail", "hubspot")
-        user_id: UUID of the user (required for user-scoped integrations)
+
+    Uses the same pipeline as periodic/API-triggered sync (``_sync_integration``):
+    clear stale errors, ``mark_sync_started``, ``sync_all``, ``update_last_sync`` /
+    ``record_error``, and ``sync.completed`` / ``sync.failed`` events.
+
+    Runs in a background task so the user is not blocked.
     """
-    from connectors.hubspot import HubSpotConnector
-    from connectors.salesforce import SalesforceConnector
-    from connectors.slack import SlackConnector
-    from connectors.google_calendar import GoogleCalendarConnector
-    from connectors.gmail import GmailConnector
-    from connectors.microsoft_calendar import MicrosoftCalendarConnector
-    from connectors.microsoft_mail import MicrosoftMailConnector
-    from connectors.fireflies import FirefliesConnector
-    from connectors.zoom import ZoomConnector
-    from connectors.github import GitHubConnector
-    from connectors.linear import LinearConnector
-    from connectors.asana import AsanaConnector
-    from connectors.granola import GranolaConnector
+    from workers.tasks.sync import _sync_integration
 
-    # Google Drive uses a different sync pattern (not BaseConnector)
-    if provider == "google_drive":
-        await _run_initial_drive_sync(organization_id, user_id)
-        return
+    owner_user_id: str | None = (
+        user_id.strip() if user_id and user_id.strip() else None
+    )
 
-    connectors = {
-        "hubspot": HubSpotConnector,
-        "salesforce": SalesforceConnector,
-        "slack": SlackConnector,
-        "google_calendar": GoogleCalendarConnector,
-        "gmail": GmailConnector,
-        "microsoft_calendar": MicrosoftCalendarConnector,
-        "microsoft_mail": MicrosoftMailConnector,
-        "fireflies": FirefliesConnector,
-        "zoom": ZoomConnector,
-        "github": GitHubConnector,
-        "linear": LinearConnector,
-        "asana": AsanaConnector,
-        "granola": GranolaConnector,
-    }
-
-    connector_class = connectors.get(provider)
-    if not connector_class:
-        print(f"No connector for provider: {provider}")
-        return
-
-    try:
-        print(f"Starting initial sync for {provider} (org: {organization_id}, user: {user_id})")
-        connector = connector_class(organization_id, user_id=user_id)
-        counts = await connector.sync_all()
-        await connector.update_last_sync(counts)
-        print(f"Initial sync complete for {provider}: {counts}")
-    except Exception as e:
-        print(f"Initial sync failed for {provider}: {str(e)}")
-        # Record the error
-        try:
-            connector = connector_class(organization_id, user_id=user_id)
-            await connector.record_error(str(e))
-        except Exception:
-            pass  # Ignore errors while recording error
-
-
-async def _run_initial_drive_sync(organization_id: str, user_id: Optional[str]) -> None:
-    """Run initial Google Drive metadata sync after OAuth."""
-    if not user_id:
-        print("[GoogleDrive] Skipping initial sync: user_id required")
-        return
-
-    try:
-        from connectors.google_drive import GoogleDriveConnector
-
-        print(f"Starting initial Google Drive sync (org: {organization_id}, user: {user_id})")
-        connector = GoogleDriveConnector(organization_id, user_id)
-        counts: dict[str, int] = await connector.sync_file_metadata()
-        total: int = sum(counts.values())
-
-        # Update integration sync stats
-        async with get_session(organization_id=organization_id) as session:
-            result = await session.execute(
-                select(Integration).where(
-                    Integration.organization_id == UUID(organization_id),
-                    Integration.connector == "google_drive",
-                    Integration.user_id == UUID(user_id),
-                )
-            )
-            integration: Optional[Integration] = result.scalar_one_or_none()
-            if integration:
-                integration.last_sync_at = datetime.utcnow()
-                integration.sync_stats = {"total_files": total, **counts}
-                await session.commit()
-
-        print(f"Initial Google Drive sync complete: {total} files ({counts})")
-    except Exception as e:
-        print(f"Initial Google Drive sync failed: {str(e)}")
+    logger.info(
+        "Starting initial sync for provider=%s org=%s user=%s",
+        provider,
+        organization_id,
+        owner_user_id,
+    )
+    result: dict[str, Any] = await _sync_integration(
+        organization_id,
+        provider,
+        user_id=owner_user_id,
+        sync_since_override_iso=None,
+    )
+    status: str = str(result.get("status", "unknown"))
+    if status == "completed":
+        logger.info(
+            "Initial sync completed for provider=%s org=%s counts=%s",
+            provider,
+            organization_id,
+            result.get("counts"),
+        )
+    elif status == "skipped":
+        logger.info(
+            "Initial sync skipped (no SYNC capability) provider=%s org=%s",
+            provider,
+            organization_id,
+        )
+    elif status == "cancelled":
+        logger.info(
+            "Initial sync cancelled provider=%s org=%s error=%s",
+            provider,
+            organization_id,
+            result.get("error"),
+        )
+    else:
+        logger.warning(
+            "Initial sync finished with status=%s provider=%s org=%s error=%s",
+            status,
+            provider,
+            organization_id,
+            result.get("error"),
+        )
