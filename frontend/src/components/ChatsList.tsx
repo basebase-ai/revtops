@@ -286,12 +286,6 @@ export function ChatsList({ chats: sidebarChats, onSelectChat, onNewChat }: Chat
             </div>
           ) : (
             <div className="space-y-2">
-              {isRefreshing && (
-                <div className="flex items-center gap-2 text-xs text-surface-400 px-1">
-                  <div className="w-3.5 h-3.5 border-2 border-primary-500 border-t-transparent rounded-full animate-spin" />
-                  Updating chat results…
-                </div>
-              )}
               {orderedChats.map((chat) => (
                 <ChatRow
                   key={chat.id}
