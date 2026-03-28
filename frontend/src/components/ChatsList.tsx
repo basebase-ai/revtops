@@ -336,6 +336,9 @@ function ChatRow({
   onSelect: (id: string) => void;
   onTogglePin: (id: string) => void;
 }): JSX.Element {
+  const participants = chat.participants ?? [];
+  const visibleParticipants = participants.slice(0, 3);
+
   return (
     <button
       onClick={() => onSelect(chat.id)}
@@ -381,24 +384,26 @@ function ChatRow({
             </div>
           </div>
           <div className="flex items-center gap-2 mt-1">
-            {chat.participants && chat.participants.length > 0 && (
-              <div className="flex -space-x-1.5">
-                {chat.participants.slice(0, 3).map((p, idx) => (
+            {visibleParticipants.length > 0 && (
+              <div className="flex -space-x-1 md:-space-x-1.5 px-0.5">
+                {visibleParticipants.map((p, idx) => (
                   <Avatar key={p.id} user={p} size="xs" bordered style={{ zIndex: 3 - idx }} />
                 ))}
-                {chat.participants.length > 3 && (
-                  <div className="w-5 h-5 rounded-full border border-surface-700 dark:border-surface-600 bg-surface-700 flex items-center justify-center text-[10px] font-medium text-surface-300">
-                    +{chat.participants.length - 3}
+                {participants.length > 3 && (
+                  <div className="hidden md:flex w-5 h-5 rounded-full border border-surface-700 dark:border-surface-600 bg-surface-700 items-center justify-center text-[10px] font-medium text-surface-300">
+                    +{participants.length - 3}
                   </div>
                 )}
               </div>
             )}
-            <p className="text-sm text-surface-400 truncate flex-1 min-w-0">{chat.previewText}</p>
+            <p className="text-sm text-surface-400 truncate flex-1 min-w-0 pl-1 md:pl-0">{chat.previewText}</p>
             <button
               onClick={(e) => { e.stopPropagation(); onTogglePin(chat.id); }}
-              className={`p-1.5 rounded ${
-                isPinned ? 'opacity-100 text-primary-400' : 'opacity-0 text-surface-500'
-              } group-hover:opacity-100 hover:bg-surface-700 hover:text-surface-200 transition-all`}
+              className={`flex-shrink-0 p-1.5 rounded transition-all hover:bg-surface-700 ${
+                isPinned
+                  ? 'opacity-100 text-primary-400'
+                  : 'opacity-100 text-surface-500 md:opacity-0 md:group-hover:opacity-100 md:hover:text-surface-200'
+              }`}
               title={isPinned ? 'Unpin conversation' : 'Pin conversation'}
               aria-label={isPinned ? 'Unpin conversation' : 'Pin conversation'}
             >
