@@ -115,8 +115,6 @@ const CHAT_MSG_NAME: string =
   'text-[15px] font-extrabold leading-tight text-surface-50 dark:text-surface-50 tracking-[-0.015em]';
 const CHAT_MSG_TIME: string =
   'text-[10px] tabular-nums font-normal text-surface-500 dark:text-surface-500 leading-none';
-const CHAT_MSG_APP_BADGE: string =
-  'inline-flex items-center rounded-[3px] border border-surface-300 dark:border-surface-600 bg-surface-800 dark:bg-surface-800/90 px-[5px] py-px text-[9px] font-bold uppercase tracking-wide text-surface-600 dark:text-surface-400 -translate-y-px';
 const CHAT_MSG_BODY: string =
   'text-[15px] leading-[1.466] text-surface-100 dark:text-surface-200 whitespace-pre-wrap break-words';
 
@@ -2945,7 +2943,6 @@ function MessageWithBlocks({
         {!isGroupedWithPrevious && (
           <div className="flex flex-wrap items-baseline gap-x-1.5 gap-y-0">
             <span className={CHAT_MSG_NAME}>{APP_NAME}</span>
-            <span className={CHAT_MSG_APP_BADGE}>AGENT</span>
             <span className={CHAT_MSG_TIME}>
               {message.timestamp.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}
             </span>
@@ -3664,7 +3661,6 @@ function ThinkingIndicator(): JSX.Element {
       <div className="flex-1 min-w-0">
         <div className="flex flex-wrap items-baseline gap-x-1.5 gap-y-0">
           <span className={`${CHAT_MSG_NAME} !leading-none`}>{APP_NAME}</span>
-          <span className={CHAT_MSG_APP_BADGE}>AGENT</span>
         </div>
         <span className="mt-px text-xs leading-none text-surface-400 animate-shimmer">Getting ready…</span>
       </div>
