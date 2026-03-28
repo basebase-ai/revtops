@@ -391,8 +391,10 @@ function ChatRow({
             <button
               onClick={(e) => { e.stopPropagation(); onTogglePin(chat.id); }}
               className={`p-1.5 rounded ${
-                isPinned ? 'opacity-100 text-primary-400' : 'opacity-0 text-surface-500'
-              } group-hover:opacity-100 hover:bg-surface-700 hover:text-surface-200 transition-all`}
+                isPinned
+                  ? 'opacity-100 text-primary-400'
+                  : 'opacity-100 md:opacity-0 text-surface-500'
+              } md:group-hover:opacity-100 hover:bg-surface-700 hover:text-surface-200 transition-all`}
               title={isPinned ? 'Unpin conversation' : 'Pin conversation'}
               aria-label={isPinned ? 'Unpin conversation' : 'Pin conversation'}
             >
