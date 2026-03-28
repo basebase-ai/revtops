@@ -996,7 +996,7 @@ function ChatAccordion({
   };
   
   return (
-    <div className="flex-1 flex flex-col min-h-0 px-1.5">
+    <div className="flex-1 flex flex-col min-h-0 px-1.5 py-px">
       {/* Chat History header with View All link */}
       <div className="flex-shrink-0 flex items-center justify-between px-2 py-0.5">
         <span className="text-xs font-semibold text-surface-200 uppercase tracking-wider">Chat History</span>
