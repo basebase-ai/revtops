@@ -116,18 +116,27 @@ export function ChatsList({ chats: sidebarChats, onSelectChat, onNewChat }: Chat
     return () => observer.disconnect();
   }, [hasMore, isLoadingMore, loadPage]);
 
-  // Merge sidebar chats (may have more recent data) with loaded chats
+  // Merge sidebar chats with loaded chats (skip sidebar merge when searching
+  // since sidebar chats aren't filtered by the search query)
+  const isSearching: boolean = debouncedSearch.trim().length > 0;
   const mergedChats = useMemo((): ChatSummary[] => {
+    if (isSearching) {
+      return allChats.sort(
+        (a, b) => b.lastMessageAt.getTime() - a.lastMessageAt.getTime(),
+      );
+    }
     const byId = new Map<string, ChatSummary>();
     for (const c of allChats) byId.set(c.id, c);
     for (const c of sidebarChats) byId.set(c.id, c);
     return Array.from(byId.values()).sort(
       (a, b) => b.lastMessageAt.getTime() - a.lastMessageAt.getTime(),
     );
-  }, [allChats, sidebarChats]);
+  }, [allChats, sidebarChats, isSearching]);
 
   // Client-side scope filter for sidebar-sourced chats (API results already filtered)
   const filteredChats = useMemo((): ChatSummary[] => {
+    if (isSearching) return mergedChats; // API already filtered
+
     let result = mergedChats;
 
     if (scopeFilter === 'shared') {
@@ -139,7 +148,7 @@ export function ChatsList({ chats: sidebarChats, onSelectChat, onNewChat }: Chat
     }
 
     return result;
-  }, [mergedChats, scopeFilter, currentUserId]);
+  }, [mergedChats, scopeFilter, currentUserId, isSearching]);
 
   // Pinned first
   const orderedChats = useMemo((): ChatSummary[] => {
