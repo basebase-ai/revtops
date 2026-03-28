@@ -181,6 +181,7 @@ class ConversationResponse(BaseModel):
     agent_responding: bool = True
     participants: list[ParticipantResponse] = []
     match_snippet: Optional[str] = None  # Context around search match
+    match_count: int = 0  # Number of times search term appears in conversation
 
 
 class ConversationListResponse(BaseModel):
@@ -379,8 +380,9 @@ async def list_conversations(
             for user in users_result.scalars().all():
                 participants_by_id[user.id] = user
 
-        # When searching, fetch a matching snippet per conversation
+        # When searching, fetch a matching snippet and count per conversation
         snippet_by_conv_id: dict[UUID, str] = {}
+        count_by_conv_id: dict[UUID, int] = {}
         if normalized_search and conversations:
             search_lower = normalized_search.lower()
             conv_ids = [c.id for c in conversations]
@@ -391,8 +393,6 @@ async def list_conversations(
             )
             for row in snippet_result:
                 cid = row.conversation_id
-                if cid in snippet_by_conv_id:
-                    continue  # Take first match per conversation
                 # Collect all text: legacy content + all text blocks
                 candidates: list[str] = []
                 if row.content:
@@ -401,19 +401,25 @@ async def list_conversations(
                     for block in (row.content_blocks or []):
                         if isinstance(block, dict) and block.get("type") == "text":
                             candidates.append(block.get("text", ""))
-                # Find the first candidate containing the search term
+                # Count occurrences across all text in this message
                 for text_content in candidates:
-                    idx = text_content.lower().find(search_lower)
-                    if idx >= 0:
-                        start = max(0, idx - 40)
-                        end = min(len(text_content), idx + len(search_lower) + 40)
-                        snippet = text_content[start:end].strip()
-                        if start > 0:
-                            snippet = "..." + snippet
-                        if end < len(text_content):
-                            snippet = snippet + "..."
-                        snippet_by_conv_id[cid] = snippet
-                        break
+                    occurrences = text_content.lower().count(search_lower)
+                    if occurrences > 0:
+                        count_by_conv_id[cid] = count_by_conv_id.get(cid, 0) + occurrences
+                # Extract snippet from first match (once per conversation)
+                if cid not in snippet_by_conv_id:
+                    for text_content in candidates:
+                        idx = text_content.lower().find(search_lower)
+                        if idx >= 0:
+                            start = max(0, idx - 40)
+                            end = min(len(text_content), idx + len(search_lower) + 40)
+                            snippet = text_content[start:end].strip()
+                            if start > 0:
+                                snippet = "..." + snippet
+                            if end < len(text_content):
+                                snippet = snippet + "..."
+                            snippet_by_conv_id[cid] = snippet
+                            break
 
         # Build response using cached fields
         response_items: list[ConversationResponse] = []
@@ -459,6 +465,7 @@ async def list_conversations(
                 agent_responding=getattr(conv, "agent_responding", True),
                 participants=participants,
                 match_snippet=snippet_by_conv_id.get(conv.id),
+                match_count=count_by_conv_id.get(conv.id, 0),
             ))
 
         return ConversationListResponse(

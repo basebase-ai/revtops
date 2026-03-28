@@ -55,6 +55,7 @@ export interface ConversationSummary {
   scope?: "private" | "shared";
   participants?: Array<{ id: string; name: string | null; email: string; avatar_url?: string | null }>;
   match_snippet?: string | null;
+  match_count?: number;
 }
 
 export interface ConversationListResponse {

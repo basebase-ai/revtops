@@ -125,6 +125,7 @@ export interface ChatSummary {
   userId?: string; // Creator's user ID
   participants?: Participant[];
   matchSnippet?: string | null; // Search match context snippet
+  matchCount?: number; // Number of occurrences in conversation
 }
 
 // Workstream (semantic Home) types
