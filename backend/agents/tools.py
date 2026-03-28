@@ -96,6 +96,23 @@ class PendingOperationData(TypedDict):
 # In-memory store for pending operations (will be replaced by database in Phase 6)
 _pending_operations: dict[str, PendingOperationData] = {}
 
+_AUTOMATED_AGENT_FOOTER: str = "Done by an automated agent via Basebase."
+_AUTOMATED_AGENT_FOOTER_MARKER: re.Pattern[str] = re.compile(
+    r"done\s+by\s+an\s+automated\s+agent",
+    flags=re.IGNORECASE,
+)
+
+
+def _ensure_automated_agent_footer(content: str | None) -> str:
+    """Ensure outbound user-authored messages/issues include an automation signature footer."""
+    base_text: str = (content or "").rstrip()
+    if _AUTOMATED_AGENT_FOOTER_MARKER.search(base_text):
+        return base_text
+    footer_line: str = f"— {_AUTOMATED_AGENT_FOOTER}"
+    if not base_text:
+        return footer_line
+    return f"{base_text}\n\n{footer_line}"
+
 def store_pending_operation(
     operation_id: str,
     tool_name: str,
@@ -2451,10 +2468,15 @@ async def _execute_linear_create(
         team_key,
         title,
     )
+    signed_description: str = _ensure_automated_agent_footer(record.get("description"))
+    logger.info(
+        "[Tools._execute_linear_create] Applying automated-agent footer for Linear issue team_key=%s",
+        team_key,
+    )
     issue: dict[str, Any] = await connector.create_issue(
         team_key=team_key,
         title=title,
-        description=record.get("description"),
+        description=signed_description,
         priority=record.get("priority"),
         assignee_name=record.get("assignee_name"),
         project_name=record.get("project_name"),
@@ -2565,7 +2587,14 @@ async def _handle_github_write(
 
     for i, record in enumerate(records):
         try:
-            result: dict[str, Any] = await connector.write(resolved_op, record)
+            record_payload: dict[str, Any] = dict(record)
+            if resolved_op == "create_issue":
+                record_payload["body"] = _ensure_automated_agent_footer(record.get("body"))
+                logger.info(
+                    "[Tools._handle_github_write] Applying automated-agent footer for GitHub issue repo=%s",
+                    record.get("repo_full_name", ""),
+                )
+            result: dict[str, Any] = await connector.write(resolved_op, record_payload)
             results.append(result)
         except Exception as exc:
             error_msg: str = f"Record {i + 1}: {exc}"
@@ -4743,11 +4772,17 @@ async def execute_send_email_from(
                 user_id=user_id,
             )
         
+        body_with_footer: str = _ensure_automated_agent_footer(body)
+        logger.info(
+            "[Tools.execute_send_email_from] Applying automated-agent footer for email to %s",
+            to,
+        )
+
         # Send the email
         result = await connector.send_email(
             to=to,
             subject=subject,
-            body=body,
+            body=body_with_footer,
             cc=cc if cc else None,
             bcc=bcc if bcc else None,
         )
@@ -4977,7 +5012,9 @@ async def _send_sms(
     if len(digits_only) < 7 or len(digits_only) > 15:
         return {"error": f"Invalid phone number '{to}'. Expected E.164 format, e.g. +14155551234."}
 
-    result: dict[str, str | bool] = await send_sms(to=to, body=body)
+    body_with_footer: str = _ensure_automated_agent_footer(body)
+    logger.info("[Tools._send_sms] Applying automated-agent footer for SMS to %s", to)
+    result: dict[str, str | bool] = await send_sms(to=to, body=body_with_footer)
 
     if result.get("success"):
         return {
