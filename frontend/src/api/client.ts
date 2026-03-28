@@ -111,13 +111,22 @@ export interface ConnectUrlResponse {
 // Sync Types
 // =============================================================================
 
+/** Matches GET /sync/{organization_id}/{provider}/status */
 export interface SyncStatusResponse {
-  status: "idle" | "syncing" | "completed" | "failed";
+  organization_id: string;
   provider: string;
+  status: "syncing" | "failed" | "completed" | "never_synced";
   started_at: string | null;
   completed_at: string | null;
   error: string | null;
-  records_synced: number;
+  counts: Record<string, number> | null;
+}
+
+/** Matches POST /sync/{organization_id}/{provider} */
+export interface SyncTriggerResponse {
+  status: string;
+  organization_id: string;
+  provider: string;
 }
 
 // =============================================================================
@@ -283,8 +292,8 @@ export async function disconnectIntegration(
 export async function triggerSync(
   organizationId: string,
   provider: string,
-): Promise<ApiResponse<SyncStatusResponse>> {
-  return apiRequest<SyncStatusResponse>(`/sync/${organizationId}/${provider}`, {
+): Promise<ApiResponse<SyncTriggerResponse>> {
+  return apiRequest<SyncTriggerResponse>(`/sync/${organizationId}/${provider}`, {
     method: "POST",
   });
 }

@@ -59,7 +59,10 @@ def parse_sync_since_param(since: str | None) -> datetime | None:
     return parsed
 
 class SyncStatusResponse(BaseModel):
-    """Response model for sync status."""
+    """Response model for sync status.
+
+    ``status`` is one of: ``syncing``, ``failed``, ``completed``, ``never_synced``.
+    """
 
     organization_id: str
     provider: str
@@ -820,7 +823,11 @@ async def trigger_sync(
 
 @router.get("/{organization_id}/{provider}/status", response_model=SyncStatusResponse)
 async def get_sync_status(organization_id: str, provider: str) -> SyncStatusResponse:
-    """Get sync status for a specific integration."""
+    """Get sync status for a specific integration.
+
+    Resolution order: ``syncing`` (in-flight, fresh) → ``failed`` (``last_error`` set) →
+    ``completed`` (successful sync, no error) → ``never_synced``.
+    """
     try:
         UUID(organization_id)
     except ValueError:
@@ -859,7 +866,21 @@ async def get_sync_status(organization_id: str, provider: str) -> SyncStatusResp
             except (ValueError, TypeError):
                 pass
 
-    # Use DB last_sync_at / never_synced
+        last_err: str | None = integration.last_error
+        if last_err and last_err.strip():
+            completed_at: str | None = None
+            if integration.last_sync_at:
+                completed_at = f"{integration.last_sync_at.isoformat()}Z"
+            return SyncStatusResponse(
+                organization_id=organization_id,
+                provider=provider,
+                status="failed",
+                started_at=None,
+                completed_at=completed_at,
+                error=last_err,
+                counts=None,
+            )
+
     if integration and integration.last_sync_at:
         return SyncStatusResponse(
             organization_id=organization_id,
@@ -867,7 +888,7 @@ async def get_sync_status(organization_id: str, provider: str) -> SyncStatusResp
             status="completed",
             started_at=None,
             completed_at=f"{integration.last_sync_at.isoformat()}Z",
-            error=integration.last_error,
+            error=None,
             counts=None,
         )
 

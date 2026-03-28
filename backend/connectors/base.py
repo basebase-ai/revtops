@@ -3,6 +3,41 @@ Base connector class that all connectors inherit from.
 
 Uses Nango for OAuth token management - tokens are fetched from Nango
 on demand and automatically refreshed.
+
+Sync status contract (all SYNC-capable connectors)
+--------------------------------------------------
+The worker and API use a single pipeline (``workers.tasks.sync._sync_integration``)
+for periodic, manual, and post-OAuth initial sync. Connectors do **not** set
+success/failure on the integration row themselves except via the helpers below.
+
+**Integration row fields**
+
+- ``last_sync_at`` — time of the last *successful* full sync (set by
+  ``update_last_sync``).
+- ``last_error`` — truncated error message from the last failed run (set by
+  ``record_error``); cleared on the next successful ``update_last_sync`` or when
+  errors are cleared at sync start.
+- ``sync_stats`` — JSON object: entity counts from the last successful sync, plus
+  optional ``sync_started_at`` (ISO string) while a sync is in flight.
+- ``is_active`` — if false, ``ensure_sync_active`` raises ``SyncCancelledError``.
+
+**Lifecycle** (handled by ``_sync_integration``, not by connector code)
+
+1. Clear prior ``last_error`` for the matching integration row(s).
+2. ``mark_sync_started()`` — sets ``sync_stats["sync_started_at"]``.
+3. ``sync_all()`` — connector implementation; must raise on unrecoverable failure
+   so the worker can record it. Per-record ``try``/log/continue inside a stage is
+   OK; do not catch and swallow exceptions that mean the whole sync failed.
+4. On success: ``update_last_sync(counts)`` — sets ``last_sync_at``, clears
+   ``last_error``, replaces ``sync_stats`` with counts.
+5. On failure: ``clear_sync_started()`` + ``record_error(msg)``.
+
+**Multi-stage syncs** — call ``await self.ensure_sync_active("stage_name")`` between
+long steps (e.g. teams → projects → issues) so disconnect/deactivate is honored
+promptly.
+
+**HTTP sync status** — ``GET /api/sync/{org}/{provider}/status`` maps the DB to
+``syncing`` | ``failed`` | ``completed`` | ``never_synced`` (see that route).
 """
 
 from abc import ABC, abstractmethod
@@ -11,7 +46,7 @@ import logging
 from typing import Any, Optional
 from uuid import UUID
 
-from sqlalchemy import select, update
+from sqlalchemy import case, select, update
 
 from config import get_nango_integration_id
 from connectors.registry import ConnectorMeta  # noqa: F401 – re-export for convenience
@@ -80,6 +115,10 @@ class BaseConnector(ABC):
     Subclasses should set a class-level ``meta`` attribute
     (:class:`ConnectorMeta`) that describes the connector's identity,
     capabilities, auth requirements, and available operations.
+
+    **Implementing SYNC:** Override ``sync_*`` methods and/or ``sync_all``. See the
+    module docstring above for how success and errors are persisted on
+    ``Integration`` and how ``ensure_sync_active`` fits in.
     """
 
     # Override in subclasses - must match our provider names
@@ -332,11 +371,11 @@ class BaseConnector(ABC):
     ) -> Integration | None:
         """Return the best matching integration row for this connector context.
 
-        When ``user_id`` is omitted, an org can have multiple user-scoped rows for a
-        provider. In that case, prefer the most recently updated connection and log a
-        warning to aid cleanup of ambiguous call sites.
+        When ``user_id`` is set, filters to that user's row.
+        When ``user_id`` is omitted, prefers org-scoped rows (``user_id IS NULL``)
+        and falls back to user-scoped rows only if no org-scoped row exists.
         """
-        conditions = [
+        conditions: list[Any] = [
             Integration.organization_id == UUID(self.organization_id),
             Integration.connector == self.source_system,
         ]
@@ -345,19 +384,27 @@ class BaseConnector(ABC):
         if self.user_id:
             conditions.append(Integration.user_id == UUID(self.user_id))
 
+        order_clauses: list[Any] = []
+        if not self.user_id:
+            order_clauses.append(
+                case((Integration.user_id.is_(None), 0), else_=1)
+            )
+        order_clauses.extend([
+            Integration.updated_at.desc().nullslast(),
+            Integration.created_at.desc().nullslast(),
+        ])
+
         result = await session.execute(
             select(Integration)
             .where(*conditions)
-            .order_by(
-                Integration.updated_at.desc().nullslast(),
-                Integration.created_at.desc().nullslast(),
-            )
+            .order_by(*order_clauses)
             .limit(2)
         )
         candidates = result.scalars().all()
         if len(candidates) > 1 and not self.user_id:
             logger.warning(
-                "Multiple active %s integrations found for org=%s with no user_id; using integration=%s",
+                "Multiple %s integrations found for org=%s with no user_id; "
+                "preferring org-scoped integration=%s",
                 self.source_system,
                 self.organization_id,
                 candidates[0].id,
