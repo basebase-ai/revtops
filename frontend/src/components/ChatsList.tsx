@@ -33,6 +33,7 @@ function apiConvToChatSummary(conv: ConversationSummary): ChatSummary {
       avatarUrl: p.avatar_url,
     })),
     matchSnippet: conv.match_snippet,
+    matchCount: conv.match_count ?? 0,
   };
 }
 
@@ -404,6 +405,11 @@ function ChatRow({
             }`}>
               {chat.scope}
             </span>
+            {isSearching && (chat.matchCount ?? 0) > 0 && (
+              <span className="flex-shrink-0 px-1.5 py-0.5 rounded text-[10px] font-medium bg-yellow-500/20 text-yellow-400">
+                {chat.matchCount} {chat.matchCount === 1 ? 'match' : 'matches'}
+              </span>
+            )}
           </div>
           <div className="flex items-center gap-2 mt-1">
             {chat.participants && chat.participants.length > 0 && (

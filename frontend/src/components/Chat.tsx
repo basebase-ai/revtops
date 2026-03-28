@@ -1592,11 +1592,35 @@ export function Chat({
     }
   }, [chatId, conversationScope, conversationParticipants]);
 
+  // Search navigation state
+  const [searchMatchTotal, setSearchMatchTotal] = useState<number>(0);
+  const [searchMatchIndex, setSearchMatchIndex] = useState<number>(0);
+
+  const scrollToSearchMatch = useCallback((idx: number) => {
+    const container = messagesContainerRef.current;
+    if (!container) return;
+    const marks = container.querySelectorAll('mark[data-search-highlight]');
+    if (marks.length === 0) return;
+    // Clamp and wrap
+    const wrappedIdx = ((idx % marks.length) + marks.length) % marks.length;
+    setSearchMatchIndex(wrappedIdx);
+    // Style: dim all, highlight active
+    marks.forEach((m, i) => {
+      (m as HTMLElement).className = i === wrappedIdx
+        ? 'bg-yellow-400/60 text-yellow-50 rounded-sm ring-2 ring-yellow-400/80'
+        : 'bg-yellow-500/30 text-yellow-200 rounded-sm';
+    });
+    marks[wrappedIdx]?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }, []);
+
   // Highlight search term in message content via DOM TreeWalker.
-  // Runs after React paints (requestAnimationFrame) to ensure DOM is ready.
   useEffect(() => {
     const container = messagesContainerRef.current;
-    if (!container || !chatSearchTerm?.trim()) return;
+    if (!container || !chatSearchTerm?.trim()) {
+      setSearchMatchTotal(0);
+      setSearchMatchIndex(0);
+      return;
+    }
 
     const applyHighlights = (): void => {
       const term = chatSearchTerm.trim().toLowerCase();
@@ -1610,38 +1634,53 @@ export function Chat({
         }
       });
 
-      // Walk text nodes and wrap matches
+      // Walk text nodes and wrap ALL matches (not just first per node)
       const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
-      const matches: { node: Text; index: number }[] = [];
+      const allMatches: { node: Text; index: number }[] = [];
       let textNode: Text | null;
       while ((textNode = walker.nextNode() as Text | null)) {
-        const idx = textNode.textContent?.toLowerCase().indexOf(term) ?? -1;
-        if (idx >= 0) matches.push({ node: textNode, index: idx });
+        const text = textNode.textContent?.toLowerCase() ?? '';
+        let searchFrom = 0;
+        let idx: number;
+        while ((idx = text.indexOf(term, searchFrom)) >= 0) {
+          allMatches.push({ node: textNode, index: idx });
+          searchFrom = idx + term.length;
+        }
       }
-      for (const { node: matchNode, index } of matches) {
+
+      // Apply marks in reverse order (so earlier indices don't shift)
+      for (let i = allMatches.length - 1; i >= 0; i--) {
+        const match = allMatches[i];
+        if (!match) continue;
+        const { node: matchNode, index } = match;
         try {
           const range = document.createRange();
           range.setStart(matchNode, index);
           range.setEnd(matchNode, index + term.length);
           const mark = document.createElement('mark');
           mark.setAttribute('data-search-highlight', '');
-          mark.className = 'bg-yellow-500/40 text-yellow-100 rounded-sm';
+          mark.className = 'bg-yellow-500/30 text-yellow-200 rounded-sm';
           range.surroundContents(mark);
         } catch {
           // surroundContents can fail if range crosses element boundaries
         }
       }
 
-      // Scroll to first match
-      const firstMark = container.querySelector('mark[data-search-highlight]');
-      if (firstMark) {
-        firstMark.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      const totalMarks = container.querySelectorAll('mark[data-search-highlight]').length;
+      setSearchMatchTotal(totalMarks);
+      if (totalMarks > 0) {
+        setSearchMatchIndex(0);
+        // Highlight first match as active
+        const firstMark = container.querySelector('mark[data-search-highlight]');
+        if (firstMark) {
+          (firstMark as HTMLElement).className = 'bg-yellow-400/60 text-yellow-50 rounded-sm ring-2 ring-yellow-400/80';
+          firstMark.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
       }
     };
 
     // Wait for React to paint, then apply highlights
     const rafId = requestAnimationFrame(() => {
-      // Double-RAF to ensure layout is complete
       requestAnimationFrame(applyHighlights);
     });
     return () => cancelAnimationFrame(rafId);
@@ -1700,27 +1739,68 @@ export function Chat({
 
   return (
     <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
-      {/* Search result banner */}
+      {/* Search navigation bar (browser-style Find) */}
       {chatSearchTerm && (
-        <div className="hidden md:flex h-9 bg-primary-500/10 border-b border-primary-500/20 items-center px-4 md:px-6 gap-2 flex-shrink-0">
-          <svg className="w-4 h-4 text-primary-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-          </svg>
-          <span className="text-xs text-primary-300">
-            Showing results for <strong>&ldquo;{chatSearchTerm}&rdquo;</strong>
-          </span>
+        <div className="hidden md:flex h-10 bg-surface-900 border-b border-surface-700 items-center px-4 md:px-6 gap-3 flex-shrink-0">
           <button
             type="button"
             onClick={() => {
               useChatStore.setState({ chatSearchTerm: null });
               useAppStore.getState().setCurrentView('chats');
             }}
-            className="ml-auto flex items-center gap-1 text-xs text-primary-400 hover:text-primary-300 font-medium"
+            className="flex items-center gap-1 text-xs text-surface-400 hover:text-surface-200 font-medium"
+            title="Back to search results"
           >
-            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" />
             </svg>
-            Back to search
+          </button>
+          <div className="flex items-center gap-1 px-2 py-1 rounded bg-surface-800 border border-surface-700">
+            <svg className="w-3.5 h-3.5 text-yellow-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+            </svg>
+            <span className="text-xs text-surface-200 font-medium">{chatSearchTerm}</span>
+          </div>
+          {searchMatchTotal > 0 ? (
+            <span className="text-xs text-surface-400 tabular-nums">
+              {searchMatchIndex + 1} of {searchMatchTotal}
+            </span>
+          ) : (
+            <span className="text-xs text-surface-500">No matches</span>
+          )}
+          <div className="flex items-center gap-0.5">
+            <button
+              type="button"
+              onClick={() => scrollToSearchMatch(searchMatchIndex - 1)}
+              disabled={searchMatchTotal === 0}
+              className="p-1 rounded hover:bg-surface-700 text-surface-400 hover:text-surface-200 disabled:opacity-30 disabled:cursor-not-allowed"
+              title="Previous match"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
+              </svg>
+            </button>
+            <button
+              type="button"
+              onClick={() => scrollToSearchMatch(searchMatchIndex + 1)}
+              disabled={searchMatchTotal === 0}
+              className="p-1 rounded hover:bg-surface-700 text-surface-400 hover:text-surface-200 disabled:opacity-30 disabled:cursor-not-allowed"
+              title="Next match"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+              </svg>
+            </button>
+          </div>
+          <button
+            type="button"
+            onClick={() => useChatStore.setState({ chatSearchTerm: null })}
+            className="ml-auto p-1 rounded hover:bg-surface-700 text-surface-400 hover:text-surface-200"
+            title="Close search"
+          >
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
           </button>
         </div>
       )}
