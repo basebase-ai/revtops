@@ -259,6 +259,8 @@ async def list_conversations(
         search: Optional text search across title, summary, preview, and message content.
     """
     org_id = auth.organization_id_str
+    request_started_at = datetime.utcnow()
+    normalized_search = (search or "").strip()
 
     async with get_session(organization_id=org_id) as session:
         # Fast path: query without Slack filter first
@@ -274,8 +276,8 @@ async def list_conversations(
         if mine and auth.user_id:
             query = query.where(Conversation.user_id == auth.user_id)
 
-        if search and search.strip():
-            search_term = f"%{search.strip()}%"
+        if normalized_search:
+            search_term = f"%{normalized_search}%"
             # Search conversation title, summary, preview, AND message content
             message_match_subq = (
                 select(ChatMessage.conversation_id)
@@ -285,6 +287,7 @@ async def list_conversations(
                         ChatMessage.content_blocks.cast(String).ilike(search_term),
                     )
                 )
+                .where(ChatMessage.organization_id == auth.organization_id)
                 .distinct()
                 .correlate(None)
             )
@@ -329,8 +332,8 @@ async def list_conversations(
                     slack_query = slack_query.where(Conversation.scope == scope)
 
                 # Apply same search filter to Slack fallback
-                if search and search.strip():
-                    slack_search = f"%{search.strip()}%"
+                if normalized_search:
+                    slack_search = f"%{normalized_search}%"
                     slack_msg_subq = (
                         select(ChatMessage.conversation_id)
                         .where(
@@ -339,6 +342,7 @@ async def list_conversations(
                                 ChatMessage.content_blocks.cast(String).ilike(slack_search),
                             )
                         )
+                        .where(ChatMessage.organization_id == auth.organization_id)
                         .distinct()
                         .correlate(None)
                     )
@@ -421,6 +425,20 @@ async def list_conversations(
                 agent_responding=getattr(conv, "agent_responding", True),
                 participants=participants,
             ))
+
+        duration_ms = int((datetime.utcnow() - request_started_at).total_seconds() * 1000)
+        logger.info(
+            "[chat] list_conversations org=%s user=%s scope=%s mine=%s search_len=%s offset=%s limit=%s returned=%s duration_ms=%s",
+            auth.organization_id_str,
+            auth.user_id_str,
+            scope,
+            mine,
+            len(normalized_search),
+            offset,
+            limit,
+            len(response_items),
+            duration_ms,
+        )
 
         return ConversationListResponse(
             conversations=response_items,

@@ -42,9 +42,11 @@ export function ChatsList({ chats: sidebarChats, onSelectChat, onNewChat }: Chat
   const [scopeFilter, setScopeFilter] = useState<ScopeFilter>('all');
   const [allChats, setAllChats] = useState<ChatSummary[]>([]);
   const [isLoadingMore, setIsLoadingMore] = useState<boolean>(false);
+  const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
   const [hasMore, setHasMore] = useState<boolean>(true);
   const [initialLoaded, setInitialLoaded] = useState<boolean>(false);
   const offsetRef = useRef<number>(0);
+  const latestRequestIdRef = useRef<number>(0);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
 
@@ -64,12 +66,20 @@ export function ChatsList({ chats: sidebarChats, onSelectChat, onNewChat }: Chat
   }, []);
 
   const loadPage = useCallback(async (reset: boolean = false): Promise<void> => {
-    if (isLoadingMore) return;
-    setIsLoadingMore(true);
+    if ((reset && isRefreshing) || (!reset && isLoadingMore)) return;
+    if (reset) {
+      setIsRefreshing(true);
+    } else {
+      setIsLoadingMore(true);
+    }
+
+    const requestId = latestRequestIdRef.current + 1;
+    latestRequestIdRef.current = requestId;
     const offset = reset ? 0 : offsetRef.current;
     const apiScope = scopeFilter === 'all' ? undefined : scopeFilter;
     try {
       const { data, error } = await listConversations(PAGE_SIZE, offset, apiScope, debouncedSearch);
+      if (requestId !== latestRequestIdRef.current) return;
       if (error || !data) {
         setHasMore(false);
         return;
@@ -88,10 +98,13 @@ export function ChatsList({ chats: sidebarChats, onSelectChat, onNewChat }: Chat
       }
       setHasMore(mapped.length >= PAGE_SIZE);
     } finally {
-      setIsLoadingMore(false);
-      setInitialLoaded(true);
+      if (requestId === latestRequestIdRef.current) {
+        setIsLoadingMore(false);
+        setIsRefreshing(false);
+        setInitialLoaded(true);
+      }
     }
-  }, [isLoadingMore, scopeFilter, debouncedSearch]);
+  }, [isLoadingMore, isRefreshing, scopeFilter, debouncedSearch]);
 
   // Initial load + reload on filter/search change
   useEffect(() => {
@@ -119,6 +132,8 @@ export function ChatsList({ chats: sidebarChats, onSelectChat, onNewChat }: Chat
   // Merge sidebar chats with loaded chats (skip sidebar merge when searching
   // since sidebar chats aren't filtered by the search query)
   const isSearching: boolean = debouncedSearch.trim().length > 0;
+  const isDebouncingSearch = searchQuery.trim() !== debouncedSearch.trim();
+  const isSearchBusy = isDebouncingSearch || isRefreshing;
   const mergedChats = useMemo((): ChatSummary[] => {
     if (isSearching) {
       return allChats.sort(
@@ -216,6 +231,12 @@ export function ChatsList({ chats: sidebarChats, onSelectChat, onNewChat }: Chat
               className="input-field pl-10 w-full"
               autoFocus
             />
+            {isSearchBusy && (
+              <div className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-2 text-surface-400">
+                <div className="w-4 h-4 border-2 border-primary-500 border-t-transparent rounded-full animate-spin" />
+                <span className="text-xs">Searching…</span>
+              </div>
+            )}
           </div>
         </div>
       </header>
@@ -265,6 +286,12 @@ export function ChatsList({ chats: sidebarChats, onSelectChat, onNewChat }: Chat
             </div>
           ) : (
             <div className="space-y-2">
+              {isRefreshing && (
+                <div className="flex items-center gap-2 text-xs text-surface-400 px-1">
+                  <div className="w-3.5 h-3.5 border-2 border-primary-500 border-t-transparent rounded-full animate-spin" />
+                  Updating chat results…
+                </div>
+              )}
               {orderedChats.map((chat) => (
                 <ChatRow
                   key={chat.id}
