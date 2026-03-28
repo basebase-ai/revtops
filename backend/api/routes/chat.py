@@ -328,6 +328,29 @@ async def list_conversations(
                 if scope in ("shared", "private"):
                     slack_query = slack_query.where(Conversation.scope == scope)
 
+                # Apply same search filter to Slack fallback
+                if search and search.strip():
+                    slack_search = f"%{search.strip()}%"
+                    slack_msg_subq = (
+                        select(ChatMessage.conversation_id)
+                        .where(
+                            or_(
+                                ChatMessage.content.ilike(slack_search),
+                                ChatMessage.content_blocks.cast(String).ilike(slack_search),
+                            )
+                        )
+                        .distinct()
+                        .correlate(None)
+                    )
+                    slack_query = slack_query.where(
+                        or_(
+                            Conversation.title.ilike(slack_search),
+                            Conversation.summary.ilike(slack_search),
+                            Conversation.last_message_preview.ilike(slack_search),
+                            Conversation.id.in_(slack_msg_subq),
+                        )
+                    )
+
                 slack_result = await session.execute(
                     slack_query.order_by(Conversation.updated_at.desc()).limit(limit)
                 )
