@@ -1621,7 +1621,7 @@ export function Chat({
       range.setEnd(textNode, index + term.length);
       const mark = document.createElement('mark');
       mark.setAttribute('data-search-highlight', '');
-      mark.className = 'bg-primary-500/30 text-primary-200 rounded-sm';
+      mark.className = 'bg-yellow-500/40 text-yellow-100 rounded-sm';
       range.surroundContents(mark);
     }
 

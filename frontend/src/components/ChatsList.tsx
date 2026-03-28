@@ -4,7 +4,7 @@
  * Accessible via "View all" in the sidebar chat sections.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ChatSummary } from '../store/types';
 import { useActiveTasksByConversation, useAppStore } from '../store';
 import { listConversations, type ConversationSummary } from '../api/client';
@@ -45,7 +45,7 @@ function HighlightText({ text, term }: { text: string; term: string }): JSX.Elem
     <>
       {parts.map((part, i) =>
         regex.test(part) ? (
-          <mark key={i} className="bg-primary-500/30 text-primary-200 rounded-sm px-0.5">{part}</mark>
+          <mark key={i} className="bg-yellow-500/40 text-yellow-100 rounded-sm px-0.5">{part}</mark>
         ) : (
           <span key={i}>{part}</span>
         ),
@@ -72,15 +72,16 @@ export function ChatsList({ chats: sidebarChats, onSelectChat, onNewChat }: Chat
   const togglePinChat = useAppStore((state) => state.togglePinChat);
   const currentUserId = useAppStore((state) => state.user?.id);
 
-  const [debouncedSearch, setDebouncedSearch] = useState<string>('');
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const searchVersionRef = useRef<number>(0); // Tracks latest search to discard stale responses
+  const [committedSearch, setCommittedSearch] = useState<string>('');
+  const searchVersionRef = useRef<number>(0);
 
-  const handleSearchChange = useCallback((e: ChangeEvent<HTMLInputElement>) => {
-    const val = e.target.value;
-    setSearchQuery(val);
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => setDebouncedSearch(val), 500);
+  const handleSearchSubmit = useCallback(() => {
+    setCommittedSearch(searchQuery.trim());
+  }, [searchQuery]);
+
+  const handleSearchClear = useCallback(() => {
+    setSearchQuery('');
+    setCommittedSearch('');
   }, []);
 
   const loadPage = useCallback(async (reset: boolean = false): Promise<void> => {
@@ -94,7 +95,7 @@ export function ChatsList({ chats: sidebarChats, onSelectChat, onNewChat }: Chat
     const offset = reset ? 0 : offsetRef.current;
     const apiScope = scopeFilter === 'all' ? undefined : scopeFilter;
     try {
-      const { data, error } = await listConversations(PAGE_SIZE, offset, apiScope, debouncedSearch);
+      const { data, error } = await listConversations(PAGE_SIZE, offset, apiScope, committedSearch);
       // Discard response if a newer search has started
       if (version !== searchVersionRef.current) return;
       if (error || !data) {
@@ -118,13 +119,13 @@ export function ChatsList({ chats: sidebarChats, onSelectChat, onNewChat }: Chat
       setIsLoadingMore(false);
       setInitialLoaded(true);
     }
-  }, [isLoadingMore, scopeFilter, debouncedSearch]);
+  }, [isLoadingMore, scopeFilter, committedSearch]);
 
   // Initial load + reload on filter/search change
   useEffect(() => {
     void loadPage(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scopeFilter, debouncedSearch]);
+  }, [scopeFilter, committedSearch]);
 
   // Infinite scroll via IntersectionObserver
   useEffect(() => {
@@ -145,7 +146,7 @@ export function ChatsList({ chats: sidebarChats, onSelectChat, onNewChat }: Chat
 
   // Merge sidebar chats with loaded chats (skip sidebar merge when searching
   // since sidebar chats aren't filtered by the search query)
-  const isSearching: boolean = debouncedSearch.trim().length > 0;
+  const isSearching: boolean = committedSearch.trim().length > 0;
   const mergedChats = useMemo((): ChatSummary[] => {
     if (isSearching) {
       return allChats.sort(
@@ -237,12 +238,28 @@ export function ChatsList({ chats: sidebarChats, onSelectChat, onNewChat }: Chat
             </svg>
             <input
               type="text"
-              placeholder="Search conversations..."
+              placeholder="Search conversations... (press Enter)"
               value={searchQuery}
-              onChange={handleSearchChange}
-              className="input-field pl-10 w-full"
+              onChange={(e) => setSearchQuery(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') handleSearchSubmit();
+                if (e.key === 'Escape') handleSearchClear();
+              }}
+              className="input-field pl-10 pr-8 w-full"
               autoFocus
             />
+            {searchQuery && (
+              <button
+                type="button"
+                onClick={handleSearchClear}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-surface-500 hover:text-surface-200"
+                title="Clear search"
+              >
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            )}
           </div>
         </div>
       </header>
@@ -250,7 +267,7 @@ export function ChatsList({ chats: sidebarChats, onSelectChat, onNewChat }: Chat
       {/* Scrollable list */}
       <div ref={scrollContainerRef} className="flex-1 overflow-y-auto">
         <div className="max-w-4xl mx-auto px-6 md:px-8 py-4">
-          {!initialLoaded ? (
+          {(!initialLoaded || (isLoadingMore && allChats.length === 0)) ? (
             <div className="space-y-3">
               {Array.from({ length: 8 }, (_, i) => (
                 <div key={i} className="p-4 rounded-xl bg-surface-900 border border-surface-800 animate-pulse">
@@ -296,7 +313,7 @@ export function ChatsList({ chats: sidebarChats, onSelectChat, onNewChat }: Chat
                 <ChatRow
                   key={chat.id}
                   chat={chat}
-                  searchTerm={debouncedSearch}
+                  searchTerm={committedSearch}
                   hasActiveTask={chat.id in activeTasksByConversation}
                   isPinned={pinnedChatIds.includes(chat.id)}
                   onSelect={onSelectChat}
