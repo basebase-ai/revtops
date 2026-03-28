@@ -74,21 +74,29 @@ export function ChatsList({ chats: sidebarChats, onSelectChat, onNewChat }: Chat
 
   const [debouncedSearch, setDebouncedSearch] = useState<string>('');
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const searchVersionRef = useRef<number>(0); // Tracks latest search to discard stale responses
 
   const handleSearchChange = useCallback((e: ChangeEvent<HTMLInputElement>) => {
     const val = e.target.value;
     setSearchQuery(val);
     if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => setDebouncedSearch(val), 300);
+    debounceRef.current = setTimeout(() => setDebouncedSearch(val), 500);
   }, []);
 
   const loadPage = useCallback(async (reset: boolean = false): Promise<void> => {
-    if (isLoadingMore) return;
+    if (isLoadingMore && !reset) return;
     setIsLoadingMore(true);
+    if (reset) {
+      setAllChats([]); // Clear immediately so stale results don't linger
+      offsetRef.current = 0;
+    }
+    const version = ++searchVersionRef.current;
     const offset = reset ? 0 : offsetRef.current;
     const apiScope = scopeFilter === 'all' ? undefined : scopeFilter;
     try {
       const { data, error } = await listConversations(PAGE_SIZE, offset, apiScope, debouncedSearch);
+      // Discard response if a newer search has started
+      if (version !== searchVersionRef.current) return;
       if (error || !data) {
         setHasMore(false);
         return;
