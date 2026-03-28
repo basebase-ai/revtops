@@ -1592,45 +1592,60 @@ export function Chat({
     }
   }, [chatId, conversationScope, conversationParticipants]);
 
-  // Highlight search term in message content via DOM TreeWalker
+  // Highlight search term in message content via DOM TreeWalker.
+  // Runs after React paints (requestAnimationFrame) to ensure DOM is ready.
   useEffect(() => {
     const container = messagesContainerRef.current;
     if (!container || !chatSearchTerm?.trim()) return;
-    const term = chatSearchTerm.trim().toLowerCase();
 
-    // Remove previous highlights
-    container.querySelectorAll('mark[data-search-highlight]').forEach((el) => {
-      const parent = el.parentNode;
-      if (parent) {
-        parent.replaceChild(document.createTextNode(el.textContent ?? ''), el);
-        parent.normalize();
+    const applyHighlights = (): void => {
+      const term = chatSearchTerm.trim().toLowerCase();
+
+      // Remove previous highlights
+      container.querySelectorAll('mark[data-search-highlight]').forEach((el) => {
+        const parent = el.parentNode;
+        if (parent) {
+          parent.replaceChild(document.createTextNode(el.textContent ?? ''), el);
+          parent.normalize();
+        }
+      });
+
+      // Walk text nodes and wrap matches
+      const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+      const matches: { node: Text; index: number }[] = [];
+      let textNode: Text | null;
+      while ((textNode = walker.nextNode() as Text | null)) {
+        const idx = textNode.textContent?.toLowerCase().indexOf(term) ?? -1;
+        if (idx >= 0) matches.push({ node: textNode, index: idx });
       }
+      for (const { node: matchNode, index } of matches) {
+        try {
+          const range = document.createRange();
+          range.setStart(matchNode, index);
+          range.setEnd(matchNode, index + term.length);
+          const mark = document.createElement('mark');
+          mark.setAttribute('data-search-highlight', '');
+          mark.className = 'bg-yellow-500/40 text-yellow-100 rounded-sm';
+          range.surroundContents(mark);
+        } catch {
+          // surroundContents can fail if range crosses element boundaries
+        }
+      }
+
+      // Scroll to first match
+      const firstMark = container.querySelector('mark[data-search-highlight]');
+      if (firstMark) {
+        firstMark.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    };
+
+    // Wait for React to paint, then apply highlights
+    const rafId = requestAnimationFrame(() => {
+      // Double-RAF to ensure layout is complete
+      requestAnimationFrame(applyHighlights);
     });
-
-    // Walk text nodes and wrap matches
-    const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
-    const matches: { node: Text; index: number }[] = [];
-    let node: Text | null;
-    while ((node = walker.nextNode() as Text | null)) {
-      const idx = node.textContent?.toLowerCase().indexOf(term) ?? -1;
-      if (idx >= 0) matches.push({ node, index: idx });
-    }
-    for (const { node: textNode, index } of matches) {
-      const range = document.createRange();
-      range.setStart(textNode, index);
-      range.setEnd(textNode, index + term.length);
-      const mark = document.createElement('mark');
-      mark.setAttribute('data-search-highlight', '');
-      mark.className = 'bg-yellow-500/40 text-yellow-100 rounded-sm';
-      range.surroundContents(mark);
-    }
-
-    // Scroll to first match
-    const firstMark = container.querySelector('mark[data-search-highlight]');
-    if (firstMark) {
-      firstMark.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    }
-  }, [chatSearchTerm, messages]);
+    return () => cancelAnimationFrame(rafId);
+  }, [chatSearchTerm, messages, isLoading]);
 
   if (isLoading) {
     return (
