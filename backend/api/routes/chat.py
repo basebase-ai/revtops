@@ -399,25 +399,27 @@ async def list_conversations(
                 cid = row.conversation_id
                 if cid in snippet_by_conv_id:
                     continue  # Take first match per conversation
-                # Extract text from content or content_blocks
-                text_content = row.content or ""
-                if not text_content and row.content_blocks:
-                    for block in row.content_blocks:
+                # Collect all text: legacy content + all text blocks
+                candidates: list[str] = []
+                if row.content:
+                    candidates.append(row.content)
+                if row.content_blocks:
+                    for block in (row.content_blocks or []):
                         if isinstance(block, dict) and block.get("type") == "text":
-                            text_content = block.get("text", "")
-                            if search_lower in text_content.lower():
-                                break
-                # Extract ~80 chars around the match
-                idx = text_content.lower().find(search_lower)
-                if idx >= 0:
-                    start = max(0, idx - 40)
-                    end = min(len(text_content), idx + len(search_lower) + 40)
-                    snippet = text_content[start:end].strip()
-                    if start > 0:
-                        snippet = "..." + snippet
-                    if end < len(text_content):
-                        snippet = snippet + "..."
-                    snippet_by_conv_id[cid] = snippet
+                            candidates.append(block.get("text", ""))
+                # Find the first candidate containing the search term
+                for text_content in candidates:
+                    idx = text_content.lower().find(search_lower)
+                    if idx >= 0:
+                        start = max(0, idx - 40)
+                        end = min(len(text_content), idx + len(search_lower) + 40)
+                        snippet = text_content[start:end].strip()
+                        if start > 0:
+                            snippet = "..." + snippet
+                        if end < len(text_content):
+                            snippet = snippet + "..."
+                        snippet_by_conv_id[cid] = snippet
+                        break
 
         # Build response using cached fields
         response_items: list[ConversationResponse] = []
