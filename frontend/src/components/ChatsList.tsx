@@ -12,7 +12,7 @@ import { Avatar } from './Avatar';
 
 interface ChatsListProps {
   chats: ChatSummary[];
-  onSelectChat: (id: string) => void;
+  onSelectChat: (id: string, searchTerm?: string) => void;
   onNewChat: () => void;
 }
 
@@ -32,7 +32,26 @@ function apiConvToChatSummary(conv: ConversationSummary): ChatSummary {
       email: p.email,
       avatarUrl: p.avatar_url,
     })),
+    matchSnippet: conv.match_snippet,
   };
+}
+
+/** Highlight search term in text by wrapping matches in <mark>. */
+function HighlightText({ text, term }: { text: string; term: string }): JSX.Element {
+  if (!term.trim()) return <>{text}</>;
+  const regex = new RegExp(`(${term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
+  const parts = text.split(regex);
+  return (
+    <>
+      {parts.map((part, i) =>
+        regex.test(part) ? (
+          <mark key={i} className="bg-primary-500/30 text-primary-200 rounded-sm px-0.5">{part}</mark>
+        ) : (
+          <span key={i}>{part}</span>
+        ),
+      )}
+    </>
+  );
 }
 
 type ScopeFilter = 'all' | 'shared' | 'private' | 'mine';
@@ -269,6 +288,7 @@ export function ChatsList({ chats: sidebarChats, onSelectChat, onNewChat }: Chat
                 <ChatRow
                   key={chat.id}
                   chat={chat}
+                  searchTerm={debouncedSearch}
                   hasActiveTask={chat.id in activeTasksByConversation}
                   isPinned={pinnedChatIds.includes(chat.id)}
                   onSelect={onSelectChat}
@@ -298,20 +318,23 @@ export function ChatsList({ chats: sidebarChats, onSelectChat, onNewChat }: Chat
 
 function ChatRow({
   chat,
+  searchTerm,
   hasActiveTask,
   isPinned,
   onSelect,
   onTogglePin,
 }: {
   chat: ChatSummary;
+  searchTerm: string;
   hasActiveTask: boolean;
   isPinned: boolean;
-  onSelect: (id: string) => void;
+  onSelect: (id: string, searchTerm?: string) => void;
   onTogglePin: (id: string) => void;
 }): JSX.Element {
+  const isSearching = searchTerm.trim().length > 0;
   return (
     <button
-      onClick={() => onSelect(chat.id)}
+      onClick={() => onSelect(chat.id, isSearching ? searchTerm : undefined)}
       className="relative w-full text-left p-4 rounded-xl bg-surface-900 hover:bg-surface-800 border border-surface-800 hover:border-surface-700 transition-colors group"
     >
       <div className="flex items-start justify-between gap-4">
@@ -330,7 +353,7 @@ function ChatRow({
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
             <h3 className="font-medium text-surface-100 truncate group-hover:text-white transition-colors">
-              {chat.title}
+              {isSearching ? <HighlightText text={chat.title} term={searchTerm} /> : chat.title}
             </h3>
             {isPinned && (
               <svg className="w-4 h-4 text-primary-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -370,7 +393,15 @@ function ChatRow({
                 )}
               </div>
             )}
-            <p className="text-sm text-surface-400 truncate">{chat.previewText}</p>
+            <p className="text-sm text-surface-400 truncate">
+              {isSearching && chat.matchSnippet ? (
+                <HighlightText text={chat.matchSnippet} term={searchTerm} />
+              ) : isSearching ? (
+                <HighlightText text={chat.previewText} term={searchTerm} />
+              ) : (
+                chat.previewText
+              )}
+            </p>
           </div>
         </div>
 

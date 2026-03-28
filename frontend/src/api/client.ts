@@ -54,11 +54,13 @@ export interface ConversationSummary {
   last_message_preview: string | null;
   scope?: "private" | "shared";
   participants?: Array<{ id: string; name: string | null; email: string; avatar_url?: string | null }>;
+  match_snippet?: string | null;
 }
 
 export interface ConversationListResponse {
   conversations: ConversationSummary[];
   total: number;
+  search_term?: string | null;
 }
 
 export interface ConversationDetailResponse {

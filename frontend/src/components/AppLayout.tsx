@@ -1620,8 +1620,9 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
     return () => window.removeEventListener('navigate', handleNavigate);
   }, [setCurrentView]);
 
-  const handleSelectChat = useCallback((chatId: string): void => {
+  const handleSelectChat = useCallback((chatId: string, searchTerm?: string): void => {
     setCurrentChatId(chatId);
+    useChatStore.setState({ chatSearchTerm: searchTerm ?? null });
     setCurrentView('chat');
   }, [setCurrentChatId, setCurrentView]);
 

@@ -62,6 +62,7 @@ export interface ChatState {
   // Conversation list
   recentChats: ChatSummary[];
   currentChatId: string | null;
+  chatSearchTerm: string | null; // Active search term for highlighting in chat
   pendingChatInput: string | null;
   pendingChatAutoSend: boolean;
 
@@ -203,6 +204,7 @@ export const useChatStore = create<ChatState>()(
     // Initial state
     recentChats: [],
     currentChatId: null,
+    chatSearchTerm: null,
     pendingChatInput: null,
     pendingChatAutoSend: false,
     conversations: {},

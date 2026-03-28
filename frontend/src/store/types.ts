@@ -124,6 +124,7 @@ export interface ChatSummary {
   agentResponding?: boolean;
   userId?: string; // Creator's user ID
   participants?: Participant[];
+  matchSnippet?: string | null; // Search match context snippet
 }
 
 // Workstream (semantic Home) types

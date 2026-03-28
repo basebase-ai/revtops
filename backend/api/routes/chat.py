@@ -180,12 +180,14 @@ class ConversationResponse(BaseModel):
     scope: str = "shared"
     agent_responding: bool = True
     participants: list[ParticipantResponse] = []
+    match_snippet: Optional[str] = None  # Context around search match
 
 
 class ConversationListResponse(BaseModel):
     """Response model for listing conversations."""
     conversations: list[ConversationResponse]
     total: int
+    search_term: Optional[str] = None  # Echo back the search term for highlighting
 
 
 class ChatMessageResponse(BaseModel):
@@ -377,6 +379,46 @@ async def list_conversations(
             for user in users_result.scalars().all():
                 participants_by_id[user.id] = user
 
+        # When searching, fetch a matching snippet per conversation
+        snippet_by_conv_id: dict[UUID, str] = {}
+        if search and search.strip() and conversations:
+            search_lower = search.strip().lower()
+            conv_ids = [c.id for c in conversations]
+            snippet_result = await session.execute(
+                select(ChatMessage.conversation_id, ChatMessage.content, ChatMessage.content_blocks)
+                .where(ChatMessage.conversation_id.in_(conv_ids))
+                .where(
+                    or_(
+                        ChatMessage.content.ilike(f"%{search.strip()}%"),
+                        ChatMessage.content_blocks.cast(String).ilike(f"%{search.strip()}%"),
+                    )
+                )
+                .order_by(ChatMessage.created_at.desc())
+            )
+            for row in snippet_result:
+                cid = row.conversation_id
+                if cid in snippet_by_conv_id:
+                    continue  # Take first match per conversation
+                # Extract text from content or content_blocks
+                text_content = row.content or ""
+                if not text_content and row.content_blocks:
+                    for block in row.content_blocks:
+                        if isinstance(block, dict) and block.get("type") == "text":
+                            text_content = block.get("text", "")
+                            if search_lower in text_content.lower():
+                                break
+                # Extract ~80 chars around the match
+                idx = text_content.lower().find(search_lower)
+                if idx >= 0:
+                    start = max(0, idx - 40)
+                    end = min(len(text_content), idx + len(search_lower) + 40)
+                    snippet = text_content[start:end].strip()
+                    if start > 0:
+                        snippet = "..." + snippet
+                    if end < len(text_content):
+                        snippet = snippet + "..."
+                    snippet_by_conv_id[cid] = snippet
+
         # Build response using cached fields
         response_items: list[ConversationResponse] = []
         for conv in conversations:
@@ -420,11 +462,13 @@ async def list_conversations(
                 scope=conv.scope,
                 agent_responding=getattr(conv, "agent_responding", True),
                 participants=participants,
+                match_snippet=snippet_by_conv_id.get(conv.id),
             ))
 
         return ConversationListResponse(
             conversations=response_items,
             total=len(response_items),
+            search_term=search.strip() if search and search.strip() else None,
         )
 
 

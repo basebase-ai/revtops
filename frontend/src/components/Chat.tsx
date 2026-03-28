@@ -1456,6 +1456,7 @@ export function Chat({
   const pinnedChatIds = useAppStore((s) => s.pinnedChatIds);
   const deleteConversation = useAppStore((s) => s.deleteConversation);
   const isCurrentChatUnread = useChatStore((s) => Boolean(chatId && s.unreadConversationIds.has(chatId)));
+  const chatSearchTerm = useChatStore((s) => s.chatSearchTerm);
   const isCurrentChatPinned: boolean = Boolean(chatId && pinnedChatIds.includes(chatId));
 
   const startEditingHeaderTitle = useCallback(() => {
@@ -1591,6 +1592,46 @@ export function Chat({
     }
   }, [chatId, conversationScope, conversationParticipants]);
 
+  // Highlight search term in message content via DOM TreeWalker
+  useEffect(() => {
+    const container = messagesContainerRef.current;
+    if (!container || !chatSearchTerm?.trim()) return;
+    const term = chatSearchTerm.trim().toLowerCase();
+
+    // Remove previous highlights
+    container.querySelectorAll('mark[data-search-highlight]').forEach((el) => {
+      const parent = el.parentNode;
+      if (parent) {
+        parent.replaceChild(document.createTextNode(el.textContent ?? ''), el);
+        parent.normalize();
+      }
+    });
+
+    // Walk text nodes and wrap matches
+    const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+    const matches: { node: Text; index: number }[] = [];
+    let node: Text | null;
+    while ((node = walker.nextNode() as Text | null)) {
+      const idx = node.textContent?.toLowerCase().indexOf(term) ?? -1;
+      if (idx >= 0) matches.push({ node, index: idx });
+    }
+    for (const { node: textNode, index } of matches) {
+      const range = document.createRange();
+      range.setStart(textNode, index);
+      range.setEnd(textNode, index + term.length);
+      const mark = document.createElement('mark');
+      mark.setAttribute('data-search-highlight', '');
+      mark.className = 'bg-primary-500/30 text-primary-200 rounded-sm';
+      range.surroundContents(mark);
+    }
+
+    // Scroll to first match
+    const firstMark = container.querySelector('mark[data-search-highlight]');
+    if (firstMark) {
+      firstMark.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  }, [chatSearchTerm, messages]);
+
   if (isLoading) {
     return (
       <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
@@ -1644,6 +1685,30 @@ export function Chat({
 
   return (
     <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+      {/* Search result banner */}
+      {chatSearchTerm && (
+        <div className="hidden md:flex h-9 bg-primary-500/10 border-b border-primary-500/20 items-center px-4 md:px-6 gap-2 flex-shrink-0">
+          <svg className="w-4 h-4 text-primary-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+          </svg>
+          <span className="text-xs text-primary-300">
+            Showing results for <strong>&ldquo;{chatSearchTerm}&rdquo;</strong>
+          </span>
+          <button
+            type="button"
+            onClick={() => {
+              useChatStore.setState({ chatSearchTerm: null });
+              useAppStore.getState().setCurrentView('chats');
+            }}
+            className="ml-auto flex items-center gap-1 text-xs text-primary-400 hover:text-primary-300 font-medium"
+          >
+            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" />
+            </svg>
+            Back to search
+          </button>
+        </div>
+      )}
       {/* Header - hidden on mobile since AppLayout has mobile header */}
       <header className="hidden md:flex h-14 border-b border-surface-800 items-center justify-between px-4 md:px-6 flex-shrink-0">
         <div className="flex items-center gap-3 min-w-0">
