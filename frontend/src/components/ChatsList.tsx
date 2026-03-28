@@ -332,11 +332,6 @@ function ChatRow({
             <h3 className="font-medium text-surface-100 truncate group-hover:text-white transition-colors">
               {chat.title}
             </h3>
-            {isPinned && (
-              <svg className="w-4 h-4 text-primary-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />
-              </svg>
-            )}
             {chat.type === 'workflow' && (
               <span className="flex-shrink-0 px-1.5 py-0.5 rounded text-xs bg-amber-500/20 text-amber-400">Workflow</span>
             )}
@@ -349,14 +344,14 @@ function ChatRow({
                 Active
               </span>
             )}
-            <span className={`flex-shrink-0 px-1.5 py-0.5 rounded text-[10px] font-medium uppercase tracking-wide ${
+            <div className={`ml-auto inline-flex items-center gap-2 rounded-full px-2 py-0.5 text-[10px] font-medium ${
               chat.scope === 'shared'
-                ? 'bg-primary-500/20 text-primary-400'
-                : 'bg-surface-700 text-surface-400'
+                ? 'bg-primary-500/20 text-primary-300'
+                : 'bg-surface-700 text-surface-300'
             }`}>
-              {chat.scope}
-            </span>
-            <div className="text-xs text-surface-500 whitespace-nowrap ml-auto">{formatDate(chat.lastMessageAt)}</div>
+              <span className="uppercase tracking-wide">{chat.scope}</span>
+              <span className="text-surface-400 whitespace-nowrap">{formatDate(chat.lastMessageAt)}</span>
+            </div>
           </div>
           <div className="flex items-center gap-2 mt-1">
             {chat.participants && chat.participants.length > 0 && (
@@ -371,22 +366,20 @@ function ChatRow({
                 )}
               </div>
             )}
-            <p className="text-sm text-surface-400 truncate">{chat.previewText}</p>
+            <p className="text-sm text-surface-400 truncate flex-1 min-w-0">{chat.previewText}</p>
+            <button
+              onClick={(e) => { e.stopPropagation(); onTogglePin(chat.id); }}
+              className={`p-1.5 rounded ${
+                isPinned ? 'opacity-100 text-primary-400' : 'opacity-0 text-surface-500'
+              } group-hover:opacity-100 hover:bg-surface-700 hover:text-surface-200 transition-all`}
+              title={isPinned ? 'Unpin conversation' : 'Pin conversation'}
+              aria-label={isPinned ? 'Unpin conversation' : 'Pin conversation'}
+            >
+              <svg className={`w-4 h-4 ${isPinned ? 'text-primary-400' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />
+              </svg>
+            </button>
           </div>
-        </div>
-
-        <div className="flex flex-col items-end gap-2 flex-shrink-0">
-          <button
-            onClick={(e) => { e.stopPropagation(); onTogglePin(chat.id); }}
-            className={`p-1.5 rounded ${
-              isPinned ? 'opacity-100 text-primary-400' : 'opacity-0 text-surface-500'
-            } group-hover:opacity-100 hover:bg-surface-700 hover:text-surface-200 transition-all`}
-            title={isPinned ? 'Unpin conversation' : 'Pin conversation'}
-          >
-            <svg className={`w-4 h-4 ${isPinned ? 'text-primary-400' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />
-            </svg>
-          </button>
         </div>
       </div>
     </button>
