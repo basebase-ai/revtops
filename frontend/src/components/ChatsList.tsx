@@ -394,16 +394,6 @@ function ChatRow({
                 Active
               </span>
             )}
-            <div className={`ml-auto min-w-[9rem] flex-shrink-0 flex items-center gap-2 px-2 py-0.5 rounded-full text-[10px] font-medium uppercase tracking-wide ${
-              chat.scope === 'shared'
-                ? 'bg-primary-500/20 text-primary-400'
-                : 'bg-surface-700 text-surface-400'
-            }`}>
-              <span>{chat.scope}</span>
-              <span className="ml-auto normal-case tracking-normal text-xs text-surface-300 whitespace-nowrap">
-                {formatDate(chat.lastMessageAt)}
-              </span>
-            </div>
             {isSearching && (chat.matchCount ?? 0) > 0 && (
               <span className="flex-shrink-0 px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-300 text-black">
                 {chat.matchCount} {chat.matchCount === 1 ? 'match' : 'matches'}
@@ -434,22 +424,32 @@ function ChatRow({
                 chat.previewText
               )}
             </p>
+            <div className="ml-auto flex items-center gap-1.5 flex-shrink-0">
+              <button
+                onClick={(e) => { e.stopPropagation(); onTogglePin(chat.id); }}
+                className={`p-1 rounded ${
+                  isPinned
+                    ? 'opacity-100 text-primary-400'
+                    : 'opacity-100 md:opacity-0 text-surface-500'
+                } md:group-hover:opacity-100 hover:bg-surface-700 hover:text-surface-200 transition-all`}
+                title={isPinned ? 'Unpin conversation' : 'Pin conversation'}
+              >
+                <svg className={`w-4 h-4 ${isPinned ? 'text-primary-400' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />
+                </svg>
+              </button>
+              <div className={`min-w-[8rem] flex-shrink-0 flex items-center justify-end gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium uppercase tracking-wide ${
+                chat.scope === 'shared'
+                  ? 'bg-primary-500/20 text-primary-400'
+                  : 'bg-surface-700 text-surface-400'
+              }`}>
+                <span>{chat.scope}</span>
+                <span className="normal-case tracking-normal text-xs text-surface-300 whitespace-nowrap">
+                  {formatDate(chat.lastMessageAt)}
+                </span>
+              </div>
+            </div>
           </div>
-        </div>
-        <div className="flex flex-col items-end gap-2 flex-shrink-0">
-          <button
-            onClick={(e) => { e.stopPropagation(); onTogglePin(chat.id); }}
-            className={`p-1.5 rounded ${
-              isPinned
-                ? 'opacity-100 text-primary-400'
-                : 'opacity-100 md:opacity-0 text-surface-500'
-            } md:group-hover:opacity-100 hover:bg-surface-700 hover:text-surface-200 transition-all`}
-            title={isPinned ? 'Unpin conversation' : 'Pin conversation'}
-          >
-            <svg className={`w-4 h-4 ${isPinned ? 'text-primary-400' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />
-            </svg>
-          </button>
         </div>
       </div>
     </button>
