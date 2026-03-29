@@ -1460,19 +1460,15 @@ export function Chat({
   const isCurrentChatPinned: boolean = Boolean(chatId && pinnedChatIds.includes(chatId));
 
   // When opened from search, auto-load ALL older messages so every match is visible.
-  // searchFullyLoaded gates the highlight effect so it doesn't run mid-load.
-  const [searchFullyLoaded, setSearchFullyLoaded] = useState<boolean>(false);
   const autoLoadedForChatRef = useRef<string | null>(null);
   useEffect(() => {
     if (!chatSearchTerm || !chatId || isLoading) return;
     if (autoLoadedForChatRef.current === chatId) return;
     if (!hasMoreMessages) {
       autoLoadedForChatRef.current = chatId;
-      setSearchFullyLoaded(true);
       return;
     }
     autoLoadedForChatRef.current = chatId;
-    setSearchFullyLoaded(false);
     const loadAll = async (): Promise<void> => {
       let moreAvailable = true;
       let safety = 0;
@@ -1480,7 +1476,6 @@ export function Chat({
         safety++;
         moreAvailable = await fetchOlderMessages(chatId);
       }
-      setSearchFullyLoaded(true);
     };
     void loadAll();
   }, [chatSearchTerm, chatId, isLoading, hasMoreMessages, fetchOlderMessages]);
@@ -1621,7 +1616,7 @@ export function Chat({
   // Data-driven search: scan message content blocks for the search term.
   // This works even when text is in tool results or collapsed sections.
   const searchMatchMessages = useMemo((): { msgId: string; count: number }[] => {
-    if (!chatSearchTerm?.trim() || !searchFullyLoaded) return [];
+    if (!chatSearchTerm?.trim()) return [];
     const term = chatSearchTerm.trim().toLowerCase();
     const results: { msgId: string; count: number }[] = [];
     for (const msg of messages) {
@@ -1639,7 +1634,7 @@ export function Chat({
       if (count > 0) results.push({ msgId: msg.id, count });
     }
     return results;
-  }, [chatSearchTerm, messages, searchFullyLoaded]);
+  }, [chatSearchTerm, messages]);
 
   const searchMatchTotal = useMemo(
     () => searchMatchMessages.reduce((sum, m) => sum + m.count, 0),
@@ -1674,7 +1669,7 @@ export function Chat({
   // Apply DOM highlights + scroll to first match when search is ready
   useEffect(() => {
     const container = messagesContainerRef.current;
-    if (!container || !chatSearchTerm?.trim() || !searchFullyLoaded) return;
+    if (!container || !chatSearchTerm?.trim()) return;
     if (searchMatchMessages.length === 0) return;
 
     const applyHighlights = (): void => {
@@ -1728,7 +1723,7 @@ export function Chat({
 
     const rafId = requestAnimationFrame(() => requestAnimationFrame(applyHighlights));
     return () => cancelAnimationFrame(rafId);
-  }, [chatSearchTerm, searchFullyLoaded, searchMatchMessages]);
+  }, [chatSearchTerm, searchMatchMessages]);
 
   if (isLoading) {
     return (
