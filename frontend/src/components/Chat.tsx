@@ -1457,6 +1457,7 @@ export function Chat({
   const deleteConversation = useAppStore((s) => s.deleteConversation);
   const isCurrentChatUnread = useChatStore((s) => Boolean(chatId && s.unreadConversationIds.has(chatId)));
   const chatSearchTerm = useChatStore((s) => s.chatSearchTerm);
+  const chatSearchMatchCount = useChatStore((s) => s.chatSearchMatchCount);
   const isCurrentChatPinned: boolean = Boolean(chatId && pinnedChatIds.includes(chatId));
 
   const startEditingHeaderTitle = useCallback(() => {
@@ -1592,8 +1593,8 @@ export function Chat({
     }
   }, [chatId, conversationScope, conversationParticipants]);
 
-  // Search navigation state
-  const [searchMatchTotal, setSearchMatchTotal] = useState<number>(0);
+  // Search navigation state — use backend count, not DOM mark count
+  const searchMatchTotal: number = chatSearchTerm ? chatSearchMatchCount : 0;
   const [searchMatchIndex, setSearchMatchIndex] = useState<number>(0);
 
   const scrollToSearchMatch = useCallback((idx: number) => {
@@ -1617,7 +1618,6 @@ export function Chat({
   useEffect(() => {
     const container = messagesContainerRef.current;
     if (!container || !chatSearchTerm?.trim()) {
-      setSearchMatchTotal(0);
       setSearchMatchIndex(0);
       return;
     }
@@ -1667,7 +1667,6 @@ export function Chat({
       }
 
       const totalMarks = container.querySelectorAll('mark[data-search-highlight]').length;
-      setSearchMatchTotal(totalMarks);
       if (totalMarks > 0) {
         setSearchMatchIndex(0);
         // Highlight first match as active
@@ -1745,7 +1744,7 @@ export function Chat({
           <button
             type="button"
             onClick={() => {
-              useChatStore.setState({ chatSearchTerm: null });
+              // Keep chatSearchTerm so ChatsList restores search results
               useAppStore.getState().setCurrentView('chats');
             }}
             className="flex items-center gap-1 text-xs text-surface-400 hover:text-surface-200 font-medium"

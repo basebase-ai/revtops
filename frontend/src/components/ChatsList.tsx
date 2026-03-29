@@ -6,13 +6,13 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ChatSummary } from '../store/types';
-import { useActiveTasksByConversation, useAppStore } from '../store';
+import { useActiveTasksByConversation, useAppStore, useChatStore } from '../store';
 import { listConversations, type ConversationSummary } from '../api/client';
 import { Avatar } from './Avatar';
 
 interface ChatsListProps {
   chats: ChatSummary[];
-  onSelectChat: (id: string, searchTerm?: string) => void;
+  onSelectChat: (id: string, searchTerm?: string, matchCount?: number) => void;
   onNewChat: () => void;
 }
 
@@ -58,7 +58,8 @@ function HighlightText({ text, term }: { text: string; term: string }): JSX.Elem
 type ScopeFilter = 'all' | 'shared' | 'private' | 'mine';
 
 export function ChatsList({ chats: sidebarChats, onSelectChat, onNewChat }: ChatsListProps): JSX.Element {
-  const [searchQuery, setSearchQuery] = useState<string>('');
+  const storedSearchTerm = useChatStore((s) => s.chatSearchTerm);
+  const [searchQuery, setSearchQuery] = useState<string>(storedSearchTerm ?? '');
   const [scopeFilter, setScopeFilter] = useState<ScopeFilter>('all');
   const [allChats, setAllChats] = useState<ChatSummary[]>([]);
   const [isLoadingMore, setIsLoadingMore] = useState<boolean>(false);
@@ -73,7 +74,7 @@ export function ChatsList({ chats: sidebarChats, onSelectChat, onNewChat }: Chat
   const togglePinChat = useAppStore((state) => state.togglePinChat);
   const currentUserId = useAppStore((state) => state.user?.id);
 
-  const [committedSearch, setCommittedSearch] = useState<string>('');
+  const [committedSearch, setCommittedSearch] = useState<string>(storedSearchTerm ?? '');
   const searchVersionRef = useRef<number>(0);
 
   const handleSearchSubmit = useCallback(() => {
@@ -83,6 +84,7 @@ export function ChatsList({ chats: sidebarChats, onSelectChat, onNewChat }: Chat
   const handleSearchClear = useCallback(() => {
     setSearchQuery('');
     setCommittedSearch('');
+    useChatStore.setState({ chatSearchTerm: null, chatSearchMatchCount: 0 });
   }, []);
 
   const loadPage = useCallback(async (reset: boolean = false): Promise<void> => {
@@ -354,13 +356,13 @@ function ChatRow({
   searchTerm: string;
   hasActiveTask: boolean;
   isPinned: boolean;
-  onSelect: (id: string, searchTerm?: string) => void;
+  onSelect: (id: string, searchTerm?: string, matchCount?: number) => void;
   onTogglePin: (id: string) => void;
 }): JSX.Element {
   const isSearching = searchTerm.trim().length > 0;
   return (
     <button
-      onClick={() => onSelect(chat.id, isSearching ? searchTerm : undefined)}
+      onClick={() => onSelect(chat.id, isSearching ? searchTerm : undefined, isSearching ? chat.matchCount : undefined)}
       className="relative w-full text-left p-4 rounded-xl bg-surface-900 hover:bg-surface-800 border border-surface-800 hover:border-surface-700 transition-colors group"
     >
       <div className="flex items-start justify-between gap-4">

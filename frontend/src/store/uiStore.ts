@@ -99,7 +99,7 @@ export const useUIStore = create<UIState>()(
         set({ currentAppId: appId, currentView: "app-view" as View }),
       startNewChat: () => {
         set({ currentView: "chat" });
-        useChatStore.setState({ currentChatId: null, chatSearchTerm: null });
+        useChatStore.setState({ currentChatId: null, chatSearchTerm: null, chatSearchMatchCount: 0 });
       },
       togglePinChat: (id) => {
         const { pinnedChatIds } = get();
