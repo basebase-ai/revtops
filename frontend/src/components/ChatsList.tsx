@@ -383,11 +383,6 @@ function ChatRow({
             <h3 className="font-medium text-surface-100 truncate group-hover:text-white transition-colors">
               {isSearching ? <HighlightText text={chat.title} term={searchTerm} /> : chat.title}
             </h3>
-            {isPinned && (
-              <svg className="w-4 h-4 text-primary-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />
-              </svg>
-            )}
             {chat.type === 'workflow' && (
               <span className="flex-shrink-0 px-1.5 py-0.5 rounded text-xs bg-amber-500/20 text-amber-400">Workflow</span>
             )}
