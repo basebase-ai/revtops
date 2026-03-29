@@ -20,6 +20,7 @@ from connectors.registry import (
 )
 from models.activity import Activity
 from models.database import get_session
+from services.automated_agent_footer import ensure_automated_agent_footer
 
 MICROSOFT_GRAPH_API_BASE = "https://graph.microsoft.com/v1.0"
 
@@ -321,6 +322,9 @@ class MicrosoftMailConnector(BaseConnector):
         """
         # Build recipients list
         to_list = [to] if isinstance(to, str) else to
+        body_with_footer: str = ensure_automated_agent_footer(body)
+        if body_with_footer != body:
+            print(f"[MicrosoftMailConnector] Applied automated-agent footer before send to {to_list}")
         
         # Build recipient objects
         to_recipients = [
@@ -341,7 +345,7 @@ class MicrosoftMailConnector(BaseConnector):
                 "subject": subject,
                 "body": {
                     "contentType": "Text",
-                    "content": body,
+                    "content": body_with_footer,
                 },
                 "toRecipients": to_recipients,
             },

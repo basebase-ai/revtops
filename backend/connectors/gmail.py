@@ -22,6 +22,7 @@ from connectors.registry import (
 )
 from models.activity import Activity
 from models.database import get_session
+from services.automated_agent_footer import ensure_automated_agent_footer
 
 GMAIL_API_BASE = "https://gmail.googleapis.com/gmail/v1"
 
@@ -485,6 +486,9 @@ Send an email via the user's connected Gmail account. Emails are sent from the a
         
         # Build recipients list
         to_list = [to] if isinstance(to, str) else to
+        body_with_footer: str = ensure_automated_agent_footer(body)
+        if body_with_footer != body:
+            print(f"[GmailConnector] Applied automated-agent footer before send to {to_list}")
         
         # Create message
         message = email.mime.multipart.MIMEMultipart()
@@ -499,7 +503,7 @@ Send an email via the user's connected Gmail account. Emails are sent from the a
             message["Reply-To"] = reply_to
         
         # Attach body
-        message.attach(email.mime.text.MIMEText(body, "plain"))
+        message.attach(email.mime.text.MIMEText(body_with_footer, "plain"))
         
         # Encode to base64url
         raw_message = base64.urlsafe_b64encode(message.as_bytes()).decode("utf-8")

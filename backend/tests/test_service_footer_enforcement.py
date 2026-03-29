@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import base64
+import email
 from urllib.parse import parse_qs
 
 import pytest
 
+from connectors.gmail import GmailConnector
+from connectors.microsoft_mail import MicrosoftMailConnector
 from services.automated_agent_footer import AUTOMATED_AGENT_FOOTER
 from services.email import send_email
 from services.sms import send_sms
@@ -82,3 +86,99 @@ async def test_send_sms_applies_footer_right_before_send(monkeypatch: pytest.Mon
     body_values = parse_qs(captured_content).get("Body", [])
     assert body_values, "Body should be present in Twilio form payload"
     assert AUTOMATED_AGENT_FOOTER in body_values[0]
+
+
+@pytest.mark.asyncio
+async def test_gmail_connector_send_email_applies_footer(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured_json: dict[str, object] = {}
+
+    class _MockResponse:
+        status_code = 202
+
+        def raise_for_status(self) -> None:
+            return None
+
+        @staticmethod
+        def json() -> dict[str, object]:
+            return {"id": "mid_1", "threadId": "tid_1", "labelIds": ["SENT"]}
+
+    class _MockClient:
+        async def __aenter__(self) -> _MockClient:
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> bool:
+            return False
+
+        async def post(self, url: str, headers: dict[str, str], json: dict[str, object], timeout: float) -> _MockResponse:
+            captured_json.update(json)
+            return _MockResponse()
+
+    async def _mock_get_headers(self: GmailConnector) -> dict[str, str]:
+        return {"Authorization": "Bearer test", "Content-Type": "application/json"}
+
+    monkeypatch.setattr("connectors.gmail.httpx.AsyncClient", _MockClient)
+    monkeypatch.setattr(GmailConnector, "_get_headers", _mock_get_headers)
+
+    connector = GmailConnector(
+        "00000000-0000-0000-0000-000000000001",
+        user_id="00000000-0000-0000-0000-000000000002",
+    )
+    result = await connector.send_email(
+        to="recipient@example.com",
+        subject="hello",
+        body="Message body",
+    )
+
+    assert result["success"] is True
+    raw_message = str(captured_json["raw"])
+    parsed = email.message_from_bytes(base64.urlsafe_b64decode(raw_message.encode("utf-8")))
+    plain_parts = [p for p in parsed.walk() if p.get_content_type() == "text/plain"]
+    assert plain_parts
+    body_text = plain_parts[0].get_payload(decode=True).decode("utf-8")
+    assert AUTOMATED_AGENT_FOOTER in body_text
+
+
+@pytest.mark.asyncio
+async def test_microsoft_connector_send_email_applies_footer(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured_json: dict[str, object] = {}
+
+    class _MockResponse:
+        status_code = 202
+
+        def raise_for_status(self) -> None:
+            return None
+
+        @staticmethod
+        def json() -> dict[str, object]:
+            return {}
+
+    class _MockClient:
+        async def __aenter__(self) -> _MockClient:
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> bool:
+            return False
+
+        async def post(self, url: str, headers: dict[str, str], json: dict[str, object], timeout: float) -> _MockResponse:
+            captured_json.update(json)
+            return _MockResponse()
+
+    async def _mock_get_headers(self: MicrosoftMailConnector) -> dict[str, str]:
+        return {"Authorization": "Bearer test", "Content-Type": "application/json"}
+
+    monkeypatch.setattr("connectors.microsoft_mail.httpx.AsyncClient", _MockClient)
+    monkeypatch.setattr(MicrosoftMailConnector, "_get_headers", _mock_get_headers)
+
+    connector = MicrosoftMailConnector(
+        "00000000-0000-0000-0000-000000000001",
+        user_id="00000000-0000-0000-0000-000000000002",
+    )
+    result = await connector.send_email(
+        to="recipient@example.com",
+        subject="hello",
+        body="Message body",
+    )
+
+    assert result["success"] is True
+    payload_body = ((captured_json.get("message") or {}).get("body") or {})
+    assert AUTOMATED_AGENT_FOOTER in str(payload_body.get("content", ""))
