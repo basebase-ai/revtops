@@ -1618,38 +1618,64 @@ export function Chat({
     }
   }, [chatId, conversationScope, conversationParticipants]);
 
-  // Search navigation state
-  const [searchMatchTotal, setSearchMatchTotal] = useState<number>(0);
+  // Data-driven search: scan message content blocks for the search term.
+  // This works even when text is in tool results or collapsed sections.
+  const searchMatchMessages = useMemo((): { msgId: string; count: number }[] => {
+    if (!chatSearchTerm?.trim() || !searchFullyLoaded) return [];
+    const term = chatSearchTerm.trim().toLowerCase();
+    const results: { msgId: string; count: number }[] = [];
+    for (const msg of messages) {
+      let count = 0;
+      for (const block of msg.contentBlocks) {
+        if (block.type === 'text') {
+          const text = block.text.toLowerCase();
+          let idx = 0;
+          while ((idx = text.indexOf(term, idx)) >= 0) {
+            count++;
+            idx += term.length;
+          }
+        }
+      }
+      if (count > 0) results.push({ msgId: msg.id, count });
+    }
+    return results;
+  }, [chatSearchTerm, messages, searchFullyLoaded]);
+
+  const searchMatchTotal = useMemo(
+    () => searchMatchMessages.reduce((sum, m) => sum + m.count, 0),
+    [searchMatchMessages],
+  );
   const [searchMatchIndex, setSearchMatchIndex] = useState<number>(0);
 
+  // Scroll to a matching message by index (across all messages with matches)
   const scrollToSearchMatch = useCallback((idx: number) => {
+    if (searchMatchMessages.length === 0) return;
     const container = messagesContainerRef.current;
     if (!container) return;
-    const marks = container.querySelectorAll('mark[data-search-highlight]');
-    if (marks.length === 0) return;
-    // Clamp and wrap
-    const wrappedIdx = ((idx % marks.length) + marks.length) % marks.length;
-    setSearchMatchIndex(wrappedIdx);
-    // Style: dim all, highlight active
-    marks.forEach((m, i) => {
-      (m as HTMLElement).className = i === wrappedIdx
-        ? 'bg-yellow-400/60 text-yellow-50 rounded-sm ring-2 ring-yellow-400/80'
-        : 'bg-yellow-500/30 text-yellow-200 rounded-sm';
-    });
-    marks[wrappedIdx]?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-  }, []);
 
-  // Highlight search term in message content via DOM TreeWalker.
-  // Wait until all messages are loaded (searchFullyLoaded) before highlighting.
+    // Map flat index to message
+    const wrappedIdx = ((idx % searchMatchTotal) + searchMatchTotal) % searchMatchTotal;
+    setSearchMatchIndex(wrappedIdx);
+
+    let cumulative = 0;
+    for (const { msgId } of searchMatchMessages) {
+      const msgEl = container.querySelector(`[data-message-id="${msgId}"]`);
+      if (msgEl) {
+        const msgCount = searchMatchMessages.find((m) => m.msgId === msgId)?.count ?? 0;
+        if (cumulative + msgCount > wrappedIdx) {
+          msgEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          break;
+        }
+        cumulative += msgCount;
+      }
+    }
+  }, [searchMatchMessages, searchMatchTotal]);
+
+  // Apply DOM highlights + scroll to first match when search is ready
   useEffect(() => {
     const container = messagesContainerRef.current;
-    if (!container || !chatSearchTerm?.trim() || !searchFullyLoaded) {
-      if (!chatSearchTerm?.trim()) {
-        setSearchMatchTotal(0);
-        setSearchMatchIndex(0);
-      }
-      return;
-    }
+    if (!container || !chatSearchTerm?.trim() || !searchFullyLoaded) return;
+    if (searchMatchMessages.length === 0) return;
 
     const applyHighlights = (): void => {
       const term = chatSearchTerm.trim().toLowerCase();
@@ -1663,7 +1689,7 @@ export function Chat({
         }
       });
 
-      // Walk text nodes and wrap ALL matches (not just first per node)
+      // Walk text nodes and highlight visible matches
       const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
       const allMatches: { node: Text; index: number }[] = [];
       let textNode: Text | null;
@@ -1677,43 +1703,32 @@ export function Chat({
         }
       }
 
-      // Apply marks in reverse order (so earlier indices don't shift)
       for (let i = allMatches.length - 1; i >= 0; i--) {
         const match = allMatches[i];
         if (!match) continue;
-        const { node: matchNode, index } = match;
         try {
           const range = document.createRange();
-          range.setStart(matchNode, index);
-          range.setEnd(matchNode, index + term.length);
+          range.setStart(match.node, match.index);
+          range.setEnd(match.node, match.index + term.length);
           const mark = document.createElement('mark');
           mark.setAttribute('data-search-highlight', '');
           mark.className = 'bg-yellow-500/30 text-yellow-200 rounded-sm';
           range.surroundContents(mark);
-        } catch {
-          // surroundContents can fail if range crosses element boundaries
-        }
+        } catch { /* skip cross-boundary ranges */ }
       }
 
-      const totalMarks = container.querySelectorAll('mark[data-search-highlight]').length;
-      setSearchMatchTotal(totalMarks);
-      if (totalMarks > 0) {
-        setSearchMatchIndex(0);
-        // Highlight first match as active
-        const firstMark = container.querySelector('mark[data-search-highlight]');
-        if (firstMark) {
-          (firstMark as HTMLElement).className = 'bg-yellow-400/60 text-yellow-50 rounded-sm ring-2 ring-yellow-400/80';
-          firstMark.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        }
+      // Scroll to first matching message
+      const firstMsgId = searchMatchMessages[0]?.msgId;
+      if (firstMsgId) {
+        const el = container.querySelector(`[data-message-id="${firstMsgId}"]`);
+        el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
       }
+      setSearchMatchIndex(0);
     };
 
-    // Wait for React to paint, then apply highlights
-    const rafId = requestAnimationFrame(() => {
-      requestAnimationFrame(applyHighlights);
-    });
+    const rafId = requestAnimationFrame(() => requestAnimationFrame(applyHighlights));
     return () => cancelAnimationFrame(rafId);
-  }, [chatSearchTerm, messages, isLoading, searchFullyLoaded]);
+  }, [chatSearchTerm, searchFullyLoaded, searchMatchMessages]);
 
   if (isLoading) {
     return (
@@ -2225,7 +2240,7 @@ export function Chat({
                   const showDivider: boolean = !!prevMsg && prevMsg.role !== msg.role;
                   const isGroupedWithPrevious: boolean = shouldGroupMessageWithPrevious(prevMsg, msg, userId);
                   return (
-                    <div key={msg.id}>
+                    <div key={msg.id} data-message-id={msg.id}>
                       {showDivider && <div className="h-2" />}
                       <MessageWithBlocks
                         message={msg}
