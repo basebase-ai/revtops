@@ -1838,6 +1838,23 @@ export function Chat({
       {/* Header - hidden on mobile since AppLayout has mobile header */}
       <header className="hidden md:flex h-14 border-b border-surface-800 items-center justify-between px-4 md:px-6 flex-shrink-0">
         <div className="flex items-center gap-3 min-w-0">
+          {/* Back to All Chats */}
+          <button
+            type="button"
+            onClick={() => {
+              if (chatSearchTerm) {
+                useAppStore.getState().setCurrentView('chats');
+              } else {
+                useAppStore.getState().setCurrentView('chats');
+              }
+            }}
+            className="p-1 -ml-1 rounded-md text-surface-500 hover:text-surface-200 hover:bg-surface-800 transition-colors flex-shrink-0"
+            title="All Chats"
+          >
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+            </svg>
+          </button>
           {isEditingHeaderTitle ? (
             <input
               ref={headerTitleInputRef}
