@@ -25,6 +25,7 @@ from typing import Any
 from uuid import UUID
 
 from workers.celery_app import celery_app
+from services.automated_agent_footer import ensure_automated_agent_footer
 from services.anthropic_health import report_anthropic_call_failure, report_anthropic_call_success
 
 logger = logging.getLogger(__name__)
@@ -1802,10 +1803,16 @@ async def _action_send_email_from(
                 nango_connection_id=integration.nango_connection_id,
             )
         
+        body_with_footer = ensure_automated_agent_footer(body)
+        logger.info(
+            "[workflows._action_send_email_from] Applying automated-agent footer for email to %s",
+            to,
+        )
+
         result = await connector.send_email(
             to=to,
             subject=subject,
-            body=body,
+            body=body_with_footer,
             cc=cc if cc else None,
             bcc=bcc if bcc else None,
         )
