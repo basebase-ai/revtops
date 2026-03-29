@@ -1607,8 +1607,8 @@ export function Chat({
     // Style: dim all, highlight active
     marks.forEach((m, i) => {
       (m as HTMLElement).className = i === wrappedIdx
-        ? 'bg-yellow-400/60 text-yellow-50 rounded-sm ring-2 ring-yellow-400/80'
-        : 'bg-yellow-500/30 text-yellow-200 rounded-sm';
+        ? 'bg-orange-400 text-black rounded-sm ring-2 ring-orange-500 font-semibold'
+        : 'bg-amber-300 text-black rounded-sm';
     });
     marks[wrappedIdx]?.scrollIntoView({ behavior: 'smooth', block: 'center' });
   }, []);
@@ -1659,7 +1659,7 @@ export function Chat({
           range.setEnd(matchNode, index + term.length);
           const mark = document.createElement('mark');
           mark.setAttribute('data-search-highlight', '');
-          mark.className = 'bg-yellow-500/30 text-yellow-200 rounded-sm';
+          mark.className = 'bg-amber-300 text-black rounded-sm';
           range.surroundContents(mark);
         } catch {
           // surroundContents can fail if range crosses element boundaries
@@ -1673,7 +1673,7 @@ export function Chat({
         // Highlight first match as active
         const firstMark = container.querySelector('mark[data-search-highlight]');
         if (firstMark) {
-          (firstMark as HTMLElement).className = 'bg-yellow-400/60 text-yellow-50 rounded-sm ring-2 ring-yellow-400/80';
+          (firstMark as HTMLElement).className = 'bg-orange-400 text-black rounded-sm ring-2 ring-orange-500 font-semibold';
           firstMark.scrollIntoView({ behavior: 'smooth', block: 'center' });
         }
       }
@@ -1741,7 +1741,7 @@ export function Chat({
     <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
       {/* Search navigation bar (browser-style Find) */}
       {chatSearchTerm && (
-        <div className="hidden md:flex h-10 bg-surface-900 border-b border-surface-700 items-center px-4 md:px-6 gap-3 flex-shrink-0">
+        <div className="flex h-10 bg-surface-900 border-b border-surface-700 items-center px-3 md:px-6 gap-2 md:gap-3 flex-shrink-0 overflow-x-auto">
           <button
             type="button"
             onClick={() => {

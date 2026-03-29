@@ -46,7 +46,7 @@ function HighlightText({ text, term }: { text: string; term: string }): JSX.Elem
     <>
       {parts.map((part, i) =>
         regex.test(part) ? (
-          <mark key={i} className="bg-yellow-500/40 text-yellow-100 rounded-sm px-0.5">{part}</mark>
+          <mark key={i} className="bg-amber-300 text-black rounded-sm px-0.5 font-semibold">{part}</mark>
         ) : (
           <span key={i}>{part}</span>
         ),
@@ -406,7 +406,7 @@ function ChatRow({
               {chat.scope}
             </span>
             {isSearching && (chat.matchCount ?? 0) > 0 && (
-              <span className="flex-shrink-0 px-1.5 py-0.5 rounded text-[10px] font-medium bg-yellow-500/20 text-yellow-400">
+              <span className="flex-shrink-0 px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-300 text-black">
                 {chat.matchCount} {chat.matchCount === 1 ? 'match' : 'matches'}
               </span>
             )}
