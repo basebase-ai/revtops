@@ -29,6 +29,9 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+# Credit transactions returned for charts / history (deductions + grants such as renewals).
+CREDIT_HISTORY_LOOKBACK_DAYS = 365
+
 # Tier config: name, price_cents, credits_included
 # "free" tier requires no credit card; "partner" tier is hidden and assigned manually
 PLANS: dict[str, dict[str, Any]] = {
@@ -279,9 +282,25 @@ async def subscribe(
             org.subscription_tier = body.tier
             org.subscription_status = "active"
             org.credits_included = plan.get("credits_included", 100)
+            old_balance = org.credits_balance
             org.credits_balance = org.credits_included
             org.current_period_start = now
             org.current_period_end = now + timedelta(days=30)
+            from models.credit_transaction import CreditTransaction
+
+            grant = org.credits_balance - old_balance
+            if grant != 0:
+                session.add(
+                    CreditTransaction(
+                        organization_id=org.id,
+                        user_id=None,
+                        amount=grant,
+                        balance_after=org.credits_balance,
+                        reason="subscription_grant",
+                        reference_type="subscription_setup",
+                        reference_id="free",
+                    )
+                )
             await session.commit()
             return {"status": "ok", "subscription_id": "free"}
 
@@ -362,7 +381,23 @@ async def subscribe(
 
         org.subscription_status = sub.status or "active"
         if sub.status == "active":
+            from models.credit_transaction import CreditTransaction
+
+            old_balance = org.credits_balance
             org.credits_balance = org.credits_included
+            grant = org.credits_included - old_balance
+            if grant != 0:
+                session.add(
+                    CreditTransaction(
+                        organization_id=org.id,
+                        user_id=None,
+                        amount=grant,
+                        balance_after=org.credits_balance,
+                        reason="subscription_grant",
+                        reference_type="subscription_setup",
+                        reference_id=str(sub.id),
+                    )
+                )
             period_end = getattr(sub, "current_period_end", None)
             period_start = getattr(sub, "current_period_start", None)
             if period_end:
@@ -465,7 +500,7 @@ async def cancel_subscription(
 async def get_credit_details(
     auth: AuthContext = Depends(require_organization),
 ) -> CreditDetailsResponse:
-    """Return credit transactions and usage breakdown for the current billing period."""
+    """Return credit transactions (rolling history) and usage for the current billing period."""
     org_id = auth.organization_id
     if not org_id:
         raise HTTPException(status_code=403, detail="Organization required")
@@ -487,6 +522,8 @@ async def get_credit_details(
         
         period_start = org.current_period_start
         period_end = org.current_period_end
+        now = datetime.now(timezone.utc)
+        history_cutoff = now - timedelta(days=CREDIT_HISTORY_LOOKBACK_DAYS)
         
         def build_transactions_query(filter_start: Optional[datetime]) -> Any:
             q = (
@@ -517,16 +554,9 @@ async def get_credit_details(
                 q = q.where(CreditTransaction.created_at >= filter_start)
             return q
         
-        # Try current period first, fall back to all-time if empty
-        tx_result = await session.execute(build_transactions_query(period_start))
+        # Ledger for charts: last N days (includes grants + deductions across period boundaries)
+        tx_result = await session.execute(build_transactions_query(history_cutoff))
         rows = tx_result.all()
-        
-        effective_period_start = period_start
-        if not rows and period_start:
-            # No transactions in current period - show all-time data
-            tx_result = await session.execute(build_transactions_query(None))
-            rows = tx_result.all()
-            effective_period_start = None
         
         transactions: list[CreditTransactionItem] = []
         for tx, user_email, user_name in rows:
@@ -538,16 +568,14 @@ async def get_credit_details(
                 user_email=user_email,
             ))
         
-        # Calculate starting balance
-        # If showing current period, derive from first transaction
-        # If showing all-time (fallback), use credits_included since old transactions may be from different plans
+        # Balance immediately before the first transaction in the returned window
         starting_balance = org.credits_included
-        if transactions and effective_period_start:
+        if transactions:
             first_tx = transactions[0]
             starting_balance = first_tx.balance_after - first_tx.amount
         
-        # Aggregate usage by user
-        usage_result = await session.execute(build_usage_query(effective_period_start))
+        # Usage tables: still scoped to the current Stripe billing period
+        usage_result = await session.execute(build_usage_query(period_start))
         usage_rows = usage_result.all()
         
         usage_by_user: list[UserUsageItem] = []
@@ -563,23 +591,24 @@ async def get_credit_details(
 
         # Aggregate usage by conversation (per-chat credit consumption)
         conv_usage_rows: list[tuple[str, int, datetime]] = []
-        if rows:
-            conv_usage_query = (
-                select(
-                    CreditTransaction.reference_id,
-                    func.sum(func.abs(CreditTransaction.amount)).label("total_used"),
-                    func.max(CreditTransaction.created_at).label("last_used_at"),
-                )
-                .where(CreditTransaction.organization_id == org_id)
-                .where(CreditTransaction.reference_type == "conversation")
-                .where(CreditTransaction.amount < 0)
+        conv_usage_query = (
+            select(
+                CreditTransaction.reference_id,
+                func.sum(func.abs(CreditTransaction.amount)).label("total_used"),
+                func.max(CreditTransaction.created_at).label("last_used_at"),
             )
-            if effective_period_start:
-                conv_usage_query = conv_usage_query.where(
-                    CreditTransaction.created_at >= effective_period_start
-                )
-            conv_usage_result = await session.execute(conv_usage_query.group_by(CreditTransaction.reference_id))
-            conv_usage_rows = conv_usage_result.all()
+            .where(CreditTransaction.organization_id == org_id)
+            .where(CreditTransaction.reference_type == "conversation")
+            .where(CreditTransaction.amount < 0)
+        )
+        if period_start:
+            conv_usage_query = conv_usage_query.where(
+                CreditTransaction.created_at >= period_start
+            )
+        conv_usage_result = await session.execute(
+            conv_usage_query.group_by(CreditTransaction.reference_id)
+        )
+        conv_usage_rows = conv_usage_result.all()
 
         # Resolve conversation titles from the org-scoped database
         usage_by_conversation: list[ConversationUsageItem] = []
@@ -624,21 +653,21 @@ async def get_credit_details(
                     )
                 )
 
-            # Sort by total credits used (descending)
+            # Newest last activity first (reverse chronological)
             usage_by_conversation.sort(
-                key=lambda item: item.total_credits_used, reverse=True
+                key=lambda item: item.last_used_at or "",
+                reverse=True,
             )
         
-        # Return effective period (None if showing all-time)
         return CreditDetailsResponse(
             transactions=transactions,
             usage_by_user=usage_by_user,
             usage_by_conversation=usage_by_conversation,
-            period_start=effective_period_start.isoformat().replace("+00:00", "Z")
-            if effective_period_start
+            period_start=period_start.isoformat().replace("+00:00", "Z")
+            if period_start
             else None,
             period_end=period_end.isoformat().replace("+00:00", "Z")
-            if period_end and effective_period_start
+            if period_end
             else None,
             starting_balance=starting_balance,
         )
@@ -694,6 +723,7 @@ async def _handle_invoice_paid(invoice: Any) -> None:
     sub_id = invoice.get("subscription")
     if not sub_id:
         return
+    invoice_id = invoice.get("id")
     import stripe
     stripe.api_key = settings.STRIPE_SECRET_KEY
     sub = stripe.Subscription.retrieve(sub_id)
@@ -704,26 +734,41 @@ async def _handle_invoice_paid(invoice: Any) -> None:
     plan = PLANS.get(tier or "", {})
     async with get_admin_session() as session:
         from sqlalchemy import select
+        from models.credit_transaction import CreditTransaction
+
         result = await session.execute(
             select(Organization).where(Organization.id == UUID(org_id))
         )
         org = result.scalar_one_or_none()
         if not org:
             return
-        
+
+        if invoice_id:
+            dup = await session.execute(
+                select(CreditTransaction.id).where(
+                    CreditTransaction.organization_id == UUID(org_id),
+                    CreditTransaction.reference_type == "stripe_invoice",
+                    CreditTransaction.reference_id == str(invoice_id),
+                ).limit(1)
+            )
+            if dup.scalar_one_or_none():
+                return
+
         # Use plan credits if tier found, otherwise keep org's existing credits_included
         # This prevents overwriting 500 with 100 if tier lookup fails
-        credits_included: int = plan.get("credits_included") or org.credits_included or 100
+        credits_included = int(plan.get("credits_included") or org.credits_included or 100)
         effective_tier: str = tier or org.subscription_tier or ""
         cap: int = ROLLOVER_CAP.get(effective_tier, 0)
-        
+
+        old_balance = org.credits_balance
         rollover = 0
         if cap > 1 and org.credits_balance > 0:
             rollover = min(
                 org.credits_balance,
                 credits_included * (cap - 1),
             )
-        org.credits_balance = credits_included + rollover
+        new_balance = credits_included + rollover
+        org.credits_balance = new_balance
         org.credits_included = credits_included
         org.current_period_start = datetime.fromtimestamp(
             invoice.get("period_start", 0), tz=timezone.utc
@@ -731,6 +776,19 @@ async def _handle_invoice_paid(invoice: Any) -> None:
         org.current_period_end = datetime.fromtimestamp(
             invoice.get("period_end", 0), tz=timezone.utc
         )
+        delta = new_balance - old_balance
+        if delta != 0:
+            session.add(
+                CreditTransaction(
+                    organization_id=UUID(org_id),
+                    user_id=None,
+                    amount=delta,
+                    balance_after=new_balance,
+                    reason="subscription_renewal",
+                    reference_type="stripe_invoice",
+                    reference_id=str(invoice_id) if invoice_id else None,
+                )
+            )
         await session.commit()
 
 

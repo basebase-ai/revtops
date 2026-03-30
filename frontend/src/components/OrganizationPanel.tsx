@@ -1374,7 +1374,6 @@ interface CreditDetailsModalProps {
 
 function CreditDetailsModal({ organizationHandle, details, loading, onClose }: CreditDetailsModalProps): JSX.Element {
   const [PlotComponent, setPlotComponent] = useState<typeof import('react-plotly.js').default | null>(null);
-  const [chartRange, setChartRange] = useState<[string, string] | null>(null);
 
   useEffect(() => {
     import('react-plotly.js')
@@ -1384,49 +1383,34 @@ function CreditDetailsModal({ organizationHandle, details, loading, onClose }: C
 
   const burndownData = useMemo(() => {
     if (!details?.transactions.length) return null;
-    
+
+    const txs = [...details.transactions].sort(
+      (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+    );
+    const first = txs[0];
+    if (!first) return null;
     const timestamps: string[] = [];
     const balances: number[] = [];
-    
-    // Start with starting_balance (which is credits_included when showing all-time)
-    let runningBalance = details.starting_balance;
-    
-    // Add starting point (use first transaction time if no period_start)
-    const startTime = details.period_start || details.transactions[0]?.timestamp || new Date().toISOString();
-    timestamps.push(startTime);
-    balances.push(runningBalance);
-    
-    // Add each transaction point, recalculating balance from starting point
-    for (const tx of details.transactions) {
-      runningBalance += tx.amount; // amount is negative for deductions
+    // Ledger-consistent path: balance_after from API (includes renewals / grants + deductions)
+    const beforeFirst = first.balance_after - first.amount;
+    timestamps.push(first.timestamp);
+    balances.push(beforeFirst);
+    for (const tx of txs) {
       timestamps.push(tx.timestamp);
-      balances.push(runningBalance);
+      balances.push(tx.balance_after);
     }
-    
+
     return { timestamps, balances };
   }, [details]);
 
-  const availableBillingPeriodRange = useMemo<[string, string] | null>(() => {
-    if (!burndownData || burndownData.timestamps.length === 0) return null;
-
-    const firstDataTimestamp = burndownData.timestamps[0];
-    const lastDataTimestamp = burndownData.timestamps[burndownData.timestamps.length - 1];
-    if (!firstDataTimestamp || !lastDataTimestamp) return null;
-
-    const start = details?.period_start
-      ? (firstDataTimestamp < details.period_start ? details.period_start : firstDataTimestamp)
-      : firstDataTimestamp;
-
-    const end = details?.period_end
-      ? (lastDataTimestamp > details.period_end ? details.period_end : lastDataTimestamp)
-      : lastDataTimestamp;
-
-    return [start, end];
-  }, [burndownData, details?.period_end, details?.period_start]);
-
-  useEffect(() => {
-    setChartRange(availableBillingPeriodRange);
-  }, [availableBillingPeriodRange]);
+  /** Default x-axis: last 30 days (end = now when details load). */
+  const last30DaysRange = useMemo<[string, string] | null>(() => {
+    if (!details) return null;
+    const end = new Date();
+    const start = new Date(end);
+    start.setDate(start.getDate() - 30);
+    return [start.toISOString(), end.toISOString()];
+  }, [details]);
 
   const userUsageData = useMemo(() => {
     if (!details?.usage_by_user.length) return null;
@@ -1440,7 +1424,13 @@ function CreditDetailsModal({ organizationHandle, details, loading, onClose }: C
 
   const conversationUsage = useMemo(() => {
     if (!details?.usage_by_conversation?.length) return [];
-    return details.usage_by_conversation;
+    // Newest activity first (reverse chronological); missing dates last
+    return [...details.usage_by_conversation].sort((a, b) => {
+      const ta = a.last_used_at ? new Date(a.last_used_at).getTime() : 0;
+      const tb = b.last_used_at ? new Date(b.last_used_at).getTime() : 0;
+      if (tb !== ta) return tb - ta;
+      return b.total_credits_used - a.total_credits_used;
+    });
   }, [details]);
 
   const navigateToConversation = (conversationId: string): void => {
@@ -1484,19 +1474,7 @@ function CreditDetailsModal({ organizationHandle, details, loading, onClose }: C
             <>
               {/* Burndown Chart */}
               <div>
-                <div className="mb-4 flex items-center justify-between gap-3">
-                  <h3 className="text-sm font-medium text-surface-200">Credit Balance Over Time</h3>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setChartRange(availableBillingPeriodRange);
-                    }}
-                    disabled={!availableBillingPeriodRange}
-                    className="px-3 py-1.5 rounded-md border border-surface-600 text-xs font-medium text-surface-200 hover:bg-surface-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                  >
-                    Reset graph
-                  </button>
-                </div>
+                <h3 className="text-sm font-medium text-surface-200 mb-4">Credit Balance Over Time</h3>
                 {burndownData && PlotComponent ? (
                   <div className="bg-surface-800/50 rounded-lg p-4">
                     <PlotComponent
@@ -1523,7 +1501,7 @@ function CreditDetailsModal({ organizationHandle, details, loading, onClose }: C
                         xaxis: {
                           gridcolor: 'rgba(255,255,255,0.05)',
                           tickformat: '%b %d',
-                          range: chartRange ?? undefined,
+                          range: last30DaysRange ?? undefined,
                         },
                         yaxis: {
                           gridcolor: 'rgba(255,255,255,0.05)',
@@ -1533,18 +1511,6 @@ function CreditDetailsModal({ organizationHandle, details, loading, onClose }: C
                         hovermode: 'x unified',
                       }}
                       config={{ displayModeBar: false, responsive: true }}
-                      onRelayout={(event) => {
-                        const eventWithRange = event as Record<string, unknown>;
-                        const start = eventWithRange['xaxis.range[0]'];
-                        const end = eventWithRange['xaxis.range[1]'];
-                        if (typeof start === 'string' && typeof end === 'string') {
-                          setChartRange([start, end]);
-                          return;
-                        }
-                        if (eventWithRange['xaxis.autorange'] === true) {
-                          setChartRange(availableBillingPeriodRange);
-                        }
-                      }}
                       style={{ width: '100%' }}
                     />
                   </div>
