@@ -279,7 +279,9 @@ export function SandpackAppRenderer({
     if (hasScreenshot || screenshotCapturedRef.current || embedToken) return;
     if (!iframeRef.current || !tokenData || !appCode) return;
 
-    const timer = setTimeout(() => {
+    // Try capture at 3s, retry at 6s if first attempt skipped (still loading)
+    let attempt = 0;
+    const tryCapture = (): void => {
       const iframe = iframeRef.current;
       if (!iframe || screenshotCapturedRef.current) return;
 
@@ -287,10 +289,13 @@ export function SandpackAppRenderer({
         const iframeDoc = iframe.contentDocument;
         if (!iframeDoc?.body) return;
 
-        // Don't capture if the app is still showing a spinner/loading state
-        const hasSpinner = iframeDoc.querySelector('.animate-spin, [class*="spinner"], [class*="loading"]');
+        // Skip if body has very little content (probably still loading)
         const bodyText = iframeDoc.body.innerText?.trim() ?? '';
-        if (hasSpinner || bodyText.length < 20) return;
+        if (bodyText.length < 10 && attempt < 2) {
+          attempt++;
+          setTimeout(tryCapture, 3000);
+          return;
+        }
 
         screenshotCapturedRef.current = true;
         html2canvas(iframeDoc.body, {
@@ -310,8 +315,9 @@ export function SandpackAppRenderer({
           }
         }).catch(() => { /* non-critical */ });
       } catch { /* cross-origin errors */ }
-    }, 3000);
+    };
 
+    const timer = setTimeout(tryCapture, 3000);
     return () => clearTimeout(timer);
   }, [appId, tokenData, appCode, hasScreenshot, embedToken]);
 
