@@ -722,6 +722,10 @@ class BaseConnector(ABC):
         """Execute a side-effect action (ACTION capability)."""
         raise NotImplementedError(f"{self.source_system} does not support execute_action()")
 
+    async def capture_before_state(self, operation: str, data: dict[str, Any]) -> dict[str, Any] | None:
+        """Optional: snapshot current entity state before mutation. Override per connector."""
+        return None
+
     async def handle_event(self, event_type: str, payload: dict[str, Any]) -> None:
         """Handle an inbound webhook/event (LISTEN capability)."""
         raise NotImplementedError(f"{self.source_system} does not support handle_event()")

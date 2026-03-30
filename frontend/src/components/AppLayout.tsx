@@ -30,6 +30,7 @@ import { Workflows } from './Workflows';
 import { Memories } from './Memories';
 import { AdminPanel } from './AdminPanel';
 import { PendingChangesPage } from './PendingChangesPage';
+import { ActivityLog } from './ActivityLog';
 import { OrganizationPanel } from './OrganizationPanel';
 
 // Lazy-load app components (heavy due to Sandpack/Plotly deps)
@@ -460,6 +461,7 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
         apps: "apps",
         documents: "documents",
         changes: "pending-changes",
+        activity: "activity-log",
       };
       const view = viewMap[subPath];
       if (view) {
@@ -508,6 +510,7 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
       "/apps": "apps",
       "/documents": "documents",
       "/changes": "pending-changes",
+      "/activity": "activity-log",
     };
     const matchedView = viewPaths[path];
     if (matchedView) {
@@ -582,6 +585,7 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
           "artifact-view": "/chat",
           admin: "/admin",
           "pending-changes": "/changes",
+          "activity-log": "/activity",
         };
         const base: string = viewPaths[currentView];
         newPath = prefix ? `${prefix}${base === "/" ? "" : base}` : base;
@@ -1671,6 +1675,7 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
     'artifact-view': 'Artifact',
     admin: 'Global Admin',
     'pending-changes': 'Pending Changes',
+    'activity-log': 'Activity Log',
   };
 
   return (
@@ -1863,6 +1868,9 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
         )}
         {currentView === 'pending-changes' && (
           <PendingChangesPage />
+        )}
+        {currentView === 'activity-log' && (
+          <ActivityLog />
         )}
       </main>
 

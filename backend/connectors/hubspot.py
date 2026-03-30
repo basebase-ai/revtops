@@ -2276,6 +2276,32 @@ Notes are activities attached to deals (or contacts/companies). Use HubSpot **so
         raise ValueError(f"Unknown HubSpot action: {action}")
 
     # =========================================================================
+    # Before-state capture (action ledger)
+    # =========================================================================
+
+    async def capture_before_state(self, operation: str, data: dict[str, Any]) -> dict[str, Any] | None:
+        """Snapshot current entity state before a mutation."""
+        try:
+            if operation == "update_deal":
+                deal_id = data.get("deal_id") or data.get("id")
+                if deal_id:
+                    resp = await self._make_request("GET", f"/crm/v3/objects/deals/{deal_id}")
+                    return {"properties": resp.get("properties", {})}
+            if operation == "update_contact":
+                contact_id = data.get("contact_id") or data.get("id")
+                if contact_id:
+                    resp = await self._make_request("GET", f"/crm/v3/objects/contacts/{contact_id}")
+                    return {"properties": resp.get("properties", {})}
+            if operation == "update_company":
+                company_id = data.get("company_id") or data.get("id")
+                if company_id:
+                    resp = await self._make_request("GET", f"/crm/v3/objects/companies/{company_id}")
+                    return {"properties": resp.get("properties", {})}
+        except Exception:
+            return None
+        return None
+
+    # =========================================================================
     # Write Operations
     # =========================================================================
 

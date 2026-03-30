@@ -2058,6 +2058,25 @@ Call via `run_on_connector(connector='google_drive', action='edit_file', params=
             return await self.get_file_content(external_id)
         return await self.get_file_content(stripped)
 
+    async def capture_before_state(self, operation: str, data: dict[str, Any]) -> dict[str, Any] | None:
+        """Snapshot file metadata before a mutation."""
+        try:
+            external_id = data.get("external_id") or data.get("file_id")
+            if external_id and operation in ("insert_text", "edit_file", "append_rows"):
+                token, _ = await self.get_oauth_token()
+                async with httpx.AsyncClient() as client:
+                    resp = await client.get(
+                        f"https://www.googleapis.com/drive/v3/files/{external_id}",
+                        headers={"Authorization": f"Bearer {token}"},
+                        params={"fields": "id,name,mimeType,headRevisionId,modifiedTime"},
+                        timeout=15.0,
+                    )
+                    if resp.status_code == 200:
+                        return resp.json()
+        except Exception:
+            return None
+        return None
+
     async def execute_action(self, action: str, params: dict[str, Any]) -> dict[str, Any]:
         """Dispatch actions (ACTION capability)."""
         if action == "create_file":

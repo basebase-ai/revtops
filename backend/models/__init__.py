@@ -32,6 +32,7 @@ from models.tracker_project import TrackerProject
 from models.tracker_issue import TrackerIssue
 from models.workstream_snapshot import WorkstreamSnapshot
 from models.notification import Notification
+from models.action_ledger import ActionLedgerEntry
 
 __all__ = [
     "Base",
@@ -72,4 +73,5 @@ __all__ = [
     "TrackerIssue",
     "WorkstreamSnapshot",
     "Notification",
+    "ActionLedgerEntry",
 ]

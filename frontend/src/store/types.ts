@@ -318,7 +318,8 @@ export type View =
   | "documents"
   | "artifact-view"
   | "admin"
-  | "pending-changes";
+  | "pending-changes"
+  | "activity-log";
 
 /** Global Admin panel sections (sidebar + AdminPanel content). */
 export type AdminPanelTab =
