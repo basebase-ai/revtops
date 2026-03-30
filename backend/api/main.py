@@ -20,7 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from api.websockets import websocket_endpoint
-from api.routes import apps, artifacts, auth, billing, change_sessions, chat, connectors, data, deals, drive, memories, notifications, search, slack_events, slack_user_mappings, support, sync, teams_events, tool_settings, twilio_events, whatsapp_events, waitlist, workstreams, workflows
+from api.routes import action_ledger, apps, artifacts, auth, billing, change_sessions, chat, connectors, data, deals, drive, memories, notifications, search, slack_events, slack_user_mappings, support, sync, teams_events, tool_settings, twilio_events, whatsapp_events, waitlist, workstreams, workflows
 from models.database import close_db, get_pool_status
 from services.task_manager import task_manager
 from config import log_missing_env_vars, settings
@@ -179,6 +179,7 @@ app.include_router(slack_user_mappings.router, prefix="/api/slack", tags=["slack
 app.include_router(twilio_events.router, prefix="/api/twilio", tags=["twilio"])
 app.include_router(whatsapp_events.router, prefix="/api/whatsapp", tags=["whatsapp"])
 app.include_router(teams_events.router, prefix="/api/teams", tags=["teams"])
+app.include_router(action_ledger.router, prefix="/api", tags=["action-ledger"])
 
 # WebSocket - authenticated via JWT token in query parameter
 app.add_api_websocket_route("/ws/chat", websocket_endpoint)

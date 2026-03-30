@@ -64,3 +64,8 @@ class App(Base):
     archived_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime, nullable=True, default=None
     )
+
+    # Widget config: layout + slots for compact preview, plus optional screenshot data URL
+    widget_config: Mapped[Optional[dict[str, Any]]] = mapped_column(
+        JSONB, nullable=True, default=None
+    )

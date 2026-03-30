@@ -7,9 +7,10 @@ import { useCallback, useEffect, useState } from 'react';
 import { fetchWorkstreams } from '../api/workstreams';
 import { apiRequest } from '../lib/api';
 import { useAppStore, useIntegrations } from '../store';
-import type { WorkstreamsResponse } from '../store/types';
+import type { WidgetData, WorkstreamsResponse } from '../store/types';
 import { SandpackAppRenderer } from './apps/SandpackAppRenderer';
 import { HomeAppPicker } from './apps/HomeAppPicker';
+import { WidgetGrid } from './widgets/WidgetGrid';
 import { WorkstreamGrid } from './WorkstreamGrid';
 
 // ---------------------------------------------------------------------------
@@ -44,6 +45,9 @@ export function Home(): JSX.Element {
   const [homeAppLoading, setHomeAppLoading] = useState<boolean>(true);
   const [showPicker, setShowPicker] = useState<boolean>(false);
   const [orgAppCount, setOrgAppCount] = useState<number>(0);
+
+  // Widget state
+  const [widgets, setWidgets] = useState<WidgetData[]>([]);
 
   // Workstream map state (default view when no custom app)
   const [workstreamWindow, setWorkstreamWindow] = useState<number>(24);
@@ -89,6 +93,37 @@ export function Home(): JSX.Element {
   useEffect(() => {
     if (!organization?.id || homeApp !== null || homeAppLoading) return;
     void fetchWorkstreamsData();
+    // Fetch widgets + lazy-generate for apps that don't have one yet
+    const loadWidgets = async (): Promise<void> => {
+      // 1. Load existing widgets
+      const widgetResp = await apiRequest<{ widgets: WidgetData[] }>('/apps/widgets/all');
+      if (widgetResp.data) setWidgets(widgetResp.data.widgets);
+
+      // 2. Find apps without widgets and generate in background
+      const appsResp = await apiRequest<{ apps: Array<{ id: string; title: string; widget_config: unknown | null; archived_at: string | null }> }>('/apps');
+      if (!appsResp.data) return;
+      const appsWithoutWidgets = appsResp.data.apps.filter(
+        (a) => !a.archived_at && !a.widget_config
+      );
+      // Generate widgets one at a time to avoid hammering the DB and LLM
+      for (const app of appsWithoutWidgets) {
+        try {
+          const resp = await apiRequest<{ widget_config: WidgetData['widget_config'] }>(
+            `/apps/${app.id}/widget`,
+            { method: 'POST', body: JSON.stringify({}) }
+          );
+          if (resp.data?.widget_config) {
+            setWidgets((prev) => [
+              ...prev,
+              { id: app.id, title: app.title, widget_config: resp.data!.widget_config },
+            ]);
+          }
+        } catch {
+          // Skip apps that fail to generate
+        }
+      }
+    };
+    void loadWidgets();
   }, [organization?.id, homeApp, homeAppLoading, fetchWorkstreamsData]);
 
   // Re-fetch workstreams when backend broadcasts workstreams_stale (e.g. after embedding update)
@@ -106,6 +141,15 @@ export function Home(): JSX.Element {
       setCurrentView('chat');
     },
     [setCurrentChatId, setCurrentView]
+  );
+
+  const handleWidgetClick = useCallback(
+    (appId: string) => {
+      // Navigate to the app view
+      useAppStore.getState().openApp(appId);
+      setCurrentView('app-view');
+    },
+    [setCurrentView]
   );
 
   const handleAppSelected = useCallback((appId: string | null) => {
@@ -281,6 +325,9 @@ export function Home(): JSX.Element {
             </div>
           </div>
         )}
+
+        {/* Widget grid */}
+        <WidgetGrid widgets={widgets} onWidgetClick={handleWidgetClick} />
 
         {/* Workstream grid */}
         <div className="flex-1 min-h-[400px] overflow-hidden">

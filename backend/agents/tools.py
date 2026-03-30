@@ -932,9 +932,19 @@ async def _write_on_connector(
         return {"error": error}
     assert instance is not None
 
+    from services.action_ledger import record_intent, record_outcome
+
+    change_id = await record_intent(
+        organization_id, user_id, context, connector,
+        dispatch_type="write", operation=operation, data=data,
+        connector_instance=instance,
+    )
     try:
-        return await instance.write(operation, data)
+        result = await instance.write(operation, data)
+        await record_outcome(change_id, organization_id, result)
+        return result
     except Exception as exc:
+        await record_outcome(change_id, organization_id, {"error": str(exc)})
         logger.error("[Tools] write_on_connector(%s, %s) failed: %s", connector, operation, exc, exc_info=True)
         return {"error": f"Write to {connector}.{operation} failed: {exc}"}
 
@@ -977,9 +987,19 @@ async def _run_on_connector(
         return {"error": error}
     assert instance is not None
 
+    from services.action_ledger import record_intent, record_outcome
+
+    change_id = await record_intent(
+        organization_id, user_id, context, connector,
+        dispatch_type="action", operation=action, data=action_params,
+        connector_instance=instance,
+    )
     try:
-        return await instance.execute_action(action, action_params)
+        result = await instance.execute_action(action, action_params)
+        await record_outcome(change_id, organization_id, result)
+        return result
     except Exception as exc:
+        await record_outcome(change_id, organization_id, {"error": str(exc)})
         logger.error("[Tools] run_on_connector(%s, %s) failed: %s", connector, action, exc, exc_info=True)
         return {"error": f"Action {connector}.{action} failed: {exc}"}
 

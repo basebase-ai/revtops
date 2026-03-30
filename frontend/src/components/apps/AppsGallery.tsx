@@ -7,6 +7,8 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { apiRequest } from "../../lib/api";
 import { useAppStore } from "../../store";
+import type { WidgetConfig } from "../../store/types";
+import { AppPreview } from "../widgets/AppPreview";
 
 /** Preload CDN libraries used by SandpackAppRenderer so they're browser-cached before user opens an app. */
 const CDN_PRELOADS = [
@@ -37,6 +39,7 @@ interface AppItem {
   creator_email: string | null;
   conversation_id: string | null;
   archived_at: string | null;
+  widget_config: WidgetConfig | null;
 }
 
 interface AppsListResponse {
@@ -221,7 +224,7 @@ export function AppsGallery(): JSX.Element {
   }
 
   return (
-    <div className="max-w-5xl mx-auto p-6">
+    <div className="max-w-5xl mx-auto p-6 overflow-auto flex-1">
       <div className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-xl font-bold text-surface-100">Apps</h1>
@@ -255,16 +258,9 @@ export function AppsGallery(): JSX.Element {
           </p>
         </div>
       ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
           {apps.map((app) => (
-            <div
-              key={app.id}
-              role="button"
-              tabIndex={0}
-              onClick={() => openApp(app.id)}
-              onKeyDown={(e) => { if (e.key === "Enter") openApp(app.id); }}
-              className="relative text-left p-4 rounded-lg bg-surface-800 border border-surface-700 hover:border-primary-500/50 hover:bg-surface-800/80 transition-all group cursor-pointer"
-            >
+            <div key={app.id} className="relative group">
               {/* Archive button */}
               <button
                 onClick={(e) => {
@@ -272,54 +268,31 @@ export function AppsGallery(): JSX.Element {
                   void handleArchive(app.id);
                 }}
                 title="Archive app"
-                className="absolute top-2 right-2 p-1.5 rounded-md text-surface-500 opacity-0 group-hover:opacity-100 hover:text-surface-200 hover:bg-surface-700 transition-all"
+                className="absolute top-2 right-2 z-10 p-1.5 rounded-md text-surface-500 opacity-0 group-hover:opacity-100 hover:text-surface-200 hover:bg-surface-700 transition-all"
               >
                 <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4"
-                  />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4" />
                 </svg>
               </button>
 
-              <div className="flex items-start gap-3">
-                <div className="w-9 h-9 rounded-lg bg-primary-500/15 flex items-center justify-center flex-shrink-0 mt-0.5">
-                  <svg
-                    className="w-5 h-5 text-primary-400"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    stroke="currentColor"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth={2}
-                      d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"
-                    />
-                  </svg>
-                </div>
-                <div className="min-w-0 flex-1">
-                  <h3 className="text-sm font-medium text-surface-100 group-hover:text-primary-300 transition-colors truncate max-w-[35ch]">
-                    {app.title ?? "Untitled App"}
-                  </h3>
-                  {app.description && (
-                    <p className="text-xs text-surface-400 mt-1 line-clamp-2">
-                      {app.description}
-                    </p>
+              <AppPreview
+                appId={app.id}
+                appTitle={app.title ?? "Untitled App"}
+                widgetConfig={app.widget_config}
+                onClick={() => openApp(app.id)}
+              />
+
+              {/* Name and metadata below the card */}
+              <div className="mt-1.5 px-1">
+                <div className="text-sm font-medium text-surface-200 truncate">{app.title ?? "Untitled App"}</div>
+                <div className="flex items-center gap-1.5 text-xs text-surface-500">
+                  {app.creator_name && <span>{app.creator_name}</span>}
+                  {app.created_at && (
+                    <>
+                      <span className="text-surface-600">&middot;</span>
+                      <span>{new Date(app.created_at).toLocaleDateString()}</span>
+                    </>
                   )}
-                  <div className="flex items-center gap-2 mt-2 text-xs text-surface-500">
-                    {app.creator_name && <span>{app.creator_name}</span>}
-                    {app.created_at && (
-                      <>
-                        <span className="text-surface-600">&middot;</span>
-                        <span>
-                          {new Date(app.created_at).toLocaleDateString()}
-                        </span>
-                      </>
-                    )}
-                  </div>
                 </div>
               </div>
             </div>

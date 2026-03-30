@@ -61,6 +61,7 @@ class AppListItem(BaseModel):
     creator_email: str | None
     conversation_id: str | None
     archived_at: str | None = None
+    widget_config: dict[str, Any] | None = None
 
 
 class AppListResponse(BaseModel):
@@ -125,6 +126,16 @@ def _cleanup_expired_tokens() -> None:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _strip_screenshot(widget_config: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Remove large screenshot data URL from list responses to avoid massive payloads."""
+    if not widget_config or "screenshot" not in widget_config:
+        return widget_config
+    config = dict(widget_config)
+    config["has_screenshot"] = True
+    del config["screenshot"]
+    return config
+
 
 _SELECT_RE = re.compile(r"^\s*SELECT\b", re.IGNORECASE)
 _DANGEROUS_RE = re.compile(
@@ -347,6 +358,7 @@ async def list_apps(
                     creator_email=creator.email if creator else None,
                     conversation_id=str(a.conversation_id) if a.conversation_id else None,
                     archived_at=f"{a.archived_at.isoformat()}Z" if a.archived_at else None,
+                    widget_config=_strip_screenshot(a.widget_config),
                 )
             )
 
@@ -503,6 +515,59 @@ async def set_home_app(
 
 
 # ---------------------------------------------------------------------------
+# Widgets (must be before /{app_id} to avoid path collision)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/widgets/all")
+async def list_widgets(
+    auth: AuthContext = Depends(require_organization),
+) -> dict[str, Any]:
+    """Return all non-archived apps that have a widget_config."""
+    assert auth.organization_id_str is not None
+    async with get_session(organization_id=auth.organization_id_str) as session:
+        result = await session.execute(
+            select(App)
+            .where(App.archived_at.is_(None), App.widget_config.isnot(None))
+            .order_by(App.updated_at.desc().nullslast())
+        )
+        apps = list(result.scalars().all())
+
+    return {
+        "widgets": [
+            {
+                "id": str(a.id),
+                "title": a.title,
+                "widget_config": _strip_screenshot(a.widget_config),
+            }
+            for a in apps
+        ]
+    }
+
+
+@router.get("/widgets/{app_id}/screenshot")
+async def get_app_screenshot(
+    app_id: str,
+    auth: AuthContext = Depends(require_organization),
+) -> dict[str, Any]:
+    """Fetch a single app's screenshot data URL on demand (not included in list responses)."""
+    try:
+        app_uuid = UUID(app_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid app ID")
+
+    assert auth.organization_id_str is not None
+    async with get_session(organization_id=auth.organization_id_str) as session:
+        result = await session.execute(select(App).where(App.id == app_uuid))
+        app: App | None = result.scalar_one_or_none()
+        if app is None:
+            raise HTTPException(status_code=404, detail="App not found")
+
+    screenshot = (app.widget_config or {}).get("screenshot")
+    return {"screenshot": screenshot}
+
+
+# ---------------------------------------------------------------------------
 # Get Single App
 # ---------------------------------------------------------------------------
 
@@ -615,3 +680,145 @@ async def create_embed_token(
         token=token,
         expires_at=datetime.fromtimestamp(expires, tz=timezone.utc).isoformat(),
     )
+
+
+# ---------------------------------------------------------------------------
+# Screenshots
+# ---------------------------------------------------------------------------
+
+
+class ScreenshotRequest(BaseModel):
+    screenshot: str  # data URL
+
+
+@router.post("/{app_id}/screenshot")
+async def save_screenshot(
+    app_id: str,
+    body: ScreenshotRequest,
+    auth: AuthContext = Depends(require_organization),
+) -> dict[str, str]:
+    """Store a screenshot data URL in the app's widget_config."""
+    try:
+        app_uuid = UUID(app_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid app ID")
+
+    # Basic validation: must be a data URL, cap at ~2MB
+    if not body.screenshot.startswith("data:image/"):
+        raise HTTPException(status_code=400, detail="Invalid screenshot data URL")
+    if len(body.screenshot) > 2_000_000:
+        raise HTTPException(status_code=400, detail="Screenshot too large (max 2MB)")
+
+    assert auth.organization_id_str is not None
+    async with get_session(organization_id=auth.organization_id_str) as session:
+        result = await session.execute(select(App).where(App.id == app_uuid))
+        app: App | None = result.scalar_one_or_none()
+        if app is None:
+            raise HTTPException(status_code=404, detail="App not found")
+
+        config = dict(app.widget_config) if app.widget_config else {}
+        config["screenshot"] = body.screenshot
+        app.widget_config = config
+        await session.commit()
+
+    return {"status": "ok"}
+
+
+# ---------------------------------------------------------------------------
+# Widgets
+# ---------------------------------------------------------------------------
+
+
+class GenerateWidgetRequest(BaseModel):
+    prompt: str | None = None
+
+
+@router.post("/{app_id}/widget")
+async def generate_widget(
+    app_id: str,
+    body: GenerateWidgetRequest,
+    auth: AuthContext = Depends(require_organization),
+) -> dict[str, Any]:
+    """Generate (or regenerate) a widget config for an app."""
+    from services.widget_inference import generate_widget_config
+
+    try:
+        app_uuid = UUID(app_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid app ID")
+
+    assert auth.organization_id_str is not None
+    async with get_session(organization_id=auth.organization_id_str) as session:
+        result = await session.execute(select(App).where(App.id == app_uuid))
+        app: App | None = result.scalar_one_or_none()
+        if app is None:
+            raise HTTPException(status_code=404, detail="App not found")
+
+        # Run the app's queries to get data for the LLM
+        queries: dict[str, Any] = app.queries or {}
+        query_results: dict[str, list[dict[str, Any]]] = {}
+        for qname, qspec in queries.items():
+            sql: str = qspec.get("sql", "")
+            try:
+                _validate_sql_is_select(sql)
+                bound: dict[str, Any] = {"org_id": auth.organization_id_str}
+                sql_upper = sql.upper()
+                if "LIMIT" not in sql_upper:
+                    sql = f"{sql.rstrip().rstrip(';')} LIMIT 100"
+                raw = await session.execute(text(sql), bound)
+                rows = raw.mappings().all()
+                query_results[qname] = [
+                    {
+                        k: _json_serial(v)
+                        if not isinstance(v, (str, int, float, bool, type(None)))
+                        else v
+                        for k, v in dict(row).items()
+                    }
+                    for row in rows
+                ]
+            except Exception as exc:
+                logger.warning("Widget query %s failed for app %s: %s", qname, app_id, exc)
+                query_results[qname] = []
+
+        try:
+            config = await generate_widget_config(
+                app=app,
+                organization_id=auth.organization_id_str,
+                query_results=query_results,
+                user_prompt=body.prompt,
+            )
+        except Exception as exc:
+            logger.error("Widget inference failed for app %s: %s", app_id, exc)
+            raise HTTPException(status_code=500, detail="Widget generation failed")
+
+        # Preserve existing screenshot if present
+        if app.widget_config and app.widget_config.get("screenshot"):
+            config["screenshot"] = app.widget_config["screenshot"]
+
+        app.widget_config = config
+        await session.commit()
+
+    return {"widget_config": config}
+
+
+@router.delete("/{app_id}/widget")
+async def delete_widget(
+    app_id: str,
+    auth: AuthContext = Depends(require_organization),
+) -> dict[str, str]:
+    """Clear an app's widget config."""
+    try:
+        app_uuid = UUID(app_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid app ID")
+
+    assert auth.organization_id_str is not None
+    async with get_session(organization_id=auth.organization_id_str) as session:
+        result = await session.execute(select(App).where(App.id == app_uuid))
+        app: App | None = result.scalar_one_or_none()
+        if app is None:
+            raise HTTPException(status_code=404, detail="App not found")
+        app.widget_config = None
+        await session.commit()
+
+    return {"status": "ok"}

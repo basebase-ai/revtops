@@ -302,6 +302,50 @@ export interface ActiveTask {
 }
 
 // =============================================================================
+// Widget types (app previews)
+// =============================================================================
+
+export type WidgetLayout = 'big_number' | 'mini_list' | 'status' | 'sparkline';
+
+export interface BigNumberSlots {
+  value: string;
+  label: string;
+  trend?: 'up' | 'down' | 'flat';
+}
+
+export interface MiniListSlots {
+  rows: Array<{ label: string; value: string }>;
+}
+
+export interface StatusSlots {
+  icon: 'warning' | 'success' | 'info';
+  text: string;
+}
+
+export interface SparklineSlots {
+  values: number[];
+  current: string;
+  label: string;
+}
+
+export type WidgetSlots = BigNumberSlots | MiniListSlots | StatusSlots | SparklineSlots;
+
+export interface WidgetConfig {
+  layout: WidgetLayout;
+  title: string;
+  slots: WidgetSlots;
+  screenshot?: string;
+  widget_prompt: string | null;
+  generated_at: string;
+}
+
+export interface WidgetData {
+  id: string;
+  title: string;
+  widget_config: WidgetConfig;
+}
+
+// =============================================================================
 // UI types
 // =============================================================================
 
@@ -318,7 +362,8 @@ export type View =
   | "documents"
   | "artifact-view"
   | "admin"
-  | "pending-changes";
+  | "pending-changes"
+  | "activity-log";
 
 /** Global Admin panel sections (sidebar + AdminPanel content). */
 export type AdminPanelTab =

@@ -11,6 +11,7 @@
  */
 
 import { useEffect, useState, useCallback, useRef } from "react";
+import html2canvas from "html2canvas";
 import { APP_SDK_SOURCE, APP_STYLES, REACT_PLOTLY_SHIM } from "./appSdkSource";
 import { apiRequest, API_BASE } from "../../lib/api";
 
@@ -35,6 +36,8 @@ interface SandpackAppRendererProps {
   frontendCodeCompiled?: string | null;
   embedToken?: string;
   onError?: (message: string) => void;
+  /** If true, skip screenshot capture (screenshot already exists). */
+  hasScreenshot?: boolean;
 }
 
 // ---- helpers --------------------------------------------------------------
@@ -181,6 +184,7 @@ export function SandpackAppRenderer({
   frontendCodeCompiled: initialCompiled,
   embedToken,
   onError,
+  hasScreenshot,
 }: SandpackAppRendererProps): JSX.Element {
   const [tokenData, setTokenData] = useState<AppTokenData | null>(null);
   const [appCode, setAppCode] = useState<string | null>(initialCode ?? null);
@@ -189,6 +193,7 @@ export function SandpackAppRenderer({
   const [tokenRetry, setTokenRetry] = useState<number>(0);
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const retryingRef = useRef<boolean>(false);
+  const screenshotCapturedRef = useRef<boolean>(false);
 
   // Fetch latest app code from DB — always prefer this over the prop snapshot
   useEffect(() => {
@@ -268,6 +273,47 @@ export function SandpackAppRenderer({
   useEffect(() => {
     void fetchToken();
   }, [fetchToken, tokenRetry]);
+
+  // Screenshot capture: after iframe loads and data settles, capture via html2canvas
+  useEffect(() => {
+    if (hasScreenshot || screenshotCapturedRef.current || embedToken) return;
+    if (!iframeRef.current || !tokenData || !appCode) return;
+
+    const timer = setTimeout(() => {
+      const iframe = iframeRef.current;
+      if (!iframe || screenshotCapturedRef.current) return;
+
+      try {
+        const iframeDoc = iframe.contentDocument;
+        if (!iframeDoc?.body) return;
+
+        // Don't capture if the app is still showing a spinner/loading state
+        const hasSpinner = iframeDoc.querySelector('.animate-spin, [class*="spinner"], [class*="loading"]');
+        const bodyText = iframeDoc.body.innerText?.trim() ?? '';
+        if (hasSpinner || bodyText.length < 20) return;
+
+        screenshotCapturedRef.current = true;
+        html2canvas(iframeDoc.body, {
+          backgroundColor: "#18181b",
+          scale: 0.5,
+          logging: false,
+          useCORS: true,
+          width: iframeDoc.body.scrollWidth,
+          height: Math.min(iframeDoc.body.scrollHeight, 800),
+        }).then((canvas) => {
+          const dataUrl = canvas.toDataURL("image/jpeg", 0.7);
+          if (dataUrl.length < 2_000_000) {
+            void apiRequest("/apps/" + appId + "/screenshot", {
+              method: "POST",
+              body: JSON.stringify({ screenshot: dataUrl }),
+            });
+          }
+        }).catch(() => { /* non-critical */ });
+      } catch { /* cross-origin errors */ }
+    }, 3000);
+
+    return () => clearTimeout(timer);
+  }, [appId, tokenData, appCode, hasScreenshot, embedToken]);
 
   if (error) {
     return (
