@@ -1869,7 +1869,7 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
         {currentView === 'pending-changes' && (
           <PendingChangesPage />
         )}
-        {currentView === 'activity-log' && (
+        {currentView === 'activity-log' && import.meta.env.VITE_FEATURE_ACTION_LEDGER === 'true' && (
           <ActivityLog />
         )}
       </main>
