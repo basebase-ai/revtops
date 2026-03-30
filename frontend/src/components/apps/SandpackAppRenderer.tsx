@@ -279,20 +279,29 @@ export function SandpackAppRenderer({
     if (hasScreenshot || screenshotCapturedRef.current || embedToken) return;
     if (!iframeRef.current || !tokenData || !appCode) return;
 
-    const timer = setTimeout(() => {
+    // Try capture at 3s, retry at 6s if first attempt skipped (still loading)
+    let attempt = 0;
+    const tryCapture = (): void => {
       const iframe = iframeRef.current;
       if (!iframe || screenshotCapturedRef.current) return;
 
       try {
         const iframeDoc = iframe.contentDocument;
-        if (!iframeDoc?.body) return;
+        if (!iframeDoc?.body) {
+          console.warn("[screenshot] No contentDocument access for", appId);
+          return;
+        }
 
-        // Don't capture if the app is still showing a spinner/loading state
-        const hasSpinner = iframeDoc.querySelector('.animate-spin, [class*="spinner"], [class*="loading"]');
         const bodyText = iframeDoc.body.innerText?.trim() ?? '';
-        if (hasSpinner || bodyText.length < 20) return;
+        console.log(`[screenshot] attempt=${attempt} bodyLen=${bodyText.length} appId=${appId}`);
+        if (bodyText.length < 10 && attempt < 2) {
+          attempt++;
+          setTimeout(tryCapture, 3000);
+          return;
+        }
 
         screenshotCapturedRef.current = true;
+        console.log("[screenshot] Capturing with html2canvas...", appId);
         html2canvas(iframeDoc.body, {
           backgroundColor: "#18181b",
           scale: 0.5,
@@ -302,16 +311,24 @@ export function SandpackAppRenderer({
           height: Math.min(iframeDoc.body.scrollHeight, 800),
         }).then((canvas) => {
           const dataUrl = canvas.toDataURL("image/jpeg", 0.7);
+          console.log(`[screenshot] Captured! size=${dataUrl.length} appId=${appId}`);
           if (dataUrl.length < 2_000_000) {
             void apiRequest("/apps/" + appId + "/screenshot", {
               method: "POST",
               body: JSON.stringify({ screenshot: dataUrl }),
             });
+          } else {
+            console.warn("[screenshot] Too large:", dataUrl.length);
           }
-        }).catch(() => { /* non-critical */ });
-      } catch { /* cross-origin errors */ }
-    }, 3000);
+        }).catch((err) => {
+          console.error("[screenshot] html2canvas failed:", err);
+        });
+      } catch (err) {
+        console.error("[screenshot] Access error:", err);
+      }
+    };
 
+    const timer = setTimeout(tryCapture, 3000);
     return () => clearTimeout(timer);
   }, [appId, tokenData, appCode, hasScreenshot, embedToken]);
 

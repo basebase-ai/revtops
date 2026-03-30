@@ -9,7 +9,8 @@
  * Debug: click the cycle icon (top-right) to force a specific mode.
  */
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { apiRequest } from '../../lib/api';
 import type { WidgetConfig } from '../../store/types';
 import { WidgetCard } from './WidgetCard';
 
@@ -60,13 +61,29 @@ function DefaultIcon({ title }: { title: string }): JSX.Element {
 export function AppPreview({ appId, appTitle, widgetConfig, onClick }: AppPreviewProps): JSX.Element {
   const [modeOverride, setModeOverride] = useState<PreviewMode>('auto');
 
-  const hasScreenshot = Boolean(widgetConfig?.screenshot);
+  // Screenshot: inline data URL or has_screenshot flag (stripped from list responses)
+  const hasScreenshotFlag = Boolean(
+    widgetConfig?.screenshot || (widgetConfig as Record<string, unknown> | undefined)?.has_screenshot
+  );
   const hasWidget = Boolean(widgetConfig?.layout);
+  const [screenshotUrl, setScreenshotUrl] = useState<string | null>(
+    widgetConfig?.screenshot ?? null
+  );
+
+  // Lazy-fetch screenshot on demand when flag is set but no inline URL
+  useEffect(() => {
+    if (screenshotUrl || !hasScreenshotFlag || widgetConfig?.screenshot) return;
+    let cancelled = false;
+    apiRequest<{ screenshot: string | null }>(`/apps/widgets/${appId}/screenshot`).then((resp) => {
+      if (!cancelled && resp.data?.screenshot) setScreenshotUrl(resp.data.screenshot);
+    });
+    return () => { cancelled = true; };
+  }, [appId, hasScreenshotFlag, screenshotUrl, widgetConfig?.screenshot]);
 
   // Determine what to show
   const effectiveMode: 'screenshot' | 'widget' | 'icon' =
     modeOverride === 'auto'
-      ? hasScreenshot ? 'screenshot' : hasWidget ? 'widget' : 'icon'
+      ? (hasScreenshotFlag && screenshotUrl) ? 'screenshot' : hasWidget ? 'widget' : 'icon'
       : modeOverride;
 
   const cycleMode = (e: React.MouseEvent): void => {
@@ -104,8 +121,8 @@ export function AppPreview({ appId, appTitle, widgetConfig, onClick }: AppPrevie
         onClick={() => onClick?.(appId)}
         className="flex flex-col bg-surface-900 border border-surface-800 rounded-xl overflow-hidden h-[140px] w-full hover:border-surface-600 hover:bg-surface-800/50 transition-colors text-left cursor-pointer"
       >
-        {effectiveMode === 'screenshot' && widgetConfig?.screenshot ? (
-          <ScreenshotView src={widgetConfig.screenshot} title={appTitle} />
+        {effectiveMode === 'screenshot' && screenshotUrl ? (
+          <ScreenshotView src={screenshotUrl} title={appTitle} />
         ) : (
           <DefaultIcon title={appTitle} />
         )}
