@@ -287,10 +287,13 @@ export function SandpackAppRenderer({
 
       try {
         const iframeDoc = iframe.contentDocument;
-        if (!iframeDoc?.body) return;
+        if (!iframeDoc?.body) {
+          console.warn("[screenshot] No contentDocument access for", appId);
+          return;
+        }
 
-        // Skip if body has very little content (probably still loading)
         const bodyText = iframeDoc.body.innerText?.trim() ?? '';
+        console.log(`[screenshot] attempt=${attempt} bodyLen=${bodyText.length} appId=${appId}`);
         if (bodyText.length < 10 && attempt < 2) {
           attempt++;
           setTimeout(tryCapture, 3000);
@@ -298,6 +301,7 @@ export function SandpackAppRenderer({
         }
 
         screenshotCapturedRef.current = true;
+        console.log("[screenshot] Capturing with html2canvas...", appId);
         html2canvas(iframeDoc.body, {
           backgroundColor: "#18181b",
           scale: 0.5,
@@ -307,14 +311,21 @@ export function SandpackAppRenderer({
           height: Math.min(iframeDoc.body.scrollHeight, 800),
         }).then((canvas) => {
           const dataUrl = canvas.toDataURL("image/jpeg", 0.7);
+          console.log(`[screenshot] Captured! size=${dataUrl.length} appId=${appId}`);
           if (dataUrl.length < 2_000_000) {
             void apiRequest("/apps/" + appId + "/screenshot", {
               method: "POST",
               body: JSON.stringify({ screenshot: dataUrl }),
             });
+          } else {
+            console.warn("[screenshot] Too large:", dataUrl.length);
           }
-        }).catch(() => { /* non-critical */ });
-      } catch { /* cross-origin errors */ }
+        }).catch((err) => {
+          console.error("[screenshot] html2canvas failed:", err);
+        });
+      } catch (err) {
+        console.error("[screenshot] Access error:", err);
+      }
     };
 
     const timer = setTimeout(tryCapture, 3000);
