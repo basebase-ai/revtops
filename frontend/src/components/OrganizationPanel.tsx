@@ -1392,6 +1392,9 @@ function CreditDetailsModal({ organizationHandle, details, loading, onClose }: C
   const [PlotComponent, setPlotComponent] = useState<typeof import('react-plotly.js').default | null>(null);
   /** Filter "Usage by Chat" to conversations where this user consumed credits */
   const [chatFilterUserId, setChatFilterUserId] = useState<string | null>(null);
+  const [chartRangePreset, setChartRangePreset] = useState<
+    '1d' | '7d' | '30d' | 'beginningOfMonth'
+  >('30d');
 
   useEffect(() => {
     import('react-plotly.js')
@@ -1421,14 +1424,47 @@ function CreditDetailsModal({ organizationHandle, details, loading, onClose }: C
     return { timestamps, balances };
   }, [details]);
 
-  /** Default x-axis: last 30 days (end = now when details load). */
-  const last30DaysRange = useMemo<[string, string] | null>(() => {
-    if (!details) return null;
-    const end = new Date();
-    const start = new Date(end);
-    start.setDate(start.getDate() - 30);
-    return [start.toISOString(), end.toISOString()];
-  }, [details]);
+  const MS_DAY = 86400000;
+
+  /** Windows end at the latest ledger time (not clamped to first tx — otherwise short history makes every preset identical). */
+  const chartXAxisRange = useMemo<[string, string] | undefined>(() => {
+    if (!burndownData?.timestamps.length) return undefined;
+    const ts = burndownData.timestamps.map((t) => new Date(t).getTime());
+    const minT = Math.min(...ts);
+    const maxT = Math.max(...ts);
+    if (minT === maxT) return undefined;
+
+    let rangeStart: number;
+    const rangeEnd = maxT;
+
+    switch (chartRangePreset) {
+      case '1d':
+        rangeStart = maxT - MS_DAY;
+        break;
+      case '7d':
+        rangeStart = maxT - 7 * MS_DAY;
+        break;
+      case '30d':
+        rangeStart = maxT - 30 * MS_DAY;
+        break;
+      case 'beginningOfMonth': {
+        const d = new Date(maxT);
+        rangeStart = new Date(d.getFullYear(), d.getMonth(), 1, 0, 0, 0, 0).getTime();
+        break;
+      }
+      default:
+        rangeStart = minT;
+    }
+
+    if (rangeStart >= rangeEnd) return undefined;
+
+    const span = rangeEnd - rangeStart;
+    const pad = Math.max(span * 0.02, 1);
+    return [new Date(rangeStart - pad).toISOString(), new Date(rangeEnd + pad).toISOString()];
+  }, [burndownData, chartRangePreset]);
+
+  const chartTickFormat =
+    chartRangePreset === '1d' ? '%b %d %H:%M' : '%b %d';
 
   const userUsageData = useMemo(() => {
     if (!details?.usage_by_user.length) return null;
@@ -1442,20 +1478,22 @@ function CreditDetailsModal({ organizationHandle, details, loading, onClose }: C
 
   const conversationUsage = useMemo(() => {
     if (!details?.usage_by_conversation?.length) return [];
-    // Newest activity first (reverse chronological); missing dates last
-    let rows = [...details.usage_by_conversation].sort((a, b) => {
+    const byDate = (a: ConversationUsage, b: ConversationUsage): number => {
       const ta = a.last_used_at ? new Date(a.last_used_at).getTime() : 0;
       const tb = b.last_used_at ? new Date(b.last_used_at).getTime() : 0;
       if (tb !== ta) return tb - ta;
-      return b.total_credits_used - a.total_credits_used;
-    });
+      return a.conversation_id.localeCompare(b.conversation_id);
+    };
+    let rows = [...details.usage_by_conversation].sort(byDate);
     if (chatFilterUserId) {
       const fid = canonicalCreditId(chatFilterUserId);
-      rows = rows.filter((c) =>
-        (c.by_user ?? []).some(
-          (s) => canonicalCreditId(s.user_id) === fid,
-        ),
-      );
+      rows = rows
+        .filter((c) =>
+          (c.by_user ?? []).some(
+            (s) => canonicalCreditId(s.user_id) === fid,
+          ),
+        )
+        .sort(byDate);
     }
     return rows;
   }, [details, chatFilterUserId]);
@@ -1511,10 +1549,44 @@ function CreditDetailsModal({ organizationHandle, details, loading, onClose }: C
             <>
               {/* Burndown Chart */}
               <div>
-                <h3 className="text-sm font-medium text-surface-200 mb-4">Credit Balance Over Time</h3>
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-4">
+                  <h3 className="text-sm font-medium text-surface-200">Credit Balance Over Time</h3>
+                  {burndownData && PlotComponent && (
+                    <div className="flex flex-wrap items-center gap-x-1 gap-y-1 text-xs shrink-0">
+                      {(
+                        [
+                          { id: '1d' as const, label: '1 day' },
+                          { id: '7d' as const, label: '7 days' },
+                          { id: '30d' as const, label: '30 days' },
+                          { id: 'beginningOfMonth' as const, label: 'Beginning of month' },
+                        ] as const
+                      ).map((p, i) => (
+                        <span key={p.id} className="inline-flex items-center">
+                          {i > 0 && (
+                            <span className="text-surface-600 mx-1.5 select-none" aria-hidden>
+                              ·
+                            </span>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => setChartRangePreset(p.id)}
+                            className={
+                              chartRangePreset === p.id
+                                ? 'text-surface-100 font-medium'
+                                : 'text-surface-400 hover:text-surface-200 transition-colors'
+                            }
+                          >
+                            {p.label}
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
                 {burndownData && PlotComponent ? (
                   <div className="bg-surface-800/50 rounded-lg p-4">
                     <PlotComponent
+                      key={chartRangePreset}
                       data={[
                         {
                           x: burndownData.timestamps,
@@ -1537,8 +1609,9 @@ function CreditDetailsModal({ organizationHandle, details, loading, onClose }: C
                         font: { color: '#a1a1aa' },
                         xaxis: {
                           gridcolor: 'rgba(255,255,255,0.05)',
-                          tickformat: '%b %d',
-                          range: last30DaysRange ?? undefined,
+                          tickformat: chartTickFormat,
+                          range: chartXAxisRange,
+                          autorange: false,
                         },
                         yaxis: {
                           gridcolor: 'rgba(255,255,255,0.05)',
@@ -1547,7 +1620,11 @@ function CreditDetailsModal({ organizationHandle, details, loading, onClose }: C
                         },
                         hovermode: 'x unified',
                       }}
-                      config={{ displayModeBar: false, responsive: true }}
+                      config={{
+                        responsive: true,
+                        displayModeBar: false,
+                        scrollZoom: true,
+                      }}
                       style={{ width: '100%' }}
                     />
                   </div>
@@ -1564,7 +1641,10 @@ function CreditDetailsModal({ organizationHandle, details, loading, onClose }: C
 
               {/* Usage by User */}
               <div>
-                <h3 className="text-sm font-medium text-surface-200 mb-4">Usage by Team Member</h3>
+                <h3 className="text-sm font-medium text-surface-200">Usage by Team Member</h3>
+                <p className="text-xs text-surface-500 mb-4">
+                  Chat tool credits in this billing period (click to filter chats below)
+                </p>
                 {userUsageData && userUsageData.values.length > 0 ? (
                   <div className="space-y-4">
                     {/* Bar visualization — click a member to filter chats below */}
