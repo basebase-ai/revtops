@@ -532,6 +532,7 @@ async def _get_connector_instance(
     organization_id: str,
     user_id: str | None,
     required_capability: str | None = None,
+    preferred_integration_user_id: str | None = None,
 ) -> tuple["BaseConnector | None", str | None]:
     """Resolve a connector by slug, verify active Integration, and instantiate.
 
@@ -558,8 +559,22 @@ async def _get_connector_instance(
 
     # Find an integration the user can access
     async with get_session(organization_id=organization_id) as session:
-        # First, try to find user's own integration
-        if user_id:
+        # If provided, first try the preferred integration owner (used for owner-bound records)
+        if preferred_integration_user_id:
+            result = await session.execute(
+                select(Integration).where(
+                    Integration.organization_id == UUID(organization_id),
+                    Integration.connector == slug,
+                    Integration.user_id == UUID(preferred_integration_user_id),
+                    Integration.is_active == True,  # noqa: E712
+                )
+            )
+            integration: Integration | None = result.scalar_one_or_none()
+        else:
+            integration = None
+
+        # Next, try to find user's own integration
+        if integration is None and user_id:
             result = await session.execute(
                 select(Integration).where(
                     Integration.organization_id == UUID(organization_id),
@@ -568,9 +583,7 @@ async def _get_connector_instance(
                     Integration.is_active == True,  # noqa: E712
                 )
             )
-            integration: Integration | None = result.scalar_one_or_none()
-        else:
-            integration = None
+            integration = result.scalar_one_or_none()
 
         # If no personal integration, look for shared integrations
         if integration is None:
@@ -5520,6 +5533,7 @@ async def _read_cloud_file(
                 organization_id=organization_id,
                 user_id=user_id,
                 required_capability="query",
+                preferred_integration_user_id=str(file_record.user_id),
             )
             if not connector:
                 return {"error": err or "No Google Drive connector is available."}
