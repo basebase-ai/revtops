@@ -8,11 +8,27 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 
 from api.auth_middleware import AuthContext, get_current_auth
+from models.org_member import OrgMember
 from models.action_ledger import ActionLedgerEntry
-from models.database import get_session
+from models.database import get_admin_session, get_session
 
 router = APIRouter(prefix="/action-ledger", tags=["action-ledger"])
 logger = logging.getLogger(__name__)
+
+
+async def _is_org_admin(*, user_id: UUID, organization_id: UUID) -> bool:
+    """Return True when the user is an active org admin for the organization."""
+    async with get_admin_session() as session:
+        membership = (
+            await session.execute(
+                select(OrgMember).where(
+                    OrgMember.user_id == user_id,
+                    OrgMember.organization_id == organization_id,
+                    OrgMember.status.in_(("active", "onboarding", "invited")),
+                )
+            )
+        ).scalar_one_or_none()
+    return bool(membership and membership.role == "admin")
 
 
 class ActionLedgerResponse(BaseModel):
@@ -35,7 +51,15 @@ async def list_action_ledger(
     if not auth.organization_id or str(auth.organization_id) != org_id:
         raise HTTPException(status_code=403, detail="Organization mismatch")
 
-    filters = [ActionLedgerEntry.organization_id == UUID(org_id)]
+    org_uuid = UUID(org_id)
+    is_org_admin = auth.is_global_admin or await _is_org_admin(
+        user_id=auth.user_id,
+        organization_id=org_uuid,
+    )
+
+    filters = [ActionLedgerEntry.organization_id == org_uuid]
+    if not is_org_admin:
+        filters.append(ActionLedgerEntry.user_id == auth.user_id)
     if conversation_id:
         filters.append(ActionLedgerEntry.conversation_id == UUID(conversation_id))
     if connector:
