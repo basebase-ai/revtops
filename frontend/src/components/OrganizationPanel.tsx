@@ -63,6 +63,7 @@ interface ConversationUsage {
   conversation_id: string;
   title: string | null;
   total_credits_used: number;
+  unattributed_credits_used?: number;
   last_used_at: string | null;
   by_user?: ConversationUserSlice[];
 }
@@ -71,6 +72,7 @@ interface CreditDetails {
   transactions: CreditTransaction[];
   usage_by_user: UserUsage[];
   usage_by_conversation: ConversationUsage[];
+  unattributed_credits_used?: number;
   period_start: string | null;
   period_end: string | null;
   starting_balance: number;
@@ -1508,6 +1510,15 @@ function CreditDetailsModal({ organizationHandle, details, loading, onClose }: C
     return u.user_name || u.user_email.split('@')[0];
   }, [chatFilterUserId, details?.usage_by_user]);
 
+  const attributedPeriodTotal = useMemo(
+    () =>
+      details?.usage_by_user.reduce((s, u) => s + u.total_credits_used, 0) ?? 0,
+    [details?.usage_by_user],
+  );
+  const unattributedPeriodTotal = details?.unattributed_credits_used ?? 0;
+  const showMemberUsageSection =
+    attributedPeriodTotal > 0 || unattributedPeriodTotal > 0;
+
   const navigateToConversation = (conversationId: string): void => {
     const base = organizationHandle ? `/${organizationHandle}` : '';
     window.location.href = `${base}/chat/${conversationId}`;
@@ -1645,9 +1656,15 @@ function CreditDetailsModal({ organizationHandle, details, loading, onClose }: C
                 <p className="text-xs text-surface-500 mb-4">
                   Chat tool credits in this billing period (click to filter chats below)
                 </p>
-                {userUsageData && userUsageData.values.length > 0 ? (
+                {showMemberUsageSection ? (
                   <div className="space-y-4">
-                    {/* Bar visualization — click a member to filter chats below */}
+                    {attributedPeriodTotal === 0 && unattributedPeriodTotal > 0 && (
+                      <p className="text-xs text-surface-500">
+                        No credits attributed to current team members this period. Totals below are
+                        from chats where the member account was removed.
+                      </p>
+                    )}
+                    {userUsageData && userUsageData.values.length > 0 ? (
                     <div className="space-y-3">
                       {details.usage_by_user.map((user, idx) => {
                         const maxUsage = Math.max(...details.usage_by_user.map(u => u.total_credits_used));
@@ -1694,13 +1711,37 @@ function CreditDetailsModal({ organizationHandle, details, loading, onClose }: C
                         );
                       })}
                     </div>
-                    
-                    {/* Total */}
-                    <div className="pt-3 border-t border-surface-700 flex justify-between text-sm">
-                      <span className="text-surface-400">Total used this period</span>
-                      <span className="text-surface-200 font-medium">
-                        {details.usage_by_user.reduce((sum, u) => sum + u.total_credits_used, 0)} credits
-                      </span>
+                    ) : null}
+
+                    {/* Total — breakdown when both team and former-user credits exist */}
+                    <div className="pt-3 border-t border-surface-700 text-sm">
+                      {unattributedPeriodTotal > 0 ? (
+                        <div className="space-y-2">
+                          {attributedPeriodTotal > 0 && (
+                            <div className="flex justify-between">
+                              <span className="text-surface-400">Team members</span>
+                              <span className="text-surface-200 font-medium">
+                                {attributedPeriodTotal} credits
+                              </span>
+                            </div>
+                          )}
+                          <div className="flex justify-between">
+                            <span className="text-surface-400">Former user (removed account)</span>
+                            <span className="text-surface-200 font-medium">
+                              {unattributedPeriodTotal} credits
+                            </span>
+                          </div>
+                          <div className="flex justify-between pt-2 border-t border-surface-700 font-medium text-surface-100">
+                            <span>Total used this period</span>
+                            <span>{attributedPeriodTotal + unattributedPeriodTotal} credits</span>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="flex justify-between font-medium text-surface-100">
+                          <span className="text-surface-400 font-normal">Total used this period</span>
+                          <span>{attributedPeriodTotal} credits</span>
+                        </div>
+                      )}
                     </div>
                   </div>
                 ) : (
@@ -1735,7 +1776,11 @@ function CreditDetailsModal({ organizationHandle, details, loading, onClose }: C
                 </div>
                 {conversationUsage.length > 0 ? (
                   <div className="space-y-2">
-                    {conversationUsage.map((conv) => (
+                    {conversationUsage.map((conv) => {
+                      const orphan = conv.unattributed_credits_used ?? 0;
+                      const attributed = conv.total_credits_used;
+                      const lineTotal = attributed + orphan;
+                      return (
                       <button
                         key={conv.conversation_id}
                         type="button"
@@ -1759,9 +1804,18 @@ function CreditDetailsModal({ organizationHandle, details, loading, onClose }: C
                           )}
                         </div>
                         <div className="flex items-center gap-3 flex-shrink-0">
-                          <span className="text-sm font-medium text-surface-50 whitespace-nowrap">
-                            {conv.total_credits_used} credits
-                          </span>
+                          <div className="text-right">
+                            <span className="text-sm font-medium text-surface-50 whitespace-nowrap block">
+                              {lineTotal} credits
+                            </span>
+                            {orphan > 0 && (
+                              <span className="text-xs text-surface-500 block mt-0.5">
+                                {attributed > 0
+                                  ? `${attributed} team · ${orphan} former user`
+                                  : 'Former user (removed account)'}
+                              </span>
+                            )}
+                          </div>
                           <span className="inline-flex items-center gap-1 text-xs text-primary-300">
                             View chat
                             <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -1770,7 +1824,8 @@ function CreditDetailsModal({ organizationHandle, details, loading, onClose }: C
                           </span>
                         </div>
                       </button>
-                    ))}
+                      );
+                    })}
                   </div>
                 ) : (details.usage_by_conversation?.length ?? 0) > 0 && chatFilterUserId ? (
                   <div className="bg-surface-800/50 rounded-lg p-6 text-center text-surface-400">

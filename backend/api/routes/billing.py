@@ -171,7 +171,10 @@ class ConversationUserSlice(BaseModel):
 class ConversationUsageItem(BaseModel):
     conversation_id: str
     title: Optional[str] = None
+    # Attributed debits (known user_id); matches team member / by_user sums.
     total_credits_used: int
+    # Orphan debits (user_id NULL, e.g. after member removed); excluded from team totals.
+    unattributed_credits_used: int = 0
     last_used_at: Optional[str] = None
     by_user: list[ConversationUserSlice] = []
 
@@ -180,6 +183,8 @@ class CreditDetailsResponse(BaseModel):
     transactions: list[CreditTransactionItem]
     usage_by_user: list[UserUsageItem]
     usage_by_conversation: list[ConversationUsageItem] = []
+    # Sum of orphan chat debits in period (same as sum of per-conversation unattributed).
+    unattributed_credits_used: int = 0
     period_start: Optional[str] = None
     period_end: Optional[str] = None
     starting_balance: int = 0
@@ -596,7 +601,9 @@ async def get_credit_details(
                 )
             )
 
-        # Aggregate usage by conversation (per-chat credit consumption)
+        # Aggregate usage by conversation (per-chat credit consumption).
+        # Same attribution rules as build_usage_query / conv_user_query so per-chat totals
+        # match teammate rows and by_user slices (excludes orphaned debits after user_id NULL).
         conv_usage_rows: list[tuple[str, int, datetime]] = []
         conv_usage_query = (
             select(
@@ -607,6 +614,8 @@ async def get_credit_details(
             .where(CreditTransaction.organization_id == org_id)
             .where(CreditTransaction.reference_type == "conversation")
             .where(CreditTransaction.amount < 0)
+            .where(CreditTransaction.reference_id.isnot(None))
+            .where(CreditTransaction.user_id.isnot(None))
         )
         if period_start:
             conv_usage_query = conv_usage_query.where(
@@ -616,6 +625,37 @@ async def get_credit_details(
             conv_usage_query.group_by(CreditTransaction.reference_id)
         )
         conv_usage_rows = conv_usage_result.all()
+
+        # Orphan conversation debits (user_id NULL) — same period; surfaced as "Former user" in UI
+        conv_orphan_query = (
+            select(
+                CreditTransaction.reference_id,
+                func.sum(func.abs(CreditTransaction.amount)).label("total_used"),
+                func.max(CreditTransaction.created_at).label("last_used_at"),
+            )
+            .where(CreditTransaction.organization_id == org_id)
+            .where(CreditTransaction.reference_type == "conversation")
+            .where(CreditTransaction.amount < 0)
+            .where(CreditTransaction.reference_id.isnot(None))
+            .where(CreditTransaction.user_id.is_(None))
+        )
+        if period_start:
+            conv_orphan_query = conv_orphan_query.where(
+                CreditTransaction.created_at >= period_start
+            )
+        conv_orphan_result = await session.execute(
+            conv_orphan_query.group_by(CreditTransaction.reference_id)
+        )
+        orphan_by_ref: dict[str, tuple[int, Optional[datetime]]] = {}
+        for ref_id, total_used, last_used_at in conv_orphan_result.all():
+            if not ref_id:
+                continue
+            ref_key = _norm_credit_ref_id(ref_id) or str(ref_id).strip()
+            orphan_by_ref[ref_key] = (
+                int(total_used) if total_used else 0,
+                last_used_at,
+            )
+        unattributed_total = sum(t[0] for t in orphan_by_ref.values())
 
         # Per-(conversation, user) slices so the UI can filter chats by teammate
         conv_user_query = (
@@ -654,11 +694,15 @@ async def get_credit_details(
 
         # Resolve conversation titles from the org-scoped database
         usage_by_conversation: list[ConversationUsageItem] = []
-        if conv_usage_rows:
-            # Filter out rows without a reference_id
-            conv_id_strs = [
-                ref_id for (ref_id, _total_used, _last_used_at) in conv_usage_rows if ref_id
-            ]
+        if conv_usage_rows or orphan_by_ref:
+            conv_ids_for_titles: set[str] = set()
+            for ref_id, _tu, _lu in conv_usage_rows:
+                if ref_id:
+                    conv_ids_for_titles.add(
+                        _norm_credit_ref_id(ref_id) or str(ref_id).strip()
+                    )
+            conv_ids_for_titles.update(orphan_by_ref.keys())
+            conv_id_strs = list(conv_ids_for_titles)
 
             id_to_title: dict[str, Optional[str]] = {}
             if conv_id_strs:
@@ -680,10 +724,18 @@ async def get_credit_details(
                         for conv_id, title in conv_result.all():
                             id_to_title[str(conv_id)] = title
 
+            # Copy so we can pop orphan-only keys remaining after attributed merge
+            orphan_remaining = dict(orphan_by_ref)
+
             for ref_id, total_used, last_used_at in conv_usage_rows:
                 if not ref_id:
                     continue
                 ref_key = _norm_credit_ref_id(ref_id) or str(ref_id).strip()
+                o_amt, o_last = orphan_remaining.pop(ref_key, (0, None))
+                merged_last = last_used_at
+                if o_last is not None:
+                    if merged_last is None or o_last > merged_last:
+                        merged_last = o_last
                 title = id_to_title.get(ref_key) or id_to_title.get(str(ref_id))
                 slices = conv_id_to_slices.get(ref_key, [])
                 usage_by_conversation.append(
@@ -691,10 +743,29 @@ async def get_credit_details(
                         conversation_id=ref_key,
                         title=title,
                         total_credits_used=int(total_used) if total_used else 0,
-                        last_used_at=last_used_at.isoformat().replace("+00:00", "Z")
-                        if last_used_at
+                        unattributed_credits_used=o_amt,
+                        last_used_at=merged_last.isoformat().replace("+00:00", "Z")
+                        if merged_last
                         else None,
                         by_user=slices,
+                    )
+                )
+
+            # Conversations with only orphan debits (no attributed rows this period)
+            for ref_key, (o_amt, o_last) in orphan_remaining.items():
+                if o_amt <= 0:
+                    continue
+                title = id_to_title.get(ref_key) or id_to_title.get(str(ref_key))
+                usage_by_conversation.append(
+                    ConversationUsageItem(
+                        conversation_id=ref_key,
+                        title=title,
+                        total_credits_used=0,
+                        unattributed_credits_used=o_amt,
+                        last_used_at=o_last.isoformat().replace("+00:00", "Z")
+                        if o_last
+                        else None,
+                        by_user=[],
                     )
                 )
 
@@ -703,11 +774,12 @@ async def get_credit_details(
                 key=lambda item: item.last_used_at or "",
                 reverse=True,
             )
-        
+
         return CreditDetailsResponse(
             transactions=transactions,
             usage_by_user=usage_by_user,
             usage_by_conversation=usage_by_conversation,
+            unattributed_credits_used=unattributed_total,
             period_start=period_start.isoformat().replace("+00:00", "Z")
             if period_start
             else None,
