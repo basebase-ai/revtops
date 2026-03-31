@@ -5420,8 +5420,9 @@ async def _search_cloud_files(
 
     try:
         from uuid import UUID as _UUID
-        from sqlalchemy import select, and_
+        from sqlalchemy import select, and_, or_, exists
         from models.shared_file import SharedFile
+        from models.integration import Integration
         from models.database import get_session
 
         org_uuid: _UUID = _UUID(organization_id)
@@ -5432,7 +5433,18 @@ async def _search_cloud_files(
 
         filters: list[Any] = [
             SharedFile.organization_id == org_uuid,
-            SharedFile.user_id == user_uuid,
+            or_(
+                SharedFile.user_id == user_uuid,
+                exists(
+                    select(1).where(
+                        Integration.organization_id == SharedFile.organization_id,
+                        Integration.user_id == SharedFile.user_id,
+                        Integration.connector == SharedFile.source,
+                        Integration.is_active == True,  # noqa: E712
+                        Integration.share_synced_data == True,  # noqa: E712
+                    )
+                ),
+            ),
             SharedFile.mime_type != "application/vnd.google-apps.folder",
         ]
 
@@ -5494,8 +5506,9 @@ async def _read_cloud_file(
 
     try:
         from uuid import UUID as _UUID
-        from sqlalchemy import select, and_
+        from sqlalchemy import select, and_, or_, exists
         from models.shared_file import SharedFile
+        from models.integration import Integration
         from models.database import get_session
 
         org_uuid: _UUID = _UUID(organization_id)
@@ -5506,7 +5519,18 @@ async def _read_cloud_file(
                 select(SharedFile).where(
                     and_(
                         SharedFile.organization_id == org_uuid,
-                        SharedFile.user_id == user_uuid,
+                        or_(
+                            SharedFile.user_id == user_uuid,
+                            exists(
+                                select(1).where(
+                                    Integration.organization_id == SharedFile.organization_id,
+                                    Integration.user_id == SharedFile.user_id,
+                                    Integration.connector == SharedFile.source,
+                                    Integration.is_active == True,  # noqa: E712
+                                    Integration.share_synced_data == True,  # noqa: E712
+                                )
+                            ),
+                        ),
                         SharedFile.external_id == external_id,
                     )
                 )
