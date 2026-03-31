@@ -5560,7 +5560,12 @@ async def _read_cloud_file(
         if not file_record:
             return {"error": f"File not found in synced metadata: {external_id}"}
 
-        if not source_hint and not integration_user_id_hint and len(matching_records) > 1:
+        if (
+            not source_hint
+            and not integration_user_id_hint
+            and len(matching_records) > 1
+            and file_record.user_id != requester_uuid
+        ):
             ownership_variants: set[tuple[str, str]] = {
                 (record.source, str(record.user_id)) for record in matching_records
             }
