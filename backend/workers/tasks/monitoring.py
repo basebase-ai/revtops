@@ -50,8 +50,16 @@ async def _action_ledger_table_bytes() -> int:
         return int(result.scalar_one() or 0)
 
 
-async def _delete_oldest_action_ledger_batch(*, created_before: datetime) -> int:
+async def _delete_oldest_action_ledger_batch(*, created_before: datetime | None) -> int:
     """Delete one ordered batch of action_ledger rows to avoid long-running locks."""
+    cutoff_filter = ""
+    params: dict[str, Any] = {
+        "batch_size": _AUDIT_DELETE_BATCH_SIZE,
+    }
+    if created_before is not None:
+        cutoff_filter = "WHERE created_at < :created_before"
+        params["created_before"] = created_before
+
     async with get_admin_session() as session:
         result = await session.execute(
             text(
@@ -59,7 +67,7 @@ async def _delete_oldest_action_ledger_batch(*, created_before: datetime) -> int
                 WITH rows_to_delete AS (
                     SELECT id
                     FROM action_ledger
-                    WHERE created_at < :created_before
+                    {cutoff_filter}
                     ORDER BY created_at ASC
                     LIMIT :batch_size
                     FOR UPDATE SKIP LOCKED
@@ -68,11 +76,9 @@ async def _delete_oldest_action_ledger_batch(*, created_before: datetime) -> int
                 USING rows_to_delete r
                 WHERE a.id = r.id
                 """
+                .format(cutoff_filter=cutoff_filter)
             ),
-            {
-                "created_before": created_before,
-                "batch_size": _AUDIT_DELETE_BATCH_SIZE,
-            },
+            params,
         )
         await session.commit()
         return int(result.rowcount or 0)
@@ -98,6 +104,14 @@ async def _enforce_action_ledger_retention() -> dict[str, Any]:
             break
 
         removed = await _delete_oldest_action_ledger_batch(created_before=cutoff)
+        if removed == 0 and size_bytes > _AUDIT_MAX_TABLE_BYTES:
+            logger.warning(
+                "No rows older than cutoff could be deleted while action_ledger is oversized; "
+                "falling back to deleting oldest rows regardless of age size_bytes=%s cutoff=%s",
+                size_bytes,
+                cutoff.isoformat(),
+            )
+            removed = await _delete_oldest_action_ledger_batch(created_before=None)
         batches_run += 1
         deleted_rows += removed
         if removed == 0:
