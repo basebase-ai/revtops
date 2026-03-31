@@ -42,11 +42,18 @@ function WidgetView({ appId, appTitle, widgetConfig, onClick }: {
 
 function MiniAppView({ appId, onClick }: { appId: string; onClick?: (id: string) => void }): JSX.Element {
   return (
-    <button
-      onClick={() => onClick?.(appId)}
+    <div
       className="w-full aspect-video overflow-hidden relative rounded-xl border border-surface-800 cursor-pointer bg-surface-900"
     >
-      <div style={{ width: 1280, height: 720, transform: 'scale(var(--preview-scale, 0.2))', transformOrigin: 'top left' }} ref={(el) => {
+      {/* Transparent overlay captures clicks instead of the iframe */}
+      <div
+        className="absolute inset-0 z-10"
+        onClick={() => onClick?.(appId)}
+        role="button"
+        tabIndex={0}
+        onKeyDown={(e) => { if (e.key === 'Enter') onClick?.(appId); }}
+      />
+      <div className="pointer-events-none" style={{ width: 1280, height: 720, transform: 'scale(var(--preview-scale, 0.2))', transformOrigin: 'top left' }} ref={(el) => {
         if (el) {
           const parent = el.parentElement;
           if (parent) {
@@ -60,7 +67,7 @@ function MiniAppView({ appId, onClick }: { appId: string; onClick?: (id: string)
           <LazySandpackAppRenderer appId={appId} />
         </Suspense>
       </div>
-    </button>
+    </div>
   );
 }
 
