@@ -6484,7 +6484,12 @@ _SANDBOX_DB_HELPER_TEMPLATE: str = """
 import os
 import psycopg2
 
-_DATABASE_URL: str = os.environ["DATABASE_URL"]
+_DB_HOST: str = os.environ["DB_HOST"]
+_DB_PORT: str = os.environ["DB_PORT"]
+_DB_NAME: str = os.environ["DB_NAME"]
+_DB_USER: str = os.environ["DB_USER"]
+_DB_PASSWORD: str = os.environ["DB_PASSWORD"]
+_DB_SSLMODE: str = os.environ.get("DB_SSLMODE", "prefer")
 _ORG_ID: str = os.environ["ORG_ID"]
 
 def get_connection() -> psycopg2.extensions.connection:
@@ -6498,11 +6503,19 @@ def get_connection() -> psycopg2.extensions.connection:
         cur.execute("SELECT * FROM deals LIMIT 10")
         rows = cur.fetchall()
     \"\"\"
-    conn: psycopg2.extensions.connection = psycopg2.connect(_DATABASE_URL)
+    conn: psycopg2.extensions.connection = psycopg2.connect(
+        host=_DB_HOST,
+        port=_DB_PORT,
+        dbname=_DB_NAME,
+        user=_DB_USER,
+        password=_DB_PASSWORD,
+        sslmode=_DB_SSLMODE,
+    )
     conn.autocommit = True
     with conn.cursor() as cur:
         cur.execute("SET ROLE revtops_app")
         cur.execute("SET app.current_org_id = %s", (_ORG_ID,))
+        cur.execute("SET default_transaction_read_only = on")
     return conn
 """.strip()
 
@@ -6552,7 +6565,7 @@ def _create_sandbox_sync(
     sandbox: Sandbox = Sandbox.create(
         timeout=_SANDBOX_TIMEOUT_SECONDS,
         envs={
-            "DATABASE_URL": settings.sandbox_database_url,
+            **settings.sandbox_database_connection_env,
             "ORG_ID": organization_id,
         },
         metadata={
