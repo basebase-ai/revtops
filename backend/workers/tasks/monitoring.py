@@ -4,11 +4,14 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
+from sqlalchemy import text
 
 from config import get_redis_connection_kwargs, settings
+from models.database import get_admin_session
 from services.incident_throttling import clear_incident_failure, evaluate_incident_creation
 from services.pagerduty import create_pagerduty_incident
 from workers.celery_app import celery_app
@@ -17,6 +20,10 @@ logger = logging.getLogger(__name__)
 
 _HEARTBEAT_KEY = "monitoring:dependency_checks:last_completed_at"
 _HEARTBEAT_STALE_AFTER_SECONDS = 30 * 60
+_AUDIT_RETENTION_DAYS = 100
+_AUDIT_MAX_TABLE_BYTES = 10 * 1024 * 1024 * 1024
+_AUDIT_DELETE_BATCH_SIZE = 2_000
+_AUDIT_DELETE_MAX_BATCHES = 50
 
 
 @dataclass(frozen=True)
@@ -32,6 +39,97 @@ def _api_healthcheck_url() -> str:
     """Resolve API health endpoint URL for ASGI process monitoring."""
     base_url = settings.BACKEND_PUBLIC_URL or "https://api.basebase.com"
     return f"{base_url.rstrip('/')}/health"
+
+
+async def _action_ledger_table_bytes() -> int:
+    """Return total on-disk bytes (table + indexes) used by action_ledger."""
+    async with get_admin_session() as session:
+        result = await session.execute(
+            text("SELECT COALESCE(pg_total_relation_size('action_ledger'), 0)")
+        )
+        return int(result.scalar_one() or 0)
+
+
+async def _delete_oldest_action_ledger_batch(*, created_before: datetime) -> int:
+    """Delete one ordered batch of action_ledger rows to avoid long-running locks."""
+    async with get_admin_session() as session:
+        result = await session.execute(
+            text(
+                """
+                WITH rows_to_delete AS (
+                    SELECT id
+                    FROM action_ledger
+                    WHERE created_at < :created_before
+                    ORDER BY created_at ASC
+                    LIMIT :batch_size
+                    FOR UPDATE SKIP LOCKED
+                )
+                DELETE FROM action_ledger a
+                USING rows_to_delete r
+                WHERE a.id = r.id
+                """
+            ),
+            {
+                "created_before": created_before,
+                "batch_size": _AUDIT_DELETE_BATCH_SIZE,
+            },
+        )
+        await session.commit()
+        return int(result.rowcount or 0)
+
+
+async def _enforce_action_ledger_retention() -> dict[str, Any]:
+    """Apply time- and size-based retention limits for action_ledger."""
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(days=_AUDIT_RETENTION_DAYS)
+    deleted_rows = 0
+    batches_run = 0
+
+    size_before = await _action_ledger_table_bytes()
+    logger.info(
+        "Action ledger retention start size_bytes=%s cutoff=%s",
+        size_before,
+        cutoff.isoformat(),
+    )
+
+    for _ in range(_AUDIT_DELETE_MAX_BATCHES):
+        size_bytes = await _action_ledger_table_bytes()
+        if size_bytes <= _AUDIT_MAX_TABLE_BYTES and batches_run > 0:
+            break
+
+        removed = await _delete_oldest_action_ledger_batch(created_before=cutoff)
+        batches_run += 1
+        deleted_rows += removed
+        if removed == 0:
+            break
+
+    size_after = await _action_ledger_table_bytes()
+    logger.info(
+        "Action ledger retention complete deleted_rows=%s batches=%s size_before=%s size_after=%s",
+        deleted_rows,
+        batches_run,
+        size_before,
+        size_after,
+    )
+
+    if deleted_rows > 0:
+        logger.warning(
+            "Deleted %s action_ledger rows during retention enforcement (size_before=%s size_after=%s cutoff_days=%s max_bytes=%s)",
+            deleted_rows,
+            size_before,
+            size_after,
+            _AUDIT_RETENTION_DAYS,
+            _AUDIT_MAX_TABLE_BYTES,
+        )
+
+    return {
+        "deleted_rows": deleted_rows,
+        "batches_run": batches_run,
+        "size_before_bytes": size_before,
+        "size_after_bytes": size_after,
+        "cutoff_iso": cutoff.isoformat(),
+        "max_bytes": _AUDIT_MAX_TABLE_BYTES,
+    }
 
 
 async def _check_http_endpoint(name: str, url: str, timeout_s: float = 10.0) -> CheckResult:
@@ -304,3 +402,12 @@ def monitoring_heartbeat_watchdog(self: Any) -> dict[str, Any]:
         return {"status": "ok", "age_seconds": age_seconds}
 
     return run_async(_run())
+
+
+@celery_app.task(bind=True, name="workers.tasks.monitoring.enforce_action_ledger_retention")
+def enforce_action_ledger_retention(self: Any) -> dict[str, Any]:
+    """Periodic task: keep action_ledger bounded by age and total table size."""
+    from workers.run_async import run_async
+
+    logger.info("Task %s: enforcing action_ledger retention", self.request.id)
+    return run_async(_enforce_action_ledger_retention())

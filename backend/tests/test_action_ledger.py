@@ -349,6 +349,120 @@ class TestActionLedgerAPI:
         matching = [p for p in paths if "action-ledger" in p]
         assert len(matching) > 0, "action-ledger route not found in OpenAPI schema"
 
+    def test_non_admin_listing_is_scoped_to_requesting_user(self) -> None:
+        from api.auth_middleware import AuthContext
+        from api.routes import action_ledger as route
+
+        org_id = uuid.uuid4()
+        user_id = uuid.uuid4()
+        captured_queries: list[Any] = []
+
+        class _ExecResult:
+            def scalar_one(self) -> int:
+                return 0
+
+            def scalars(self) -> "_ExecResult":
+                return self
+
+            def all(self) -> list[Any]:
+                return []
+
+        @asynccontextmanager
+        async def _fake_session(*_a: object, **_kw: object):
+            mock = MagicMock()
+
+            async def _execute(query: Any) -> _ExecResult:
+                captured_queries.append(query)
+                return _ExecResult()
+
+            mock.execute = AsyncMock(side_effect=_execute)
+            yield mock
+
+        async def _run() -> None:
+            with patch.object(route, "_is_org_admin", new=AsyncMock(return_value=False)), patch.object(
+                route,
+                "get_session",
+                _fake_session,
+            ):
+                response = await route.list_action_ledger(
+                    org_id=str(org_id),
+                    auth=AuthContext(
+                        user_id=user_id,
+                        organization_id=org_id,
+                        email="user@example.com",
+                        role="member",
+                        is_global_admin=False,
+                    ),
+                    conversation_id=None,
+                    connector=None,
+                    entity_type=None,
+                    entity_id=None,
+                    limit=50,
+                    offset=0,
+                )
+                assert response.total == 0
+
+        asyncio.run(_run())
+        rendered_queries = " ".join(str(q) for q in captured_queries)
+        assert "action_ledger.user_id = :user_id_1" in rendered_queries
+
+    def test_org_admin_listing_is_not_scoped_to_user_id(self) -> None:
+        from api.auth_middleware import AuthContext
+        from api.routes import action_ledger as route
+
+        org_id = uuid.uuid4()
+        user_id = uuid.uuid4()
+        captured_queries: list[Any] = []
+
+        class _ExecResult:
+            def scalar_one(self) -> int:
+                return 0
+
+            def scalars(self) -> "_ExecResult":
+                return self
+
+            def all(self) -> list[Any]:
+                return []
+
+        @asynccontextmanager
+        async def _fake_session(*_a: object, **_kw: object):
+            mock = MagicMock()
+
+            async def _execute(query: Any) -> _ExecResult:
+                captured_queries.append(query)
+                return _ExecResult()
+
+            mock.execute = AsyncMock(side_effect=_execute)
+            yield mock
+
+        async def _run() -> None:
+            with patch.object(route, "_is_org_admin", new=AsyncMock(return_value=True)), patch.object(
+                route,
+                "get_session",
+                _fake_session,
+            ):
+                response = await route.list_action_ledger(
+                    org_id=str(org_id),
+                    auth=AuthContext(
+                        user_id=user_id,
+                        organization_id=org_id,
+                        email="admin@example.com",
+                        role="admin",
+                        is_global_admin=False,
+                    ),
+                    conversation_id=None,
+                    connector=None,
+                    entity_type=None,
+                    entity_id=None,
+                    limit=50,
+                    offset=0,
+                )
+                assert response.total == 0
+
+        asyncio.run(_run())
+        rendered_queries = " ".join(str(q) for q in captured_queries)
+        assert "action_ledger.user_id = :user_id_1" not in rendered_queries
+
 
 # ---------------------------------------------------------------------------
 # Connector: capture_before_state default

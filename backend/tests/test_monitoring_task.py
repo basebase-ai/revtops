@@ -276,6 +276,33 @@ def test_monitor_dependencies_suppresses_repeated_incident_for_same_failure(monk
     assert created_incidents == []
 
 
+def test_enforce_action_ledger_retention_deletes_when_limits_exceeded(monkeypatch: Any) -> None:
+    sizes = [12_000_000_000, 11_000_000_000, 9_000_000_000, 9_000_000_000]
+    deletes = [2000]
+
+    async def _fake_size() -> int:
+        return sizes.pop(0)
+
+    async def _fake_delete_oldest_action_ledger_batch(*, created_before: Any) -> int:
+        return deletes.pop(0)
+
+    monkeypatch.setattr(monitoring, "_action_ledger_table_bytes", _fake_size)
+    monkeypatch.setattr(
+        monitoring,
+        "_delete_oldest_action_ledger_batch",
+        _fake_delete_oldest_action_ledger_batch,
+    )
+
+    import asyncio
+
+    result = asyncio.run(monitoring._enforce_action_ledger_retention())
+
+    assert result["deleted_rows"] == 2000
+    assert result["batches_run"] == 1
+    assert result["size_before_bytes"] == 12_000_000_000
+    assert result["size_after_bytes"] == 9_000_000_000
+
+
 def test_monitor_dependencies_allows_incident_when_different_check_fails(monkeypatch: Any) -> None:
     async def _fake_run_dependency_checks() -> list[monitoring.CheckResult]:
         return [
