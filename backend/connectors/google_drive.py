@@ -501,7 +501,7 @@ Call via `run_on_connector(connector='google_drive', action='edit_file', params=
         if self._token:
             return self._token, ""
 
-        async with get_session(organization_id=self.organization_id) as session:
+        async with get_session(organization_id=self.organization_id, user_id=self.user_id) as session:
             connection_id: str = f"{self.organization_id}:user:{self.user_id}"
             result = await session.execute(
                 select(Integration).where(
@@ -600,7 +600,7 @@ Call via `run_on_connector(connector='google_drive', action='edit_file', params=
         user_uuid: UUID = UUID(self.user_id)
         counts: dict[str, int] = {"folders": 0, "docs": 0, "sheets": 0, "slides": 0, "other": 0}
 
-        async with get_session(organization_id=self.organization_id) as session:
+        async with get_session(organization_id=self.organization_id, user_id=self.user_id) as session:
             for file_data in all_files:
                 file_id: str = file_data["id"]
                 mime_type: str = file_data.get("mimeType", "")
@@ -752,7 +752,7 @@ Call via `run_on_connector(connector='google_drive', action='edit_file', params=
         # Normalise wildcard-only queries (e.g. "*") to match all files
         cleaned_query: str = name_query.replace("*", "").strip()
 
-        async with get_session(organization_id=self.organization_id) as session:
+        async with get_session(organization_id=self.organization_id, user_id=self.user_id) as session:
             base_filters = [
                 SharedFile.organization_id == org_uuid,
                 SharedFile.user_id == user_uuid,
@@ -867,7 +867,7 @@ Call via `run_on_connector(connector='google_drive', action='edit_file', params=
         user_uuid: UUID = UUID(self.user_id)
 
         file_record: Optional[SharedFile] = None
-        async with get_session(organization_id=self.organization_id) as session:
+        async with get_session(organization_id=self.organization_id, user_id=self.user_id) as session:
             result = await session.execute(
                 select(SharedFile).where(
                     and_(
@@ -1150,7 +1150,7 @@ Call via `run_on_connector(connector='google_drive', action='edit_file', params=
         user_uuid: UUID = UUID(self.user_id)
 
         file_record: Optional[SharedFile] = None
-        async with get_session(organization_id=self.organization_id) as session:
+        async with get_session(organization_id=self.organization_id, user_id=self.user_id) as session:
             result = await session.execute(
                 select(SharedFile).where(
                     and_(
@@ -1221,7 +1221,7 @@ Call via `run_on_connector(connector='google_drive', action='edit_file', params=
         user_uuid: UUID = UUID(self.user_id)
 
         file_record: Optional[SharedFile] = None
-        async with get_session(organization_id=self.organization_id) as session:
+        async with get_session(organization_id=self.organization_id, user_id=self.user_id) as session:
             result = await session.execute(
                 select(SharedFile).where(
                     and_(
@@ -1343,7 +1343,7 @@ Call via `run_on_connector(connector='google_drive', action='edit_file', params=
         user_uuid: UUID = UUID(self.user_id)
 
         file_record: Optional[SharedFile] = None
-        async with get_session(organization_id=self.organization_id) as session:
+        async with get_session(organization_id=self.organization_id, user_id=self.user_id) as session:
             result = await session.execute(
                 select(SharedFile).where(
                     and_(
@@ -1420,7 +1420,7 @@ Call via `run_on_connector(connector='google_drive', action='edit_file', params=
         user_uuid: UUID = UUID(self.user_id)
 
         file_record: Optional[SharedFile] = None
-        async with get_session(organization_id=self.organization_id) as session:
+        async with get_session(organization_id=self.organization_id, user_id=self.user_id) as session:
             result = await session.execute(
                 select(SharedFile).where(
                     and_(
@@ -1972,7 +1972,7 @@ Call via `run_on_connector(connector='google_drive', action='edit_file', params=
             except ValueError:
                 pass
 
-        async with get_session(organization_id=self.organization_id) as session:
+        async with get_session(organization_id=self.organization_id, user_id=self.user_id) as session:
             stmt = pg_insert(SharedFile).values(
                 id=uuid4(),
                 organization_id=org_uuid,
