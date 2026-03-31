@@ -38,10 +38,10 @@ function BigNumber({ slots }: { slots: BigNumberSlots }): JSX.Element {
   );
 }
 
-function MiniList({ slots }: { slots: MiniListSlots }): JSX.Element {
+function MiniList({ slots, maxRows = 3 }: { slots: MiniListSlots; maxRows?: number }): JSX.Element {
   return (
     <div className="flex flex-col gap-1.5 flex-1 justify-center w-full px-1">
-      {(slots.rows || []).slice(0, 3).map((row, i) => (
+      {(slots.rows || []).slice(0, maxRows).map((row, i) => (
         <div key={i} className="flex justify-between items-center text-xs">
           <span className="text-surface-400 truncate mr-2">{row.label}</span>
           <span className="text-surface-100 font-medium whitespace-nowrap">{row.value}</span>
@@ -125,6 +125,8 @@ interface WidgetCardProps {
 
 export function WidgetCard({ appId, appTitle, widgetConfig, onClick }: WidgetCardProps): JSX.Element {
   const { layout, title, slots } = widgetConfig;
+  const detailLevel = widgetConfig.detail_level;
+  const miniListMaxRows = detailLevel === 'detailed' ? 5 : 3;
 
   return (
     <button
@@ -135,7 +137,7 @@ export function WidgetCard({ appId, appTitle, widgetConfig, onClick }: WidgetCar
         {title || appTitle}
       </div>
       {layout === 'big_number' && <BigNumber slots={slots as BigNumberSlots} />}
-      {layout === 'mini_list' && <MiniList slots={slots as MiniListSlots} />}
+      {layout === 'mini_list' && <MiniList slots={slots as MiniListSlots} maxRows={miniListMaxRows} />}
       {layout === 'status' && <Status slots={slots as StatusSlots} />}
       {layout === 'sparkline' && <Sparkline slots={slots as SparklineSlots} />}
     </button>

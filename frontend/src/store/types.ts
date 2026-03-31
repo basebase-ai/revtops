@@ -337,6 +337,9 @@ export interface WidgetConfig {
   screenshot?: string;
   widget_prompt: string | null;
   generated_at: string;
+  preferred_mode?: 'screenshot' | 'widget' | 'mini_app' | 'icon';
+  detail_level?: 'minimal' | 'standard' | 'detailed';
+  has_screenshot?: boolean;
 }
 
 export interface WidgetData {

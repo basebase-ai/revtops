@@ -49,11 +49,24 @@ Rules:
 """
 
 
+_DETAIL_LEVEL_INSTRUCTIONS: dict[str, str] = {
+    "minimal": (
+        "\n\nIMPORTANT: Show a single key metric only. Strongly prefer big_number layout."
+    ),
+    "standard": "",  # current behavior, no extra instructions
+    "detailed": (
+        "\n\nIMPORTANT: Show a multi-metric summary with 3-4 data points. "
+        "For mini_list, allow up to 5 rows."
+    ),
+}
+
+
 async def generate_widget_config(
     app: App,
     organization_id: str,
     query_results: dict[str, list[dict[str, Any]]],
     user_prompt: str | None = None,
+    detail_level: str = "standard",
 ) -> dict[str, Any]:
     """Generate a widget config from app query results.
 
@@ -62,9 +75,10 @@ async def generate_widget_config(
         organization_id: Org UUID string.
         query_results: Dict mapping query name -> list of row dicts (pre-fetched).
         user_prompt: Optional user override for what the widget should show.
+        detail_level: One of 'minimal', 'standard', 'detailed'.
 
     Returns:
-        Widget config dict with layout, title, slots, widget_prompt, generated_at.
+        Widget config dict with layout, title, slots, widget_prompt, generated_at, detail_level.
     """
     # Build the user message
     parts: list[str] = [f"App: {app.title}"]
@@ -83,12 +97,15 @@ async def generate_widget_config(
 
     user_message = "\n".join(parts)
 
+    # Append detail-level-specific instructions to the system prompt
+    system_prompt = _SYSTEM_PROMPT + _DETAIL_LEVEL_INSTRUCTIONS.get(detail_level, "")
+
     client = AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
     try:
         response = await client.messages.create(
             model=_MODEL,
             max_tokens=300,
-            system=_SYSTEM_PROMPT,
+            system=system_prompt,
             messages=[{"role": "user", "content": user_message}],
         )
         await report_anthropic_call_success(source="services.widget_inference.generate_widget_config")
@@ -115,5 +132,6 @@ async def generate_widget_config(
     # Attach metadata
     config["widget_prompt"] = user_prompt
     config["generated_at"] = datetime.utcnow().isoformat() + "Z"
+    config["detail_level"] = detail_level
 
     return config

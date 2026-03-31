@@ -23,6 +23,7 @@ interface AppDetail {
   conversation_id: string | null;
   created_at: string | null;
   user_id: string;
+  widget_config?: Record<string, unknown> | null;
 }
 
 interface EmbedTokenData {
@@ -42,6 +43,8 @@ export function AppFullView({ appId }: AppFullViewProps): JSX.Element {
   const [linkCopied, setLinkCopied] = useState<boolean>(false);
   const [embedUrl, setEmbedUrl] = useState<string | null>(null);
   const [embedCopied, setEmbedCopied] = useState<boolean>(false);
+  const [previewMode, setPreviewMode] = useState<string>("auto");
+  const [detailLevel, setDetailLevel] = useState<string>("standard");
 
   const setCurrentView = useAppStore((s) => s.setCurrentView);
 
@@ -59,6 +62,36 @@ export function AppFullView({ appId }: AppFullViewProps): JSX.Element {
   useEffect(() => {
     void fetchApp();
   }, [fetchApp]);
+
+  // Sync preview mode / detail level from widget_config when app loads
+  useEffect(() => {
+    if (app?.widget_config) {
+      if (app.widget_config.preferred_mode) setPreviewMode(app.widget_config.preferred_mode as string);
+      if (app.widget_config.detail_level) setDetailLevel(app.widget_config.detail_level as string);
+    }
+  }, [app?.widget_config]);
+
+  const handlePreviewSettingsChange = async (
+    newMode?: string,
+    newDetail?: string,
+  ): Promise<void> => {
+    const payload: Record<string, string> = {};
+    if (newMode !== undefined) payload.preferred_mode = newMode === "auto" ? "" : newMode;
+    if (newDetail !== undefined) payload.detail_level = newDetail;
+
+    // Optimistic update
+    if (newMode !== undefined) setPreviewMode(newMode);
+    if (newDetail !== undefined) setDetailLevel(newDetail);
+
+    await apiRequest(`/apps/${appId}/preview-settings`, {
+      method: "PATCH",
+      body: JSON.stringify(
+        Object.fromEntries(
+          Object.entries(payload).filter(([, v]) => v !== ""),
+        ),
+      ),
+    });
+  };
 
   const organization = useAppStore((s) => s.organization);
   const organizations = useAppStore((s) => s.organizations);
@@ -147,6 +180,32 @@ export function AppFullView({ appId }: AppFullViewProps): JSX.Element {
         </div>
 
         <div className="flex items-center gap-2">
+          {/* Preview mode selector */}
+          <select
+            value={previewMode}
+            onChange={(e) => void handlePreviewSettingsChange(e.target.value, undefined)}
+            className="bg-surface-700 border border-surface-600 rounded-md px-2 py-1 text-xs text-surface-200"
+          >
+            <option value="auto">Auto</option>
+            <option value="screenshot">Screenshot</option>
+            <option value="widget">Widget</option>
+            <option value="mini_app">Mini App</option>
+            <option value="icon">Icon</option>
+          </select>
+
+          {/* Detail level selector (only visible for widget mode) */}
+          {previewMode === "widget" && (
+            <select
+              value={detailLevel}
+              onChange={(e) => void handlePreviewSettingsChange(undefined, e.target.value)}
+              className="bg-surface-700 border border-surface-600 rounded-md px-2 py-1 text-xs text-surface-200"
+            >
+              <option value="minimal">Minimal</option>
+              <option value="standard">Standard</option>
+              <option value="detailed">Detailed</option>
+            </select>
+          )}
+
           <button
             onClick={() => void handleCopyLink()}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-surface-700 hover:bg-surface-600 text-surface-300 text-xs font-medium transition-colors"
