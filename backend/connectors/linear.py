@@ -59,6 +59,7 @@ _UPDATE_ISSUE_KWARGS: frozenset[str] = frozenset({
     "state_name",
     "priority",
     "assignee_name",
+    "project_name",
     "conversation_id",
     "attachment_ids",
 })
@@ -139,6 +140,7 @@ class LinearConnector(BaseConnector):
                     {"name": "state_name", "type": "string", "required": False, "description": "New state name"},
                     {"name": "priority", "type": "integer", "required": False, "description": "Priority 0-4"},
                     {"name": "assignee_name", "type": "string", "required": False, "description": "Assignee display name"},
+                    {"name": "project_name", "type": "string", "required": False, "description": "Project name (move issue into this project)"},
                     {
                         "name": "attachment_ids",
                         "type": "array",
@@ -181,6 +183,7 @@ Use `write_on_connector(connector='linear', operation='...', data={...})` with `
 | state_name | string | No | New state (e.g. `Done`, `In Progress`) |
 | priority | integer | No | 0-4 |
 | assignee_name | string | No | New assignee display name |
+| project_name | string | No | Project name (matched globally, same as `create_issue`; moves the issue into that project) |
 | attachment_ids | array | No | Same as `create_issue`: uploads chat files to Linear and **appends** markdown to the description. If you also pass `description`, that string is used as the base (then attachments are appended). If you omit `description`, the current issue description is fetched and attachments are appended. `conversation_id` is injected in chat. |
 
 ### Finding team keys and identifiers
@@ -905,13 +908,14 @@ Use `write_on_connector(connector='linear', operation='...', data={...})` with `
         state_name: str | None = None,
         priority: int | None = None,
         assignee_name: str | None = None,
+        project_name: str | None = None,
         conversation_id: str | None = None,
         attachment_ids: Any | None = None,
     ) -> dict[str, Any]:
         """Update an existing issue in Linear via the issueUpdate mutation.
 
-        Accepts human-friendly parameters (issue_identifier, state_name, assignee_name)
-        and resolves them to Linear IDs internally.
+        Accepts human-friendly parameters (issue_identifier, state_name, assignee_name,
+        project_name) and resolves them to Linear IDs internally.
         Optional ``attachment_ids`` upload chat files and append markdown to the description
         (after any explicit ``description``, or after the current issue body if omitted).
         """
@@ -956,6 +960,15 @@ Use `write_on_connector(connector='linear', operation='...', data={...})` with `
             else:
                 logger.warning("Assignee '%s' not found, skipping assignee update", assignee_name)
 
+        # Resolve optional project_name → project_id
+        project_id: str | None = None
+        if project_name:
+            project: dict[str, Any] | None = await self.resolve_project_by_name(project_name)
+            if project:
+                project_id = project["id"]
+            else:
+                logger.warning("Project '%s' not found, skipping project update", project_name)
+
         input_fields: dict[str, Any] = {}
         if title is not None:
             input_fields["title"] = title
@@ -967,6 +980,8 @@ Use `write_on_connector(connector='linear', operation='...', data={...})` with `
             input_fields["priority"] = priority
         if assignee_id is not None:
             input_fields["assigneeId"] = assignee_id
+        if project_id is not None:
+            input_fields["projectId"] = project_id
 
         if not input_fields:
             raise ValueError("At least one field to update must be provided")
