@@ -78,6 +78,33 @@ interface CreditDetails {
   starting_balance: number;
 }
 
+/** Total credits for a chat (team + former-user) for sorting. */
+function chatTotalCredits(conv: ConversationUsage): number {
+  return conv.total_credits_used + (conv.unattributed_credits_used ?? 0);
+}
+
+type ChatUsageSort = 'recent' | 'credits_desc' | 'credits_asc';
+
+function compareChatsBySort(a: ConversationUsage, b: ConversationUsage, sort: ChatUsageSort): number {
+  if (sort === 'recent') {
+    const ta = a.last_used_at ? new Date(a.last_used_at).getTime() : 0;
+    const tb = b.last_used_at ? new Date(b.last_used_at).getTime() : 0;
+    if (tb !== ta) return tb - ta;
+    return a.conversation_id.localeCompare(b.conversation_id);
+  }
+  const ca = chatTotalCredits(a);
+  const cb = chatTotalCredits(b);
+  if (sort === 'credits_desc') {
+    if (cb !== ca) return cb - ca;
+  } else {
+    if (ca !== cb) return ca - cb;
+  }
+  const ta = a.last_used_at ? new Date(a.last_used_at).getTime() : 0;
+  const tb = b.last_used_at ? new Date(b.last_used_at).getTime() : 0;
+  if (tb !== ta) return tb - ta;
+  return a.conversation_id.localeCompare(b.conversation_id);
+}
+
 /** Normalize UUID strings so usage_by_user.user_id matches by_user[].user_id across APIs/drivers. */
 function canonicalCreditId(id: string): string {
   const t = id.trim().toLowerCase();
@@ -1394,6 +1421,8 @@ function CreditDetailsModal({ organizationHandle, details, loading, onClose }: C
   const [PlotComponent, setPlotComponent] = useState<typeof import('react-plotly.js').default | null>(null);
   /** Filter "Usage by Chat" to conversations where this user consumed credits */
   const [chatFilterUserId, setChatFilterUserId] = useState<string | null>(null);
+  /** Sort order for Usage by Chat */
+  const [chatUsageSort, setChatUsageSort] = useState<ChatUsageSort>('recent');
   const [chartRangePreset, setChartRangePreset] = useState<
     '1d' | '7d' | '30d' | 'beginningOfMonth'
   >('30d');
@@ -1480,25 +1509,16 @@ function CreditDetailsModal({ organizationHandle, details, loading, onClose }: C
 
   const conversationUsage = useMemo(() => {
     if (!details?.usage_by_conversation?.length) return [];
-    const byDate = (a: ConversationUsage, b: ConversationUsage): number => {
-      const ta = a.last_used_at ? new Date(a.last_used_at).getTime() : 0;
-      const tb = b.last_used_at ? new Date(b.last_used_at).getTime() : 0;
-      if (tb !== ta) return tb - ta;
-      return a.conversation_id.localeCompare(b.conversation_id);
-    };
-    let rows = [...details.usage_by_conversation].sort(byDate);
+    let rows = [...details.usage_by_conversation];
     if (chatFilterUserId) {
       const fid = canonicalCreditId(chatFilterUserId);
-      rows = rows
-        .filter((c) =>
-          (c.by_user ?? []).some(
-            (s) => canonicalCreditId(s.user_id) === fid,
-          ),
-        )
-        .sort(byDate);
+      rows = rows.filter((c) =>
+        (c.by_user ?? []).some((s) => canonicalCreditId(s.user_id) === fid),
+      );
     }
+    rows.sort((a, b) => compareChatsBySort(a, b, chatUsageSort));
     return rows;
-  }, [details, chatFilterUserId]);
+  }, [details, chatFilterUserId, chatUsageSort]);
 
   const chatFilterLabel = useMemo(() => {
     if (!chatFilterUserId || !details?.usage_by_user?.length) return null;
@@ -1753,24 +1773,57 @@ function CreditDetailsModal({ organizationHandle, details, loading, onClose }: C
 
               {/* Usage by Conversation (per chat) */}
               <div>
-                <div className="flex flex-wrap items-center gap-2 mb-4">
-                  <h3 className="text-sm font-medium text-surface-200">Usage by Chat</h3>
-                  {chatFilterUserId && (
-                    <div className="flex items-center gap-1.5 pl-2 pr-1 py-0.5 rounded-md border border-primary-500/30 bg-primary-500/10 text-xs">
-                      <span className="text-surface-300">
-                        {chatFilterLabel ?? 'Member'}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => setChatFilterUserId(null)}
-                        className="p-0.5 rounded hover:bg-primary-500/20 text-surface-400 hover:text-surface-100"
-                        title="Show all chats"
-                        aria-label="Clear chat filter"
-                      >
-                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                        </svg>
-                      </button>
+                <div className="flex flex-col gap-2 mb-4">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h3 className="text-sm font-medium text-surface-200">Usage by Chat</h3>
+                    {chatFilterUserId && (
+                      <div className="flex items-center gap-1.5 pl-2 pr-1 py-0.5 rounded-md border border-primary-500/30 bg-primary-500/10 text-xs">
+                        <span className="text-surface-300">
+                          {chatFilterLabel ?? 'Member'}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setChatFilterUserId(null)}
+                          className="p-0.5 rounded hover:bg-primary-500/20 text-surface-400 hover:text-surface-100"
+                          title="Show all chats"
+                          aria-label="Clear chat filter"
+                        >
+                          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                          </svg>
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                  {(details.usage_by_conversation?.length ?? 0) > 0 && (
+                    <div className="flex flex-wrap items-center gap-x-1 gap-y-1 text-xs">
+                      <span className="text-surface-500 mr-1 shrink-0">Sort:</span>
+                      {(
+                        [
+                          { id: 'recent' as const, label: 'Recent activity' },
+                          { id: 'credits_desc' as const, label: 'Most credits' },
+                          { id: 'credits_asc' as const, label: 'Fewest credits' },
+                        ] as const
+                      ).map((opt, i) => (
+                        <span key={opt.id} className="inline-flex items-center">
+                          {i > 0 && (
+                            <span className="text-surface-600 mx-1.5 select-none" aria-hidden>
+                              ·
+                            </span>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => setChatUsageSort(opt.id)}
+                            className={
+                              chatUsageSort === opt.id
+                                ? 'text-surface-100 font-medium'
+                                : 'text-surface-400 hover:text-surface-200 transition-colors'
+                            }
+                          >
+                            {opt.label}
+                          </button>
+                        </span>
+                      ))}
                     </div>
                   )}
                 </div>
@@ -1779,7 +1832,7 @@ function CreditDetailsModal({ organizationHandle, details, loading, onClose }: C
                     {conversationUsage.map((conv) => {
                       const orphan = conv.unattributed_credits_used ?? 0;
                       const attributed = conv.total_credits_used;
-                      const lineTotal = attributed + orphan;
+                      const lineTotal = chatTotalCredits(conv);
                       return (
                       <button
                         key={conv.conversation_id}
@@ -1827,7 +1880,7 @@ function CreditDetailsModal({ organizationHandle, details, loading, onClose }: C
                       );
                     })}
                   </div>
-                ) : (details.usage_by_conversation?.length ?? 0) > 0 && chatFilterUserId ? (
+                ) : (details.usage_by_conversation?.length ?? 0) > 0 && chatFilterUserId && conversationUsage.length === 0 ? (
                   <div className="bg-surface-800/50 rounded-lg p-6 text-center text-surface-400">
                     No chats with credit usage from this teammate in this period
                   </div>
