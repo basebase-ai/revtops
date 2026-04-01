@@ -25,7 +25,7 @@ from uuid import UUID
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
 
-from api.auth_middleware import AuthContext, get_current_auth
+from api.auth_middleware import AuthContext, get_current_auth, require_global_admin
 from pydantic import BaseModel, Field
 from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.exc import IntegrityError
@@ -597,14 +597,11 @@ async def logout(response: Response) -> dict[str, str]:
 
 
 @router.post("/me/request-phone-verification")
-async def request_phone_verification(user_id: Optional[str] = None) -> dict[str, str | bool]:
+async def request_phone_verification(
+    auth: AuthContext = Depends(get_current_auth),
+) -> dict[str, str | bool]:
     """Send a verification code via SMS to the current user's phone number."""
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    try:
-        user_uuid = UUID(user_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid user ID")
+    user_uuid: UUID = auth.user_id
     from services.phone_verify import request_phone_verification as send_verification
 
     async with get_admin_session() as session:
@@ -630,15 +627,10 @@ class VerifyPhoneRequest(BaseModel):
 @router.post("/me/verify-phone")
 async def verify_phone(
     request: VerifyPhoneRequest,
-    user_id: Optional[str] = None,
+    auth: AuthContext = Depends(get_current_auth),
 ) -> dict[str, str | bool]:
     """Verify the current user's phone number with the code sent by SMS."""
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    try:
-        user_uuid = UUID(user_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid user ID")
+    user_uuid: UUID = auth.user_id
     if not (request.code or "").strip():
         raise HTTPException(status_code=400, detail="Code is required")
     from datetime import datetime as dt
@@ -678,6 +670,16 @@ class OrganizationResponse(BaseModel):
     email_domain: Optional[str]
     logo_url: Optional[str] = None
     company_summary: Optional[str] = None
+    handle: Optional[str] = None
+
+
+class OrganizationSignupLookupResponse(BaseModel):
+    """Public org metadata for signup domain check (no sensitive fields)."""
+
+    id: str
+    name: str
+    email_domain: Optional[str]
+    logo_url: Optional[str] = None
     handle: Optional[str] = None
 
 
@@ -1082,11 +1084,14 @@ async def get_organization_by_handle(
         )
 
 
-@router.get("/organizations/by-domain/{email_domain}", response_model=OrganizationResponse)
-async def get_organization_by_domain(email_domain: str) -> OrganizationResponse:
+@router.get("/organizations/by-domain/{email_domain}", response_model=OrganizationSignupLookupResponse)
+async def get_organization_by_domain(
+    email_domain: str,
+) -> OrganizationSignupLookupResponse:
     """Get organization by email domain.
-    
+
     Used to check if an organization exists for a domain when a new user signs up.
+    Does not expose internal fields (e.g. company_summary).
     """
     async with get_admin_session() as session:
         result = await session.execute(
@@ -1099,13 +1104,13 @@ async def get_organization_by_domain(email_domain: str) -> OrganizationResponse:
 
         if not org:
             raise HTTPException(status_code=404, detail="Organization not found")
-        
-        return OrganizationResponse(
+
+        return OrganizationSignupLookupResponse(
             id=str(org.id),
             name=org.name,
             email_domain=org.email_domain,
             logo_url=org.logo_url,
-            company_summary=org.company_summary,
+            handle=org.handle,
         )
 
 
@@ -2576,18 +2581,14 @@ class MasqueradeUserResponse(BaseModel):
 @router.get("/masquerade/{target_user_id}", response_model=MasqueradeUserResponse)
 async def get_masquerade_user(
     target_user_id: str,
-    admin_user_id: Optional[str] = None,
+    auth: AuthContext = Depends(require_global_admin),
 ) -> MasqueradeUserResponse:
     """Get user info for masquerade/impersonation.
-    
+
     Only accessible by global admins. Returns the target user's full profile
     including organization data so the admin can impersonate them.
     """
-    if not admin_user_id:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-
     try:
-        admin_uuid = UUID(admin_user_id)
         target_uuid = UUID(target_user_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid user ID format")
@@ -2595,17 +2596,6 @@ async def get_masquerade_user(
     # Admin session: masquerade runs without X-Organization-Id; get_session() would set
     # empty app.current_org_id and org_members RLS would hide all membership rows.
     async with get_admin_session() as session:
-        # Verify admin has global_admin role
-        admin_user = await session.get(User, admin_uuid)
-        if not admin_user:
-            raise HTTPException(status_code=404, detail="Admin user not found")
-        
-        if "global_admin" not in (admin_user.roles or []):
-            raise HTTPException(
-                status_code=403, 
-                detail="Only global admins can masquerade as other users"
-            )
-        
         # Fetch target user
         target_user = await session.get(User, target_uuid)
         if not target_user:
@@ -2681,7 +2671,7 @@ async def get_available_integrations() -> AvailableIntegrationsResponse:
 @router.get("/connect/{provider}", response_model=ConnectUrlResponse)
 async def get_connect_url(
     provider: str,
-    user_id: Optional[str] = None,
+    auth: AuthContext = Depends(get_current_auth),
     organization_id: Optional[str] = None,
 ) -> ConnectUrlResponse:
     """
@@ -2689,40 +2679,29 @@ async def get_connect_url(
 
     The frontend should redirect the user to this URL to initiate OAuth.
     After OAuth completes, Nango redirects back to our callback.
-    Accepts either user_id (to look up org) or organization_id directly.
+    Organization is taken from the authenticated context (X-Organization-Id / guest org).
+    Optional query ``organization_id`` must match the active org when provided.
     """
-    org_id_str: str
+    if auth.organization_id is None:
+        raise HTTPException(
+            status_code=403,
+            detail="User not associated with an organization",
+        )
+    if organization_id is not None and str(auth.organization_id) != organization_id:
+        raise HTTPException(
+            status_code=403,
+            detail="Organization does not match active organization",
+        )
+    org_id_str: str = str(auth.organization_id)
 
-    if organization_id:
-        # Direct organization ID provided
-        try:
-            UUID(organization_id)  # Validate it's a valid UUID
-            org_id_str = organization_id
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid organization ID")
-    elif user_id:
-        # Look up organization via user
-        try:
-            user_uuid = UUID(user_id)
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid user ID")
-
-        async with get_admin_session() as session:
-            user = await session.get(User, user_uuid)
-            if not user:
-                raise HTTPException(status_code=404, detail="User not found")
-            if user.is_guest:
-                raise HTTPException(
-                    status_code=403, detail="Guest users cannot connect integrations"
-                )
-            resolved_org: Optional[UUID] = await _resolve_sync_response_org_id(
-                session, user_uuid, None
+    async with get_admin_session() as session:
+        user = await session.get(User, auth.user_id)
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        if user.is_guest:
+            raise HTTPException(
+                status_code=403, detail="Guest users cannot connect integrations"
             )
-            if not resolved_org:
-                raise HTTPException(status_code=404, detail="User not found")
-            org_id_str = str(resolved_org)
-    else:
-        raise HTTPException(status_code=400, detail="Either user_id or organization_id required")
 
     # Get Nango integration ID
     try:
@@ -2746,7 +2725,7 @@ async def get_connect_url(
 @router.get("/connect/{provider}/session", response_model=ConnectSessionResponse)
 async def get_connect_session(
     provider: str,
-    user_id: Optional[str] = None,
+    auth: AuthContext = Depends(get_current_auth),
     organization_id: Optional[str] = None,
 ) -> ConnectSessionResponse:
     """
@@ -2755,49 +2734,31 @@ async def get_connect_session(
     This is the recommended approach - returns a session token that
     the frontend uses with @nangohq/frontend to open a popup OAuth flow.
 
-    user_id is REQUIRED (used for connection ID and ownership tracking).
+    User and organization come from the JWT and active org context.
+    Optional query ``organization_id`` must match the active org when provided.
     Connection ID format: "{org_id}:user:{user_id}"
     """
-    org_id_str: str = ""
-    user_id_str: str | None = None
-
-    if organization_id:
-        try:
-            UUID(organization_id)
-            org_id_str = organization_id
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid organization ID")
-
-    if user_id:
-        try:
-            user_uuid = UUID(user_id)
-            user_id_str = user_id
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid user ID")
-
-        async with get_admin_session() as db_session:
-            user = await db_session.get(User, user_uuid)
-            if not user:
-                raise HTTPException(status_code=404, detail="User not found")
-            if user.is_guest:
-                raise HTTPException(
-                    status_code=403, detail="Guest users cannot connect integrations"
-                )
-            resolved_org_session: Optional[UUID] = await _resolve_sync_response_org_id(
-                db_session, user_uuid, None
-            )
-            if not resolved_org_session:
-                raise HTTPException(status_code=404, detail="User not found")
-            org_id_str = str(resolved_org_session)
-
-    if not org_id_str:
-        raise HTTPException(status_code=400, detail="Either user_id or organization_id required")
-
-    if not user_id_str:
+    if auth.organization_id is None:
         raise HTTPException(
-            status_code=400,
-            detail="user_id is required for all integrations"
+            status_code=403,
+            detail="User not associated with an organization",
         )
+    if organization_id is not None and str(auth.organization_id) != organization_id:
+        raise HTTPException(
+            status_code=403,
+            detail="Organization does not match active organization",
+        )
+    org_id_str: str = str(auth.organization_id)
+    user_id_str: str = str(auth.user_id)
+
+    async with get_admin_session() as db_session:
+        user = await db_session.get(User, auth.user_id)
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        if user.is_guest:
+            raise HTTPException(
+                status_code=403, detail="Guest users cannot connect integrations"
+            )
 
     try:
         nango_integration_id = get_nango_integration_id(provider)
@@ -2808,8 +2769,7 @@ async def get_connect_session(
     connection_id = f"{org_id_str}:user:{user_id_str}"
 
     org_name: str | None = None
-    async with get_session() as db_session:
-        from models.organization import Organization
+    async with get_session(organization_id=org_id_str) as db_session:
         org_row = await db_session.get(Organization, UUID(org_id_str))
         if org_row:
             org_name = org_row.name

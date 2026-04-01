@@ -49,7 +49,7 @@ _JWKS_CACHE_TTL_SECONDS = 60 * 60
 # expires after _AUTH_CACHE_TTL_SECONDS so role/membership changes propagate
 # within that window.
 # ---------------------------------------------------------------------------
-_AUTH_CACHE_TTL_SECONDS: int = 60
+_AUTH_CACHE_TTL_SECONDS: int = 12
 _AUTH_CACHE_MAX_ENTRIES: int = 500
 
 # {user_uuid: (User, monotonic_timestamp)}

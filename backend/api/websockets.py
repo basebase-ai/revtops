@@ -710,6 +710,17 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 if not user_message:
                     continue
 
+                if not organization_id:
+                    await websocket.send_text(
+                        json.dumps(
+                            {
+                                "type": "error",
+                                "error": "Organization required to send messages. Select a team or complete onboarding.",
+                            }
+                        )
+                    )
+                    continue
+
                 # Create conversation if needed
                 if not conversation_id:
                     # Generate title from first message
@@ -726,8 +737,8 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     async with get_session(organization_id=organization_id) as session:
                         conversation = Conversation(
                             id=conv_uuid,
-                            user_id=UUID(user_id_str), 
-                            organization_id=UUID(organization_id) if organization_id else None,
+                            user_id=UUID(user_id_str),
+                            organization_id=UUID(organization_id),
                             participating_user_ids=[UUID(user_id_str)],
                             title=title,
                             scope=conv_scope,
@@ -743,13 +754,6 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                         "title": title,
                         "scope": conv_scope,
                     }))
-
-                if not organization_id:
-                    await websocket.send_text(json.dumps({
-                        "type": "error",
-                        "error": "No organization found. Please complete onboarding.",
-                    }))
-                    continue
 
                 mentions: list[dict] | None = data.get("mentions")
                 from services.chat_messages import resolve_agent_responding, save_user_message
