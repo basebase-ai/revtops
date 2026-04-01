@@ -36,6 +36,13 @@ logger = logging.getLogger(__name__)
 # Hard timeout for a single tool run so the UI always gets a result (no infinite "Running")
 _TOOL_EXECUTION_TIMEOUT_SECONDS: float = 600.0  # 10 minutes
 
+_CROSS_CONVERSATION_HISTORY_TRIGGER_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\b(across|from|search|look\s+through)\b.{0,40}\b(conversations|chats|threads)\b", re.IGNORECASE),
+    re.compile(r"\b(all|other|past|previous|prior)\b.{0,20}\b(conversations|chats|threads)\b", re.IGNORECASE),
+    re.compile(r"\b(history|context)\b.{0,20}\b(other|all|past)\b.{0,20}\b(conversations|chats|threads)\b", re.IGNORECASE),
+    re.compile(r"\bshared\b.{0,20}\b(conversations|chats|threads)\b", re.IGNORECASE),
+)
+
 
 def _linear_attachment_tool_hint(attachment_ids: Sequence[str]) -> str:
     """Instruction appended for the model so write_on_connector can pass Linear attachment_ids."""
@@ -100,6 +107,16 @@ WHERE source_system = 'slack'
 ```
 
 The activities table contains synced Slack messages with these relevant custom_fields keys: channel_id, channel_name, user_id, thread_ts."""
+
+
+def _should_include_cross_conversation_history(user_message: str) -> bool:
+    """Return True when a user explicitly asks for cross-conversation context."""
+    if not user_message:
+        return False
+    text: str = user_message.strip()
+    if not text:
+        return False
+    return any(pattern.search(text) for pattern in _CROSS_CONVERSATION_HISTORY_TRIGGER_PATTERNS)
 
 
 async def update_tool_result(
@@ -850,6 +867,94 @@ class ChatOrchestrator:
             logger.warning("Failed to load workflow notes", exc_info=True)
             return []
 
+    async def _load_cross_conversation_history(
+        self,
+        *,
+        max_conversations: int = 8,
+        messages_per_conversation: int = 2,
+    ) -> list[dict[str, Any]]:
+        """Load snippets from other user-visible conversations for optional prompt context.
+
+        Includes:
+        - Conversations created by the current user
+        - Conversations shared with the current user (participating_user_ids contains user)
+        """
+        user_uuid: UUID | None = self._resolve_current_user_uuid()
+        if not (self.organization_id and user_uuid):
+            logger.info(
+                "[Orchestrator] Skipping cross-conversation history load; missing org/user context org_id=%s user_id=%s",
+                self.organization_id,
+                self.user_id,
+            )
+            return []
+
+        try:
+            async with get_session(organization_id=self.organization_id) as session:
+                query = (
+                    select(Conversation)
+                    .where(Conversation.organization_id == UUID(self.organization_id))
+                    .where(
+                        (Conversation.user_id == user_uuid)
+                        | (Conversation.participating_user_ids.any(user_uuid))
+                    )
+                    .order_by(Conversation.updated_at.desc())
+                    .limit(max_conversations + 1)
+                )
+                result = await session.execute(query)
+                candidate_conversations: list[Conversation] = list(result.scalars().all())
+
+                if self.conversation_id:
+                    current_conv_uuid: UUID = UUID(self.conversation_id)
+                    candidate_conversations = [
+                        conv for conv in candidate_conversations if conv.id != current_conv_uuid
+                    ]
+
+                conversation_summaries: list[dict[str, Any]] = []
+                for conv in candidate_conversations[:max_conversations]:
+                    message_result = await session.execute(
+                        select(ChatMessage)
+                        .where(ChatMessage.conversation_id == conv.id)
+                        .order_by(ChatMessage.created_at.desc())
+                        .limit(messages_per_conversation)
+                    )
+                    recent_messages: list[ChatMessage] = list(message_result.scalars().all())
+                    if not recent_messages:
+                        continue
+
+                    excerpt_lines: list[str] = []
+                    for msg in reversed(recent_messages):
+                        body: str = (msg.content or "").strip()
+                        if not body and msg.content_blocks:
+                            body = " ".join(
+                                str(block.get("text", "")).strip()
+                                for block in msg.content_blocks
+                                if isinstance(block, dict) and block.get("type") == "text"
+                            ).strip()
+                        if not body:
+                            continue
+                        condensed: str = re.sub(r"\s+", " ", body)[:280]
+                        excerpt_lines.append(f"{msg.role}: {condensed}")
+
+                    if excerpt_lines:
+                        conversation_summaries.append(
+                            {
+                                "conversation_id": str(conv.id),
+                                "scope": conv.scope,
+                                "updated_at": conv.updated_at.isoformat() if conv.updated_at else "",
+                                "excerpt": excerpt_lines,
+                            }
+                        )
+
+                logger.info(
+                    "[Orchestrator] Loaded %d cross-conversation snippets for user_id=%s",
+                    len(conversation_summaries),
+                    self.user_id,
+                )
+                return conversation_summaries
+        except Exception:
+            logger.warning("Failed to load cross-conversation history", exc_info=True)
+            return []
+
     async def process_message(
         self,
         user_message: str,
@@ -1109,6 +1214,31 @@ class ChatOrchestrator:
                 system_prompt += "\n## Profile Completeness\n"
                 for part in completeness_parts:
                     system_prompt += f"- {part}\n"
+
+        if _should_include_cross_conversation_history(user_message):
+            logger.info(
+                "[Orchestrator] User requested cross-conversation history; loading supplemental context conversation_id=%s",
+                self.conversation_id,
+            )
+            cross_conversation_history: list[dict[str, Any]] = await self._load_cross_conversation_history()
+            if cross_conversation_history:
+                system_prompt += "\n\n## Cross-Conversation Context (Loaded On Request)\n"
+                system_prompt += (
+                    "The user explicitly requested context across their accessible conversations. "
+                    "Use only what is relevant and cite uncertainty when snippets are incomplete.\n"
+                )
+                for item in cross_conversation_history:
+                    system_prompt += (
+                        f"- Conversation {item['conversation_id']} "
+                        f"(scope={item['scope']}, updated_at={item['updated_at']}):\n"
+                    )
+                    for line in item["excerpt"]:
+                        system_prompt += f"  - {line}\n"
+            else:
+                logger.info(
+                    "[Orchestrator] Cross-conversation history requested but no snippets available for user_id=%s",
+                    self.user_id,
+                )
 
         workflow_id: str | None = (self.workflow_context or {}).get("workflow_id")
         if workflow_id and self.organization_id:
