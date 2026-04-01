@@ -30,7 +30,8 @@ wheels/
 .installed.cfg
 *.egg
 MANIFEST
-.venv/
+# Match .venv, .venv312, etc. (.venv/ alone does not ignore .venv312/)
+.venv*/
 venv/
 ENV/
 env/
