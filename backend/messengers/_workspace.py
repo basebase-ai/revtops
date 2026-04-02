@@ -907,7 +907,7 @@ class WorkspaceMessenger(BaseMessenger):
 
         from services.chat_messages import resolve_agent_responding, save_user_message
 
-        should_invoke_agent: bool = True
+        should_invoke_agent = True
         if self.meta.slug == "slack" or message.mentions:
             mentions_for_resolve: list[dict[str, Any]] = await self._mentions_payload_for_resolve_agent(
                 message,
@@ -917,6 +917,7 @@ class WorkspaceMessenger(BaseMessenger):
                 conversation_id=conversation_id,
                 organization_id=organization_id,
                 mentions=mentions_for_resolve,
+                message_text=message.text,
             )
 
         attachment_ids: list[str] = await self.download_attachments(message)
