@@ -289,14 +289,18 @@ interface SuggestedInvitesBannerProps {
   invites: Array<{ id: string; name: string | null; email: string }>;
   onAdd: (userIds: string[]) => void;
   onDismiss: () => void;
+  bannerRef?: React.RefObject<HTMLDivElement>;
 }
 
-function SuggestedInvitesBanner({ invites, onAdd, onDismiss }: SuggestedInvitesBannerProps): JSX.Element {
+function SuggestedInvitesBanner({ invites, onAdd, onDismiss, bannerRef }: SuggestedInvitesBannerProps): JSX.Element {
   const names = invites.map(u => u.name || u.email).join(', ');
   const isMultiple = invites.length > 1;
 
   return (
-    <div className="mb-4 rounded-lg border border-primary-500/30 bg-primary-500/10 px-4 py-3 shadow-sm animate-in fade-in slide-in-from-top-2 duration-300">
+    <div
+      ref={bannerRef}
+      className="mb-4 rounded-lg border border-primary-500/30 bg-primary-500/10 px-4 py-3 shadow-sm animate-in fade-in slide-in-from-top-2 duration-300"
+    >
       <div className="flex items-center justify-between gap-4">
         <div className="flex items-center gap-3 min-w-0">
           <div className="w-8 h-8 rounded-full bg-primary-500/20 flex items-center justify-center flex-shrink-0">
@@ -516,6 +520,7 @@ export function Chat({
   const workflowDoneRef = useRef<boolean>(false); // Prevents polling restart after workflow completes
   const prevAppCountRef = useRef(0); // Track app count for auto-switching preview
   const dragContainerRef = useRef<HTMLDivElement>(null); // Container for drag-resize
+  const suggestedInvitesBannerRef = useRef<HTMLDivElement>(null);
   const lastTypingSentRef = useRef<number>(0);
 
   // Keep ref in sync with state
@@ -2294,6 +2299,7 @@ export function Chat({
                 invites={suggestedInvites}
                 onAdd={handleSuggestedInvitesAdd}
                 onDismiss={handleSuggestedInvitesDismiss}
+                bannerRef={suggestedInvitesBannerRef}
               />
             )}
             {!userId && (
@@ -2519,6 +2525,7 @@ export function Chat({
 
             const handleComposerBlur = (e: React.FocusEvent<HTMLDivElement>): void => {
               if (composerRef.current?.contains(e.relatedTarget as Node)) return;
+              if (suggestedInvitesBannerRef.current?.contains(e.relatedTarget as Node)) return;
               setComposerFocused(false);
             };
 
