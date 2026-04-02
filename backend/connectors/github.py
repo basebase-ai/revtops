@@ -14,7 +14,7 @@ import logging
 import uuid as uuid_mod
 from datetime import datetime
 from types import SimpleNamespace
-from typing import Any, Optional
+from typing import Any, Optional, TypedDict
 from uuid import UUID
 
 import httpx
@@ -40,6 +40,14 @@ _GITHUB_ORG_MEMBER_ACTIVE: tuple[str, ...] = ("active", "onboarding")
 logger = logging.getLogger(__name__)
 
 GITHUB_API_BASE: str = "https://api.github.com"
+
+
+class _TrackedRepoSnapshot(TypedDict):
+    """Detached-safe repository fields used during sync loops."""
+
+    id: UUID
+    full_name: str
+    default_branch: str
 
 
 class GitHubConnector(BaseConnector):
@@ -1397,6 +1405,33 @@ Use `run_sql_query` on `github_repositories`, `github_commits`, `github_pull_req
 
     # ── Sync: Repositories ───────────────────────────────────────────────
 
+    async def _get_tracked_repo_snapshots(self) -> list[_TrackedRepoSnapshot]:
+        """Return detached-safe repository snapshots for sync operations."""
+        org_uuid: UUID = UUID(self.organization_id)
+        async with get_session(organization_id=self.organization_id) as session:
+            result = await session.execute(
+                select(
+                    GitHubRepository.id,
+                    GitHubRepository.full_name,
+                    GitHubRepository.default_branch,
+                ).where(
+                    GitHubRepository.organization_id == org_uuid,
+                    GitHubRepository.is_tracked == True,
+                )
+            )
+            rows = result.all()
+
+        snapshots: list[_TrackedRepoSnapshot] = []
+        for row in rows:
+            snapshots.append(
+                {
+                    "id": row.id,
+                    "full_name": row.full_name,
+                    "default_branch": row.default_branch or "main",
+                }
+            )
+        return snapshots
+
     async def sync_repositories(self) -> int:
         """
         Refresh metadata for all tracked repos.
@@ -1404,16 +1439,9 @@ Use `run_sql_query` on `github_repositories`, `github_commits`, `github_pull_req
         Updates description, language, default_branch, etc.
         Returns count of repos refreshed.
         """
-        org_uuid: UUID = UUID(self.organization_id)
-
-        async with get_session(organization_id=self.organization_id) as session:
-            result = await session.execute(
-                select(GitHubRepository).where(
-                    GitHubRepository.organization_id == org_uuid,
-                    GitHubRepository.is_tracked == True,
-                )
-            )
-            tracked_repos: list[GitHubRepository] = list(result.scalars().all())
+        tracked_repos: list[_TrackedRepoSnapshot] = (
+            await self._get_tracked_repo_snapshots()
+        )
 
         if not tracked_repos:
             logger.info(
@@ -1426,11 +1454,11 @@ Use `run_sql_query` on `github_repositories`, `github_commits`, `github_pull_req
         for repo in tracked_repos:
             try:
                 data: dict[str, Any] = await self._gh_get(
-                    f"/repos/{repo.full_name}"
+                    f"/repos/{repo['full_name']}"
                 )
                 async with get_session(organization_id=self.organization_id) as session:
                     db_repo: GitHubRepository | None = await session.get(
-                        GitHubRepository, repo.id
+                        GitHubRepository, repo["id"]
                     )
                     if db_repo:
                         db_repo.description = data.get("description")
@@ -1442,7 +1470,7 @@ Use `run_sql_query` on `github_repositories`, `github_commits`, `github_pull_req
                 count += 1
             except Exception as exc:
                 logger.warning(
-                    "Failed to refresh repo %s: %s", repo.full_name, exc
+                    "Failed to refresh repo %s: %s", repo["full_name"], exc
                 )
 
         return count
@@ -1457,16 +1485,9 @@ Use `run_sql_query` on `github_repositories`, `github_commits`, `github_pull_req
         ~5 000 commits (50 pages x 100); subsequent syncs are incremental
         because the unique-SHA constraint means duplicates are skipped.
         """
-        org_uuid: UUID = UUID(self.organization_id)
-
-        async with get_session(organization_id=self.organization_id) as session:
-            result = await session.execute(
-                select(GitHubRepository).where(
-                    GitHubRepository.organization_id == org_uuid,
-                    GitHubRepository.is_tracked == True,
-                )
-            )
-            tracked_repos: list[GitHubRepository] = list(result.scalars().all())
+        tracked_repos: list[_TrackedRepoSnapshot] = (
+            await self._get_tracked_repo_snapshots()
+        )
 
         if not tracked_repos:
             return 0
@@ -1478,19 +1499,19 @@ Use `run_sql_query` on `github_repositories`, `github_commits`, `github_pull_req
                 total_count += count
             except Exception as exc:
                 logger.warning(
-                    "Failed to sync commits for %s: %s", repo.full_name, exc
+                    "Failed to sync commits for %s: %s", repo["full_name"], exc
                 )
 
         return total_count
 
-    async def _sync_commits_for_repo(self, repo: GitHubRepository) -> int:
+    async def _sync_commits_for_repo(self, repo: _TrackedRepoSnapshot) -> int:
         """Fetch and upsert commits for a single repo."""
         org_uuid: UUID = UUID(self.organization_id)
-        commit_params: dict[str, Any] = {"sha": repo.default_branch}
+        commit_params: dict[str, Any] = {"sha": repo["default_branch"]}
         if self.sync_since:
             commit_params["since"] = self.sync_since.strftime("%Y-%m-%dT%H:%M:%SZ")
         raw_commits: list[dict[str, Any]] = await self._gh_get_paginated(
-            f"/repos/{repo.full_name}/commits",
+            f"/repos/{repo['full_name']}/commits",
             params=commit_params,
         )
 
@@ -1520,7 +1541,7 @@ Use `run_sql_query` on `github_repositories`, `github_commits`, `github_pull_req
 
                 stmt = pg_insert(GitHubCommit).values(
                     organization_id=org_uuid,
-                    repository_id=repo.id,
+                    repository_id=repo["id"],
                     sha=c["sha"],
                     message=commit_data.get("message", ""),
                     author_name=author_info.get("name", "Unknown"),
@@ -1546,29 +1567,22 @@ Use `run_sql_query` on `github_repositories`, `github_commits`, `github_pull_req
         # Update last_sync_at on the repo
         async with get_session(organization_id=self.organization_id) as session:
             db_repo: GitHubRepository | None = await session.get(
-                GitHubRepository, repo.id
+                GitHubRepository, repo["id"]
             )
             if db_repo:
                 db_repo.last_sync_at = datetime.utcnow()
                 await session.commit()
 
-        logger.info("Synced %d commits for %s", count, repo.full_name)
+        logger.info("Synced %d commits for %s", count, repo["full_name"])
         return count
 
     # ── Sync: Pull Requests ──────────────────────────────────────────────
 
     async def sync_pull_requests(self) -> int:
         """Fetch pull requests for all tracked repos and upsert."""
-        org_uuid: UUID = UUID(self.organization_id)
-
-        async with get_session(organization_id=self.organization_id) as session:
-            result = await session.execute(
-                select(GitHubRepository).where(
-                    GitHubRepository.organization_id == org_uuid,
-                    GitHubRepository.is_tracked == True,
-                )
-            )
-            tracked_repos: list[GitHubRepository] = list(result.scalars().all())
+        tracked_repos: list[_TrackedRepoSnapshot] = (
+            await self._get_tracked_repo_snapshots()
+        )
 
         if not tracked_repos:
             return 0
@@ -1580,16 +1594,16 @@ Use `run_sql_query` on `github_repositories`, `github_commits`, `github_pull_req
                 total_count += count
             except Exception as exc:
                 logger.warning(
-                    "Failed to sync PRs for %s: %s", repo.full_name, exc
+                    "Failed to sync PRs for %s: %s", repo["full_name"], exc
                 )
 
         return total_count
 
-    async def _sync_prs_for_repo(self, repo: GitHubRepository) -> int:
+    async def _sync_prs_for_repo(self, repo: _TrackedRepoSnapshot) -> int:
         """Fetch and upsert PRs for a single repo."""
         org_uuid: UUID = UUID(self.organization_id)
         raw_prs: list[dict[str, Any]] = await self._gh_get_paginated(
-            f"/repos/{repo.full_name}/pulls",
+            f"/repos/{repo['full_name']}/pulls",
             params={"state": "all", "sort": "updated", "direction": "desc"},
         )
 
@@ -1632,7 +1646,7 @@ Use `run_sql_query` on `github_repositories`, `github_commits`, `github_pull_req
 
                 stmt = pg_insert(GitHubPullRequest).values(
                     organization_id=org_uuid,
-                    repository_id=repo.id,
+                    repository_id=repo["id"],
                     github_pr_id=pr["id"],
                     number=pr["number"],
                     title=pr.get("title", ""),
@@ -1699,7 +1713,7 @@ Use `run_sql_query` on `github_repositories`, `github_commits`, `github_pull_req
 
             await session.commit()
 
-        logger.info("Synced %d PRs for %s", count, repo.full_name)
+        logger.info("Synced %d PRs for %s", count, repo["full_name"])
         return count
 
     # ── Date helpers ─────────────────────────────────────────────────────
