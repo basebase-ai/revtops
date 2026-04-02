@@ -576,6 +576,10 @@ class WorkspaceMessenger(BaseMessenger):
 
                 if changed:
                     await session.commit()
+                # get_session() cleanup always rolls back before close to clear
+                # transaction state/RLS context; expunge the ORM object so
+                # attribute access remains safe after the session scope exits.
+                session.expunge(conversation)
                 return conversation
 
             source_label: str = {
@@ -604,6 +608,8 @@ class WorkspaceMessenger(BaseMessenger):
                 "[%s] Created conversation %s channel=%s user=%s",
                 source, conversation.id, source_channel_id, revtops_user_id,
             )
+            # See note above: detach before get_session() cleanup rollback.
+            session.expunge(conversation)
             return conversation
 
     # ------------------------------------------------------------------

@@ -550,6 +550,10 @@ class TwilioPhoneMessenger(BaseMessenger):
                 if user.id and conversation.user_id is None:
                     conversation.user_id = user.id
                     await session.commit()
+                # get_session() cleanup issues rollback before close; detach
+                # instance so scalar attribute reads don't trigger refresh on a
+                # closed session.
+                session.expunge(conversation)
                 return conversation
 
             display_name: str = user.name or phone
@@ -573,6 +577,8 @@ class TwilioPhoneMessenger(BaseMessenger):
                 phone,
                 organization_id,
             )
+            # Detach before get_session() cleanup rollback.
+            session.expunge(conversation)
             return conversation
 
     # ------------------------------------------------------------------
