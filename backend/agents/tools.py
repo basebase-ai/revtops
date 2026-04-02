@@ -5095,6 +5095,7 @@ async def _trigger_sync(
         return {"error": "Provider is required (e.g., 'hubspot', 'gmail', 'salesforce')."}
     
     # Active integrations (often multiple user-scoped rows per org + connector)
+    owner_ids: list[str | None] = []
     async with get_session(organization_id=organization_id) as session:
         result = await session.execute(
             select(Integration)
@@ -5115,6 +5116,10 @@ async def _trigger_sync(
                 "error": f"No active {provider} integration found.",
                 "suggestion": f"Go to Data Sources and connect {provider}.",
             }
+        # Snapshot scalar identifiers while the rows are still bound to a live
+        # session. Accessing ORM attributes after the session exits can trigger
+        # detached-instance refresh errors.
+        owner_ids = [str(integration.user_id) if integration.user_id else None for integration in integrations]
     
     dp_ctx = ConnectorContext(
         organization_id=organization_id,
@@ -5130,10 +5135,13 @@ async def _trigger_sync(
         from workers.tasks.sync import sync_integration
 
         task_ids: list[str] = []
-        for integration in integrations:
-            owner_id: str | None = (
-                str(integration.user_id) if integration.user_id else None
-            )
+        logger.info(
+            "[Tools._trigger_sync] Queueing %d sync task(s) for provider=%s org=%s",
+            len(owner_ids),
+            provider,
+            organization_id,
+        )
+        for owner_id in owner_ids:
             task = sync_integration.delay(organization_id, provider, user_id=owner_id)
             task_ids.append(task.id)
 
