@@ -475,13 +475,14 @@ export function Chat({
     const agentOption = { type: 'agent' as const, displayName: 'Basebase', userId: null };
     const userOptions = members
       .filter((m) => {
+        const email = m.email.toLowerCase();
+        const name = (m.name ?? '').toLowerCase();
         // Hide internal guest/system accounts (e.g. guest+uuid@guest.basebase.local)
-        if (m.email.toLowerCase().endsWith('.basebase.local')) {
+        // More aggressive filter to catch variations seen in demos
+        if (email.includes('guest') || email.includes('.basebase.local') || name.includes('guest user')) {
           return false;
         }
         if (!q) return true;
-        const name = (m.name ?? '').toLowerCase();
-        const email = m.email.toLowerCase();
         return name.includes(q) || email.includes(q);
       })
       .map((m) => ({
@@ -2824,12 +2825,17 @@ function InviteParticipantModal({
 
   const selectableMembers: readonly TeamMember[] = useMemo(() => {
     const q: string = searchQuery.trim().toLowerCase();
-    const filtered: TeamMember[] = teamMembers.filter(
-      (member) =>
+    const filtered: TeamMember[] = teamMembers.filter((member) => {
+      const email = member.email.toLowerCase();
+      const name = (member.name ?? '').toLowerCase();
+      return (
         member.id !== currentUserId &&
         !existingParticipantIds.has(member.id) &&
-        !member.email.toLowerCase().endsWith('.basebase.local'),
-    );
+        !email.includes('guest') &&
+        !email.includes('.basebase.local') &&
+        !name.includes('guest user')
+      );
+    });
     const matched: TeamMember[] = filtered.filter((member) => {
       if (q.length === 0) return true;
       const displayName: string = (member.name ?? '').toLowerCase();

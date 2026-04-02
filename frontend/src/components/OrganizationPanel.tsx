@@ -169,9 +169,15 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
     isLoading: isLoadingMembers 
   } = useTeamMembers(organization.id, currentUser.id);
 
-  const members: TeamMember[] = (teamData?.members ?? []).filter(
-    (m) => !m.email.toLowerCase().endsWith('.basebase.local'),
-  );
+  const members: TeamMember[] = (teamData?.members ?? []).filter((m) => {
+    const email = m.email.toLowerCase();
+    const name = (m.name ?? '').toLowerCase();
+    return (
+      !email.includes('guest') &&
+      !email.includes('.basebase.local') &&
+      !name.includes('guest user')
+    );
+  });
   const sortedMembers: TeamMember[] = [...members].sort((a, b) => {
     const aInvited: boolean = a.status === 'invited';
     const bInvited: boolean = b.status === 'invited';
