@@ -2778,6 +2778,8 @@ export function Chat({
               }
               return merged;
             });
+            // Clear any suggested invites since participants list has changed
+            useChatStore.getState().clearConversationSuggestedInvites(chatId);
           }}
         />
       )}

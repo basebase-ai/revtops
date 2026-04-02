@@ -4,6 +4,7 @@ Standalone chat message helpers for human-mode flow (save without invoking agent
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime
 from typing import Any
 from uuid import UUID, uuid4
@@ -13,6 +14,7 @@ from sqlalchemy import or_, select, update
 from models.chat_message import ChatMessage
 from models.conversation import Conversation
 from models.database import get_session
+from models.org_member import OrgMember
 from models.user import User
 
 logger = logging.getLogger(__name__)
@@ -41,12 +43,11 @@ async def resolve_agent_responding(
     has_agent_mention = any(m.get("type") == "agent" for m in mentions)
     user_mentions = [m for m in mentions if m.get("type") == "user"]
 
-    # Fallback: check plain text for @basebase if no structured agent mention
+    # Fallback: check plain text for @basebase or other user mentions if structured mentions are incomplete
     text_mentions: list[str] = []
     if message_text:
-        import re
-        # Match @followed_by_chars_until_space_or_end
-        text_mentions = re.findall(r"@(\S+)", message_text)
+        # Match @followed_by_alphanumeric_dots_dashes (avoids trailing punctuation like commas)
+        text_mentions = re.findall(r"@([\w\.-]+)", message_text)
         
         if not has_agent_mention:
             for tm in text_mentions:
@@ -78,29 +79,33 @@ async def resolve_agent_responding(
                     continue
 
         # 2. Collect IDs from plain-text mentions
+        has_plain_text_user_mention = False
         if text_mentions and organization_id:
-            from models.org_member import OrgMember
-            for tm in text_mentions:
-                if tm.lower() == "basebase":
-                    continue
-                # Match member in this org
+            # Look for members whose name or email matches the @mention string
+            # We filter out "basebase" which is the agent
+            filtered_tms = [tm for tm in text_mentions if tm.lower() != "basebase"]
+            
+            if filtered_tms:
+                # Perform bulk query to resolve all mentions at once
+                # We search for exact email, exact name, or name as email prefix
                 stmt = (
                     select(User.id)
                     .join(OrgMember, User.id == OrgMember.user_id)
                     .where(
                         OrgMember.organization_id == UUID(organization_id),
                         or_(
-                            User.email.ilike(tm),
-                            User.name.ilike(tm),
-                            User.email.ilike(f"{tm}@%"),
+                            User.email.in_(filtered_tms),
+                            User.name.in_(filtered_tms),
+                            *[User.email.ilike(f"{tm}@%") for tm in filtered_tms]
                         )
                     )
-                    .limit(1)
                 )
                 res = await session.execute(stmt)
-                uid = res.scalar_one_or_none()
-                if uid and uid not in mentioned_ids:
-                    mentioned_ids.append(uid)
+                resolved_uids = [r[0] for r in res.all()]
+                for uid in resolved_uids:
+                    if uid not in mentioned_ids:
+                        mentioned_ids.append(uid)
+                        has_plain_text_user_mention = True
 
         # Identify who is mentioned but NOT yet participating
         suggested_invites: list[dict[str, Any]] = []
@@ -121,7 +126,8 @@ async def resolve_agent_responding(
         new_responding = current_agent_responding
         if has_agent_mention:
             new_responding = True
-        elif user_mentions:
+        elif user_mentions or has_plain_text_user_mention:
+            # If a user was mentioned (structured or plain text that resolved), disable agent
             new_responding = False
 
         if new_responding != current_agent_responding:
