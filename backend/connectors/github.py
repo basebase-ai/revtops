@@ -13,6 +13,7 @@ import base64
 import logging
 import uuid as uuid_mod
 from datetime import datetime
+from types import SimpleNamespace
 from typing import Any, Optional
 from uuid import UUID
 
@@ -25,12 +26,14 @@ from connectors.registry import (
     AuthType, Capability, ConnectorMeta, ConnectorScope, WriteOperation,
 )
 from models.database import get_session
+from models.integration import Integration
 from models.github_commit import GitHubCommit
 from models.github_pull_request import GitHubPullRequest
 from models.github_repository import GitHubRepository
 from models.external_identity_mapping import ExternalIdentityMapping
 from models.org_member import OrgMember
 from models.user import User
+from services.nango import get_nango_client
 
 _GITHUB_ORG_MEMBER_ACTIVE: tuple[str, ...] = ("active", "onboarding")
 
@@ -211,6 +214,74 @@ Use `run_sql_query` on `github_repositories`, `github_commits`, `github_pull_req
         self._login_cache: dict[str, UUID | None] = {}
         # Cache: email → internal user UUID (or None)
         self._email_cache: dict[str, UUID | None] = {}
+        # Scalar snapshot to avoid carrying ORM instances across session boundaries.
+        self._integration_id: UUID | None = None
+        self._integration_last_sync_at: datetime | None = None
+        self._nango_connection_id: str | None = None
+
+    @property
+    def sync_since(self) -> datetime | None:
+        """Return incremental sync cutoff without relying on attached ORM objects."""
+        if self._sync_since_override is not None:
+            return self._sync_since_override
+        if self._integration_last_sync_at is not None:
+            return self._integration_last_sync_at - self._SYNC_SINCE_BUFFER
+        return None
+
+    async def get_oauth_token(self) -> tuple[str, str]:
+        """Get OAuth token from Nango while caching only scalar integration state."""
+        if self._token:
+            return self._token, ""
+
+        async with get_session(organization_id=self.organization_id) as session:
+            conditions: list[Any] = [
+                Integration.organization_id == UUID(self.organization_id),
+                Integration.connector == self.source_system,
+                Integration.is_active == True,  # noqa: E712
+            ]
+            if self.user_id:
+                conditions.append(Integration.user_id == UUID(self.user_id))
+
+            result = await session.execute(
+                select(
+                    Integration.id,
+                    Integration.nango_connection_id,
+                    Integration.last_sync_at,
+                )
+                .where(*conditions)
+                .order_by(Integration.updated_at.desc().nullslast())
+                .limit(1)
+            )
+            row = result.first()
+            if row is None:
+                user_msg = f" for user {self.user_id}" if self.user_id else ""
+                raise ValueError(
+                    f"No active {self.source_system} integration{user_msg} for organization: {self.organization_id}"
+                )
+
+            self._integration_id = row.id
+            self._nango_connection_id = row.nango_connection_id
+            self._integration_last_sync_at = row.last_sync_at
+            # Keep BaseConnector compatibility for helper methods that inspect _integration.
+            self._integration = SimpleNamespace(
+                id=row.id,
+                nango_connection_id=row.nango_connection_id,
+                last_sync_at=row.last_sync_at,
+                user_id=UUID(self.user_id) if self.user_id else None,
+            )
+
+        if not self._nango_connection_id:
+            raise ValueError(
+                f"No Nango connection ID stored for {self.source_system} integration"
+            )
+
+        nango = get_nango_client()
+        nango_integration_id = self.meta.nango_integration_id or self.source_system
+        self._token = await nango.get_token(
+            nango_integration_id,
+            self._nango_connection_id,
+        )
+        return self._token, ""
 
     # ── HTTP helpers ─────────────────────────────────────────────────────
 
@@ -1248,8 +1319,7 @@ Use `run_sql_query` on `github_repositories`, `github_commits`, `github_pull_req
             return []
 
         # Get integration ID
-        integration = await self._get_integration()
-        integration_id: UUID = integration.id
+        integration_id: UUID = await self._get_integration_id()
         org_uuid: UUID = UUID(self.organization_id)
 
         tracked: list[dict[str, Any]] = []
@@ -1316,14 +1386,14 @@ Use `run_sql_query` on `github_repositories`, `github_commits`, `github_pull_req
 
     # ── Integration helper ───────────────────────────────────────────────
 
-    async def _get_integration(self) -> Any:
-        """Load the Integration record (cached on self._integration)."""
-        if self._integration:
-            return self._integration
-        # get_oauth_token also loads the integration as a side effect
+    async def _get_integration_id(self) -> UUID:
+        """Return integration id from a scalar snapshot, refreshing token state if needed."""
+        if self._integration_id is not None:
+            return self._integration_id
         await self.get_oauth_token()
-        assert self._integration is not None
-        return self._integration
+        if self._integration_id is None:
+            raise ValueError("GitHub integration not found")
+        return self._integration_id
 
     # ── Sync: Repositories ───────────────────────────────────────────────
 
