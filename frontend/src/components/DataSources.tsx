@@ -36,7 +36,7 @@ const ApolloIcon: IconType = ({ className, ...props }) => (
     <line x1="19.07" y1="4.93" x2="4.93" y2="19.07" />
   </svg>
 );
-import { API_BASE, apiRequest } from '../lib/api';
+import { API_BASE, apiRequest, getAuthenticatedRequestHeaders } from '../lib/api';
 import { useAppStore, useIntegrations, useIntegrationsLoading, type Integration, type SyncStats } from '../store';
 import { useWebSocket } from '../hooks/useWebSocket';
 
@@ -367,10 +367,13 @@ export function DataSources(): JSX.Element {
     let cancelled = false;
     const checkInFlight = async (): Promise<void> => {
       const inFlight = new Set<string>();
+      const authHeaders = await getAuthenticatedRequestHeaders();
       await Promise.all(
         syncableProviders.map(async (provider: string) => {
           try {
-            const res: Response = await fetch(`${API_BASE}/sync/${orgId}/${provider}/status`);
+            const res: Response = await fetch(`${API_BASE}/sync/${orgId}/${provider}/status`, {
+              headers: authHeaders,
+            });
             if (!res.ok) return;
             const data = (await res.json()) as { status: string };
             if (data.status === 'syncing') {
@@ -661,7 +664,10 @@ export function DataSources(): JSX.Element {
     setSlackMappingsError(null);
     try {
       const params = new URLSearchParams({ organization_id: organizationId, user_id: userId });
-      const response = await fetch(`${API_BASE}/slack/user-mappings?${params.toString()}`);
+      const headers = await getAuthenticatedRequestHeaders();
+      const response = await fetch(`${API_BASE}/slack/user-mappings?${params.toString()}`, {
+        headers,
+      });
       if (!response.ok) {
         throw new Error(`Failed to load Slack mappings: ${response.status}`);
       }
@@ -696,7 +702,8 @@ export function DataSources(): JSX.Element {
     setGithubReposLoading(true);
     setGithubReposError(null);
     try {
-      const res = await fetch(`${API_BASE}/sync/${organizationId}/github/repos`);
+      const headers = await getAuthenticatedRequestHeaders();
+      const res = await fetch(`${API_BASE}/sync/${organizationId}/github/repos`, { headers });
       if (!res.ok) throw new Error(`Failed to load repos: ${res.status}`);
       const data = (await res.json()) as { repos: GitHubRepo[] };
       setGithubAvailableRepos(data.repos ?? []);
@@ -711,7 +718,8 @@ export function DataSources(): JSX.Element {
   const fetchGitHubTrackedRepos = useCallback(async (): Promise<void> => {
     if (!organizationId) return;
     try {
-      const res = await fetch(`${API_BASE}/sync/${organizationId}/github/repos/tracked`);
+      const headers = await getAuthenticatedRequestHeaders();
+      const res = await fetch(`${API_BASE}/sync/${organizationId}/github/repos/tracked`, { headers });
       if (!res.ok) return;
       const data = (await res.json()) as { repos: { github_repo_id: number; full_name?: string }[] };
       const repos = data.repos ?? [];
@@ -738,9 +746,10 @@ export function DataSources(): JSX.Element {
     setGithubSaving(true);
     setGithubReposError(null);
     try {
+      const authHeaders = await getAuthenticatedRequestHeaders();
       const res = await fetch(`${API_BASE}/sync/${organizationId}/github/repos/track`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
         body: JSON.stringify({ github_repo_ids: Array.from(githubSelectedIds) }),
       });
       if (!res.ok) {
@@ -889,11 +898,11 @@ export function DataSources(): JSX.Element {
         return;
       }
 
-      // Get session token from backend for OAuth connectors
-      const params = new URLSearchParams({ organization_id: organizationId, user_id: userId });
-      const response = await fetch(
-        `${API_BASE}/auth/connect/${provider}/session?${params.toString()}`
-      );
+      // Get session token from backend for OAuth connectors (JWT + org header)
+      const connectAuthHeaders = await getAuthenticatedRequestHeaders();
+      const response = await fetch(`${API_BASE}/auth/connect/${provider}/session`, {
+        headers: connectAuthHeaders,
+      });
 
       if (!response.ok) {
         throw new Error('Failed to get session token');
@@ -1202,8 +1211,10 @@ export function DataSources(): JSX.Element {
           ? `${API_BASE}/sync/${organizationId}/${provider}?since=${encodeURIComponent(sinceIso)}`
           : `${API_BASE}/sync/${organizationId}/${provider}`;
 
+      const authHeaders = await getAuthenticatedRequestHeaders();
       const response = await fetch(syncUrl, {
         method: 'POST',
+        headers: authHeaders,
       });
 
       if (!response.ok) throw new Error(await getResponseErrorMessage(response, `Failed to sync ${getConnectorDisplay(provider).name}`));
@@ -1212,7 +1223,9 @@ export function DataSources(): JSX.Element {
       let attempts = 0;
       const maxAttempts = 150;
       const checkStatus = async (): Promise<void> => {
-        const statusRes = await fetch(`${API_BASE}/sync/${organizationId}/${provider}/status`);
+        const statusRes = await fetch(`${API_BASE}/sync/${organizationId}/${provider}/status`, {
+          headers: authHeaders,
+        });
         const status = await statusRes.json();
 
         if (status.status === 'completed' || status.status === 'failed' || attempts >= maxAttempts) {
@@ -1260,6 +1273,8 @@ export function DataSources(): JSX.Element {
     setSyncError(null);
     setSyncingAll(true);
 
+    const syncAllAuthHeaders = await getAuthenticatedRequestHeaders();
+
     const { data, error } = await apiRequest<{
       status: string;
       organization_id: string;
@@ -1291,7 +1306,9 @@ export function DataSources(): JSX.Element {
     const pollOne = async (provider: string): Promise<void> => {
       let attempts: number = 0;
       for (;;) {
-        const statusRes: Response = await fetch(`${API_BASE}/sync/${organizationId}/${provider}/status`);
+        const statusRes: Response = await fetch(`${API_BASE}/sync/${organizationId}/${provider}/status`, {
+          headers: syncAllAuthHeaders,
+        });
         const status: { status: string; error?: string } = (await statusRes.json()) as {
           status: string;
           error?: string;
@@ -1336,9 +1353,10 @@ export function DataSources(): JSX.Element {
     setSlackMappingStatus(null);
     setSlackSendCodeLoading(true);
     try {
+      const slackAuthHeaders = await getAuthenticatedRequestHeaders();
       const response = await fetch(`${API_BASE}/slack/user-mappings/request-code`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...slackAuthHeaders },
         body: JSON.stringify({
           user_id: userId,
           organization_id: organizationId,
@@ -1376,9 +1394,10 @@ export function DataSources(): JSX.Element {
     setSlackMappingStatus(null);
     setSlackVerifyCodeLoading(true);
     try {
+      const slackVerifyHeaders = await getAuthenticatedRequestHeaders();
       const response = await fetch(`${API_BASE}/slack/user-mappings/verify-code`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...slackVerifyHeaders },
         body: JSON.stringify({
           user_id: userId,
           organization_id: organizationId,
@@ -1419,9 +1438,10 @@ export function DataSources(): JSX.Element {
     if (!organizationId || !userId) return;
     try {
       const params = new URLSearchParams({ organization_id: organizationId, user_id: userId });
+      const delHeaders = await getAuthenticatedRequestHeaders();
       const response = await fetch(
         `${API_BASE}/slack/user-mappings/${mappingId}?${params.toString()}`,
-        { method: 'DELETE' },
+        { method: 'DELETE', headers: delHeaders },
       );
       if (!response.ok) {
         const text = await response.text();

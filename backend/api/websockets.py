@@ -332,6 +332,21 @@ def _generate_title(message: str) -> str:
 logger = logging.getLogger(__name__)
 
 
+def _warn_org_required_rejection(
+    *,
+    user_id: str,
+    message_type: str,
+    conversation_id: str | None = None,
+) -> None:
+    """Emit a warning when a websocket message is rejected due to missing org context."""
+    logger.warning(
+        "[WebSocket] Rejected %s message: no organization context (user_id=%s, conversation_id=%s)",
+        message_type,
+        user_id,
+        conversation_id or "none",
+    )
+
+
 async def _collect_running_workflow_tool_updates(organization_id: str) -> list[dict]:
     """
     Collect running workflow tool states from persisted chat messages.
@@ -664,7 +679,14 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 
             if message_type == "typing":
                 ty_conv_id = data.get("conversation_id")
-                if not ty_conv_id or not organization_id:
+                if not ty_conv_id:
+                    continue
+                if not organization_id:
+                    _warn_org_required_rejection(
+                        user_id=user_id_str,
+                        message_type=message_type,
+                        conversation_id=str(ty_conv_id),
+                    )
                     continue
                 try:
                     ty_conv_uuid = UUID(str(ty_conv_id))
@@ -710,6 +732,22 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 if not user_message:
                     continue
 
+                if not organization_id:
+                    _warn_org_required_rejection(
+                        user_id=user_id_str,
+                        message_type=message_type,
+                        conversation_id=str(conversation_id) if conversation_id else None,
+                    )
+                    await websocket.send_text(
+                        json.dumps(
+                            {
+                                "type": "error",
+                                "error": "Organization required to send messages. Select a team or complete onboarding.",
+                            }
+                        )
+                    )
+                    continue
+
                 # Create conversation if needed
                 if not conversation_id:
                     # Generate title from first message
@@ -726,8 +764,8 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     async with get_session(organization_id=organization_id) as session:
                         conversation = Conversation(
                             id=conv_uuid,
-                            user_id=UUID(user_id_str), 
-                            organization_id=UUID(organization_id) if organization_id else None,
+                            user_id=UUID(user_id_str),
+                            organization_id=UUID(organization_id),
                             participating_user_ids=[UUID(user_id_str)],
                             title=title,
                             scope=conv_scope,
@@ -743,13 +781,6 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                         "title": title,
                         "scope": conv_scope,
                     }))
-
-                if not organization_id:
-                    await websocket.send_text(json.dumps({
-                        "type": "error",
-                        "error": "No organization found. Please complete onboarding.",
-                    }))
-                    continue
 
                 mentions: list[dict] | None = data.get("mentions")
                 from services.chat_messages import resolve_agent_responding, save_user_message

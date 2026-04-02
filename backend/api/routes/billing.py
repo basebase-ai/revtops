@@ -18,16 +18,33 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 
 from api.auth_middleware import AuthContext, require_organization
 from config import settings
 from models.database import get_admin_session
+from models.org_member import OrgMember
 from models.organization import Organization
 from services.credits import ACTIVE_SUBSCRIPTION_STATUSES
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+async def _is_org_admin(*, user_id: UUID, organization_id: UUID) -> bool:
+    """Return True when the user is an active organization admin."""
+    async with get_admin_session() as session:
+        membership = (
+            await session.execute(
+                select(OrgMember).where(
+                    OrgMember.user_id == user_id,
+                    OrgMember.organization_id == organization_id,
+                    OrgMember.status.in_(("active", "onboarding", "invited")),
+                )
+            )
+        ).scalar_one_or_none()
+    return bool(membership and membership.role == "admin")
+
 
 # Tier config: name, price_cents, credits_included
 # "free" tier requires no credit card; "partner" tier is hidden and assigned manually
@@ -470,6 +487,17 @@ async def get_credit_details(
     if not org_id:
         raise HTTPException(status_code=403, detail="Organization required")
     
+    is_org_admin = auth.is_global_admin or await _is_org_admin(
+        user_id=auth.user_id,
+        organization_id=org_id,
+    )
+    if not is_org_admin:
+        logger.info(
+            "Scoping credit transaction details to requesting user org=%s user=%s",
+            org_id,
+            auth.user_id,
+        )
+
     async with get_admin_session() as session:
         from sqlalchemy import select, func
         from models.credit_transaction import CreditTransaction
@@ -495,6 +523,8 @@ async def get_credit_details(
                 .where(CreditTransaction.organization_id == org_id)
                 .order_by(CreditTransaction.created_at.asc())
             )
+            if not is_org_admin:
+                q = q.where(CreditTransaction.user_id == auth.user_id)
             if filter_start:
                 q = q.where(CreditTransaction.created_at >= filter_start)
             return q
@@ -513,6 +543,8 @@ async def get_credit_details(
                 .group_by(CreditTransaction.user_id, User.email, User.name)
                 .order_by(func.sum(func.abs(CreditTransaction.amount)).desc())
             )
+            if not is_org_admin:
+                q = q.where(CreditTransaction.user_id == auth.user_id)
             if filter_start:
                 q = q.where(CreditTransaction.created_at >= filter_start)
             return q
@@ -574,6 +606,10 @@ async def get_credit_details(
                 .where(CreditTransaction.reference_type == "conversation")
                 .where(CreditTransaction.amount < 0)
             )
+            if not is_org_admin:
+                conv_usage_query = conv_usage_query.where(
+                    CreditTransaction.user_id == auth.user_id
+                )
             if effective_period_start:
                 conv_usage_query = conv_usage_query.where(
                     CreditTransaction.created_at >= effective_period_start

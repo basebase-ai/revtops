@@ -8,6 +8,7 @@ from typing import Optional
 
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from sqlalchemy.engine.url import make_url
 
 
 def to_iso8601(dt: datetime | date | None) -> str | None:
@@ -161,9 +162,22 @@ class Settings(BaseSettings):
     SUPPORT_SLACK_WEBHOOK_URL: Optional[str] = None
 
     @property
-    def sandbox_database_url(self) -> str:
-        """Sync Postgres URL for E2B sandbox (strips SQLAlchemy asyncpg prefix)."""
-        return self.DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://")
+    def sandbox_database_connection_env(self) -> dict[str, str]:
+        """Database connection env values for code sandbox without exposing a full URI."""
+        sync_database_url: str = self.DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://")
+        parsed_url = make_url(sync_database_url)
+        if parsed_url.host is None:
+            raise ValueError("DATABASE_URL is missing host; cannot configure code sandbox DB connection.")
+        if parsed_url.database is None:
+            raise ValueError("DATABASE_URL is missing database name; cannot configure code sandbox DB connection.")
+        return {
+            "DB_HOST": parsed_url.host,
+            "DB_PORT": str(parsed_url.port or 5432),
+            "DB_NAME": parsed_url.database,
+            "DB_USER": parsed_url.username or "postgres",
+            "DB_PASSWORD": parsed_url.password or "",
+            "DB_SSLMODE": (parsed_url.query.get("sslmode") if parsed_url.query is not None else None) or "prefer",
+        }
 
     model_config = SettingsConfigDict(
         env_file=str(_env_file),

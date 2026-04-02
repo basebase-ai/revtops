@@ -24,6 +24,7 @@ from typing import Any, ClassVar
 
 from models.conversation import Conversation
 from models.user import User
+from services.anthropic_health import user_message_for_agent_stream_failure
 
 logger = logging.getLogger(__name__)
 
@@ -339,16 +340,13 @@ class BaseMessenger(ABC):
                     )
                 else:
                     full_response += chunk
-        except Exception:
+        except Exception as exc:
             logger.exception(
                 "[%s] Orchestrator error conversation=%s",
                 self.meta.slug,
                 conversation.id,
             )
-            full_response += (
-                "\nSorry, something went wrong processing your message. "
-                "Please try again."
-            )
+            full_response += user_message_for_agent_stream_failure(exc)
 
         # 7. Format and deliver
         response_text: str = self.format_text(full_response.strip())

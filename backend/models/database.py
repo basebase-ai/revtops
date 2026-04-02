@@ -301,6 +301,10 @@ async def get_session(
             # Reset role AND org context before returning connection to pool.
             # Without this, a pooled connection could leak one org's RLS context to another.
             try:
+                # Always rollback first so cleanup SQL doesn't fail with
+                # PendingRollbackError when prior work left the transaction in
+                # a failed state.
+                await session.rollback()
                 logger.debug("Session cleanup: resetting RLS context (set_config + RESET ROLE)")
                 # Batch both set_config resets into one round trip
                 await session.execute(

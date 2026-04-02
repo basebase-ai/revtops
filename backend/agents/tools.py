@@ -188,6 +188,7 @@ class ToolProgressUpdater:
 ALLOWED_TABLES: set[str] = {
     "deals", "accounts", "contacts", "activities", "meetings", "integrations", "users", "organizations",
     "org_members", "apps",
+    "conversations", "chat_messages",
     "pipelines", "pipeline_stages", "goals", "workflows", "workflow_runs", "user_mappings_for_identity",
     "github_repositories", "github_commits", "github_pull_requests",
     "shared_files",
@@ -532,6 +533,7 @@ async def _get_connector_instance(
     organization_id: str,
     user_id: str | None,
     required_capability: str | None = None,
+    preferred_integration_user_id: str | None = None,
 ) -> tuple["BaseConnector | None", str | None]:
     """Resolve a connector by slug, verify active Integration, and instantiate.
 
@@ -558,8 +560,40 @@ async def _get_connector_instance(
 
     # Find an integration the user can access
     async with get_session(organization_id=organization_id) as session:
-        # First, try to find user's own integration
-        if user_id:
+        # If provided, first try the preferred integration owner (used for owner-bound records).
+        # For user-scoped connectors, non-owners must still satisfy capability sharing flags.
+        if preferred_integration_user_id:
+            preferred_filters: list[Any] = [
+                Integration.organization_id == UUID(organization_id),
+                Integration.connector == slug,
+                Integration.user_id == UUID(preferred_integration_user_id),
+                Integration.is_active == True,  # noqa: E712
+            ]
+
+            requester_matches_preferred = bool(user_id) and preferred_integration_user_id == user_id
+            if (
+                not requester_matches_preferred
+                and meta.scope == ConnectorScope.USER
+                and required_capability in ("query", "write", "action")
+            ):
+                preferred_share_flag_map: dict[str, Any] = {
+                    "query": Integration.share_query_access,
+                    "write": Integration.share_write_access,
+                    "action": Integration.share_write_access,
+                }
+                preferred_filters.append(preferred_share_flag_map[required_capability] == True)  # noqa: E712
+
+            result = await session.execute(
+                select(Integration).where(
+                    *preferred_filters,
+                )
+            )
+            integration: Integration | None = result.scalar_one_or_none()
+        else:
+            integration = None
+
+        # Next, try to find user's own integration
+        if integration is None and user_id:
             result = await session.execute(
                 select(Integration).where(
                     Integration.organization_id == UUID(organization_id),
@@ -568,9 +602,7 @@ async def _get_connector_instance(
                     Integration.is_active == True,  # noqa: E712
                 )
             )
-            integration: Integration | None = result.scalar_one_or_none()
-        else:
-            integration = None
+            integration = result.scalar_one_or_none()
 
         # If no personal integration, look for shared integrations
         if integration is None:
@@ -2506,7 +2538,14 @@ async def _execute_linear_update(
     if not issue_identifier:
         raise ValueError("issue_identifier is required (e.g. 'ENG-123')")
 
-    update_fields: list[str] = ["title", "description", "state_name", "priority", "assignee_name"]
+    update_fields: list[str] = [
+        "title",
+        "description",
+        "state_name",
+        "priority",
+        "assignee_name",
+        "project_name",
+    ]
     has_scalar_update: bool = any(record.get(f) is not None for f in update_fields)
     raw_attachments: Any = record.get("attachment_ids")
     has_attachments: bool
@@ -2521,7 +2560,7 @@ async def _execute_linear_update(
     if not has_scalar_update and not has_attachments:
         raise ValueError(
             "At least one field to update must be provided "
-            "(title, description, state_name, priority, assignee_name, or attachment_ids)",
+            "(title, description, state_name, priority, assignee_name, project_name, or attachment_ids)",
         )
 
     logger.info(
@@ -2535,6 +2574,7 @@ async def _execute_linear_update(
         state_name=record.get("state_name"),
         priority=record.get("priority"),
         assignee_name=record.get("assignee_name"),
+        project_name=record.get("project_name"),
         conversation_id=record.get("conversation_id"),
         attachment_ids=record.get("attachment_ids"),
     )
@@ -5425,14 +5465,12 @@ async def _search_cloud_files(
         from models.database import get_session
 
         org_uuid: _UUID = _UUID(organization_id)
-        user_uuid: _UUID = _UUID(user_id)
 
         # Normalise wildcard-only queries (e.g. "*") to match all files
         cleaned_query: str = name_query.replace("*", "").strip()
 
         filters: list[Any] = [
             SharedFile.organization_id == org_uuid,
-            SharedFile.user_id == user_uuid,
             SharedFile.mime_type != "application/vnd.google-apps.folder",
         ]
 
@@ -5443,7 +5481,7 @@ async def _search_cloud_files(
         if source_filter:
             filters.append(SharedFile.source == source_filter)
 
-        async with get_session(organization_id=organization_id) as session:
+        async with get_session(organization_id=organization_id, user_id=user_id) as session:
             query = (
                 select(SharedFile)
                 .where(and_(*filters))
@@ -5485,6 +5523,8 @@ async def _read_cloud_file(
     Looks up the file's source, then dispatches to the appropriate connector.
     """
     external_id: str = params.get("external_id", "").strip()
+    source_hint: str = params.get("source", "").strip()
+    integration_user_id_hint: str = params.get("integration_user_id", "").strip()
 
     if not external_id:
         return {"error": "external_id is required."}
@@ -5494,33 +5534,70 @@ async def _read_cloud_file(
 
     try:
         from uuid import UUID as _UUID
-        from sqlalchemy import select, and_
+        from sqlalchemy import and_, case, select
         from models.shared_file import SharedFile
         from models.database import get_session
 
         org_uuid: _UUID = _UUID(organization_id)
-        user_uuid: _UUID = _UUID(user_id)
+        requester_uuid: _UUID = _UUID(user_id)
 
-        async with get_session(organization_id=organization_id) as session:
+        async with get_session(organization_id=organization_id, user_id=user_id) as session:
+            where_filters: list[Any] = [
+                SharedFile.organization_id == org_uuid,
+                SharedFile.external_id == external_id,
+            ]
+            if source_hint:
+                where_filters.append(SharedFile.source == source_hint)
+            if integration_user_id_hint:
+                where_filters.append(SharedFile.user_id == _UUID(integration_user_id_hint))
+
             result = await session.execute(
-                select(SharedFile).where(
-                    and_(
-                        SharedFile.organization_id == org_uuid,
-                        SharedFile.user_id == user_uuid,
-                        SharedFile.external_id == external_id,
-                    )
+                select(SharedFile)
+                .where(and_(*where_filters))
+                .order_by(
+                    case((SharedFile.user_id == requester_uuid, 0), else_=1),
+                    SharedFile.synced_at.desc().nullslast(),
+                    SharedFile.source.asc(),
+                    SharedFile.user_id.asc(),
+                    SharedFile.id.asc(),
                 )
             )
-            file_record: SharedFile | None = result.scalars().first()
+            matching_records: list[SharedFile] = list(result.scalars().all())
+
+        file_record: SharedFile | None = matching_records[0] if matching_records else None
 
         if not file_record:
             return {"error": f"File not found in synced metadata: {external_id}"}
 
+        if (
+            not source_hint
+            and not integration_user_id_hint
+            and len(matching_records) > 1
+            and file_record.user_id != requester_uuid
+        ):
+            ownership_variants: set[tuple[str, str]] = {
+                (record.source, str(record.user_id)) for record in matching_records
+            }
+            if len(ownership_variants) > 1:
+                return {
+                    "error": (
+                        f"Multiple synced files match external_id '{external_id}'. "
+                        "Please provide 'source' and/or 'integration_user_id' to disambiguate."
+                    )
+                }
+
         source: str = file_record.source
 
         if source == "google_drive":
-            from connectors.google_drive import GoogleDriveConnector
-            connector: GoogleDriveConnector = GoogleDriveConnector(organization_id, user_id)
+            connector, err = await _get_connector_instance(
+                slug="google_drive",
+                organization_id=organization_id,
+                user_id=user_id,
+                required_capability="query",
+                preferred_integration_user_id=str(file_record.user_id),
+            )
+            if not connector:
+                return {"error": err or "No Google Drive connector is available."}
             return await connector.get_file_content(external_id)
         else:
             return {"error": f"Reading files from '{source}' is not yet supported."}
@@ -6484,7 +6561,12 @@ _SANDBOX_DB_HELPER_TEMPLATE: str = """
 import os
 import psycopg2
 
-_DATABASE_URL: str = os.environ["DATABASE_URL"]
+_DB_HOST: str = os.environ["DB_HOST"]
+_DB_PORT: str = os.environ["DB_PORT"]
+_DB_NAME: str = os.environ["DB_NAME"]
+_DB_USER: str = os.environ["DB_USER"]
+_DB_PASSWORD: str = os.environ["DB_PASSWORD"]
+_DB_SSLMODE: str = os.environ.get("DB_SSLMODE", "prefer")
 _ORG_ID: str = os.environ["ORG_ID"]
 
 def get_connection() -> psycopg2.extensions.connection:
@@ -6498,11 +6580,19 @@ def get_connection() -> psycopg2.extensions.connection:
         cur.execute("SELECT * FROM deals LIMIT 10")
         rows = cur.fetchall()
     \"\"\"
-    conn: psycopg2.extensions.connection = psycopg2.connect(_DATABASE_URL)
+    conn: psycopg2.extensions.connection = psycopg2.connect(
+        host=_DB_HOST,
+        port=_DB_PORT,
+        dbname=_DB_NAME,
+        user=_DB_USER,
+        password=_DB_PASSWORD,
+        sslmode=_DB_SSLMODE,
+    )
     conn.autocommit = True
     with conn.cursor() as cur:
         cur.execute("SET ROLE revtops_app")
         cur.execute("SET app.current_org_id = %s", (_ORG_ID,))
+        cur.execute("SET default_transaction_read_only = on")
     return conn
 """.strip()
 
@@ -6552,7 +6642,7 @@ def _create_sandbox_sync(
     sandbox: Sandbox = Sandbox.create(
         timeout=_SANDBOX_TIMEOUT_SECONDS,
         envs={
-            "DATABASE_URL": settings.sandbox_database_url,
+            **settings.sandbox_database_connection_env,
             "ORG_ID": organization_id,
         },
         metadata={

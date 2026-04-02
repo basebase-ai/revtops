@@ -43,6 +43,7 @@ from models.messenger_user_mapping import MessengerUserMapping
 from models.org_member import OrgMember
 from models.organization import Organization
 from models.user import User
+from services.anthropic_health import user_message_for_agent_stream_failure
 
 logger = logging.getLogger(__name__)
 
@@ -741,7 +742,7 @@ class WorkspaceMessenger(BaseMessenger):
                         await _flush(reason="buffer_size" if size_flush else "interval")
         except Exception as exc:
             logger.error("[%s] Error during streaming: %s", self.meta.slug, exc, exc_info=True)
-            current_text += "\nSorry, something went wrong processing your message. Please try again."
+            current_text += user_message_for_agent_stream_failure(exc)
 
         await _flush(reason="stream_end", force=True)
         return total_length
@@ -773,6 +774,17 @@ class WorkspaceMessenger(BaseMessenger):
             return
         normalized_status_text: str = status_text.strip()
         tool_status: str = data.get("status") if isinstance(data.get("status"), str) else "running"
+        global_dedup_key: str = "__last_tool_status_message__"
+        if posted_tool_statuses is not None:
+            last_global_status: tuple[str, str] | None = posted_tool_statuses.get(global_dedup_key)
+            if last_global_status == (tool_status, normalized_status_text):
+                logger.info(
+                    "[%s] Skipping consecutive duplicate tool status message status=%s text=%s",
+                    self.meta.slug,
+                    tool_status,
+                    normalized_status_text,
+                )
+                return
         dedup_key: str = (
             data.get("tool_id")
             if isinstance(data.get("tool_id"), str) and data.get("tool_id")
@@ -795,6 +807,7 @@ class WorkspaceMessenger(BaseMessenger):
         message: str = self.format_tool_status_for_display(normalized_status_text)
         if posted_tool_statuses is not None:
             posted_tool_statuses[dedup_key] = (tool_status, normalized_status_text)
+            posted_tool_statuses[global_dedup_key] = (tool_status, normalized_status_text)
 
         async def _post() -> None:
             try:

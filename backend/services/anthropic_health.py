@@ -38,6 +38,32 @@ def _extract_error_message(exc: Exception) -> str:
     return str(exc).lower()
 
 
+_DEFAULT_AGENT_STREAM_FAILURE_MESSAGE: str = (
+    "\nSorry, something went wrong processing your message. Please try again."
+)
+
+
+def user_message_for_agent_stream_failure(exc: BaseException) -> str:
+    """User-visible suffix when the agent stream fails (e.g. Slack incremental replies).
+
+    Maps common transient Anthropic API failures (after retries are exhausted) to clear copy.
+    """
+    if isinstance(exc, APIStatusError):
+        body: Any = getattr(exc, "body", None)
+        if isinstance(body, dict):
+            error_payload: Any = body.get("error")
+            if isinstance(error_payload, dict):
+                error_type: Any = error_payload.get("type")
+                if error_type == "overloaded_error":
+                    return "\nAnthropic is overloaded right now."
+                if error_type == "api_error":
+                    # e.g. Anthropic 5xx / "Internal server error" in response body
+                    return "\nAnthropic had a temporary error. Please try again in a moment."
+                if error_type == "rate_limit_error":
+                    return "\nAnthropic rate-limited this request. Please try again shortly."
+    return _DEFAULT_AGENT_STREAM_FAILURE_MESSAGE
+
+
 def is_anthropic_out_of_credits_error(exc: Exception) -> bool:
     """Return True when an Anthropic failure indicates account credits are exhausted."""
     message = _extract_error_message(exc)

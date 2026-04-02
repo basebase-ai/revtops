@@ -239,10 +239,9 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
     queryKey: ['workflows', organization?.id],
     queryFn: async () => {
       if (!organization?.id) return [];
-      const response = await fetch(`${API_BASE}/workflows/${organization.id}`);
-      if (!response.ok) return [];
-      const data = await response.json() as { workflows: Array<{ is_enabled: boolean }> };
-      return data.workflows ?? [];
+      const res = await apiRequest<{ workflows: Array<{ is_enabled: boolean }> }>(`/workflows/${organization.id}`);
+      if (res.error || !res.data) return [];
+      return res.data.workflows ?? [];
     },
     enabled: !!organization?.id,
   });

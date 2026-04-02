@@ -28,6 +28,32 @@ def test_is_anthropic_out_of_credits_error_ignores_non_credit_error() -> None:
     assert anthropic_health.is_anthropic_out_of_credits_error(exc) is False
 
 
+def test_user_message_for_agent_stream_failure_overloaded() -> None:
+    exc = _api_status_error("Overloaded", status_code=529, error_type="overloaded_error")
+    assert anthropic_health.user_message_for_agent_stream_failure(exc) == "\nAnthropic is overloaded right now."
+
+
+def test_user_message_for_agent_stream_failure_default() -> None:
+    exc = _api_status_error("Bad request", status_code=400, error_type="invalid_request_error")
+    assert anthropic_health.user_message_for_agent_stream_failure(exc) == (
+        "\nSorry, something went wrong processing your message. Please try again."
+    )
+
+
+def test_user_message_for_agent_stream_failure_api_error() -> None:
+    exc = _api_status_error("Internal server error", status_code=500, error_type="api_error")
+    assert anthropic_health.user_message_for_agent_stream_failure(exc) == (
+        "\nAnthropic had a temporary error. Please try again in a moment."
+    )
+
+
+def test_user_message_for_agent_stream_failure_rate_limit() -> None:
+    exc = _api_status_error("Too many requests", status_code=429, error_type="rate_limit_error")
+    assert anthropic_health.user_message_for_agent_stream_failure(exc) == (
+        "\nAnthropic rate-limited this request. Please try again shortly."
+    )
+
+
 def test_report_anthropic_call_failure_creates_incident_when_allowed(monkeypatch: Any) -> None:
     eval_calls: list[str] = []
     incident_titles: list[str] = []
