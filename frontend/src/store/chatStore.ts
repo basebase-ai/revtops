@@ -18,6 +18,7 @@ import type {
   ConversationSummaryData,
   ActiveTask,
   ToolCallData,
+  Participant,
   ArtifactBlock,
   AppBlock,
   ContentBlock,
