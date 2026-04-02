@@ -20,6 +20,19 @@ from models.user import User
 logger = logging.getLogger(__name__)
 
 
+def is_internal_system_account(email: str | None, name: str | None) -> bool:
+    """Return True if this account looks like an internal system/guest user."""
+    email_low = (email or "").lower()
+    name_low = (name or "").lower()
+    if not email_low:
+        return True
+    return (
+        "guest" in email_low
+        or ".basebase.local" in email_low
+        or "guest user" in name_low
+    )
+
+
 async def resolve_agent_responding(
     conversation_id: str,
     organization_id: str,
@@ -61,36 +74,39 @@ async def resolve_agent_responding(
         current_agent_responding: bool = conv_row[0]
         participating: list[UUID] = list(conv_row[1] or [])
 
+        # Build list of user IDs mentioned (structured or plain text)
         mentioned_ids: list[UUID] = []
-        # 1. Collect IDs from structured user mentions
+        has_plain_text_user_mention = False
+
+        # 1. Fetch all org members once to resolve both types of mentions
+        stmt = (
+            select(User.id, User.name, User.email)
+            .join(OrgMember, User.id == OrgMember.user_id)
+            .where(OrgMember.organization_id == UUID(organization_id))
+        )
+        members_res = await session.execute(stmt)
+        all_members = members_res.all()
+        members_by_id = {m[0]: (m[1], m[2]) for m in all_members}
+
+        # 2. Process structured user mentions (with Guest filter)
         for m in user_mentions:
             uid_raw: Any = m.get("user_id")
             if uid_raw and isinstance(uid_raw, str):
                 try:
-                    mentioned_ids.append(UUID(uid_raw))
+                    uid = UUID(uid_raw)
+                    user_info = members_by_id.get(uid)
+                    if user_info:
+                        name, email = user_info
+                        if not is_internal_system_account(email, name):
+                            mentioned_ids.append(uid)
                 except (ValueError, TypeError):
                     continue
 
-        # 2. Collect IDs from plain-text mentions (@Name With Spaces or @email)
-        has_plain_text_user_mention = False
+        # 3. Process plain-text mentions (@Name With Spaces or @email)
         if organization_id and message_text and "@" in message_text:
-            # Fetch all members of this org to match against (aggressive but accurate for small/medium orgs)
-            stmt = (
-                select(User.id, User.name, User.email)
-                .join(OrgMember, User.id == OrgMember.user_id)
-                .where(OrgMember.organization_id == UUID(organization_id))
-            )
-            members_res = await session.execute(stmt)
-            all_members = members_res.all()
-            
-            # Prepare search text
             text_lower = message_text.lower()
-            
             for m_id, m_name, m_email in all_members:
-                # SKIP guest accounts
-                email_lower = m_email.lower()
-                name_lower = (m_name or "").lower()
-                if "guest" in email_lower or ".basebase.local" in email_lower or "guest user" in name_lower:
+                if is_internal_system_account(m_email, m_name):
                     continue
                 
                 # Check for @Name mention (case insensitive)
@@ -100,10 +116,10 @@ async def resolve_agent_responding(
                         if m_id not in mentioned_ids:
                             mentioned_ids.append(m_id)
                             has_plain_text_user_mention = True
-                        continue # Matched by name
+                        continue
                 
                 # Check for @email mention
-                mention_email = f"@{email_lower}"
+                mention_email = f"@{m_email.lower()}"
                 if mention_email in text_lower:
                     if m_id not in mentioned_ids:
                         mentioned_ids.append(m_id)
@@ -111,25 +127,22 @@ async def resolve_agent_responding(
 
         # Identify who is mentioned but NOT yet participating
         suggested_invites: list[dict[str, Any]] = []
-        to_check = [uid for uid in mentioned_ids if uid not in participating]
-        
-        if to_check:
-            users_res = await session.execute(
-                select(User.id, User.name, User.email).where(User.id.in_(to_check))
-            )
-            for u_id, u_name, u_email in users_res.all():
-                suggested_invites.append({
-                    "id": str(u_id),
-                    "name": u_name or u_email,
-                    "email": u_email
-                })
+        for uid in mentioned_ids:
+            if uid not in participating:
+                user_info = members_by_id.get(uid)
+                if user_info:
+                    u_name, u_email = user_info
+                    suggested_invites.append({
+                        "id": str(uid),
+                        "name": u_name or u_email,
+                        "email": u_email
+                    })
 
         # Update agent_responding state if changed by mentions
         new_responding = current_agent_responding
         if has_agent_mention:
             new_responding = True
         elif user_mentions or has_plain_text_user_mention:
-            # If a user was mentioned (structured or plain text that resolved), disable agent
             new_responding = False
 
         if new_responding != current_agent_responding:
