@@ -18,16 +18,33 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 
 from api.auth_middleware import AuthContext, require_organization
 from config import settings
 from models.database import get_admin_session
+from models.org_member import OrgMember
 from models.organization import Organization
 from services.credits import ACTIVE_SUBSCRIPTION_STATUSES
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+async def _is_org_admin(*, user_id: UUID, organization_id: UUID) -> bool:
+    """Return True when the user is an active organization admin."""
+    async with get_admin_session() as session:
+        membership = (
+            await session.execute(
+                select(OrgMember).where(
+                    OrgMember.user_id == user_id,
+                    OrgMember.organization_id == organization_id,
+                    OrgMember.status.in_(("active", "onboarding", "invited")),
+                )
+            )
+        ).scalar_one_or_none()
+    return bool(membership and membership.role == "admin")
 
 
 def _norm_credit_ref_id(value: Any) -> Optional[str]:
@@ -511,7 +528,18 @@ async def get_credit_details(
     org_id = auth.organization_id
     if not org_id:
         raise HTTPException(status_code=403, detail="Organization required")
-    
+
+    is_org_admin = auth.is_global_admin or await _is_org_admin(
+        user_id=auth.user_id,
+        organization_id=org_id,
+    )
+    if not is_org_admin:
+        logger.info(
+            "Scoping credit transaction details to requesting user org=%s user=%s",
+            org_id,
+            auth.user_id,
+        )
+
     async with get_admin_session() as session:
         from sqlalchemy import select, func
         from models.credit_transaction import CreditTransaction
@@ -531,7 +559,7 @@ async def get_credit_details(
         period_end = org.current_period_end
         now = datetime.now(timezone.utc)
         history_cutoff = now - timedelta(days=CREDIT_HISTORY_LOOKBACK_DAYS)
-        
+
         def build_transactions_query(filter_start: Optional[datetime]) -> Any:
             q = (
                 select(CreditTransaction, User.email, User.name)
@@ -539,10 +567,12 @@ async def get_credit_details(
                 .where(CreditTransaction.organization_id == org_id)
                 .order_by(CreditTransaction.created_at.asc())
             )
+            if not is_org_admin:
+                q = q.where(CreditTransaction.user_id == auth.user_id)
             if filter_start:
                 q = q.where(CreditTransaction.created_at >= filter_start)
             return q
-        
+
         def build_usage_query(filter_start: Optional[datetime]) -> Any:
             """Per-user totals for chat-attributed usage only (matches Usage by Chat / filter)."""
             q = (
@@ -561,12 +591,22 @@ async def get_credit_details(
                 .group_by(CreditTransaction.user_id, User.email, User.name)
                 .order_by(func.sum(func.abs(CreditTransaction.amount)).desc())
             )
+            if not is_org_admin:
+                q = q.where(CreditTransaction.user_id == auth.user_id)
             if filter_start:
                 q = q.where(CreditTransaction.created_at >= filter_start)
             return q
-        
-        # Ledger for charts: last N days (includes grants + deductions across period boundaries)
-        tx_result = await session.execute(build_transactions_query(history_cutoff))
+
+        # No ledger rows in current billing period → align usage with all-time (same as main)
+        period_check = await session.execute(build_transactions_query(period_start))
+        period_tx_nonempty = bool(period_check.all())
+        effective_period_start = period_start
+        if not period_tx_nonempty and period_start:
+            effective_period_start = None
+
+        # Ledger for charts: rolling window in normal mode; full history when usage falls back to all-time
+        tx_window = history_cutoff if effective_period_start is not None else None
+        tx_result = await session.execute(build_transactions_query(tx_window))
         rows = tx_result.all()
         
         transactions: list[CreditTransactionItem] = []
@@ -581,12 +621,12 @@ async def get_credit_details(
         
         # Balance immediately before the first transaction in the returned window
         starting_balance = org.credits_included
-        if transactions:
+        if transactions and effective_period_start:
             first_tx = transactions[0]
             starting_balance = first_tx.balance_after - first_tx.amount
-        
-        # Usage tables: still scoped to the current Stripe billing period
-        usage_result = await session.execute(build_usage_query(period_start))
+
+        # Usage tables: current period, or all-time when the period has no ledger activity
+        usage_result = await session.execute(build_usage_query(effective_period_start))
         usage_rows = usage_result.all()
         
         usage_by_user: list[UserUsageItem] = []
@@ -617,9 +657,13 @@ async def get_credit_details(
             .where(CreditTransaction.reference_id.isnot(None))
             .where(CreditTransaction.user_id.isnot(None))
         )
-        if period_start:
+        if not is_org_admin:
             conv_usage_query = conv_usage_query.where(
-                CreditTransaction.created_at >= period_start
+                CreditTransaction.user_id == auth.user_id
+            )
+        if effective_period_start:
+            conv_usage_query = conv_usage_query.where(
+                CreditTransaction.created_at >= effective_period_start
             )
         conv_usage_result = await session.execute(
             conv_usage_query.group_by(CreditTransaction.reference_id)
@@ -639,9 +683,13 @@ async def get_credit_details(
             .where(CreditTransaction.reference_id.isnot(None))
             .where(CreditTransaction.user_id.is_(None))
         )
-        if period_start:
+        if not is_org_admin:
             conv_orphan_query = conv_orphan_query.where(
-                CreditTransaction.created_at >= period_start
+                CreditTransaction.user_id == auth.user_id
+            )
+        if effective_period_start:
+            conv_orphan_query = conv_orphan_query.where(
+                CreditTransaction.created_at >= effective_period_start
             )
         conv_orphan_result = await session.execute(
             conv_orphan_query.group_by(CreditTransaction.reference_id)
@@ -670,9 +718,13 @@ async def get_credit_details(
             .where(CreditTransaction.reference_id.isnot(None))
             .where(CreditTransaction.user_id.isnot(None))
         )
-        if period_start:
+        if not is_org_admin:
             conv_user_query = conv_user_query.where(
-                CreditTransaction.created_at >= period_start
+                CreditTransaction.user_id == auth.user_id
+            )
+        if effective_period_start:
+            conv_user_query = conv_user_query.where(
+                CreditTransaction.created_at >= effective_period_start
             )
         conv_user_result = await session.execute(
             conv_user_query.group_by(
@@ -780,11 +832,11 @@ async def get_credit_details(
             usage_by_user=usage_by_user,
             usage_by_conversation=usage_by_conversation,
             unattributed_credits_used=unattributed_total,
-            period_start=period_start.isoformat().replace("+00:00", "Z")
-            if period_start
+            period_start=effective_period_start.isoformat().replace("+00:00", "Z")
+            if effective_period_start
             else None,
             period_end=period_end.isoformat().replace("+00:00", "Z")
-            if period_end
+            if period_end and effective_period_start
             else None,
             starting_balance=starting_balance,
         )
