@@ -142,3 +142,52 @@ def test_handle_json_chunk_allows_same_status_text_after_status_change() -> None
         "Reading Linear docs",
         "Reading Linear docs",
     ]
+
+
+def test_handle_json_chunk_skips_consecutive_duplicate_messages_across_tool_ids() -> None:
+    messenger = _TestWorkspaceMessenger()
+    posted_tool_statuses: dict[str, tuple[str, str]] = {}
+    first_chunk = json.dumps(
+        {
+            "type": "tool_call",
+            "tool_id": "tool-aaa",
+            "tool_name": "execute_sql",
+            "status": "running",
+            "status_text": "Querying your database",
+        }
+    )
+    second_chunk = json.dumps(
+        {
+            "type": "tool_call",
+            "tool_id": "tool-bbb",
+            "tool_name": "execute_sql",
+            "status": "running",
+            "status_text": "Querying your database",
+        }
+    )
+
+    async def _run() -> None:
+        await messenger._handle_json_chunk(
+            first_chunk,
+            channel_id="C123",
+            thread_id="thread-1",
+            workspace_id="T123",
+            organization_id="org-1",
+            posted_tool_statuses=posted_tool_statuses,
+        )
+        await asyncio.sleep(0)
+        await messenger._handle_json_chunk(
+            second_chunk,
+            channel_id="C123",
+            thread_id="thread-1",
+            workspace_id="T123",
+            organization_id="org-1",
+            posted_tool_statuses=posted_tool_statuses,
+        )
+        await asyncio.sleep(0)
+
+    asyncio.run(_run())
+
+    assert [message["text"] for message in messenger.posted_messages] == [
+        "Querying your database",
+    ]

@@ -774,6 +774,17 @@ class WorkspaceMessenger(BaseMessenger):
             return
         normalized_status_text: str = status_text.strip()
         tool_status: str = data.get("status") if isinstance(data.get("status"), str) else "running"
+        global_dedup_key: str = "__last_tool_status_message__"
+        if posted_tool_statuses is not None:
+            last_global_status: tuple[str, str] | None = posted_tool_statuses.get(global_dedup_key)
+            if last_global_status == (tool_status, normalized_status_text):
+                logger.info(
+                    "[%s] Skipping consecutive duplicate tool status message status=%s text=%s",
+                    self.meta.slug,
+                    tool_status,
+                    normalized_status_text,
+                )
+                return
         dedup_key: str = (
             data.get("tool_id")
             if isinstance(data.get("tool_id"), str) and data.get("tool_id")
@@ -796,6 +807,7 @@ class WorkspaceMessenger(BaseMessenger):
         message: str = self.format_tool_status_for_display(normalized_status_text)
         if posted_tool_statuses is not None:
             posted_tool_statuses[dedup_key] = (tool_status, normalized_status_text)
+            posted_tool_statuses[global_dedup_key] = (tool_status, normalized_status_text)
 
         async def _post() -> None:
             try:
