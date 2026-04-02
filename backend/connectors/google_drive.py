@@ -491,6 +491,18 @@ Call via `run_on_connector(connector='google_drive', action='edit_file', params=
         super().__init__(
             organization_id, user_id=user_id, sync_since_override=sync_since_override
         )
+        self._integration_last_sync_at: datetime | None = None
+        self._nango_connection_id: str | None = None
+
+
+    @property
+    def sync_since(self) -> datetime | None:
+        """Return incremental sync cutoff without relying on an attached ORM instance."""
+        if self._sync_since_override is not None:
+            return self._sync_since_override
+        if self._integration_last_sync_at is not None:
+            return self._integration_last_sync_at - self._SYNC_SINCE_BUFFER
+        return None
 
     # -------------------------------------------------------------------------
     # OAuth – overrides BaseConnector to handle legacy connection-id format
@@ -504,25 +516,28 @@ Call via `run_on_connector(connector='google_drive', action='edit_file', params=
         async with get_session(organization_id=self.organization_id, user_id=self.user_id) as session:
             connection_id: str = f"{self.organization_id}:user:{self.user_id}"
             result = await session.execute(
-                select(Integration).where(
+                select(Integration.nango_connection_id, Integration.last_sync_at).where(
                     Integration.organization_id == UUID(self.organization_id),
                     Integration.connector == "google_drive",
                     Integration.user_id == UUID(self.user_id),
                 )
             )
-            self._integration = result.scalar_one_or_none()
+            integration_row = result.one_or_none()
 
-            if not self._integration:
+            if integration_row is None:
                 raise ValueError(
                     "Google Drive integration not found. Please connect first."
                 )
+
+            self._nango_connection_id = integration_row.nango_connection_id
+            self._integration_last_sync_at = integration_row.last_sync_at
 
         nango = get_nango_client()
         nango_integration_id: str = get_nango_integration_id("google_drive")
 
         self._token = await nango.get_token(
             nango_integration_id,
-            self._integration.nango_connection_id or connection_id,
+            self._nango_connection_id or connection_id,
         )
         return self._token, ""
 
