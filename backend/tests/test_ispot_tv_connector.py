@@ -112,6 +112,9 @@ class _FakeSession:
     def __init__(self, integration: SimpleNamespace) -> None:
         self._integration = integration
 
+    def expunge(self, instance: Any) -> None:
+        pass
+
     async def execute(self, query: object) -> object:
         class _Scalars:
             def all(self) -> list:
