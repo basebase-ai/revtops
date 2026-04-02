@@ -2454,6 +2454,7 @@ export function Chat({
                   className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${
                     idx === mentionPopover.selectedIndex ? 'bg-primary-500/15 text-surface-100' : 'hover:bg-surface-800 text-surface-200'
                   }`}
+                  onMouseDown={(e) => e.preventDefault()}
                   onClick={() => {
                     const displayName: string = item.type === 'agent' ? 'Basebase' : item.displayName;
                     selectMention(
