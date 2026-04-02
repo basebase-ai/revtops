@@ -285,6 +285,55 @@ function SummaryCard({ summary }: { summary: ConversationSummaryData }): JSX.Ele
   );
 }
 
+interface SuggestedInvitesBannerProps {
+  invites: Array<{ id: string; name: string | null; email: string }>;
+  onAdd: (userIds: string[]) => void;
+  onDismiss: () => void;
+}
+
+function SuggestedInvitesBanner({ invites, onAdd, onDismiss }: SuggestedInvitesBannerProps): JSX.Element {
+  const names = invites.map(u => u.name || u.email).join(', ');
+  const isMultiple = invites.length > 1;
+
+  return (
+    <div className="mb-4 rounded-lg border border-primary-500/30 bg-primary-500/10 px-4 py-3 shadow-sm animate-in fade-in slide-in-from-top-2 duration-300">
+      <div className="flex items-center justify-between gap-4">
+        <div className="flex items-center gap-3 min-w-0">
+          <div className="w-8 h-8 rounded-full bg-primary-500/20 flex items-center justify-center flex-shrink-0">
+            <svg className="w-4 h-4 text-primary-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z" />
+            </svg>
+          </div>
+          <div className="min-w-0">
+            <p className="text-sm font-medium text-surface-100">
+              {isMultiple ? `${names} are not in this chat.` : `${names} is not in this chat.`}
+            </p>
+            <p className="text-xs text-surface-400 truncate">
+              {isMultiple ? 'Would you like to add them so they can see this conversation?' : 'Would you like to add them so they can see this conversation?'}
+            </p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2 flex-shrink-0">
+          <button
+            type="button"
+            onClick={onDismiss}
+            className="px-3 py-1.5 text-xs font-medium text-surface-400 hover:text-surface-200 transition-colors"
+          >
+            Dismiss
+          </button>
+          <button
+            type="button"
+            onClick={() => onAdd(invites.map(u => u.id))}
+            className="px-3 py-1.5 text-xs font-medium bg-primary-600 hover:bg-primary-500 text-white rounded-md shadow-sm transition-colors"
+          >
+            {isMultiple ? 'Add them' : 'Add them'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function Chat({
   userId,
   organizationId,
@@ -305,6 +354,40 @@ export function Chat({
 
   // Get per-conversation state from Zustand
   const conversationState = useConversationState(chatId ?? null);
+  const suggestedInvites = conversationState?.suggestedInvites ?? [];
+
+  const handleSuggestedInvitesAdd = useCallback(async (userIds: string[]) => {
+    if (!chatId) return;
+    try {
+      const { data, error } = await apiRequest<{
+        participants: Array<{ id: string; name: string | null; email: string }>;
+      }>(`/chat/conversations/${chatId}/participants`, {
+        method: 'POST',
+        body: JSON.stringify({ user_ids: userIds }),
+      });
+
+      if (error) {
+        throw new Error(error);
+      }
+
+      if (data) {
+        const added = data.participants.map((p) => ({
+          id: p.id,
+          name: p.name,
+          email: p.email,
+        }));
+        setConversationParticipants((prev) => [...prev, ...added]);
+        useChatStore.getState().clearConversationSuggestedInvites(chatId);
+      }
+    } catch (err) {
+      console.error('[Chat] Failed to add suggested participants:', err);
+    }
+  }, [chatId]);
+
+  const handleSuggestedInvitesDismiss = useCallback(() => {
+    if (!chatId) return;
+    useChatStore.getState().clearConversationSuggestedInvites(chatId);
+  }, [chatId]);
   const activeTasksByConversation = useActiveTasksByConversation();
   const chatTitle = conversationState?.title ?? 'New Chat';
   const conversationThinking = conversationState?.isThinking ?? false;
@@ -2199,6 +2282,13 @@ export function Chat({
           <div className="relative flex-1 min-h-0">
             <div ref={messagesContainerRef} className="absolute inset-0 overflow-y-auto overflow-x-hidden p-3 md:p-6">
             {conversationState?.summary && <SummaryCard summary={conversationState.summary} />}
+            {suggestedInvites.length > 0 && (
+              <SuggestedInvitesBanner
+                invites={suggestedInvites}
+                onAdd={handleSuggestedInvitesAdd}
+                onDismiss={handleSuggestedInvitesDismiss}
+              />
+            )}
             {!userId && (
               <div className="mb-3 rounded-lg border border-amber-600/50 bg-amber-900/20 px-3 py-2 text-sm text-amber-200">
                 User context is missing — artifacts and apps may not save correctly. Please refresh or re-sign in.

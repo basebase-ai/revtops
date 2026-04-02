@@ -786,12 +786,19 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 from services.chat_messages import resolve_agent_responding, save_user_message
                 from services.notifications import create_mention_notifications
 
-                should_invoke_agent: bool = await resolve_agent_responding(
+                should_invoke_agent, suggested_invites = await resolve_agent_responding(
                     conversation_id=conversation_id,
                     organization_id=organization_id,
                     mentions=mentions,
                     message_text=user_message,
                 )
+
+                if suggested_invites:
+                    await websocket.send_text(json.dumps({
+                        "type": "mention_invite_suggested",
+                        "conversation_id": conversation_id,
+                        "users": suggested_invites,
+                    }))
 
                 if not should_invoke_agent:
                     # Human-only path: save message, notify participants, no agent

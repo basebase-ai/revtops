@@ -23,19 +23,17 @@ async def resolve_agent_responding(
     organization_id: str,
     mentions: list[dict[str, Any]] | None,
     message_text: str | None = None,
-) -> bool:
+) -> tuple[bool, list[dict[str, Any]]]:
     """
-    Determine whether the agent should respond and update conversation state.
+    Determine whether the agent should respond and identify suggested invites.
 
-    - {"type": "user", "user_id": "<uuid>"} with a valid UUID is merged into participating_user_ids
-      (invite-by-mention), including when combined with @agent. User mentions without ``user_id``
-      still disable the agent but do not add participants.
-    - If mentions contains {"type": "agent"} -> set agent_responding=True, return True.
-    - Else if any user mention -> set agent_responding=False, return False.
-    - If no mentions -> check message_text for plain-text agent mentions (@basebase).
-    - Else if no plain-text mention -> return current conversation.agent_responding.
-
-    Returns True if the agent should run, False if human-only.
+    - If mentions contains {"type": "agent"} -> set agent_responding=True.
+    - Else if any user mention -> set agent_responding=False.
+    - If no agent mention -> check message_text for plain-text agent mentions (@basebase).
+    
+    Returns (should_invoke_agent, suggested_invites).
+    suggested_invites is a list of {"id": str, "name": str, "email": str} for people 
+    mentioned but not yet in the conversation.
     """
     conv_uuid = UUID(conversation_id)
     mentions = mentions or []
@@ -43,11 +41,11 @@ async def resolve_agent_responding(
     has_agent_mention = any(m.get("type") == "agent" for m in mentions)
     user_mentions = [m for m in mentions if m.get("type") == "user"]
 
-    # Fallback: check plain text for @basebase or other user mentions if structured mentions are incomplete
+    # Fallback: check plain text for @basebase if no structured agent mention
     text_mentions: list[str] = []
     if message_text:
         import re
-        # Match @followed_by_chars_until_space_or_end (simple regex for demo/v1)
+        # Match @followed_by_chars_until_space_or_end
         text_mentions = re.findall(r"@(\S+)", message_text)
         
         if not has_agent_mention:
@@ -64,31 +62,28 @@ async def resolve_agent_responding(
         )
         conv_row = row.one_or_none()
         if not conv_row:
-            return True  # Conversation not found; default to agent
+            return True, []  # Conversation not found; default to agent
 
         current_agent_responding: bool = conv_row[0]
         participating: list[UUID] = list(conv_row[1] or [])
 
         mentioned_ids: list[UUID] = []
-        # 1. Add IDs from structured mentions
+        # 1. Collect IDs from structured user mentions
         for m in user_mentions:
             uid_raw: Any = m.get("user_id")
-            if not uid_raw or not isinstance(uid_raw, str):
-                continue
-            try:
-                mentioned_ids.append(UUID(uid_raw))
-            except (ValueError, TypeError):
-                continue
+            if uid_raw and isinstance(uid_raw, str):
+                try:
+                    mentioned_ids.append(UUID(uid_raw))
+                except (ValueError, TypeError):
+                    continue
 
-        # 2. Try to resolve plain-text mentions to user IDs
+        # 2. Collect IDs from plain-text mentions
         if text_mentions and organization_id:
             from models.org_member import OrgMember
-            # Look for members whose name or email matches the @mention string
             for tm in text_mentions:
                 if tm.lower() == "basebase":
                     continue
-                
-                # Search for matching member in this org
+                # Match member in this org
                 stmt = (
                     select(User.id)
                     .join(OrgMember, User.id == OrgMember.user_id)
@@ -97,7 +92,7 @@ async def resolve_agent_responding(
                         or_(
                             User.email.ilike(tm),
                             User.name.ilike(tm),
-                            User.email.ilike(f"{tm}@%"), # Partial email match
+                            User.email.ilike(f"{tm}@%"),
                         )
                     )
                     .limit(1)
@@ -107,29 +102,37 @@ async def resolve_agent_responding(
                 if uid and uid not in mentioned_ids:
                     mentioned_ids.append(uid)
 
-        for uid in mentioned_ids:
-            if uid not in participating:
-                participating.append(uid)
+        # Identify who is mentioned but NOT yet participating
+        suggested_invites: list[dict[str, Any]] = []
+        to_check = [uid for uid in mentioned_ids if uid not in participating]
+        
+        if to_check:
+            users_res = await session.execute(
+                select(User.id, User.name, User.email).where(User.id.in_(to_check))
+            )
+            for u_id, u_name, u_email in users_res.all():
+                suggested_invites.append({
+                    "id": str(u_id),
+                    "name": u_name or u_email,
+                    "email": u_email
+                })
 
+        # Update agent_responding state if changed by mentions
+        new_responding = current_agent_responding
         if has_agent_mention:
+            new_responding = True
+        elif user_mentions:
+            new_responding = False
+
+        if new_responding != current_agent_responding:
             await session.execute(
                 update(Conversation)
                 .where(Conversation.id == conv_uuid)
-                .values(agent_responding=True, participating_user_ids=participating)
+                .values(agent_responding=new_responding)
             )
             await session.commit()
-            return True
 
-        if user_mentions:
-            await session.execute(
-                update(Conversation)
-                .where(Conversation.id == conv_uuid)
-                .values(agent_responding=False, participating_user_ids=participating)
-            )
-            await session.commit()
-            return False
-
-        return current_agent_responding
+        return new_responding, suggested_invites
 
 
 async def save_user_message(

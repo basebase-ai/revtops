@@ -286,6 +286,7 @@ export interface ConversationState {
   agentResponding?: boolean;
   /** userId -> last typing ping (shared chats only) */
   typingUsers?: Record<string, TypingUserEntry>;
+  suggestedInvites?: Participant[];
 }
 
 // Task state from backend

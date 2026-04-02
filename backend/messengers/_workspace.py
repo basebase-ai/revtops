@@ -907,13 +907,13 @@ class WorkspaceMessenger(BaseMessenger):
 
         from services.chat_messages import resolve_agent_responding, save_user_message
 
-        should_invoke_agent: bool = True
+        should_invoke_agent = True
         if self.meta.slug == "slack" or message.mentions:
             mentions_for_resolve: list[dict[str, Any]] = await self._mentions_payload_for_resolve_agent(
                 message,
                 organization_id,
             )
-            should_invoke_agent = await resolve_agent_responding(
+            should_invoke_agent, _ = await resolve_agent_responding(
                 conversation_id=str(conversation.id),
                 organization_id=organization_id,
                 mentions=mentions_for_resolve,

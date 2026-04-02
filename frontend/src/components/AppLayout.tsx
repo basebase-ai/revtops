@@ -1501,6 +1501,12 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
           break;
         }
 
+        case 'mention_invite_suggested': {
+          const { conversation_id, users } = parsed as { conversation_id: string; users: Participant[] };
+          useChatStore.getState().setConversationSuggestedInvites(conversation_id, users);
+          break;
+        }
+
         case 'user_typing': {
           const ut = parsed as WsUserTyping;
           const cid: string | undefined = ut.conversation_id;
