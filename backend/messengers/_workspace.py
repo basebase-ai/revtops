@@ -904,6 +904,7 @@ class WorkspaceMessenger(BaseMessenger):
                 conversation_id=str(conversation.id),
                 organization_id=organization_id,
                 mentions=mentions_for_resolve,
+                message_text=message.text,
             )
 
         attachment_ids: list[str] = await self.download_attachments(message)

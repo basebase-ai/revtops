@@ -759,6 +759,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     conversation_id=conversation_id,
                     organization_id=organization_id,
                     mentions=mentions,
+                    message_text=user_message,
                 )
 
                 if not should_invoke_agent:

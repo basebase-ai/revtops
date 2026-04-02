@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import select, update
+from sqlalchemy import or_, select, update
 
 from models.chat_message import ChatMessage
 from models.conversation import Conversation
@@ -22,6 +22,7 @@ async def resolve_agent_responding(
     conversation_id: str,
     organization_id: str,
     mentions: list[dict[str, Any]] | None,
+    message_text: str | None = None,
 ) -> bool:
     """
     Determine whether the agent should respond and update conversation state.
@@ -31,16 +32,29 @@ async def resolve_agent_responding(
       still disable the agent but do not add participants.
     - If mentions contains {"type": "agent"} -> set agent_responding=True, return True.
     - Else if any user mention -> set agent_responding=False, return False.
-    - If no mentions -> return current conversation.agent_responding.
+    - If no mentions -> check message_text for plain-text agent mentions (@basebase).
+    - Else if no plain-text mention -> return current conversation.agent_responding.
 
     Returns True if the agent should run, False if human-only.
     """
     conv_uuid = UUID(conversation_id)
-    org_uuid = UUID(organization_id) if organization_id else None
     mentions = mentions or []
 
     has_agent_mention = any(m.get("type") == "agent" for m in mentions)
     user_mentions = [m for m in mentions if m.get("type") == "user"]
+
+    # Fallback: check plain text for @basebase or other user mentions if structured mentions are incomplete
+    text_mentions: list[str] = []
+    if message_text:
+        import re
+        # Match @followed_by_chars_until_space_or_end (simple regex for demo/v1)
+        text_mentions = re.findall(r"@(\S+)", message_text)
+        
+        if not has_agent_mention:
+            for tm in text_mentions:
+                if tm.lower() == "basebase":
+                    has_agent_mention = True
+                    break
 
     async with get_session(organization_id=organization_id) as session:
         row = await session.execute(
@@ -56,6 +70,7 @@ async def resolve_agent_responding(
         participating: list[UUID] = list(conv_row[1] or [])
 
         mentioned_ids: list[UUID] = []
+        # 1. Add IDs from structured mentions
         for m in user_mentions:
             uid_raw: Any = m.get("user_id")
             if not uid_raw or not isinstance(uid_raw, str):
@@ -63,11 +78,35 @@ async def resolve_agent_responding(
             try:
                 mentioned_ids.append(UUID(uid_raw))
             except (ValueError, TypeError):
-                logger.warning(
-                    "Skipping non-UUID user_id in mentions for conversation %s: %r",
-                    conversation_id,
-                    uid_raw,
+                continue
+
+        # 2. Try to resolve plain-text mentions to user IDs
+        if text_mentions and organization_id:
+            from models.org_member import OrgMember
+            # Look for members whose name or email matches the @mention string
+            for tm in text_mentions:
+                if tm.lower() == "basebase":
+                    continue
+                
+                # Search for matching member in this org
+                stmt = (
+                    select(User.id)
+                    .join(OrgMember, User.id == OrgMember.user_id)
+                    .where(
+                        OrgMember.organization_id == UUID(organization_id),
+                        or_(
+                            User.email.ilike(tm),
+                            User.name.ilike(tm),
+                            User.email.ilike(f"{tm}@%"), # Partial email match
+                        )
+                    )
+                    .limit(1)
                 )
+                res = await session.execute(stmt)
+                uid = res.scalar_one_or_none()
+                if uid and uid not in mentioned_ids:
+                    mentioned_ids.append(uid)
+
         for uid in mentioned_ids:
             if uid not in participating:
                 participating.append(uid)
