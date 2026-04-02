@@ -125,6 +125,8 @@ Available tables (use these exact column names):
 - users: Team members (email, name, role, phone_number in E.164 format e.g. +14155551234)
 - user_mappings_for_identity: Slack identity links (external_userid, external_email, match_source)
 - organizations: User's company info (name, logo_url)
+- conversations: Conversation threads visible to the current user (their own conversations plus org-shared conversations). Columns include id, user_id, title, summary, scope, source, participating_user_ids, created_at, updated_at.
+- chat_messages: Messages from conversations visible to the current user. Columns include id, conversation_id, role, content_blocks (JSONB), user_id, created_at.
 - workflows: Workflow definitions (name, trigger_type, prompt, is_enabled, auto_approve_tools). Useful for listing and inspecting workflows.
 - workflow_runs: Workflow execution history (workflow_id, status, started_at, completed_at, output, workflow_notes). Useful for querying past run outcomes and notes.
 - github_repositories: Tracked GitHub repos (full_name, owner, name, is_tracked, last_sync_at). Join to commits/PRs via repository_id.
