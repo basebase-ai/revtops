@@ -8,9 +8,116 @@
 
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
+import ReactMarkdown from 'react-markdown';
 import { API_BASE, apiRequest, getAuthenticatedRequestHeaders } from '../lib/api';
 import { useDeleteOrganization } from '../hooks';
 import { useAppStore, useAuthStore, type UserProfile, type OrganizationInfo } from '../store';
+
+// ─── Dashboard types ─────────────────────────────────────────────────────────
+
+interface CreditUsageSeries {
+  org_id: string;
+  org_name: string;
+  values: number[];
+}
+
+interface CreditUsageResponse {
+  days: string[];
+  series: CreditUsageSeries[];
+}
+
+interface TopConversation {
+  id: string;
+  title: string;
+  summary: string | null;
+  message_count: number;
+  source: string;
+  updated_at: string | null;
+}
+
+interface TopOrgConversations {
+  org_id: string;
+  org_name: string;
+  total_credits_used: number;
+  conversations: TopConversation[];
+}
+
+interface TopConversationsResponse {
+  organizations: TopOrgConversations[];
+}
+
+function useThemeColors(): { fontColor: string; gridColor: string } {
+  const [colors, setColors] = useState<{ fontColor: string; gridColor: string }>({
+    fontColor: '#71717a',
+    gridColor: 'rgba(0,0,0,0.08)',
+  });
+
+  useEffect(() => {
+    const update = (): void => {
+      const isDark: boolean = document.documentElement.classList.contains('dark');
+      setColors({
+        fontColor: getComputedStyle(document.documentElement).getPropertyValue('--surface-400').trim() || '#71717a',
+        gridColor: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.08)',
+      });
+    };
+    update();
+    const observer = new MutationObserver(update);
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+    return () => observer.disconnect();
+  }, []);
+
+  return colors;
+}
+
+function CreditUsageChart({ PlotComponent, data }: {
+  PlotComponent: typeof import('react-plotly.js').default;
+  data: CreditUsageResponse;
+}): JSX.Element {
+  const { fontColor, gridColor } = useThemeColors();
+
+  return (
+    <div className="bg-surface-900 border border-surface-800 rounded-xl p-4">
+      <PlotComponent
+        data={data.series.map((s) => ({
+          x: data.days,
+          y: s.values,
+          name: s.org_name,
+          type: 'scatter' as const,
+          mode: 'lines' as const,
+          fill: 'tonexty' as const,
+          stackgroup: 'one',
+          line: { width: 1.5 },
+          hovertemplate: `${s.org_name}: %{y} credits<br>%{x}<extra></extra>`,
+        }))}
+        layout={{
+          autosize: true,
+          height: 360,
+          margin: { l: 50, r: 20, t: 10, b: 40 },
+          paper_bgcolor: 'transparent',
+          plot_bgcolor: 'transparent',
+          font: { color: fontColor, size: 12 },
+          xaxis: {
+            gridcolor: gridColor,
+            tickformat: '%b %d',
+          },
+          yaxis: {
+            gridcolor: gridColor,
+            title: { text: 'Credits used' },
+          },
+          legend: {
+            orientation: 'h' as const,
+            y: -0.2,
+            font: { size: 11 },
+          },
+          hovermode: 'x unified' as const,
+        }}
+        config={{ displayModeBar: false, responsive: true }}
+        useResizeHandler
+        style={{ width: '100%' }}
+      />
+    </div>
+  );
+}
 
 interface WaitlistEntry {
   id: string;
@@ -383,6 +490,45 @@ export function AdminPanel(): JSX.Element {
   const [jobsError, setJobsError] = useState<string | null>(null);
   const [cancellingJobId, setCancellingJobId] = useState<string | null>(null);
 
+  // Dashboard tab state
+  const [creditUsage, setCreditUsage] = useState<CreditUsageResponse | null>(null);
+  const [creditUsageLoading, setCreditUsageLoading] = useState<boolean>(true);
+  const [creditUsageError, setCreditUsageError] = useState<string | null>(null);
+  const [topConversations, setTopConversations] = useState<TopConversationsResponse | null>(null);
+  const [topConversationsLoading, setTopConversationsLoading] = useState<boolean>(true);
+  const [topConversationsError, setTopConversationsError] = useState<string | null>(null);
+  const [PlotComponent, setPlotComponent] = useState<typeof import('react-plotly.js').default | null>(null);
+
+  useEffect(() => {
+    import('react-plotly.js')
+      .then((mod) => setPlotComponent(() => mod.default))
+      .catch(() => console.error('Failed to load chart library'));
+  }, []);
+
+  const fetchCreditUsage = useCallback(async (): Promise<void> => {
+    if (!user) return;
+    setCreditUsageLoading(true);
+    setCreditUsageError(null);
+    try {
+      const { data, error: reqErr } = await apiRequest<CreditUsageResponse>('/admin-dashboard/credit-usage');
+      if (reqErr || !data) { setCreditUsageError(reqErr ?? 'Failed to fetch'); return; }
+      setCreditUsage(data);
+    } catch { setCreditUsageError('Request failed'); }
+    finally { setCreditUsageLoading(false); }
+  }, [user]);
+
+  const fetchTopConversations = useCallback(async (): Promise<void> => {
+    if (!user) return;
+    setTopConversationsLoading(true);
+    setTopConversationsError(null);
+    try {
+      const { data, error: reqErr } = await apiRequest<TopConversationsResponse>('/admin-dashboard/top-conversations');
+      if (reqErr || !data) { setTopConversationsError(reqErr ?? 'Failed to fetch'); return; }
+      setTopConversations(data);
+    } catch { setTopConversationsError('Request failed'); }
+    finally { setTopConversationsLoading(false); }
+  }, [user]);
+
   const fetchWaitlist = useCallback(async (): Promise<void> => {
     if (!user) return;
     
@@ -524,7 +670,10 @@ export function AdminPanel(): JSX.Element {
   }, [user]);
 
   useEffect(() => {
-    if (activeTab === 'waitlist') {
+    if (activeTab === 'dashboard') {
+      void fetchCreditUsage();
+      void fetchTopConversations();
+    } else if (activeTab === 'waitlist') {
       void fetchWaitlist();
     } else if (activeTab === 'users') {
       void fetchUsers();
@@ -535,7 +684,7 @@ export function AdminPanel(): JSX.Element {
     } else if (activeTab === 'jobs') {
       void fetchRunningJobs();
     }
-  }, [activeTab, fetchWaitlist, fetchUsers, fetchOrganizations, fetchIntegrations, fetchRunningJobs]);
+  }, [activeTab, fetchCreditUsage, fetchTopConversations, fetchWaitlist, fetchUsers, fetchOrganizations, fetchIntegrations, fetchRunningJobs]);
 
   const handleCancelJob = async (job: AdminRunningJob): Promise<void> => {
     if (!user) return;
@@ -1015,6 +1164,94 @@ export function AdminPanel(): JSX.Element {
       </header>
 
       <div className="mx-auto max-w-6xl px-4 py-4 md:px-8 md:py-6">
+        {/* Dashboard Tab Content */}
+        {activeTab === 'dashboard' && (
+          <div className="space-y-8">
+            {/* Credit Usage Chart */}
+            <section>
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-lg font-semibold text-surface-100">Credit Usage — Past 7 Days</h2>
+                <button
+                  onClick={() => { void fetchCreditUsage(); void fetchTopConversations(); }}
+                  className="px-3 py-1.5 rounded-lg border border-surface-700 text-xs font-medium text-surface-300 hover:bg-surface-800 transition-colors"
+                >
+                  Refresh
+                </button>
+              </div>
+
+              {creditUsageLoading && (
+                <div className="text-center py-16 text-surface-400">Loading credit usage data...</div>
+              )}
+              {creditUsageError && (
+                <div className="text-center py-16 text-red-400">{creditUsageError}</div>
+              )}
+              {!creditUsageLoading && !creditUsageError && creditUsage && PlotComponent && (
+                <CreditUsageChart PlotComponent={PlotComponent} data={creditUsage} />
+              )}
+              {!creditUsageLoading && !creditUsageError && creditUsage && creditUsage.series.length === 0 && (
+                <div className="text-center py-16 text-surface-400">No credit usage in the past 7 days.</div>
+              )}
+            </section>
+
+            {/* Top Conversations */}
+            <section>
+              <h2 className="text-lg font-semibold text-surface-100 mb-4">Top Customers — Active Conversations</h2>
+
+              {topConversationsLoading && (
+                <div className="text-center py-12 text-surface-400">Loading conversations...</div>
+              )}
+              {topConversationsError && (
+                <div className="text-center py-12 text-red-400">{topConversationsError}</div>
+              )}
+              {!topConversationsLoading && !topConversationsError && topConversations && topConversations.organizations.length === 0 && (
+                <div className="text-center py-12 text-surface-400">No conversation data available.</div>
+              )}
+              {!topConversationsLoading && !topConversationsError && topConversations && topConversations.organizations.length > 0 && (
+                <div className="space-y-6">
+                  {topConversations.organizations.map((org) => (
+                    <div key={org.org_id} className="rounded-xl border border-surface-800 bg-surface-900 overflow-hidden">
+                      <div className="px-5 py-3 border-b border-surface-800 flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <span className="font-medium text-surface-100">{org.org_name}</span>
+                        </div>
+                        <span className="text-xs text-surface-400 bg-surface-800 rounded-full px-2.5 py-0.5">
+                          {org.total_credits_used.toLocaleString()} credits used
+                        </span>
+                      </div>
+                      {org.conversations.length === 0 ? (
+                        <div className="px-5 py-6 text-sm text-surface-500">No recent conversations</div>
+                      ) : (
+                        <div className="divide-y divide-surface-800">
+                          {org.conversations.map((conv) => (
+                            <div key={conv.id} className="px-5 py-3 hover:bg-surface-800/40 transition-colors">
+                              <div className="flex items-start justify-between gap-3">
+                                <div className="min-w-0 flex-1">
+                                  <div className="text-sm font-medium text-surface-200 truncate">{conv.title}</div>
+                                  {conv.summary && (
+                                    <div className="mt-1 text-xs text-surface-300 line-clamp-3 prose dark:prose-invert prose-xs max-w-none [&_p]:m-0 [&_strong]:text-surface-100 [&_em]:text-surface-200 [&_a]:text-primary-600 dark:[&_a]:text-primary-400 [&_li]:text-surface-300">
+                                      <ReactMarkdown>{conv.summary}</ReactMarkdown>
+                                    </div>
+                                  )}
+                                </div>
+                                <div className="flex items-center gap-3 shrink-0">
+                                  <span className="text-xs text-surface-500 capitalize">{conv.source}</span>
+                                  <span className="text-xs text-surface-400 bg-surface-800 rounded px-1.5 py-0.5">
+                                    {conv.message_count} msgs
+                                  </span>
+                                </div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+          </div>
+        )}
+
         {/* Waitlist Tab Content */}
         {activeTab === 'waitlist' && (
           <div className="space-y-6">

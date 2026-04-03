@@ -49,15 +49,17 @@ export type { UserProfile, OrganizationInfo, ChatSummary, View } from '../store'
 
 function adminTabFromPathSegment(segment: string): AdminPanelTab {
   const s: string = segment.toLowerCase();
-  if (s === '' || s === 'waitlist') return 'waitlist';
+  if (s === '' || s === 'dashboard') return 'dashboard';
+  if (s === 'waitlist') return 'waitlist';
   if (s === 'users') return 'users';
   if (s === 'teams') return 'organizations';
   if (s === 'sources') return 'sources';
   if (s === 'jobs') return 'jobs';
-  return 'waitlist';
+  return 'dashboard';
 }
 
 const ADMIN_TAB_TO_PATH: Record<AdminPanelTab, string> = {
+  dashboard: '/admin/dashboard',
   waitlist: '/admin/waitlist',
   users: '/admin/users',
   organizations: '/admin/teams',

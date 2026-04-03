@@ -66,7 +66,7 @@ export const useUIStore = create<UIState>()(
       pinnedChatIds: [],
       lastArtifactUpdateId: null,
       documentSearchTerm: null,
-      adminPanelTab: "waitlist",
+      adminPanelTab: "dashboard",
 
       // Actions
       notifyArtifactUpdated: (artifactId) => set({ lastArtifactUpdateId: artifactId }),

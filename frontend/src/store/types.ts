@@ -371,6 +371,7 @@ export type View =
 
 /** Global Admin panel sections (sidebar + AdminPanel content). */
 export type AdminPanelTab =
+  | "dashboard"
   | "waitlist"
   | "users"
   | "organizations"
