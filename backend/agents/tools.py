@@ -5469,13 +5469,24 @@ async def _search_documents(
         from models.user import User
         from models.database import get_session
 
-        like_pattern = f"%{query}%"
-        filters: list[Any] = [
-            or_(
-                Artifact.title.ilike(like_pattern),
-                Artifact.description.ilike(like_pattern),
+        # Auto-detect file extension queries and map to content_type filter
+        ext_map = {".md": "markdown", "markdown": "markdown", ".pdf": "pdf", "pdf": "pdf",
+                   ".txt": "text", "text": "text", "chart": "chart"}
+        query_lower = query.lower()
+        if query_lower in ext_map and not content_type_filter:
+            content_type_filter = ext_map[query_lower]
+            query = ""  # Don't also text-search for ".md"
+
+        filters: list[Any] = []
+        cleaned_query = query.replace("*", "").strip()
+        if cleaned_query:
+            like_pattern = f"%{cleaned_query}%"
+            filters.append(
+                or_(
+                    Artifact.title.ilike(like_pattern),
+                    Artifact.description.ilike(like_pattern),
+                )
             )
-        ]
         if content_type_filter:
             filters.append(Artifact.content_type == content_type_filter)
 
