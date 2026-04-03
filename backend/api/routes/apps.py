@@ -568,6 +568,120 @@ async def get_app_screenshot(
 
 
 # ---------------------------------------------------------------------------
+# Preview Settings (must be before /{app_id} to avoid path collision)
+# ---------------------------------------------------------------------------
+
+
+_VALID_PREVIEW_MODES = {"screenshot", "widget", "mini_app", "icon"}
+_VALID_DETAIL_LEVELS = {"minimal", "standard", "detailed"}
+
+
+class PreviewSettingsRequest(BaseModel):
+    preferred_mode: str | None = None
+    detail_level: str | None = None
+
+
+@router.patch("/{app_id}/preview-settings")
+async def update_preview_settings(
+    app_id: str,
+    body: PreviewSettingsRequest,
+    auth: AuthContext = Depends(require_organization),
+) -> dict[str, Any]:
+    """Update preview mode / detail level in an app's widget_config."""
+    from services.widget_inference import generate_widget_config
+
+    if body.preferred_mode is not None and body.preferred_mode not in _VALID_PREVIEW_MODES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid preferred_mode. Must be one of: {', '.join(sorted(_VALID_PREVIEW_MODES))}",
+        )
+    if body.detail_level is not None and body.detail_level not in _VALID_DETAIL_LEVELS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid detail_level. Must be one of: {', '.join(sorted(_VALID_DETAIL_LEVELS))}",
+        )
+
+    try:
+        app_uuid = UUID(app_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid app ID")
+
+    assert auth.organization_id_str is not None
+    async with get_session(organization_id=auth.organization_id_str) as session:
+        result = await session.execute(select(App).where(App.id == app_uuid))
+        app: App | None = result.scalar_one_or_none()
+        if app is None:
+            raise HTTPException(status_code=404, detail="App not found")
+
+        config = dict(app.widget_config) if app.widget_config else {}
+        old_detail = config.get("detail_level")
+
+        if body.preferred_mode is not None:
+            config["preferred_mode"] = body.preferred_mode
+        if body.detail_level is not None:
+            config["detail_level"] = body.detail_level
+
+        # If detail_level changed and mode is widget, regenerate widget inline
+        detail_changed = (
+            body.detail_level is not None
+            and body.detail_level != old_detail
+            and config.get("preferred_mode", "widget") == "widget"
+        )
+        if detail_changed and config.get("layout"):
+            # Run queries and regenerate
+            queries: dict[str, Any] = app.queries or {}
+            query_results: dict[str, list[dict[str, Any]]] = {}
+            for qname, qspec in queries.items():
+                sql: str = qspec.get("sql", "")
+                try:
+                    _validate_sql_is_select(sql)
+                    bound: dict[str, Any] = {"org_id": auth.organization_id_str}
+                    sql_upper = sql.upper()
+                    if "LIMIT" not in sql_upper:
+                        sql = f"{sql.rstrip().rstrip(';')} LIMIT 100"
+                    raw = await session.execute(text(sql), bound)
+                    rows = raw.mappings().all()
+                    query_results[qname] = [
+                        {
+                            k: _json_serial(v)
+                            if not isinstance(v, (str, int, float, bool, type(None)))
+                            else v
+                            for k, v in dict(row).items()
+                        }
+                        for row in rows
+                    ]
+                except Exception as exc:
+                    logger.warning("Preview regen query %s failed for app %s: %s", qname, app_id, exc)
+                    query_results[qname] = []
+
+            try:
+                new_config = await generate_widget_config(
+                    app=app,
+                    organization_id=auth.organization_id_str,
+                    query_results=query_results,
+                    user_prompt=config.get("widget_prompt"),
+                    detail_level=body.detail_level,
+                )
+                # Preserve screenshot and preview settings
+                if config.get("screenshot"):
+                    new_config["screenshot"] = config["screenshot"]
+                if body.preferred_mode is not None:
+                    new_config["preferred_mode"] = body.preferred_mode
+                elif config.get("preferred_mode"):
+                    new_config["preferred_mode"] = config["preferred_mode"]
+                new_config["detail_level"] = body.detail_level
+                config = new_config
+            except Exception as exc:
+                logger.error("Widget regen failed for app %s: %s", app_id, exc)
+                # Still save the settings even if regen fails
+
+        app.widget_config = config
+        await session.commit()
+
+    return {"widget_config": _strip_screenshot(config)}
+
+
+# ---------------------------------------------------------------------------
 # Get Single App
 # ---------------------------------------------------------------------------
 
@@ -602,6 +716,7 @@ async def get_app(
             "conversation_id": str(app.conversation_id) if app.conversation_id else None,
             "created_at": f"{app.created_at.isoformat()}Z" if app.created_at else None,
             "user_id": str(app.user_id),
+            "widget_config": _strip_screenshot(app.widget_config),
         }
 
 
@@ -731,6 +846,7 @@ async def save_screenshot(
 
 class GenerateWidgetRequest(BaseModel):
     prompt: str | None = None
+    detail_level: str | None = None
 
 
 @router.post("/{app_id}/widget")
@@ -786,6 +902,7 @@ async def generate_widget(
                 organization_id=auth.organization_id_str,
                 query_results=query_results,
                 user_prompt=body.prompt,
+                detail_level=body.detail_level or "standard",
             )
         except Exception as exc:
             logger.error("Widget inference failed for app %s: %s", app_id, exc)

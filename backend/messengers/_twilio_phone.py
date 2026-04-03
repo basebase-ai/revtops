@@ -533,7 +533,7 @@ class TwilioPhoneMessenger(BaseMessenger):
         organization_id: str,
         user: User,
         message: InboundMessage,
-    ) -> Conversation:
+    ) -> str:
         phone: str = message.external_user_id
         source: str = self.meta.slug
 
@@ -550,7 +550,7 @@ class TwilioPhoneMessenger(BaseMessenger):
                 if user.id and conversation.user_id is None:
                     conversation.user_id = user.id
                     await session.commit()
-                return conversation
+                return str(conversation.id)
 
             display_name: str = user.name or phone
             conversation = Conversation(
@@ -573,7 +573,7 @@ class TwilioPhoneMessenger(BaseMessenger):
                 phone,
                 organization_id,
             )
-            return conversation
+            return str(conversation.id)
 
     # ------------------------------------------------------------------
     # Attachments

@@ -67,15 +67,28 @@ _SANDBOX_DB_HELPER_TEMPLATE: str = """
 import os
 import psycopg2
 
-_DATABASE_URL: str = os.environ["DATABASE_URL"]
+_DB_HOST: str = os.environ["DB_HOST"]
+_DB_PORT: str = os.environ["DB_PORT"]
+_DB_NAME: str = os.environ["DB_NAME"]
+_DB_USER: str = os.environ["DB_USER"]
+_DB_PASSWORD: str = os.environ["DB_PASSWORD"]
+_DB_SSLMODE: str = os.environ.get("DB_SSLMODE", "prefer")
 _ORG_ID: str = os.environ["ORG_ID"]
 
 def get_connection() -> psycopg2.extensions.connection:
-    conn: psycopg2.extensions.connection = psycopg2.connect(_DATABASE_URL)
+    conn: psycopg2.extensions.connection = psycopg2.connect(
+        host=_DB_HOST,
+        port=_DB_PORT,
+        dbname=_DB_NAME,
+        user=_DB_USER,
+        password=_DB_PASSWORD,
+        sslmode=_DB_SSLMODE,
+    )
     conn.autocommit = True
     with conn.cursor() as cur:
         cur.execute("SET ROLE revtops_app")
         cur.execute("SET app.current_org_id = %s", (_ORG_ID,))
+        cur.execute("SET default_transaction_read_only = on")
     return conn
 """.strip()
 
@@ -96,7 +109,7 @@ class CodeSandboxConnector(BaseConnector):
                 description=(
                     "Run a shell command in a persistent Linux sandbox (Debian, Python3, Node, preinstalled libraries). "
                     "Files in /home/user/output/ are returned as artifacts. "
-                    "A read-only DB connection is at $DATABASE_URL. Use `from db import get_connection`."
+                    "A read-only DB helper is available via `from db import get_connection`."
                 ),
                 parameters=[
                     {"name": "command", "type": "string", "required": True, "description": "Shell command to execute"},
@@ -228,9 +241,10 @@ async def _save_sandbox_id_to_db(conversation_id: str, organization_id: str, san
 def _create_sandbox_sync(organization_id: str, conversation_id: str) -> str:
     from e2b import Sandbox
 
+    sandbox_db_env: dict[str, str] = settings.sandbox_database_connection_env
     sandbox: Sandbox = Sandbox.create(
         timeout=_SANDBOX_TIMEOUT_SECONDS,
-        envs={"DATABASE_URL": settings.sandbox_database_url, "ORG_ID": organization_id},
+        envs={**sandbox_db_env, "ORG_ID": organization_id},
         metadata={"conversation_id": conversation_id, "organization_id": organization_id},
         api_key=settings.E2B_API_KEY,
     )

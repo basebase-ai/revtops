@@ -285,6 +285,55 @@ function SummaryCard({ summary }: { summary: ConversationSummaryData }): JSX.Ele
   );
 }
 
+interface SuggestedInvitesBannerProps {
+  invites: Array<{ id: string; name: string | null; email: string }>;
+  onAdd: (userIds: string[]) => void;
+  onDismiss: () => void;
+}
+
+function SuggestedInvitesBanner({ invites, onAdd, onDismiss }: SuggestedInvitesBannerProps): JSX.Element {
+  const names = invites.map(u => u.name || u.email).join(', ');
+  const isMultiple = invites.length > 1;
+
+  return (
+    <div className="border-b border-primary-500/30 bg-surface-900 px-4 py-3 shadow-lg animate-in fade-in slide-in-from-top-2 duration-300">
+      <div className="flex items-center justify-between gap-4">
+        <div className="flex items-center gap-3 min-w-0">
+          <div className="w-8 h-8 rounded-full bg-primary-500/20 flex items-center justify-center flex-shrink-0">
+            <svg className="w-4 h-4 text-primary-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z" />
+            </svg>
+          </div>
+          <div className="min-w-0">
+            <p className="text-sm font-medium text-surface-100">
+              {isMultiple ? `${names} are not in this chat.` : `${names} is not in this chat.`}
+            </p>
+            <p className="text-xs text-surface-400 truncate">
+              {isMultiple ? 'Would you like to add them so they can see this conversation?' : 'Would you like to add them so they can see this conversation?'}
+            </p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2 flex-shrink-0">
+          <button
+            type="button"
+            onClick={onDismiss}
+            className="px-3 py-1.5 text-xs font-medium text-surface-400 hover:text-surface-200 transition-colors"
+          >
+            Dismiss
+          </button>
+          <button
+            type="button"
+            onClick={() => onAdd(invites.map(u => u.id))}
+            className="px-3 py-1.5 text-xs font-medium bg-primary-600 hover:bg-primary-500 text-white rounded-md shadow-sm transition-colors"
+          >
+            {isMultiple ? 'Add them' : 'Add them'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function Chat({
   userId,
   organizationId,
@@ -305,6 +354,47 @@ export function Chat({
 
   // Get per-conversation state from Zustand
   const conversationState = useConversationState(chatId ?? null);
+  const suggestedInvites = conversationState?.suggestedInvites ?? [];
+
+  const handleSuggestedInvitesAdd = useCallback(async (userIds: string[]) => {
+    if (!chatId) return;
+    try {
+      const added: Array<{ id: string; name: string | null; email: string }> = [];
+      for (const uid of userIds) {
+        const { data, error } = await apiRequest<{
+          participant: { id: string; name: string | null; email: string };
+        }>(`/chat/conversations/${chatId}/participants`, {
+          method: 'POST',
+          body: JSON.stringify({ user_id: uid }),
+        });
+
+        if (error) {
+          console.error(`[Chat] Failed to add participant ${uid}:`, error);
+          continue;
+        }
+
+        if (data?.participant) {
+          added.push({
+            id: data.participant.id,
+            name: data.participant.name,
+            email: data.participant.email,
+          });
+        }
+      }
+
+      if (added.length > 0) {
+        setConversationParticipants((prev) => [...prev, ...added]);
+      }
+      useChatStore.getState().clearConversationSuggestedInvites(chatId);
+    } catch (err) {
+      console.error('[Chat] Failed to add suggested participants:', err);
+    }
+  }, [chatId]);
+
+  const handleSuggestedInvitesDismiss = useCallback(() => {
+    if (!chatId) return;
+    useChatStore.getState().clearConversationSuggestedInvites(chatId);
+  }, [chatId]);
   const activeTasksByConversation = useActiveTasksByConversation();
   const chatTitle = conversationState?.title ?? 'New Chat';
   const conversationThinking = conversationState?.isThinking ?? false;
@@ -325,6 +415,7 @@ export function Chat({
   
   // Local state
   const [input, setInput] = useState<string>('');
+  const draftsRef = useRef<Map<string, string>>(new Map());
   const [composerFocused, setComposerFocused] = useState<boolean>(false);
   const [currentArtifactId, setCurrentArtifactId] = useState<string | null>(null);
   const [currentAttachmentId, setCurrentAttachmentId] = useState<string | null>(null);
@@ -383,19 +474,56 @@ export function Chat({
 
   const mentionSuggestions = useMemo(() => {
     const members = teamMembersData?.members ?? [];
-    const q: string = mentionPopover.query.toLowerCase();
+    // Derive query from input string directly (not mentionPopover.query)
+    // to avoid one-character lag from React state batching.
+    const lastAt = input.lastIndexOf('@');
+    const rawQuery = mentionPopover.open && lastAt !== -1 ? input.substring(lastAt + 1) : '';
+    const q: string = rawQuery.includes(' ') ? '' : rawQuery.toLowerCase();
     // Only offer @Basebase when query is empty (bare "@") or prefixes the agent name,
     // so e.g. "@Cyn" + Enter selects Cynthia, not Basebase at index 0.
     const agentCanonical: string = 'basebase';
     const showAgentOption: boolean = q.length === 0 || agentCanonical.startsWith(q);
 
+    // Derive org email domain from the majority of member emails
+    const domainCounts = new Map<string, number>();
+    for (const m of members) {
+      if (m.isGuest) continue;
+      const d = m.email.split('@')[1]?.toLowerCase();
+      if (d) domainCounts.set(d, (domainCounts.get(d) ?? 0) + 1);
+    }
+    let orgDomain = '';
+    let maxCount = 0;
+    for (const [d, c] of domainCounts) {
+      if (c > maxCount) { orgDomain = d; maxCount = c; }
+    }
+
+    // Deduplicate: when multiple members share a name, keep the one on the org domain
+    const byName = new Map<string, typeof members[number]>();
+    for (const m of members) {
+      if (m.isGuest) continue;
+      const key = (m.name ?? m.email).trim().toLowerCase();
+      const existing = byName.get(key);
+      if (!existing) {
+        byName.set(key, m);
+      } else {
+        // Prefer the member whose email matches the org domain
+        const existingOnDomain = existing.email.toLowerCase().endsWith(`@${orgDomain}`);
+        const currentOnDomain = m.email.toLowerCase().endsWith(`@${orgDomain}`);
+        if (currentOnDomain && !existingOnDomain) {
+          byName.set(key, m);
+        }
+      }
+    }
+    const dedupedMembers = Array.from(byName.values());
+
     const agentOption = { type: 'agent' as const, displayName: 'Basebase', userId: null };
-    const userOptions = members
+    const userOptions = dedupedMembers
       .filter((m) => {
+        if (m.id === userId) return false;
         if (!q) return true;
         const name = (m.name ?? '').toLowerCase();
-        const email = m.email.toLowerCase();
-        return name.includes(q) || email.includes(q);
+        const emailLocal = (m.email.split('@')[0] ?? '').toLowerCase();
+        return name.startsWith(q) || emailLocal.startsWith(q);
       })
       .map((m) => ({
         type: 'user' as const,
@@ -404,7 +532,7 @@ export function Chat({
         email: m.email,
       }));
     return showAgentOption ? [agentOption, ...userOptions] : userOptions;
-  }, [teamMembersData?.members, mentionPopover.query]);
+  }, [teamMembersData?.members, mentionPopover.open, input, userId]);
 
   // Attachment state
   const [pendingAttachments, setPendingAttachments] = useState<UploadResponse[]>([]);
@@ -638,7 +766,21 @@ export function Chat({
   }, [crmApprovalResults]);
 
   // Reset local state when chatId changes
+  const prevChatIdRef = useRef<string | null | undefined>(chatId);
   useEffect(() => {
+    // Save draft from the chat we're leaving
+    const prevId = prevChatIdRef.current;
+    const currentInput = inputRef.current?.value ?? '';
+    if (prevId && currentInput.trim()) {
+      draftsRef.current.set(prevId, currentInput);
+    } else if (prevId) {
+      draftsRef.current.delete(prevId);
+    }
+    prevChatIdRef.current = chatId;
+
+    // Restore draft for the chat we're entering
+    setInput(chatId ? (draftsRef.current.get(chatId) ?? '') : '');
+
     setLocalConversationId(chatId ?? null);
     setCurrentArtifactId(null);
     setCurrentAttachmentId(null);
@@ -654,6 +796,7 @@ export function Chat({
       setIsWorkflowPolling(false);
       setNewConversationScope('shared'); // Default to shared for new conversations
       setConversationCreatorId(null);
+      setConversationParticipants([]);
     }
     setIsEditingHeaderTitle(false);
     // Reset workflow-done flag whenever the conversation changes
@@ -757,14 +900,15 @@ export function Chat({
           setConversationType(data.type ?? null);
           setConversationScope((data.scope ?? 'shared') as 'private' | 'shared');
           setConversationCreatorId(data.user_id ?? null);
-          setConversationParticipants(
-            (data.participants ?? []).map((p: { id: string; name: string | null; email: string; avatar_url?: string | null }) => ({
-              id: p.id,
-              name: p.name,
-              email: p.email,
-              avatarUrl: p.avatar_url,
-            }))
-          );
+          const mappedParticipants = (data.participants ?? []).map((p: { id: string; name: string | null; email: string; avatar_url?: string | null }) => ({
+            id: p.id,
+            name: p.name,
+            email: p.email,
+            avatarUrl: p.avatar_url,
+          }));
+          setConversationParticipants(mappedParticipants);
+          // Sync sidebar so left nav avatars match header
+          useChatStore.getState().setChatParticipants(chatId, mappedParticipants);
 
           setTimeout(() => {
             messagesEndRef.current?.scrollIntoView({ behavior: 'instant' });
@@ -1192,7 +1336,7 @@ export function Chat({
         setMentionPopover((p) => ({ ...p, selectedIndex: Math.max(p.selectedIndex - 1, 0) }));
         return;
       }
-      if (e.key === 'Enter') {
+      if (e.key === 'Enter' || e.key === 'Tab') {
         e.preventDefault();
         const sel = mentionSuggestions[mentionPopover.selectedIndex];
         if (sel) {
@@ -1969,14 +2113,9 @@ export function Chat({
             <div className="flex items-center gap-2">
               <div className="flex -space-x-2">
                 {conversationParticipants.slice(0, 4).map((p, idx) => (
-                  <Avatar
-                    key={p.id}
-                    user={p}
-                    size="sm"
-                    bordered
-                    className="border-2 border-surface-900"
-                    style={{ zIndex: 4 - idx }}
-                  />
+                  <div key={p.id} title={p.name || p.email} style={{ zIndex: 4 - idx }}>
+                    <Avatar user={p} size="sm" bordered className="border-2 border-surface-900" />
+                  </div>
                 ))}
                 {conversationParticipants.length > 4 && (
                   <div
@@ -1995,14 +2134,9 @@ export function Chat({
               {conversationParticipants.length > 0 && (
                 <div className="flex -space-x-2">
                   {conversationParticipants.slice(0, 4).map((p, idx) => (
-                    <Avatar
-                      key={p.id}
-                      user={p}
-                      size="sm"
-                      bordered
-                      className="border-2 border-surface-900"
-                      style={{ zIndex: 4 - idx }}
-                    />
+                    <div key={p.id} title={p.name || p.email} style={{ zIndex: 4 - idx }}>
+                      <Avatar user={p} size="sm" bordered className="border-2 border-surface-900" />
+                    </div>
                   ))}
                   {conversationParticipants.length > 4 && (
                     <div
@@ -2197,6 +2331,15 @@ export function Chat({
 
           {/* Messages scroll area */}
           <div className="relative flex-1 min-h-0">
+            {suggestedInvites.length > 0 && (
+              <div className="absolute top-0 left-0 right-0 z-10">
+                <SuggestedInvitesBanner
+                  invites={suggestedInvites}
+                  onAdd={handleSuggestedInvitesAdd}
+                  onDismiss={handleSuggestedInvitesDismiss}
+                />
+              </div>
+            )}
             <div ref={messagesContainerRef} className="absolute inset-0 overflow-y-auto overflow-x-hidden p-3 md:p-6">
             {conversationState?.summary && <SummaryCard summary={conversationState.summary} />}
             {!userId && (
@@ -2346,45 +2489,47 @@ export function Chat({
       {/* Composer */}
       <div className="px-3 md:px-5 pb-3 pt-1">
         <div className="relative">
-          {mentionPopover.open && mentionSuggestions.length > 0 && (
-            <div
-              className="absolute left-0 bottom-full mb-1 min-w-[14rem] max-w-sm max-h-44 overflow-y-auto rounded-lg border border-surface-700 bg-surface-900 shadow-xl z-50"
-              role="listbox"
-            >
-              {mentionSuggestions.slice(0, 8).map((item, idx) => (
-                <button
-                  key={item.type === 'agent' ? 'agent' : item.userId}
-                  type="button"
-                  role="option"
-                  aria-selected={idx === mentionPopover.selectedIndex}
-                  className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${
-                    idx === mentionPopover.selectedIndex ? 'bg-primary-500/15 text-surface-100' : 'hover:bg-surface-800 text-surface-200'
-                  }`}
-                  onClick={() => {
-                    const displayName: string = item.type === 'agent' ? 'Basebase' : item.displayName;
-                    selectMention(
-                      item.type === 'agent' ? { type: 'agent' } : { type: 'user', userId: item.userId },
-                      displayName
-                    );
-                  }}
-                >
-                  {item.type === 'agent' ? (
-                    <span className="flex items-center gap-2 font-medium text-primary-400">
-                      <img src="/basebase_logo.svg" alt="" className="w-4 h-4" />
-                      Basebase
-                    </span>
-                  ) : (
-                    <span className="min-w-0 text-left">
-                      <span className="font-medium">{item.displayName}</span>
-                      {item.email.trim().toLowerCase() !== item.displayName.trim().toLowerCase() ? (
-                        <span className="text-surface-500"> ({item.email})</span>
-                      ) : null}
-                    </span>
-                  )}
-                </button>
-              ))}
-            </div>
-          )}
+          <div
+            className={`absolute left-0 bottom-full mb-1 min-w-[14rem] max-w-sm max-h-44 overflow-y-auto rounded-lg border border-surface-700 bg-surface-900 shadow-xl z-50 ${
+              mentionPopover.open && mentionSuggestions.length > 0 ? '' : 'hidden'
+            }`}
+            role="listbox"
+          >
+            {mentionSuggestions.slice(0, 8).map((item, idx) => (
+              <button
+                key={item.type === 'agent' ? 'agent' : item.userId}
+                type="button"
+                role="option"
+                aria-selected={idx === mentionPopover.selectedIndex}
+                ref={idx === mentionPopover.selectedIndex ? (el) => el?.scrollIntoView({ block: 'nearest' }) : undefined}
+                className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${
+                  idx === mentionPopover.selectedIndex ? 'bg-primary-500/15 text-surface-100' : 'hover:bg-surface-800 text-surface-200'
+                }`}
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => {
+                  const displayName: string = item.type === 'agent' ? 'Basebase' : item.displayName;
+                  selectMention(
+                    item.type === 'agent' ? { type: 'agent' } : { type: 'user', userId: item.userId },
+                    displayName
+                  );
+                }}
+              >
+                {item.type === 'agent' ? (
+                  <span className="flex items-center gap-2 font-medium text-primary-400">
+                    <svg className="w-4 h-4" viewBox="0 0 500 500" fill="none"><rect x="277.744" y="193.333" width="42.89" height="119.37" transform="rotate(45 277.744 193.333)" fill="currentColor"/><rect x="308.074" y="277.744" width="42.89" height="119.37" transform="rotate(135 308.074 277.744)" fill="currentColor"/><path d="M310.7 59.7c35.2-35.2 92.2-35.2 127.3 0s35.2 92.1 0 127.3c-42.4 42.4-162.6 35.3-162.6 35.3s-7.1-120.2 35.3-162.6zm66 29.6c-16.6 0-30 13.5-30 30 0 16.6 13.4 30 30 30s30-13.4 30-30c0-16.5-13.4-30-30-30z" fill="currentColor"/><path d="M59.7 187c-35.2-35.2-35.2-92.2 0-127.3s92.1-35.2 127.3 0c42.4 42.4 35.3 162.6 35.3 162.6s-120.2 7.1-162.6-35.3zm29.6-66c0 16.6 13.5 30 30 30 16.6 0 30-13.4 30-30s-13.4-30-30-30-30 13.4-30 30z" fill="currentColor"/><path d="M310.7 439.1c35.2 35.1 92.2 35.1 127.3 0s35.2-92.2 0-127.3c-42.4-42.4-162.5-35.4-162.6-35.4 0 0-7.1 120.2 35.3 162.7zm66-29.7c-16.6 0-30-13.4-30-30s13.4-30 30-30 30 13.4 30 30-13.4 30-30 30z" fill="currentColor"/><path d="M59.7 311.8c-35.2 35.2-35.2 92.2 0 127.3s92.1 35.2 127.3 0c42.4-42.4 35.3-162.5 35.3-162.6 0 0-120.2-7.1-162.6 35.3zm29.7 66c0-16.6 13.4-30 30-30s30 13.4 30 30-13.4 30-30 30-30-13.4-30-30z" fill="currentColor"/></svg>
+                    Basebase
+                  </span>
+                ) : (
+                  <span className="min-w-0 text-left">
+                    <span className="font-medium">{item.displayName}</span>
+                    {item.email.trim().toLowerCase() !== item.displayName.trim().toLowerCase() ? (
+                      <span className="text-surface-500"> ({item.email})</span>
+                    ) : null}
+                  </span>
+                )}
+              </button>
+            ))}
+          </div>
           {outOfCredits && (
             <div className="mb-2 px-3 py-2 rounded-lg bg-red-500/10 border border-red-500/30 text-red-300 text-sm flex items-center gap-2">
               <svg className="w-4 h-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -2394,8 +2539,25 @@ export function Chat({
             </div>
           )}
           {chatId && conversationState && conversationState.agentResponding === false && (
-            <div className="mb-2 px-3 py-2 rounded-lg bg-surface-700/50 border border-surface-600 text-surface-400 text-sm">
-              Basebase paused — use @Basebase to resume
+            <div className="mb-2 px-3 py-2 rounded-lg bg-surface-700/50 border border-surface-600 text-surface-400 text-sm flex items-center justify-between">
+              <span>Basebase paused — use @Basebase to resume</span>
+              <button
+                type="button"
+                onClick={() => {
+                  if (!chatId) return;
+                  sendMessage({
+                    type: 'send_message',
+                    message: '@Basebase',
+                    conversation_id: chatId,
+                    mentions: [{ type: 'agent' }],
+                  });
+                  setConversationAgentResponding(chatId, true);
+                  setConversationThinking(chatId, true);
+                }}
+                className="px-3 py-1 text-xs font-medium bg-primary-600 hover:bg-primary-500 text-white rounded-md transition-colors"
+              >
+                Resume
+              </button>
             </div>
           )}
           {lowCredits && (
@@ -2688,6 +2850,8 @@ export function Chat({
               }
               return merged;
             });
+            // Clear any suggested invites since participants list has changed
+            useChatStore.getState().clearConversationSuggestedInvites(chatId);
           }}
         />
       )}

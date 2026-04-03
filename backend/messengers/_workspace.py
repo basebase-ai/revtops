@@ -43,6 +43,7 @@ from models.messenger_user_mapping import MessengerUserMapping
 from models.org_member import OrgMember
 from models.organization import Organization
 from models.user import User
+from services.anthropic_health import user_message_for_agent_stream_failure
 
 logger = logging.getLogger(__name__)
 
@@ -538,7 +539,7 @@ class WorkspaceMessenger(BaseMessenger):
         organization_id: str,
         user: User,
         message: InboundMessage,
-    ) -> Conversation:
+    ) -> str:
         ctx: dict[str, Any] = message.messenger_context
         channel_id: str = ctx.get("channel_id", "")
         thread_id: str | None = ctx.get("thread_id") or ctx.get("thread_ts")
@@ -575,7 +576,7 @@ class WorkspaceMessenger(BaseMessenger):
 
                 if changed:
                     await session.commit()
-                return conversation
+                return str(conversation.id)
 
             source_label: str = {
                 "direct": f"{self.meta.name} DM",
@@ -603,7 +604,7 @@ class WorkspaceMessenger(BaseMessenger):
                 "[%s] Created conversation %s channel=%s user=%s",
                 source, conversation.id, source_channel_id, revtops_user_id,
             )
-            return conversation
+            return str(conversation.id)
 
     # ------------------------------------------------------------------
     # Attachments
@@ -741,7 +742,7 @@ class WorkspaceMessenger(BaseMessenger):
                         await _flush(reason="buffer_size" if size_flush else "interval")
         except Exception as exc:
             logger.error("[%s] Error during streaming: %s", self.meta.slug, exc, exc_info=True)
-            current_text += "\nSorry, something went wrong processing your message. Please try again."
+            current_text += user_message_for_agent_stream_failure(exc)
 
         await _flush(reason="stream_end", force=True)
         return total_length
@@ -773,6 +774,17 @@ class WorkspaceMessenger(BaseMessenger):
             return
         normalized_status_text: str = status_text.strip()
         tool_status: str = data.get("status") if isinstance(data.get("status"), str) else "running"
+        global_dedup_key: str = "__last_tool_status_message__"
+        if posted_tool_statuses is not None:
+            last_global_status: tuple[str, str] | None = posted_tool_statuses.get(global_dedup_key)
+            if last_global_status == (tool_status, normalized_status_text):
+                logger.info(
+                    "[%s] Skipping consecutive duplicate tool status message status=%s text=%s",
+                    self.meta.slug,
+                    tool_status,
+                    normalized_status_text,
+                )
+                return
         dedup_key: str = (
             data.get("tool_id")
             if isinstance(data.get("tool_id"), str) and data.get("tool_id")
@@ -795,6 +807,7 @@ class WorkspaceMessenger(BaseMessenger):
         message: str = self.format_tool_status_for_display(normalized_status_text)
         if posted_tool_statuses is not None:
             posted_tool_statuses[dedup_key] = (tool_status, normalized_status_text)
+            posted_tool_statuses[global_dedup_key] = (tool_status, normalized_status_text)
 
         async def _post() -> None:
             try:
@@ -885,7 +898,7 @@ class WorkspaceMessenger(BaseMessenger):
             await self.remove_typing_indicator(message)
             return {"status": "error", "error": "insufficient_credits"}
 
-        conversation: Conversation = await self.find_or_create_conversation(
+        conversation_id: str = await self.find_or_create_conversation(
             organization_id, user, message,
         )
 
@@ -894,16 +907,17 @@ class WorkspaceMessenger(BaseMessenger):
 
         from services.chat_messages import resolve_agent_responding, save_user_message
 
-        should_invoke_agent: bool = True
+        should_invoke_agent = True
         if self.meta.slug == "slack" or message.mentions:
             mentions_for_resolve: list[dict[str, Any]] = await self._mentions_payload_for_resolve_agent(
                 message,
                 organization_id,
             )
             should_invoke_agent = await resolve_agent_responding(
-                conversation_id=str(conversation.id),
+                conversation_id=conversation_id,
                 organization_id=organization_id,
                 mentions=mentions_for_resolve,
+                message_text=message.text,
             )
 
         attachment_ids: list[str] = await self.download_attachments(message)
@@ -911,7 +925,7 @@ class WorkspaceMessenger(BaseMessenger):
 
         if not should_invoke_agent:
             await save_user_message(
-                conversation_id=str(conversation.id),
+                conversation_id=conversation_id,
                 user_id=str(user.id),
                 organization_id=organization_id,
                 message_text=message_text,
@@ -920,7 +934,7 @@ class WorkspaceMessenger(BaseMessenger):
                 sender_email=slack_user_email or user.email,
             )
             await self.remove_typing_indicator(message)
-            return {"status": "human_only", "conversation_id": str(conversation.id)}
+            return {"status": "human_only", "conversation_id": conversation_id}
 
         workflow_context: dict[str, Any] | None = _build_workflow_context_for_message(
             platform_slug=self.meta.slug,
@@ -930,7 +944,7 @@ class WorkspaceMessenger(BaseMessenger):
         orchestrator = ChatOrchestrator(
             user_id=str(user.id),
             organization_id=organization_id,
-            conversation_id=str(conversation.id),
+            conversation_id=conversation_id,
             user_email=user.email,
             source_user_id=message.external_user_id,
             source_user_email=slack_user_email or user.email,
@@ -965,7 +979,7 @@ class WorkspaceMessenger(BaseMessenger):
                 await self.remove_typing_indicator(message)
                 return {
                     "status": "success",
-                    "conversation_id": str(conversation.id),
+                    "conversation_id": conversation_id,
                     "response_length": total,
                 }
 
@@ -978,7 +992,7 @@ class WorkspaceMessenger(BaseMessenger):
                 await self.remove_typing_indicator(message)
                 return {
                     "status": "success",
-                    "conversation_id": str(conversation.id),
+                    "conversation_id": conversation_id,
                     "response_length": total,
                 }
 
@@ -1003,7 +1017,7 @@ class WorkspaceMessenger(BaseMessenger):
                     await self.remove_typing_indicator(message)
 
             asyncio.create_task(_finish())
-            return {"status": "timeout_continuing", "conversation_id": str(conversation.id)}
+            return {"status": "timeout_continuing", "conversation_id": conversation_id}
 
         # Batch mode (fallback — workspace messengers are usually streaming)
         return await super().process_inbound(message)

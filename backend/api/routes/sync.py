@@ -21,8 +21,9 @@ from pydantic import BaseModel
 from sqlalchemy import select
 
 from connectors.github import GitHubConnector
+from connectors.hubspot import HubSpotConnector
 from connectors.registry import Capability, discover_connectors
-from api.auth_middleware import AuthContext, get_current_auth
+from api.auth_middleware import AuthContext, get_current_auth, require_global_admin
 from api.routes.auth import _can_administer_org
 from models.database import get_admin_session, get_session
 from models.user import User
@@ -173,18 +174,20 @@ class AdminCancelJobResponse(BaseModel):
     message: str
 
 
-async def _require_global_admin(user_id: str) -> None:
-    """Raise if the user is not a global admin."""
-    from models.database import get_admin_session
-    from models.user import User
-
-    async with get_admin_session() as session:
-        result = await session.execute(select(User).where(User.id == UUID(user_id)))
-        user = result.scalar_one_or_none()
-        if not user:
-            raise HTTPException(status_code=404, detail="User not found")
-        if "global_admin" not in (user.roles or []):
-            raise HTTPException(status_code=403, detail="Requires global_admin role")
+def _ensure_org_path_matches_auth(organization_id: str, auth: AuthContext) -> None:
+    """Require active org context and that path org matches JWT org (unless global admin)."""
+    if auth.is_global_admin:
+        return
+    if auth.organization_id is None:
+        raise HTTPException(
+            status_code=403,
+            detail="User not associated with an organization",
+        )
+    if str(auth.organization_id) != organization_id:
+        raise HTTPException(
+            status_code=403,
+            detail="Not authorized for this organization",
+        )
 
 
 def _parse_celery_args(args: Any) -> list[Any]:
@@ -339,26 +342,15 @@ def _build_workflow_run_admin_job(
 
 
 @router.get("/admin/integrations", response_model=AdminIntegrationsResponse)
-async def list_admin_integrations(user_id: str) -> AdminIntegrationsResponse:
+async def list_admin_integrations(
+    auth: AuthContext = Depends(require_global_admin),
+) -> AdminIntegrationsResponse:
     """
     List all integrations across all organizations (global admin only).
     """
     from models.database import get_admin_session
-    from models.user import User
-    
-    # Verify user is global admin
+
     async with get_admin_session() as session:
-        result = await session.execute(
-            select(User).where(User.id == UUID(user_id))
-        )
-        user = result.scalar_one_or_none()
-        
-        if not user:
-            raise HTTPException(status_code=404, detail="User not found")
-        
-        if "global_admin" not in (user.roles or []):
-            raise HTTPException(status_code=403, detail="Requires global_admin role")
-        
         # Get all integrations with org names
         result = await session.execute(
             select(Integration, Organization.name.label("org_name"))
@@ -390,28 +382,17 @@ async def list_admin_integrations(user_id: str) -> AdminIntegrationsResponse:
 
 
 @router.post("/admin/all", response_model=GlobalSyncResponse)
-async def trigger_global_sync(user_id: str) -> GlobalSyncResponse:
+async def trigger_global_sync(
+    auth: AuthContext = Depends(require_global_admin),
+) -> GlobalSyncResponse:
     """
     Trigger sync for ALL organizations (global admin only).
-    
+
     This calls the same task that the hourly beat scheduler runs.
     """
     from models.database import get_admin_session
-    from models.user import User
-    
-    # Verify user is global admin
+
     async with get_admin_session() as session:
-        result = await session.execute(
-            select(User).where(User.id == UUID(user_id))
-        )
-        user = result.scalar_one_or_none()
-        
-        if not user:
-            raise HTTPException(status_code=404, detail="User not found")
-        
-        if "global_admin" not in (user.roles or []):
-            raise HTTPException(status_code=403, detail="Requires global_admin role")
-        
         # Count active integrations
         result = await session.execute(
             select(Integration).where(Integration.is_active == True)
@@ -433,36 +414,40 @@ async def trigger_global_sync(user_id: str) -> GlobalSyncResponse:
 
 
 @router.post("/admin/dependency-checks", response_model=AdminQueueTaskResponse)
-async def trigger_dependency_checks(user_id: str) -> AdminQueueTaskResponse:
+async def trigger_dependency_checks(
+    auth: AuthContext = Depends(require_global_admin),
+) -> AdminQueueTaskResponse:
     """Trigger dependency checks immediately (global admin only)."""
-    await _require_global_admin(user_id)
-
     from workers.tasks.monitoring import monitor_dependencies
 
     task = monitor_dependencies.delay()
-    logger.warning("Admin user %s queued dependency checks task_id=%s", user_id, task.id)
+    logger.warning(
+        "Admin user %s queued dependency checks task_id=%s",
+        auth.user_id,
+        task.id,
+    )
     return AdminQueueTaskResponse(status="queued", task_id=task.id)
 
 
 @router.post("/admin/fire-incident", response_model=AdminFireIncidentResponse)
-async def admin_fire_incident(user_id: str) -> AdminFireIncidentResponse:
+async def admin_fire_incident(
+    auth: AuthContext = Depends(require_global_admin),
+) -> AdminFireIncidentResponse:
     """Manually fire a PagerDuty incident to validate alerting (global admin only)."""
     from services.pagerduty import create_pagerduty_incident_with_details
-
-    await _require_global_admin(user_id)
 
     title = "Admin test incident"
     incident_result = await create_pagerduty_incident_with_details(
         title=title,
         details=(
             "Manual admin-panel trigger to validate PagerDuty wiring and on-call delivery. "
-            f"Triggered by global admin user_id={user_id}."
+            f"Triggered by global admin user_id={auth.user_id}."
         ),
     )
     if not incident_result.ok:
         logger.error(
             "Admin user %s failed to fire PagerDuty test incident; reason=%s status=%s body=%s",
-            user_id,
+            auth.user_id,
             incident_result.reason,
             incident_result.status_code,
             incident_result.response_body,
@@ -475,18 +460,18 @@ async def admin_fire_incident(user_id: str) -> AdminFireIncidentResponse:
             ),
         )
 
-    logger.warning("Admin user %s fired PagerDuty test incident", user_id)
+    logger.warning("Admin user %s fired PagerDuty test incident", auth.user_id)
     return AdminFireIncidentResponse(status="sent", title=title)
 
 
 @router.get("/admin/jobs", response_model=AdminRunningJobsResponse)
-async def list_admin_running_jobs(user_id: str) -> AdminRunningJobsResponse:
+async def list_admin_running_jobs(
+    auth: AuthContext = Depends(require_global_admin),
+) -> AdminRunningJobsResponse:
     """List currently running jobs across chats, workflows, and connector syncs."""
     from models.database import get_admin_session
     from workers.celery_app import celery_app
     from models.workflow import WorkflowRun, Workflow
-
-    await _require_global_admin(user_id)
 
     async with get_admin_session() as session:
         org_rows = await session.execute(select(Organization.id, Organization.name))
@@ -604,7 +589,7 @@ async def list_admin_running_jobs(user_id: str) -> AdminRunningJobsResponse:
             )
 
     jobs.sort(key=lambda job: job.started_at or "", reverse=True)
-    logger.info("Returning %d running jobs for admin user %s", len(jobs), user_id)
+    logger.info("Returning %d running jobs for admin user %s", len(jobs), auth.user_id)
     return AdminRunningJobsResponse(jobs=jobs, total=len(jobs))
 
 
@@ -612,7 +597,7 @@ async def list_admin_running_jobs(user_id: str) -> AdminRunningJobsResponse:
 async def cancel_admin_running_job(
     job_id: str,
     request: AdminCancelJobRequest,
-    user_id: str,
+    auth: AuthContext = Depends(require_global_admin),
 ) -> AdminCancelJobResponse:
     """Cancel a running admin-visible job."""
     from services.task_manager import task_manager
@@ -620,13 +605,11 @@ async def cancel_admin_running_job(
     from models.database import get_admin_session
     from models.workflow import WorkflowRun
 
-    await _require_global_admin(user_id)
-
     if request.job_type == "chat":
         cancelled = await task_manager.cancel_task(job_id)
         if not cancelled:
             raise HTTPException(status_code=404, detail="Running chat job not found")
-        logger.info("Admin %s cancelled chat job %s", user_id, job_id)
+        logger.info("Admin %s cancelled chat job %s", auth.user_id, job_id)
         return AdminCancelJobResponse(
             status="cancelled",
             job_id=job_id,
@@ -655,7 +638,7 @@ async def cancel_admin_running_job(
                     run.completed_at = datetime.utcnow()
                     run.error_message = "Cancelled by admin"
                     await session.commit()
-                    logger.info("Admin %s cancelled workflow run %s", user_id, job_id)
+                    logger.info("Admin %s cancelled workflow run %s", auth.user_id, job_id)
                     return AdminCancelJobResponse(
                         status="cancelled",
                         job_id=job_id,
@@ -664,7 +647,12 @@ async def cancel_admin_running_job(
                     )
 
     celery_app.control.revoke(job_id, terminate=True)
-    logger.info("Admin %s revoked celery task %s of type %s", user_id, job_id, request.job_type)
+    logger.info(
+        "Admin %s revoked celery task %s of type %s",
+        auth.user_id,
+        job_id,
+        request.job_type,
+    )
     return AdminCancelJobResponse(
         status="cancelled",
         job_id=job_id,
@@ -709,12 +697,12 @@ async def _execute_sync_all_integrations(organization_id: str) -> SyncAllRespons
 
     async with get_session(organization_id=organization_id) as session:
         result = await session.execute(
-            select(Integration).where(
+            select(Integration.connector, Integration.user_id).where(
                 Integration.organization_id == customer_uuid,
-                Integration.is_active == True,
+                Integration.is_active == True,  # noqa: E712
             )
         )
-        integrations = result.scalars().all()
+        integrations: list[tuple[str, UUID | None]] = list(result.all())
 
     if not integrations:
         raise HTTPException(status_code=404, detail="No active integrations found")
@@ -722,13 +710,12 @@ async def _execute_sync_all_integrations(organization_id: str) -> SyncAllRespons
     from workers.tasks.sync import sync_integration
 
     syncing_providers: list[str] = []
-    for integration in integrations:
-        prov: str = integration.connector
+    for prov, integration_user_id in integrations:
         connector_cls = CONNECTORS.get(prov)
         if connector_cls is not None and Capability.SYNC in connector_cls.meta.capabilities:
             if prov not in syncing_providers:
                 syncing_providers.append(prov)
-            uid: str | None = str(integration.user_id) if integration.user_id else None
+            uid: str | None = str(integration_user_id) if integration_user_id else None
             sync_integration.delay(organization_id, prov, uid)
 
     return SyncAllResponse(
@@ -752,6 +739,7 @@ async def trigger_sync_all(
 async def trigger_sync(
     organization_id: str,
     provider: str,
+    auth: AuthContext = Depends(get_current_auth),
     since: str | None = Query(
         default=None,
         description="ISO8601 UTC start time for manual resync (overrides last_sync_at for this run)",
@@ -766,6 +754,7 @@ async def trigger_sync(
     Optional ``since`` (ISO8601) temporarily overrides the incremental window
     for this run only (e.g. resync last 7 days).
     """
+    _ensure_org_path_matches_auth(organization_id, auth)
     try:
         customer_uuid = UUID(organization_id)
     except ValueError:
@@ -786,15 +775,15 @@ async def trigger_sync(
     # Fetch *all* active integrations for this provider (may be per-user)
     async with get_session(organization_id=organization_id) as session:
         result = await session.execute(
-            select(Integration).where(
+            select(Integration.user_id).where(
                 Integration.organization_id == customer_uuid,
                 Integration.connector == provider,
-                Integration.is_active == True,
+                Integration.is_active == True,  # noqa: E712
             )
         )
-        integrations = result.scalars().all()
+        integration_user_ids: list[UUID | None] = list(result.scalars().all())
 
-        if not integrations:
+        if not integration_user_ids:
             raise HTTPException(
                 status_code=404,
                 detail=f"No active {provider} integration found",
@@ -807,8 +796,8 @@ async def trigger_sync(
 
     from workers.tasks.sync import sync_integration
 
-    for integration in integrations:
-        user_id: str | None = str(integration.user_id) if integration.user_id else None
+    for integration_user_id in integration_user_ids:
+        user_id: str | None = str(integration_user_id) if integration_user_id else None
         sync_integration.delay(
             organization_id,
             provider,
@@ -822,12 +811,17 @@ async def trigger_sync(
 
 
 @router.get("/{organization_id}/{provider}/status", response_model=SyncStatusResponse)
-async def get_sync_status(organization_id: str, provider: str) -> SyncStatusResponse:
+async def get_sync_status(
+    organization_id: str,
+    provider: str,
+    auth: AuthContext = Depends(get_current_auth),
+) -> SyncStatusResponse:
     """Get sync status for a specific integration.
 
     Resolution order: ``syncing`` (in-flight, fresh) → ``failed`` (``last_error`` set) →
     ``completed`` (successful sync, no error) → ``never_synced``.
     """
+    _ensure_org_path_matches_auth(organization_id, auth)
     try:
         UUID(organization_id)
     except ValueError:
@@ -836,15 +830,21 @@ async def get_sync_status(organization_id: str, provider: str) -> SyncStatusResp
     # DB is the primary source of truth — check sync_started_at first
     async with get_session(organization_id=organization_id) as session:
         result = await session.execute(
-            select(Integration).where(
+            select(
+                Integration.sync_stats,
+                Integration.last_error,
+                Integration.last_sync_at,
+            ).where(
                 Integration.organization_id == UUID(organization_id),
                 Integration.connector == provider,
             )
         )
-        integration: Integration | None = result.scalars().first()
+        integration_row: tuple[dict[str, Any] | None, str | None, datetime | None] | None = (
+            result.first()
+        )
 
-    if integration:
-        stats: dict[str, Any] | None = integration.sync_stats
+    if integration_row:
+        stats, last_err, last_sync_at = integration_row
         sync_started_raw: str | None = (
             stats.get("sync_started_at") if isinstance(stats, dict) else None
         )
@@ -866,11 +866,10 @@ async def get_sync_status(organization_id: str, provider: str) -> SyncStatusResp
             except (ValueError, TypeError):
                 pass
 
-        last_err: str | None = integration.last_error
         if last_err and last_err.strip():
             completed_at: str | None = None
-            if integration.last_sync_at:
-                completed_at = f"{integration.last_sync_at.isoformat()}Z"
+            if last_sync_at:
+                completed_at = f"{last_sync_at.isoformat()}Z"
             return SyncStatusResponse(
                 organization_id=organization_id,
                 provider=provider,
@@ -881,13 +880,13 @@ async def get_sync_status(organization_id: str, provider: str) -> SyncStatusResp
                 counts=None,
             )
 
-    if integration and integration.last_sync_at:
+    if integration_row and integration_row[2]:
         return SyncStatusResponse(
             organization_id=organization_id,
             provider=provider,
             status="completed",
             started_at=None,
-            completed_at=f"{integration.last_sync_at.isoformat()}Z",
+            completed_at=f"{integration_row[2].isoformat()}Z",
             error=None,
             counts=None,
         )
@@ -924,12 +923,16 @@ class OwnerMatchResponse(BaseModel):
     "/{organization_id}/hubspot/match-owners",
     response_model=OwnerMatchResponse,
 )
-async def match_hubspot_owners(organization_id: str) -> OwnerMatchResponse:
+async def match_hubspot_owners(
+    organization_id: str,
+    auth: AuthContext = Depends(get_current_auth),
+) -> OwnerMatchResponse:
     """
     Fetch all HubSpot owners and match them to local users by email.
 
     Persists mappings in ``user_mappings_for_identity`` for every match found.
     """
+    _ensure_org_path_matches_auth(organization_id, auth)
     try:
         UUID(organization_id)
     except ValueError:
@@ -1033,8 +1036,12 @@ class GitHubTrackReposRequest(BaseModel):
     "/{organization_id}/github/repos",
     response_model=GitHubAvailableReposResponse,
 )
-async def list_github_repos(organization_id: str) -> GitHubAvailableReposResponse:
+async def list_github_repos(
+    organization_id: str,
+    auth: AuthContext = Depends(get_current_auth),
+) -> GitHubAvailableReposResponse:
     """List all GitHub repos accessible to the connected token."""
+    _ensure_org_path_matches_auth(organization_id, auth)
     try:
         UUID(organization_id)
     except ValueError:
@@ -1073,9 +1080,12 @@ async def list_github_repos(organization_id: str) -> GitHubAvailableReposRespons
     response_model=GitHubTrackedReposResponse,
 )
 async def track_github_repos(
-    organization_id: str, body: GitHubTrackReposRequest
+    organization_id: str,
+    body: GitHubTrackReposRequest,
+    auth: AuthContext = Depends(get_current_auth),
 ) -> GitHubTrackedReposResponse:
     """Select specific repos to track for this organization."""
+    _ensure_org_path_matches_auth(organization_id, auth)
     try:
         UUID(organization_id)
     except ValueError:
@@ -1093,9 +1103,12 @@ async def track_github_repos(
 
 @router.post("/{organization_id}/github/repos/untrack")
 async def untrack_github_repos(
-    organization_id: str, body: GitHubTrackReposRequest
+    organization_id: str,
+    body: GitHubTrackReposRequest,
+    auth: AuthContext = Depends(get_current_auth),
 ) -> dict[str, str]:
     """Stop tracking specific repos (data is preserved)."""
+    _ensure_org_path_matches_auth(organization_id, auth)
     try:
         UUID(organization_id)
     except ValueError:
@@ -1112,10 +1125,12 @@ async def untrack_github_repos(
 )
 async def get_tracked_github_repos(
     organization_id: str,
+    auth: AuthContext = Depends(get_current_auth),
 ) -> GitHubTrackedReposResponse:
     """Get all currently tracked repos for this organization."""
     from models.github_repository import GitHubRepository
 
+    _ensure_org_path_matches_auth(organization_id, auth)
     try:
         org_uuid: UUID = UUID(organization_id)
     except ValueError:
@@ -1128,21 +1143,25 @@ async def get_tracked_github_repos(
                 GitHubRepository.is_tracked == True,
             )
         )
-        repos = result.scalars().all()
+        repos_payload: list[dict[str, Any]] = [
+            repo.to_dict() for repo in result.scalars().all()
+        ]
 
     return GitHubTrackedReposResponse(
-        repos=[GitHubTrackedRepoResponse(**r.to_dict()) for r in repos]
+        repos=[GitHubTrackedRepoResponse(**repo) for repo in repos_payload]
     )
 
 
 @router.post("/{organization_id}/github/match-users")
 async def match_github_users(
     organization_id: str,
+    auth: AuthContext = Depends(get_current_auth),
 ) -> dict[str, Any]:
     """
     Match GitHub commit authors to internal users by email and persist
     identity mappings. Also backfills user_id on existing commits/PRs.
     """
+    _ensure_org_path_matches_auth(organization_id, auth)
     try:
         UUID(organization_id)
     except ValueError:

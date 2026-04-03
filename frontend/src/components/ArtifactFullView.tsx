@@ -2,10 +2,11 @@
  * Full-screen artifact view at /artifacts/:id.
  *
  * Fetches the artifact by ID and displays it with ArtifactViewer.
- * Shows a header with title, back button, and copy link.
+ * Shows a header with title, back button, copy link, and search
+ * highlight navigation (when opened from a search).
  */
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { apiRequest } from "../lib/api";
 import { useAppStore, useUIStore } from "../store";
 import { ArtifactViewer } from "./ArtifactViewer";
@@ -50,6 +51,56 @@ interface ArtifactFullViewProps {
   artifactId: string;
 }
 
+/**
+ * Walk all text nodes inside a container and wrap matches of `term`
+ * in <mark data-search-highlight> elements. Returns the total count.
+ */
+function highlightTextNodes(container: HTMLElement, term: string): number {
+  const termLower = term.toLowerCase();
+  let count = 0;
+
+  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+  const textNodes: Text[] = [];
+  while (walker.nextNode()) textNodes.push(walker.currentNode as Text);
+
+  for (const node of textNodes) {
+    const text = node.textContent ?? "";
+    const lower = text.toLowerCase();
+    const idx = lower.indexOf(termLower);
+    if (idx === -1) continue;
+
+    // Split the text node around the match
+    const before = text.slice(0, idx);
+    const match = text.slice(idx, idx + term.length);
+    const after = text.slice(idx + term.length);
+
+    const mark = document.createElement("mark");
+    mark.setAttribute("data-search-highlight", "");
+    mark.className = "bg-yellow-400/30 text-inherit rounded-sm px-0.5";
+    mark.textContent = match;
+
+    const parent = node.parentNode;
+    if (!parent) continue;
+
+    if (before) parent.insertBefore(document.createTextNode(before), node);
+    parent.insertBefore(mark, node);
+    if (after) parent.insertBefore(document.createTextNode(after), node);
+    parent.removeChild(node);
+    count++;
+  }
+  return count;
+}
+
+function clearHighlights(container: HTMLElement): void {
+  container.querySelectorAll("mark[data-search-highlight]").forEach((el) => {
+    const parent = el.parentNode;
+    if (parent) {
+      parent.replaceChild(document.createTextNode(el.textContent ?? ""), el);
+      parent.normalize();
+    }
+  });
+}
+
 export function ArtifactFullView({
   artifactId,
 }: ArtifactFullViewProps): JSX.Element {
@@ -59,6 +110,12 @@ export function ArtifactFullView({
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [linkCopied, setLinkCopied] = useState<boolean>(false);
+
+  // Search highlighting
+  const documentSearchTerm = useUIStore((s) => s.documentSearchTerm);
+  const [matchTotal, setMatchTotal] = useState<number>(0);
+  const [matchIndex, setMatchIndex] = useState<number>(0);
+  const contentRef = useRef<HTMLDivElement>(null);
 
   const setCurrentView = useAppStore((s) => s.setCurrentView);
 
@@ -89,6 +146,46 @@ export function ArtifactFullView({
       void fetchArtifact();
     }
   }, [lastArtifactUpdateId, artifactId, fetchArtifact]);
+
+  // Apply search highlights after content renders
+  useEffect(() => {
+    const container = contentRef.current;
+    if (!container) return;
+    clearHighlights(container);
+    if (!documentSearchTerm?.trim()) {
+      setMatchTotal(0);
+      setMatchIndex(0);
+      return;
+    }
+    // Wait a tick for ReactMarkdown to render
+    const raf = requestAnimationFrame(() => {
+      const total = highlightTextNodes(container, documentSearchTerm.trim());
+      setMatchTotal(total);
+      setMatchIndex(0);
+      // Scroll to first match
+      if (total > 0) {
+        const first = container.querySelector("mark[data-search-highlight]");
+        first?.scrollIntoView({ block: "center", behavior: "smooth" });
+      }
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [documentSearchTerm, artifact]);
+
+  const scrollToMatch = useCallback((idx: number) => {
+    const container = contentRef.current;
+    if (!container) return;
+    const marks = container.querySelectorAll("mark[data-search-highlight]");
+    if (marks.length === 0) return;
+    const clamped = Math.max(0, Math.min(idx, marks.length - 1));
+    setMatchIndex(clamped);
+    // Highlight the current match more brightly
+    marks.forEach((m, i) => {
+      (m as HTMLElement).className = i === clamped
+        ? "bg-yellow-400/60 text-inherit rounded-sm px-0.5 ring-2 ring-yellow-400/50"
+        : "bg-yellow-400/30 text-inherit rounded-sm px-0.5";
+    });
+    marks[clamped]?.scrollIntoView({ block: "center", behavior: "smooth" });
+  }, []);
 
   const organization = useAppStore((s) => s.organization);
   const organizations = useAppStore((s) => s.organizations);
@@ -137,18 +234,8 @@ export function ArtifactFullView({
             className="text-surface-400 hover:text-surface-200 transition-colors"
             title="Back to Documents"
           >
-            <svg
-              className="w-5 h-5"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M15 19l-7-7 7-7"
-              />
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
             </svg>
           </button>
           <div>
@@ -161,28 +248,48 @@ export function ArtifactFullView({
           </div>
         </div>
 
-        <button
-          onClick={() => void handleCopyLink()}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-surface-700 hover:bg-surface-600 text-surface-300 text-xs font-medium transition-colors"
-        >
-          <svg
-            className="w-3.5 h-3.5"
-            fill="none"
-            viewBox="0 0 24 24"
-            stroke="currentColor"
+        <div className="flex items-center gap-3">
+          {/* Search match navigator */}
+          {documentSearchTerm && matchTotal > 0 && (
+            <div className="flex items-center gap-1.5 text-xs text-surface-300">
+              <span>{matchIndex + 1} of {matchTotal}</span>
+              <button
+                onClick={() => scrollToMatch(matchIndex - 1)}
+                disabled={matchIndex <= 0}
+                className="p-1 rounded hover:bg-surface-700 disabled:opacity-30 transition-colors"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
+                </svg>
+              </button>
+              <button
+                onClick={() => scrollToMatch(matchIndex + 1)}
+                disabled={matchIndex >= matchTotal - 1}
+                className="p-1 rounded hover:bg-surface-700 disabled:opacity-30 transition-colors"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                </svg>
+              </button>
+            </div>
+          )}
+          {documentSearchTerm && matchTotal === 0 && (
+            <span className="text-xs text-surface-500">No matches</span>
+          )}
+
+          <button
+            onClick={() => void handleCopyLink()}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-surface-700 hover:bg-surface-600 text-surface-300 text-xs font-medium transition-colors"
           >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"
-            />
-          </svg>
-          {linkCopied ? "Copied!" : "Copy link"}
-        </button>
+            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+            </svg>
+            {linkCopied ? "Copied!" : "Copy link"}
+          </button>
+        </div>
       </div>
 
-      <div className="flex-1 overflow-auto p-4">
+      <div ref={contentRef} className="flex-1 overflow-auto p-4">
         <ArtifactViewer artifact={artifact} />
       </div>
     </div>

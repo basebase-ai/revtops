@@ -9,7 +9,7 @@ import type { IconType } from 'react-icons';
 import { SiHubspot, SiSalesforce, SiSlack, SiGmail, SiGooglecalendar, SiZoom } from 'react-icons/si';
 import { HiGlobeAlt, HiUserGroup, HiDeviceMobile, HiLightningBolt } from 'react-icons/hi';
 
-import { API_BASE } from '../lib/api';
+import { API_BASE, getAuthenticatedRequestHeaders } from '../lib/api';
 import { getDomainFromUrl } from '../lib/email';
 import { supabase } from '../lib/supabase';
 import { useAppStore, useIntegrations } from '../store';
@@ -352,8 +352,10 @@ export function OnboardingWizard({ emailDomain, isInvitedMode = false, isCreatin
         setConnectingProvider(null);
         return;
       }
-      const params = new URLSearchParams({ organization_id: orgId, user_id: userId });
-      const response = await fetch(`${API_BASE}/auth/connect/${provider}/session?${params.toString()}`);
+      const connectHeaders = await getAuthenticatedRequestHeaders();
+      const response = await fetch(`${API_BASE}/auth/connect/${provider}/session`, {
+        headers: connectHeaders,
+      });
       if (!response.ok) throw new Error('Failed to get session token');
       const sessionData = (await response.json()) as { session_token: string; connection_id: string };
       const { session_token, connection_id } = sessionData;

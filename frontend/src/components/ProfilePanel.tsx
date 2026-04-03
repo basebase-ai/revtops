@@ -56,10 +56,10 @@ function PhoneVerifyModal({ userId, initialNumber, onVerified, onClose }: PhoneV
         const d = await saveRes.json().catch(() => ({})) as { detail?: string };
         throw new Error(d.detail ?? 'Failed to save number');
       }
-      const res = await fetch(
-        `${API_BASE}/auth/me/request-phone-verification?user_id=${userId}`,
-        { method: 'POST', headers: authHeaders },
-      );
+      const res = await fetch(`${API_BASE}/auth/me/request-phone-verification`, {
+        method: 'POST',
+        headers: authHeaders,
+      });
       const data = await res.json().catch(() => ({})) as { detail?: string };
       if (!res.ok) throw new Error(data.detail ?? 'Failed to send code');
       setNormalizedPhone(e164);
@@ -77,7 +77,7 @@ function PhoneVerifyModal({ userId, initialNumber, onVerified, onClose }: PhoneV
     setError(null);
     try {
       const verifyHeaders: Record<string, string> = await getAuthenticatedRequestHeaders();
-      const res = await fetch(`${API_BASE}/auth/me/verify-phone?user_id=${userId}`, {
+      const res = await fetch(`${API_BASE}/auth/me/verify-phone`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...verifyHeaders },
         body: JSON.stringify({ code: code.trim() }),

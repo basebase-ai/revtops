@@ -14,7 +14,7 @@
 import { useMemo, useState, useRef, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import type { View, ChatSummary, OrganizationInfo } from './AppLayout';
-import { useAppStore, useAuthStore, useChatStore, useIsGlobalAdmin, useActiveTasksByConversation, type UserOrganization, type AdminPanelTab } from '../store';
+import { useAppStore, useAuthStore, useChatStore, useIsGlobalAdmin, useIsOrgAdmin, useActiveTasksByConversation, type UserOrganization, type AdminPanelTab } from '../store';
 import { apiRequest } from '../lib/api';
 import { FaLifeRing } from 'react-icons/fa';
 import { Avatar, type AvatarUser } from './Avatar';
@@ -655,6 +655,7 @@ export function Sidebar({
   const adminPanelTab = useAppStore((state) => state.adminPanelTab);
   const setAdminPanelTab = useAppStore((state) => state.setAdminPanelTab);
   const isGlobalAdmin = useIsGlobalAdmin();
+  const isOrgAdmin = useIsOrgAdmin();
   const activeTasksByConversation = useActiveTasksByConversation();
   const storedWidth = useAppStore((state) => state.sidebarWidth);
   const widthPx = collapsed ? 64 : storedWidth;
@@ -791,7 +792,7 @@ export function Sidebar({
               </svg>
             } />
           )}
-          {import.meta.env.VITE_FEATURE_ACTION_LEDGER === 'true' && (
+          {isOrgAdmin && (
             <NavItem view="activity-log" label="Activity" collapsed={collapsed} currentView={currentView} onViewChange={onViewChange} icon={
               <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01" />

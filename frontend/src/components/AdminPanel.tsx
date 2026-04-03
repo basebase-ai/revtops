@@ -8,7 +8,7 @@
 
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { API_BASE, apiRequest } from '../lib/api';
+import { API_BASE, apiRequest, getAuthenticatedRequestHeaders } from '../lib/api';
 import { useDeleteOrganization } from '../hooks';
 import { useAppStore, useAuthStore, type UserProfile, type OrganizationInfo } from '../store';
 
@@ -468,9 +468,10 @@ export function AdminPanel(): JSX.Element {
     setIntegrationsError(null);
 
     try {
-      const response = await fetch(
-        `${API_BASE}/sync/admin/integrations?user_id=${user.id}`
-      );
+      const headers = await getAuthenticatedRequestHeaders();
+      const response = await fetch(`${API_BASE}/sync/admin/integrations`, {
+        headers,
+      });
 
       if (!response.ok) {
         if (response.status === 403) {
@@ -499,7 +500,8 @@ export function AdminPanel(): JSX.Element {
     setJobsError(null);
 
     try {
-      const response = await fetch(`${API_BASE}/sync/admin/jobs?user_id=${user.id}`);
+      const headers = await getAuthenticatedRequestHeaders();
+      const response = await fetch(`${API_BASE}/sync/admin/jobs`, { headers });
 
       if (!response.ok) {
         if (response.status === 403) {
@@ -540,9 +542,10 @@ export function AdminPanel(): JSX.Element {
 
     setCancellingJobId(job.id);
     try {
-      const response = await fetch(`${API_BASE}/sync/admin/jobs/${job.id}/cancel?user_id=${user.id}`, {
+      const authHeaders = await getAuthenticatedRequestHeaders();
+      const response = await fetch(`${API_BASE}/sync/admin/jobs/${job.id}/cancel`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
         body: JSON.stringify({ job_type: job.type }),
       });
 
@@ -720,7 +723,7 @@ export function AdminPanel(): JSX.Element {
       };
 
       const { data, error } = await apiRequest<MasqueradeApiResponse>(
-        `/auth/masquerade/${encodeURIComponent(targetUserId)}?admin_user_id=${encodeURIComponent(actor.id)}`,
+        `/auth/masquerade/${encodeURIComponent(targetUserId)}`,
         { method: 'GET' },
       );
 
@@ -826,10 +829,11 @@ export function AdminPanel(): JSX.Element {
     setSyncResult(null);
 
     try {
-      const response = await fetch(
-        `${API_BASE}/sync/admin/all?user_id=${user.id}`,
-        { method: 'POST' }
-      );
+      const headers = await getAuthenticatedRequestHeaders();
+      const response = await fetch(`${API_BASE}/sync/admin/all`, {
+        method: 'POST',
+        headers,
+      });
 
       if (!response.ok) {
         const data = await response.json() as { detail?: string };
@@ -857,10 +861,11 @@ export function AdminPanel(): JSX.Element {
     setDependencyCheckTaskId(null);
 
     try {
-      const response = await fetch(
-        `${API_BASE}/sync/admin/dependency-checks?user_id=${user.id}`,
-        { method: 'POST' }
-      );
+      const headers = await getAuthenticatedRequestHeaders();
+      const response = await fetch(`${API_BASE}/sync/admin/dependency-checks`, {
+        method: 'POST',
+        headers,
+      });
 
       if (!response.ok) {
         const data = await response.json() as { detail?: string };
@@ -884,10 +889,11 @@ export function AdminPanel(): JSX.Element {
     setIncidentResult(null);
 
     try {
-      const response = await fetch(
-        `${API_BASE}/sync/admin/fire-incident?user_id=${user.id}`,
-        { method: 'POST' }
-      );
+      const headers = await getAuthenticatedRequestHeaders();
+      const response = await fetch(`${API_BASE}/sync/admin/fire-incident`, {
+        method: 'POST',
+        headers,
+      });
 
       if (!response.ok) {
         const data = await response.json() as { detail?: string };

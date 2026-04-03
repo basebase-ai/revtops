@@ -38,10 +38,10 @@ function BigNumber({ slots }: { slots: BigNumberSlots }): JSX.Element {
   );
 }
 
-function MiniList({ slots }: { slots: MiniListSlots }): JSX.Element {
+function MiniList({ slots, maxRows = 3 }: { slots: MiniListSlots; maxRows?: number }): JSX.Element {
   return (
     <div className="flex flex-col gap-1.5 flex-1 justify-center w-full px-1">
-      {(slots.rows || []).slice(0, 3).map((row, i) => (
+      {(slots.rows || []).slice(0, maxRows).map((row, i) => (
         <div key={i} className="flex justify-between items-center text-xs">
           <span className="text-surface-400 truncate mr-2">{row.label}</span>
           <span className="text-surface-100 font-medium whitespace-nowrap">{row.value}</span>
@@ -125,17 +125,19 @@ interface WidgetCardProps {
 
 export function WidgetCard({ appId, appTitle, widgetConfig, onClick }: WidgetCardProps): JSX.Element {
   const { layout, title, slots } = widgetConfig;
+  const detailLevel = widgetConfig.detail_level;
+  const miniListMaxRows = detailLevel === 'detailed' ? 5 : 3;
 
   return (
     <button
       onClick={() => onClick?.(appId)}
-      className="flex flex-col bg-surface-900 border border-surface-800 rounded-xl p-3 h-[140px] w-full hover:border-surface-600 hover:bg-surface-800/50 transition-colors text-left cursor-pointer"
+      className="flex flex-col bg-surface-900 border border-surface-800 rounded-xl p-3 aspect-video w-full hover:border-surface-600 hover:bg-surface-800/50 transition-colors text-left cursor-pointer"
     >
       <div className="text-[10px] font-medium text-surface-500 uppercase tracking-wider mb-1 truncate">
         {title || appTitle}
       </div>
       {layout === 'big_number' && <BigNumber slots={slots as BigNumberSlots} />}
-      {layout === 'mini_list' && <MiniList slots={slots as MiniListSlots} />}
+      {layout === 'mini_list' && <MiniList slots={slots as MiniListSlots} maxRows={miniListMaxRows} />}
       {layout === 'status' && <Status slots={slots as StatusSlots} />}
       {layout === 'sparkline' && <Sparkline slots={slots as SparklineSlots} />}
     </button>

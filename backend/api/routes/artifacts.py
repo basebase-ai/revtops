@@ -42,6 +42,8 @@ class ArtifactMetadata(BaseModel):
     created_at: Optional[str]
     user_id: Optional[str]
     creator_name: Optional[str] = None
+    match_snippet: Optional[str] = None
+    match_count: int = 0
 
 
 class ArtifactContent(BaseModel):
@@ -77,6 +79,9 @@ async def list_artifacts(
     List all artifacts for the current organization (most recent first).
     Optional search filters on title and description (case-insensitive).
     """
+    import logging
+    _log = logging.getLogger(__name__)
+    _log.info("[artifacts] list_artifacts org_id=%s user_id=%s search=%s", auth.organization_id_str, auth.user_id, search)
     async with get_session(organization_id=auth.organization_id_str) as session:
         stmt = select(Artifact).order_by(Artifact.created_at.desc())
         if search and search.strip():
@@ -85,10 +90,12 @@ async def list_artifacts(
                 or_(
                     Artifact.title.ilike(term),
                     Artifact.description.ilike(term),
+                    Artifact.content.ilike(term),
                 )
             )
         result = await session.execute(stmt)
         artifacts: list[Artifact] = list(result.scalars().all())
+        _log.info("[artifacts] found %d artifacts for org=%s", len(artifacts), auth.organization_id_str)
 
         user_ids: set[UUID] = {a.user_id for a in artifacts if a.user_id is not None}
         users_map: dict[UUID, User] = {}
@@ -97,8 +104,29 @@ async def list_artifacts(
             for u in user_result.scalars().all():
                 users_map[u.id] = u
 
-        artifact_list: list[ArtifactMetadata] = [
-            ArtifactMetadata(
+        search_lower = search.strip().lower() if search and search.strip() else ""
+
+        artifact_list: list[ArtifactMetadata] = []
+        for a in artifacts:
+            snippet: str | None = None
+            match_count = 0
+            if search_lower and a.content:
+                content_lower = a.content.lower()
+                match_count = content_lower.count(search_lower)
+                # Also count matches in title/description
+                if a.title:
+                    match_count += a.title.lower().count(search_lower)
+                if a.description:
+                    match_count += a.description.lower().count(search_lower)
+                # Extract snippet around first content match
+                idx = content_lower.find(search_lower)
+                if idx != -1:
+                    start = max(0, idx - 60)
+                    end = min(len(a.content), idx + len(search_lower) + 60)
+                    raw = a.content[start:end].replace("\n", " ").strip()
+                    snippet = ("..." if start > 0 else "") + raw + ("..." if end < len(a.content) else "")
+
+            artifact_list.append(ArtifactMetadata(
                 id=str(a.id),
                 type=a.type,
                 title=a.title,
@@ -111,9 +139,9 @@ async def list_artifacts(
                 created_at=f"{a.created_at.isoformat()}Z" if a.created_at else None,
                 user_id=str(a.user_id) if a.user_id else None,
                 creator_name=(u.name if (u := users_map.get(a.user_id)) else None),
-            )
-            for a in artifacts
-        ]
+                match_snippet=snippet,
+                match_count=match_count,
+            ))
 
         return ArtifactListResponse(artifacts=artifact_list, total=len(artifact_list))
 

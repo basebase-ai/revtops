@@ -18,6 +18,7 @@ import type {
   ConversationSummaryData,
   ActiveTask,
   ToolCallData,
+  Participant,
   ArtifactBlock,
   AppBlock,
   ContentBlock,
@@ -52,6 +53,7 @@ const defaultConversationState: ConversationState = {
   hasMore: false,
   contextTokens: null,
   typingUsers: {},
+  suggestedInvites: [],
 };
 
 // ---------------------------------------------------------------------------
@@ -131,6 +133,8 @@ export interface ChatState {
   setConversationContextTokens: (conversationId: string, tokens: number) => void;
   setConversationHasMore: (conversationId: string, hasMore: boolean) => void;
   setConversationAgentResponding: (conversationId: string, agentResponding: boolean) => void;
+  setConversationSuggestedInvites: (conversationId: string, invites: Participant[]) => void;
+  clearConversationSuggestedInvites: (conversationId: string) => void;
   setUserTyping: (
     conversationId: string,
     userId: string,
@@ -138,6 +142,7 @@ export interface ChatState {
   ) => void;
   clearExpiredTyping: (conversationId: string) => void;
   setChatScope: (conversationId: string, scope: "private" | "shared") => void;
+  setChatParticipants: (conversationId: string, participants: Participant[]) => void;
   fetchOlderMessages: (conversationId: string) => Promise<boolean>;
   setConversationThinking: (
     conversationId: string,
@@ -866,6 +871,31 @@ export const useChatStore = create<ChatState>()(
       });
     },
 
+    setConversationSuggestedInvites: (conversationId, invites) => {
+      const { conversations } = get();
+      const current = conversations[conversationId] ?? {
+        ...defaultConversationState,
+      };
+      set({
+        conversations: {
+          ...conversations,
+          [conversationId]: { ...current, suggestedInvites: invites },
+        },
+      });
+    },
+
+    clearConversationSuggestedInvites: (conversationId) => {
+      const { conversations } = get();
+      const current = conversations[conversationId];
+      if (!current) return;
+      set({
+        conversations: {
+          ...conversations,
+          [conversationId]: { ...current, suggestedInvites: [] },
+        },
+      });
+    },
+
     setUserTyping: (conversationId: string, userId: string, userName: string) => {
       const { conversations } = get();
       const current: ConversationState =
@@ -918,6 +948,15 @@ export const useChatStore = create<ChatState>()(
       set({
         recentChats: recentChats.map((c) =>
           c.id === conversationId ? { ...c, scope } : c,
+        ),
+      });
+    },
+
+    setChatParticipants: (conversationId, participants) => {
+      const { recentChats } = get();
+      set({
+        recentChats: recentChats.map((c) =>
+          c.id === conversationId ? { ...c, participants } : c,
         ),
       });
     },

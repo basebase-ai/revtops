@@ -1,27 +1,23 @@
 /**
  * AppPreview — universal app preview component.
  *
- * Renders in priority order:
+ * Renders in priority order based on preferred_mode (from widget_config) or auto:
  * 1. Screenshot (data URL from html2canvas capture)
  * 2. Widget (LLM-inferred data summary card)
- * 3. Default chart icon placeholder
- *
- * Debug: click the cycle icon (top-right) to force a specific mode.
+ * 3. Mini App (CSS-scaled iframe of the full app)
+ * 4. Default chart icon placeholder
  */
 
-import { useEffect, useState } from 'react';
+import { lazy, Suspense, useEffect, useState } from 'react';
 import { apiRequest } from '../../lib/api';
 import type { WidgetConfig } from '../../store/types';
 import { WidgetCard } from './WidgetCard';
 
-type PreviewMode = 'auto' | 'screenshot' | 'widget' | 'icon';
-const MODES: PreviewMode[] = ['auto', 'screenshot', 'widget', 'icon'];
-const MODE_LABELS: Record<PreviewMode, string> = {
-  auto: 'Auto',
-  screenshot: 'Screenshot',
-  widget: 'Widget',
-  icon: 'Icon',
-};
+const LazySandpackAppRenderer = lazy(() =>
+  import('../apps/SandpackAppRenderer').then((m) => ({ default: m.SandpackAppRenderer }))
+);
+
+type PreviewMode = 'auto' | 'screenshot' | 'widget' | 'mini_app' | 'icon';
 
 interface AppPreviewProps {
   appId: string;
@@ -44,6 +40,37 @@ function WidgetView({ appId, appTitle, widgetConfig, onClick }: {
   );
 }
 
+function MiniAppView({ appId, onClick }: { appId: string; onClick?: (id: string) => void }): JSX.Element {
+  return (
+    <div
+      className="w-full aspect-video overflow-hidden relative rounded-xl border border-surface-800 cursor-pointer bg-surface-900"
+    >
+      {/* Transparent overlay captures clicks instead of the iframe */}
+      <div
+        className="absolute inset-0 z-10"
+        onClick={() => onClick?.(appId)}
+        role="button"
+        tabIndex={0}
+        onKeyDown={(e) => { if (e.key === 'Enter') onClick?.(appId); }}
+      />
+      <div className="pointer-events-none" style={{ width: 1280, height: 720, transform: 'scale(var(--preview-scale, 0.2))', transformOrigin: 'top left' }} ref={(el) => {
+        if (el) {
+          const parent = el.parentElement;
+          if (parent) {
+            const scale = parent.clientWidth / 1280;
+            el.style.setProperty('--preview-scale', String(scale));
+            el.style.transform = `scale(${scale})`;
+          }
+        }
+      }}>
+        <Suspense fallback={<div className="w-full h-full bg-surface-900" />}>
+          <LazySandpackAppRenderer appId={appId} />
+        </Suspense>
+      </div>
+    </div>
+  );
+}
+
 function DefaultIcon({ title }: { title: string }): JSX.Element {
   return (
     <div className="flex flex-col items-center justify-center flex-1 gap-2">
@@ -59,11 +86,12 @@ function DefaultIcon({ title }: { title: string }): JSX.Element {
 }
 
 export function AppPreview({ appId, appTitle, widgetConfig, onClick }: AppPreviewProps): JSX.Element {
-  const [modeOverride, setModeOverride] = useState<PreviewMode>('auto');
+  // Use preferred_mode from widgetConfig as the default mode
+  const defaultMode: PreviewMode = widgetConfig?.preferred_mode ?? 'auto';
 
   // Screenshot: inline data URL or has_screenshot flag (stripped from list responses)
   const hasScreenshotFlag = Boolean(
-    widgetConfig?.screenshot || (widgetConfig as Record<string, unknown> | undefined)?.has_screenshot
+    widgetConfig?.screenshot || widgetConfig?.has_screenshot
   );
   const hasWidget = Boolean(widgetConfig?.layout);
   const [screenshotUrl, setScreenshotUrl] = useState<string | null>(
@@ -80,67 +108,46 @@ export function AppPreview({ appId, appTitle, widgetConfig, onClick }: AppPrevie
     return () => { cancelled = true; };
   }, [appId, hasScreenshotFlag, screenshotUrl, widgetConfig?.screenshot]);
 
-  // Determine what to show
-  const effectiveMode: 'screenshot' | 'widget' | 'icon' =
-    modeOverride === 'auto'
-      ? (hasScreenshotFlag && screenshotUrl) ? 'screenshot' : hasWidget ? 'widget' : 'icon'
-      : modeOverride;
-
-  const cycleMode = (e: React.MouseEvent): void => {
-    e.stopPropagation();
-    const idx = MODES.indexOf(modeOverride);
-    setModeOverride(MODES[(idx + 1) % MODES.length]!);
-  };
+  // Determine effective mode with fallback chain
+  let effectiveMode: 'screenshot' | 'widget' | 'mini_app' | 'icon';
+  if (defaultMode === 'auto') {
+    effectiveMode = (hasScreenshotFlag && screenshotUrl)
+      ? 'screenshot'
+      : hasWidget
+        ? 'widget'
+        : 'icon';
+  } else if (defaultMode === 'screenshot') {
+    effectiveMode = (hasScreenshotFlag && screenshotUrl) ? 'screenshot' : hasWidget ? 'widget' : 'icon';
+  } else if (defaultMode === 'widget') {
+    effectiveMode = hasWidget ? 'widget' : 'icon';
+  } else if (defaultMode === 'mini_app') {
+    effectiveMode = 'mini_app';
+  } else {
+    effectiveMode = 'icon';
+  }
 
   // For widget mode, render WidgetCard directly (it's its own button)
   if (effectiveMode === 'widget' && widgetConfig?.layout) {
     return (
-      <div className="relative group">
-        <WidgetView appId={appId} appTitle={appTitle} widgetConfig={widgetConfig} onClick={onClick} />
-        <button
-          onClick={cycleMode}
-          className="absolute top-1.5 left-1.5 p-1 rounded bg-surface-800/80 text-surface-400 hover:text-surface-100 opacity-0 group-hover:opacity-100 transition-opacity z-10"
-          title={`Mode: ${MODE_LABELS[modeOverride]} → click to cycle`}
-        >
-          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-          </svg>
-        </button>
-        {modeOverride !== 'auto' && (
-          <span className="absolute top-1.5 right-1.5 px-1 py-0.5 rounded text-[8px] font-bold bg-surface-800/80 text-surface-300 opacity-0 group-hover:opacity-100 transition-opacity z-10">
-            {MODE_LABELS[modeOverride]}
-          </span>
-        )}
-      </div>
+      <WidgetView appId={appId} appTitle={appTitle} widgetConfig={widgetConfig} onClick={onClick} />
     );
   }
 
+  // Mini app mode
+  if (effectiveMode === 'mini_app') {
+    return <MiniAppView appId={appId} onClick={onClick} />;
+  }
+
   return (
-    <div className="relative group">
-      <button
-        onClick={() => onClick?.(appId)}
-        className="flex flex-col bg-surface-900 border border-surface-800 rounded-xl overflow-hidden h-[140px] w-full hover:border-surface-600 hover:bg-surface-800/50 transition-colors text-left cursor-pointer"
-      >
-        {effectiveMode === 'screenshot' && screenshotUrl ? (
-          <ScreenshotView src={screenshotUrl} title={appTitle} />
-        ) : (
-          <DefaultIcon title={appTitle} />
-        )}
-      </button>
-      <button
-        onClick={cycleMode}
-        className="absolute top-1.5 left-1.5 p-1 rounded bg-surface-800/80 text-surface-400 hover:text-surface-100 opacity-0 group-hover:opacity-100 transition-opacity z-10"
-        title={`Mode: ${MODE_LABELS[modeOverride]} → click to cycle`}
-      >
-        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-        </svg>
-      </button>
-      {modeOverride !== 'auto' && (
-        <span className="absolute top-1.5 right-1.5 px-1 py-0.5 rounded text-[8px] font-bold bg-surface-800/80 text-surface-300 opacity-0 group-hover:opacity-100 transition-opacity z-10">
-          {MODE_LABELS[modeOverride]}
-        </span>
+    <button
+      onClick={() => onClick?.(appId)}
+      className="flex flex-col bg-surface-900 border border-surface-800 rounded-xl overflow-hidden aspect-video w-full hover:border-surface-600 hover:bg-surface-800/50 transition-colors text-left cursor-pointer"
+    >
+      {effectiveMode === 'screenshot' && screenshotUrl ? (
+        <ScreenshotView src={screenshotUrl} title={appTitle} />
+      ) : (
+        <DefaultIcon title={appTitle} />
       )}
-    </div>
+    </button>
   );
 }

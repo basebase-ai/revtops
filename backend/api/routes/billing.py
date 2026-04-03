@@ -528,7 +528,6 @@ async def get_credit_details(
     org_id = auth.organization_id
     if not org_id:
         raise HTTPException(status_code=403, detail="Organization required")
-
     is_org_admin = auth.is_global_admin or await _is_org_admin(
         user_id=auth.user_id,
         organization_id=org_id,
@@ -936,7 +935,7 @@ def _tier_from_price(invoice: Any) -> Optional[str]:
     """Infer tier from invoice line items price id."""
     for line in invoice.get("lines", {}).get("data", []):
         pid = line.get("price", {}).get("id")
-        for tier, price_id in STRIPE_PRICE_IDS.items():
+        for tier, price_id in _get_stripe_price_ids().items():
             if price_id and pid == price_id:
                 return tier
     return None
@@ -976,7 +975,7 @@ def _tier_from_subscription(sub: Any) -> Optional[str]:
     if not items:
         return None
     price_id = items[0].get("price", {}).get("id")
-    for tier, pid in STRIPE_PRICE_IDS.items():
+    for tier, pid in _get_stripe_price_ids().items():
         if pid and price_id == pid:
             return tier
     return None

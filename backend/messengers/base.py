@@ -22,8 +22,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, ClassVar
 
-from models.conversation import Conversation
 from models.user import User
+from services.anthropic_health import user_message_for_agent_stream_failure
 
 logger = logging.getLogger(__name__)
 
@@ -180,8 +180,8 @@ class BaseMessenger(ABC):
         organization_id: str,
         user: User,
         message: InboundMessage,
-    ) -> Conversation:
-        """Find or create the :class:`Conversation` for this message."""
+    ) -> str:
+        """Find or create the conversation and return its UUID string."""
 
     # ------------------------------------------------------------------
     # Attachments
@@ -300,7 +300,7 @@ class BaseMessenger(ABC):
             return {"status": "error", "error": "insufficient_credits"}
 
         # 4. Find / create conversation
-        conversation: Conversation = await self.find_or_create_conversation(
+        conversation_id: str = await self.find_or_create_conversation(
             organization_id, user, message
         )
 
@@ -318,7 +318,7 @@ class BaseMessenger(ABC):
         orchestrator = ChatOrchestrator(
             user_id=user_id,
             organization_id=organization_id,
-            conversation_id=str(conversation.id),
+            conversation_id=conversation_id,
             user_email=user_email,
             source_user_id=message.external_user_id,
             source_user_email=user_email,
@@ -339,16 +339,13 @@ class BaseMessenger(ABC):
                     )
                 else:
                     full_response += chunk
-        except Exception:
+        except Exception as exc:
             logger.exception(
                 "[%s] Orchestrator error conversation=%s",
                 self.meta.slug,
-                conversation.id,
+                conversation_id,
             )
-            full_response += (
-                "\nSorry, something went wrong processing your message. "
-                "Please try again."
-            )
+            full_response += user_message_for_agent_stream_failure(exc)
 
         # 7. Format and deliver
         response_text: str = self.format_text(full_response.strip())

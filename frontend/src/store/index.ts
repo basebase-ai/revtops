@@ -168,6 +168,18 @@ export const useIsGlobalAdmin = (): boolean =>
       return true;
     return false;
   });
+/** True if the signed-in user is an admin of the current organization. */
+export const useIsOrgAdmin = (): boolean =>
+  useAuthStore((state) => {
+    const orgId = state.organization?.id;
+    if (!orgId) return false;
+    const membership = state.organizations.find((o) => o.id === orgId);
+    if (membership?.role === 'admin') return true;
+    // Global admins can always see org-admin features
+    if (state.user?.roles?.includes("global_admin")) return true;
+    if (state.masquerade?.originalUser.roles?.includes("global_admin")) return true;
+    return false;
+  });
 export const useMasquerade = () => useAuthStore((state) => state.masquerade);
 export const useIsMasquerading = () =>
   useAuthStore((state) => state.masquerade !== null);

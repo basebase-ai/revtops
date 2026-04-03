@@ -409,7 +409,12 @@ class BaseConnector(ABC):
                 self.organization_id,
                 candidates[0].id,
             )
-        return candidates[0] if candidates else None
+        selected = candidates[0] if candidates else None
+        if selected is not None:
+            # Detach so callers can safely access scalar attributes after the
+            # session context exits (e.g., nango_connection_id in write paths).
+            session.expunge(selected)
+        return selected
 
     @abstractmethod
     async def sync_deals(self) -> int:

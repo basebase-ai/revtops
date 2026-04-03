@@ -197,12 +197,14 @@ async def test_write_update_issue_filters_keys_and_passes_conversation_id(
         {
             "issue_identifier": "BAS-497",
             "state_name": "Canceled",
+            "project_name": "Roadmap Q1",
             "conversation_id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
             "bogus": "nope",
         },
     )
     assert "bogus" not in captured
     assert captured.get("conversation_id") == "cccccccc-cccc-cccc-cccc-cccccccccccc"
+    assert captured.get("project_name") == "Roadmap Q1"
 
 
 @pytest.mark.asyncio
@@ -257,3 +259,53 @@ async def test_update_issue_attachment_only_appends_to_existing_description(
     update_calls: list[dict[str, Any]] = [v for q, v in gql_calls if "issueUpdate" in q]
     assert len(update_calls) == 1
     assert update_calls[0].get("input_description") == "Original body\n\n![](https://asset)"
+
+
+@pytest.mark.asyncio
+async def test_update_issue_sets_project_id_from_project_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connector = LinearConnector(organization_id="00000000-0000-0000-0000-000000000001")
+    monkeypatch.setattr(
+        connector,
+        "resolve_issue_by_identifier",
+        AsyncMock(
+            return_value={
+                "id": "i1",
+                "identifier": "BAS-497",
+                "description": None,
+                "team": {"id": "t1", "key": "BAS"},
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        connector,
+        "resolve_project_by_name",
+        AsyncMock(return_value={"id": "proj-uuid", "name": "Roadmap"}),
+    )
+    gql_calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def fake_gql(query: str, variables: dict[str, Any] | None = None) -> dict[str, Any]:
+        gql_calls.append((query, variables or {}))
+        if "issueUpdate" in query:
+            return {
+                "issueUpdate": {
+                    "success": True,
+                    "issue": {
+                        "id": "i1",
+                        "identifier": "BAS-497",
+                        "title": "T",
+                        "url": "u",
+                        "state": {"name": "Todo"},
+                        "priority": 1,
+                        "priorityLabel": "Urgent",
+                    },
+                },
+            }
+        return {}
+
+    monkeypatch.setattr(connector, "_gql", fake_gql)
+    await connector.update_issue(issue_identifier="BAS-497", project_name="Roadmap")
+    update_calls: list[dict[str, Any]] = [v for q, v in gql_calls if "issueUpdate" in q]
+    assert len(update_calls) == 1
+    assert update_calls[0].get("input_projectId") == "proj-uuid"

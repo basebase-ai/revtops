@@ -5,6 +5,7 @@ from uuid import UUID
 
 from fastapi import HTTPException
 
+from api.auth_middleware import AuthContext
 from api.routes import slack_user_mappings
 
 
@@ -88,13 +89,21 @@ def test_request_code_retries_multiple_slack_identities(monkeypatch):
     monkeypatch.setattr(slack_user_mappings, "_get_redis", lambda: asyncio.sleep(0, result=fake_redis))
     monkeypatch.setattr(slack_user_mappings.secrets, "randbelow", lambda _n: 123456)
 
+    auth_ctx = AuthContext(
+        user_id=user_uuid,
+        organization_id=org_uuid,
+        email="user@example.com",
+        role="user",
+        is_global_admin=False,
+    )
     response = asyncio.run(
         slack_user_mappings.request_slack_user_mapping_code(
+            auth_ctx,
             slack_user_mappings.SlackMappingRequest(
                 user_id=str(user_uuid),
                 organization_id=str(org_uuid),
                 email="user@example.com",
-            )
+            ),
         )
     )
 
@@ -125,14 +134,22 @@ def test_request_code_returns_502_when_all_slack_identities_fail(monkeypatch):
     monkeypatch.setattr(slack_user_mappings, "SlackConnector", _FakeSlackConnector)
     monkeypatch.setattr(slack_user_mappings, "_get_redis", lambda: asyncio.sleep(0, result=fake_redis))
 
+    auth_ctx = AuthContext(
+        user_id=user_uuid,
+        organization_id=org_uuid,
+        email="user@example.com",
+        role="user",
+        is_global_admin=False,
+    )
     try:
         asyncio.run(
             slack_user_mappings.request_slack_user_mapping_code(
+                auth_ctx,
                 slack_user_mappings.SlackMappingRequest(
                     user_id=str(user_uuid),
                     organization_id=str(org_uuid),
                     email="user@example.com",
-                )
+                ),
             )
         )
         raise AssertionError("Expected HTTPException")

@@ -8,10 +8,11 @@ from datetime import timedelta
 from uuid import UUID
 
 import redis.asyncio as redis
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select, text
 
+from api.auth_middleware import AuthContext, get_current_auth
 from config import get_redis_connection_kwargs, settings
 from connectors.slack import SlackConnector
 from models.database import get_admin_session, get_session
@@ -109,6 +110,26 @@ async def _resolve_org_and_user(
         return org_uuid, user.id
 
 
+def _verify_slack_mapping_caller(
+    auth: AuthContext,
+    user_id: str,
+    organization_id: str | None,
+) -> None:
+    """Ensure JWT identity matches claimed user and org (prevents IDOR)."""
+    if str(auth.user_id) != user_id:
+        raise HTTPException(
+            status_code=403,
+            detail="Not authorized to access these mappings",
+        )
+    if not organization_id:
+        raise HTTPException(status_code=400, detail="organization_id is required")
+    if auth.organization_id is None or str(auth.organization_id) != organization_id:
+        raise HTTPException(
+            status_code=403,
+            detail="Organization does not match active organization",
+        )
+
+
 async def _require_slack_integration(organization_id: UUID) -> Integration:
     async with get_session(organization_id=str(organization_id)) as session:
         result = await session.execute(
@@ -149,7 +170,9 @@ def _normalize_email(email: str) -> str:
 async def list_user_mappings_for_identity(
     user_id: str,
     organization_id: str | None = None,
+    auth: AuthContext = Depends(get_current_auth),
 ) -> SlackMappingListResponse:
+    _verify_slack_mapping_caller(auth, user_id, organization_id)
     org_uuid, user_uuid = await _resolve_org_and_user(user_id, organization_id)
     async with get_session(organization_id=str(org_uuid)) as session:
         await session.execute(
@@ -181,8 +204,10 @@ async def list_user_mappings_for_identity(
 
 @router.post("/user-mappings/request-code")
 async def request_slack_user_mapping_code(
-    request: SlackMappingRequest,
+    auth: AuthContext = Depends(get_current_auth),
+    request: SlackMappingRequest = Body(),
 ) -> dict[str, str]:
+    _verify_slack_mapping_caller(auth, request.user_id, request.organization_id)
     org_uuid, user_uuid = await _resolve_org_and_user(
         request.user_id,
         request.organization_id,
@@ -337,8 +362,10 @@ async def request_slack_user_mapping_code(
 
 @router.post("/user-mappings/verify-code")
 async def verify_slack_user_mapping_code(
-    request: SlackMappingVerifyRequest,
+    auth: AuthContext = Depends(get_current_auth),
+    request: SlackMappingVerifyRequest = Body(),
 ) -> dict[str, str]:
+    _verify_slack_mapping_caller(auth, request.user_id, request.organization_id)
     org_uuid, user_uuid = await _resolve_org_and_user(
         request.user_id,
         request.organization_id,
@@ -384,7 +411,9 @@ async def delete_slack_user_mapping(
     mapping_id: str,
     user_id: str,
     organization_id: str | None = None,
+    auth: AuthContext = Depends(get_current_auth),
 ) -> dict[str, str]:
+    _verify_slack_mapping_caller(auth, user_id, organization_id)
     org_uuid, user_uuid = await _resolve_org_and_user(user_id, organization_id)
     try:
         mapping_uuid = UUID(mapping_id)

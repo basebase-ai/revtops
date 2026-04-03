@@ -40,7 +40,8 @@ export interface UIState {
   setCurrentView: (view: View) => void;
   setCurrentAppId: (id: string | null) => void;
   setCurrentArtifactId: (id: string | null) => void;
-  openArtifact: (artifactId: string) => void;
+  documentSearchTerm: string | null;
+  openArtifact: (artifactId: string, searchTerm?: string) => void;
   openApp: (appId: string) => void;
   startNewChat: () => void;
   togglePinChat: (id: string) => void;
@@ -64,6 +65,7 @@ export const useUIStore = create<UIState>()(
       currentArtifactId: null,
       pinnedChatIds: [],
       lastArtifactUpdateId: null,
+      documentSearchTerm: null,
       adminPanelTab: "waitlist",
 
       // Actions
@@ -90,9 +92,10 @@ export const useUIStore = create<UIState>()(
       setCurrentAppId: (currentAppId) => set({ currentAppId }),
       setCurrentArtifactId: (currentArtifactId) =>
         set({ currentArtifactId }),
-      openArtifact: (artifactId) =>
+      openArtifact: (artifactId, searchTerm) =>
         set({
           currentArtifactId: artifactId,
+          documentSearchTerm: searchTerm ?? null,
           currentView: "artifact-view" as View,
         }),
       openApp: (appId) =>

@@ -286,6 +286,7 @@ export interface ConversationState {
   agentResponding?: boolean;
   /** userId -> last typing ping (shared chats only) */
   typingUsers?: Record<string, TypingUserEntry>;
+  suggestedInvites?: Participant[];
 }
 
 // Task state from backend
@@ -337,6 +338,9 @@ export interface WidgetConfig {
   screenshot?: string;
   widget_prompt: string | null;
   generated_at: string;
+  preferred_mode?: 'screenshot' | 'widget' | 'mini_app' | 'icon';
+  detail_level?: 'minimal' | 'standard' | 'detailed';
+  has_screenshot?: boolean;
 }
 
 export interface WidgetData {

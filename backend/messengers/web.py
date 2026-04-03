@@ -17,7 +17,6 @@ from messengers.base import (
     OutboundResponse,
     ResponseMode,
 )
-from models.conversation import Conversation
 from models.user import User
 
 
@@ -36,7 +35,7 @@ class WebMessenger(BaseMessenger):
 
     async def find_or_create_conversation(
         self, organization_id: str, user: User, message: InboundMessage,
-    ) -> Conversation:
+    ) -> str:
         raise NotImplementedError("Web messenger uses WebSocket flow, not process_inbound()")
 
     async def download_attachments(self, message: InboundMessage) -> list[str]:

@@ -40,7 +40,7 @@ const ArtifactFullView = lazy(() => import('./ArtifactFullView').then(m => ({ de
 const DocumentsGallery = lazy(() => import('./documents/DocumentsGallery').then(m => ({ default: m.DocumentsGallery })));
 import { APP_NAME, LOGO_PATH, RELEASE_STAGE } from '../lib/brand';
 import { ProfilePanel } from './ProfilePanel';
-import { useAppStore, useChatStore, useUIStore, useMasquerade, useIntegrations, useIsSwitchingOrg, useIsGlobalAdmin, type ActiveTask, type AdminPanelTab, type ToolCallData, type ChatMessage, type ContentBlock, type View } from '../store';
+import { useAppStore, useChatStore, useUIStore, useMasquerade, useIntegrations, useIsSwitchingOrg, useIsGlobalAdmin, useIsOrgAdmin, type ActiveTask, type AdminPanelTab, type ToolCallData, type ChatMessage, type ContentBlock, type View, type Participant } from '../store';
 import { useTeamMembers, useWebSocket } from '../hooks';
 import { apiRequest } from '../lib/api';
 
@@ -184,7 +184,13 @@ interface WsUserTyping {
   user_name?: string;
 }
 
-type WsMessage = WsActiveTasks | WsTaskStarted | WsTaskChunk | WsTaskComplete | WsConversationCreated | WsCatchup | WsCrmApprovalResult | WsToolApprovalResult | WsToolProgress | WsError | WsNewMessage | WsSummaryUpdated | WsWorkstreamsStale | WsNotification | WsMessageSent | WsUserTyping;
+interface WsMentionInviteSuggested {
+  type: 'mention_invite_suggested';
+  conversation_id: string;
+  users: Participant[];
+}
+
+type WsMessage = WsActiveTasks | WsTaskStarted | WsTaskChunk | WsTaskComplete | WsConversationCreated | WsCatchup | WsCrmApprovalResult | WsToolApprovalResult | WsToolProgress | WsError | WsNewMessage | WsSummaryUpdated | WsWorkstreamsStale | WsNotification | WsMessageSent | WsUserTyping | WsMentionInviteSuggested;
 
 // Props
 interface AppLayoutProps {
@@ -239,10 +245,9 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
     queryKey: ['workflows', organization?.id],
     queryFn: async () => {
       if (!organization?.id) return [];
-      const response = await fetch(`${API_BASE}/workflows/${organization.id}`);
-      if (!response.ok) return [];
-      const data = await response.json() as { workflows: Array<{ is_enabled: boolean }> };
-      return data.workflows ?? [];
+      const res = await apiRequest<{ workflows: Array<{ is_enabled: boolean }> }>(`/workflows/${organization.id}`);
+      if (res.error || !res.data) return [];
+      return res.data.workflows ?? [];
     },
     enabled: !!organization?.id,
   });
@@ -1502,6 +1507,12 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
           break;
         }
 
+        case 'mention_invite_suggested': {
+          const { conversation_id, users } = parsed as { conversation_id: string; users: Participant[] };
+          useChatStore.getState().setConversationSuggestedInvites(conversation_id, users);
+          break;
+        }
+
         case 'user_typing': {
           const ut = parsed as WsUserTyping;
           const cid: string | undefined = ut.conversation_id;
@@ -1635,12 +1646,16 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
   }, [setCurrentChatId]);
 
   const isGlobalAdmin: boolean = useIsGlobalAdmin();
+  const isOrgAdmin: boolean = useIsOrgAdmin();
 
   useEffect(() => {
     if (currentView === 'admin' && !isGlobalAdmin) {
       setCurrentView('home');
     }
-  }, [currentView, isGlobalAdmin, setCurrentView]);
+    if (currentView === 'activity-log' && !isOrgAdmin) {
+      setCurrentView('home');
+    }
+  }, [currentView, isGlobalAdmin, isOrgAdmin, setCurrentView]);
 
   // Guard against missing user/org (shouldn't happen, but be safe)
   if (!user || !organization || isSwitchingOrg) {
@@ -1869,7 +1884,7 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
         {currentView === 'pending-changes' && (
           <PendingChangesPage />
         )}
-        {currentView === 'activity-log' && import.meta.env.VITE_FEATURE_ACTION_LEDGER === 'true' && (
+        {currentView === 'activity-log' && isOrgAdmin && (
           <ActivityLog />
         )}
       </main>

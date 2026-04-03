@@ -183,6 +183,7 @@ export function ActivityLog(): JSX.Element {
   }
 
   return (
+    <div className="h-full overflow-y-auto">
     <div className="max-w-4xl mx-auto px-4 py-6 sm:px-6">
       <div className="flex items-center justify-between mb-6">
         <div>
@@ -245,6 +246,7 @@ export function ActivityLog(): JSX.Element {
           </button>
         </div>
       )}
+    </div>
     </div>
   );
 }
