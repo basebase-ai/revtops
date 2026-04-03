@@ -440,11 +440,11 @@ async def list_conversations(
                         conv.source_channel_id,
                     )
 
-            # Build participants list
+            # Build participants list (exclude guest/system accounts)
             participants: list[ParticipantResponse] = []
             for uid in (conv.participating_user_ids or []):
                 user = participants_by_id.get(uid)
-                if user:
+                if user and not getattr(user, "is_guest", False):
                     participants.append(ParticipantResponse(
                         id=str(user.id),
                         name=user.name,
@@ -617,19 +617,20 @@ async def get_conversation(
         # Reverse to chronological order (oldest first)
         message_rows = list(reversed(message_rows))
 
-        # Fetch participants
+        # Fetch participants (exclude guest/system accounts)
         participants: list[ParticipantResponse] = []
         if conversation.participating_user_ids:
             users_result = await session.execute(
                 select(User).where(User.id.in_(conversation.participating_user_ids))
             )
             for user in users_result.scalars().all():
-                participants.append(ParticipantResponse(
-                    id=str(user.id),
-                    name=user.name,
-                    email=user.email,
-                    avatar_url=user.avatar_url,
-                ))
+                if not getattr(user, "is_guest", False):
+                    participants.append(ParticipantResponse(
+                        id=str(user.id),
+                        name=user.name,
+                        email=user.email,
+                        avatar_url=user.avatar_url,
+                    ))
 
         return ConversationDetailResponse(
             id=str(conversation.id),
@@ -698,19 +699,20 @@ async def update_conversation(
         conv_updated_at = conversation.updated_at
         conv_participant_ids = list(conversation.participating_user_ids or [])
 
-        # Fetch participants
+        # Fetch participants (exclude guest/system accounts)
         participants: list[ParticipantResponse] = []
         if conv_participant_ids:
             users_result = await session.execute(
                 select(User).where(User.id.in_(conv_participant_ids))
             )
             for user in users_result.scalars().all():
-                participants.append(ParticipantResponse(
-                    id=str(user.id),
-                    name=user.name,
-                    email=user.email,
-                    avatar_url=user.avatar_url,
-                ))
+                if not getattr(user, "is_guest", False):
+                    participants.append(ParticipantResponse(
+                        id=str(user.id),
+                        name=user.name,
+                        email=user.email,
+                        avatar_url=user.avatar_url,
+                    ))
 
         await session.commit()
         # Note: don't call refresh() - it can fail due to RLS after commit
@@ -977,19 +979,20 @@ async def update_scope(
         conv_updated_at = conversation.updated_at
         conv_participant_ids = list(conversation.participating_user_ids or [])
 
-        # Fetch participants
+        # Fetch participants (exclude guest/system accounts)
         participants: list[ParticipantResponse] = []
         if conv_participant_ids:
             users_result = await session.execute(
                 select(User).where(User.id.in_(conv_participant_ids))
             )
             for user in users_result.scalars().all():
-                participants.append(ParticipantResponse(
-                    id=str(user.id),
-                    name=user.name,
-                    email=user.email,
-                    avatar_url=user.avatar_url,
-                ))
+                if not getattr(user, "is_guest", False):
+                    participants.append(ParticipantResponse(
+                        id=str(user.id),
+                        name=user.name,
+                        email=user.email,
+                        avatar_url=user.avatar_url,
+                    ))
 
         await session.commit()
 
