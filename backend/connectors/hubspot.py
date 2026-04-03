@@ -10,6 +10,7 @@ Responsibilities:
 """
 
 import asyncio
+import logging
 import uuid
 from datetime import datetime
 from decimal import Decimal
@@ -40,6 +41,8 @@ from models.org_member import OrgMember
 from models.pipeline import Pipeline, PipelineStage
 from models.external_identity_mapping import ExternalIdentityMapping
 from models.user import User
+
+logger: logging.Logger = logging.getLogger(__name__)
 
 HUBSPOT_API_BASE = "https://api.hubapi.com"
 
@@ -1973,13 +1976,20 @@ Notes are activities attached to deals (or contacts/companies). Use HubSpot **so
 
         Resolution order:
         1. Existing identity mapping in ``user_mappings_for_identity``
-           (source='hubspot', user_id=<user_id>).
+           (source='hubspot', user_id=<user_id>), **validated** against
+           the HubSpot owners API so stale or wrong IDs (e.g. a HubSpot
+           *user* ID instead of an *owner* ID) are caught.
         2. Fall back to the bulk owner email cache (email match).
+           If the email match succeeds and a stale mapping exists, the
+           mapping is self-healed to the correct owner ID.
         """
-        # 1. Check identity mapping table
-        async with get_session(organization_id=self.organization_id) as session:
-            from models.external_identity_mapping import ExternalIdentityMapping as IdentityMapping
+        from models.external_identity_mapping import ExternalIdentityMapping as IdentityMapping
 
+        stale_mapping_id: Optional[uuid.UUID] = None
+        stored_external_userid: Optional[str] = None
+        user_email: Optional[str] = None
+
+        async with get_session(organization_id=self.organization_id) as session:
             result = await session.execute(
                 select(IdentityMapping).where(
                     IdentityMapping.organization_id == uuid.UUID(self.organization_id),
@@ -1990,23 +2000,60 @@ Notes are activities attached to deals (or contacts/companies). Use HubSpot **so
             )
             mapping: Optional[IdentityMapping] = result.scalar_one_or_none()
             if mapping and mapping.external_userid:
-                return mapping.external_userid
+                stored_external_userid = mapping.external_userid
+                stale_mapping_id = mapping.id
 
-            # 2. Fetch user email and match against HubSpot owners
             user_result = await session.execute(
                 select(User).where(User.id == user_id)
             )
             user: Optional[User] = user_result.scalar_one_or_none()
-            if not user or not user.email:
-                return None
+            if user and user.email:
+                user_email = user.email
 
-        # Ensure owner email cache is populated
         await self._ensure_owner_email_cache()
 
-        # Reverse lookup: email → owner ID
-        user_email_lower: str = user.email.lower()
+        # Return stored ID only if it's a valid HubSpot owner
+        if stored_external_userid and stored_external_userid in self._owner_email_cache:
+            return stored_external_userid
+
+        if stored_external_userid:
+            logger.warning(
+                "Stored HubSpot external_userid %s for user %s is not a valid owner ID; "
+                "attempting email-based fallback",
+                stored_external_userid,
+                user_id,
+            )
+
+        if not user_email:
+            return None
+
+        user_email_lower: str = user_email.lower()
         for hs_owner_id, owner_email in self._owner_email_cache.items():
             if owner_email.lower() == user_email_lower:
+                # Self-heal: overwrite the invalid stored ID with the correct owner ID
+                if stale_mapping_id:
+                    try:
+                        async with get_session(organization_id=self.organization_id) as heal_session:
+                            heal_result = await heal_session.execute(
+                                select(IdentityMapping).where(
+                                    IdentityMapping.id == stale_mapping_id
+                                )
+                            )
+                            stale_mapping: Optional[IdentityMapping] = heal_result.scalar_one_or_none()
+                            if stale_mapping:
+                                logger.info(
+                                    "Self-healing HubSpot owner mapping: %s -> %s for user %s",
+                                    stale_mapping.external_userid,
+                                    hs_owner_id,
+                                    user_id,
+                                )
+                                stale_mapping.external_userid = hs_owner_id
+                                await heal_session.commit()
+                    except Exception:
+                        logger.exception(
+                            "Failed to self-heal HubSpot owner mapping for user %s",
+                            user_id,
+                        )
                 return hs_owner_id
 
         return None
