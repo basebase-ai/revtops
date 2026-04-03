@@ -2339,11 +2339,8 @@ export function Chat({
             </>
           )}
 
-          {/* Messages scroll area */}
-          <div className="relative flex-1 min-h-0">
-            <div ref={messagesContainerRef} className="absolute inset-0 overflow-y-auto overflow-x-hidden p-3 md:p-6">
-            {conversationState?.summary && <SummaryCard summary={conversationState.summary} />}
-            {suggestedInvites.length > 0 && (
+          {suggestedInvites.length > 0 && (
+            <div className="px-3 md:px-6 pt-3 flex-shrink-0">
               <SuggestedInvitesBanner
                 invites={suggestedInvites}
                 onAdd={handleSuggestedInvitesAdd}
@@ -2351,7 +2348,13 @@ export function Chat({
                 bannerRef={suggestedInvitesBannerRef}
                 addButtonRef={suggestedInvitesAddButtonRef}
               />
-            )}
+            </div>
+          )}
+
+          {/* Messages scroll area */}
+          <div className="relative flex-1 min-h-0">
+            <div ref={messagesContainerRef} className="absolute inset-0 overflow-y-auto overflow-x-hidden p-3 md:p-6">
+            {conversationState?.summary && <SummaryCard summary={conversationState.summary} />}
             {!userId && (
               <div className="mb-3 rounded-lg border border-amber-600/50 bg-amber-900/20 px-3 py-2 text-sm text-amber-200">
                 User context is missing — artifacts and apps may not save correctly. Please refresh or re-sign in.
