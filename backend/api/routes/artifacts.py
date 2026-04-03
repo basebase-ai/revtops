@@ -92,6 +92,7 @@ async def list_artifacts(
             )
         result = await session.execute(stmt)
         artifacts: list[Artifact] = list(result.scalars().all())
+        _log.info("[artifacts] found %d artifacts for org=%s", len(artifacts), auth.organization_id_str)
 
         user_ids: set[UUID] = {a.user_id for a in artifacts if a.user_id is not None}
         users_map: dict[UUID, User] = {}
