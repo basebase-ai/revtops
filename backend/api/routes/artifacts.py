@@ -81,15 +81,16 @@ async def list_artifacts(
     _log = logging.getLogger(__name__)
     _log.info("[artifacts] list_artifacts org_id=%s user_id=%s search=%s", auth.organization_id_str, auth.user_id, search)
     async with get_session(organization_id=auth.organization_id_str) as session:
-        stmt = select(Artifact).order_by(Artifact.created_at.desc())
+        filters = [Artifact.organization_id == auth.organization_id]
         if search and search.strip():
             term: str = f"%{search.strip()}%"
-            stmt = stmt.where(
+            filters.append(
                 or_(
                     Artifact.title.ilike(term),
                     Artifact.description.ilike(term),
                 )
             )
+        stmt = select(Artifact).where(*filters).order_by(Artifact.created_at.desc())
         result = await session.execute(stmt)
         artifacts: list[Artifact] = list(result.scalars().all())
         _log.info("[artifacts] found %d artifacts for org=%s", len(artifacts), auth.organization_id_str)
