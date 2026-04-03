@@ -142,6 +142,7 @@ export interface ChatState {
   ) => void;
   clearExpiredTyping: (conversationId: string) => void;
   setChatScope: (conversationId: string, scope: "private" | "shared") => void;
+  setChatParticipants: (conversationId: string, participants: Participant[]) => void;
   fetchOlderMessages: (conversationId: string) => Promise<boolean>;
   setConversationThinking: (
     conversationId: string,
@@ -947,6 +948,15 @@ export const useChatStore = create<ChatState>()(
       set({
         recentChats: recentChats.map((c) =>
           c.id === conversationId ? { ...c, scope } : c,
+        ),
+      });
+    },
+
+    setChatParticipants: (conversationId, participants) => {
+      const { recentChats } = get();
+      set({
+        recentChats: recentChats.map((c) =>
+          c.id === conversationId ? { ...c, participants } : c,
         ),
       });
     },

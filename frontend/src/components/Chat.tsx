@@ -518,6 +518,7 @@ export function Chat({
     const agentOption = { type: 'agent' as const, displayName: 'Basebase', userId: null };
     const userOptions = dedupedMembers
       .filter((m) => {
+        if (m.id === userId) return false;
         if (!q) return true;
         const name = (m.name ?? '').toLowerCase();
         const emailLocal = (m.email.split('@')[0] ?? '').toLowerCase();
@@ -530,7 +531,7 @@ export function Chat({
         email: m.email,
       }));
     return showAgentOption ? [agentOption, ...userOptions] : userOptions;
-  }, [teamMembersData?.members, mentionPopover.open, input]);
+  }, [teamMembersData?.members, mentionPopover.open, input, userId]);
 
   // Attachment state
   const [pendingAttachments, setPendingAttachments] = useState<UploadResponse[]>([]);
@@ -884,14 +885,15 @@ export function Chat({
           setConversationType(data.type ?? null);
           setConversationScope((data.scope ?? 'shared') as 'private' | 'shared');
           setConversationCreatorId(data.user_id ?? null);
-          setConversationParticipants(
-            (data.participants ?? []).map((p: { id: string; name: string | null; email: string; avatar_url?: string | null }) => ({
-              id: p.id,
-              name: p.name,
-              email: p.email,
-              avatarUrl: p.avatar_url,
-            }))
-          );
+          const mappedParticipants = (data.participants ?? []).map((p: { id: string; name: string | null; email: string; avatar_url?: string | null }) => ({
+            id: p.id,
+            name: p.name,
+            email: p.email,
+            avatarUrl: p.avatar_url,
+          }));
+          setConversationParticipants(mappedParticipants);
+          // Sync sidebar so left nav avatars match header
+          useChatStore.getState().setChatParticipants(chatId, mappedParticipants);
 
           setTimeout(() => {
             messagesEndRef.current?.scrollIntoView({ behavior: 'instant' });
