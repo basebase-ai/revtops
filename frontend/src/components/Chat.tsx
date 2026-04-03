@@ -296,7 +296,7 @@ function SuggestedInvitesBanner({ invites, onAdd, onDismiss }: SuggestedInvitesB
   const isMultiple = invites.length > 1;
 
   return (
-    <div className="mb-4 rounded-lg border border-primary-500/30 bg-surface-850 px-4 py-3 shadow-lg animate-in fade-in slide-in-from-top-2 duration-300">
+    <div className="border-b border-primary-500/30 bg-surface-900 px-4 py-3 shadow-lg animate-in fade-in slide-in-from-top-2 duration-300">
       <div className="flex items-center justify-between gap-4">
         <div className="flex items-center gap-3 min-w-0">
           <div className="w-8 h-8 rounded-full bg-primary-500/20 flex items-center justify-center flex-shrink-0">
@@ -521,8 +521,7 @@ export function Chat({
         if (!q) return true;
         const name = (m.name ?? '').toLowerCase();
         const emailLocal = (m.email.split('@')[0] ?? '').toLowerCase();
-        // Match query against start of any word in the name, or start of email local part
-        return name.split(/\s+/).some((w) => w.startsWith(q)) || emailLocal.startsWith(q);
+        return name.startsWith(q) || emailLocal.startsWith(q);
       })
       .map((m) => ({
         type: 'user' as const,
@@ -2326,7 +2325,7 @@ export function Chat({
           {/* Messages scroll area */}
           <div className="relative flex-1 min-h-0">
             {suggestedInvites.length > 0 && (
-              <div className="absolute top-0 left-0 right-0 z-10 px-3 md:px-6 pt-3 pb-4 bg-surface-900">
+              <div className="absolute top-0 left-0 right-0 z-10">
                 <SuggestedInvitesBanner
                   invites={suggestedInvites}
                   onAdd={handleSuggestedInvitesAdd}
