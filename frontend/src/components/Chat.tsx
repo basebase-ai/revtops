@@ -473,7 +473,11 @@ export function Chat({
 
   const mentionSuggestions = useMemo(() => {
     const members = teamMembersData?.members ?? [];
-    const q: string = mentionPopover.query.toLowerCase();
+    // Derive query from input string directly (not mentionPopover.query)
+    // to avoid one-character lag from React state batching.
+    const lastAt = input.lastIndexOf('@');
+    const rawQuery = mentionPopover.open && lastAt !== -1 ? input.substring(lastAt + 1) : '';
+    const q: string = rawQuery.includes(' ') ? '' : rawQuery.toLowerCase();
     // Only offer @Basebase when query is empty (bare "@") or prefixes the agent name,
     // so e.g. "@Cyn" + Enter selects Cynthia, not Basebase at index 0.
     const agentCanonical: string = 'basebase';
@@ -526,7 +530,7 @@ export function Chat({
         email: m.email,
       }));
     return showAgentOption ? [agentOption, ...userOptions] : userOptions;
-  }, [teamMembersData?.members, mentionPopover.query]);
+  }, [teamMembersData?.members, mentionPopover.open, input]);
 
   // Attachment state
   const [pendingAttachments, setPendingAttachments] = useState<UploadResponse[]>([]);
@@ -2334,7 +2338,7 @@ export function Chat({
           {/* Messages scroll area */}
           <div className="relative flex-1 min-h-0">
             {suggestedInvites.length > 0 && (
-              <div className="absolute top-0 left-0 right-0 z-10 px-3 md:px-6 pt-3 pb-2 bg-gradient-to-b from-surface-900 via-surface-900 to-transparent">
+              <div className="absolute top-0 left-0 right-0 z-10 px-3 md:px-6 pt-3 pb-4 bg-gradient-to-b from-surface-900 via-surface-900/85 to-transparent">
                 <SuggestedInvitesBanner
                   invites={suggestedInvites}
                   onAdd={handleSuggestedInvitesAdd}
