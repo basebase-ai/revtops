@@ -21,6 +21,8 @@ interface ArtifactItem {
   created_at: string | null;
   user_id: string | null;
   creator_name: string | null;
+  match_snippet: string | null;
+  match_count: number;
 }
 
 interface ArtifactsListResponse {
@@ -144,7 +146,7 @@ export function DocumentsGallery(): JSX.Element {
   }, [searchInput, fetchArtifacts]);
 
   const handleOpen = (artifactId: string): void => {
-    openArtifact(artifactId);
+    openArtifact(artifactId, searchInput.trim() || undefined);
     window.history.pushState({}, "", `${pathPrefix}/artifacts/${artifactId}`);
   };
 
@@ -281,7 +283,16 @@ export function DocumentsGallery(): JSX.Element {
                         <span>{new Date(doc.created_at).toLocaleDateString()}</span>
                       </>
                     )}
+                    {doc.match_count > 0 && (
+                      <>
+                        <span className="text-surface-600">&middot;</span>
+                        <span className="text-primary-400">{doc.match_count} match{doc.match_count !== 1 ? "es" : ""}</span>
+                      </>
+                    )}
                   </div>
+                  {doc.match_snippet && (
+                    <p className="text-xs text-surface-500 mt-1.5 line-clamp-2 italic">{doc.match_snippet}</p>
+                  )}
                 </div>
               </div>
             </div>
@@ -311,9 +322,17 @@ export function DocumentsGallery(): JSX.Element {
                 <div className="text-primary-400 flex-shrink-0">
                   {contentTypeIcon(doc.content_type)}
                 </div>
-                <span className="text-sm text-surface-100 group-hover:text-primary-300 truncate transition-colors">
-                  {doc.title ?? doc.filename ?? "Untitled"}
-                </span>
+                <div className="min-w-0">
+                  <span className="text-sm text-surface-100 group-hover:text-primary-300 truncate block transition-colors">
+                    {doc.title ?? doc.filename ?? "Untitled"}
+                  </span>
+                  {doc.match_snippet && (
+                    <p className="text-xs text-surface-500 truncate italic mt-0.5">{doc.match_snippet}</p>
+                  )}
+                </div>
+                {doc.match_count > 0 && (
+                  <span className="text-[10px] text-primary-400 flex-shrink-0 ml-auto">{doc.match_count}</span>
+                )}
               </div>
               <div className="flex items-center">
                 <span className="text-sm text-surface-400 truncate">{doc.creator_name ?? "—"}</span>
