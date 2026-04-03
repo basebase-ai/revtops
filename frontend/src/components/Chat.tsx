@@ -2496,45 +2496,46 @@ export function Chat({
       {/* Composer */}
       <div className="px-3 md:px-5 pb-3 pt-1">
         <div className="relative">
-          {mentionPopover.open && mentionSuggestions.length > 0 && (
-            <div
-              className="absolute left-0 bottom-full mb-1 min-w-[14rem] max-w-sm max-h-44 overflow-y-auto rounded-lg border border-surface-700 bg-surface-900 shadow-xl z-50"
-              role="listbox"
-            >
-              {mentionSuggestions.slice(0, 8).map((item, idx) => (
-                <button
-                  key={item.type === 'agent' ? 'agent' : item.userId}
-                  type="button"
-                  role="option"
-                  aria-selected={idx === mentionPopover.selectedIndex}
-                  className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${
-                    idx === mentionPopover.selectedIndex ? 'bg-primary-500/15 text-surface-100' : 'hover:bg-surface-800 text-surface-200'
-                  }`}
-                  onClick={() => {
-                    const displayName: string = item.type === 'agent' ? 'Basebase' : item.displayName;
-                    selectMention(
-                      item.type === 'agent' ? { type: 'agent' } : { type: 'user', userId: item.userId },
-                      displayName
-                    );
-                  }}
-                >
-                  {item.type === 'agent' ? (
-                    <span className="flex items-center gap-2 font-medium text-primary-400">
-                      <img src="/basebase_logo.svg" alt="" className="w-4 h-4" />
-                      Basebase
-                    </span>
-                  ) : (
-                    <span className="min-w-0 text-left">
-                      <span className="font-medium">{item.displayName}</span>
-                      {item.email.trim().toLowerCase() !== item.displayName.trim().toLowerCase() ? (
-                        <span className="text-surface-500"> ({item.email})</span>
-                      ) : null}
-                    </span>
-                  )}
-                </button>
-              ))}
-            </div>
-          )}
+          <div
+            className={`absolute left-0 bottom-full mb-1 min-w-[14rem] max-w-sm max-h-44 overflow-y-auto rounded-lg border border-surface-700 bg-surface-900 shadow-xl z-50 ${
+              mentionPopover.open && mentionSuggestions.length > 0 ? '' : 'hidden'
+            }`}
+            role="listbox"
+          >
+            {mentionSuggestions.slice(0, 8).map((item, idx) => (
+              <button
+                key={item.type === 'agent' ? 'agent' : item.userId}
+                type="button"
+                role="option"
+                aria-selected={idx === mentionPopover.selectedIndex}
+                className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${
+                  idx === mentionPopover.selectedIndex ? 'bg-primary-500/15 text-surface-100' : 'hover:bg-surface-800 text-surface-200'
+                }`}
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => {
+                  const displayName: string = item.type === 'agent' ? 'Basebase' : item.displayName;
+                  selectMention(
+                    item.type === 'agent' ? { type: 'agent' } : { type: 'user', userId: item.userId },
+                    displayName
+                  );
+                }}
+              >
+                {item.type === 'agent' ? (
+                  <span className="flex items-center gap-2 font-medium text-primary-400">
+                    <svg className="w-4 h-4" viewBox="0 0 500 500" fill="none"><rect x="277.744" y="193.333" width="42.89" height="119.37" transform="rotate(45 277.744 193.333)" fill="currentColor"/><rect x="308.074" y="277.744" width="42.89" height="119.37" transform="rotate(135 308.074 277.744)" fill="currentColor"/><path d="M310.7 59.7c35.2-35.2 92.2-35.2 127.3 0s35.2 92.1 0 127.3c-42.4 42.4-162.6 35.3-162.6 35.3s-7.1-120.2 35.3-162.6zm66 29.6c-16.6 0-30 13.5-30 30 0 16.6 13.4 30 30 30s30-13.4 30-30c0-16.5-13.4-30-30-30z" fill="currentColor"/><path d="M59.7 187c-35.2-35.2-35.2-92.2 0-127.3s92.1-35.2 127.3 0c42.4 42.4 35.3 162.6 35.3 162.6s-120.2 7.1-162.6-35.3zm29.6-66c0 16.6 13.5 30 30 30 16.6 0 30-13.4 30-30s-13.4-30-30-30-30 13.4-30 30z" fill="currentColor"/><path d="M310.7 439.1c35.2 35.1 92.2 35.1 127.3 0s35.2-92.2 0-127.3c-42.4-42.4-162.5-35.4-162.6-35.4 0 0-7.1 120.2 35.3 162.7zm66-29.7c-16.6 0-30-13.4-30-30s13.4-30 30-30 30 13.4 30 30-13.4 30-30 30z" fill="currentColor"/><path d="M59.7 311.8c-35.2 35.2-35.2 92.2 0 127.3s92.1 35.2 127.3 0c42.4-42.4 35.3-162.5 35.3-162.6 0 0-120.2-7.1-162.6 35.3zm29.7 66c0-16.6 13.4-30 30-30s30 13.4 30 30-13.4 30-30 30-30-13.4-30-30z" fill="currentColor"/></svg>
+                    Basebase
+                  </span>
+                ) : (
+                  <span className="min-w-0 text-left">
+                    <span className="font-medium">{item.displayName}</span>
+                    {item.email.trim().toLowerCase() !== item.displayName.trim().toLowerCase() ? (
+                      <span className="text-surface-500"> ({item.email})</span>
+                    ) : null}
+                  </span>
+                )}
+              </button>
+            ))}
+          </div>
           {outOfCredits && (
             <div className="mb-2 px-3 py-2 rounded-lg bg-red-500/10 border border-red-500/30 text-red-300 text-sm flex items-center gap-2">
               <svg className="w-4 h-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
