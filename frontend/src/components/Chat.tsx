@@ -2320,7 +2320,7 @@ export function Chat({
           {/* Messages scroll area */}
           <div className="relative flex-1 min-h-0">
             {suggestedInvites.length > 0 && (
-              <div className="absolute top-0 left-0 right-0 z-10 px-3 md:px-6 pt-3">
+              <div className="absolute top-0 left-0 right-0 z-10 px-3 md:px-6 pt-3 pb-2 bg-gradient-to-b from-surface-900 via-surface-900 to-transparent">
                 <SuggestedInvitesBanner
                   invites={suggestedInvites}
                   onAdd={handleSuggestedInvitesAdd}
