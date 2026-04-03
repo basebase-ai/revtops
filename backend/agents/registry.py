@@ -163,6 +163,39 @@ IMPORTANT: Only SELECT queries are allowed. No INSERT, UPDATE, DELETE, DROP, etc
 
 
 register_tool(
+    name="search_documents",
+    description="""Search documents (artifacts) created by the agent across all conversations.
+
+Use this when the user asks to find a report, analysis, document, or file that was previously
+created in any chat. Searches by title and description. Returns metadata (title, type, creation
+date, conversation link) without the full content — use run_sql_query on the artifacts table
+to retrieve content if needed.""",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "Search term to match against document titles and descriptions",
+            },
+            "content_type": {
+                "type": "string",
+                "description": "Optional filter: 'markdown', 'text', 'pdf', 'chart'",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Max results to return (default 20, max 50)",
+            },
+        },
+        "required": ["query"],
+    },
+    category=ToolCategory.LOCAL_READ,
+    default_requires_approval=False,
+    status_running="Searching documents",
+    status_complete="Found documents",
+)
+
+
+register_tool(
     name="list_connected_connectors",
     description="""Refresh and return the capabilities manifest for all connected connectors.
 

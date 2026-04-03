@@ -325,6 +325,7 @@ async def execute_tool(
         "manage_memory": lambda: _manage_memory(tool_input, organization_id, user_id, skip_approval),
         "foreach": lambda: _foreach(tool_input, organization_id, user_id, context),
         "trigger_sync": lambda: _trigger_sync(tool_input, organization_id),
+        "search_documents": lambda: _search_documents(tool_input, organization_id, user_id),
         "initiate_connector": lambda: _initiate_connector(tool_input, organization_id, user_id),
         # Connector-driven generic tools
         "list_connected_connectors": lambda: _list_connected_connectors(organization_id),
@@ -373,6 +374,8 @@ def _log_tool_execution_result(
         logger.info("[Tools] list_connected_connectors returned manifest")
     elif executed_tool_name == "search_cloud_files":
         logger.info("[Tools] search_cloud_files returned %d results", len(result.get("files", [])))
+    elif executed_tool_name == "search_documents":
+        logger.info("[Tools] search_documents returned %d results", len(result.get("documents", [])))
     elif executed_tool_name == "read_cloud_file":
         logger.info("[Tools] read_cloud_file completed: %s", result.get("file_name", "unknown"))
     elif executed_tool_name == "edit_cloud_file":
@@ -5441,6 +5444,82 @@ async def _run_workflow(
     except Exception as e:
         logger.error("[Tools._run_workflow] Failed: %s", str(e))
         return {"error": f"Failed to run workflow: {str(e)}", "status": "failed"}
+
+
+# =============================================================================
+# Document / Artifact Search
+# =============================================================================
+
+
+async def _search_documents(
+    params: dict[str, Any], organization_id: str, user_id: str | None
+) -> dict[str, Any]:
+    """Search artifacts (documents) by title and description."""
+    query = params.get("query", "").strip()
+    content_type_filter = params.get("content_type")
+    limit = min(params.get("limit", 20), 50)
+
+    if not query:
+        return {"error": "query is required."}
+
+    try:
+        from uuid import UUID as _UUID
+        from sqlalchemy import select, and_, or_
+        from models.artifact import Artifact
+        from models.user import User
+        from models.database import get_session
+
+        like_pattern = f"%{query}%"
+        filters: list[Any] = [
+            or_(
+                Artifact.title.ilike(like_pattern),
+                Artifact.description.ilike(like_pattern),
+            )
+        ]
+        if content_type_filter:
+            filters.append(Artifact.content_type == content_type_filter)
+
+        async with get_session(organization_id=organization_id, user_id=user_id) as session:
+            result = await session.execute(
+                select(Artifact)
+                .where(and_(*filters))
+                .order_by(Artifact.created_at.desc())
+                .limit(limit)
+            )
+            artifacts = list(result.scalars().all())
+
+            # Fetch creator names
+            user_ids = {a.user_id for a in artifacts if a.user_id}
+            users_map: dict[Any, str] = {}
+            if user_ids:
+                user_result = await session.execute(select(User).where(User.id.in_(user_ids)))
+                for u in user_result.scalars().all():
+                    users_map[u.id] = u.name or u.email
+
+        docs = [
+            {
+                "id": str(a.id),
+                "title": a.title,
+                "description": a.description,
+                "content_type": a.content_type,
+                "created_at": f"{a.created_at.isoformat()}Z" if a.created_at else None,
+                "creator": users_map.get(a.user_id, "unknown"),
+                "conversation_id": str(a.conversation_id) if a.conversation_id else None,
+            }
+            for a in artifacts
+        ]
+
+        if not docs:
+            return {
+                "documents": [],
+                "count": 0,
+                "message": f"No documents matching '{query}' found.",
+            }
+
+        return {"documents": docs, "count": len(docs)}
+    except Exception as e:
+        logger.error("[Tools._search_documents] Failed: %s", e)
+        return {"error": f"Failed to search documents: {str(e)}"}
 
 
 # =============================================================================
