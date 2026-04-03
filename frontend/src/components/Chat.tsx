@@ -479,8 +479,40 @@ export function Chat({
     const agentCanonical: string = 'basebase';
     const showAgentOption: boolean = q.length === 0 || agentCanonical.startsWith(q);
 
+    // Derive org email domain from the majority of member emails
+    const domainCounts = new Map<string, number>();
+    for (const m of members) {
+      if (m.isGuest) continue;
+      const d = m.email.split('@')[1]?.toLowerCase();
+      if (d) domainCounts.set(d, (domainCounts.get(d) ?? 0) + 1);
+    }
+    let orgDomain = '';
+    let maxCount = 0;
+    for (const [d, c] of domainCounts) {
+      if (c > maxCount) { orgDomain = d; maxCount = c; }
+    }
+
+    // Deduplicate: when multiple members share a name, keep the one on the org domain
+    const byName = new Map<string, typeof members[number]>();
+    for (const m of members) {
+      if (m.isGuest) continue;
+      const key = (m.name ?? m.email).trim().toLowerCase();
+      const existing = byName.get(key);
+      if (!existing) {
+        byName.set(key, m);
+      } else {
+        // Prefer the member whose email matches the org domain
+        const existingOnDomain = existing.email.toLowerCase().endsWith(`@${orgDomain}`);
+        const currentOnDomain = m.email.toLowerCase().endsWith(`@${orgDomain}`);
+        if (currentOnDomain && !existingOnDomain) {
+          byName.set(key, m);
+        }
+      }
+    }
+    const dedupedMembers = Array.from(byName.values());
+
     const agentOption = { type: 'agent' as const, displayName: 'Basebase', userId: null };
-    const userOptions = members
+    const userOptions = dedupedMembers
       .filter((m) => {
         if (!q) return true;
         const name = (m.name ?? '').toLowerCase();
