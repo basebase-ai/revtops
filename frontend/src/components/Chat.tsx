@@ -520,8 +520,9 @@ export function Chat({
       .filter((m) => {
         if (!q) return true;
         const name = (m.name ?? '').toLowerCase();
-        const email = m.email.toLowerCase();
-        return name.includes(q) || email.includes(q);
+        const emailLocal = (m.email.split('@')[0] ?? '').toLowerCase();
+        // Match query against start of any word in the name, or start of email local part
+        return name.split(/\s+/).some((w) => w.startsWith(q)) || emailLocal.startsWith(q);
       })
       .map((m) => ({
         type: 'user' as const,
