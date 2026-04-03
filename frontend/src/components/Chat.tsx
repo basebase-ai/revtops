@@ -2531,8 +2531,25 @@ export function Chat({
             </div>
           )}
           {chatId && conversationState && conversationState.agentResponding === false && (
-            <div className="mb-2 px-3 py-2 rounded-lg bg-surface-700/50 border border-surface-600 text-surface-400 text-sm">
-              Basebase paused — use @Basebase to resume
+            <div className="mb-2 px-3 py-2 rounded-lg bg-surface-700/50 border border-surface-600 text-surface-400 text-sm flex items-center justify-between">
+              <span>Basebase paused</span>
+              <button
+                type="button"
+                onClick={() => {
+                  if (!chatId) return;
+                  sendMessage({
+                    type: 'send_message',
+                    message: '@Basebase',
+                    conversation_id: chatId,
+                    mentions: [{ type: 'agent' }],
+                  });
+                  setConversationAgentResponding(chatId, true);
+                  setConversationThinking(chatId, true);
+                }}
+                className="px-3 py-1 text-xs font-medium bg-primary-600 hover:bg-primary-500 text-white rounded-md transition-colors"
+              >
+                Resume
+              </button>
             </div>
           )}
           {lowCredits && (
