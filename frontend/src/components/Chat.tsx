@@ -296,7 +296,7 @@ function SuggestedInvitesBanner({ invites, onAdd, onDismiss }: SuggestedInvitesB
   const isMultiple = invites.length > 1;
 
   return (
-    <div className="mb-4 rounded-lg border border-primary-500/30 bg-primary-500/10 px-4 py-3 shadow-sm animate-in fade-in slide-in-from-top-2 duration-300">
+    <div className="mb-4 rounded-lg border border-primary-500/30 bg-surface-850 px-4 py-3 shadow-lg animate-in fade-in slide-in-from-top-2 duration-300">
       <div className="flex items-center justify-between gap-4">
         <div className="flex items-center gap-3 min-w-0">
           <div className="w-8 h-8 rounded-full bg-primary-500/20 flex items-center justify-center flex-shrink-0">
@@ -2287,15 +2287,17 @@ export function Chat({
 
           {/* Messages scroll area */}
           <div className="relative flex-1 min-h-0">
+            {suggestedInvites.length > 0 && (
+              <div className="absolute top-0 left-0 right-0 z-10 px-3 md:px-6 pt-3">
+                <SuggestedInvitesBanner
+                  invites={suggestedInvites}
+                  onAdd={handleSuggestedInvitesAdd}
+                  onDismiss={handleSuggestedInvitesDismiss}
+                />
+              </div>
+            )}
             <div ref={messagesContainerRef} className="absolute inset-0 overflow-y-auto overflow-x-hidden p-3 md:p-6">
             {conversationState?.summary && <SummaryCard summary={conversationState.summary} />}
-            {suggestedInvites.length > 0 && (
-              <SuggestedInvitesBanner
-                invites={suggestedInvites}
-                onAdd={handleSuggestedInvitesAdd}
-                onDismiss={handleSuggestedInvitesDismiss}
-              />
-            )}
             {!userId && (
               <div className="mb-3 rounded-lg border border-amber-600/50 bg-amber-900/20 px-3 py-2 text-sm text-amber-200">
                 User context is missing — artifacts and apps may not save correctly. Please refresh or re-sign in.
