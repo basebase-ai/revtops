@@ -1316,7 +1316,21 @@ export function Chat({
       }
       if (e.key === 'Enter' || e.key === 'Tab') {
         e.preventDefault();
-        const sel = mentionSuggestions[mentionPopover.selectedIndex];
+        // Read the live query from the DOM to avoid stale state when typing fast
+        const ta = e.currentTarget;
+        const cursor = ta.selectionStart ?? ta.value.length;
+        const textBefore = ta.value.substring(0, cursor);
+        const lastAt = textBefore.lastIndexOf('@');
+        const liveQuery = lastAt !== -1 ? textBefore.substring(lastAt + 1).toLowerCase() : '';
+        // Filter suggestions using the live query
+        const filtered = liveQuery
+          ? mentionSuggestions.filter((s) => {
+              const name = (s.displayName ?? '').toLowerCase();
+              const email = ('email' in s ? (s as { email?: string }).email ?? '' : '').toLowerCase();
+              return name.includes(liveQuery) || email.includes(liveQuery);
+            })
+          : mentionSuggestions;
+        const sel = filtered.length > 0 ? filtered[0] : mentionSuggestions[mentionPopover.selectedIndex];
         if (sel) {
           const displayName: string = sel.type === 'agent' ? 'Basebase' : (sel.displayName ?? sel.userId ?? '');
           const mention = sel.type === 'agent' ? { type: 'agent' as const } : { type: 'user' as const, userId: sel.userId };
