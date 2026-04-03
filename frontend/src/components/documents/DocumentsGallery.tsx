@@ -128,7 +128,7 @@ export function DocumentsGallery(): JSX.Element {
   }
 
   return (
-    <div className="max-w-5xl mx-auto p-6">
+    <div className="max-w-5xl mx-auto p-6 h-full overflow-y-auto">
       <div className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-xl font-bold text-surface-100">Documents</h1>
