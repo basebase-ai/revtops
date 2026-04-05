@@ -161,7 +161,13 @@ interface WsNewMessage {
 interface WsSummaryUpdated {
   type: 'summary_updated';
   conversation_id: string;
-  summary: { overall: string; recent: string; message_count_at_generation: number; updated_at: string };
+  summary: string;
+}
+
+interface WsTitleUpdated {
+  type: 'title_updated';
+  conversation_id: string;
+  title: string;
 }
 
 interface WsWorkstreamsStale {
@@ -192,7 +198,7 @@ interface WsMentionInviteSuggested {
   users: Participant[];
 }
 
-type WsMessage = WsActiveTasks | WsTaskStarted | WsTaskChunk | WsTaskComplete | WsConversationCreated | WsCatchup | WsCrmApprovalResult | WsToolApprovalResult | WsToolProgress | WsError | WsNewMessage | WsSummaryUpdated | WsWorkstreamsStale | WsNotification | WsMessageSent | WsUserTyping | WsMentionInviteSuggested;
+type WsMessage = WsActiveTasks | WsTaskStarted | WsTaskChunk | WsTaskComplete | WsConversationCreated | WsCatchup | WsCrmApprovalResult | WsToolApprovalResult | WsToolProgress | WsError | WsNewMessage | WsSummaryUpdated | WsTitleUpdated | WsWorkstreamsStale | WsNotification | WsMessageSent | WsUserTyping | WsMentionInviteSuggested;
 
 // Props
 interface AppLayoutProps {
@@ -1527,9 +1533,17 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
         }
 
         case 'summary_updated': {
-          const { conversation_id, summary } = parsed;
-          if (conversation_id && summary) {
-            useAppStore.getState().setConversationSummary(conversation_id, summary);
+          const { conversation_id, summary } = parsed as WsSummaryUpdated;
+          if (conversation_id && typeof summary === 'string' && summary.trim()) {
+            useChatStore.getState().setConversationSummary(conversation_id, summary);
+          }
+          break;
+        }
+
+        case 'title_updated': {
+          const tu = parsed as WsTitleUpdated;
+          if (tu.conversation_id && typeof tu.title === 'string' && tu.title.trim()) {
+            useChatStore.getState().setConversationTitle(tu.conversation_id, tu.title);
           }
           break;
         }

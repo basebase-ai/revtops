@@ -7,18 +7,19 @@ Endpoints:
 """
 from __future__ import annotations
 
-import json
 import logging
 from datetime import date, timedelta, timezone, datetime
 from typing import Any
+from uuid import UUID
 
 from fastapi import APIRouter, Depends
-from sqlalchemy import func, select, cast, Date, desc, Integer
+from sqlalchemy import cast, Date, desc, func, select
 
 from api.auth_middleware import AuthContext, require_global_admin
-from models.credit_transaction import CreditTransaction
 from models.conversation import Conversation
+from models.credit_transaction import CreditTransaction
 from models.organization import Organization
+from models.user import User
 from models.database import get_admin_session
 
 router = APIRouter()
@@ -33,14 +34,6 @@ async def get_credit_usage(
     Return daily credit consumption per org for the past 7 days.
 
     Only negative-amount transactions (deductions) are counted.
-    Response shape:
-        {
-          "days": ["2026-03-25", "2026-03-26", ...],
-          "series": [
-            {"org_id": "...", "org_name": "...", "values": [10, 5, 0, ...]},
-            ...
-          ]
-        }
     """
     today: date = datetime.now(timezone.utc).date()
     start_date: date = today - timedelta(days=6)
@@ -121,7 +114,7 @@ async def get_top_conversations(
             )
         ).all()
 
-        top_org_ids: list[str] = [str(r.organization_id) for r in top_org_rows]
+        top_org_ids: list[UUID] = [r.organization_id for r in top_org_rows]
         org_name_map: dict[str, str] = {str(r.organization_id): r.org_name for r in top_org_rows}
 
         if not top_org_ids:
@@ -132,13 +125,16 @@ async def get_top_conversations(
                 select(
                     Conversation.id,
                     Conversation.organization_id,
+                    Conversation.user_id,
                     Conversation.title,
                     Conversation.summary,
                     Conversation.last_message_preview,
                     Conversation.message_count,
                     Conversation.source,
                     Conversation.updated_at,
+                    User.name.label("user_name"),
                 )
+                .outerjoin(User, User.id == Conversation.user_id)
                 .where(
                     Conversation.organization_id.in_(top_org_ids),
                     cast(Conversation.updated_at, Date) >= start_date,
@@ -148,22 +144,11 @@ async def get_top_conversations(
             )
         ).all()
 
-    org_convs: dict[str, list[dict[str, Any]]] = {oid: [] for oid in top_org_ids}
+    org_convs: dict[str, list[dict[str, Any]]] = {str(oid): [] for oid in top_org_ids}
     for c in conv_rows:
         oid: str = str(c.organization_id)
         if oid in org_convs and len(org_convs[oid]) < 5:
-            summary_text: str | None = None
-            if c.summary:
-                try:
-                    parsed: dict[str, Any] = json.loads(c.summary)
-                    overall: str | None = parsed.get("overall")
-                    recent: str | None = parsed.get("recent")
-                    if overall and recent:
-                        summary_text = f"{overall} — Recently: {recent}"
-                    elif overall:
-                        summary_text = overall
-                except (json.JSONDecodeError, TypeError):
-                    summary_text = c.summary
+            summary_text: str | None = (c.summary or "").strip() or None
             if not summary_text and c.last_message_preview:
                 summary_text = c.last_message_preview
 
@@ -174,6 +159,7 @@ async def get_top_conversations(
                 "message_count": c.message_count,
                 "source": c.source,
                 "updated_at": c.updated_at.isoformat() + "Z" if c.updated_at else None,
+                "user_name": c.user_name,
             })
 
     organizations: list[dict[str, Any]] = []
@@ -187,3 +173,5 @@ async def get_top_conversations(
         })
 
     return {"organizations": organizations}
+
+

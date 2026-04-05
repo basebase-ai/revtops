@@ -15,7 +15,7 @@ import type {
   ChatSummary,
   ChatMessage,
   ConversationState,
-  ConversationSummaryData,
+  ConversationSummaryText,
   ActiveTask,
   ToolCallData,
   Participant,
@@ -36,6 +36,27 @@ import { useUIStore } from "./uiStore";
 import type { ConversationDetailResponse } from "../api/client";
 
 const _inflightFetches = new Map<string, Promise<ConversationDetailResponse | null>>();
+
+/** Normalize API summary: plain text, or legacy JSON with overall/recent. */
+function parseConversationSummaryFromApi(raw: string | null | undefined): ConversationSummaryText | null {
+  if (raw == null || raw === "") {
+    return null;
+  }
+  const t: string = raw.trim();
+  if (t.startsWith("{")) {
+    try {
+      const o = JSON.parse(t) as { overall?: string; recent?: string };
+      const parts: string[] = [o.overall, o.recent].filter(
+        (x): x is string => typeof x === "string" && x.trim().length > 0,
+      );
+      const joined: string = parts.join(" ").trim();
+      return joined.length > 0 ? joined : null;
+    } catch {
+      return t;
+    }
+  }
+  return t;
+}
 
 // ---------------------------------------------------------------------------
 // Helper: Default conversation state
@@ -129,7 +150,7 @@ export interface ChatState {
   ) => void;
   markConversationMessageComplete: (conversationId: string) => void;
   setConversationTitle: (conversationId: string, title: string) => void;
-  setConversationSummary: (conversationId: string, summary: ConversationSummaryData) => void;
+  setConversationSummary: (conversationId: string, summary: ConversationSummaryText) => void;
   setConversationContextTokens: (conversationId: string, tokens: number) => void;
   setConversationHasMore: (conversationId: string, hasMore: boolean) => void;
   setConversationAgentResponding: (conversationId: string, agentResponding: boolean) => void;
@@ -301,10 +322,7 @@ export const useChatStore = create<ChatState>()(
                 title: data.title ?? "New Chat",
                 hasMore: data.has_more,
                 agentResponding: data.agent_responding ?? true,
-                summary: data.summary ? (() => {
-                  try { return JSON.parse(data.summary!) as ConversationSummaryData; }
-                  catch { return null; }
-                })() : null,
+                summary: parseConversationSummaryFromApi(data.summary ?? null),
               },
             },
           });

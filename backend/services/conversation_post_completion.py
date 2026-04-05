@@ -44,14 +44,29 @@ async def run_post_completion(conversation_id: str, organization_id: str) -> Non
     try:
         from api.websockets import sync_broadcaster
         from services.conversation_embeddings import update_conversation_embedding
-        from services.conversation_summary import generate_conversation_summary
+        from services.conversation_summary import (
+            generate_conversation_summary,
+            generate_conversation_title,
+        )
 
-        summary = await generate_conversation_summary(conversation_id, organization_id)
-        if summary:
+        summary_text: str | None = await generate_conversation_summary(
+            conversation_id, organization_id
+        )
+        if summary_text:
             await sync_broadcaster.broadcast(
                 organization_id,
                 "summary_updated",
-                {"conversation_id": conversation_id, "summary": summary},
+                {"conversation_id": conversation_id, "summary": summary_text},
+            )
+
+        new_title: str | None = await generate_conversation_title(
+            conversation_id, organization_id
+        )
+        if new_title:
+            await sync_broadcaster.broadcast(
+                organization_id,
+                "title_updated",
+                {"conversation_id": conversation_id, "title": new_title},
             )
 
         embedding_updated = await update_conversation_embedding(

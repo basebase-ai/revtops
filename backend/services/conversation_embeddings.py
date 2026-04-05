@@ -8,7 +8,6 @@ Snapshot-stale marking and workstreams_stale broadcast are done by
 conversation_post_completion.run_post_completion() after this returns.
 """
 
-import json
 import logging
 from typing import Any
 
@@ -73,7 +72,7 @@ async def update_conversation_embedding(
     Generate or refresh the conversation embedding if stale.
 
     Staleness: message_count - embedding_message_count >= _STALENESS_THRESHOLD.
-    Builds text from title + summary.overall + last N user messages, then embeds.
+    Builds text from title + plain-text summary + last N user messages, then embeds.
 
     Returns True if the embedding was updated, False if skipped or on failure.
     """
@@ -89,13 +88,7 @@ async def update_conversation_embedding(
             if (current_count - emb_count) < _STALENESS_THRESHOLD:
                 return False
 
-            summary_overall: str | None = None
-            if conv.summary:
-                try:
-                    parsed = json.loads(conv.summary)
-                    summary_overall = parsed.get("overall") if isinstance(parsed, dict) else None
-                except (json.JSONDecodeError, TypeError):
-                    pass
+            summary_text: str | None = (conv.summary or "").strip() or None
 
             result = await session.execute(
                 select(ChatMessageModel)
@@ -121,7 +114,7 @@ async def update_conversation_embedding(
 
         embedding_text = build_embedding_text(
             title=conv.title,
-            summary_overall=summary_overall,
+            summary_overall=summary_text,
             recent_user_texts=recent_texts,
         )
         if not embedding_text or embedding_text == "Untitled conversation":
