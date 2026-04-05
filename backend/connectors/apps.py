@@ -320,20 +320,28 @@ class AppsConnector(BaseConnector):
         conversation_id: str | None = data.get("conversation_id")
         user_uuid: UUID | None = None
         if message_id:
-            async with get_session(organization_id=self.organization_id) as session:
-                row = await session.execute(
-                    select(ChatMessage.user_id).where(
-                        ChatMessage.id == UUID(message_id),
-                    )
+            try:
+                message_uuid = UUID(message_id)
+            except (ValueError, TypeError, AttributeError):
+                logger.warning(
+                    "[AppsConnector] Could not parse message_id as UUID for owner resolution fallback: message_id=%s",
+                    message_id,
                 )
-                message_user_id: UUID | None = row.scalar_one_or_none()
-                if message_user_id is not None:
-                    user_uuid = message_user_id
-                    logger.info(
-                        "[AppsConnector] Resolved app owner from initiating message: message_id=%s user_id=%s",
-                        message_id,
-                        message_user_id,
+            else:
+                async with get_session(organization_id=self.organization_id) as session:
+                    row = await session.execute(
+                        select(ChatMessage.user_id).where(
+                            ChatMessage.id == message_uuid,
+                        )
                     )
+                    message_user_id: UUID | None = row.scalar_one_or_none()
+                    if message_user_id is not None:
+                        user_uuid = message_user_id
+                        logger.info(
+                            "[AppsConnector] Resolved app owner from initiating message: message_id=%s user_id=%s",
+                            message_id,
+                            message_user_id,
+                        )
 
         if not user_uuid and self.user_id:
             user_uuid = UUID(self.user_id)
