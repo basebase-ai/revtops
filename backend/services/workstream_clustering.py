@@ -300,14 +300,7 @@ async def compute_workstream_clusters(
                 conv = await session.get(Conversation, cid)
                 if conv:
                     titles.append(conv.title or "")
-                    overall = ""
-                    if conv.summary:
-                        try:
-                            parsed = json.loads(conv.summary)
-                            overall = (parsed.get("overall") or "") if isinstance(parsed, dict) else ""
-                        except (json.JSONDecodeError, TypeError):
-                            pass
-                    summaries.append(overall)
+                    summaries.append((conv.summary or "").strip())
             cluster_conversations_for_labels.append({"titles": titles, "summaries": summaries})
 
     label_tuples = await _generate_cluster_labels(organization_id, cluster_conversations_for_labels)

@@ -33,6 +33,7 @@ interface TopConversation {
   message_count: number;
   source: string;
   updated_at: string | null;
+  user_name: string | null;
 }
 
 interface TopOrgConversations {
@@ -1227,6 +1228,9 @@ export function AdminPanel(): JSX.Element {
                               <div className="flex items-start justify-between gap-3">
                                 <div className="min-w-0 flex-1">
                                   <div className="text-sm font-medium text-surface-200 truncate">{conv.title}</div>
+                                  {conv.user_name && (
+                                    <div className="text-xs text-surface-500 mt-0.5">{conv.user_name}</div>
+                                  )}
                                   {conv.summary && (
                                     <div className="mt-1 text-xs text-surface-300 line-clamp-3 prose dark:prose-invert prose-xs max-w-none [&_p]:m-0 [&_strong]:text-surface-100 [&_em]:text-surface-200 [&_a]:text-primary-600 dark:[&_a]:text-primary-400 [&_li]:text-surface-300">
                                       <ReactMarkdown>{conv.summary}</ReactMarkdown>

@@ -36,7 +36,7 @@ import {
   useConnectedIntegrations,
   type AppBlock,
   type ChatMessage,
-  type ConversationSummaryData,
+  type ConversationSummaryText,
   type Integration,
   type ThinkingBlock as ThinkingBlockType,
   type ToolCallData,
@@ -243,44 +243,22 @@ function shouldGroupMessageWithPrevious(
   return prevUid === currUid;
 }
 
-function SummaryCard({ summary }: { summary: ConversationSummaryData }): JSX.Element {
-  const [expanded, setExpanded] = useState(false);
-
+function SummaryPanel({ summary, onClose }: { summary: ConversationSummaryText; onClose: () => void }): JSX.Element {
   return (
-    <div className="mb-3">
-      <button
-        type="button"
-        onClick={() => setExpanded((v) => !v)}
-        className="w-full text-left rounded-lg border border-surface-700 bg-surface-850 px-4 py-3 transition-colors hover:bg-surface-800"
-      >
-        <div className="flex items-center gap-2">
-          <svg className="w-4 h-4 text-primary-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+    <div className="border-b border-surface-800 bg-surface-900 px-4 md:px-6 py-3">
+      <div className="flex items-start gap-2">
+        <p className="text-xs text-surface-300 whitespace-pre-wrap leading-relaxed flex-1 min-w-0">{summary}</p>
+        <button
+          type="button"
+          onClick={onClose}
+          className="p-0.5 rounded text-surface-400 hover:text-surface-200 hover:bg-surface-800 transition-colors flex-shrink-0"
+          title="Close summary"
+        >
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
           </svg>
-          <span className="text-sm font-medium text-surface-300">Conversation Summary</span>
-          <svg
-            className={`w-4 h-4 text-surface-400 ml-auto transition-transform ${expanded ? 'rotate-180' : ''}`}
-            fill="none" viewBox="0 0 24 24" stroke="currentColor"
-          >
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-          </svg>
-        </div>
-        {!expanded && (
-          <p className="mt-1 text-sm text-surface-400 truncate">{summary.overall}</p>
-        )}
-      </button>
-      {expanded && (
-        <div className="mt-0 rounded-b-lg border border-t-0 border-surface-700 bg-surface-850 px-4 py-3 space-y-3">
-          <div>
-            <h4 className="text-xs font-semibold uppercase tracking-wider text-surface-400 mb-1">Overall</h4>
-            <p className="text-sm text-surface-200">{summary.overall}</p>
-          </div>
-          <div>
-            <h4 className="text-xs font-semibold uppercase tracking-wider text-surface-400 mb-1">Recent Updates</h4>
-            <p className="text-sm text-surface-200">{summary.recent}</p>
-          </div>
-        </div>
-      )}
+        </button>
+      </div>
     </div>
   );
 }
@@ -397,6 +375,7 @@ export function Chat({
   }, [chatId]);
   const activeTasksByConversation = useActiveTasksByConversation();
   const chatTitle = conversationState?.title ?? 'New Chat';
+  const chatSummary: ConversationSummaryText | null = conversationState?.summary ?? null;
   const conversationThinking = conversationState?.isThinking ?? false;
   
   // Get actions from Zustand (stable references)
@@ -453,6 +432,7 @@ export function Chat({
   const [isWorkflowPolling, setIsWorkflowPolling] = useState<boolean>(false);
   const [showInviteModal, setShowInviteModal] = useState(false);
   const [chatHeaderMenuOpen, setChatHeaderMenuOpen] = useState<boolean>(false);
+  const [showSummaryPanel, setShowSummaryPanel] = useState<boolean>(false);
   const [shareChatLinkCopied, setShareChatLinkCopied] = useState<boolean>(false);
   const chatHeaderMenuRef = useRef<HTMLDivElement>(null);
   const [newConversationScope, setNewConversationScope] = useState<'private' | 'shared'>('shared');
@@ -1981,8 +1961,8 @@ export function Chat({
         </div>
       )}
       {/* Header - hidden on mobile since AppLayout has mobile header */}
-      <header className="hidden md:flex h-14 border-b border-surface-800 items-center justify-between px-4 md:px-6 flex-shrink-0">
-        <div className="flex items-center gap-3 min-w-0">
+      <header className="hidden md:flex h-14 border-b border-surface-200 dark:border-surface-800 items-center justify-between px-4 md:px-6 flex-shrink-0">
+        <div className="flex items-center gap-3 min-w-0 flex-1">
           {/* Back to All Chats */}
           <button
             type="button"
@@ -2011,7 +1991,7 @@ export function Chat({
                 if (e.key === 'Escape') cancelEditingHeaderTitle();
               }}
               onBlur={() => void saveHeaderTitle()}
-              className="text-lg font-semibold text-surface-100 bg-transparent border-b border-primary-500 outline-none max-w-[200px] md:max-w-md"
+              className="text-lg font-semibold text-surface-100 bg-transparent border-b border-primary-500 outline-none w-full"
               maxLength={100}
             />
           ) : (
@@ -2020,7 +2000,7 @@ export function Chat({
               onClick={canRenameHeader ? startEditingHeaderTitle : undefined}
               title={canRenameHeader ? 'Click to rename' : undefined}
             >
-              <h1 className="text-lg font-semibold text-surface-100 truncate max-w-[200px] md:max-w-md">
+              <h1 className="text-lg font-semibold text-surface-100 truncate">
                 {chatTitle}
               </h1>
               {canRenameHeader && (
@@ -2203,6 +2183,16 @@ export function Chat({
                 >
                   Copy to clipboard
                 </button>
+                {chatSummary ? (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="flex w-full items-center px-3 py-2 text-left text-sm text-surface-200 hover:bg-surface-800"
+                    onClick={() => { setChatHeaderMenuOpen(false); setShowSummaryPanel((v) => !v); }}
+                  >
+                    {showSummaryPanel ? 'Hide summary' : 'Show summary'}
+                  </button>
+                ) : null}
                 {chatId ? (
                   <>
                     <div className="my-1 border-t border-surface-800" role="separator" />
@@ -2293,6 +2283,9 @@ export function Chat({
           </div>
         </div>
       </header>
+      {showSummaryPanel && chatSummary && (
+        <SummaryPanel summary={chatSummary} onClose={() => setShowSummaryPanel(false)} />
+      )}
 
       {/* Content area with messages and optional artifact sidebar */}
       <div className="flex-1 flex overflow-hidden">
@@ -2341,7 +2334,6 @@ export function Chat({
               </div>
             )}
             <div ref={messagesContainerRef} className="absolute inset-0 overflow-y-auto overflow-x-hidden p-3 md:p-6">
-            {conversationState?.summary && <SummaryCard summary={conversationState.summary} />}
             {!userId && (
               <div className="mb-3 rounded-lg border border-amber-600/50 bg-amber-900/20 px-3 py-2 text-sm text-amber-200">
                 User context is missing — artifacts and apps may not save correctly. Please refresh or re-sign in.

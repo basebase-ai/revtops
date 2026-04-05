@@ -43,7 +43,7 @@ export type {
   ChatMessage,
   PendingChunk,
   ConversationState,
-  ConversationSummaryData,
+  ConversationSummaryText,
   TypingUserEntry,
   ActiveTask,
   View,

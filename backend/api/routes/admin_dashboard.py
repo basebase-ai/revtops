@@ -4,21 +4,25 @@ Admin dashboard routes for global admin analytics.
 Endpoints:
 - GET /api/admin-dashboard/credit-usage  — Credit usage by org per day (past 7 days)
 - GET /api/admin-dashboard/top-conversations — Most active conversations for top customers
+- POST /api/admin-dashboard/backfill-conversation-assets — Batch summary + title regeneration
 """
 from __future__ import annotations
 
-import json
+import asyncio
 import logging
 from datetime import date, timedelta, timezone, datetime
 from typing import Any
+from uuid import UUID
 
 from fastapi import APIRouter, Depends
-from sqlalchemy import func, select, cast, Date, desc, Integer
+from pydantic import BaseModel, Field
+from sqlalchemy import cast, Date, desc, func, select
 
 from api.auth_middleware import AuthContext, require_global_admin
-from models.credit_transaction import CreditTransaction
 from models.conversation import Conversation
+from models.credit_transaction import CreditTransaction
 from models.organization import Organization
+from models.user import User
 from models.database import get_admin_session
 
 router = APIRouter()
@@ -33,14 +37,6 @@ async def get_credit_usage(
     Return daily credit consumption per org for the past 7 days.
 
     Only negative-amount transactions (deductions) are counted.
-    Response shape:
-        {
-          "days": ["2026-03-25", "2026-03-26", ...],
-          "series": [
-            {"org_id": "...", "org_name": "...", "values": [10, 5, 0, ...]},
-            ...
-          ]
-        }
     """
     today: date = datetime.now(timezone.utc).date()
     start_date: date = today - timedelta(days=6)
@@ -121,7 +117,7 @@ async def get_top_conversations(
             )
         ).all()
 
-        top_org_ids: list[str] = [str(r.organization_id) for r in top_org_rows]
+        top_org_ids: list[UUID] = [r.organization_id for r in top_org_rows]
         org_name_map: dict[str, str] = {str(r.organization_id): r.org_name for r in top_org_rows}
 
         if not top_org_ids:
@@ -132,13 +128,16 @@ async def get_top_conversations(
                 select(
                     Conversation.id,
                     Conversation.organization_id,
+                    Conversation.user_id,
                     Conversation.title,
                     Conversation.summary,
                     Conversation.last_message_preview,
                     Conversation.message_count,
                     Conversation.source,
                     Conversation.updated_at,
+                    User.name.label("user_name"),
                 )
+                .outerjoin(User, User.id == Conversation.user_id)
                 .where(
                     Conversation.organization_id.in_(top_org_ids),
                     cast(Conversation.updated_at, Date) >= start_date,
@@ -148,22 +147,11 @@ async def get_top_conversations(
             )
         ).all()
 
-    org_convs: dict[str, list[dict[str, Any]]] = {oid: [] for oid in top_org_ids}
+    org_convs: dict[str, list[dict[str, Any]]] = {str(oid): [] for oid in top_org_ids}
     for c in conv_rows:
         oid: str = str(c.organization_id)
         if oid in org_convs and len(org_convs[oid]) < 5:
-            summary_text: str | None = None
-            if c.summary:
-                try:
-                    parsed: dict[str, Any] = json.loads(c.summary)
-                    overall: str | None = parsed.get("overall")
-                    recent: str | None = parsed.get("recent")
-                    if overall and recent:
-                        summary_text = f"{overall} — Recently: {recent}"
-                    elif overall:
-                        summary_text = overall
-                except (json.JSONDecodeError, TypeError):
-                    summary_text = c.summary
+            summary_text: str | None = (c.summary or "").strip() or None
             if not summary_text and c.last_message_preview:
                 summary_text = c.last_message_preview
 
@@ -174,6 +162,7 @@ async def get_top_conversations(
                 "message_count": c.message_count,
                 "source": c.source,
                 "updated_at": c.updated_at.isoformat() + "Z" if c.updated_at else None,
+                "user_name": c.user_name,
             })
 
     organizations: list[dict[str, Any]] = []
@@ -187,3 +176,65 @@ async def get_top_conversations(
         })
 
     return {"organizations": organizations}
+
+
+class BackfillRequest(BaseModel):
+    """Request body for backfill endpoint."""
+
+    limit: int = Field(default=20, ge=1, le=200)
+    delay_seconds: float = Field(default=0.35, ge=0.0, le=5.0)
+
+
+@router.post("/backfill-conversation-assets")
+async def backfill_conversation_assets(
+    body: BackfillRequest,
+    auth: AuthContext = Depends(require_global_admin),
+) -> dict[str, Any]:
+    """
+    Regenerate summaries and LLM titles for recent agent conversations (global admin).
+
+    Each conversation runs the same generators as post-completion; most rows skip
+    if below the semantic word threshold or already satisfied.
+    """
+    from services.conversation_summary import (
+        generate_conversation_summary,
+        generate_conversation_title,
+    )
+
+    summaries_done: int = 0
+    titles_done: int = 0
+    processed: int = 0
+
+    async with get_admin_session() as session:
+        rows = (
+            await session.execute(
+                select(Conversation.id, Conversation.organization_id)
+                .where(
+                    Conversation.type == "agent",
+                    Conversation.organization_id.isnot(None),
+                )
+                .order_by(desc(Conversation.updated_at))
+                .limit(body.limit)
+            )
+        ).all()
+
+    pairs: list[tuple[str, str]] = [
+        (str(r.id), str(r.organization_id)) for r in rows if r.organization_id
+    ]
+
+    for conv_id, org_id in pairs:
+        processed += 1
+        s: str | None = await generate_conversation_summary(conv_id, org_id)
+        if s:
+            summaries_done += 1
+        t: str | None = await generate_conversation_title(conv_id, org_id)
+        if t:
+            titles_done += 1
+        if body.delay_seconds > 0:
+            await asyncio.sleep(body.delay_seconds)
+
+    return {
+        "processed": processed,
+        "summaries_generated": summaries_done,
+        "titles_generated": titles_done,
+    }

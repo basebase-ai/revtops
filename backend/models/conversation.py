@@ -101,7 +101,16 @@ class Conversation(Base):
     )  # Auto-generated from first message
     summary: Mapped[Optional[str]] = mapped_column(
         Text, nullable=True
-    )  # Optional AI-generated summary
+    )  # Optional AI-generated summary (plain text)
+    summary_word_count: Mapped[Optional[int]] = mapped_column(
+        Integer, nullable=True
+    )  # Semantic text word count when summary was last generated
+    summary_updated_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    title_llm_upgraded: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )  # True after LLM title replaced truncated first-message title
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, nullable=False
     )

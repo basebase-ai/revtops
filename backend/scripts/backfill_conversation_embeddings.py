@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import json
 import sys
 from pathlib import Path
 
@@ -105,13 +104,7 @@ async def backfill(
         valid_convs: list[Conversation] = []
 
         for conv in convs:
-            summary_overall: str | None = None
-            if conv.summary:
-                try:
-                    parsed = json.loads(conv.summary)
-                    summary_overall = parsed.get("overall") if isinstance(parsed, dict) else None
-                except (json.JSONDecodeError, TypeError):
-                    pass
+            summary_overall: str | None = (conv.summary or "").strip() or None
 
             async with get_session(organization_id=oid) as session:
                 result = await session.execute(
