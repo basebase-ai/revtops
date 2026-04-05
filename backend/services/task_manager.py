@@ -398,13 +398,18 @@ class TaskManager:
                     .limit(1)
                 )
                 latest: ChatMessage | None = msg_result.scalars().one_or_none()
-            if not latest:
+                latest_message_data: dict[str, Any] | None = latest.to_dict() if latest else None
+            if not latest_message_data:
+                logger.debug(
+                    "No assistant message available for broadcast (conversation_id=%s)",
+                    conversation_id,
+                )
                 return
             await broadcast_conversation_message(
                 conversation_id=conversation_id,
                 scope=scope,
                 participant_user_ids=participant_ids,
-                message_data=latest.to_dict(),
+                message_data=latest_message_data,
                 sender_user_id=exclude_user_id,
             )
         except Exception:
