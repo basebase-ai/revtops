@@ -35,7 +35,7 @@ from config import get_redis_connection_kwargs, settings
 from models.chat_attachment import ChatAttachment
 from models.chat_message import ChatMessage
 from models.conversation import Conversation
-from models.database import get_session
+from models.database import get_admin_session, get_session
 from models.org_member import OrgMember
 from models.user import User
 from services.file_handler import store_file, MAX_FILE_SIZE
@@ -746,16 +746,33 @@ async def delete_conversation(
     org_id = auth.organization_id_str
 
     async with get_session(organization_id=org_id) as session:
-        slack_user_ids = await _get_slack_user_ids(auth, session=session)
         result = await session.execute(
             select(Conversation)
             .where(Conversation.id == conv_uuid)
-            .where(_build_conversation_access_filter(auth, slack_user_ids))
         )
         conversation = result.scalar_one_or_none()
 
         if not conversation:
             raise HTTPException(status_code=404, detail="Conversation not found")
+
+        is_owner = conversation.user_id == auth.user_id
+        is_admin = False
+        if not is_owner:
+            async with get_admin_session() as admin_session:
+                membership = (
+                    await admin_session.execute(
+                        select(OrgMember).where(
+                            OrgMember.user_id == auth.user_id,
+                            OrgMember.organization_id == auth.organization_id,
+                            OrgMember.role == "admin",
+                            OrgMember.status.in_(("active", "onboarding", "invited")),
+                        )
+                    )
+                ).scalar_one_or_none()
+                is_admin = membership is not None or auth.is_global_admin
+
+        if not is_owner and not is_admin:
+            raise HTTPException(status_code=403, detail="Only the conversation creator or an org admin can delete it")
 
         await session.delete(conversation)
         await session.commit()

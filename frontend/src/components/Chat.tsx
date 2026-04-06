@@ -34,6 +34,7 @@ import {
   useConversationState,
   useActiveTasksByConversation,
   useConnectedIntegrations,
+  useIsOrgAdmin,
   type AppBlock,
   type ChatMessage,
   type ConversationSummaryText,
@@ -1579,6 +1580,10 @@ export function Chat({
   const togglePinChat = useAppStore((s) => s.togglePinChat);
   const pinnedChatIds = useAppStore((s) => s.pinnedChatIds);
   const deleteConversation = useAppStore((s) => s.deleteConversation);
+  const isOrgAdmin = useIsOrgAdmin();
+  const isConversationOwner = userId != null && conversationCreatorId === userId;
+  const canDeleteConversation = isConversationOwner || isOrgAdmin;
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const isCurrentChatUnread = useChatStore((s) => Boolean(chatId && s.unreadConversationIds.has(chatId)));
   const chatSearchTerm = useChatStore((s) => s.chatSearchTerm);
   const chatSearchMatchCount = useChatStore((s) => s.chatSearchMatchCount);
@@ -1654,6 +1659,12 @@ export function Chat({
   const handleMenuDeleteChat = useCallback((): void => {
     if (!chatId) return;
     setChatHeaderMenuOpen(false);
+    setShowDeleteConfirm(true);
+  }, [chatId]);
+
+  const handleConfirmDelete = useCallback((): void => {
+    if (!chatId) return;
+    setShowDeleteConfirm(false);
     void deleteConversation(chatId);
   }, [chatId, deleteConversation]);
 
@@ -2265,7 +2276,7 @@ export function Chat({
                 >
                   Share chat
                 </button>
-                {chatId ? (
+                {chatId && canDeleteConversation ? (
                   <>
                     <div className="my-1 border-t border-surface-800" role="separator" />
                     <button
@@ -2283,6 +2294,37 @@ export function Chat({
           </div>
         </div>
       </header>
+
+      {/* Delete confirmation modal */}
+      {showDeleteConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+          <div className="bg-surface-900 border border-surface-700 rounded-lg p-6 max-w-sm w-full mx-4 shadow-xl">
+            <h3 className="text-lg font-semibold text-surface-100 mb-2">Delete conversation</h3>
+            <p className="text-sm text-surface-400 mb-5">
+              {isConversationOwner
+                ? "Are you sure you want to delete this conversation? This action cannot be undone."
+                : "You are deleting a conversation created by another user as an org admin. This action cannot be undone."}
+            </p>
+            <div className="flex justify-end gap-3">
+              <button
+                type="button"
+                className="px-4 py-2 text-sm text-surface-300 hover:text-surface-100 rounded-md hover:bg-surface-800 transition-colors"
+                onClick={() => setShowDeleteConfirm(false)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="px-4 py-2 text-sm text-white bg-red-600 hover:bg-red-500 rounded-md transition-colors"
+                onClick={handleConfirmDelete}
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {showSummaryPanel && chatSummary && (
         <SummaryPanel summary={chatSummary} onClose={() => setShowSummaryPanel(false)} />
       )}
