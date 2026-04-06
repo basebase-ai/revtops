@@ -17,6 +17,7 @@ from sqlalchemy import select, update
 from config import settings
 from connectors.base import BaseConnector
 from models.chat_message import ChatMessage
+from models.conversation import Conversation
 from connectors.registry import (
     AuthType,
     Capability,
@@ -207,6 +208,22 @@ class ArtifactConnector(BaseConnector):
 
         if not user_uuid and self.user_id:
             user_uuid = UUID(self.user_id)
+
+        if not user_uuid and conversation_id:
+            async with get_session(organization_id=self.organization_id) as session:
+                row = await session.execute(
+                    select(Conversation.user_id).where(
+                        Conversation.id == UUID(conversation_id),
+                    )
+                )
+                conv_user_id: UUID | None = row.scalar_one_or_none()
+                if conv_user_id is not None:
+                    user_uuid = conv_user_id
+                    logger.info(
+                        "[ArtifactConnector] Falling back to conversation owner for artifact owner: conversation_id=%s user_id=%s",
+                        conversation_id,
+                        conv_user_id,
+                    )
 
         async with get_session(organization_id=self.organization_id) as session:
             artifact = Artifact(
