@@ -11,7 +11,7 @@ import { createPortal } from 'react-dom';
 import ReactMarkdown from 'react-markdown';
 import { API_BASE, apiRequest, getAuthenticatedRequestHeaders } from '../lib/api';
 import { useDeleteOrganization } from '../hooks';
-import { useAppStore, useAuthStore, type UserProfile, type OrganizationInfo } from '../store';
+import { useAppStore, useAuthStore, useChatStore, type UserProfile, type OrganizationInfo } from '../store';
 
 // ─── Dashboard types ─────────────────────────────────────────────────────────
 
@@ -32,8 +32,9 @@ interface TopConversation {
   summary: string | null;
   message_count: number;
   source: string;
+  scope: string | null;
   updated_at: string | null;
-  user_name: string | null;
+  participant_names: string[];
 }
 
 interface TopOrgConversations {
@@ -45,6 +46,18 @@ interface TopOrgConversations {
 
 interface TopConversationsResponse {
   organizations: TopOrgConversations[];
+}
+
+function formatRelativeTime(iso: string): string {
+  const diffMs: number = Date.now() - new Date(iso).getTime();
+  const mins: number = Math.floor(diffMs / 60_000);
+  const hrs: number = Math.floor(diffMs / 3_600_000);
+  const days: number = Math.floor(diffMs / 86_400_000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  if (hrs < 24) return `${hrs}h ago`;
+  if (days < 7) return `${days}d ago`;
+  return new Date(iso).toLocaleDateString();
 }
 
 function useThemeColors(): { fontColor: string; gridColor: string } {
@@ -1222,12 +1235,20 @@ export function AdminPanel(): JSX.Element {
                       ) : (
                         <div className="divide-y divide-surface-800">
                           {org.conversations.map((conv) => (
-                            <div key={conv.id} className="px-5 py-3 hover:bg-surface-800/40 transition-colors">
+                            <button
+                              key={conv.id}
+                              type="button"
+                              onClick={() => {
+                                useChatStore.getState().setCurrentChatId(conv.id);
+                                useAppStore.getState().setCurrentView('chat');
+                              }}
+                              className="w-full text-left px-5 py-3 hover:bg-surface-800/40 transition-colors cursor-pointer"
+                            >
                               <div className="flex items-start justify-between gap-3">
                                 <div className="min-w-0 flex-1">
                                   <div className="text-sm font-medium text-surface-200 truncate">{conv.title}</div>
-                                  {conv.user_name && (
-                                    <div className="text-xs text-surface-500 mt-0.5">{conv.user_name}</div>
+                                  {conv.participant_names.length > 0 && (
+                                    <div className="text-xs text-surface-500 mt-0.5">{conv.participant_names.join(', ')}</div>
                                   )}
                                   {conv.summary && (
                                     <div className="mt-1 text-xs text-surface-300 line-clamp-3 prose dark:prose-invert prose-xs max-w-none [&_p]:m-0 [&_strong]:text-surface-100 [&_em]:text-surface-200 [&_a]:text-primary-600 dark:[&_a]:text-primary-400 [&_li]:text-surface-300">
@@ -1236,13 +1257,16 @@ export function AdminPanel(): JSX.Element {
                                   )}
                                 </div>
                                 <div className="flex items-center gap-3 shrink-0">
+                                  {conv.updated_at && (
+                                    <span className="text-[11px] text-surface-500">{formatRelativeTime(conv.updated_at)}</span>
+                                  )}
                                   <span className="text-xs text-surface-500 capitalize">{conv.source}</span>
                                   <span className="text-xs text-surface-400 bg-surface-800 rounded px-1.5 py-0.5">
                                     {conv.message_count} msgs
                                   </span>
                                 </div>
                               </div>
-                            </div>
+                            </button>
                           ))}
                         </div>
                       )}
