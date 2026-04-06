@@ -83,8 +83,9 @@ async def list_action_ledger(
             .offset(offset)
         )
         rows = (await session.execute(q)).scalars().all()
+        entries = [r.to_dict() for r in rows]
 
     return ActionLedgerResponse(
-        entries=[r.to_dict() for r in rows],
+        entries=entries,
         total=total,
     )
