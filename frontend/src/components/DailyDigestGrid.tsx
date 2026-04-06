@@ -252,7 +252,7 @@ export function DailyDigestGrid({ digestDate, onDigestDateChange }: DailyDigestG
         <div className="rounded-lg border border-red-500/40 bg-red-500/10 p-4 text-red-300 text-sm">{error}</div>
       ) : null}
 
-      {loading && !data ? (
+      {loading ? (
         <div className="flex items-center justify-center flex-1 min-h-[280px] text-surface-400 gap-2">
           <svg className="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24">
             <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
@@ -264,13 +264,9 @@ export function DailyDigestGrid({ digestDate, onDigestDateChange }: DailyDigestG
           </svg>
           Loading digests…
         </div>
-      ) : null}
-
-      {!loading && data && data.members.length === 0 ? (
+      ) : data && data.members.length === 0 ? (
         <p className="text-surface-500 text-sm">No active team members in this organization.</p>
-      ) : null}
-
-      {data && data.members.length > 0 ? (
+      ) : data && data.members.length > 0 ? (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 pb-4">
           {data.members.map((m) => (
             <MemberCard key={m.user_id} member={m} />

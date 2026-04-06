@@ -47,6 +47,7 @@ _SYSTEM_PROMPT_TEMPLATE: str = (
     '"calendar", "crm", "documents" — each value is an array of short strings (can be empty).\n'
     "IMPORTANT: Only report actions the person actively took — commits, PR reviews, "
     "Slack messages they wrote, meetings they attended, issues they updated, etc. "
+    "Never say the person \"received\" something (emails, notifications, digests). "
     "Ignore automated emails, third-party digests, recharge notifications, newsletters, "
     "and other passive/automated items that don't reflect real work. "
     "If after filtering out noise there is NO meaningful activity, the narrative MUST be "
