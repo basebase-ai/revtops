@@ -1,7 +1,7 @@
 """Create daily_digests table for per-member daily activity summaries.
 
 Revision ID: 126_daily_digests
-Revises: 125_conversation_summary_plaintext
+Revises: 125_conv_summary_plain
 """
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision: str = "126_daily_digests"
-down_revision: Union[str, None] = "125_conversation_summary_plaintext"
+down_revision: Union[str, None] = "125_conv_summary_plain"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

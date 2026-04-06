@@ -1,6 +1,6 @@
 """Plain-text conversation summary + metadata columns.
 
-Revision ID: 125_conversation_summary_plaintext
+Revision ID: 125_conv_summary_plain
 Revises: 124_convo_msg_visibility
 """
 from __future__ import annotations
@@ -13,7 +13,7 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy import text
 
-revision: str = "125_conversation_summary_plaintext"
+revision: str = "125_conv_summary_plain"
 down_revision: Union[str, None] = "124_convo_msg_visibility"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
