@@ -88,9 +88,7 @@ async def get_top_conversations(
     auth: AuthContext = Depends(require_global_admin),
 ) -> dict[str, Any]:
     """
-    Return most active recent conversations for the top orgs by credit usage.
-
-    Returns up to 5 orgs, each with up to 5 busiest conversations from the past 7 days.
+    Return the 10 most recent conversations for each org that used credits in the past 7 days.
     """
     today: date = datetime.now(timezone.utc).date()
     start_date: date = today - timedelta(days=6)
@@ -110,7 +108,7 @@ async def get_top_conversations(
                 )
                 .group_by(CreditTransaction.organization_id, Organization.name)
                 .order_by(desc("total"))
-                .limit(5)
+                .limit(10)
             )
         ).all()
 
@@ -131,26 +129,49 @@ async def get_top_conversations(
                     Conversation.last_message_preview,
                     Conversation.message_count,
                     Conversation.source,
+                    Conversation.scope,
                     Conversation.updated_at,
-                    User.name.label("user_name"),
+                    Conversation.participating_user_ids,
                 )
-                .outerjoin(User, User.id == Conversation.user_id)
                 .where(
                     Conversation.organization_id.in_(top_org_ids),
-                    cast(Conversation.updated_at, Date) >= start_date,
-                    Conversation.type == "agent",
                 )
-                .order_by(desc(Conversation.message_count))
+                .order_by(desc(Conversation.updated_at))
             )
         ).all()
+
+        all_user_ids: set[UUID] = set()
+        for c in conv_rows:
+            if c.user_id:
+                all_user_ids.add(c.user_id)
+            if c.participating_user_ids:
+                all_user_ids.update(c.participating_user_ids)
+
+        user_name_map: dict[str, str] = {}
+        if all_user_ids:
+            user_rows = (
+                await session.execute(
+                    select(User.id, User.name).where(User.id.in_(list(all_user_ids)))
+                )
+            ).all()
+            user_name_map = {str(r.id): r.name for r in user_rows if r.name}
 
     org_convs: dict[str, list[dict[str, Any]]] = {str(oid): [] for oid in top_org_ids}
     for c in conv_rows:
         oid: str = str(c.organization_id)
-        if oid in org_convs and len(org_convs[oid]) < 5:
+        if oid in org_convs and len(org_convs[oid]) < 10:
             summary_text: str | None = (c.summary or "").strip() or None
             if not summary_text and c.last_message_preview:
                 summary_text = c.last_message_preview
+
+            participant_names: list[str] = []
+            participant_ids: list[UUID] = c.participating_user_ids or []
+            if not participant_ids and c.user_id:
+                participant_ids = [c.user_id]
+            for uid in participant_ids:
+                name: str | None = user_name_map.get(str(uid))
+                if name:
+                    participant_names.append(name)
 
             org_convs[oid].append({
                 "id": str(c.id),
@@ -158,8 +179,9 @@ async def get_top_conversations(
                 "summary": summary_text,
                 "message_count": c.message_count,
                 "source": c.source,
+                "scope": c.scope,
                 "updated_at": c.updated_at.isoformat() + "Z" if c.updated_at else None,
-                "user_name": c.user_name,
+                "participant_names": participant_names,
             })
 
     organizations: list[dict[str, Any]] = []

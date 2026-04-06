@@ -193,18 +193,20 @@ function App(): JSX.Element {
       (identityData?.full_name as string | undefined) ??
       null;
 
-    // Set user in store first (needed for syncUserToBackend)
+    // Set user in store first (needed for syncUserToBackend).
+    // Preserve persisted roles/profile fields so the admin guard in AppLayout
+    // doesn't kick the user out before the backend sync responds.
     setUser({
       id: supabaseUser.id,
       email,
       name,
       avatarUrl,
-      phoneNumber: null,
-      jobTitle: null,
-      roles: [],
-      smsConsent: false,
-      whatsappConsent: false,
-      phoneNumberVerified: false,
+      phoneNumber: existingUser?.phoneNumber ?? null,
+      jobTitle: existingUser?.jobTitle ?? null,
+      roles: existingUser?.roles ?? [],
+      smsConsent: existingUser?.smsConsent ?? false,
+      whatsappConsent: existingUser?.whatsappConsent ?? false,
+      phoneNumberVerified: existingUser?.phoneNumberVerified ?? false,
     });
 
     // CHECK WAITLIST STATUS FIRST - before any company/org setup
