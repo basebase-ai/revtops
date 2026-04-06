@@ -20,7 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from api.websockets import websocket_endpoint
-from api.routes import action_ledger, admin_dashboard, apps, artifacts, auth, billing, change_sessions, chat, connectors, data, deals, drive, memories, notifications, search, slack_events, slack_user_mappings, support, sync, teams_events, tool_settings, twilio_events, whatsapp_events, waitlist, workstreams, workflows
+from api.routes import action_ledger, admin_dashboard, apps, artifacts, auth, billing, change_sessions, chat, connectors, daily_digests, data, deals, drive, memories, notifications, search, slack_events, slack_user_mappings, support, sync, teams_events, tool_settings, twilio_events, whatsapp_events, waitlist, workstreams, workflows
 from models.database import close_db, get_pool_status
 from services.task_manager import task_manager
 from config import log_missing_env_vars, settings
@@ -169,6 +169,7 @@ app.include_router(search.router, prefix="/api/search", tags=["search"])
 app.include_router(support.router, prefix="/api/support", tags=["support"])
 app.include_router(workflows.router, prefix="/api/workflows", tags=["workflows"])
 app.include_router(workstreams.router, prefix="/api/workstreams", tags=["workstreams"])
+app.include_router(daily_digests.router, prefix="/api/daily-digests", tags=["daily-digests"])
 app.include_router(memories.router, prefix="/api/memories", tags=["memories"])
 app.include_router(drive.router, prefix="/api/drive", tags=["drive"])
 app.include_router(data.router, prefix="/api/data", tags=["data"])

@@ -33,6 +33,7 @@ from models.tracker_issue import TrackerIssue
 from models.workstream_snapshot import WorkstreamSnapshot
 from models.notification import Notification
 from models.action_ledger import ActionLedgerEntry
+from models.daily_digest import DailyDigest
 
 __all__ = [
     "Base",
@@ -74,4 +75,5 @@ __all__ = [
     "WorkstreamSnapshot",
     "Notification",
     "ActionLedgerEntry",
+    "DailyDigest",
 ]
