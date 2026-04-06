@@ -26,6 +26,42 @@ function formatDisplayDate(isoDate: string): string {
   return `${mm}/${dd}/${yy}`;
 }
 
+const SOURCE_META: Record<string, { label: string; icon: string }> = {
+  slack: { label: "Slack", icon: "💬" },
+  google_calendar: { label: "Google Calendar", icon: "📅" },
+  meetings: { label: "Meeting Notes", icon: "🎙️" },
+  linear: { label: "Linear", icon: "🔷" },
+  github: { label: "GitHub", icon: "🐙" },
+  hubspot: { label: "HubSpot", icon: "🟠" },
+  google_drive: { label: "Google Drive", icon: "📁" },
+  granola: { label: "Granola", icon: "📝" },
+  fireflies: { label: "Fireflies", icon: "🔥" },
+  zoom: { label: "Zoom", icon: "📹" },
+  salesforce: { label: "Salesforce", icon: "☁️" },
+};
+
+function SourceBadges({ sources }: { sources: string[] }): JSX.Element | null {
+  if (sources.length === 0) return null;
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      <span className="text-xs text-surface-500 mr-0.5">Sources:</span>
+      {sources.map((s) => {
+        const meta: { label: string; icon: string } = SOURCE_META[s] ?? { label: s, icon: "🔗" };
+        return (
+          <span
+            key={s}
+            title={meta.label}
+            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-surface-800 text-surface-300 text-xs"
+          >
+            <span>{meta.icon}</span>
+            <span>{meta.label}</span>
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
 function categoryLabel(key: string): string {
   const labels: Record<string, string> = {
     code: "Code",
@@ -89,7 +125,7 @@ function renderSummary(summary: DigestSummaryJson | null): JSX.Element {
 function MemberCard({ member }: { member: DigestMemberRow }): JSX.Element {
   const displayName: string = member.name?.trim() || member.user_id.slice(0, 8);
   return (
-    <article className="rounded-xl border border-surface-700 bg-surface-900/50 p-4 md:p-5 flex flex-col gap-3">
+    <article className="rounded-xl border border-surface-700 bg-surface-900/50 p-4 md:p-5 flex flex-col gap-3 max-h-[28rem] overflow-y-auto">
       <div className="flex items-center gap-3">
         {member.avatar_url ? (
           <img
@@ -207,6 +243,10 @@ export function DailyDigestGrid({ digestDate, onDigestDateChange }: DailyDigestG
           </button>
         </div>
       </div>
+
+      {data && data.all_active_sources.length > 0 ? (
+        <SourceBadges sources={data.all_active_sources} />
+      ) : null}
 
       {error ? (
         <div className="rounded-lg border border-red-500/40 bg-red-500/10 p-4 text-red-300 text-sm">{error}</div>

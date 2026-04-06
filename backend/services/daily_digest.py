@@ -34,14 +34,25 @@ logger = logging.getLogger(__name__)
 _PT: ZoneInfo = ZoneInfo("America/Los_Angeles")
 _MODEL: str = settings.ANTHROPIC_CHEAP_MODEL
 
-_SYSTEM_PROMPT: str = (
-    "You summarize one team member's work for a single calendar day from raw system data. "
-    "Return ONLY valid JSON with keys:\n"
+_SYSTEM_PROMPT_TEMPLATE: str = (
+    "You summarize {name_possessive} work for exactly one calendar day ({date}) "
+    "from raw system data. Use their first name (\"{first_name}\") in the narrative, "
+    "not \"the team member\". "
+    "Refer ONLY to that single date — never say a range like "
+    "\"April 5-6\" or \"April 5th and 6th\"; just say \"{date_human}\".\n"
+    "Return ONLY valid JSON (no markdown fences) with keys:\n"
     '- "narrative": 1-2 sentences, past tense, human-readable overview.\n'
     '- "highlights": array of short strings (max 8), most important concrete items.\n'
     '- "categories": object with optional keys "code", "issues", "meetings", "slack", '
     '"calendar", "crm", "documents" — each value is an array of short strings (can be empty).\n'
-    "Omit speculative claims; if data is thin, say so briefly. No markdown."
+    "IMPORTANT: Only report actions the person actively took — commits, PR reviews, "
+    "Slack messages they wrote, meetings they attended, issues they updated, etc. "
+    "Ignore automated emails, third-party digests, recharge notifications, newsletters, "
+    "and other passive/automated items that don't reflect real work. "
+    "If after filtering out noise there is NO meaningful activity, the narrative MUST be "
+    "something like \"{first_name} didn't have any Basebase-related activity on {date_human}.\" "
+    "and highlights should be an empty array. Do not fabricate a summary from noise.\n"
+    "No markdown fences."
 )
 
 
@@ -127,8 +138,13 @@ async def collect_member_raw_data(
         session, organization_id, user_id
     )
 
+    u_result = await session.execute(select(User).where(User.id == user_id))
+    user_row: User | None = u_result.scalar_one_or_none()
+    member_name: str = (user_row.name or "").strip() if user_row else ""
+
     raw: dict[str, Any] = {
         "digest_date": digest_date.isoformat(),
+        "member_name": member_name,
         "slack_user_ids": slack_ids,
         "github_logins": github_logins,
         "emails": email_list,
@@ -334,6 +350,24 @@ async def collect_member_raw_data(
             }
         )
 
+    # Track which sources contributed data
+    active_sources: list[str] = []
+    _source_systems_seen: set[str] = set()
+    for a in raw["activities"]:
+        ss: str = str(a.get("source_system", ""))
+        if ss:
+            _source_systems_seen.add(ss)
+    if raw["meetings"]:
+        _source_systems_seen.add("meetings")
+    if raw["tracker_issues"]:
+        _source_systems_seen.add("linear")
+    if raw["github_commits"] or raw["github_pull_requests"]:
+        _source_systems_seen.add("github")
+    if raw["shared_files"]:
+        _source_systems_seen.add("google_drive")
+    active_sources = sorted(_source_systems_seen)
+    raw["active_sources"] = active_sources
+
     return raw
 
 
@@ -351,9 +385,15 @@ def _is_raw_effectively_empty(raw: dict[str, Any]) -> bool:
     return True
 
 
-def _empty_summary() -> dict[str, Any]:
+def _empty_summary(member_name: str = "", digest_date: date | None = None) -> dict[str, Any]:
+    first: str = member_name.split()[0] if member_name.strip() else "This person"
+    if digest_date is not None:
+        date_str: str = digest_date.strftime("%B %-d, %Y")
+        narrative: str = f"{first} didn't have any Basebase-related activity on {date_str}."
+    else:
+        narrative = f"{first} didn't have any synced activity for this day."
     return {
-        "narrative": "No synced activity was captured for this day.",
+        "narrative": narrative,
         "highlights": [],
         "categories": {
             "code": [],
@@ -368,6 +408,22 @@ def _empty_summary() -> dict[str, Any]:
 
 
 async def _call_llm_for_summary(raw: dict[str, Any]) -> dict[str, Any]:
+    digest_date_str: str = str(raw.get("digest_date", ""))
+    member_name: str = str(raw.get("member_name", "")).strip() or "This team member"
+    first_name: str = member_name.split()[0] if member_name else "They"
+    name_possessive: str = f"{first_name}'s" if first_name != "They" else "this team member's"
+    parsed_date: date | None = None
+    try:
+        parsed_date = date.fromisoformat(digest_date_str)
+        date_human: str = parsed_date.strftime("%B %-d, %Y")
+    except ValueError:
+        date_human = digest_date_str
+    system_prompt: str = _SYSTEM_PROMPT_TEMPLATE.format(
+        date=digest_date_str,
+        date_human=date_human,
+        name_possessive=name_possessive,
+        first_name=first_name,
+    )
     client: AsyncAnthropic = AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
     payload: str = json.dumps(raw, default=str)[:120_000]
     user_msg: str = f"Raw activity data (JSON):\n{payload}"
@@ -375,37 +431,46 @@ async def _call_llm_for_summary(raw: dict[str, Any]) -> dict[str, Any]:
         resp = await client.messages.create(
             model=_MODEL,
             max_tokens=2048,
-            system=_SYSTEM_PROMPT,
+            system=system_prompt,
             messages=[{"role": "user", "content": user_msg}],
         )
-        report_anthropic_call_success(model=_MODEL)
+        await report_anthropic_call_success(source="daily_digest")
     except Exception as exc:
-        report_anthropic_call_failure(model=_MODEL, error=exc)
+        await report_anthropic_call_failure(exc=exc, source="daily_digest")
         logger.exception("daily_digest LLM failed: %s", exc)
-        return _empty_summary()
+        return _empty_summary(member_name, parsed_date)
 
     text_parts: list[str] = []
     for block in resp.content:
         if hasattr(block, "text"):
             text_parts.append(str(block.text))
     combined: str = "".join(text_parts).strip()
+    if combined.startswith("```"):
+        first_newline: int = combined.find("\n")
+        if first_newline != -1:
+            combined = combined[first_newline + 1 :]
+        if combined.endswith("```"):
+            combined = combined[: -3]
+        combined = combined.strip()
+
+    fallback: dict[str, Any] = _empty_summary(member_name, parsed_date)
     try:
         parsed: Any = json.loads(combined)
     except json.JSONDecodeError:
-        logger.warning("daily_digest LLM returned non-JSON, using fallback")
+        logger.warning("daily_digest LLM returned non-JSON, using fallback: %.200s", combined)
         return {
-            "narrative": combined[:500] if combined else "Summary unavailable.",
+            "narrative": combined[:500] if combined else fallback["narrative"],
             "highlights": [],
-            "categories": _empty_summary()["categories"],
+            "categories": fallback["categories"],
         }
     if not isinstance(parsed, dict):
-        return _empty_summary()
+        return fallback
     out: dict[str, Any] = {
         "narrative": str(parsed.get("narrative", ""))[:2000],
         "highlights": parsed.get("highlights") if isinstance(parsed.get("highlights"), list) else [],
         "categories": parsed.get("categories")
         if isinstance(parsed.get("categories"), dict)
-        else _empty_summary()["categories"],
+        else fallback["categories"],
     }
     return out
 
@@ -420,8 +485,9 @@ async def generate_member_digest(
     raw: dict[str, Any] = await collect_member_raw_data(
         session, organization_id, user_id, digest_date
     )
+    raw_member_name: str = str(raw.get("member_name", ""))
     if _is_raw_effectively_empty(raw):
-        summary: dict[str, Any] = _empty_summary()
+        summary: dict[str, Any] = _empty_summary(raw_member_name, digest_date)
     else:
         summary = await _call_llm_for_summary(raw)
 
@@ -467,9 +533,12 @@ async def generate_org_digests_for_session(
 ) -> dict[str, Any]:
     """Generate digests for every active org member."""
     mem_res = await session.execute(
-        select(OrgMember).where(
+        select(OrgMember)
+        .join(User, User.id == OrgMember.user_id)
+        .where(
             OrgMember.organization_id == organization_id,
             OrgMember.status == "active",
+            User.is_guest.is_(False),
         )
     )
     members: list[OrgMember] = list(mem_res.scalars().all())

@@ -19,11 +19,13 @@ export interface DigestMemberRow {
   digest_date: string;
   summary: DigestSummaryJson | null;
   generated_at: string | null;
+  active_sources: string[];
 }
 
 export interface DailyDigestsResponse {
   digest_date: string;
   members: DigestMemberRow[];
+  all_active_sources: string[];
 }
 
 export interface DigestDatesResponse {

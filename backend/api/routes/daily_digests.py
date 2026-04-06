@@ -34,11 +34,13 @@ class DigestMemberRow(BaseModel):
     digest_date: str
     summary: DigestSummaryJson | None = None
     generated_at: str | None = None
+    active_sources: list[str] = Field(default_factory=list)
 
 
 class DailyDigestsResponse(BaseModel):
     digest_date: str
     members: list[DigestMemberRow]
+    all_active_sources: list[str] = Field(default_factory=list)
 
 
 class DigestDatesResponse(BaseModel):
@@ -96,6 +98,7 @@ async def list_daily_digests(
             .where(
                 OrgMember.organization_id == org_uuid,
                 OrgMember.status == "active",
+                User.is_guest.is_(False),
             )
             .order_by(User.name.asc().nulls_last(), User.email.asc().nulls_last())
         )
@@ -106,6 +109,7 @@ async def list_daily_digests(
             dd: DailyDigest | None = row[2]
             summary_model: DigestSummaryJson | None = None
             gen_at: str | None = None
+            member_sources: list[str] = []
             if dd is not None:
                 s: dict[str, Any] = dd.summary if isinstance(dd.summary, dict) else {}
                 summary_model = DigestSummaryJson(
@@ -117,6 +121,9 @@ async def list_daily_digests(
                 if ga.tzinfo is None:
                     ga = ga.replace(tzinfo=timezone.utc)
                 gen_at = ga.isoformat()
+                rd: dict[str, Any] | None = dd.raw_data if isinstance(dd.raw_data, dict) else None
+                if rd:
+                    member_sources = list(rd.get("active_sources") or [])
             members_out.append(
                 DigestMemberRow(
                     user_id=str(om.user_id),
@@ -125,10 +132,20 @@ async def list_daily_digests(
                     digest_date=target.isoformat(),
                     summary=summary_model,
                     generated_at=gen_at,
+                    active_sources=member_sources,
                 )
             )
 
-    return DailyDigestsResponse(digest_date=target.isoformat(), members=members_out)
+    all_sources_set: set[str] = set()
+    for m in members_out:
+        for src in m.active_sources:
+            all_sources_set.add(src)
+
+    return DailyDigestsResponse(
+        digest_date=target.isoformat(),
+        members=members_out,
+        all_active_sources=sorted(all_sources_set),
+    )
 
 
 @router.get("/dates", response_model=DigestDatesResponse)

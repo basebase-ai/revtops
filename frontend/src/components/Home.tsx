@@ -393,7 +393,7 @@ export function Home(): JSX.Element {
             Loading team digest…
           </div>
         ) : (
-          <div className="flex-1 min-h-[400px] overflow-hidden mr-2 md:mr-4">
+          <div className="flex-1 min-h-[400px] overflow-auto mr-2 md:mr-4">
             <DailyDigestGrid digestDate={digestDate} onDigestDateChange={setDigestDate} />
           </div>
         )}
