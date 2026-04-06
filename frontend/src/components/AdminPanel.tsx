@@ -507,7 +507,6 @@ export function AdminPanel(): JSX.Element {
   }, []);
 
   const fetchCreditUsage = useCallback(async (): Promise<void> => {
-    if (!user) return;
     setCreditUsageLoading(true);
     setCreditUsageError(null);
     try {
@@ -516,10 +515,9 @@ export function AdminPanel(): JSX.Element {
       setCreditUsage(data);
     } catch { setCreditUsageError('Request failed'); }
     finally { setCreditUsageLoading(false); }
-  }, [user]);
+  }, []);
 
   const fetchTopConversations = useCallback(async (): Promise<void> => {
-    if (!user) return;
     setTopConversationsLoading(true);
     setTopConversationsError(null);
     try {
@@ -528,7 +526,7 @@ export function AdminPanel(): JSX.Element {
       setTopConversations(data);
     } catch { setTopConversationsError('Request failed'); }
     finally { setTopConversationsLoading(false); }
-  }, [user]);
+  }, []);
 
   const fetchWaitlist = useCallback(async (): Promise<void> => {
     if (!user) return;
