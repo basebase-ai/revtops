@@ -104,7 +104,8 @@ def _resolve_conversation_scope(
         return "shared"
 
     channel_type: str | None = message.messenger_context.get("channel_type")
-    if channel_type == "mpim":
+    normalized_channel_type: str = (channel_type or "").strip().lower()
+    if normalized_channel_type in {"mpim", "groupchat"}:
         return "shared"
 
     identity_known: bool = bool(revtops_user_id or message.external_user_id)

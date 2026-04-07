@@ -265,6 +265,7 @@ def _build_inbound_message(
     user_id: str = from_obj.get("aadObjectId") or from_obj.get("id") or ""
     conversation: dict[str, Any] = activity.get("conversation") or {}
     conv_id: str = conversation.get("id") or ""
+    conversation_type: str = (conversation.get("conversationType") or "").strip().lower()
     tenant_id: str | None = _tenant_id_from_activity(activity)
     workspace_id: str = tenant_id or ""
     service_url: str = (activity.get("serviceUrl") or "").strip()
@@ -286,6 +287,7 @@ def _build_inbound_message(
             "thread_id": reply_to_id,
             "thread_ts": reply_to_id,
             "event_ts": message_id,
+            "channel_type": conversation_type,
             "service_url": service_url,
             "bot_id": bot_id,
         },
@@ -322,9 +324,8 @@ def _activity_mentions_bot(activity: dict[str, Any], bot_id: str | None) -> bool
 
 async def _process_message_activity(activity: dict[str, Any]) -> None:
     """Handle message activity: route to DIRECT, MENTION, or THREAD_REPLY."""
-    channel_data: dict[str, Any] = activity.get("channelData") or {}
-    conv_type: str = (channel_data.get("channel") or {}).get("id") if isinstance(channel_data.get("channel"), dict) else ""
     conversation: dict[str, Any] = activity.get("conversation") or {}
+    conversation_type: str = (conversation.get("conversationType") or "").strip().lower()
     is_group_raw: Any = conversation.get("isGroup")
     is_group: bool = is_group_raw is True or (
         isinstance(is_group_raw, str) and is_group_raw.lower() == "true"
@@ -347,8 +348,9 @@ async def _process_message_activity(activity: dict[str, Any]) -> None:
     if activity.get("from", {}).get("id") == bot_id:
         return
 
-    # 1:1 chat -> DIRECT
-    if not is_group:
+    # 1:1 personal chat -> DIRECT
+    # (group chats set conversationType=groupChat and/or isGroup=true)
+    if not is_group and conversation_type != "groupchat":
         msg = _build_inbound_message(activity, MessageType.DIRECT)
         await TeamsMessenger().process_inbound(msg)
         return
