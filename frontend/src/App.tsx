@@ -20,6 +20,8 @@ import { SubscriptionSetup } from './components/SubscriptionSetup';
 import { AppLayout } from './components/AppLayout';
 import { OAuthCallback } from './components/OAuthCallback';
 import { AppEmbed } from './components/apps/AppEmbed';
+import { PublicAppView } from './components/public/PublicAppView';
+import { PublicArtifactView } from './components/public/PublicArtifactView';
 import type { User, AuthChangeEvent, Session } from '@supabase/supabase-js';
 import { queryClient } from './lib/queryClient';
 import { APP_NAME, LOGO_PATH } from './lib/brand';
@@ -363,6 +365,22 @@ function App(): JSX.Element {
           onSuccess={() => setScreen('app')}
         />
       );
+    }
+  }
+
+  // Public artifact / app (no auth)
+  if (path.startsWith('/public/apps/')) {
+    const parts: string[] = path.split('/').filter(Boolean);
+    const publicAppId: string = parts[2] ?? '';
+    if (publicAppId) {
+      return <PublicAppView appId={publicAppId} />;
+    }
+  }
+  if (path.startsWith('/public/artifacts/')) {
+    const partsArt: string[] = path.split('/').filter(Boolean);
+    const publicArtifactId: string = partsArt[2] ?? '';
+    if (publicArtifactId) {
+      return <PublicArtifactView artifactId={publicArtifactId} />;
     }
   }
 

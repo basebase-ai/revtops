@@ -22,6 +22,8 @@ from api.auth_middleware import AuthContext, require_organization
 from models.artifact import Artifact
 from models.database import get_session
 from models.user import User
+from models.visibility import normalize_visibility
+from services.org_admin import user_is_org_admin
 from services.pdf_generator import generate_pdf
 
 router = APIRouter()
@@ -41,6 +43,7 @@ class ArtifactMetadata(BaseModel):
     message_id: Optional[str]
     created_at: Optional[str]
     user_id: Optional[str]
+    visibility: str = "team"
     creator_name: Optional[str] = None
     match_snippet: Optional[str] = None
     match_count: int = 0
@@ -61,6 +64,7 @@ class ArtifactContent(BaseModel):
     message_id: Optional[str]
     created_at: Optional[str]
     user_id: Optional[str]
+    visibility: str = "team"
 
 
 class ArtifactListResponse(BaseModel):
@@ -82,7 +86,10 @@ async def list_artifacts(
     import logging
     _log = logging.getLogger(__name__)
     _log.info("[artifacts] list_artifacts org_id=%s user_id=%s search=%s", auth.organization_id_str, auth.user_id, search)
-    async with get_session(organization_id=auth.organization_id_str) as session:
+    async with get_session(
+        organization_id=auth.organization_id_str,
+        user_id=auth.user_id_str,
+    ) as session:
         stmt = select(Artifact).order_by(Artifact.created_at.desc())
         if search and search.strip():
             term: str = f"%{search.strip()}%"
@@ -138,12 +145,61 @@ async def list_artifacts(
                 message_id=str(a.message_id) if a.message_id else None,
                 created_at=f"{a.created_at.isoformat()}Z" if a.created_at else None,
                 user_id=str(a.user_id) if a.user_id else None,
+                visibility=a.visibility or "team",
                 creator_name=(u.name if (u := users_map.get(a.user_id)) else None),
                 match_snippet=snippet,
                 match_count=match_count,
             ))
 
         return ArtifactListResponse(artifacts=artifact_list, total=len(artifact_list))
+
+
+class ArtifactVisibilityPatchRequest(BaseModel):
+    visibility: str
+
+
+@router.patch("/{artifact_id}/visibility")
+async def patch_artifact_visibility(
+    artifact_id: str,
+    body: ArtifactVisibilityPatchRequest,
+    auth: AuthContext = Depends(require_organization),
+) -> dict[str, str]:
+    """Update artifact visibility (creator or org admin)."""
+    try:
+        artifact_uuid = UUID(artifact_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid artifact ID format")
+
+    vis: str = normalize_visibility(body.visibility)
+    assert auth.organization_id is not None
+
+    async with get_session(
+        organization_id=auth.organization_id_str,
+        user_id=auth.user_id_str,
+    ) as session:
+        result = await session.execute(select(Artifact).where(Artifact.id == artifact_uuid))
+        artifact: Artifact | None = result.scalar_one_or_none()
+        if artifact is None:
+            raise HTTPException(status_code=404, detail="Artifact not found")
+
+        if vis == "private" and artifact.user_id is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot set private visibility without an artifact owner (user_id)",
+            )
+
+        is_admin: bool = await user_is_org_admin(
+            user_id=auth.user_id,
+            organization_id=auth.organization_id,
+        )
+        is_owner: bool = artifact.user_id == auth.user_id
+        if not is_owner and not is_admin and not auth.is_global_admin:
+            raise HTTPException(status_code=403, detail="Only the creator or an org admin can change visibility")
+
+        artifact.visibility = vis
+        await session.commit()
+
+    return {"visibility": vis}
 
 
 @router.get("/{artifact_id}", response_model=ArtifactContent)
@@ -167,7 +223,10 @@ async def get_artifact(
         raise HTTPException(status_code=400, detail="Invalid artifact ID format")
 
     # RLS (org_isolation) already restricts to auth.organization_id; allow any org member to view
-    async with get_session(organization_id=auth.organization_id_str) as session:
+    async with get_session(
+        organization_id=auth.organization_id_str,
+        user_id=auth.user_id_str,
+    ) as session:
         result = await session.execute(select(Artifact).where(Artifact.id == artifact_uuid))
         artifact: Artifact | None = result.scalar_one_or_none()
 
@@ -186,7 +245,8 @@ async def get_artifact(
             conversation_id=str(artifact.conversation_id) if artifact.conversation_id else None,
             message_id=str(artifact.message_id) if artifact.message_id else None,
             created_at=f"{artifact.created_at.isoformat()}Z" if artifact.created_at else None,
-            user_id=str(artifact.user_id),
+            user_id=str(artifact.user_id) if artifact.user_id else None,
+            visibility=artifact.visibility or "team",
         )
 
 
@@ -214,7 +274,10 @@ async def download_artifact(
         raise HTTPException(status_code=400, detail="Invalid artifact ID format")
 
     # RLS (org_isolation) already restricts to auth.organization_id; allow any org member to download
-    async with get_session(organization_id=auth.organization_id_str) as session:
+    async with get_session(
+        organization_id=auth.organization_id_str,
+        user_id=auth.user_id_str,
+    ) as session:
         result = await session.execute(select(Artifact).where(Artifact.id == artifact_uuid))
         artifact: Artifact | None = result.scalar_one_or_none()
 
@@ -315,7 +378,10 @@ async def list_conversation_artifacts(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid conversation ID format")
 
-    async with get_session(organization_id=auth.organization_id_str) as session:
+    async with get_session(
+        organization_id=auth.organization_id_str,
+        user_id=auth.user_id_str,
+    ) as session:
         result = await session.execute(
             select(Artifact)
             .where(
@@ -339,6 +405,7 @@ async def list_conversation_artifacts(
                 message_id=str(a.message_id) if a.message_id else None,
                 created_at=f"{a.created_at.isoformat()}Z" if a.created_at else None,
                 user_id=str(a.user_id) if a.user_id else None,
+                visibility=a.visibility or "team",
             )
             for a in artifacts
         ]

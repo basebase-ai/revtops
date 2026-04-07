@@ -11,11 +11,9 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 import secrets
 import time
-from datetime import date, datetime, timezone
-from decimal import Decimal
+from datetime import datetime, timezone
 from typing import Any, Optional
 from uuid import UUID
 
@@ -23,13 +21,20 @@ from fastapi import APIRouter, Depends, HTTPException, Header, Query, Request
 from pydantic import BaseModel
 from sqlalchemy import func, select, text
 
-from access_control import RightsContext, check_sql
 from api.auth_middleware import AuthContext, require_organization
 from config import settings
 from models.app import App
 from models.database import get_session, get_admin_session
 from models.organization import Organization
 from models.user import User
+from models.visibility import normalize_visibility
+from services.app_query_runner import (
+    AppQueryResponse as QueryResponse,
+    json_serial,
+    run_named_app_query,
+    validate_sql_is_select,
+)
+from services.org_admin import user_is_org_admin
 
 logger = logging.getLogger(__name__)
 
@@ -38,11 +43,6 @@ router = APIRouter()
 # ---------------------------------------------------------------------------
 # Pydantic models
 # ---------------------------------------------------------------------------
-
-
-class QueryResponse(BaseModel):
-    data: list[dict[str, Any]]
-    columns: list[str]
 
 
 class AppTokenResponse(BaseModel):
@@ -62,6 +62,7 @@ class AppListItem(BaseModel):
     conversation_id: str | None
     archived_at: str | None = None
     widget_config: dict[str, Any] | None = None
+    visibility: str = "team"
 
 
 class AppListResponse(BaseModel):
@@ -137,36 +138,6 @@ def _strip_screenshot(widget_config: dict[str, Any] | None) -> dict[str, Any] | 
     return config
 
 
-_SELECT_RE = re.compile(r"^\s*SELECT\b", re.IGNORECASE)
-_DANGEROUS_RE = re.compile(
-    r"\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE|GRANT|REVOKE|EXEC|EXECUTE)\b",
-    re.IGNORECASE,
-)
-
-
-def _validate_sql_is_select(sql: str) -> None:
-    """Raise if the SQL is not a plain SELECT statement."""
-    if not _SELECT_RE.match(sql):
-        raise ValueError("Only SELECT queries are allowed")
-    if _DANGEROUS_RE.search(sql):
-        raise ValueError("Query contains disallowed SQL keywords")
-
-
-def _json_serial(obj: Any) -> Any:
-    """JSON serializer for types not handled by default."""
-    if isinstance(obj, datetime):
-        if obj.tzinfo is not None:
-            return obj.isoformat()
-        return f"{obj.isoformat()}Z"
-    if isinstance(obj, date):
-        return obj.isoformat()
-    if isinstance(obj, Decimal):
-        return float(obj)
-    if isinstance(obj, UUID):
-        return str(obj)
-    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
-
-
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
@@ -184,7 +155,10 @@ async def create_app_token(
         raise HTTPException(status_code=400, detail="Invalid app ID")
 
     assert auth.organization_id_str is not None
-    async with get_session(organization_id=auth.organization_id_str) as session:
+    async with get_session(
+        organization_id=auth.organization_id_str,
+        user_id=auth.user_id_str,
+    ) as session:
         result = await session.execute(
             select(App).where(App.id == app_uuid)
         )
@@ -245,74 +219,13 @@ async def execute_app_query(
         if app is None:
             raise HTTPException(status_code=404, detail="App not found")
 
-        queries: dict[str, Any] = app.queries or {}
-        query_spec: dict[str, Any] | None = queries.get(query_name)
-
-        if query_spec is None:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Query '{query_name}' not found in app spec",
-            )
-
-        sql: str = query_spec.get("sql", "")
-        _validate_sql_is_select(sql)
-
-        # Validate params against declared schema
-        param_defs: dict[str, Any] = query_spec.get("params", {})
-        bound_params: dict[str, Any] = {"org_id": organization_id}
-        for pname, pdef in param_defs.items():
-            value: Any = params.get(pname)
-            if value is None and pdef.get("required", False):
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Missing required parameter: {pname}",
-                )
-            if value is not None:
-                bound_params[pname] = value
-
-        # Inject LIMIT if not present
-        sql_upper: str = sql.upper()
-        if "LIMIT" not in sql_upper:
-            sql = f"{sql.rstrip().rstrip(';')} LIMIT 5000"
-
-        rights_ctx = RightsContext(
+        return await run_named_app_query(
+            app=app,
             organization_id=organization_id,
-            user_id=None,
-            conversation_id=None,
-            is_workflow=False,
+            query_name=query_name,
+            params=params,
+            session=session,
         )
-        rights_result = await check_sql(rights_ctx, sql, bound_params)
-        if not rights_result.allowed:
-            raise HTTPException(
-                status_code=403,
-                detail=rights_result.deny_reason or "Query not allowed",
-            )
-        query_to_run: str = (
-            rights_result.transformed_query if rights_result.transformed_query is not None else sql
-        )
-        params_to_use: dict[str, Any] = (
-            rights_result.transformed_params if rights_result.transformed_params is not None else bound_params
-        )
-
-        try:
-            raw_result = await session.execute(text(query_to_run), params_to_use)
-            rows = raw_result.mappings().all()
-            columns: list[str] = list(raw_result.keys()) if rows else []
-
-            data: list[dict[str, Any]] = [
-                {
-                    k: _json_serial(v)
-                    if not isinstance(v, (str, int, float, bool, type(None)))
-                    else v
-                    for k, v in dict(row).items()
-                }
-                for row in rows
-            ]
-
-            return QueryResponse(data=data, columns=columns)
-        except Exception as exc:
-            logger.error("App query execution failed: %s", exc)
-            raise HTTPException(status_code=400, detail=f"Query error: {exc}")
 
 
 # ---------------------------------------------------------------------------
@@ -327,7 +240,10 @@ async def list_apps(
 ) -> AppListResponse:
     """List all apps for the current organization."""
     assert auth.organization_id_str is not None
-    async with get_session(organization_id=auth.organization_id_str) as session:
+    async with get_session(
+        organization_id=auth.organization_id_str,
+        user_id=auth.user_id_str,
+    ) as session:
         stmt = select(App).order_by(App.created_at.desc())
         if archived:
             stmt = stmt.where(App.archived_at.isnot(None))
@@ -359,6 +275,7 @@ async def list_apps(
                     conversation_id=str(a.conversation_id) if a.conversation_id else None,
                     archived_at=f"{a.archived_at.isoformat()}Z" if a.archived_at else None,
                     widget_config=_strip_screenshot(a.widget_config),
+                    visibility=a.visibility or "team",
                 )
             )
 
@@ -382,7 +299,10 @@ async def archive_app(
         raise HTTPException(status_code=400, detail="Invalid app ID")
 
     assert auth.organization_id_str is not None
-    async with get_session(organization_id=auth.organization_id_str) as session:
+    async with get_session(
+        organization_id=auth.organization_id_str,
+        user_id=auth.user_id_str,
+    ) as session:
         result = await session.execute(select(App).where(App.id == app_uuid))
         app: App | None = result.scalar_one_or_none()
         if app is None:
@@ -408,7 +328,10 @@ async def unarchive_app(
         raise HTTPException(status_code=400, detail="Invalid app ID")
 
     assert auth.organization_id_str is not None
-    async with get_session(organization_id=auth.organization_id_str) as session:
+    async with get_session(
+        organization_id=auth.organization_id_str,
+        user_id=auth.user_id_str,
+    ) as session:
         result = await session.execute(select(App).where(App.id == app_uuid))
         app: App | None = result.scalar_one_or_none()
         if app is None:
@@ -446,7 +369,10 @@ async def get_home_app(
         org: Organization | None = result.scalar_one_or_none()
         home_app_id = org.home_app_id if org else None
 
-    async with get_session(organization_id=auth.organization_id_str) as session:
+    async with get_session(
+        organization_id=auth.organization_id_str,
+        user_id=auth.user_id_str,
+    ) as session:
         count_result = await session.execute(select(func.count()).select_from(App))
         app_count: int = count_result.scalar_one()
 
@@ -489,7 +415,10 @@ async def set_home_app(
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid app ID")
 
-        async with get_session(organization_id=auth.organization_id_str) as session:
+        async with get_session(
+            organization_id=auth.organization_id_str,
+            user_id=auth.user_id_str,
+        ) as session:
             result = await session.execute(
                 select(App).where(App.id == app_uuid)
             )
@@ -525,7 +454,10 @@ async def list_widgets(
 ) -> dict[str, Any]:
     """Return all non-archived apps that have a widget_config."""
     assert auth.organization_id_str is not None
-    async with get_session(organization_id=auth.organization_id_str) as session:
+    async with get_session(
+        organization_id=auth.organization_id_str,
+        user_id=auth.user_id_str,
+    ) as session:
         result = await session.execute(
             select(App)
             .where(App.archived_at.is_(None), App.widget_config.isnot(None))
@@ -557,7 +489,10 @@ async def get_app_screenshot(
         raise HTTPException(status_code=400, detail="Invalid app ID")
 
     assert auth.organization_id_str is not None
-    async with get_session(organization_id=auth.organization_id_str) as session:
+    async with get_session(
+        organization_id=auth.organization_id_str,
+        user_id=auth.user_id_str,
+    ) as session:
         result = await session.execute(select(App).where(App.id == app_uuid))
         app: App | None = result.scalar_one_or_none()
         if app is None:
@@ -607,7 +542,10 @@ async def update_preview_settings(
         raise HTTPException(status_code=400, detail="Invalid app ID")
 
     assert auth.organization_id_str is not None
-    async with get_session(organization_id=auth.organization_id_str) as session:
+    async with get_session(
+        organization_id=auth.organization_id_str,
+        user_id=auth.user_id_str,
+    ) as session:
         result = await session.execute(select(App).where(App.id == app_uuid))
         app: App | None = result.scalar_one_or_none()
         if app is None:
@@ -634,7 +572,7 @@ async def update_preview_settings(
             for qname, qspec in queries.items():
                 sql: str = qspec.get("sql", "")
                 try:
-                    _validate_sql_is_select(sql)
+                    validate_sql_is_select(sql)
                     bound: dict[str, Any] = {"org_id": auth.organization_id_str}
                     sql_upper = sql.upper()
                     if "LIMIT" not in sql_upper:
@@ -643,7 +581,7 @@ async def update_preview_settings(
                     rows = raw.mappings().all()
                     query_results[qname] = [
                         {
-                            k: _json_serial(v)
+                            k: json_serial(v)
                             if not isinstance(v, (str, int, float, bool, type(None)))
                             else v
                             for k, v in dict(row).items()
@@ -698,7 +636,10 @@ async def get_app(
         raise HTTPException(status_code=400, detail="Invalid app ID")
 
     assert auth.organization_id_str is not None
-    async with get_session(organization_id=auth.organization_id_str) as session:
+    async with get_session(
+        organization_id=auth.organization_id_str,
+        user_id=auth.user_id_str,
+    ) as session:
         result = await session.execute(
             select(App).where(App.id == app_uuid)
         )
@@ -717,7 +658,55 @@ async def get_app(
             "created_at": f"{app.created_at.isoformat()}Z" if app.created_at else None,
             "user_id": str(app.user_id),
             "widget_config": _strip_screenshot(app.widget_config),
+            "visibility": app.visibility or "team",
         }
+
+
+# ---------------------------------------------------------------------------
+# Visibility (must be before embed routes that use /{app_id}/...)
+# ---------------------------------------------------------------------------
+
+
+class VisibilityPatchRequest(BaseModel):
+    visibility: str
+
+
+@router.patch("/{app_id}/visibility")
+async def patch_app_visibility(
+    app_id: str,
+    body: VisibilityPatchRequest,
+    auth: AuthContext = Depends(require_organization),
+) -> dict[str, Any]:
+    """Update who can view this app (creator or org admin)."""
+    try:
+        app_uuid = UUID(app_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid app ID")
+
+    vis: str = normalize_visibility(body.visibility)
+    assert auth.organization_id is not None
+
+    async with get_session(
+        organization_id=auth.organization_id_str,
+        user_id=auth.user_id_str,
+    ) as session:
+        result = await session.execute(select(App).where(App.id == app_uuid))
+        app: App | None = result.scalar_one_or_none()
+        if app is None:
+            raise HTTPException(status_code=404, detail="App not found")
+
+        is_admin: bool = await user_is_org_admin(
+            user_id=auth.user_id,
+            organization_id=auth.organization_id,
+        )
+        is_owner: bool = app.user_id == auth.user_id
+        if not is_owner and not is_admin and not auth.is_global_admin:
+            raise HTTPException(status_code=403, detail="Only the creator or an org admin can change visibility")
+
+        app.visibility = vis
+        await session.commit()
+
+    return {"visibility": vis}
 
 
 # ---------------------------------------------------------------------------
@@ -775,7 +764,10 @@ async def create_embed_token(
         raise HTTPException(status_code=400, detail="Invalid app ID")
 
     assert auth.organization_id_str is not None
-    async with get_session(organization_id=auth.organization_id_str) as session:
+    async with get_session(
+        organization_id=auth.organization_id_str,
+        user_id=auth.user_id_str,
+    ) as session:
         result = await session.execute(
             select(App).where(App.id == app_uuid)
         )
@@ -825,7 +817,10 @@ async def save_screenshot(
         raise HTTPException(status_code=400, detail="Screenshot too large (max 2MB)")
 
     assert auth.organization_id_str is not None
-    async with get_session(organization_id=auth.organization_id_str) as session:
+    async with get_session(
+        organization_id=auth.organization_id_str,
+        user_id=auth.user_id_str,
+    ) as session:
         result = await session.execute(select(App).where(App.id == app_uuid))
         app: App | None = result.scalar_one_or_none()
         if app is None:
@@ -864,7 +859,10 @@ async def generate_widget(
         raise HTTPException(status_code=400, detail="Invalid app ID")
 
     assert auth.organization_id_str is not None
-    async with get_session(organization_id=auth.organization_id_str) as session:
+    async with get_session(
+        organization_id=auth.organization_id_str,
+        user_id=auth.user_id_str,
+    ) as session:
         result = await session.execute(select(App).where(App.id == app_uuid))
         app: App | None = result.scalar_one_or_none()
         if app is None:
@@ -885,7 +883,7 @@ async def generate_widget(
                 rows = raw.mappings().all()
                 query_results[qname] = [
                     {
-                        k: _json_serial(v)
+                        k: json_serial(v)
                         if not isinstance(v, (str, int, float, bool, type(None)))
                         else v
                         for k, v in dict(row).items()
@@ -930,7 +928,10 @@ async def delete_widget(
         raise HTTPException(status_code=400, detail="Invalid app ID")
 
     assert auth.organization_id_str is not None
-    async with get_session(organization_id=auth.organization_id_str) as session:
+    async with get_session(
+        organization_id=auth.organization_id_str,
+        user_id=auth.user_id_str,
+    ) as session:
         result = await session.execute(select(App).where(App.id == app_uuid))
         app: App | None = result.scalar_one_or_none()
         if app is None:

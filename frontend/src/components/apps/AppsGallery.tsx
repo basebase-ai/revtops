@@ -9,6 +9,7 @@ import { apiRequest } from "../../lib/api";
 import { useAppStore } from "../../store";
 import type { WidgetConfig } from "../../store/types";
 import { AppPreview } from "../widgets/AppPreview";
+import { VisibilityBadge } from "../VisibilitySelector";
 
 /** Preload CDN libraries used by SandpackAppRenderer so they're browser-cached before user opens an app. */
 const CDN_PRELOADS = [
@@ -40,6 +41,7 @@ interface AppItem {
   conversation_id: string | null;
   archived_at: string | null;
   widget_config: WidgetConfig | null;
+  visibility?: string;
 }
 
 interface AppsListResponse {
@@ -284,7 +286,12 @@ export function AppsGallery(): JSX.Element {
 
               {/* Name and metadata below the card */}
               <div className="mt-1.5 px-1">
-                <div className="text-sm font-medium text-surface-200 truncate">{app.title ?? "Untitled App"}</div>
+                <div className="flex items-center gap-2 min-w-0">
+                  <div className="text-sm font-medium text-surface-200 truncate">
+                    {app.title ?? "Untitled App"}
+                  </div>
+                  <VisibilityBadge visibility={app.visibility ?? "team"} />
+                </div>
                 <div className="flex items-center gap-1.5 text-xs text-surface-500">
                   {app.creator_name && <span>{app.creator_name}</span>}
                   {app.created_at && (
@@ -375,9 +382,12 @@ export function AppsGallery(): JSX.Element {
                         </svg>
                       </div>
                       <div className="min-w-0 flex-1">
-                        <h3 className="text-sm font-medium text-surface-300 group-hover:text-surface-100 transition-colors truncate max-w-[35ch]">
-                          {app.title ?? "Untitled App"}
-                        </h3>
+                        <div className="flex items-center gap-2 min-w-0">
+                          <h3 className="text-sm font-medium text-surface-300 group-hover:text-surface-100 transition-colors truncate max-w-[35ch]">
+                            {app.title ?? "Untitled App"}
+                          </h3>
+                          <VisibilityBadge visibility={app.visibility ?? "team"} />
+                        </div>
                         {app.description && (
                           <p className="text-xs text-surface-500 mt-1 line-clamp-2">
                             {app.description}

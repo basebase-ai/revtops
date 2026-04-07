@@ -20,7 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from api.websockets import websocket_endpoint
-from api.routes import action_ledger, admin_dashboard, apps, artifacts, auth, billing, change_sessions, chat, connectors, daily_digests, data, deals, drive, memories, notifications, search, slack_events, slack_user_mappings, support, sync, teams_events, tool_settings, twilio_events, whatsapp_events, waitlist, workstreams, workflows
+from api.routes import action_ledger, admin_dashboard, apps, artifacts, auth, billing, change_sessions, chat, connectors, daily_digests, data, deals, drive, memories, notifications, public, search, slack_events, slack_user_mappings, support, sync, teams_events, tool_settings, twilio_events, whatsapp_events, waitlist, workstreams, workflows
 from models.database import close_db, get_pool_status
 from services.task_manager import task_manager
 from config import log_missing_env_vars, settings
@@ -156,6 +156,7 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
 
 # Routes
 app.include_router(apps.router, prefix="/api/apps", tags=["apps"])
+app.include_router(public.router, prefix="/api/public", tags=["public"])
 app.include_router(connectors.router, prefix="/api/connectors", tags=["connectors"])
 app.include_router(artifacts.router, prefix="/api/artifacts", tags=["artifacts"])
 app.include_router(auth.router, prefix="/api/auth", tags=["auth"])

@@ -12,6 +12,10 @@ import { useState, useEffect, useCallback } from "react";
 import { SandpackAppRenderer } from "./SandpackAppRenderer";
 import { apiRequest } from "../../lib/api";
 import { useAppStore } from "../../store";
+import {
+  VisibilitySelector,
+  type VisibilityLevel,
+} from "../VisibilitySelector";
 
 interface AppDetail {
   id: string;
@@ -24,6 +28,7 @@ interface AppDetail {
   created_at: string | null;
   user_id: string;
   widget_config?: Record<string, unknown> | null;
+  visibility: string;
 }
 
 interface EmbedTokenData {
@@ -45,8 +50,11 @@ export function AppFullView({ appId }: AppFullViewProps): JSX.Element {
   const [embedCopied, setEmbedCopied] = useState<boolean>(false);
   const [previewMode, setPreviewMode] = useState<string>("auto");
   const [detailLevel, setDetailLevel] = useState<string>("standard");
+  const [visBusy, setVisBusy] = useState<boolean>(false);
+  const [publicUrlCopied, setPublicUrlCopied] = useState<boolean>(false);
 
   const setCurrentView = useAppStore((s) => s.setCurrentView);
+  const user = useAppStore((s) => s.user);
 
   const fetchApp = useCallback(async (): Promise<void> => {
     setLoading(true);
@@ -54,7 +62,10 @@ export function AppFullView({ appId }: AppFullViewProps): JSX.Element {
     if (resp.error || !resp.data) {
       setError(resp.error ?? "Failed to load app");
     } else {
-      setApp(resp.data);
+      setApp({
+        ...resp.data,
+        visibility: resp.data.visibility ?? "team",
+      });
     }
     setLoading(false);
   }, [appId]);
@@ -101,11 +112,39 @@ export function AppFullView({ appId }: AppFullViewProps): JSX.Element {
     null;
   const prefix: string = orgHandle ? `/${orgHandle}` : "";
 
+  const isOwner: boolean =
+    Boolean(user?.id) && Boolean(app?.user_id) && user?.id === app?.user_id;
+
   const handleCopyLink = async (): Promise<void> => {
     const url: string = `${window.location.origin}${prefix}/apps/${appId}`;
     await navigator.clipboard.writeText(url);
     setLinkCopied(true);
     setTimeout(() => setLinkCopied(false), 2000);
+  };
+
+  const handleVisibilityChange = async (next: VisibilityLevel): Promise<void> => {
+    if (next === "public") {
+      const ok: boolean = window.confirm(
+        "Anyone on the internet can view this app without signing in. Continue?",
+      );
+      if (!ok) return;
+    }
+    setVisBusy(true);
+    const resp = await apiRequest<{ visibility: string }>(`/apps/${appId}/visibility`, {
+      method: "PATCH",
+      body: JSON.stringify({ visibility: next }),
+    });
+    setVisBusy(false);
+    if (!resp.error && resp.data && app) {
+      setApp({ ...app, visibility: resp.data.visibility });
+    }
+  };
+
+  const handleCopyPublicUrl = async (): Promise<void> => {
+    const url: string = `${window.location.origin}/public/apps/${appId}`;
+    await navigator.clipboard.writeText(url);
+    setPublicUrlCopied(true);
+    setTimeout(() => setPublicUrlCopied(false), 2000);
   };
 
   const handleEmbed = async (): Promise<void> => {
@@ -179,7 +218,23 @@ export function AppFullView({ appId }: AppFullViewProps): JSX.Element {
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap justify-end">
+          {isOwner && app.visibility && (
+            <VisibilitySelector
+              value={app.visibility as VisibilityLevel}
+              onChange={(v) => void handleVisibilityChange(v)}
+              busy={visBusy}
+            />
+          )}
+          {isOwner && app.visibility === "public" && (
+            <button
+              type="button"
+              onClick={() => void handleCopyPublicUrl()}
+              className="flex items-center gap-1.5 px-2 py-1.5 rounded-md bg-surface-700 hover:bg-surface-600 text-surface-300 text-xs font-medium"
+            >
+              {publicUrlCopied ? "Public link copied!" : "Copy public link"}
+            </button>
+          )}
           {/* Preview mode selector */}
           <select
             value={previewMode}

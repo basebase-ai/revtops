@@ -16,6 +16,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 const APP_TOKEN = window.__REVTOPS_APP_TOKEN__ || "";
 const API_BASE  = window.__REVTOPS_API_BASE__  || "";
 const APP_ID    = window.__REVTOPS_APP_ID__    || "";
+const PUBLIC_MODE = window.__REVTOPS_PUBLIC_MODE__ === true;
 
 // ---------------------------------------------------------------------------
 // useAppQuery – fetch data from a named server-side query
@@ -48,18 +49,19 @@ export function useAppQuery(queryName, params, options) {
     setError(null);
 
     try {
-      const res = await fetch(
-        API_BASE + "/apps/" + APP_ID + "/queries/" + encodeURIComponent(queryName),
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Authorization": "Bearer " + APP_TOKEN,
-          },
-          body: paramKey,
-          signal: controller.signal,
-        }
-      );
+      const queryPath = PUBLIC_MODE
+        ? "/public/apps/" + APP_ID + "/queries/" + encodeURIComponent(queryName)
+        : "/apps/" + APP_ID + "/queries/" + encodeURIComponent(queryName);
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (!PUBLIC_MODE) {
+        headers["Authorization"] = "Bearer " + APP_TOKEN;
+      }
+      const res = await fetch(API_BASE + queryPath, {
+        method: "POST",
+        headers,
+        body: paramKey,
+        signal: controller.signal,
+      });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         if (res.status === 401) {

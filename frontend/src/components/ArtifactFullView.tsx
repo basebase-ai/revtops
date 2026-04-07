@@ -10,6 +10,10 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { apiRequest } from "../lib/api";
 import { useAppStore, useUIStore } from "../store";
 import { ArtifactViewer } from "./ArtifactViewer";
+import {
+  VisibilitySelector,
+  type VisibilityLevel,
+} from "./VisibilitySelector";
 
 interface ArtifactApiResponse {
   id: string;
@@ -24,6 +28,7 @@ interface ArtifactApiResponse {
   message_id: string | null;
   created_at: string | null;
   user_id: string | null;
+  visibility?: string;
 }
 
 // Map API snake_case to ArtifactViewer camelCase
@@ -110,6 +115,10 @@ export function ArtifactFullView({
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [linkCopied, setLinkCopied] = useState<boolean>(false);
+  const [visibility, setVisibility] = useState<VisibilityLevel>("team");
+  const [ownerUserId, setOwnerUserId] = useState<string | null>(null);
+  const [visBusy, setVisBusy] = useState<boolean>(false);
+  const [publicUrlCopied, setPublicUrlCopied] = useState<boolean>(false);
 
   // Search highlighting
   const documentSearchTerm = useUIStore((s) => s.documentSearchTerm);
@@ -118,6 +127,7 @@ export function ArtifactFullView({
   const contentRef = useRef<HTMLDivElement>(null);
 
   const setCurrentView = useAppStore((s) => s.setCurrentView);
+  const user = useAppStore((s) => s.user);
 
   const fetchArtifact = useCallback(async (): Promise<void> => {
     setLoading(true);
@@ -130,6 +140,8 @@ export function ArtifactFullView({
       setArtifact(null);
     } else {
       setArtifact(toFileArtifact(resp.data));
+      setVisibility((resp.data.visibility as VisibilityLevel) ?? "team");
+      setOwnerUserId(resp.data.user_id);
     }
     setLoading(false);
   }, [artifactId]);
@@ -200,6 +212,37 @@ export function ArtifactFullView({
     await navigator.clipboard.writeText(url);
     setLinkCopied(true);
     setTimeout(() => setLinkCopied(false), 2000);
+  };
+
+  const isOwner: boolean =
+    Boolean(user?.id) && Boolean(ownerUserId) && user?.id === ownerUserId;
+
+  const handleVisibilityChange = async (next: VisibilityLevel): Promise<void> => {
+    if (next === "public") {
+      const ok: boolean = window.confirm(
+        "Anyone on the internet can view this document without signing in. Continue?",
+      );
+      if (!ok) return;
+    }
+    setVisBusy(true);
+    const resp = await apiRequest<{ visibility: string }>(
+      `/artifacts/${artifactId}/visibility`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({ visibility: next }),
+      },
+    );
+    setVisBusy(false);
+    if (!resp.error && resp.data) {
+      setVisibility(resp.data.visibility as VisibilityLevel);
+    }
+  };
+
+  const handleCopyPublicUrl = async (): Promise<void> => {
+    const url: string = `${window.location.origin}/public/artifacts/${artifactId}`;
+    await navigator.clipboard.writeText(url);
+    setPublicUrlCopied(true);
+    setTimeout(() => setPublicUrlCopied(false), 2000);
   };
 
   const goBack = (): void => {
@@ -275,6 +318,23 @@ export function ArtifactFullView({
           )}
           {documentSearchTerm && matchTotal === 0 && (
             <span className="text-xs text-surface-500">No matches</span>
+          )}
+
+          {isOwner && (
+            <VisibilitySelector
+              value={visibility}
+              onChange={(v) => void handleVisibilityChange(v)}
+              busy={visBusy}
+            />
+          )}
+          {isOwner && visibility === "public" && (
+            <button
+              type="button"
+              onClick={() => void handleCopyPublicUrl()}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-surface-700 hover:bg-surface-600 text-surface-300 text-xs font-medium transition-colors"
+            >
+              {publicUrlCopied ? "Public link copied!" : "Copy public link"}
+            </button>
           )}
 
           <button

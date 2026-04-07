@@ -32,6 +32,11 @@ class App(Base):
         UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False
     )
 
+    # private | team | public — who can view this app (RLS enforced)
+    visibility: Mapped[str] = mapped_column(
+        String(10), nullable=False, server_default="team"
+    )
+
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 

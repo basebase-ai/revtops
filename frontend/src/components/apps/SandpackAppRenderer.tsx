@@ -35,6 +35,8 @@ interface SandpackAppRendererProps {
   frontendCode?: string;
   frontendCodeCompiled?: string | null;
   embedToken?: string;
+  /** Use unauthenticated /api/public/apps/:id and query routes (no Bearer token). */
+  publicMode?: boolean;
   onError?: (message: string) => void;
   /** If true, skip screenshot capture (screenshot already exists). */
   hasScreenshot?: boolean;
@@ -104,6 +106,7 @@ function buildSrcdocHtml(opts: {
   token: string;
   apiBase: string;
   appId: string;
+  publicMode: boolean;
 }): string {
   const sdkInline: string = stripModuleSyntax(APP_SDK_SOURCE);
   const plotInline: string = stripModuleSyntax(REACT_PLOTLY_SHIM);
@@ -135,6 +138,7 @@ ${babelScript}
 window.__REVTOPS_APP_TOKEN__ = ${JSON.stringify(opts.token)};
 window.__REVTOPS_API_BASE__  = ${JSON.stringify(opts.apiBase)};
 window.__REVTOPS_APP_ID__    = ${JSON.stringify(opts.appId)};
+window.__REVTOPS_PUBLIC_MODE__ = ${opts.publicMode ? "true" : "false"};
 
 // Global error handler → show in UI + notify parent
 window.onerror = function(msg, url, line, col, err) {
@@ -183,6 +187,7 @@ export function SandpackAppRenderer({
   frontendCode: initialCode,
   frontendCodeCompiled: initialCompiled,
   embedToken,
+  publicMode = false,
   onError,
   hasScreenshot,
 }: SandpackAppRendererProps): JSX.Element {
@@ -197,7 +202,7 @@ export function SandpackAppRenderer({
 
   // Fetch latest app code from DB — always prefer this over the prop snapshot
   useEffect(() => {
-    if (embedToken) return; // embed page fetches its own data
+    if (embedToken || publicMode) return; // embed / public pages fetch their own data
     let cancelled = false;
     (async () => {
       const resp = await apiRequest<AppApiData>(`/apps/${appId}`);
@@ -208,7 +213,34 @@ export function SandpackAppRenderer({
       }
     })();
     return () => { cancelled = true; };
-  }, [appId, embedToken]);
+  }, [appId, embedToken, publicMode]);
+
+  // Public app: load code from unauthenticated API
+  useEffect(() => {
+    if (!publicMode) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch(`${API_BASE}/public/apps/${appId}`);
+        if (!res.ok) {
+          setError("This app is not public or could not be loaded.");
+          return;
+        }
+        const data = (await res.json()) as {
+          frontend_code: string;
+          frontend_code_compiled?: string | null;
+        };
+        if (cancelled) return;
+        setAppCode(data.frontend_code);
+        setAppCodeCompiled(data.frontend_code_compiled);
+      } catch {
+        if (!cancelled) setError("Failed to load public app");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [appId, publicMode]);
 
   // Listen for error / token-expired messages from the iframe
   useEffect(() => {
@@ -229,6 +261,15 @@ export function SandpackAppRenderer({
   }, [onError, appId]);
 
   const fetchToken = useCallback(async (): Promise<void> => {
+    if (publicMode) {
+      setTokenData({
+        token: "",
+        expires_at: "",
+        app_id: appId,
+        api_base: API_BASE,
+      });
+      return;
+    }
     if (embedToken) {
       setTokenData({
         token: embedToken,
@@ -268,7 +309,7 @@ export function SandpackAppRenderer({
     } catch { /* storage full — ignore */ }
     retryingRef.current = false;
     setTokenData(resp.data);
-  }, [appId, embedToken]);
+  }, [appId, embedToken, publicMode]);
 
   useEffect(() => {
     void fetchToken();
@@ -276,7 +317,7 @@ export function SandpackAppRenderer({
 
   // Screenshot capture: after iframe loads and data settles, capture via html2canvas
   useEffect(() => {
-    if (hasScreenshot || screenshotCapturedRef.current || embedToken) return;
+    if (hasScreenshot || screenshotCapturedRef.current || embedToken || publicMode) return;
     if (!iframeRef.current || !tokenData || !appCode) return;
 
     // Try capture at 3s, retry at 6s if first attempt skipped (still loading)
@@ -330,7 +371,7 @@ export function SandpackAppRenderer({
 
     const timer = setTimeout(tryCapture, 3000);
     return () => clearTimeout(timer);
-  }, [appId, tokenData, appCode, hasScreenshot, embedToken]);
+  }, [appId, tokenData, appCode, hasScreenshot, embedToken, publicMode]);
 
   if (error) {
     return (
@@ -361,6 +402,7 @@ export function SandpackAppRenderer({
     token: tokenData.token,
     apiBase: resolvedApiBase,
     appId,
+    publicMode,
   });
 
   return (

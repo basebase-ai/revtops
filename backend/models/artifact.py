@@ -33,6 +33,11 @@ class Artifact(Base):
         UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False
     )
 
+    # private | team | public — who can view this artifact (RLS enforced)
+    visibility: Mapped[str] = mapped_column(
+        String(10), nullable=False, server_default="team"
+    )
+
     type: Mapped[Optional[str]] = mapped_column(
         String(50), nullable=True
     )  # 'dashboard', 'report', 'analysis'
@@ -104,7 +109,8 @@ class Artifact(Base):
             "conversation_id": str(self.conversation_id) if self.conversation_id else None,
             "message_id": str(self.message_id) if self.message_id else None,
             "created_at": f"{self.created_at.isoformat()}Z" if self.created_at else None,
-            "user_id": str(self.user_id),
+            "user_id": str(self.user_id) if self.user_id else None,
+            "visibility": self.visibility,
         }
         if include_content:
             result["content"] = self.content

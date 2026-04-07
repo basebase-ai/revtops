@@ -7,6 +7,7 @@ import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { apiRequest } from "../../lib/api";
 import { useAppStore, useUIStore } from "../../store";
 import { ArtifactViewer } from "../ArtifactViewer";
+import { VisibilityBadge } from "../VisibilitySelector";
 
 interface ArtifactItem {
   id: string;
@@ -23,6 +24,7 @@ interface ArtifactItem {
   creator_name: string | null;
   match_snippet: string | null;
   match_count: number;
+  visibility?: string;
 }
 
 interface ArtifactsListResponse {
@@ -324,9 +326,12 @@ export function DocumentsGallery(): JSX.Element {
                     {contentTypeIcon(doc.content_type)}
                   </div>
                   <div className="min-w-0 flex-1">
-                    <h3 className="text-sm font-medium text-surface-100 group-hover:text-primary-300 transition-colors truncate">
-                      {doc.title ?? doc.filename ?? "Untitled"}
-                    </h3>
+                    <div className="flex items-center gap-2 min-w-0">
+                      <h3 className="text-sm font-medium text-surface-100 group-hover:text-primary-300 transition-colors truncate">
+                        {doc.title ?? doc.filename ?? "Untitled"}
+                      </h3>
+                      <VisibilityBadge visibility={doc.visibility ?? "team"} />
+                    </div>
                     <div className="flex items-center gap-2 mt-1.5 text-xs text-surface-500">
                       {doc.creator_name && <span>{doc.creator_name}</span>}
                       {doc.created_at && (
@@ -375,9 +380,12 @@ export function DocumentsGallery(): JSX.Element {
                         {contentTypeIcon(doc.content_type)}
                       </div>
                       <div className="min-w-0 flex-1">
-                        <span className="text-sm text-surface-100 group-hover:text-primary-300 truncate block transition-colors">
-                          {doc.title ?? doc.filename ?? "Untitled"}
-                        </span>
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className="text-sm text-surface-100 group-hover:text-primary-300 truncate block transition-colors">
+                            {doc.title ?? doc.filename ?? "Untitled"}
+                          </span>
+                          <VisibilityBadge visibility={doc.visibility ?? "team"} />
+                        </div>
                         {doc.match_snippet && (
                           <p className="text-xs text-surface-500 truncate italic mt-0.5">{doc.match_snippet}</p>
                         )}
