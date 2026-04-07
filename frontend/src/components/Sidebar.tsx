@@ -523,14 +523,14 @@ function NavItem({
     : 'bg-surface-800 text-surface-100';
   const inactiveClass = colorTheme === 'amber'
     ? 'text-amber-400 hover:text-amber-300 hover:bg-amber-500/10'
-    : 'text-surface-400 hover:text-surface-200 hover:bg-surface-800/50';
+    : 'text-surface-300 hover:text-surface-200 hover:bg-surface-800/50';
   const badgeBg = badgeColor === 'amber' ? 'bg-amber-500' : 'bg-primary-500';
 
   return (
     <button
       onClick={() => onViewChange(view)}
       title={collapsed ? label : undefined}
-      className={`w-full flex items-center gap-2 px-3 py-1.5 rounded-lg transition-colors ${isActive ? activeClass : inactiveClass} ${collapsed ? 'justify-center' : ''}`}
+      className={`w-full flex items-center gap-2 px-3 py-[5px] rounded-lg transition-colors ${isActive ? activeClass : inactiveClass} ${collapsed ? 'justify-center' : ''}`}
     >
       {badge != null && badge > 0 ? (
         <div className="relative">
@@ -565,8 +565,8 @@ function GlobalAdminSidebarNavItem({
       type="button"
       onClick={onClick}
       title={collapsed ? label : undefined}
-      className={`w-full flex items-center gap-2 px-3 py-1.5 rounded-lg transition-colors ${
-        active ? 'bg-surface-800 text-surface-100' : 'text-surface-400 hover:text-surface-200 hover:bg-surface-800/50'
+      className={`w-full flex items-center gap-2 px-3 py-[5px] rounded-lg transition-colors ${
+        active ? 'bg-surface-800 text-surface-100' : 'text-surface-300 hover:text-surface-200 hover:bg-surface-800/50'
       } ${collapsed ? 'justify-center' : ''}`}
     >
       {icon}
@@ -748,7 +748,7 @@ export function Sidebar({
       <div className="px-2 py-1">
         <button
           onClick={onNewChat}
-          className={`w-full flex items-center gap-2 px-3 py-1.5 rounded-lg bg-primary-600 hover:bg-primary-700 text-white font-medium text-sm transition-colors ${collapsed ? 'justify-center' : ''}`}
+          className={`w-full flex items-center gap-2 px-3 py-[5px] rounded-lg bg-primary-600 hover:bg-primary-700 text-white font-medium text-sm transition-colors ${collapsed ? 'justify-center' : ''}`}
         >
           <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />

@@ -110,12 +110,12 @@ interface ToolApprovalState {
 const AGENT_AVATAR_PATH: string = '/basebase_logo_reverse-256.png';
 const CHAT_MSG_ROW: string =
   'group/msg flex items-start gap-3 px-5 -mx-5 hover:bg-black/[0.035] dark:hover:bg-surface-800/40 transition-colors';
-const CHAT_MSG_AVATAR: string = 'flex-shrink-0 !w-9 !h-9 !rounded-md mt-px';
+const CHAT_MSG_AVATAR: string = 'flex-shrink-0 !w-9 !h-9 !rounded-lg mt-px';
 const CHAT_MSG_AVATAR_SPACER: string = 'w-9 flex-shrink-0 mt-px';
 const CHAT_MSG_NAME: string =
-  'text-[15px] font-extrabold leading-tight text-surface-50 dark:text-surface-50 tracking-[-0.015em]';
+  'text-[15px] font-bold leading-tight text-surface-50 dark:text-surface-50 tracking-[-0.015em]';
 const CHAT_MSG_TIME: string =
-  'text-[10px] tabular-nums font-normal text-surface-500 dark:text-surface-500 leading-none';
+  'text-xs tabular-nums font-normal text-surface-500 dark:text-surface-500 leading-none';
 const CHAT_MSG_BODY: string =
   'text-[15px] leading-[1.466] text-surface-100 dark:text-surface-200 whitespace-pre-wrap break-words';
 
@@ -1980,7 +1980,7 @@ export function Chat({
         </div>
       )}
       {/* Header - hidden on mobile since AppLayout has mobile header */}
-      <header className="hidden md:flex h-14 border-b border-surface-200 dark:border-surface-800 items-center justify-between px-4 md:px-6 flex-shrink-0">
+      <header className="hidden md:flex h-[49px] border-b border-surface-700 dark:border-surface-800/60 items-center justify-between px-4 md:px-6 flex-shrink-0">
         <div className="flex items-center gap-3 min-w-0 flex-1">
           {/* Back to All Chats */}
           <button
@@ -2190,7 +2190,7 @@ export function Chat({
             </button>
             {chatHeaderMenuOpen && (
               <div
-                className="absolute right-0 top-full mt-1 min-w-[13rem] rounded-lg border border-surface-700 bg-surface-900 py-1 shadow-xl z-[60]"
+                className="absolute right-0 top-full mt-1 min-w-[13rem] rounded-lg border border-surface-700 bg-surface-900 py-1 shadow-lg z-[60]"
                 role="menu"
               >
                 <button
@@ -2309,7 +2309,7 @@ export function Chat({
       {/* Delete confirmation modal */}
       {showDeleteConfirm && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-          <div className="bg-surface-900 border border-surface-700 rounded-lg p-6 max-w-sm w-full mx-4 shadow-xl">
+          <div className="bg-surface-900 border border-surface-700 rounded-lg p-6 max-w-sm w-full mx-4 shadow-lg">
             <h3 className="text-lg font-semibold text-surface-100 mb-2">Delete conversation</h3>
             <p className="text-sm text-surface-400 mb-5">
               {isConversationOwner
@@ -2386,7 +2386,7 @@ export function Chat({
                 />
               </div>
             )}
-            <div ref={messagesContainerRef} className="absolute inset-0 overflow-y-auto overflow-x-hidden p-3 md:p-6">
+            <div ref={messagesContainerRef} className="absolute inset-0 overflow-y-auto overflow-x-hidden p-3 md:p-5">
             {!userId && (
               <div className="mb-3 rounded-lg border border-amber-600/50 bg-amber-900/20 px-3 py-2 text-sm text-amber-200">
                 User context is missing — artifacts and apps may not save correctly. Please refresh or re-sign in.
@@ -2434,7 +2434,7 @@ export function Chat({
                   const isGroupedWithPrevious: boolean = shouldGroupMessageWithPrevious(prevMsg, msg, userId);
                   return (
                     <div key={msg.id}>
-                      {showDivider && <div className="h-2" />}
+                      {showDivider && <div className="h-4" />}
                       <MessageWithBlocks
                         message={msg}
                         isGroupedWithPrevious={isGroupedWithPrevious}
@@ -2532,10 +2532,10 @@ export function Chat({
       </div>
 
       {/* Composer */}
-      <div className="px-3 md:px-5 pb-3 pt-1">
+      <div className="px-3 md:px-5 pb-4 pt-1">
         <div className="relative">
           <div
-            className={`absolute left-0 bottom-full mb-1 min-w-[14rem] max-w-sm max-h-44 overflow-y-auto rounded-lg border border-surface-700 bg-surface-900 shadow-xl z-50 ${
+            className={`absolute left-0 bottom-full mb-1 min-w-[14rem] max-w-sm max-h-44 overflow-y-auto rounded-lg border border-surface-700 bg-surface-900 shadow-lg z-50 ${
               mentionPopover.open && mentionSuggestions.length > 0 ? '' : 'hidden'
             }`}
             role="listbox"
@@ -2736,7 +2736,7 @@ export function Chat({
                     ? 'border-primary-500 ring-1 ring-primary-500/40 bg-surface-850'
                     : (!isConnected || outOfCredits)
                       ? 'border-surface-700 opacity-50 bg-surface-900'
-                      : 'border-surface-600 focus-within:border-surface-500 bg-surface-900'
+                      : 'border-surface-700 focus-within:border-surface-600 bg-surface-900'
                 } w-full min-w-0 overflow-hidden`}
               >
                 {isDragOver && (
@@ -2791,14 +2791,14 @@ export function Chat({
                       onPaste={(e) => void handlePaste(e)}
                       onFocus={() => setComposerFocused(true)}
                       placeholder={outOfCredits ? 'Out of credits — upgrade to continue' : agentRunning ? 'Agent working...' : 'Message...'}
-                      className="w-full resize-none bg-transparent text-surface-100 px-3.5 pt-2.5 pb-2 text-[13px] placeholder-surface-500 focus:outline-none leading-[1.46] scrollbar-none disabled:cursor-not-allowed"
+                      className="w-full resize-none bg-transparent text-surface-100 px-3.5 pt-3 pb-2.5 text-[15px] placeholder-surface-500 focus:outline-none leading-[1.46] scrollbar-none disabled:cursor-not-allowed"
                       style={{ minHeight: '36px', maxHeight: '240px' }}
                       rows={1}
                       disabled={!isConnected || outOfCredits}
                       autoFocus={chatId === null}
                     />
 
-                    <div className="flex items-center justify-between gap-2 border-t border-surface-700/60 px-1.5 py-1 min-w-0">
+                    <div className="flex items-center justify-between gap-2 border-t border-surface-700/40 px-1.5 py-1 min-w-0">
                       <div className="flex min-w-0 items-center gap-0.5">
                         {attachButton}
                         {scopeToggle && (
@@ -2851,7 +2851,7 @@ export function Chat({
                         onPaste={(e) => void handlePaste(e)}
                         onFocus={() => setComposerFocused(true)}
                         placeholder={outOfCredits ? 'Out of credits — upgrade to continue' : agentRunning ? 'Agent working...' : 'Message...'}
-                        className="flex-1 min-w-0 resize-none bg-transparent text-surface-100 py-1 text-[13px] placeholder-surface-500 focus:outline-none leading-[1.46] scrollbar-none disabled:cursor-not-allowed"
+                        className="flex-1 min-w-0 resize-none bg-transparent text-surface-100 py-1 text-[15px] placeholder-surface-500 focus:outline-none leading-[1.46] scrollbar-none disabled:cursor-not-allowed"
                         style={{ height: '28px' }}
                         rows={1}
                         disabled={!isConnected || outOfCredits}
@@ -3031,7 +3031,7 @@ function InviteParticipantModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-      <div className="bg-surface-900 rounded-xl border border-surface-700 shadow-xl w-full max-w-md mx-4 max-h-[min(90vh,32rem)] flex flex-col">
+      <div className="bg-surface-900 rounded-xl border border-surface-700 shadow-lg w-full max-w-md mx-4 max-h-[min(90vh,32rem)] flex flex-col">
         <div className="flex items-center justify-between px-4 py-3 border-b border-surface-700 flex-shrink-0">
           <h3 className="text-lg font-semibold text-surface-100">Add people</h3>
           <button
@@ -3158,7 +3158,7 @@ function MessageWithBlocks({
     return <></>;
   }
 
-  const rowPad: string = isGroupedWithPrevious ? 'py-[3px]' : 'py-1';
+  const rowPad: string = isGroupedWithPrevious ? 'py-[3px]' : 'py-1.5';
 
   // For user messages, use the simple Message component (with attachment cards if any)
   if (isUser) {
@@ -3195,7 +3195,7 @@ function MessageWithBlocks({
 
           <div className="flex-1 min-w-0 overflow-hidden">
             {!isGroupedWithPrevious && (
-              <div className="flex flex-wrap items-baseline gap-x-1.5 gap-y-0">
+              <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0">
                 <span className={CHAT_MSG_NAME}>{senderName}</span>
                 <span className={CHAT_MSG_TIME}>
                   {message.timestamp.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}
@@ -3259,7 +3259,7 @@ function MessageWithBlocks({
 
         <div className="flex-1 min-w-0 overflow-hidden">
           {!isGroupedWithPrevious && (
-            <div className="flex flex-wrap items-baseline gap-x-1.5 gap-y-0">
+            <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0">
               <span className={CHAT_MSG_NAME}>{displayName}</span>
               <span className={CHAT_MSG_TIME}>
                 {message.timestamp.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}
@@ -3363,7 +3363,7 @@ function MessageWithBlocks({
 
       <div className="flex-1 min-w-0 overflow-hidden -mt-px">
         {!isGroupedWithPrevious && (
-          <div className="flex flex-wrap items-baseline gap-x-1.5 gap-y-0">
+          <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0">
             <span className={CHAT_MSG_NAME}>{APP_NAME}</span>
             <span className={CHAT_MSG_TIME}>
               {message.timestamp.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}
@@ -3621,7 +3621,7 @@ function ToolBlockIndicator({
   return (
     <button
       onClick={onClick}
-      className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] leading-tight transition-colors cursor-pointer group ${pillBg} hover:brightness-95 dark:hover:brightness-110`}
+      className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-xs leading-tight transition-colors cursor-pointer group ${pillBg} hover:brightness-95 dark:hover:brightness-110`}
     >
       {isComplete ? (
         hasError ? (
@@ -3947,7 +3947,7 @@ function ToolCallModal({
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={onClose}>
       <div 
-        className="bg-surface-900 border border-surface-700 rounded-xl max-w-2xl w-full max-h-[80vh] overflow-hidden shadow-xl"
+        className="bg-surface-900 border border-surface-700 rounded-xl max-w-2xl w-full max-h-[80vh] overflow-hidden shadow-lg"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -4063,7 +4063,7 @@ function HumanTypingIndicator({
     <div className={`${CHAT_MSG_ROW} py-1`}>
       <Avatar user={avatarUser} size="md" className={CHAT_MSG_AVATAR} />
       <div className="flex-1 min-w-0">
-        <div className="flex flex-wrap items-baseline gap-x-1.5 gap-y-0">
+        <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0">
           <span className={CHAT_MSG_NAME}>{label}</span>
         </div>
         <span className="text-xs text-surface-400 animate-shimmer">Typing…</span>
@@ -4081,7 +4081,7 @@ function ThinkingIndicator(): JSX.Element {
       <img src={AGENT_AVATAR_PATH} alt={APP_NAME} className={`${CHAT_MSG_AVATAR} object-cover`} />
 
       <div className="flex-1 min-w-0">
-        <div className="flex flex-wrap items-baseline gap-x-1.5 gap-y-0">
+        <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0">
           <span className={`${CHAT_MSG_NAME} !leading-none`}>{APP_NAME}</span>
         </div>
         <span className="mt-px text-xs leading-none text-surface-400 animate-shimmer">Getting ready…</span>

@@ -16,7 +16,7 @@ export function AppTile({ app, onClick }: AppTileProps): JSX.Element {
   return (
     <button
       onClick={onClick}
-      className="flex items-center gap-3 p-3 rounded-lg bg-surface-800/80 hover:bg-surface-700/80 border border-surface-700 hover:border-surface-600 transition-all duration-150 text-left w-full max-w-sm group"
+      className="flex items-center gap-3 p-3 rounded-lg bg-surface-800/80 hover:bg-surface-700/80 border border-surface-700 hover:border-surface-600 shadow-sm transition-all duration-150 text-left w-full max-w-sm group"
     >
       {/* Icon */}
       <div className="flex-shrink-0 w-10 h-10 rounded-lg bg-primary-900/40 group-hover:bg-primary-900/60 flex items-center justify-center transition-colors">
