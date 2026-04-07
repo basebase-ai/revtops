@@ -295,8 +295,11 @@ class ArtifactConnector(BaseConnector):
                 )
             )
             existing: Artifact | None = result.scalar_one_or_none()
-        if not existing:
-            return {"error": "Artifact not found or access denied"}
+            if not existing:
+                return {"error": "Artifact not found or access denied"}
+            prev_title: str = existing.title or "Untitled"
+            prev_filename: str = existing.filename or "artifact.txt"
+            prev_content_type: str = existing.content_type or "text"
 
         updates: dict[str, Any] = {}
         if content is not None:
@@ -316,9 +319,9 @@ class ArtifactConnector(BaseConnector):
                 )
                 await session.commit()
 
-        final_title: str = title if title is not None else (existing.title or "Untitled")
-        final_filename: str = filename if filename is not None else (existing.filename or "artifact.txt")
-        final_content_type: str = content_type if content_type is not None else (existing.content_type or "text")
+        final_title: str = title if title is not None else prev_title
+        final_filename: str = filename if filename is not None else prev_filename
+        final_content_type: str = content_type if content_type is not None else prev_content_type
         artifact_id_str: str = str(artifact_uuid)
         view_url: str = f"{settings.FRONTEND_URL.rstrip('/')}/artifacts/{artifact_id_str}"
 

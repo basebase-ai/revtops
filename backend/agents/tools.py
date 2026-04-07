@@ -948,7 +948,15 @@ async def _write_on_connector(
     """Dispatch a write to a WRITE-capable connector."""
     connector: str = (params.get("connector") or "").strip()
     operation: str = (params.get("operation") or "").strip()
-    data: dict[str, Any] = dict(params.get("data") or {})
+    raw_data: Any = params.get("data") or {}
+    if isinstance(raw_data, str):
+        import json as _json
+        try:
+            raw_data = _json.JSONDecoder(strict=False).decode(raw_data)
+        except (ValueError, TypeError) as exc:
+            logger.warning("[Tools] write_on_connector: failed to parse data string: %s", exc)
+            return {"error": f"data must be a JSON object (parse error: {exc})"}
+    data: dict[str, Any] = dict(raw_data)
 
     if connector == "artifacts":
         ctx: dict[str, Any] = context or {}
@@ -1017,7 +1025,15 @@ async def _run_on_connector(
     """Dispatch an action to an ACTION-capable connector."""
     connector: str = (params.get("connector") or "").strip()
     action: str = (params.get("action") or "").strip()
-    action_params: dict[str, Any] = params.get("params") or {}
+    raw_action_params: Any = params.get("params") or {}
+    if isinstance(raw_action_params, str):
+        import json as _json
+        try:
+            raw_action_params = _json.JSONDecoder(strict=False).decode(raw_action_params)
+        except (ValueError, TypeError) as exc:
+            logger.warning("[Tools] run_on_connector: failed to parse params string: %s", exc)
+            return {"error": f"params must be a JSON object (parse error: {exc})"}
+    action_params: dict[str, Any] = dict(raw_action_params)
 
     if not connector:
         return {"error": "connector is required"}
