@@ -48,6 +48,7 @@ class MicrosoftCalendarConnector(BaseConnector):
         return {
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
+            "Prefer": 'outlook.timezone="UTC"',
         }
 
     async def _make_request(
@@ -102,7 +103,11 @@ class MicrosoftCalendarConnector(BaseConnector):
         time_max: Optional[datetime] = None,
         max_results: int = 250,
     ) -> list[dict[str, Any]]:
-        """Get events from a specific calendar or the default calendar."""
+        """Get events from a specific calendar or the default calendar.
+
+        Uses the /calendarView endpoint so recurring events are expanded into
+        individual occurrences and date-range filtering is reliable.
+        """
         if time_min is None:
             time_min = datetime.utcnow() - timedelta(days=30)
         if time_max is None:
@@ -111,15 +116,13 @@ class MicrosoftCalendarConnector(BaseConnector):
         events: list[dict[str, Any]] = []
         next_link: Optional[str] = None
 
-        # Build endpoint - use default calendar if no calendar_id provided
         if calendar_id:
-            endpoint = f"/me/calendars/{calendar_id}/events"
+            endpoint = f"/me/calendars/{calendar_id}/calendarView"
         else:
-            endpoint = "/me/calendar/events"
+            endpoint = "/me/calendarView"
 
         while len(events) < max_results:
             if next_link:
-                # For pagination, use the full URL
                 async with httpx.AsyncClient() as client:
                     headers = await self._get_headers()
                     response = await client.get(next_link, headers=headers, timeout=30.0)
@@ -127,16 +130,14 @@ class MicrosoftCalendarConnector(BaseConnector):
                     data = response.json()
             else:
                 params: dict[str, Any] = {
+                    "startDateTime": time_min.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "endDateTime": time_max.strftime("%Y-%m-%dT%H:%M:%SZ"),
                     "$top": min(50, max_results - len(events)),
                     "$orderby": "start/dateTime",
-                    "$filter": (
-                        f"start/dateTime ge '{time_min.isoformat()}Z' and "
-                        f"start/dateTime le '{time_max.isoformat()}Z'"
-                    ),
                     "$select": (
                         "id,subject,bodyPreview,start,end,location,attendees,"
                         "organizer,isOnlineMeeting,onlineMeeting,recurrence,"
-                        "isCancelled,showAs,importance"
+                        "isCancelled,showAs,importance,seriesMasterId,type"
                     ),
                 }
                 data = await self._make_request("GET", endpoint, params=params)
@@ -239,6 +240,7 @@ class MicrosoftCalendarConnector(BaseConnector):
                             "attendee_emails": parsed["attendee_emails"],
                             "duration_minutes": parsed["duration_minutes"],
                             "is_recurring": parsed["is_recurring"],
+                            "is_all_day": parsed["is_all_day"],
                             "conference_link": parsed["conference_link"],
                             "show_as": parsed["show_as"],
                             "importance": parsed["importance"],
@@ -270,14 +272,26 @@ class MicrosoftCalendarConnector(BaseConnector):
         if ms_event.get("isCancelled"):
             return None
 
-        # Parse start time
+        # Parse start time (dateTime for timed events, date for all-day)
         start = ms_event.get("start", {})
         activity_date: Optional[datetime] = None
+        is_all_day: bool = False
 
         if start.get("dateTime"):
             try:
                 dt_str: str = start["dateTime"]
-                activity_date = datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
+                raw: str = dt_str.replace("Z", "+00:00")
+                if "+" not in raw and "-" not in raw[10:]:
+                    raw += "+00:00"
+                activity_date = datetime.fromisoformat(raw)
+            except (ValueError, TypeError):
+                pass
+        elif start.get("date"):
+            try:
+                activity_date = datetime.fromisoformat(start["date"]).replace(
+                    tzinfo=timezone.utc
+                )
+                is_all_day = True
             except (ValueError, TypeError):
                 pass
 
@@ -291,7 +305,17 @@ class MicrosoftCalendarConnector(BaseConnector):
         if end.get("dateTime"):
             try:
                 dt_str = end["dateTime"]
-                end_time = datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
+                raw = dt_str.replace("Z", "+00:00")
+                if "+" not in raw and "-" not in raw[10:]:
+                    raw += "+00:00"
+                end_time = datetime.fromisoformat(raw)
+            except (ValueError, TypeError):
+                pass
+        elif end.get("date"):
+            try:
+                end_time = datetime.fromisoformat(end["date"]).replace(
+                    tzinfo=timezone.utc
+                )
             except (ValueError, TypeError):
                 pass
 
@@ -336,12 +360,14 @@ class MicrosoftCalendarConnector(BaseConnector):
         # Determine meeting type
         meeting_type = "meeting"
         conference_link: Optional[str] = None
-        if ms_event.get("isOnlineMeeting"):
-            online_meeting = ms_event.get("onlineMeeting", {})
+        if is_all_day:
+            meeting_type = "all_day_event"
+        elif ms_event.get("isOnlineMeeting"):
+            online_meeting = ms_event.get("onlineMeeting", {}) or {}
             conference_link = online_meeting.get("joinUrl", "")
-            if "teams" in conference_link.lower():
+            if conference_link and "teams" in conference_link.lower():
                 meeting_type = "teams_meeting"
-            elif "zoom" in conference_link.lower():
+            elif conference_link and "zoom" in conference_link.lower():
                 meeting_type = "zoom"
             else:
                 meeting_type = "online_meeting"
@@ -362,6 +388,12 @@ class MicrosoftCalendarConnector(BaseConnector):
         location = ms_event.get("location", {})
         location_display: Optional[str] = location.get("displayName") if location else None
 
+        is_recurring: bool = (
+            ms_event.get("recurrence") is not None
+            or ms_event.get("seriesMasterId") is not None
+            or ms_event.get("type") == "occurrence"
+        )
+
         return {
             "event_id": event_id,
             "subject": subject,
@@ -375,7 +407,8 @@ class MicrosoftCalendarConnector(BaseConnector):
             "organizer_email": organizer_email,
             "meeting_type": meeting_type,
             "meeting_status": meeting_status,
-            "is_recurring": ms_event.get("recurrence") is not None,
+            "is_recurring": is_recurring,
+            "is_all_day": is_all_day,
             "location": location_display,
             "conference_link": conference_link,
             "show_as": ms_event.get("showAs"),
