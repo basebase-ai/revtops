@@ -565,7 +565,7 @@ class WorkspaceMessenger(BaseMessenger):
         source_channel_id: str = f"{channel_id}:{thread_id}" if thread_id else channel_id
         revtops_user_id: str | None = str(user.id) if user.id else None
 
-        async with get_session(organization_id=organization_id) as session:
+        async with get_session(organization_id=organization_id, user_id=revtops_user_id) as session:
             result = await session.execute(
                 select(Conversation)
                 .where(Conversation.organization_id == UUID(organization_id))
