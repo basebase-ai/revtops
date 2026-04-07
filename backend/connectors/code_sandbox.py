@@ -49,12 +49,22 @@ _PACKAGE_INSTALL_BLOCK_MESSAGE: str = (
     "Use the preinstalled runtimes and libraries only."
 )
 
+_SUDO_BLOCK_PATTERN: re.Pattern[str] = re.compile(r"(^|[;&|()\s])sudo\b", re.IGNORECASE)
+_SUDO_BLOCK_MESSAGE: str = (
+    "Using sudo inside the code sandbox is disabled. "
+    "Run commands without elevated privileges."
+)
+
 
 def get_blocked_package_install_reason(command: str) -> str | None:
-    """Return a user-facing reason when a sandbox command installs packages."""
+    """Return a user-facing reason when a sandbox command violates command policy."""
     normalized_command: str = command.strip()
     if not normalized_command:
         return None
+
+    if _SUDO_BLOCK_PATTERN.search(normalized_command):
+        logger.info("[Sandbox] Blocked sudo command attempt")
+        return f"{_SUDO_BLOCK_MESSAGE} Blocked command pattern: sudo."
 
     for pattern, label in _PACKAGE_INSTALL_PATTERNS:
         if pattern.search(normalized_command):
