@@ -454,6 +454,7 @@ def _build_inbound_message(
             "thread_id": thread_ts,
             "thread_ts": thread_ts,
             "event_ts": event_ts,
+            "channel_type": event.get("channel_type"),
         },
         message_id=message_ts,
         mentions=mentions,

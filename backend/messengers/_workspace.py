@@ -95,6 +95,22 @@ def _merge_participating_user_ids(
     return current
 
 
+def _resolve_conversation_scope(
+    message: InboundMessage,
+    revtops_user_id: str | None,
+) -> str:
+    """Resolve conversation scope for newly created or updated conversations."""
+    if message.message_type != MessageType.DIRECT:
+        return "shared"
+
+    channel_type: str | None = message.messenger_context.get("channel_type")
+    if channel_type == "mpim":
+        return "shared"
+
+    identity_known: bool = bool(revtops_user_id or message.external_user_id)
+    return "private" if identity_known else "shared"
+
+
 def _build_workflow_context_for_message(
     platform_slug: str,
     ctx: dict[str, Any],
@@ -559,6 +575,7 @@ class WorkspaceMessenger(BaseMessenger):
 
             if conversation is not None:
                 changed: bool = False
+                target_scope: str = _resolve_conversation_scope(message, revtops_user_id)
                 if message.external_user_id and conversation.source_user_id != message.external_user_id:
                     conversation.source_user_id = message.external_user_id
                     changed = True
@@ -572,6 +589,10 @@ class WorkspaceMessenger(BaseMessenger):
 
                 if revtops_user_id and conversation.user_id != UUID(revtops_user_id):
                     conversation.user_id = UUID(revtops_user_id)
+                    changed = True
+
+                if conversation.scope != target_scope:
+                    conversation.scope = target_scope
                     changed = True
 
                 if changed:
@@ -592,6 +613,7 @@ class WorkspaceMessenger(BaseMessenger):
                 source_channel_id=source_channel_id,
                 source_user_id=message.external_user_id,
                 participating_user_ids=_merge_participating_user_ids([], revtops_user_id),
+                scope=_resolve_conversation_scope(message, revtops_user_id),
                 type="agent",
                 title=f"{source_label} - {user_display}",
             )

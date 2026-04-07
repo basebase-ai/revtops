@@ -41,6 +41,7 @@ def test_process_event_callback_routes_mpim_messages_to_direct_message_handler(m
     assert msg.text == "hey basebase"
     assert msg.messenger_context["workspace_id"] == "T123"
     assert msg.messenger_context["channel_id"] == "G123"
+    assert msg.messenger_context["channel_type"] == "mpim"
     assert msg.messenger_context["thread_id"] is None
 
 
@@ -77,4 +78,5 @@ def test_process_event_callback_passes_thread_ts_for_direct_message_thread(monke
     assert len(captured) == 1
     msg: InboundMessage = captured[0]
     assert msg.messenger_context["thread_ts"] == "1700000000.001"
+    assert msg.messenger_context["channel_type"] == "im"
     assert msg.message_id == "1700000000.002"
