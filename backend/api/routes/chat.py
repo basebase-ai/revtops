@@ -264,7 +264,7 @@ async def list_conversations(
     org_id = auth.organization_id_str
     normalized_search = (search or "").strip()
 
-    async with get_session(organization_id=org_id) as session:
+    async with get_session(organization_id=org_id, user_id=auth.user_id) as session:
         # Fast path: query without Slack filter first
         query = (
             select(Conversation)
@@ -488,7 +488,7 @@ async def create_conversation(
     if scope not in ("private", "shared"):
         raise HTTPException(status_code=400, detail="Invalid scope. Must be 'private' or 'shared'")
 
-    async with get_session(organization_id=org_id) as session:
+    async with get_session(organization_id=org_id, user_id=auth.user_id) as session:
         conversation = Conversation(
             user_id=auth.user_id,
             organization_id=auth.organization_id,
@@ -570,7 +570,7 @@ async def get_conversation(
 
     org_id = auth.organization_id_str
 
-    async with get_session(organization_id=org_id) as session:
+    async with get_session(organization_id=org_id, user_id=auth.user_id) as session:
         # Fast path: try without Slack lookup (covers web chats + shared org chats)
         result = await session.execute(
             select(Conversation)
@@ -665,7 +665,7 @@ async def update_conversation(
 
     org_id = auth.organization_id_str
 
-    async with get_session(organization_id=org_id) as session:
+    async with get_session(organization_id=org_id, user_id=auth.user_id) as session:
         slack_user_ids = await _get_slack_user_ids(auth, session=session)
         result = await session.execute(
             select(Conversation)
@@ -745,7 +745,7 @@ async def delete_conversation(
 
     org_id = auth.organization_id_str
 
-    async with get_session(organization_id=org_id) as session:
+    async with get_session(organization_id=org_id, user_id=auth.user_id) as session:
         result = await session.execute(
             select(Conversation)
             .where(Conversation.id == conv_uuid)
@@ -813,7 +813,7 @@ async def add_participant(
 
     org_id = auth.organization_id_str
 
-    async with get_session(organization_id=org_id) as session:
+    async with get_session(organization_id=org_id, user_id=auth.user_id) as session:
         slack_user_ids = await _get_slack_user_ids(auth, session=session)
         # Get conversation
         result = await session.execute(
@@ -908,7 +908,7 @@ async def remove_participant(
 
     org_id = auth.organization_id_str
 
-    async with get_session(organization_id=org_id) as session:
+    async with get_session(organization_id=org_id, user_id=auth.user_id) as session:
         slack_user_ids = await _get_slack_user_ids(auth, session=session)
         result = await session.execute(
             select(Conversation)
@@ -960,7 +960,7 @@ async def update_scope(
 
     org_id = auth.organization_id_str
 
-    async with get_session(organization_id=org_id) as session:
+    async with get_session(organization_id=org_id, user_id=auth.user_id) as session:
         slack_user_ids = await _get_slack_user_ids(auth, session=session)
         result = await session.execute(
             select(Conversation)
@@ -1047,7 +1047,7 @@ async def get_chat_history(
 
     org_id = auth.organization_id_str
 
-    async with get_session(organization_id=org_id) as session:
+    async with get_session(organization_id=org_id, user_id=auth.user_id) as session:
         slack_user_ids = await _get_slack_user_ids(auth, session=session)
         query = (
             select(ChatMessage)
@@ -1094,7 +1094,7 @@ async def send_message(
             detail="Insufficient credits or no active subscription. Please upgrade your plan or add a payment method.",
         )
 
-    async with get_session(organization_id=org_id) as session:
+    async with get_session(organization_id=org_id, user_id=auth.user_id) as session:
         # Create conversation if not provided
         if not conv_uuid:
             conversation = Conversation(
@@ -1218,7 +1218,7 @@ async def get_chat_attachment(
     if not org_id:
         raise HTTPException(status_code=403, detail="Organization context required")
 
-    async with get_session(organization_id=org_id) as session:
+    async with get_session(organization_id=org_id, user_id=auth.user_id) as session:
         stmt = (
             select(ChatAttachment)
             .join(Conversation, ChatAttachment.conversation_id == Conversation.id)
