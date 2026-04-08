@@ -18,6 +18,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from config import settings
 from models.activity import Activity
 from models.daily_digest import DailyDigest
+from models.daily_team_summary import DailyTeamSummary
 from models.external_identity_mapping import ExternalIdentityMapping
 from models.github_commit import GitHubCommit
 from models.github_pull_request import GitHubPullRequest
@@ -537,12 +538,133 @@ async def generate_member_digest(
     return row
 
 
+_TEAM_SUMMARY_SYSTEM_PROMPT: str = (
+    "You are given individual daily work summaries for every member of a team on {date_human}. "
+    "You may also receive the team's summaries from the previous few days for context.\n\n"
+    "Identify the 1-4 shared goals or initiatives the team appears to be making progress on, "
+    "based on today's activity and any recent patterns. Present each as a short markdown section:\n\n"
+    "# Goal / Initiative Title\n"
+    "1-2 sentences on what progress the team made toward this goal today.\n\n"
+    "Use past tense. Focus on themes, key outcomes, and momentum — not individual names. "
+    "Keep each section brief (1-2 sentences). You may use markdown formatting "
+    "(headers, bold, inline code) but do NOT use bullet lists. "
+    "If all members had no activity, just write a single section titled "
+    "\"# Quiet Day\" with a note that there was no notable activity."
+)
+
+_PRIOR_TEAM_SUMMARIES_LOOKBACK_DAYS: int = 4
+
+
+async def generate_team_summary(
+    session: Any,
+    organization_id: UUID,
+    digest_date: date,
+) -> DailyTeamSummary:
+    """Summarize all member narratives into a single team paragraph and upsert."""
+    res = await session.execute(
+        select(DailyDigest).where(
+            DailyDigest.organization_id == organization_id,
+            DailyDigest.digest_date == digest_date,
+        )
+    )
+    digests: list[DailyDigest] = list(res.scalars().all())
+
+    narratives: list[str] = []
+    for d in digests:
+        raw_summary: dict[str, Any] = d.summary if isinstance(d.summary, dict) else {}
+        narrative: str = str(raw_summary.get("narrative", "")).strip()
+        if narrative and "didn't have any" not in narrative.lower():
+            narratives.append(narrative)
+
+    if not narratives:
+        summary_text: str = "The team had a quiet day with no notable activity."
+    else:
+        try:
+            parsed_date: date = digest_date
+            date_human: str = parsed_date.strftime("%B %-d, %Y")
+        except ValueError:
+            date_human = digest_date.isoformat()
+
+        prior_parts: list[str] = []
+        try:
+            lookback_start: date = digest_date - timedelta(days=_PRIOR_TEAM_SUMMARIES_LOOKBACK_DAYS)
+            prior_res = await session.execute(
+                select(DailyTeamSummary)
+                .where(
+                    DailyTeamSummary.organization_id == organization_id,
+                    DailyTeamSummary.digest_date >= lookback_start,
+                    DailyTeamSummary.digest_date < digest_date,
+                )
+                .order_by(DailyTeamSummary.digest_date.asc())
+            )
+            prior_rows: list[DailyTeamSummary] = list(prior_res.scalars().all())
+            for pr in prior_rows:
+                pr_date_str: str = pr.digest_date.strftime("%B %-d, %Y")
+                prior_parts.append(f"{pr_date_str}: {pr.summary_text}")
+        except Exception:
+            logger.debug("Failed to load prior team summaries; proceeding without them")
+
+        system_prompt: str = _TEAM_SUMMARY_SYSTEM_PROMPT.format(date_human=date_human)
+        user_msg: str = ""
+        if prior_parts:
+            user_msg += "Previous days' team summaries:\n\n" + "\n\n".join(prior_parts) + "\n\n---\n\n"
+        user_msg += "Today's member summaries:\n\n" + "\n\n".join(narratives)
+        client: AsyncAnthropic = AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
+        try:
+            resp = await client.messages.create(
+                model=_MODEL,
+                max_tokens=512,
+                system=system_prompt,
+                messages=[{"role": "user", "content": user_msg}],
+            )
+            await report_anthropic_call_success(source="daily_team_summary")
+            text_parts: list[str] = []
+            for block in resp.content:
+                if hasattr(block, "text"):
+                    text_parts.append(str(block.text))
+            summary_text = "".join(text_parts).strip()[:2000] or "The team had a quiet day with no notable activity."
+        except Exception as exc:
+            await report_anthropic_call_failure(exc=exc, source="daily_team_summary")
+            logger.exception("team summary LLM failed: %s", exc)
+            summary_text = "The team had a quiet day with no notable activity."
+
+    now: datetime = datetime.now(timezone.utc)
+    new_id: UUID = uuid.uuid4()
+    insert_stmt = pg_insert(DailyTeamSummary).values(
+        id=new_id,
+        organization_id=organization_id,
+        digest_date=digest_date,
+        summary_text=summary_text,
+        generated_at=now,
+    )
+    upsert_stmt = insert_stmt.on_conflict_do_update(
+        constraint="uq_daily_team_summaries_org_date",
+        set_={
+            "summary_text": insert_stmt.excluded.summary_text,
+            "generated_at": insert_stmt.excluded.generated_at,
+        },
+    )
+    await session.execute(upsert_stmt)
+    await session.commit()
+
+    row_res = await session.execute(
+        select(DailyTeamSummary).where(
+            DailyTeamSummary.organization_id == organization_id,
+            DailyTeamSummary.digest_date == digest_date,
+        )
+    )
+    row: DailyTeamSummary | None = row_res.scalar_one_or_none()
+    if row is None:
+        raise RuntimeError("daily_team_summary upsert failed to read back row")
+    return row
+
+
 async def generate_org_digests_for_session(
     session: Any,
     organization_id: UUID,
     digest_date: date,
 ) -> dict[str, Any]:
-    """Generate digests for every active org member."""
+    """Generate digests for every active org member, then a team summary."""
     mem_res = await session.execute(
         select(OrgMember)
         .join(User, User.id == OrgMember.user_id)
@@ -563,6 +685,13 @@ async def generate_org_digests_for_session(
             err_msg: str = f"user_id={m.user_id}: {exc}"
             errors.append(err_msg)
             logger.exception("daily_digest member failed %s", err_msg)
+
+    try:
+        await generate_team_summary(session, organization_id, digest_date)
+    except Exception as exc:
+        errors.append(f"team_summary: {exc}")
+        logger.exception("daily_digest team summary failed: %s", exc)
+
     return {"generated": generated, "errors": errors}
 
 

@@ -12,62 +12,19 @@
 
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import Nango from '@nangohq/frontend';
-import type { IconType } from 'react-icons';
-import {
-  SiSalesforce,
-  SiHubspot,
-  SiSlack,
-  SiZoom,
-  SiGooglecalendar,
-  SiGmail,
-  SiGoogledrive,
-  SiGithub,
-  SiLinear,
-  SiJira,
-  SiAsana,
-} from 'react-icons/si';
-import { HiOutlineCalendar, HiOutlineMail, HiGlobeAlt, HiUserGroup, HiDeviceMobile, HiMicrophone, HiLightningBolt, HiX, HiCog, HiShare, HiLockClosed, HiDocumentText, HiCube, HiLink, HiChevronDown } from 'react-icons/hi';
-// Custom Apollo.io icon - 8-ray starburst matching their brand
-const ApolloIcon: IconType = ({ className, ...props }) => (
-  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className={className} {...props}>
-    <line x1="12" y1="2" x2="12" y2="22" />
-    <line x1="2" y1="12" x2="22" y2="12" />
-    <line x1="4.93" y1="4.93" x2="19.07" y2="19.07" />
-    <line x1="19.07" y1="4.93" x2="4.93" y2="19.07" />
-  </svg>
-);
+import { HiGlobeAlt, HiUserGroup, HiX, HiCog, HiShare, HiLockClosed, HiChevronDown, HiLightningBolt, HiLink } from 'react-icons/hi';
 import { API_BASE, apiRequest, getAuthenticatedRequestHeaders } from '../lib/api';
 import { useAppStore, useIntegrations, useIntegrationsLoading, type Integration, type SyncStats } from '../store';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { IdentityMappingWizard } from './IdentityMappingWizard';
-
-// Icon map for integration providers
-const ICON_MAP: Record<string, IconType> = {
-  hubspot: SiHubspot,
-  salesforce: SiSalesforce,
-  slack: SiSlack,
-  zoom: SiZoom,
-  'google-calendar': SiGooglecalendar,
-  google_calendar: SiGooglecalendar,
-  gmail: SiGmail,
-  'microsoft-calendar': HiOutlineCalendar,
-  microsoft_calendar: HiOutlineCalendar,
-  'microsoft-mail': HiOutlineMail,
-  microsoft_mail: HiOutlineMail,
-  fireflies: HiMicrophone,
-  google_drive: SiGoogledrive,
-  apollo: ApolloIcon,
-  github: SiGithub,
-  linear: SiLinear,
-  jira: SiJira,
-  asana: SiAsana,
-  globe: HiGlobeAlt,
-  terminal: HiLightningBolt,
-  sms: HiDeviceMobile,
-  artifacts: HiDocumentText,
-  apps: HiCube,
-  plug: HiLink,
-};
+import {
+  CONNECTOR_DISPLAY as CONNECTOR_DISPLAY_OVERRIDE,
+  CONNECTOR_ICON_MAP as ICON_MAP,
+  DEFAULT_CONNECTOR_ICON as DEFAULT_ICON,
+  DEFAULT_CONNECTOR_COLOR as DEFAULT_COLOR,
+  isImageIcon,
+  getConnectorColorClass as getColorClass,
+} from './shared/ConnectorIcons';
 
 /** Connector metadata from GET /api/connectors */
 interface ConnectorMetaFromApi {
@@ -81,36 +38,6 @@ interface ConnectorMetaFromApi {
   capabilities: string[];
   icon: string;
 }
-
-/** Display overrides (icon, color) by slug; fallback used when missing. */
-const CONNECTOR_DISPLAY_OVERRIDE: Record<string, { icon?: string; color?: string }> = {
-  hubspot: { icon: 'hubspot', color: 'from-orange-500 to-orange-600' },
-  salesforce: { icon: 'salesforce', color: 'from-blue-500 to-blue-600' },
-  slack: { icon: 'slack', color: 'from-purple-500 to-purple-600' },
-  zoom: { icon: 'zoom', color: 'from-blue-400 to-blue-500' },
-  google_calendar: { icon: 'google_calendar', color: 'from-green-500 to-green-600' },
-  gmail: { icon: 'gmail', color: 'from-red-500 to-red-600' },
-  microsoft_calendar: { icon: 'microsoft_calendar', color: 'from-sky-500 to-sky-600' },
-  microsoft_mail: { icon: 'microsoft_mail', color: 'from-sky-500 to-sky-600' },
-  fireflies: { icon: 'fireflies', color: 'from-violet-500 to-violet-600' },
-  granola: { icon: '/connector-icons/granola.png', color: 'from-lime-500 to-green-600' },
-  google_drive: { icon: 'google_drive', color: 'from-yellow-500 to-amber-500' },
-  apollo: { icon: 'apollo', color: 'from-yellow-400 to-yellow-500' },
-  github: { icon: 'github', color: 'from-gray-600 to-gray-700' },
-  linear: { icon: 'linear', color: 'from-indigo-500 to-violet-600' },
-  jira: { icon: 'jira', color: 'from-blue-500 to-blue-600' },
-  asana: { icon: 'asana', color: 'from-fuchsia-500 to-pink-600' },
-  web_search: { icon: 'globe', color: 'from-emerald-500 to-teal-600' },
-  code_sandbox: { icon: 'terminal', color: 'from-amber-500 to-orange-600' },
-  twilio: { icon: 'sms', color: 'from-red-500 to-pink-600' },
-  artifacts: { icon: 'artifacts', color: 'from-slate-500 to-slate-600' },
-  apps: { icon: 'apps', color: 'from-violet-500 to-purple-600' },
-  mcp: { icon: 'plug', color: 'from-cyan-500 to-blue-600' },
-  ispot_tv: { icon: 'globe', color: 'from-emerald-500 to-teal-600' },
-};
-
-const DEFAULT_ICON = 'globe';
-const DEFAULT_COLOR = 'from-gray-500 to-gray-600';
 
 /** Fallback when API fails or provider not in registry. */
 interface IntegrationConfigEntry {
@@ -1476,37 +1403,12 @@ export function DataSources(): JSX.Element {
   );
   const availableIntegrations = allIntegrations.filter((i) => !i.connected);
 
-  const isImageIcon = (iconId: string): boolean =>
-    iconId.startsWith('/') || iconId.startsWith('http');
-
-  // Icon renderer — supports both react-icon keys and image paths
   const renderIcon = (iconId: string): JSX.Element => {
     if (isImageIcon(iconId)) {
       return <img src={iconId} alt="" className="w-full h-full rounded-xl object-cover" />;
     }
     const IconComponent = ICON_MAP[iconId] ?? HiGlobeAlt;
     return <IconComponent className="w-8 h-8" />;
-  };
-
-  // Color mapper
-  const getColorClass = (color: string): string => {
-    const colorMap: Record<string, string> = {
-      'from-orange-500 to-orange-600': 'bg-orange-500',
-      'from-blue-500 to-blue-600': 'bg-blue-500',
-      'from-blue-400 to-blue-500': 'bg-blue-400',
-      'from-purple-500 to-purple-600': 'bg-purple-500',
-      'from-green-500 to-green-600': 'bg-green-500',
-      'from-sky-500 to-sky-600': 'bg-sky-500',
-      'from-red-500 to-red-600': 'bg-red-500',
-      'from-violet-500 to-violet-600': 'bg-violet-500',
-      'from-yellow-400 to-yellow-500': 'bg-yellow-400',
-      'from-yellow-500 to-amber-500': 'bg-yellow-500',
-      'from-indigo-500 to-violet-600': 'bg-indigo-500',
-      'from-gray-600 to-gray-700': 'bg-gray-600',
-      'from-gray-500 to-gray-600': 'bg-gray-500',
-      'from-emerald-500 to-teal-600': 'bg-emerald-500',
-    };
-    return colorMap[color] ?? 'bg-surface-600';
   };
 
   // Tile state type for unified rendering

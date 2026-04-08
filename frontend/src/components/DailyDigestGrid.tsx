@@ -3,6 +3,9 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
+import type { Components } from "react-markdown";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import {
   fetchDailyDigests,
   generateDailyDigests,
@@ -10,6 +13,14 @@ import {
   type DigestMemberRow,
   type DigestSummaryJson,
 } from "../api/daily-digests";
+import {
+  CONNECTOR_DISPLAY,
+  DEFAULT_CONNECTOR_COLOR,
+  DEFAULT_CONNECTOR_ICON,
+  getConnectorColorClass,
+  isImageIcon,
+  renderConnectorIcon,
+} from "./shared/ConnectorIcons";
 
 function addCalendarDays(isoDate: string, deltaDays: number): string {
   const parts: string[] = isoDate.split("-");
@@ -26,35 +37,26 @@ function formatDisplayDate(isoDate: string): string {
   return `${mm}/${dd}/${yy}`;
 }
 
-const SOURCE_META: Record<string, { label: string; icon: string }> = {
-  slack: { label: "Slack", icon: "💬" },
-  google_calendar: { label: "Google Calendar", icon: "📅" },
-  meetings: { label: "Meeting Notes", icon: "🎙️" },
-  linear: { label: "Linear", icon: "🔷" },
-  github: { label: "GitHub", icon: "🐙" },
-  hubspot: { label: "HubSpot", icon: "🟠" },
-  google_drive: { label: "Google Drive", icon: "📁" },
-  granola: { label: "Granola", icon: "📝" },
-  fireflies: { label: "Fireflies", icon: "🔥" },
-  zoom: { label: "Zoom", icon: "📹" },
-  salesforce: { label: "Salesforce", icon: "☁️" },
-};
-
 function SourceBadges({ sources }: { sources: string[] }): JSX.Element | null {
   if (sources.length === 0) return null;
   return (
     <div className="flex flex-wrap items-center gap-1.5">
-      <span className="text-xs text-surface-500 mr-0.5">Sources:</span>
       {sources.map((s) => {
-        const meta: { label: string; icon: string } = SOURCE_META[s] ?? { label: s, icon: "🔗" };
+        const display = CONNECTOR_DISPLAY[s];
+        const label: string = display?.label ?? s;
+        const iconId: string = display?.icon ?? DEFAULT_CONNECTOR_ICON;
+        const color: string = display?.color ?? DEFAULT_CONNECTOR_COLOR;
+        const bgClass: string = isImageIcon(iconId) ? "" : getConnectorColorClass(color);
         return (
           <span
             key={s}
-            title={meta.label}
-            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-surface-800 text-surface-300 text-xs"
+            title={label}
+            className="inline-flex items-center gap-1.5 pl-1 pr-2 py-0.5 rounded-md bg-surface-800 text-surface-300 text-xs"
           >
-            <span>{meta.icon}</span>
-            <span>{meta.label}</span>
+            <span className={`${bgClass} rounded p-0.5 text-white flex items-center justify-center`}>
+              {renderConnectorIcon(iconId, "w-3.5 h-3.5")}
+            </span>
+            <span>{label}</span>
           </span>
         );
       })}
@@ -119,6 +121,43 @@ function renderSummary(summary: DigestSummaryJson | null): JSX.Element {
         <p className="text-surface-500">No activity data available for this day.</p>
       ) : null}
     </div>
+  );
+}
+
+const TEAM_SUMMARY_MD_COMPONENTS: Components = {
+  h1({ children }) {
+    return (
+      <h3 className="text-sm font-semibold text-surface-100 mt-3 first:mt-0 mb-1">
+        {children}
+      </h3>
+    );
+  },
+  h2({ children }) {
+    return (
+      <h4 className="text-sm font-medium text-surface-200 mt-2 first:mt-0 mb-1">
+        {children}
+      </h4>
+    );
+  },
+  p({ children }) {
+    return (
+      <p className="text-surface-300 text-sm leading-relaxed mb-1.5 last:mb-0">
+        {children}
+      </p>
+    );
+  },
+};
+
+function TeamSummaryCard({ summary }: { summary: string }): JSX.Element {
+  return (
+    <article className="rounded-xl border border-primary-500/30 bg-surface-900/60 p-4 md:p-5">
+      <div className="text-xs font-medium text-primary-400 uppercase tracking-wide mb-2">
+        Team Summary
+      </div>
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={TEAM_SUMMARY_MD_COMPONENTS}>
+        {summary}
+      </ReactMarkdown>
+    </article>
   );
 }
 
@@ -202,7 +241,7 @@ export function DailyDigestGrid({ digestDate, onDigestDateChange }: DailyDigestG
   };
 
   return (
-    <div className="flex flex-col gap-4 min-h-[400px]">
+    <div className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2">
           <button
@@ -267,11 +306,14 @@ export function DailyDigestGrid({ digestDate, onDigestDateChange }: DailyDigestG
       ) : data && data.members.length === 0 ? (
         <p className="text-surface-500 text-sm">No active team members in this organization.</p>
       ) : data && data.members.length > 0 ? (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 pb-4">
-          {data.members.map((m) => (
-            <MemberCard key={m.user_id} member={m} />
-          ))}
-        </div>
+        <>
+          {data.team_summary ? <TeamSummaryCard summary={data.team_summary} /> : null}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 pb-4">
+            {data.members.map((m) => (
+              <MemberCard key={m.user_id} member={m} />
+            ))}
+          </div>
+        </>
       ) : null}
     </div>
   );

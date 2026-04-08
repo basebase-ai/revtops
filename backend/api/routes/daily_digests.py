@@ -13,6 +13,7 @@ from sqlalchemy import and_, select
 
 from api.auth_middleware import AuthContext, require_organization
 from models.daily_digest import DailyDigest
+from models.daily_team_summary import DailyTeamSummary
 from models.database import get_session
 from models.org_member import OrgMember
 from models.user import User
@@ -39,6 +40,7 @@ class DigestMemberRow(BaseModel):
 
 class DailyDigestsResponse(BaseModel):
     digest_date: str
+    team_summary: str | None = None
     members: list[DigestMemberRow]
     all_active_sources: list[str] = Field(default_factory=list)
 
@@ -136,6 +138,15 @@ async def list_daily_digests(
                 )
             )
 
+        team_summary_row = await session.execute(
+            select(DailyTeamSummary).where(
+                DailyTeamSummary.organization_id == org_uuid,
+                DailyTeamSummary.digest_date == target,
+            )
+        )
+        ts: DailyTeamSummary | None = team_summary_row.scalar_one_or_none()
+        team_summary_text: str | None = ts.summary_text if ts is not None else None
+
     all_sources_set: set[str] = set()
     for m in members_out:
         for src in m.active_sources:
@@ -143,6 +154,7 @@ async def list_daily_digests(
 
     return DailyDigestsResponse(
         digest_date=target.isoformat(),
+        team_summary=team_summary_text,
         members=members_out,
         all_active_sources=sorted(all_sources_set),
     )

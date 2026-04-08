@@ -24,6 +24,7 @@ export interface DigestMemberRow {
 
 export interface DailyDigestsResponse {
   digest_date: string;
+  team_summary: string | null;
   members: DigestMemberRow[];
   all_active_sources: string[];
 }
