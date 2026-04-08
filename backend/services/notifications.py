@@ -46,6 +46,7 @@ async def create_mention_notifications(
     actor_uuid = UUID(actor_user_id)
     msg_uuid = UUID(message_id) if message_id else None
 
+    created_payloads: list[dict[str, str | None]] = []
     async with get_session(organization_id=organization_id) as session:
         actor_row = await session.execute(select(User.name).where(User.id == actor_uuid))
         actor_name: str | None = actor_row.scalar_one_or_none()
@@ -64,21 +65,39 @@ async def create_mention_notifications(
             )
             session.add(n)
             created.append(n)
+
+        # Materialize Python-side defaults (id/created_at) before commit/session close
+        # so we never access detached instances later.
+        await session.flush()
+        for n in created:
+            created_payloads.append(
+                {
+                    "id": str(n.id) if n.id else None,
+                    "type": n.type,
+                    "conversation_id": str(n.conversation_id) if n.conversation_id else None,
+                    "actor_user_id": str(n.actor_user_id) if n.actor_user_id else None,
+                    "created_at": n.created_at.isoformat() if n.created_at else None,
+                    "user_id": str(n.user_id) if n.user_id else None,
+                }
+            )
         await session.commit()
 
     from api.websockets import conversation_broadcaster
 
-    for n in created:
+    for payload in created_payloads:
+        if not payload.get("user_id"):
+            logger.warning("Skipping notification broadcast due to missing user_id payload: %s", payload)
+            continue
         notification_data = {
-            "id": str(n.id),
-            "type": n.type,
-            "conversation_id": str(n.conversation_id),
-            "actor_user_id": str(n.actor_user_id),
+            "id": payload["id"],
+            "type": payload["type"],
+            "conversation_id": payload["conversation_id"],
+            "actor_user_id": payload["actor_user_id"],
             "actor_name": actor_name,
-            "created_at": n.created_at.isoformat() if n.created_at else None,
+            "created_at": payload["created_at"],
         }
         await conversation_broadcaster.broadcast_to_users(
-            user_ids=[str(n.user_id)],
+            user_ids=[payload["user_id"]],
             event_type="notification",
             data={"notification": notification_data},
             exclude_user_id=None,
