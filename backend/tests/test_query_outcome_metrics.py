@@ -34,6 +34,12 @@ def test_failed_query_outcome_classification() -> None:
     )
 
 
+def test_timeout_continuing_is_excluded_from_query_outcome_consideration() -> None:
+    assert BaseMessenger._should_skip_query_outcome(result={"status": "timeout_continuing"})
+    assert not BaseMessenger._should_skip_query_outcome(result={"status": "success"})
+    assert not BaseMessenger._should_skip_query_outcome(result=None)
+
+
 def test_get_query_outcome_window_stats() -> None:
     class _FakePipeline:
         def zremrangebyscore(self, *_args, **_kwargs) -> None:

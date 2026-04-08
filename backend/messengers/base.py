@@ -409,6 +409,14 @@ class BaseMessenger(ABC):
             )
             return
 
+        if self._should_skip_query_outcome(result=result):
+            logger.info(
+                "[%s] Skipping query outcome metrics for intermediate status=%s",
+                self.meta.slug,
+                result.get("status") if result else None,
+            )
+            return
+
         was_success = self._is_successful_query_outcome(result=result, error=error)
         failure_reason = self._derive_failed_query_reason(result=result, error=error)
         try:
@@ -446,6 +454,16 @@ class BaseMessenger(ABC):
         if status == "error" and result.get("error") == "insufficient_credits":
             return True
         return False
+
+    @staticmethod
+    def _should_skip_query_outcome(
+        *,
+        result: dict[str, Any] | None,
+    ) -> bool:
+        """Identify intermediate states that should not affect success/failure metrics."""
+        if not result:
+            return False
+        return result.get("status") == "timeout_continuing"
 
     @staticmethod
     def _derive_failed_query_reason(
