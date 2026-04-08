@@ -27,20 +27,21 @@ _COMMAND_TIMEOUT_SECONDS: float = 120
 _MAX_OUTPUT_LENGTH: int = 50_000
 
 _PACKAGE_INSTALL_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
-    (re.compile(r"(^|[;&|()\s])npm\s+(?:install|i)\b", re.IGNORECASE), "npm install"),
+    (re.compile(r"(^|[;&|()\s])npm\b", re.IGNORECASE), "npm"),
     (re.compile(r"(^|[;&|()\s])yarn\s+(?:global\s+add|add|install)\b", re.IGNORECASE), "yarn add/install"),
     (re.compile(r"(^|[;&|()\s])pnpm\s+(?:add|install)\b", re.IGNORECASE), "pnpm add/install"),
     (re.compile(r"(^|[;&|()\s])bun\s+(?:add|install)\b", re.IGNORECASE), "bun add/install"),
-    (re.compile(r"(^|[;&|()\s])pip(?:3)?\s+install\b", re.IGNORECASE), "pip install"),
+    (re.compile(r"(^|[;&|()\s])pip(?:3)?\b", re.IGNORECASE), "pip"),
     (re.compile(r"(^|[;&|()\s])python(?:3)?\s+-m\s+pip\s+install\b", re.IGNORECASE), "python -m pip install"),
     (re.compile(r"(^|[;&|()\s])uv\s+(?:pip\s+install|add)\b", re.IGNORECASE), "uv pip install/add"),
     (re.compile(r"(^|[;&|()\s])poetry\s+(?:add|install)\b", re.IGNORECASE), "poetry add/install"),
     (re.compile(r"(^|[;&|()\s])pipx\s+install\b", re.IGNORECASE), "pipx install"),
-    (re.compile(r"(^|[;&|()\s])apt(?:-get)?\s+install\b", re.IGNORECASE), "apt install"),
+    (re.compile(r"(^|[;&|()\s])apt-get\b", re.IGNORECASE), "apt-get"),
+    (re.compile(r"(^|[;&|()\s])yum\b", re.IGNORECASE), "yum"),
+    (re.compile(r"(^|[;&|()\s])brew\b", re.IGNORECASE), "brew"),
+    (re.compile(r"(^|[;&|()\s])apt\s+install\b", re.IGNORECASE), "apt install"),
     (re.compile(r"(^|[;&|()\s])apk\s+add\b", re.IGNORECASE), "apk add"),
-    (re.compile(r"(^|[;&|()\s])yum\s+install\b", re.IGNORECASE), "yum install"),
     (re.compile(r"(^|[;&|()\s])dnf\s+install\b", re.IGNORECASE), "dnf install"),
-    (re.compile(r"(^|[;&|()\s])brew\s+install\b", re.IGNORECASE), "brew install"),
     (re.compile(r"(^|[;&|()\s])pacman\s+-S\b", re.IGNORECASE), "pacman -S"),
 )
 

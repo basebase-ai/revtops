@@ -5,22 +5,27 @@ from connectors.code_sandbox import CodeSandboxConnector, get_blocked_package_in
 
 def test_get_blocked_package_install_reason_allows_non_install_commands() -> None:
     assert get_blocked_package_install_reason("python3 -c 'print(1)'") is None
-    assert get_blocked_package_install_reason("npm run build") is None
+    assert get_blocked_package_install_reason("node -e 'console.log(1)'") is None
 
 
 def test_get_blocked_package_install_reason_blocks_common_package_managers() -> None:
     commands = [
         "npm install lodash",
+        "npm run build",
         "yarn add react",
         "pnpm install zod",
         "bun add hono",
         "pip install pandas",
+        "pip --version",
         "python3 -m pip install numpy",
         "uv pip install polars",
         "poetry add requests",
         "apt-get install jq",
+        "apt-get update",
         "apk add curl",
+        "yum update -y",
         "brew install wget",
+        "brew update",
     ]
 
     for command in commands:
@@ -48,7 +53,7 @@ async def test_execute_action_rejects_package_install_before_sandbox_use() -> No
         "error": (
             "Installing packages inside the code sandbox is disabled. "
             "Use the preinstalled runtimes and libraries only. "
-            "Blocked command pattern: npm install."
+            "Blocked command pattern: npm."
         )
     }
 
