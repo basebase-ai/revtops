@@ -70,6 +70,63 @@ _DEFAULT_HUBSPOT_CONTACT_READ_PROPERTIES: tuple[str, ...] = (
     "lifecyclestage",
 )
 
+_HUBSPOT_SEARCH_FILTERS_NO_VALUE: frozenset[str] = frozenset({"HAS_PROPERTY", "NOT_HAS_PROPERTY"})
+
+
+def _hubspot_contact_search_filter_from_item(item: dict[str, Any]) -> dict[str, Any]:
+    """Map a user filter dict to HubSpot CRM Search API filter shape."""
+    prop_any: Any = item.get("property") if "property" in item else item.get("propertyName")
+    prop_name: str = str(prop_any).strip() if prop_any is not None else ""
+    if not prop_name:
+        raise ValueError("Each filter must include property (or propertyName)")
+    op_any: Any = item.get("operator")
+    if op_any is None or (isinstance(op_any, str) and not str(op_any).strip()):
+        raise ValueError("Each filter must include operator")
+    operator: str = str(op_any).strip().upper()
+    out: dict[str, Any] = {
+        "propertyName": prop_name,
+        "operator": operator,
+    }
+    if operator in _HUBSPOT_SEARCH_FILTERS_NO_VALUE:
+        return out
+    val: Any = item.get("value")
+    if operator == "BETWEEN":
+        if val is None or val == "":
+            raise ValueError("BETWEEN filter requires value")
+        out["value"] = str(val)
+        high_any: Any = item.get("highValue")
+        if high_any is None or high_any == "":
+            raise ValueError("BETWEEN filter requires highValue")
+        out["highValue"] = str(high_any)
+        return out
+    if val is None or val == "":
+        raise ValueError(f"filter for operator {operator} requires value")
+    if operator in ("IN", "NOT_IN") and isinstance(val, list):
+        out["value"] = ";".join(str(x) for x in val)
+    elif isinstance(val, (dict, list)):
+        raise ValueError("filter value must be a scalar or list for IN/NOT_IN")
+    else:
+        out["value"] = str(val)
+    high_opt: Any = item.get("highValue")
+    if high_opt is not None and str(high_opt).strip() != "":
+        out["highValue"] = str(high_opt)
+    return out
+
+
+def _hubspot_contact_sort_from_item(item: dict[str, Any]) -> dict[str, Any]:
+    """Map a user sort dict to HubSpot CRM Search API sort shape."""
+    prop_any: Any = item.get("property") if "property" in item else item.get("propertyName")
+    prop_name: str = str(prop_any).strip() if prop_any is not None else ""
+    if not prop_name:
+        raise ValueError("Each sort must include property (or propertyName)")
+    dir_any: Any = item.get("direction")
+    if dir_any is None or (isinstance(dir_any, str) and not str(dir_any).strip()):
+        raise ValueError("Each sort must include direction")
+    direction: str = str(dir_any).strip().upper()
+    if direction not in ("ASCENDING", "DESCENDING"):
+        raise ValueError("sort direction must be ASCENDING or DESCENDING")
+    return {"propertyName": prop_name, "direction": direction}
+
 
 class HubSpotConnector(BaseConnector):
     """Connector for HubSpot CRM."""
@@ -229,6 +286,56 @@ class HubSpotConnector(BaseConnector):
                     },
                 ],
             ),
+            ConnectorAction(
+                name="search_contacts",
+                description=(
+                    "Search CRM contacts with filters, property selection, sorting, and pagination. "
+                    "Wraps HubSpot POST /crm/v3/objects/contacts/search. "
+                    "Up to 100 results per page; use paging.next.after for the next page."
+                ),
+                parameters=[
+                    {
+                        "name": "filters",
+                        "type": "array",
+                        "required": True,
+                        "description": (
+                            "Filters ANDed in one group: objects with property, operator, value. "
+                            "Operators: EQ, NEQ, LT, LTE, GT, GTE, BETWEEN, IN, NOT_IN, "
+                            "HAS_PROPERTY, NOT_HAS_PROPERTY, CONTAINS_TOKEN, NOT_CONTAINS_TOKEN."
+                        ),
+                    },
+                    {
+                        "name": "properties",
+                        "type": "array",
+                        "required": False,
+                        "description": (
+                            "Contact properties to return (e.g. email, firstname, lastname, company, "
+                            "notes_last_contacted, hubspot_owner_id, lifecyclestage)."
+                        ),
+                    },
+                    {
+                        "name": "sorts",
+                        "type": "array",
+                        "required": False,
+                        "description": (
+                            "Sort objects: property (or propertyName) and direction "
+                            "(ASCENDING or DESCENDING)."
+                        ),
+                    },
+                    {
+                        "name": "limit",
+                        "type": "integer",
+                        "required": False,
+                        "description": "Results per page, 1–100 (default 100).",
+                    },
+                    {
+                        "name": "after",
+                        "type": "string",
+                        "required": False,
+                        "description": "Pagination cursor from the previous response's paging.next.after.",
+                    },
+                ],
+            ),
         ],
         write_operations=[
             WriteOperation(
@@ -329,7 +436,7 @@ class HubSpotConnector(BaseConnector):
         nango_integration_id="hubspot",
         description=(
             "HubSpot CRM – deals, contacts, companies, activities; live actions for marketing emails, "
-            "email events, and contact lookup"
+            "email events, contact lookup, and filtered contact search"
         ),
         usage_guide="""# HubSpot Usage Guide
 
@@ -348,6 +455,7 @@ Use `run_on_connector(connector='hubspot', action='...', params={...})` for Mark
 | `list_email_events` | `{"recipient": "a@b.com", "limit": 50}` or `{"startTimestamp": 1700000000000, "endTimestamp": 1700086400000}` |
 | `get_contact` | `{"id": "12345"}` or `{"id": "12345", "properties": ["email", "jobtitle", "lifecyclestage"]}` |
 | `find_contact_by_email` | `{"email": "jane@acme.com"}` or with `properties` array for extra fields |
+| `search_contacts` | `{"filters": [{"property": "hubspot_owner_id", "operator": "EQ", "value": "185420961"}], "properties": ["email", "firstname"], "sorts": [{"property": "notes_last_contacted", "direction": "ASCENDING"}], "limit": 100}` — optional `after` for pagination |
 
 **Examples:**
 
@@ -369,6 +477,10 @@ Use `run_on_connector(connector='hubspot', action='...', params={...})` for Mark
 
 ```json
 {"connector": "hubspot", "action": "find_contact_by_email", "params": {"email": "jane@acme.com"}}
+```
+
+```json
+{"connector": "hubspot", "action": "search_contacts", "params": {"filters": [{"property": "hubspot_owner_id", "operator": "EQ", "value": "185420961"}], "properties": ["email", "firstname", "lastname", "company", "notes_last_contacted"], "sorts": [{"property": "notes_last_contacted", "direction": "ASCENDING"}], "limit": 100}}
 ```
 
 For mutating CRM records, use **write** operations below.
@@ -1244,13 +1356,15 @@ Notes are activities attached to deals (or contacts/companies). Use HubSpot **so
                 "name": contact.name, "email": contact.email,
                 "title": contact.title, "phone": contact.phone,
                 "account_id": contact.account_id,
+                "custom_fields": contact.custom_fields,
                 "synced_at": datetime.utcnow(), "sync_status": "synced",
             })
 
         # Bulk upsert in batches
         BATCH_SIZE: int = 500
         update_cols: list[str] = [
-            "name", "email", "title", "phone", "account_id", "synced_at",
+            "name", "email", "title", "phone", "account_id", "custom_fields",
+            "synced_at",
         ]
         async with get_session(organization_id=self.organization_id) as session:
             for i in range(0, len(rows), BATCH_SIZE):
@@ -1305,6 +1419,14 @@ Notes are activities attached to deals (or contacts/companies). Use HubSpot **so
         if phone_val:
             phone_val = phone_val[:50]
 
+        owner_raw: Any = props.get("hubspot_owner_id")
+        owner_id: str | None = (
+            str(owner_raw).strip() if owner_raw not in (None, "") else None
+        )
+        custom_fields: dict[str, Any] | None = (
+            {"hubspot_owner_id": owner_id} if owner_id else None
+        )
+
         return Contact(
             id=existing_id or uuid.uuid4(),
             organization_id=uuid.UUID(self.organization_id),
@@ -1315,6 +1437,7 @@ Notes are activities attached to deals (or contacts/companies). Use HubSpot **so
             title=title_val,
             phone=phone_val,
             account_id=account_id,
+            custom_fields=custom_fields,
         )
 
     async def sync_activities(self) -> int:
@@ -2320,6 +2443,50 @@ Notes are activities attached to deals (or contacts/companies). Use HubSpot **so
             if found is None:
                 return {"found": False, "contact": None}
             return {"found": True, "contact": found}
+        if action == "search_contacts":
+            filters_raw: Any = raw.get("filters")
+            if not isinstance(filters_raw, list) or len(filters_raw) == 0:
+                raise ValueError("search_contacts requires params.filters as a non-empty array")
+            filter_dicts: list[dict[str, Any]] = []
+            for item in filters_raw:
+                if not isinstance(item, dict):
+                    raise ValueError("Each search_contacts filter must be an object")
+                filter_dicts.append(item)
+            props_sc: Any = raw.get("properties")
+            prop_list_sc: list[str] | None = None
+            if props_sc is not None:
+                if not isinstance(props_sc, list):
+                    raise ValueError(
+                        "search_contacts params.properties must be an array when provided"
+                    )
+                prop_list_sc = [str(x) for x in props_sc]
+            sorts_raw: Any = raw.get("sorts")
+            sorts_list: list[dict[str, Any]] | None = None
+            if sorts_raw is not None:
+                if not isinstance(sorts_raw, list):
+                    raise ValueError(
+                        "search_contacts params.sorts must be an array when provided"
+                    )
+                sorts_list = []
+                for s in sorts_raw:
+                    if not isinstance(s, dict):
+                        raise ValueError("Each search_contacts sort must be an object")
+                    sorts_list.append(s)
+            lim_sc: Any = raw.get("limit")
+            limit_sc: int = 100
+            if lim_sc is not None and lim_sc != "":
+                limit_sc = int(lim_sc)
+            after_sc_raw: Any = raw.get("after")
+            after_sc: str | None = (
+                str(after_sc_raw).strip() if after_sc_raw not in (None, "") else None
+            )
+            return await self.search_contacts(
+                filters=filter_dicts,
+                properties=prop_list_sc,
+                sorts=sorts_list,
+                limit=limit_sc,
+                after=after_sc,
+            )
         raise ValueError(f"Unknown HubSpot action: {action}")
 
     # =========================================================================
@@ -2617,6 +2784,61 @@ Notes are activities attached to deals (or contacts/companies). Use HubSpot **so
             return None
         except httpx.HTTPStatusError:
             return None
+
+    async def search_contacts(
+        self,
+        filters: list[dict[str, Any]],
+        properties: list[str] | None,
+        sorts: list[dict[str, Any]] | None,
+        limit: int,
+        after: str | None,
+    ) -> dict[str, Any]:
+        """Search contacts via HubSpot CRM Search API (single page)."""
+        if not filters:
+            raise ValueError("search_contacts requires at least one filter")
+        if limit < 1 or limit > 100:
+            raise ValueError("search_contacts limit must be between 1 and 100")
+        hubspot_filters: list[dict[str, Any]] = []
+        for f in filters:
+            hubspot_filters.append(_hubspot_contact_search_filter_from_item(f))
+        body: dict[str, Any] = {
+            "filterGroups": [{"filters": hubspot_filters}],
+            "limit": limit,
+        }
+        if properties:
+            prop_names: list[str] = [str(p).strip() for p in properties if str(p).strip()]
+            if prop_names:
+                body["properties"] = prop_names
+        if sorts:
+            hubspot_sorts: list[dict[str, Any]] = []
+            for s in sorts:
+                hubspot_sorts.append(_hubspot_contact_sort_from_item(s))
+            body["sorts"] = hubspot_sorts
+        if after is not None and str(after).strip() != "":
+            try:
+                body["after"] = int(str(after).strip())
+            except ValueError as exc:
+                raise ValueError(
+                    "search_contacts params.after must be a numeric pagination cursor"
+                ) from exc
+        data: dict[str, Any] = await self._make_request(
+            "POST",
+            "/crm/v3/objects/contacts/search",
+            json_data=body,
+        )
+        total_raw: Any = data.get("total")
+        total_val: int = int(total_raw) if total_raw is not None else 0
+        results_raw: Any = data.get("results")
+        results_list: list[dict[str, Any]] = results_raw if isinstance(results_raw, list) else []
+        paging_raw: Any = data.get("paging")
+        paging_val: dict[str, Any] | None = (
+            paging_raw if isinstance(paging_raw, dict) else None
+        )
+        return {
+            "total": total_val,
+            "results": results_list,
+            "paging": paging_val,
+        }
 
     async def find_company_by_domain(self, domain: str) -> dict[str, Any] | None:
         """

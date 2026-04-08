@@ -148,3 +148,68 @@ async def test_execute_action_find_contact_by_email_not_found(monkeypatch: pytes
     monkeypatch.setattr(HubSpotConnector, "_make_request", fake_make_request)
     out = await c.execute_action("find_contact_by_email", {"email": "nobody@example.com"})
     assert out == {"found": False, "contact": None}
+
+
+@pytest.mark.asyncio
+async def test_execute_action_search_contacts(monkeypatch: pytest.MonkeyPatch) -> None:
+    c = _connector()
+    recorded: list[tuple[str, str, dict[str, Any] | None]] = []
+
+    async def fake_make_request(
+        self: HubSpotConnector,
+        method: str,
+        endpoint: str,
+        params: dict[str, Any] | None = None,
+        json_data: dict[str, Any] | None = None,
+        _max_retries: int = 5,
+    ) -> dict[str, Any]:
+        recorded.append((method, endpoint, json_data))
+        return {
+            "total": 1,
+            "results": [{"id": "1", "properties": {"email": "a@b.com"}}],
+            "paging": {"next": {"after": "99"}},
+        }
+
+    monkeypatch.setattr(HubSpotConnector, "_make_request", fake_make_request)
+    out = await c.execute_action(
+        "search_contacts",
+        {
+            "filters": [
+                {"property": "hubspot_owner_id", "operator": "EQ", "value": "185420961"},
+            ],
+            "properties": ["email", "firstname"],
+            "sorts": [{"property": "notes_last_contacted", "direction": "ASCENDING"}],
+            "limit": 50,
+            "after": "0",
+        },
+    )
+    assert out["total"] == 1
+    assert len(out["results"]) == 1
+    assert out["paging"] == {"next": {"after": "99"}}
+    assert recorded[0][0] == "POST"
+    assert recorded[0][1] == "/crm/v3/objects/contacts/search"
+    body: dict[str, Any] = recorded[0][2] or {}
+    assert body["limit"] == 50
+    assert body["after"] == 0
+    assert body["filterGroups"] == [
+        {
+            "filters": [
+                {
+                    "propertyName": "hubspot_owner_id",
+                    "operator": "EQ",
+                    "value": "185420961",
+                }
+            ]
+        }
+    ]
+    assert body["properties"] == ["email", "firstname"]
+    assert body["sorts"] == [
+        {"propertyName": "notes_last_contacted", "direction": "ASCENDING"}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_execute_action_search_contacts_requires_filters() -> None:
+    c = _connector()
+    with pytest.raises(ValueError, match="search_contacts requires params.filters"):
+        await c.execute_action("search_contacts", {})
