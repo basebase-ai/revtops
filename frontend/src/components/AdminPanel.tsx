@@ -48,6 +48,14 @@ interface TopConversationsResponse {
   organizations: TopOrgConversations[];
 }
 
+interface QueryOutcomeRateResponse {
+  window_seconds: number;
+  success_count: number;
+  failure_count: number;
+  total_count: number;
+  success_rate_pct: number;
+}
+
 function formatRelativeTime(iso: string): string {
   const diffMs: number = Date.now() - new Date(iso).getTime();
   const mins: number = Math.floor(diffMs / 60_000);
@@ -489,6 +497,9 @@ export function AdminPanel(): JSX.Element {
   const [integrationsLoading, setIntegrationsLoading] = useState<boolean>(true);
   const [integrationsError, setIntegrationsError] = useState<string | null>(null);
   const [sourceSearch, setSourceSearch] = useState<string>('');
+  const [queryOutcomeRate, setQueryOutcomeRate] = useState<QueryOutcomeRateResponse | null>(null);
+  const [queryOutcomeRateLoading, setQueryOutcomeRateLoading] = useState<boolean>(true);
+  const [queryOutcomeRateError, setQueryOutcomeRateError] = useState<string | null>(null);
 
   // Global sync state
   const [syncing, setSyncing] = useState<boolean>(false);
@@ -681,6 +692,27 @@ export function AdminPanel(): JSX.Element {
     }
   }, [user]);
 
+  const fetchQueryOutcomeRate = useCallback(async (): Promise<void> => {
+    if (!user) return;
+
+    setQueryOutcomeRateLoading(true);
+    setQueryOutcomeRateError(null);
+    try {
+      const { data, error: reqErr } = await apiRequest<QueryOutcomeRateResponse>('/admin-dashboard/query-outcome-rate');
+      if (reqErr || !data) {
+        setQueryOutcomeRateError(reqErr ?? 'Failed to fetch query rate');
+        setQueryOutcomeRate(null);
+        return;
+      }
+      setQueryOutcomeRate(data);
+    } catch {
+      setQueryOutcomeRateError('Failed to fetch query rate');
+      setQueryOutcomeRate(null);
+    } finally {
+      setQueryOutcomeRateLoading(false);
+    }
+  }, [user]);
+
   useEffect(() => {
     if (activeTab === 'dashboard') {
       void fetchCreditUsage();
@@ -693,10 +725,11 @@ export function AdminPanel(): JSX.Element {
       void fetchOrganizations();
     } else if (activeTab === 'sources') {
       void fetchIntegrations();
+      void fetchQueryOutcomeRate();
     } else if (activeTab === 'jobs') {
       void fetchRunningJobs();
     }
-  }, [activeTab, fetchCreditUsage, fetchTopConversations, fetchWaitlist, fetchUsers, fetchOrganizations, fetchIntegrations, fetchRunningJobs]);
+  }, [activeTab, fetchCreditUsage, fetchTopConversations, fetchWaitlist, fetchUsers, fetchOrganizations, fetchIntegrations, fetchQueryOutcomeRate, fetchRunningJobs]);
 
   const handleCancelJob = async (job: AdminRunningJob): Promise<void> => {
     if (!user) return;
@@ -2192,6 +2225,37 @@ export function AdminPanel(): JSX.Element {
         {/* Sources Tab Content */}
         {activeTab === 'sources' && (
           <div className="space-y-6">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              <div className="rounded-xl border border-surface-800 bg-surface-900 p-4">
+                <div className="text-xs uppercase tracking-wide text-surface-500">Rolling success rate (15m)</div>
+                <div className="mt-2 text-2xl font-semibold text-surface-100">
+                  {queryOutcomeRateLoading ? '…' : `${(queryOutcomeRate?.success_rate_pct ?? 0).toFixed(1)}%`}
+                </div>
+              </div>
+              <div className="rounded-xl border border-surface-800 bg-surface-900 p-4">
+                <div className="text-xs uppercase tracking-wide text-surface-500">Successful queries</div>
+                <div className="mt-2 text-2xl font-semibold text-emerald-400">
+                  {queryOutcomeRateLoading ? '…' : (queryOutcomeRate?.success_count ?? 0).toLocaleString()}
+                </div>
+              </div>
+              <div className="rounded-xl border border-surface-800 bg-surface-900 p-4">
+                <div className="text-xs uppercase tracking-wide text-surface-500">Failed queries</div>
+                <div className="mt-2 text-2xl font-semibold text-red-400">
+                  {queryOutcomeRateLoading ? '…' : (queryOutcomeRate?.failure_count ?? 0).toLocaleString()}
+                </div>
+              </div>
+              <div className="rounded-xl border border-surface-800 bg-surface-900 p-4">
+                <div className="text-xs uppercase tracking-wide text-surface-500">Total queries (15m)</div>
+                <div className="mt-2 text-2xl font-semibold text-surface-100">
+                  {queryOutcomeRateLoading ? '…' : (queryOutcomeRate?.total_count ?? 0).toLocaleString()}
+                </div>
+              </div>
+            </div>
+            {queryOutcomeRateError && (
+              <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-300">
+                {queryOutcomeRateError}
+              </div>
+            )}
             {/* Search & Actions */}
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div className="relative w-full flex-1 sm:max-w-md">
@@ -2241,7 +2305,10 @@ export function AdminPanel(): JSX.Element {
                   {syncing ? 'Syncing...' : 'Sync All'}
                 </button>
                 <button
-                  onClick={() => void fetchIntegrations()}
+                  onClick={() => {
+                    void fetchIntegrations();
+                    void fetchQueryOutcomeRate();
+                  }}
                   disabled={integrationsLoading}
                   className="flex w-full items-center justify-center gap-2 rounded-lg border border-surface-700 bg-surface-800 px-4 py-2 text-surface-300 transition-colors hover:bg-surface-700 disabled:opacity-50 sm:w-auto"
                 >
