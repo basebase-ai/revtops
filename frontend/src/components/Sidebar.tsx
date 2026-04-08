@@ -748,19 +748,6 @@ export function Sidebar({
 
       {currentView !== 'admin' && (
       <>
-      {/* New Chat Button */}
-      <div className="px-2 py-1">
-        <button
-          onClick={onNewChat}
-          className={`w-full flex items-center gap-2 px-3 py-[5px] rounded-lg bg-primary-600 hover:bg-primary-700 text-white font-medium text-sm transition-colors ${collapsed ? 'justify-center' : ''}`}
-        >
-          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-          </svg>
-          {!collapsed && <span>New Chat</span>}
-        </button>
-      </div>
-
       {/* Navigation Tabs — scrollable pane */}
       <div
         ref={navRef}
@@ -853,6 +840,21 @@ export function Sidebar({
               ))}
             </nav>
           </div>
+        </div>
+      )}
+
+      {/* New Chat Button */}
+      {currentView !== 'admin' && (
+        <div className="px-2 py-1">
+          <button
+            onClick={onNewChat}
+            className={`w-full flex items-center gap-2 px-3 py-[5px] rounded-lg bg-primary-600 hover:bg-primary-700 text-white font-medium text-sm transition-colors ${collapsed ? 'justify-center' : ''}`}
+          >
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+            </svg>
+            {!collapsed && <span>New Chat</span>}
+          </button>
         </div>
       )}
 

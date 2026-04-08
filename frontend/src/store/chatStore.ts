@@ -137,6 +137,7 @@ export interface ChatState {
     conversationId: string,
     message: ChatMessage,
   ) => void;
+  bumpConversationTimestamp: (conversationId: string) => void;
   appendToConversationStreaming: (
     conversationId: string,
     content: string,
@@ -272,6 +273,19 @@ export const useChatStore = create<ChatState>()(
           ...recentChats.slice(0, 9),
         ],
       });
+    },
+
+    bumpConversationTimestamp: (conversationId: string) => {
+      const { recentChats } = get();
+      const now: Date = new Date();
+      const updated: ChatSummary[] = recentChats.map((chat) =>
+        chat.id === conversationId
+          ? { ...chat, lastMessageAt: now }
+          : chat,
+      );
+      if (updated !== recentChats) {
+        set({ recentChats: updated });
+      }
     },
 
     fetchConversationData: (conversationId) => {
@@ -547,6 +561,7 @@ export const useChatStore = create<ChatState>()(
           },
         },
       });
+      get().bumpConversationTimestamp(conversationId);
     },
 
     appendToConversationStreaming: (conversationId, content, chunkIndex) => {
