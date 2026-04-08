@@ -314,7 +314,12 @@ class WorkspaceMessenger(BaseMessenger):
         organization_id: str,
         email: str,
     ) -> User | None:
-        """Find an org user whose email matches."""
+        """Find an org user whose email matches.
+
+        Historical data can contain duplicate email rows (for example a guest
+        plus a member record), so this method resolves deterministically instead
+        of using ``scalar_one_or_none()``.
+        """
         async with get_admin_session() as session:
             org_uuid: UUID = UUID(organization_id)
             membership_subq = (
@@ -334,8 +339,20 @@ class WorkspaceMessenger(BaseMessenger):
                     )
                 )
                 .where(User.email == email)
+                .order_by(User.is_guest.asc(), User.id.asc())
+                .limit(2)
             )
-            return result.scalar_one_or_none()
+            matched_users: list[User] = list(result.scalars().all())
+            if len(matched_users) > 1:
+                logger.warning(
+                    "[%s] Multiple users matched email=%s org=%s; choosing user=%s and ignoring %d additional match(es)",
+                    self.meta.slug,
+                    email,
+                    organization_id,
+                    matched_users[0].id,
+                    len(matched_users) - 1,
+                )
+            return matched_users[0] if matched_users else None
 
     async def _resolve_guest_user(self, organization_id: str) -> User | None:
         """Fall back to the org's guest user if configured."""
