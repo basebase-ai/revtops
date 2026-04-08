@@ -326,10 +326,16 @@ async def _process_event_callback_impl(payload: dict[str, Any]) -> None:
                 "[slack_events] Processing direct message type=%s from %s in %s thread=%s: %s (files=%d)",
                 channel_type, user_id, channel_id, thread_ts, text[:50], len(files),
             )
-            message = _build_inbound_message(
-                event, team_id, MessageType.DIRECT, bot_user_ids=bot_user_ids,
+            lock_key: str = SlackThreadLockManager.build_lock_key(
+                team_id,
+                channel_id,
+                thread_ts,
             )
-            await messenger.process_inbound(message)
+            async with _thread_lock_manager.thread_lock(lock_key):
+                message = _build_inbound_message(
+                    event, team_id, MessageType.DIRECT, bot_user_ids=bot_user_ids,
+                )
+                await messenger.process_inbound(message)
             return
 
         thread_ts = event.get("thread_ts")

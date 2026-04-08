@@ -571,8 +571,19 @@ class WorkspaceMessenger(BaseMessenger):
                 .where(Conversation.organization_id == UUID(organization_id))
                 .where(Conversation.source == source)
                 .where(Conversation.source_channel_id == source_channel_id)
+                .order_by(Conversation.updated_at.desc(), Conversation.id.desc())
+                .limit(2)
             )
-            conversation: Conversation | None = result.scalar_one_or_none()
+            conversations: list[Conversation] = list(result.scalars().all())
+            if len(conversations) > 1:
+                logger.warning(
+                    "[%s] Multiple conversations found for org=%s source_channel_id=%s ids=%s; using latest",
+                    source,
+                    organization_id,
+                    source_channel_id,
+                    [str(conv.id) for conv in conversations],
+                )
+            conversation: Conversation | None = conversations[0] if conversations else None
 
             if conversation is not None:
                 changed: bool = False
