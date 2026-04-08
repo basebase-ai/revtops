@@ -47,6 +47,7 @@ logger = logging.getLogger(__name__)
 
 _redis_client: aioredis.Redis | None = None
 _SLACK_USER_IDS_TTL = 300  # 5 minutes
+_WEB_PLATFORM_SLUG = "web"
 
 
 async def _get_redis() -> aioredis.Redis:
@@ -101,6 +102,27 @@ async def _get_slack_user_ids(
         pass
 
     return result
+
+
+async def _record_web_query_outcome(
+    *,
+    was_success: bool,
+    conversation_id: str | None,
+    user_id: str,
+) -> None:
+    """Best-effort metric recording for web-app turns."""
+    from services.query_outcome_metrics import record_query_outcome
+
+    try:
+        await record_query_outcome(platform=_WEB_PLATFORM_SLUG, was_success=was_success)
+    except Exception:
+        logger.exception(
+            "[chat] Failed to record query outcome platform=%s was_success=%s conversation_id=%s user_id=%s",
+            _WEB_PLATFORM_SLUG,
+            was_success,
+            conversation_id,
+            user_id,
+        )
 
 
 def _build_conversation_access_filter(
@@ -1120,9 +1142,11 @@ async def send_message(
 
         # Collect all chunks into a single response
         response_content = ""
+        was_success = False
         try:
             async for chunk in orchestrator.process_message(request.content):
                 response_content += chunk
+            was_success = True
         except Exception as exc:
             logger.exception(
                 "send_message turn processing failed conversation_id=%s user_id=%s",
@@ -1133,6 +1157,12 @@ async def send_message(
                 status_code=500,
                 detail=f"Failed to process message: {exc}",
             ) from exc
+        finally:
+            await _record_web_query_outcome(
+                was_success=was_success,
+                conversation_id=str(conv_uuid) if conv_uuid else None,
+                user_id=auth.user_id_str,
+            )
 
         # Get the message IDs from the database
         result = await session.execute(
