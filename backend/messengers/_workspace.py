@@ -887,163 +887,183 @@ class WorkspaceMessenger(BaseMessenger):
         from agents.orchestrator import ChatOrchestrator
         from services.credits import can_use_credits
 
-        # For thread replies, silently ignore if the bot isn't already
-        # participating in the thread (no existing conversation).
-        if message.message_type == MessageType.THREAD_REPLY:
-            has_conversation: bool = await self._has_existing_conversation(message)
-            if not has_conversation:
-                logger.info(
-                    "[%s] Ignoring thread reply — no existing conversation for thread",
-                    self.meta.slug,
+        result: dict[str, Any] | None = None
+        delegated_to_super = False
+        caught_error: Exception | None = None
+        try:
+            # For thread replies, silently ignore if the bot isn't already
+            # participating in the thread (no existing conversation).
+            if message.message_type == MessageType.THREAD_REPLY:
+                has_conversation: bool = await self._has_existing_conversation(message)
+                if not has_conversation:
+                    logger.info(
+                        "[%s] Ignoring thread reply — no existing conversation for thread",
+                        self.meta.slug,
+                    )
+                    result = {"status": "ignored", "reason": "no_existing_thread_conversation"}
+                    return result
+
+            await self.add_typing_indicator(message)
+
+            user: User | None = await self.resolve_user(message)
+            if user is None:
+                await self.send_response(message, OutboundResponse(text=self.unknown_user_message()))
+                await self.remove_typing_indicator(message)
+                result = {"status": "rejected", "reason": "unknown_user"}
+                return result
+
+            org_result: tuple[str, str] | None = await self.resolve_organization(user, message)
+            if org_result is None:
+                await self.remove_typing_indicator(message)
+                result = {"status": "error", "error": "no_organization"}
+                return result
+
+            organization_id, _organization_name = org_result
+            message.messenger_context["organization_id"] = organization_id
+
+            await self.enrich_message_context(message, organization_id)
+
+            if not await can_use_credits(organization_id):
+                await self.send_response(message, OutboundResponse(text=self.no_credits_message()))
+                await self.remove_typing_indicator(message)
+                result = {"status": "error", "error": "insufficient_credits"}
+                return result
+
+            conversation_id: str = await self.find_or_create_conversation(
+                organization_id, user, message,
+            )
+
+            ctx: dict[str, Any] = message.messenger_context
+            slack_user_email: str | None = ctx.get("user_email")
+
+            from services.chat_messages import resolve_agent_responding, save_user_message
+
+            should_invoke_agent = True
+            if self.meta.slug == "slack" or message.mentions:
+                mentions_for_resolve: list[dict[str, Any]] = await self._mentions_payload_for_resolve_agent(
+                    message,
+                    organization_id,
                 )
-                return {"status": "ignored", "reason": "no_existing_thread_conversation"}
+                should_invoke_agent = await resolve_agent_responding(
+                    conversation_id=conversation_id,
+                    organization_id=organization_id,
+                    mentions=mentions_for_resolve,
+                    message_text=message.text,
+                )
 
-        await self.add_typing_indicator(message)
+            attachment_ids: list[str] = await self.download_attachments(message)
+            message_text: str = message.text or ("(see attached files)" if attachment_ids else "")
 
-        user: User | None = await self.resolve_user(message)
-        if user is None:
-            await self.send_response(message, OutboundResponse(text=self.unknown_user_message()))
-            await self.remove_typing_indicator(message)
-            return {"status": "rejected", "reason": "unknown_user"}
-
-        org_result: tuple[str, str] | None = await self.resolve_organization(user, message)
-        if org_result is None:
-            await self.remove_typing_indicator(message)
-            return {"status": "error", "error": "no_organization"}
-
-        organization_id, organization_name = org_result
-        message.messenger_context["organization_id"] = organization_id
-
-        await self.enrich_message_context(message, organization_id)
-
-        if not await can_use_credits(organization_id):
-            await self.send_response(message, OutboundResponse(text=self.no_credits_message()))
-            await self.remove_typing_indicator(message)
-            return {"status": "error", "error": "insufficient_credits"}
-
-        conversation_id: str = await self.find_or_create_conversation(
-            organization_id, user, message,
-        )
-
-        ctx: dict[str, Any] = message.messenger_context
-        slack_user_email: str | None = ctx.get("user_email")
-
-        from services.chat_messages import resolve_agent_responding, save_user_message
-
-        should_invoke_agent = True
-        if self.meta.slug == "slack" or message.mentions:
-            mentions_for_resolve: list[dict[str, Any]] = await self._mentions_payload_for_resolve_agent(
-                message,
-                organization_id,
-            )
-            should_invoke_agent = await resolve_agent_responding(
-                conversation_id=conversation_id,
-                organization_id=organization_id,
-                mentions=mentions_for_resolve,
-                message_text=message.text,
-            )
-
-        attachment_ids: list[str] = await self.download_attachments(message)
-        message_text: str = message.text or ("(see attached files)" if attachment_ids else "")
-
-        if not should_invoke_agent:
-            await save_user_message(
-                conversation_id=conversation_id,
-                user_id=str(user.id),
-                organization_id=organization_id,
-                message_text=message_text,
-                attachment_ids=attachment_ids or None,
-                sender_name=user.name,
-                sender_email=slack_user_email or user.email,
-            )
-            await self.remove_typing_indicator(message)
-            return {"status": "human_only", "conversation_id": conversation_id}
-
-        workflow_context: dict[str, Any] | None = _build_workflow_context_for_message(
-            platform_slug=self.meta.slug,
-            ctx=ctx,
-        )
-
-        orchestrator = ChatOrchestrator(
-            user_id=str(user.id),
-            organization_id=organization_id,
-            conversation_id=conversation_id,
-            user_email=user.email,
-            source_user_id=message.external_user_id,
-            source_user_email=slack_user_email or user.email,
-            workflow_context=workflow_context,
-            source=self.meta.slug,
-            timezone=ctx.get("timezone"),
-            local_time=ctx.get("local_time"),
-        )
-
-        if self.meta.response_mode.value == "streaming":
-            last_message_sent_at: float | None = None
-
-            def _mark_message_sent() -> None:
-                nonlocal last_message_sent_at
-                last_message_sent_at = time.monotonic()
-
-            response_task: asyncio.Task[int] = asyncio.create_task(
-                self.stream_and_post_responses(
-                    orchestrator=orchestrator,
-                    message=message,
+            if not should_invoke_agent:
+                await save_user_message(
+                    conversation_id=conversation_id,
+                    user_id=str(user.id),
+                    organization_id=organization_id,
                     message_text=message_text,
                     attachment_ids=attachment_ids or None,
-                    organization_id=organization_id,
-                    on_message_posted=_mark_message_sent,
+                    sender_name=user.name,
+                    sender_email=slack_user_email or user.email,
                 )
-            )
-            done, _ = await asyncio.wait(
-                {response_task}, timeout=SLOW_REPLY_TIMEOUT_SECONDS,
-            )
-            if response_task in done:
-                total: int = response_task.result()
                 await self.remove_typing_indicator(message)
-                return {
-                    "status": "success",
-                    "conversation_id": conversation_id,
-                    "response_length": total,
-                }
+                result = {"status": "human_only", "conversation_id": conversation_id}
+                return result
 
-            await self._wait_for_slow_reply_window(
-                response_task=response_task,
-                get_last_message_sent_at=lambda: last_message_sent_at,
+            workflow_context: dict[str, Any] | None = _build_workflow_context_for_message(
+                platform_slug=self.meta.slug,
+                ctx=ctx,
             )
-            if response_task.done():
-                total = response_task.result()
-                await self.remove_typing_indicator(message)
-                return {
-                    "status": "success",
-                    "conversation_id": conversation_id,
-                    "response_length": total,
-                }
 
-            # Slow path: notify user and continue in background
-            channel_id: str = ctx.get("channel_id", "")
-            thread_id: str | None = ctx.get("thread_id") or ctx.get("thread_ts")
-            await self.post_message(
-                channel_id=channel_id,
-                text=SLOW_REPLY_MESSAGE,
-                thread_id=thread_id,
-                workspace_id=ctx.get("workspace_id"),
+            orchestrator = ChatOrchestrator(
+                user_id=str(user.id),
                 organization_id=organization_id,
+                conversation_id=conversation_id,
+                user_email=user.email,
+                source_user_id=message.external_user_id,
+                source_user_email=slack_user_email or user.email,
+                workflow_context=workflow_context,
+                source=self.meta.slug,
+                timezone=ctx.get("timezone"),
+                local_time=ctx.get("local_time"),
             )
-            _mark_message_sent()
 
-            async def _finish() -> None:
-                try:
-                    await response_task
-                except Exception as exc:
-                    logger.error("[%s] Background response failed: %s", self.meta.slug, exc)
-                finally:
+            if self.meta.response_mode.value == "streaming":
+                last_message_sent_at: float | None = None
+
+                def _mark_message_sent() -> None:
+                    nonlocal last_message_sent_at
+                    last_message_sent_at = time.monotonic()
+
+                response_task: asyncio.Task[int] = asyncio.create_task(
+                    self.stream_and_post_responses(
+                        orchestrator=orchestrator,
+                        message=message,
+                        message_text=message_text,
+                        attachment_ids=attachment_ids or None,
+                        organization_id=organization_id,
+                        on_message_posted=_mark_message_sent,
+                    )
+                )
+                done, _ = await asyncio.wait(
+                    {response_task}, timeout=SLOW_REPLY_TIMEOUT_SECONDS,
+                )
+                if response_task in done:
+                    total: int = response_task.result()
                     await self.remove_typing_indicator(message)
+                    result = {
+                        "status": "success",
+                        "conversation_id": conversation_id,
+                        "response_length": total,
+                    }
+                    return result
 
-            asyncio.create_task(_finish())
-            return {"status": "timeout_continuing", "conversation_id": conversation_id}
+                await self._wait_for_slow_reply_window(
+                    response_task=response_task,
+                    get_last_message_sent_at=lambda: last_message_sent_at,
+                )
+                if response_task.done():
+                    total = response_task.result()
+                    await self.remove_typing_indicator(message)
+                    result = {
+                        "status": "success",
+                        "conversation_id": conversation_id,
+                        "response_length": total,
+                    }
+                    return result
 
-        # Batch mode (fallback — workspace messengers are usually streaming)
-        return await super().process_inbound(message)
+                # Slow path: notify user and continue in background
+                channel_id: str = ctx.get("channel_id", "")
+                thread_id: str | None = ctx.get("thread_id") or ctx.get("thread_ts")
+                await self.post_message(
+                    channel_id=channel_id,
+                    text=SLOW_REPLY_MESSAGE,
+                    thread_id=thread_id,
+                    workspace_id=ctx.get("workspace_id"),
+                    organization_id=organization_id,
+                )
+                _mark_message_sent()
+
+                async def _finish() -> None:
+                    try:
+                        await response_task
+                    except Exception as exc:
+                        logger.error("[%s] Background response failed: %s", self.meta.slug, exc)
+                    finally:
+                        await self.remove_typing_indicator(message)
+
+                asyncio.create_task(_finish())
+                result = {"status": "timeout_continuing", "conversation_id": conversation_id}
+                return result
+
+            # Batch mode (fallback — workspace messengers are usually streaming)
+            delegated_to_super = True
+            result = await super().process_inbound(message)
+            return result
+        except Exception as exc:
+            caught_error = exc
+            raise
+        finally:
+            if not delegated_to_super:
+                await self._record_query_outcome(result=result, error=caught_error)
 
     # ------------------------------------------------------------------
     # Activity persistence

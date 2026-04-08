@@ -255,126 +255,179 @@ class BaseMessenger(ABC):
         from agents.orchestrator import ChatOrchestrator
         from services.credits import can_use_credits
 
-        # 1. Resolve user
-        user: User | None = await self.resolve_user(message)
-        if user is None:
-            logger.info(
-                "[%s] Unknown user external_id=%s",
-                self.meta.slug,
-                message.external_user_id,
-            )
-            await self.send_response(
-                message,
-                OutboundResponse(text=self.unknown_user_message()),
-            )
-            return {"status": "rejected", "reason": "unknown_user"}
-
-        user_id: str = str(user.id)
-        user_email: str | None = user.email
-
-        # 2. Resolve organisation
-        org_result: tuple[str, str] | None = await self.resolve_organization(
-            user, message
-        )
-        if org_result is None:
-            return {"status": "pending_org_choice"}
-
-        organization_id: str
-        organization_name: str
-        organization_id, organization_name = org_result
-
-        logger.info(
-            "[%s] Resolved org=%s (%s) for user=%s",
-            self.meta.slug,
-            organization_id,
-            organization_name,
-            user_id,
-        )
-
-        # 3. Check credits
-        if not await can_use_credits(organization_id):
-            await self.send_response(
-                message,
-                OutboundResponse(text=self.no_credits_message()),
-            )
-            return {"status": "error", "error": "insufficient_credits"}
-
-        # 4. Find / create conversation
-        conversation_id: str = await self.find_or_create_conversation(
-            organization_id, user, message
-        )
-
-        # 5. Download attachments
-        attachment_ids: list[str] = await self.download_attachments(message)
-
-        message_text: str = message.text or (
-            "(see attached files)" if attachment_ids else ""
-        )
-
-        if not message_text.strip():
-            return {"status": "ok", "reason": "empty_after_org_selection"}
-
-        # 6. Run orchestrator
-        orchestrator = ChatOrchestrator(
-            user_id=user_id,
-            organization_id=organization_id,
-            conversation_id=conversation_id,
-            user_email=user_email,
-            source_user_id=message.external_user_id,
-            source_user_email=user_email,
-            workflow_context=None,
-            source=self.meta.slug,
-        )
-
-        full_response: str = ""
-        outbound_media_urls: list[str] = []
+        result: dict[str, Any] | None = None
+        caught_error: Exception | None = None
         try:
-            async for chunk in orchestrator.process_message(
-                message_text,
-                attachment_ids=attachment_ids or None,
-            ):
-                if chunk.startswith("{"):
-                    outbound_media_urls.extend(
-                        self._extract_media_from_chunk(chunk)
-                    )
-                else:
-                    full_response += chunk
-        except Exception as exc:
-            logger.exception(
-                "[%s] Orchestrator error conversation=%s",
+            # 1. Resolve user
+            user: User | None = await self.resolve_user(message)
+            if user is None:
+                logger.info(
+                    "[%s] Unknown user external_id=%s",
+                    self.meta.slug,
+                    message.external_user_id,
+                )
+                await self.send_response(
+                    message,
+                    OutboundResponse(text=self.unknown_user_message()),
+                )
+                result = {"status": "rejected", "reason": "unknown_user"}
+                return result
+
+            user_id: str = str(user.id)
+            user_email: str | None = user.email
+
+            # 2. Resolve organisation
+            org_result: tuple[str, str] | None = await self.resolve_organization(
+                user, message
+            )
+            if org_result is None:
+                result = {"status": "pending_org_choice"}
+                return result
+
+            organization_id: str
+            organization_name: str
+            organization_id, organization_name = org_result
+
+            logger.info(
+                "[%s] Resolved org=%s (%s) for user=%s",
                 self.meta.slug,
+                organization_id,
+                organization_name,
+                user_id,
+            )
+
+            # 3. Check credits
+            if not await can_use_credits(organization_id):
+                await self.send_response(
+                    message,
+                    OutboundResponse(text=self.no_credits_message()),
+                )
+                result = {"status": "error", "error": "insufficient_credits"}
+                return result
+
+            # 4. Find / create conversation
+            conversation_id: str = await self.find_or_create_conversation(
+                organization_id, user, message
+            )
+
+            # 5. Download attachments
+            attachment_ids: list[str] = await self.download_attachments(message)
+
+            message_text: str = message.text or (
+                "(see attached files)" if attachment_ids else ""
+            )
+
+            if not message_text.strip():
+                result = {"status": "ok", "reason": "empty_after_org_selection"}
+                return result
+
+            # 6. Run orchestrator
+            orchestrator = ChatOrchestrator(
+                user_id=user_id,
+                organization_id=organization_id,
+                conversation_id=conversation_id,
+                user_email=user_email,
+                source_user_id=message.external_user_id,
+                source_user_email=user_email,
+                workflow_context=None,
+                source=self.meta.slug,
+            )
+
+            full_response: str = ""
+            outbound_media_urls: list[str] = []
+            try:
+                async for chunk in orchestrator.process_message(
+                    message_text,
+                    attachment_ids=attachment_ids or None,
+                ):
+                    if chunk.startswith("{"):
+                        outbound_media_urls.extend(
+                            self._extract_media_from_chunk(chunk)
+                        )
+                    else:
+                        full_response += chunk
+            except Exception as exc:
+                logger.exception(
+                    "[%s] Orchestrator error conversation=%s",
+                    self.meta.slug,
+                    conversation_id,
+                )
+                full_response += user_message_for_agent_stream_failure(exc)
+
+            # 7. Format and deliver
+            response_text: str = self.format_text(full_response.strip())
+            if response_text or outbound_media_urls:
+                await self.send_response(
+                    message,
+                    OutboundResponse(
+                        text=response_text,
+                        media_urls=outbound_media_urls,
+                    ),
+                )
+            else:
+                logger.warning(
+                    "[%s] Empty response for conversation=%s",
+                    self.meta.slug,
+                    conversation_id,
+                )
+
+            logger.info(
+                "[%s] Replied (%d chars) conversation=%s",
+                self.meta.slug,
+                len(response_text),
                 conversation_id,
             )
-            full_response += user_message_for_agent_stream_failure(exc)
+            result = {
+                "status": "success",
+                "conversation_id": conversation_id,
+                "response_length": len(response_text),
+            }
+            return result
+        except Exception as exc:
+            caught_error = exc
+            raise
+        finally:
+            await self._record_query_outcome(result=result, error=caught_error)
 
-        # 7. Format and deliver
-        response_text: str = self.format_text(full_response.strip())
-        if response_text or outbound_media_urls:
-            await self.send_response(
-                message,
-                OutboundResponse(
-                    text=response_text,
-                    media_urls=outbound_media_urls,
-                ),
-            )
-        else:
-            logger.warning(
-                "[%s] Empty response for conversation=%s",
+    async def _record_query_outcome(
+        self,
+        *,
+        result: dict[str, Any] | None,
+        error: Exception | None,
+    ) -> None:
+        """Persist query success/failure for rolling monitoring windows."""
+        from services.query_outcome_metrics import record_query_outcome
+
+        was_success = self._is_successful_query_outcome(result=result, error=error)
+        try:
+            await record_query_outcome(platform=self.meta.slug, was_success=was_success)
+        except Exception:
+            logger.exception(
+                "[%s] Failed to record query outcome was_success=%s result=%s",
                 self.meta.slug,
-                conversation.id,
+                was_success,
+                result,
             )
 
-        logger.info(
-            "[%s] Replied (%d chars) conversation=%s",
-            self.meta.slug,
-            len(response_text),
-            conversation.id,
-        )
-        return {
-            "status": "success",
-            "conversation_id": str(conversation.id),
-            "response_length": len(response_text),
-        }
+    @staticmethod
+    def _is_successful_query_outcome(
+        *,
+        result: dict[str, Any] | None,
+        error: Exception | None,
+    ) -> bool:
+        """Classify whether a completed inbound query should count as success."""
+        if error is not None:
+            return False
+        if not result:
+            return False
+        status = result.get("status")
+        if status == "success":
+            return True
+        if status == "rejected" and result.get("reason") == "unknown_user":
+            return True
+        if status == "error" and result.get("error") == "insufficient_credits":
+            return True
+        return False
 
     # ------------------------------------------------------------------
     # Helpers
