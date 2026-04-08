@@ -137,6 +137,8 @@ Available tables (use these exact column names):
 - tracker_issues: Issue tracker issues/tasks (source_system, source_id, team_id, identifier e.g. "ENG-123", title, description, state_name, state_type, priority 0-4, priority_label, issue_type, assignee_name, assignee_email, creator_name, project_id, labels JSONB, estimate, url, due_date, created_date, updated_date, completed_date, cancelled_date, user_id). Filter by source_system.
 - shared_files: Synced file metadata from cloud sources like Google Drive (external_id, source, name, mime_type, folder_path, web_view_link, file_size, source_modified_at). Filter by source (e.g. 'google_drive'). Use query_on_connector(connector='google_drive', query='search:...') for name-based searches.
 - temp_data: Agent-generated results and computed metrics. Flexible JSONB storage linked to entities. Columns: entity_type, entity_id, namespace, key, value (JSONB), metadata (JSONB), created_by_user_id, created_at, expires_at. Example: SELECT td.value->>'score' as confidence, d.name FROM temp_data td JOIN deals d ON d.id = td.entity_id WHERE td.namespace = 'deal_confidence'
+- daily_digests: Per-member daily activity digest. Columns: id, user_id, digest_date (DATE), summary (JSONB with keys: narrative, highlights, categories), raw_data (JSONB, nullable), generated_at. One row per user per date. Join to users via user_id. All org members' digests are visible.
+- daily_team_summaries: Org-wide daily team summary. Columns: id, digest_date (DATE), summary_text (TEXT), generated_at. One row per date. Read-only.
 
 SEMANTIC SEARCH on activities: Use semantic_embed('natural language query') as an inline function to generate an embedding vector. Combine with the <=> cosine distance operator to rank by similarity.
 Example: SELECT id, type, subject, description, activity_date, 1 - (embedding <=> semantic_embed('pricing negotiations')) AS similarity FROM activities WHERE embedding IS NOT NULL ORDER BY embedding <=> semantic_embed('pricing negotiations') LIMIT 10
@@ -363,6 +365,7 @@ Writable tables:
 - workflows: See workflow format below → immediate
 - artifacts: (type, title, description, data) → immediate
 - temp_data: (entity_type, entity_id, namespace, key, value, metadata, expires_at) → immediate. Flexible JSONB store for computed results. Use namespace to group (e.g. 'deal_confidence'). value is JSONB, any shape.
+- daily_digests: (summary) → immediate, user can only update their own digest. summary is JSONB with keys: narrative (string), highlights (array), categories (array). user_id is auto-set to the current user on INSERT.
 
 **WORKFLOW FORMAT (Important!):**
 Workflows are prompts sent to the agent on a schedule. Use these columns:

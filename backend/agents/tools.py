@@ -197,6 +197,7 @@ ALLOWED_TABLES: set[str] = {
     "tracker_teams", "tracker_projects", "tracker_issues",
     "bulk_operations", "bulk_operation_results",
     "temp_data",
+    "daily_digests", "daily_team_summaries",
 }
 
 
@@ -1188,11 +1189,14 @@ WRITABLE_TABLES: set[str] = {
     "accounts",
     "org_members",
     "temp_data",
+    "daily_digests",
 }
 
 # Per-table column restrictions: only these columns may appear in SET clauses.
 # Tables not listed here have no column restrictions.
-WRITABLE_COLUMNS: dict[str, set[str]] = {}
+WRITABLE_COLUMNS: dict[str, set[str]] = {
+    "daily_digests": {"summary"},
+}
 
 # CRM tables that go through pending operations (review before commit)
 CRM_TABLES: set[str] = {
@@ -1621,6 +1625,20 @@ async def _run_sql_write(
     if table not in WRITABLE_TABLES:
         return {"error": f"Table '{table}' is not in the writable list. Allowed tables: {', '.join(sorted(WRITABLE_TABLES))}"}
 
+    if table in WRITABLE_COLUMNS and operation == "UPDATE":
+        allowed_cols: set[str] = WRITABLE_COLUMNS[table]
+        set_match = re.findall(r"\bSET\b\s+(.*?)(?:\bWHERE\b|$)", query, re.IGNORECASE | re.DOTALL)
+        if set_match:
+            col_names: list[str] = re.findall(r"(\w+)\s*=", set_match[0])
+            disallowed: list[str] = [c for c in col_names if c.lower() not in allowed_cols]
+            if disallowed:
+                return {
+                    "error": (
+                        f"Column(s) {', '.join(disallowed)} cannot be updated on '{table}'. "
+                        f"Allowed columns: {', '.join(sorted(allowed_cols))}"
+                    )
+                }
+
     # Prevent autonomous workflow fan-out: a workflow run cannot create other
     # workflows that are automatically runnable (enabled + non-manual trigger).
     if context and context.get("is_workflow") and table == "workflows":
@@ -1732,6 +1750,12 @@ async def _run_sql_write(
                     if "id" not in columns_lower:
                         extra_cols.append("id")
                         extra_vals.append("gen_random_uuid()")
+
+                # daily_digests: bind user_id to the calling user
+                if table == "daily_digests":
+                    if "user_id" not in columns_lower:
+                        extra_cols.append("user_id")
+                        extra_vals.append(f"'{user_id}'")
                 
                 # Reconstruct the query
                 if extra_cols:
