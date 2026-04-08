@@ -21,9 +21,18 @@ from models.credit_transaction import CreditTransaction
 from models.organization import Organization
 from models.user import User
 from models.database import get_admin_session
+from services.query_outcome_metrics import get_query_outcome_window_stats
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+@router.get("/query-outcome-rate")
+async def get_query_outcome_rate(
+    auth: AuthContext = Depends(require_global_admin),
+) -> dict[str, float | int]:
+    """Return rolling query success/failure counts for the last 15 minutes."""
+    return await get_query_outcome_window_stats()
 
 
 @router.get("/credit-usage")
