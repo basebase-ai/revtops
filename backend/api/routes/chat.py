@@ -1120,8 +1120,19 @@ async def send_message(
 
         # Collect all chunks into a single response
         response_content = ""
-        async for chunk in orchestrator.process_message(request.content):
-            response_content += chunk
+        try:
+            async for chunk in orchestrator.process_message(request.content):
+                response_content += chunk
+        except Exception as exc:
+            logger.exception(
+                "send_message turn processing failed conversation_id=%s user_id=%s",
+                conv_uuid,
+                auth.user_id,
+            )
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to process message: {exc}",
+            ) from exc
 
         # Get the message IDs from the database
         result = await session.execute(
