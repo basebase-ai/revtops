@@ -1,17 +1,17 @@
 """
-Google Drive connector for syncing file metadata, reading, creating, and editing files.
+Google Drive connector for syncing file metadata, reading, creating, and editing files and folders.
 
 1. Syncs all file metadata (folders, docs, sheets, slides) from a user's Drive
 2. Supports searching files by name
 3. Exports text representations of Docs, Sheets, and Slides on demand
-4. Creates new Google Docs, Sheets, and Slides with content
+4. Creates new folders and Google Docs, Sheets, and Slides with content
 5. Edits existing Google Docs, Sheets, and Slides (replaces or appends content)
 
 Flow:
 1. User connects Google account via OAuth (Nango)
 2. Sync crawls Drive and stores file metadata in shared_files table (source='google_drive')
 3. Agent can search files by name and read their text content
-4. Agent can create new files in the user's Drive and populate them with content
+4. Agent can create new folders and files in the user's Drive
 5. Agent can edit existing files (user must have edit permission on the file)
 """
 
@@ -255,6 +255,14 @@ class GoogleDriveConnector(BaseConnector):
         ),
         actions=[
             ConnectorAction(
+                name="create_folder",
+                description="Create a new folder in Google Drive.",
+                parameters=[
+                    {"name": "name", "type": "string", "required": True, "description": "Display name for the new folder"},
+                    {"name": "parent_folder_id", "type": "string", "required": False, "description": "Google Drive folder ID to nest this folder inside"},
+                ],
+            ),
+            ConnectorAction(
                 name="create_file",
                 description="Create a new Google Doc, Sheet, or Slides presentation.",
                 parameters=[
@@ -302,7 +310,7 @@ class GoogleDriveConnector(BaseConnector):
             ),
         ],
         nango_integration_id="google-drive",
-        description="Google Drive – file metadata sync, search, read, create, and edit",
+        description="Google Drive – file metadata sync, search, read, create folders/files, and edit",
         usage_guide="""# Google Drive Usage Guide
 
 ## Query format (query_on_connector)
@@ -320,6 +328,23 @@ Use `query_on_connector(connector='google_drive', query='...')` with one of thes
 - `search:Q4 budget` — find files with "Q4 budget" in the name
 - `type:spreadsheet` — list all spreadsheets
 - `file:1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms` — read that file's content
+
+---
+
+## Action: create_folder
+
+Call via `run_on_connector(connector='google_drive', action='create_folder', params={...})`.
+
+Creates a new folder in Google Drive. Returns the folder's external_id which you can pass as `folder_id` when creating files or `parent_folder_id` when creating nested folders.
+
+| Param | Type | Required | Description |
+|-------|------|---------|-------------|
+| name | string | Yes | Display name for the new folder |
+| parent_folder_id | string | No | Drive folder ID to nest this folder inside |
+
+**Examples:**
+- Create a top-level folder: `run_on_connector(connector='google_drive', action='create_folder', params={"name": "Project Alpha"})`
+- Create a nested folder: `run_on_connector(connector='google_drive', action='create_folder', params={"name": "Designs", "parent_folder_id": "1abc..."})`
 
 ---
 
@@ -463,6 +488,9 @@ Call via `run_on_connector(connector='google_drive', action='edit_file', params=
 ---
 
 ## Examples
+
+**Create a folder:**
+`run_on_connector(connector='google_drive', action='create_folder', params={"name": "Meeting Notes"})`
 
 **Create a meeting notes doc:**
 `run_on_connector(connector='google_drive', action='create_file', params={"file_type": "document", "title": "Q1 Planning Notes", "content": "# Q1 Planning\\n\\n## Attendees\\n- Alice\\n- Bob\\n\\n## Action items\\n1. Review budget\\n2. Schedule follow-up"})`
@@ -1068,6 +1096,63 @@ Call via `run_on_connector(connector='google_drive', action='edit_file', params=
             return response.text
         except Exception:
             return None
+
+    # -------------------------------------------------------------------------
+    # Folder Creation
+    # -------------------------------------------------------------------------
+
+    async def create_folder(
+        self,
+        name: str,
+        parent_folder_id: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """
+        Create a new folder in Google Drive.
+
+        Args:
+            name: Display name for the new folder.
+            parent_folder_id: Optional parent folder ID to nest inside.
+
+        Returns:
+            Dict with created folder metadata (external_id, web_view_link, etc.).
+        """
+        if not name or not name.strip():
+            return {"error": "Folder name is required."}
+
+        await self.get_oauth_token()
+
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            create_body: dict[str, Any] = {
+                "name": name.strip(),
+                "mimeType": GOOGLE_FOLDER_MIME,
+            }
+            if parent_folder_id:
+                create_body["parents"] = [parent_folder_id]
+
+            resp = await client.post(
+                f"{DRIVE_API_BASE}/files",
+                headers={**self._get_headers(), "Content-Type": "application/json"},
+                params={"fields": FILE_FIELDS},
+                json=create_body,
+            )
+            if resp.status_code not in (200, 201):
+                logger.error("[GoogleDrive] Create folder failed: %s %s", resp.status_code, resp.text)
+                return {"error": f"Failed to create folder: {resp.status_code} — {resp.text}"}
+
+            folder_meta: dict[str, Any] = resp.json()
+
+        await self._upsert_created_file(folder_meta)
+
+        folder_id: str = folder_meta["id"]
+        web_link: str = folder_meta.get("webViewLink", f"https://drive.google.com/drive/folders/{folder_id}")
+
+        return {
+            "status": "created",
+            "external_id": folder_id,
+            "name": name.strip(),
+            "mime_type": GOOGLE_FOLDER_MIME,
+            "web_view_link": web_link,
+        }
 
     # -------------------------------------------------------------------------
     # File Creation
@@ -2047,6 +2132,11 @@ Call via `run_on_connector(connector='google_drive', action='edit_file', params=
 
     async def execute_action(self, action: str, params: dict[str, Any]) -> dict[str, Any]:
         """Dispatch actions (ACTION capability)."""
+        if action == "create_folder":
+            return await self.create_folder(
+                name=params.get("name", ""),
+                parent_folder_id=params.get("parent_folder_id"),
+            )
         if action == "create_file":
             return await self.create_file(
                 file_type=params.get("file_type", ""),
