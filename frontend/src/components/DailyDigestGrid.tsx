@@ -271,16 +271,16 @@ function MemberCardCompact({
     <button
       type="button"
       onClick={onToggle}
-      className="rounded-xl border border-surface-700 bg-surface-900/50 p-3 md:p-4 flex flex-col gap-2.5 text-left hover:border-surface-500 hover:bg-surface-800/50 transition-colors cursor-pointer w-full"
+      className="rounded-xl border border-surface-700 bg-surface-900/50 p-4 md:p-5 flex flex-col gap-3 text-left hover:border-surface-500 hover:bg-surface-800/50 transition-colors cursor-pointer w-full"
     >
-      <div className="flex items-center gap-2.5">
-        <MemberAvatar member={member} size="sm" />
-        <h3 className="text-surface-100 font-medium text-sm truncate">{displayName}</h3>
+      <div className="flex items-center gap-3">
+        <MemberAvatar member={member} size="md" />
+        <h3 className="text-surface-100 font-medium truncate">{displayName}</h3>
       </div>
       {narrative ? (
-        <p className="text-surface-400 text-xs leading-relaxed line-clamp-2">{narrative}</p>
+        <p className="text-surface-400 text-sm leading-relaxed line-clamp-4">{narrative}</p>
       ) : (
-        <p className="text-surface-600 text-xs italic">No activity</p>
+        <p className="text-surface-600 text-sm italic">No activity</p>
       )}
       {member.active_sources.length > 0 && (
         <div className="flex flex-wrap gap-1">
@@ -509,7 +509,7 @@ export function DailyDigestGrid({ digestDate, onDigestDateChange }: DailyDigestG
           {filteredMembers.length === 0 ? (
             <p className="text-surface-500 text-sm py-4">No members matching &ldquo;{searchQuery}&rdquo;</p>
           ) : layout === "cards" ? (
-            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 pb-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 pb-4">
               {filteredMembers.map((m) => (
                 <MemberCardCompact
                   key={m.user_id}
