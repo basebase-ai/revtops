@@ -271,14 +271,14 @@ function MemberCardCompact({
     <button
       type="button"
       onClick={onToggle}
-      className="rounded-xl border border-surface-700 bg-surface-900/50 p-4 md:p-5 flex flex-col gap-3 text-left hover:border-surface-500 hover:bg-surface-800/50 transition-colors cursor-pointer w-full"
+      className="rounded-xl border border-surface-700 bg-surface-900/50 p-4 md:p-5 flex flex-col gap-3 text-left hover:border-surface-500 hover:bg-surface-800/50 transition-colors cursor-pointer w-full min-h-[10rem]"
     >
-      <div className="flex items-center gap-3">
-        <MemberAvatar member={member} size="md" />
-        <h3 className="text-surface-100 font-medium truncate">{displayName}</h3>
+      <div className="flex items-center gap-2.5">
+        <MemberAvatar member={member} size="sm" />
+        <h3 className="text-surface-100 font-medium text-sm truncate">{displayName}</h3>
       </div>
       {narrative ? (
-        <p className="text-surface-400 text-sm leading-relaxed line-clamp-4">{narrative}</p>
+        <p className="text-surface-400 text-sm leading-relaxed line-clamp-5">{narrative}</p>
       ) : (
         <p className="text-surface-600 text-sm italic">No activity</p>
       )}
