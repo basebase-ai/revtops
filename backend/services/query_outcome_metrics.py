@@ -22,6 +22,7 @@ _QUERY_SUCCESS_INCIDENT_THRESHOLD_PCT = 25.0
 _MAX_REASON_LENGTH = 80
 _DEFAULT_FAILURE_REASON = "unknown_error"
 _MAX_REASON_RESULTS = 20
+_MAX_REASON_CONVERSATIONS = 5
 
 
 def normalize_failure_reason(raw_reason: str | None) -> str:
@@ -40,7 +41,7 @@ def normalize_failure_reason(raw_reason: str | None) -> str:
     return compact or _DEFAULT_FAILURE_REASON
 
 
-async def get_query_outcome_window_stats() -> dict[str, float | int]:
+async def get_query_outcome_window_stats() -> dict[str, object]:
     """Return rolling 30-minute query outcome stats from Redis."""
     timestamp = int(time.time())
     window_start = timestamp - _WINDOW_SECONDS
@@ -68,18 +69,29 @@ async def get_query_outcome_window_stats() -> dict[str, float | int]:
     total = success_total + failure_total
     success_pct = ((success_total / total) * 100.0) if total else 100.0
     reason_counts: Counter[str] = Counter()
+    reason_conversations: dict[str, list[str]] = {}
     for raw_member in failure_reason_members or []:
         member = raw_member.decode("utf-8") if isinstance(raw_member, bytes) else str(raw_member)
-        # member format: "{timestamp}:{platform}:{reason}:{time_ns}"
-        parts = member.split(":", 3)
+        # member format:
+        # "{timestamp}:{platform}:{reason}:{conversation_id}:{time_ns}".
+        # Older members may omit conversation_id:
+        # "{timestamp}:{platform}:{reason}:{time_ns}".
+        parts = member.split(":")
         if len(parts) < 4:
             continue
         reason = parts[2].strip()
+        conversation_id = ""
+        if len(parts) >= 5:
+            conversation_id = parts[3].strip()
         if reason:
             reason_counts[reason] += 1
+            if conversation_id and conversation_id != "unknown":
+                existing = reason_conversations.setdefault(reason, [])
+                if conversation_id not in existing and len(existing) < _MAX_REASON_CONVERSATIONS:
+                    existing.append(conversation_id)
 
     top_failure_reasons = [
-        {"reason": reason, "count": count}
+        {"reason": reason, "count": count, "conversation_ids": reason_conversations.get(reason, [])}
         for reason, count in reason_counts.most_common(_MAX_REASON_RESULTS)
     ]
     return {
@@ -97,6 +109,7 @@ async def record_query_outcome(
     platform: str,
     was_success: bool,
     failure_reason: str | None = None,
+    conversation_id: str | None = None,
 ) -> None:
     """Record one query outcome and maintain a rolling 30-minute success pct."""
     timestamp = int(time.time())
@@ -104,6 +117,7 @@ async def record_query_outcome(
     bucket_key = _SUCCESS_KEY if was_success else _FAILURE_KEY
     member = f"{timestamp}:{platform}:{'ok' if was_success else 'fail'}:{time.time_ns()}"
     normalized_reason = normalize_failure_reason(failure_reason) if not was_success else None
+    normalized_conversation_id = (conversation_id or "unknown").strip() or "unknown"
 
     redis_client = aioredis.from_url(
         settings.REDIS_URL,
@@ -115,7 +129,9 @@ async def record_query_outcome(
         pipe.zadd(bucket_key, {member: score})
         pipe.expire(bucket_key, _WINDOW_SECONDS * 2)
         if normalized_reason:
-            reason_member = f"{timestamp}:{platform}:{normalized_reason}:{time.time_ns()}"
+            reason_member = (
+                f"{timestamp}:{platform}:{normalized_reason}:{normalized_conversation_id}:{time.time_ns()}"
+            )
             pipe.zadd(_FAILURE_REASON_KEY, {reason_member: score})
             pipe.expire(_FAILURE_REASON_KEY, _WINDOW_SECONDS * 2)
         await pipe.execute()
@@ -124,7 +140,7 @@ async def record_query_outcome(
 
     logger.info(
         "Rolling query outcomes window_seconds=%s platform=%s was_success=%s "
-        "success_count=%s failure_count=%s success_pct=%.2f failure_reason=%s",
+        "success_count=%s failure_count=%s success_pct=%.2f failure_reason=%s conversation_id=%s",
         stats["window_seconds"],
         platform,
         was_success,
@@ -132,6 +148,7 @@ async def record_query_outcome(
         stats["failure_count"],
         stats["success_rate_pct"],
         normalized_reason,
+        normalized_conversation_id,
     )
     await _maybe_raise_query_success_incident(platform=platform, stats=stats)
 
@@ -139,7 +156,7 @@ async def record_query_outcome(
 async def _maybe_raise_query_success_incident(
     *,
     platform: str,
-    stats: dict[str, float | int],
+    stats: dict[str, object],
 ) -> None:
     """Raise/suppress incident when rolling success percentage crosses threshold."""
     success_rate_pct = float(stats["success_rate_pct"])

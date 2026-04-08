@@ -119,6 +119,7 @@ async def _record_web_query_outcome(
             platform=_WEB_PLATFORM_SLUG,
             was_success=was_success,
             failure_reason=normalize_failure_reason(failure_reason) if not was_success else None,
+            conversation_id=conversation_id,
         )
     except Exception:
         logger.exception(

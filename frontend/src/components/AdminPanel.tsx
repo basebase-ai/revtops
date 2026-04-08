@@ -57,6 +57,7 @@ interface QueryOutcomeRateResponse {
   top_failure_reasons: Array<{
     reason: string;
     count: number;
+    conversation_ids: string[];
   }>;
 }
 
@@ -2288,8 +2289,15 @@ export function AdminPanel(): JSX.Element {
                   ) : (
                     <ul className="divide-y divide-surface-800">
                       {(queryOutcomeRate?.top_failure_reasons ?? []).map((entry) => (
-                        <li key={entry.reason} className="flex items-center justify-between gap-4 p-3 text-sm">
-                          <span className="truncate text-surface-200" title={entry.reason}>{entry.reason}</span>
+                        <li key={entry.reason} className="flex items-start justify-between gap-4 p-3 text-sm">
+                          <div className="min-w-0 flex-1">
+                            <span className="block truncate text-surface-200" title={entry.reason}>{entry.reason}</span>
+                            {(entry.conversation_ids?.length ?? 0) > 0 && (
+                              <div className="mt-1 text-xs text-surface-400">
+                                Conversations: {entry.conversation_ids.join(', ')}
+                              </div>
+                            )}
+                          </div>
                           <span className="rounded bg-surface-800 px-2 py-0.5 text-xs text-surface-300">{entry.count.toLocaleString()}</span>
                         </li>
                       ))}

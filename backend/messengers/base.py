@@ -405,6 +405,7 @@ class BaseMessenger(ABC):
                 platform=self.meta.slug,
                 was_success=was_success,
                 failure_reason=normalize_failure_reason(failure_reason) if not was_success else None,
+                conversation_id=str(result.get("conversation_id")) if result and result.get("conversation_id") else None,
             )
         except Exception:
             logger.exception(

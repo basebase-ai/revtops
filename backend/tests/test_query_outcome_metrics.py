@@ -112,6 +112,57 @@ def test_get_query_outcome_window_stats_defaults_to_full_success_for_empty_windo
     assert stats["top_failure_reasons"] == []
 
 
+def test_get_query_outcome_window_stats_includes_source_conversation_ids() -> None:
+    class _FakePipeline:
+        def zremrangebyscore(self, *_args, **_kwargs) -> None:
+            return None
+
+        def zcard(self, *_args, **_kwargs) -> None:
+            return None
+
+        def zrangebyscore(self, *_args, **_kwargs) -> None:
+            return None
+
+        async def execute(self) -> list[object]:
+            return [
+                0,
+                0,
+                0,
+                8,
+                2,
+                [
+                    b"100:web:provider timeout:conv-1:9001",
+                    b"101:web:provider timeout:conv-2:9002",
+                    b"102:web:provider timeout:9003",  # legacy format without conversation_id
+                ],
+            ]
+
+    class _FakeRedis:
+        def pipeline(self) -> _FakePipeline:
+            return _FakePipeline()
+
+        async def __aenter__(self) -> "_FakeRedis":
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> bool:
+            return False
+
+    original_from_url = query_outcome_metrics.aioredis.from_url
+    query_outcome_metrics.aioredis.from_url = lambda *_args, **_kwargs: _FakeRedis()
+    try:
+        stats = asyncio.run(query_outcome_metrics.get_query_outcome_window_stats())
+    finally:
+        query_outcome_metrics.aioredis.from_url = original_from_url
+
+    assert stats["top_failure_reasons"] == [
+        {
+            "reason": "provider timeout",
+            "count": 3,
+            "conversation_ids": ["conv-1", "conv-2"],
+        }
+    ]
+
+
 def test_record_query_outcome_raises_incident_when_success_rate_at_or_below_25(
     monkeypatch,
 ) -> None:
