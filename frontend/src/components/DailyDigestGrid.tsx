@@ -509,7 +509,7 @@ export function DailyDigestGrid({ digestDate, onDigestDateChange }: DailyDigestG
           {filteredMembers.length === 0 ? (
             <p className="text-surface-500 text-sm py-4">No members matching &ldquo;{searchQuery}&rdquo;</p>
           ) : layout === "cards" ? (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 pb-4">
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 pb-4">
               {filteredMembers.map((m) => (
                 <MemberCardCompact
                   key={m.user_id}
