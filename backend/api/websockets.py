@@ -761,7 +761,10 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     if conv_scope not in ("private", "shared"):
                         conv_scope = "shared"
                     
-                    async with get_session(organization_id=organization_id) as session:
+                    async with get_session(
+                        organization_id=organization_id,
+                        user_id=user_id_str,
+                    ) as session:
                         conversation = Conversation(
                             id=conv_uuid,
                             user_id=UUID(user_id_str),
@@ -810,7 +813,10 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                         attachment_ids=attachment_ids,
                         sender_email=user_email,
                     )
-                    async with get_session(organization_id=organization_id) as session:
+                    async with get_session(
+                        organization_id=organization_id,
+                        user_id=user_id_str,
+                    ) as session:
                         conv_row = await session.execute(
                             select(Conversation.participating_user_ids).where(
                                 Conversation.id == UUID(conversation_id)
