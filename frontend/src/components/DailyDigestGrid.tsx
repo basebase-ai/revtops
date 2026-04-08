@@ -13,6 +13,14 @@ import {
   type DigestMemberRow,
   type DigestSummaryJson,
 } from "../api/daily-digests";
+import {
+  CONNECTOR_DISPLAY,
+  DEFAULT_CONNECTOR_COLOR,
+  DEFAULT_CONNECTOR_ICON,
+  getConnectorColorClass,
+  isImageIcon,
+  renderConnectorIcon,
+} from "./shared/ConnectorIcons";
 
 function addCalendarDays(isoDate: string, deltaDays: number): string {
   const parts: string[] = isoDate.split("-");
@@ -29,35 +37,27 @@ function formatDisplayDate(isoDate: string): string {
   return `${mm}/${dd}/${yy}`;
 }
 
-const SOURCE_META: Record<string, { label: string; icon: string }> = {
-  slack: { label: "Slack", icon: "💬" },
-  google_calendar: { label: "Google Calendar", icon: "📅" },
-  meetings: { label: "Meeting Notes", icon: "🎙️" },
-  linear: { label: "Linear", icon: "🔷" },
-  github: { label: "GitHub", icon: "🐙" },
-  hubspot: { label: "HubSpot", icon: "🟠" },
-  google_drive: { label: "Google Drive", icon: "📁" },
-  granola: { label: "Granola", icon: "📝" },
-  fireflies: { label: "Fireflies", icon: "🔥" },
-  zoom: { label: "Zoom", icon: "📹" },
-  salesforce: { label: "Salesforce", icon: "☁️" },
-};
-
 function SourceBadges({ sources }: { sources: string[] }): JSX.Element | null {
   if (sources.length === 0) return null;
   return (
     <div className="flex flex-wrap items-center gap-1.5">
       <span className="text-xs text-surface-500 mr-0.5">Sources:</span>
       {sources.map((s) => {
-        const meta: { label: string; icon: string } = SOURCE_META[s] ?? { label: s, icon: "🔗" };
+        const display = CONNECTOR_DISPLAY[s];
+        const label: string = display?.label ?? s;
+        const iconId: string = display?.icon ?? DEFAULT_CONNECTOR_ICON;
+        const color: string = display?.color ?? DEFAULT_CONNECTOR_COLOR;
+        const bgClass: string = isImageIcon(iconId) ? "" : getConnectorColorClass(color);
         return (
           <span
             key={s}
-            title={meta.label}
-            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-surface-800 text-surface-300 text-xs"
+            title={label}
+            className="inline-flex items-center gap-1.5 pl-1 pr-2 py-0.5 rounded-md bg-surface-800 text-surface-300 text-xs"
           >
-            <span>{meta.icon}</span>
-            <span>{meta.label}</span>
+            <span className={`${bgClass} rounded p-0.5 text-white flex items-center justify-center`}>
+              {renderConnectorIcon(iconId, "w-3.5 h-3.5")}
+            </span>
+            <span>{label}</span>
           </span>
         );
       })}
