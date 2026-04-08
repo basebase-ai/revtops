@@ -39,6 +39,50 @@ WORKFLOW_NESTING_GUARDRAIL = (
 )
 
 
+async def _record_workflow_query_outcome(
+    *,
+    result: dict[str, Any] | None,
+    workflow_id: str,
+) -> None:
+    """Best-effort rolling success metric recording for workflow turns."""
+    if not result:
+        return
+
+    status = (result.get("status") or "").strip().lower()
+    if status not in {"completed", "failed"}:
+        return
+
+    from services.query_outcome_metrics import normalize_failure_reason, record_query_outcome
+
+    was_success = status == "completed"
+    failure_reason = (
+        str(result.get("error") or result.get("reason") or "workflow_failed")
+        if not was_success
+        else None
+    )
+    conversation_id = (
+        str(result.get("conversation_id"))
+        if result.get("conversation_id")
+        else f"workflow:{workflow_id}"
+    )
+
+    try:
+        await record_query_outcome(
+            platform="workflow",
+            was_success=was_success,
+            failure_reason=normalize_failure_reason(failure_reason) if failure_reason else None,
+            conversation_id=conversation_id,
+        )
+    except Exception:
+        logger.exception(
+            "[Workflow] Failed to record query outcome workflow_id=%s status=%s conversation_id=%s failure_reason=%s",
+            workflow_id,
+            status,
+            conversation_id,
+            failure_reason,
+        )
+
+
 def _extract_allowed_slack_channels(workflow: Any) -> list[str]:
     """Extract workflow-approved Slack channels from output_config."""
     if not workflow:
@@ -695,16 +739,26 @@ async def _execute_workflow(
         workflow = result.scalar_one_or_none()
         
         if not workflow:
-            return {
+            result_payload = {
                 "status": "failed",
                 "error": f"Workflow {workflow_id} not found",
             }
+            await _record_workflow_query_outcome(
+                result=result_payload,
+                workflow_id=workflow_id,
+            )
+            return result_payload
         
         if not workflow.is_enabled:
-            return {
+            result_payload = {
                 "status": "skipped",
                 "reason": "Workflow is disabled",
             }
+            await _record_workflow_query_outcome(
+                result=result_payload,
+                workflow_id=workflow_id,
+            )
+            return result_payload
 
         existing_run_count_result = await session.execute(
             select(WorkflowRun.id).where(WorkflowRun.workflow_id == workflow.id).limit(1)
@@ -736,7 +790,7 @@ async def _execute_workflow(
                     error_message="Insufficient credits or no active subscription. Please add a payment method in Basebase.",
                     is_first_run_attempt=is_first_run_attempt,
                 )
-                return {
+                result_payload = {
                     "status": "failed",
                     "workflow_id": workflow_id,
                     "run_id": str(run_id),
@@ -745,6 +799,11 @@ async def _execute_workflow(
                         workflow_disabled=is_first_run_attempt,
                     ),
                 }
+                await _record_workflow_query_outcome(
+                    result=result_payload,
+                    workflow_id=workflow_id,
+                )
+                return result_payload
             # NEW: Execute via agent conversation
             try:
                 result = await _execute_workflow_via_agent(
@@ -756,6 +815,10 @@ async def _execute_workflow(
                     is_first_run_attempt=is_first_run_attempt,
                     existing_conversation_id=conversation_id,
                     triggered_by_user_id=triggered_by_user_id,
+                )
+                await _record_workflow_query_outcome(
+                    result=result,
+                    workflow_id=workflow_id,
                 )
                 return result
             except Exception as e:
@@ -769,7 +832,7 @@ async def _execute_workflow(
                     error_message=error_msg,
                     is_first_run_attempt=is_first_run_attempt,
                 )
-                return {
+                result_payload = {
                     "status": "failed",
                     "workflow_id": workflow_id,
                     "run_id": str(run_id),
@@ -778,15 +841,25 @@ async def _execute_workflow(
                         workflow_disabled=is_first_run_attempt,
                     ),
                 }
+                await _record_workflow_query_outcome(
+                    result=result_payload,
+                    workflow_id=workflow_id,
+                )
+                return result_payload
         
         # LEGACY: Fall back to step-by-step execution for workflows without prompts
-        return await _execute_workflow_legacy(
+        result = await _execute_workflow_legacy(
             workflow,
             run,
             trigger_data,
             session,
             is_first_run_attempt=is_first_run_attempt,
         )
+        await _record_workflow_query_outcome(
+            result=result,
+            workflow_id=workflow_id,
+        )
+        return result
 
 
 def _format_workflow_error_for_response(base_error: str, workflow_disabled: bool) -> str:
