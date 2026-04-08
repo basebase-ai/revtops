@@ -613,9 +613,16 @@ export function OnboardingWizard({ emailDomain, isInvitedMode = false, isCreatin
                   </label>
                   <input
                     id="websiteUrl"
-                    type="url"
+                    type="text"
+                    inputMode="url"
                     value={websiteUrl}
                     onChange={(e) => setWebsiteUrl(e.target.value)}
+                    onBlur={() => {
+                      const v: string = websiteUrl.trim();
+                      if (v && !/^https?:\/\//i.test(v)) {
+                        setWebsiteUrl(`https://${v}`);
+                      }
+                    }}
                     className="input"
                     placeholder="https://company.com"
                   />
