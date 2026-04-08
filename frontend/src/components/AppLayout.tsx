@@ -220,8 +220,6 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
     currentAppId,
     currentArtifactId,
     recentChats,
-    orgAccessError,
-    clearOrgAccessError,
   } = useAppStore(
     useShallow((state) => ({
       user: state.user,
@@ -233,10 +231,12 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
       currentAppId: state.currentAppId,
       currentArtifactId: state.currentArtifactId,
       recentChats: state.recentChats,
-      orgAccessError: state.orgAccessError,
-      clearOrgAccessError: state.clearOrgAccessError,
     }))
   );
+
+  // Read directly from uiStore (not the merged facade) so subscription is reliable.
+  const orgAccessError = useUIStore((s) => s.orgAccessError);
+  const clearOrgAccessError = useUIStore((s) => s.clearOrgAccessError);
 
   const isSwitchingOrg: boolean = useIsSwitchingOrg();
 
@@ -431,16 +431,13 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
           await fetchUserOrganizations();
         }
       }
-      if (!targetOrg) {
-        return;
-      }
       const subPath: string = orgPrefixMatch?.[2] ?? "";
-      const currentOrg = useAppStore.getState().organization;
-      let switchSucceeded: boolean = true;
-      if (!currentOrg || currentOrg.id !== targetOrg.id) {
-        switchSucceeded = await switchActiveOrganization(targetOrg.id);
-      }
-      if (!switchSucceeded) {
+
+      // Helper: try public fallback then show org-access error.
+      const handleOrgAccessDenied = async (
+        handle: string,
+        orgName: string,
+      ): Promise<void> => {
         const appMatchFail = subPath.match(/^apps\/([a-f0-9-]+)$/i);
         const artifactMatchFail = subPath.match(/^artifacts?\/([a-f0-9-]+)$/i);
         if (appMatchFail?.[1] || artifactMatchFail?.[1]) {
@@ -461,11 +458,22 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
           }
         }
         useUIStore.setState({
-          orgAccessError: {
-            handle: orgHandleFromPath,
-            orgName: targetOrg.name,
-          },
+          orgAccessError: { handle, orgName },
         });
+      };
+
+      if (!targetOrg) {
+        await handleOrgAccessDenied(orgHandleFromPath, orgHandleFromPath);
+        return;
+      }
+
+      const currentOrg = useAppStore.getState().organization;
+      let switchSucceeded: boolean = true;
+      if (!currentOrg || currentOrg.id !== targetOrg.id) {
+        switchSucceeded = await switchActiveOrganization(targetOrg.id);
+      }
+      if (!switchSucceeded) {
+        await handleOrgAccessDenied(orgHandleFromPath, targetOrg.name);
         return;
       }
 
