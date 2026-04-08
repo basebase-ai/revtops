@@ -240,8 +240,18 @@ export function ChatsList({ chats: sidebarChats, onSelectChat, onNewChat }: Chat
         </div>
 
         {/* Filters + Search */}
-        <div className="flex flex-col gap-3 mb-4">
-          <div className="flex items-center gap-1 rounded-lg border border-surface-700 p-0.5 w-fit bg-surface-900">
+        <div className="flex items-center gap-3 mb-4">
+          <GallerySearchInput
+            value={searchQuery}
+            onChange={handleSearchValueChange}
+            placeholder="Search conversations… (press Enter)"
+            aria-label="Search conversations"
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') handleSearchSubmit();
+              if (e.key === 'Escape') handleSearchClear();
+            }}
+          />
+          <div className="flex items-center gap-1 rounded-lg border border-surface-700 p-0.5 flex-shrink-0 bg-surface-900">
             {(['all', 'shared', 'private', 'mine'] as const).map((f) => (
               <button
                 key={f}
@@ -256,18 +266,6 @@ export function ChatsList({ chats: sidebarChats, onSelectChat, onNewChat }: Chat
                 {f === 'all' ? 'All' : f === 'shared' ? 'Shared' : f === 'private' ? 'Private' : 'Mine'}
               </button>
             ))}
-          </div>
-          <div className="flex items-center gap-3">
-            <GallerySearchInput
-              value={searchQuery}
-              onChange={handleSearchValueChange}
-              placeholder="Search conversations… (press Enter)"
-              aria-label="Search conversations"
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') handleSearchSubmit();
-                if (e.key === 'Escape') handleSearchClear();
-              }}
-            />
           </div>
         </div>
       </div>
