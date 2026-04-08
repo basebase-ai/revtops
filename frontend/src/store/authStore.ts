@@ -35,7 +35,7 @@ export interface AuthState {
   setOrganization: (org: OrganizationInfo | null) => void;
   setOrganizations: (orgs: UserOrganization[]) => void;
   fetchUserOrganizations: () => Promise<void>;
-  switchActiveOrganization: (orgId: string) => Promise<void>;
+  switchActiveOrganization: (orgId: string) => Promise<boolean>;
   logout: () => void;
   startMasquerade: (
     targetUser: UserProfile,
@@ -113,7 +113,7 @@ export const useAuthStore = create<AuthState>()(
 
       switchActiveOrganization: async (orgId: string) => {
         const { user } = get();
-        if (!user) return;
+        if (!user) return false;
 
         let organizations: UserOrganization[] = get().organizations;
         let orgInList: UserOrganization | undefined = organizations.find(
@@ -126,8 +126,7 @@ export const useAuthStore = create<AuthState>()(
         }
         if (!orgInList) {
           console.error("[Store] Failed to switch org: not a member", orgId);
-          alert("You don't have access to that organization.");
-          return;
+          return false;
         }
 
         const updatedOrgs: UserOrganization[] = organizations.map((o) => ({
@@ -170,8 +169,10 @@ export const useAuthStore = create<AuthState>()(
           currentView: "home",
           currentAppId: null,
           currentArtifactId: null,
+          orgAccessError: null,
         });
 
+        return true;
       },
 
       logout: () => {

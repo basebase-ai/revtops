@@ -54,6 +54,7 @@ export type {
 export { useAuthStore } from "./authStore";
 export { useChatStore } from "./chatStore";
 export { useUIStore } from "./uiStore";
+export type { OrgAccessErrorState } from "./uiStore";
 
 // =============================================================================
 // Combined AppState type (union of all three sub-stores)

@@ -247,7 +247,11 @@ function OrgSwitcherSection({
     setShowDropdown(false);
     useAuthStore.setState({ isSwitchingOrg: true });
     try {
-      await switchActiveOrganization(orgId);
+      const switched: boolean = await switchActiveOrganization(orgId);
+      if (!switched) {
+        alert("You don't have access to that organization.");
+        return;
+      }
       await Promise.all([fetchConversations(), fetchIntegrations()]);
     } finally {
       useAuthStore.setState({ isSwitchingOrg: false });

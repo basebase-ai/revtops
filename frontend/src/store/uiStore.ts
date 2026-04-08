@@ -13,6 +13,12 @@ import { useChatStore } from "./chatStore";
 /** User-selected color theme; `system` follows OS preference. */
 export type UITheme = "light" | "dark" | "system";
 
+/** Shown when the URL names an org the user cannot switch into (e.g. deep link to another tenant). */
+export interface OrgAccessErrorState {
+  handle: string;
+  orgName: string;
+}
+
 // ---------------------------------------------------------------------------
 // Store interface
 // ---------------------------------------------------------------------------
@@ -31,6 +37,8 @@ export interface UIState {
   lastArtifactUpdateId: string | null;
   /** Active section in Global Admin (sidebar + main panel). */
   adminPanelTab: AdminPanelTab;
+  /** Set when org-prefixed URL targets an org the user does not belong to. */
+  orgAccessError: OrgAccessErrorState | null;
 
   // Actions
   setSidebarCollapsed: (collapsed: boolean) => void;
@@ -47,6 +55,7 @@ export interface UIState {
   togglePinChat: (id: string) => void;
   setTheme: (theme: UITheme) => void;
   setAdminPanelTab: (tab: AdminPanelTab) => void;
+  clearOrgAccessError: () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -67,6 +76,7 @@ export const useUIStore = create<UIState>()(
       lastArtifactUpdateId: null,
       documentSearchTerm: null,
       adminPanelTab: "dashboard",
+      orgAccessError: null,
 
       // Actions
       notifyArtifactUpdated: (artifactId) => set({ lastArtifactUpdateId: artifactId }),
@@ -114,6 +124,7 @@ export const useUIStore = create<UIState>()(
       },
       setTheme: (theme) => set({ theme }),
       setAdminPanelTab: (adminPanelTab) => set({ adminPanelTab }),
+      clearOrgAccessError: () => set({ orgAccessError: null }),
     }),
     {
       name: "revtops-ui-store",
