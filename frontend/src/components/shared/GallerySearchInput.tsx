@@ -2,11 +2,15 @@
  * Search field used on Apps and Documents galleries: full-width with optional clear control.
  */
 
+import type { KeyboardEventHandler } from "react";
+
 export interface GallerySearchInputProps {
   value: string;
   onChange: (next: string) => void;
   placeholder: string;
   "aria-label": string;
+  /** Optional, e.g. Enter to submit search, Escape to clear. */
+  onKeyDown?: KeyboardEventHandler<HTMLInputElement>;
 }
 
 export function GallerySearchInput({
@@ -14,6 +18,7 @@ export function GallerySearchInput({
   onChange,
   placeholder,
   "aria-label": ariaLabel,
+  onKeyDown,
 }: GallerySearchInputProps): JSX.Element {
   const hasValue: boolean = value.length > 0;
 
@@ -24,6 +29,7 @@ export function GallerySearchInput({
         placeholder={placeholder}
         value={value}
         onChange={(e) => onChange(e.target.value)}
+        onKeyDown={onKeyDown}
         className={`w-full py-2 rounded-lg bg-surface-800 border border-surface-700 text-surface-100 placeholder-surface-500 focus:outline-none focus:ring-1 focus:ring-primary-500 focus:border-primary-500 ${
           hasValue ? "pl-3 pr-9" : "px-3"
         }`}

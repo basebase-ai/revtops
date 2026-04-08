@@ -183,70 +183,73 @@ export function ActivityLog(): JSX.Element {
   }
 
   return (
-    <div className="h-full overflow-y-auto">
-    <div className="max-w-4xl mx-auto px-4 py-6 sm:px-6">
-      <div className="flex items-center justify-between mb-6">
-        <div>
-          <h1 className="text-xl font-semibold text-surface-100">Activity Log</h1>
-          <p className="text-sm text-surface-400 mt-1">
-            Audit trail of all external writes and actions
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <select
-            value={connectorFilter}
-            onChange={(e) => setConnectorFilter(e.target.value)}
-            className="bg-surface-800 border border-surface-700 rounded-md px-3 py-1.5 text-sm text-surface-200 focus:outline-none focus:ring-1 focus:ring-primary-500"
-          >
-            <option value="">All connectors</option>
-            <option value="hubspot">HubSpot</option>
-            <option value="google_drive">Google Drive</option>
-            <option value="google_mail">Google Mail</option>
-            <option value="slack">Slack</option>
-            <option value="linear">Linear</option>
-          </select>
+    <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+      <div className="flex-shrink-0 px-6 pt-6 pb-0">
+        <div className="flex items-center justify-between mb-4 gap-4">
+          <div>
+            <h1 className="text-xl font-bold text-surface-100">Activity Log</h1>
+            <p className="text-sm text-surface-400 mt-1">
+              Audit trail of all external writes and actions
+            </p>
+          </div>
+          <div className="flex items-center gap-2 flex-shrink-0">
+            <select
+              value={connectorFilter}
+              onChange={(e) => setConnectorFilter(e.target.value)}
+              className="bg-surface-800 border border-surface-700 rounded-md px-3 py-1.5 text-sm text-surface-200 focus:outline-none focus:ring-1 focus:ring-primary-500"
+            >
+              <option value="">All connectors</option>
+              <option value="hubspot">HubSpot</option>
+              <option value="google_drive">Google Drive</option>
+              <option value="google_mail">Google Mail</option>
+              <option value="slack">Slack</option>
+              <option value="linear">Linear</option>
+            </select>
+          </div>
         </div>
       </div>
 
-      {error && (
-        <div className="mb-4 p-3 bg-red-500/10 border border-red-500/20 rounded-lg text-sm text-red-400">
-          {error}
-        </div>
-      )}
+      <div className="flex-1 overflow-y-auto min-h-0 px-6 pb-6">
+        {error && (
+          <div className="mb-4 p-3 bg-red-500/10 border border-red-500/20 rounded-lg text-sm text-red-400">
+            {error}
+          </div>
+        )}
 
-      <div className="space-y-2">
-        {entries.map((entry) => (
-          <EntryCard key={entry.id} entry={entry} />
-        ))}
+        <div className="space-y-2">
+          {entries.map((entry) => (
+            <EntryCard key={entry.id} entry={entry} />
+          ))}
+        </div>
+
+        {!loading && entries.length === 0 && !error && (
+          <div className="text-center py-16 text-surface-500">
+            <svg className="w-12 h-12 mx-auto mb-3 text-surface-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+            </svg>
+            <p>No actions recorded yet.</p>
+            <p className="text-xs mt-1">Actions will appear here when connectors write to external systems.</p>
+          </div>
+        )}
+
+        {loading && (
+          <div className="flex justify-center py-8">
+            <div className="animate-spin w-6 h-6 border-2 border-surface-500 border-t-primary-500 rounded-full" />
+          </div>
+        )}
+
+        {!loading && entries.length < total && (
+          <div className="flex justify-center mt-4">
+            <button
+              type="button"
+              onClick={loadMore}
+              className="px-4 py-2 text-sm bg-surface-800 hover:bg-surface-700 border border-surface-700 rounded-md text-surface-300 transition-colors"
+            >
+              Load more ({total - entries.length} remaining)
+            </button>
+          </div>
+        )}
       </div>
-
-      {!loading && entries.length === 0 && !error && (
-        <div className="text-center py-16 text-surface-500">
-          <svg className="w-12 h-12 mx-auto mb-3 text-surface-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
-          </svg>
-          <p>No actions recorded yet.</p>
-          <p className="text-xs mt-1">Actions will appear here when connectors write to external systems.</p>
-        </div>
-      )}
-
-      {loading && (
-        <div className="flex justify-center py-8">
-          <div className="animate-spin w-6 h-6 border-2 border-surface-500 border-t-primary-500 rounded-full" />
-        </div>
-      )}
-
-      {!loading && entries.length < total && (
-        <div className="flex justify-center mt-4">
-          <button
-            onClick={loadMore}
-            className="px-4 py-2 text-sm bg-surface-800 hover:bg-surface-700 border border-surface-700 rounded-md text-surface-300 transition-colors"
-          >
-            Load more ({total - entries.length} remaining)
-          </button>
-        </div>
-      )}
-    </div>
     </div>
   );
 }

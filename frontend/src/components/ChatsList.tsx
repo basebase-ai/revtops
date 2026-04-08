@@ -9,6 +9,7 @@ import type { ChatSummary } from '../store/types';
 import { useActiveTasksByConversation, useAppStore, useChatStore } from '../store';
 import { listConversations, type ConversationSummary } from '../api/client';
 import { Avatar } from './Avatar';
+import { GallerySearchInput } from './shared/GallerySearchInput';
 
 interface ChatsListProps {
   chats: ChatSummary[];
@@ -197,30 +198,49 @@ export function ChatsList({ chats: sidebarChats, onSelectChat, onNewChat }: Chat
     return [...pinned, ...unpinned];
   }, [filteredChats, pinnedChatIds]);
 
+  const handleSearchValueChange = useCallback(
+    (next: string): void => {
+      setSearchQuery(next);
+      if (next === '') {
+        if (committedSearch) {
+          setInitialLoaded(false);
+        }
+        setCommittedSearch('');
+        useChatStore.setState({ chatSearchTerm: null, chatSearchMatchCount: 0 });
+      }
+    },
+    [committedSearch],
+  );
+
   return (
     <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
       {/* Header */}
-      <header className="flex-shrink-0 border-b border-surface-800 px-6 md:px-8 py-5">
-        <div className="flex items-center justify-between max-w-4xl mx-auto">
+      <div className="flex-shrink-0 px-6 pt-6 pb-0">
+        <div className="flex items-center justify-between mb-4 gap-4">
           <div>
-            <h1 className="text-2xl font-bold text-surface-50">All Chats</h1>
-            {initialLoaded && (
-              <p className="text-surface-400 text-sm mt-0.5">
+            <h1 className="text-xl font-bold text-surface-100">All Chats</h1>
+            <p className="text-sm text-surface-400 mt-1">
+              Browse and search conversations in your organization
+            </p>
+          </div>
+          <div className="flex items-center gap-3 flex-shrink-0">
+            {initialLoaded ? (
+              <span className="text-sm text-surface-500">
                 {mergedChats.length} conversation{mergedChats.length !== 1 ? 's' : ''}
                 {hasMore ? '+' : ''}
-              </p>
-            )}
+              </span>
+            ) : null}
+            <button type="button" onClick={onNewChat} className="btn-primary flex items-center gap-2">
+              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+              </svg>
+              New Chat
+            </button>
           </div>
-          <button onClick={onNewChat} className="btn-primary flex items-center gap-2">
-            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-            </svg>
-            New Chat
-          </button>
         </div>
 
         {/* Filters + Search */}
-        <div className="max-w-4xl mx-auto mt-4 flex flex-col gap-3">
+        <div className="flex flex-col gap-3 mb-4">
           <div className="flex items-center gap-1 rounded-lg border border-surface-700 p-0.5 w-fit bg-surface-900">
             {(['all', 'shared', 'private', 'mine'] as const).map((f) => (
               <button
@@ -237,46 +257,24 @@ export function ChatsList({ chats: sidebarChats, onSelectChat, onNewChat }: Chat
               </button>
             ))}
           </div>
-          <div className="relative">
-            <svg
-              className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-surface-500"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-            >
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-            </svg>
-            <input
-              type="text"
-              placeholder="Search conversations... (press Enter)"
+          <div className="flex items-center gap-3">
+            <GallerySearchInput
               value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
+              onChange={handleSearchValueChange}
+              placeholder="Search conversations… (press Enter)"
+              aria-label="Search conversations"
               onKeyDown={(e) => {
                 if (e.key === 'Enter') handleSearchSubmit();
                 if (e.key === 'Escape') handleSearchClear();
               }}
-              className="input-field pl-10 pr-8 w-full"
-              autoFocus
             />
-            {searchQuery && (
-              <button
-                type="button"
-                onClick={handleSearchClear}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-surface-500 hover:text-surface-200"
-                title="Clear search"
-              >
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              </button>
-            )}
           </div>
         </div>
-      </header>
+      </div>
 
       {/* Scrollable list */}
-      <div ref={scrollContainerRef} className="flex-1 overflow-y-auto">
-        <div className="max-w-4xl mx-auto px-6 md:px-8 py-4">
+      <div ref={scrollContainerRef} className="flex-1 overflow-y-auto min-h-0">
+        <div className="px-6 pb-6 pt-4">
           {(!initialLoaded || (isLoadingMore && allChats.length === 0)) ? (
             <div className="space-y-3">
               {Array.from({ length: 8 }, (_, i) => (
