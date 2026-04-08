@@ -1936,8 +1936,8 @@ export function DataSources(): JSX.Element {
       <header className="hidden md:block sticky top-0 z-20 bg-surface-950 border-b border-surface-800 px-4 md:px-8 py-4 md:py-6">
         <div className="flex items-center justify-between gap-4">
           <div>
-            <h1 className="text-xl md:text-2xl font-bold text-surface-50">Connectors</h1>
-            <p className="text-surface-400 mt-1 text-sm md:text-base">
+            <h1 className="text-xl font-bold text-surface-100">Connectors</h1>
+            <p className="text-surface-400 mt-1 text-sm">
               Connect your sales tools to unlock AI-powered insights
             </p>
           </div>
