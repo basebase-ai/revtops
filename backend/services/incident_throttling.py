@@ -11,7 +11,7 @@ from config import get_redis_connection_kwargs, settings
 
 logger = logging.getLogger(__name__)
 
-_INCIDENT_COOLDOWN_SECONDS = 3 * 60 * 60
+_INCIDENT_COOLDOWN_SECONDS = 90 * 60
 _INCIDENT_KEY_PREFIX = "monitoring:incident_throttle"
 _INCIDENT_KEY_TTL_SECONDS = 7 * 24 * 60 * 60
 
@@ -85,4 +85,3 @@ async def clear_incident_failure(check_name: str) -> None:
             logger.info("Cleared incident throttle state for recovered check=%s", check_name)
     except Exception:
         logger.exception("Failed to clear incident throttle state for check=%s", check_name)
-
