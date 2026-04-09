@@ -523,6 +523,7 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
         documents: "documents",
         changes: "pending-changes",
         activity: "activity-log",
+        settings: "org-settings",
       };
       const view = viewMap[subPath];
       if (view) {
@@ -572,6 +573,7 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
       "/documents": "documents",
       "/changes": "pending-changes",
       "/activity": "activity-log",
+      "/settings": "org-settings",
     };
     const matchedView = viewPaths[path];
     if (matchedView) {
@@ -665,6 +667,7 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
           admin: "/admin",
           "pending-changes": "/changes",
           "activity-log": "/activity",
+          "org-settings": "/settings",
         };
         const base: string = viewPaths[currentView];
         newPath = prefix ? `${prefix}${base === "/" ? "" : base}` : base;
@@ -1788,6 +1791,7 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
     admin: 'Global Admin',
     'pending-changes': 'Pending Changes',
     'activity-log': 'Activity Log',
+    'org-settings': 'Settings',
   };
 
   return (
@@ -2007,6 +2011,16 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
         )}
         {currentView === 'activity-log' && isOrgAdmin && (
           <ActivityLog />
+        )}
+        {currentView === 'org-settings' && (
+          <OrganizationPanel
+            key={`org-settings-page-${organization.id}`}
+            organization={organization}
+            currentUser={user}
+            initialTab="settings"
+            onClose={() => setCurrentView('home')}
+            mode="page"
+          />
         )}
           </>
         )}

@@ -120,9 +120,10 @@ interface OrganizationPanelProps {
   currentUser: UserProfile;
   initialTab?: 'team' | 'billing' | 'settings';
   onClose: () => void;
+  mode?: 'panel' | 'page';
 }
 
-export function OrganizationPanel({ organization, currentUser, initialTab = 'team', onClose }: OrganizationPanelProps): JSX.Element {
+export function OrganizationPanel({ organization, currentUser, initialTab = 'team', onClose, mode = 'panel' }: OrganizationPanelProps): JSX.Element {
   const queryClient = useQueryClient();
   const setOrganization = useAppStore((state) => state.setOrganization);
   const logout = useAppStore((state) => state.logout);
@@ -504,29 +505,22 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
     }
   };
 
-  const handleSaveSettings = async (): Promise<void> => {
-    if (!hasUnsavedChanges) return;
+  const handleSaveName = async (newName: string): Promise<void> => {
+    const trimmed: string = newName.trim();
+    if (!trimmed || trimmed === organization.name) return;
 
     try {
-      const params: Record<string, string | null | undefined> & { orgId: string; userId: string } = {
+      await updateOrgMutation.mutateAsync({
         orgId: organization.id,
         userId: currentUser.id,
-      };
-      if (orgName !== organization.name) params.name = orgName;
-      if (llmPrimaryModel !== (organization.llmPrimaryModel ?? '')) params.llmPrimaryModel = llmPrimaryModel || null;
-      if (llmCheapModel !== (organization.llmCheapModel ?? '')) params.llmCheapModel = llmCheapModel || null;
-
-      await updateOrgMutation.mutateAsync(params);
-      
-      setSettingsSaved(true);
-      setOrganization({
-        ...organization,
-        name: orgName,
-        llmPrimaryModel: llmPrimaryModel || null,
-        llmCheapModel: llmCheapModel || null,
+        name: trimmed,
       });
+      setOrganization({ ...organization, name: trimmed });
+      setOrgName(trimmed);
+      setSettingsSaved(true);
       setTimeout(() => setSettingsSaved(false), 2000);
     } catch (error) {
+      setOrgName(organization.name);
       alert(`Failed to save: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   };
@@ -610,11 +604,26 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
     }
   };
 
-  const hasUnsavedChanges: boolean = (
-    orgName !== organization.name
-    || llmPrimaryModel !== (organization.llmPrimaryModel ?? '')
-    || llmCheapModel !== (organization.llmCheapModel ?? '')
-  );
+  const handleModelChange = async (field: 'llmPrimaryModel' | 'llmCheapModel', value: string): Promise<void> => {
+    const prev: string = field === 'llmPrimaryModel' ? llmPrimaryModel : llmCheapModel;
+    if (field === 'llmPrimaryModel') setLlmPrimaryModel(value);
+    else setLlmCheapModel(value);
+
+    try {
+      await updateOrgMutation.mutateAsync({
+        orgId: organization.id,
+        userId: currentUser.id,
+        [field]: value || null,
+      });
+      setOrganization({ ...organization, [field]: value || null });
+      setSettingsSaved(true);
+      setTimeout(() => setSettingsSaved(false), 2000);
+    } catch (error) {
+      if (field === 'llmPrimaryModel') setLlmPrimaryModel(prev);
+      else setLlmCheapModel(prev);
+      alert(`Failed to save: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  };
 
   const handleLogoUpload = async (event: React.ChangeEvent<HTMLInputElement>): Promise<void> => {
     const file = event.target.files?.[0];
@@ -678,18 +687,23 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
     }
   };
 
+  const isPageMode: boolean = mode === 'page';
+
   return (
     <>
-      {/* Backdrop */}
-      <div
-        className="fixed inset-0 bg-black/50 z-40"
-        onClick={onClose}
-      />
+      {!isPageMode && (
+        <div
+          className="fixed inset-0 bg-black/50 z-40"
+          onClick={onClose}
+        />
+      )}
 
-      {/* Panel */}
-      <div className="fixed right-0 top-0 bottom-0 w-full max-w-lg bg-surface-900 border-l border-surface-800 z-50 flex flex-col shadow-2xl">
+      <div className={isPageMode
+        ? 'flex-1 flex flex-col overflow-hidden'
+        : 'fixed right-0 top-0 bottom-0 w-full max-w-lg bg-surface-900 border-l border-surface-800 z-50 flex flex-col shadow-2xl'
+      }>
         {/* Header */}
-        <header className="flex items-center justify-between px-6 py-4 border-b border-surface-800">
+        <header className={`flex items-center justify-between border-b border-surface-800 ${isPageMode ? 'px-8 py-5' : 'px-6 py-4'}`}>
           <div className="flex items-center gap-3">
             {logoUrl ? (
               <img
@@ -703,39 +717,41 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
               </div>
             )}
             <div>
-              <h2 className="font-semibold text-surface-100">{organization.name}</h2>
+              <h2 className={`font-semibold text-surface-100 ${isPageMode ? 'text-lg' : ''}`}>{organization.name}</h2>
               <p className="text-xs text-surface-400">Team settings</p>
             </div>
           </div>
-          <button
-            onClick={onClose}
-            className="p-2 text-surface-400 hover:text-surface-200 hover:bg-surface-800 rounded-lg transition-colors"
-          >
-            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
+          {!isPageMode && (
+            <button
+              onClick={onClose}
+              className="p-2 text-surface-400 hover:text-surface-200 hover:bg-surface-800 rounded-lg transition-colors"
+            >
+              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          )}
         </header>
 
         {/* Tabs */}
-        <div className="flex border-b border-surface-800">
-          {(['team', 'billing', 'settings'] as const).map((tab) => (
+        <div className={`flex border-b border-surface-800 ${isPageMode ? 'px-8' : ''}`}>
+          {(isPageMode ? (['settings', 'team', 'billing'] as const) : (['team', 'billing', 'settings'] as const)).map((tab) => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
-              className={`flex-1 px-4 py-3 text-sm font-medium transition-colors ${
+              className={`px-4 py-3 text-sm font-medium transition-colors ${isPageMode ? '' : 'flex-1'} ${
                 activeTab === tab
                   ? 'text-primary-400 border-b-2 border-primary-500'
                   : 'text-surface-400 hover:text-surface-200'
               }`}
             >
-              {tab.charAt(0).toUpperCase() + tab.slice(1)}
+              {tab === 'team' ? 'Members' : tab.charAt(0).toUpperCase() + tab.slice(1)}
             </button>
           ))}
         </div>
 
         {/* Content */}
-        <div className="flex-1 overflow-y-auto p-6">
+        <div className={`flex-1 overflow-y-auto ${isPageMode ? 'p-8' : 'p-6'}`}>
           {activeTab === 'team' && (
             <div className="space-y-6">
               {/* Invite Section */}
@@ -1306,6 +1322,8 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                   type="text"
                   value={orgName}
                   onChange={(e) => setOrgName(e.target.value)}
+                  onBlur={(e) => void handleSaveName(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
                   className="input-field"
                 />
               </div>
@@ -1354,7 +1372,7 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                         <label className="block text-sm text-surface-400 mb-1.5">Primary model</label>
                         <select
                           value={llmPrimaryModel}
-                          onChange={(e) => setLlmPrimaryModel(e.target.value)}
+                          onChange={(e) => void handleModelChange('llmPrimaryModel', e.target.value)}
                           className="input-field"
                         >
                           <option value="">Default</option>
@@ -1368,7 +1386,7 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                         <label className="block text-sm text-surface-400 mb-1.5">Fast model</label>
                         <select
                           value={llmCheapModel}
-                          onChange={(e) => setLlmCheapModel(e.target.value)}
+                          onChange={(e) => void handleModelChange('llmCheapModel', e.target.value)}
                           className="input-field"
                         >
                           <option value="">Default</option>
@@ -1385,24 +1403,14 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                 </div>
               </div>
 
-              {/* Save Button */}
-              <div className="flex items-center gap-3">
-                <button
-                  onClick={() => void handleSaveSettings()}
-                  disabled={updateOrgMutation.isPending || !hasUnsavedChanges}
-                  className="btn-primary disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {updateOrgMutation.isPending ? 'Saving...' : 'Save Changes'}
-                </button>
-                {settingsSaved && (
-                  <span className="text-sm text-green-400 flex items-center gap-1">
-                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                    </svg>
-                    Saved
-                  </span>
-                )}
-              </div>
+              {settingsSaved && (
+                <div className="flex items-center gap-1 text-sm text-green-400">
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                  </svg>
+                  Saved
+                </div>
+              )}
 
               {/* Organization Info */}
               <div className="pt-6 border-t border-surface-800">
