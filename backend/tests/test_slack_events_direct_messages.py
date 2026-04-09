@@ -80,3 +80,35 @@ def test_process_event_callback_passes_thread_ts_for_direct_message_thread(monke
     assert msg.messenger_context["thread_ts"] == "1700000000.001"
     assert msg.messenger_context["channel_type"] == "im"
     assert msg.message_id == "1700000000.002"
+
+
+def test_process_event_callback_records_failure_when_background_processing_raises(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    async def _fake_impl(_payload: dict[str, object]) -> None:
+        raise RuntimeError("test forced failure")
+
+    async def _fake_record_query_outcome(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(slack_events, "_process_event_callback_impl", _fake_impl)
+    monkeypatch.setattr(
+        "services.query_outcome_metrics.record_query_outcome",
+        _fake_record_query_outcome,
+    )
+
+    payload = {
+        "type": "event_callback",
+        "team_id": "T123",
+        "event": {
+            "type": "message",
+            "channel": "D123",
+            "ts": "1700000000.002",
+        },
+    }
+    asyncio.run(slack_events._process_event_callback(payload))
+
+    assert captured["platform"] == "slack"
+    assert captured["was_success"] is False
+    assert captured["conversation_id"] == "D123:1700000000.002"
+    assert captured["failure_reason"] == "test forced failure"

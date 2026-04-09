@@ -279,7 +279,37 @@ async def _process_event_callback(payload: dict[str, Any]) -> None:
     try:
         await _process_event_callback_impl(payload)
     except Exception as e:
+        await _record_slack_inbound_failure(payload=payload, error=e)
         logger.exception("[slack_events] Background processing failed: %s", e)
+
+
+def _conversation_id_from_slack_payload(payload: dict[str, Any]) -> str | None:
+    """Build a stable conversation identifier for Slack inbound failure metrics."""
+    event: dict[str, Any] = payload.get("event") or {}
+    channel_id: str = (event.get("channel") or "").strip()
+    thread_ts: str = (event.get("thread_ts") or event.get("ts") or event.get("event_ts") or "").strip()
+    if channel_id and thread_ts:
+        return f"{channel_id}:{thread_ts}"
+    return channel_id or None
+
+
+async def _record_slack_inbound_failure(
+    *,
+    payload: dict[str, Any],
+    error: Exception,
+) -> None:
+    """Record a failed Slack inbound turn when we error before turn completion."""
+    from services.query_outcome_metrics import normalize_failure_reason, record_query_outcome
+
+    try:
+        await record_query_outcome(
+            platform="slack",
+            was_success=False,
+            failure_reason=normalize_failure_reason(str(error)),
+            conversation_id=_conversation_id_from_slack_payload(payload),
+        )
+    except Exception:
+        logger.exception("[slack_events] Failed to record inbound failure metric")
 
 
 async def _process_event_callback_impl(payload: dict[str, Any]) -> None:

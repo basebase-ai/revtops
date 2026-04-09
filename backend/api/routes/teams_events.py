@@ -324,59 +324,92 @@ def _activity_mentions_bot(activity: dict[str, Any], bot_id: str | None) -> bool
 
 async def _process_message_activity(activity: dict[str, Any]) -> None:
     """Handle message activity: route to DIRECT, MENTION, or THREAD_REPLY."""
-    conversation: dict[str, Any] = activity.get("conversation") or {}
-    conversation_type: str = (conversation.get("conversationType") or "").strip().lower()
-    is_group_raw: Any = conversation.get("isGroup")
-    is_group: bool = is_group_raw is True or (
-        isinstance(is_group_raw, str) and is_group_raw.lower() == "true"
-    )
-    reply_to_id: str | None = activity.get("replyToId")
-    recipient: dict[str, Any] = activity.get("recipient") or {}
-    bot_id: str | None = recipient.get("id")
-    text: str = (activity.get("text") or "").strip()
-    attachments: list[dict[str, Any]] = activity.get("attachments") or []
-
-    if not text and not attachments:
-        return
-
-    tenant_id: str | None = _tenant_id_from_activity(activity)
-    conv_id: str = (conversation.get("id") or "").strip()
-    if not conv_id or not tenant_id:
-        logger.warning("[teams_events] message missing conversation.id or tenant")
-        return
-
-    if activity.get("from", {}).get("id") == bot_id:
-        return
-
-    # 1:1 personal chat -> DIRECT
-    # (group chats set conversationType=groupChat and/or isGroup=true)
-    if not is_group and conversation_type != "groupchat":
-        msg = _build_inbound_message(activity, MessageType.DIRECT)
-        await TeamsMessenger().process_inbound(msg)
-        return
-
-    # Channel: @mention (no replyToId or replyToId is root) -> MENTION
-    mentions_bot = _activity_mentions_bot(activity, bot_id)
-    if mentions_bot:
-        normalized_text = _strip_mentions(text, bot_id)
-        if not normalized_text and not attachments:
-            return
-        lock_key = _thread_lock_manager.build_lock_key(
-            tenant_id, conv_id, reply_to_id or activity.get("id")
+    try:
+        conversation: dict[str, Any] = activity.get("conversation") or {}
+        conversation_type: str = (conversation.get("conversationType") or "").strip().lower()
+        is_group_raw: Any = conversation.get("isGroup")
+        is_group: bool = is_group_raw is True or (
+            isinstance(is_group_raw, str) and is_group_raw.lower() == "true"
         )
-        async with _thread_lock_manager.thread_lock(lock_key):
-            msg = _build_inbound_message(
-                activity, MessageType.MENTION, text_override=normalized_text
-            )
-            await TeamsMessenger().process_inbound(msg)
-        return
+        reply_to_id: str | None = activity.get("replyToId")
+        recipient: dict[str, Any] = activity.get("recipient") or {}
+        bot_id: str | None = recipient.get("id")
+        text: str = (activity.get("text") or "").strip()
+        attachments: list[dict[str, Any]] = activity.get("attachments") or []
 
-    # Channel thread reply -> THREAD_REPLY
-    if reply_to_id:
-        lock_key = _thread_lock_manager.build_lock_key(tenant_id, conv_id, reply_to_id)
-        async with _thread_lock_manager.thread_lock(lock_key):
-            msg = _build_inbound_message(activity, MessageType.THREAD_REPLY)
+        if not text and not attachments:
+            return
+
+        tenant_id: str | None = _tenant_id_from_activity(activity)
+        conv_id: str = (conversation.get("id") or "").strip()
+        if not conv_id or not tenant_id:
+            logger.warning("[teams_events] message missing conversation.id or tenant")
+            return
+
+        if activity.get("from", {}).get("id") == bot_id:
+            return
+
+        # 1:1 personal chat -> DIRECT
+        # (group chats set conversationType=groupChat and/or isGroup=true)
+        if not is_group and conversation_type != "groupchat":
+            msg = _build_inbound_message(activity, MessageType.DIRECT)
             await TeamsMessenger().process_inbound(msg)
+            return
+
+        # Channel: @mention (no replyToId or replyToId is root) -> MENTION
+        mentions_bot = _activity_mentions_bot(activity, bot_id)
+        if mentions_bot:
+            normalized_text = _strip_mentions(text, bot_id)
+            if not normalized_text and not attachments:
+                return
+            lock_key = _thread_lock_manager.build_lock_key(
+                tenant_id, conv_id, reply_to_id or activity.get("id")
+            )
+            async with _thread_lock_manager.thread_lock(lock_key):
+                msg = _build_inbound_message(
+                    activity, MessageType.MENTION, text_override=normalized_text
+                )
+                await TeamsMessenger().process_inbound(msg)
+            return
+
+        # Channel thread reply -> THREAD_REPLY
+        if reply_to_id:
+            lock_key = _thread_lock_manager.build_lock_key(tenant_id, conv_id, reply_to_id)
+            async with _thread_lock_manager.thread_lock(lock_key):
+                msg = _build_inbound_message(activity, MessageType.THREAD_REPLY)
+                await TeamsMessenger().process_inbound(msg)
+    except Exception as exc:
+        await _record_teams_inbound_failure(activity=activity, error=exc)
+        logger.exception("[teams_events] Failed to process message activity")
+
+
+def _conversation_id_from_teams_activity(activity: dict[str, Any]) -> str | None:
+    """Build a stable conversation identifier for Teams inbound failure metrics."""
+    conversation: dict[str, Any] = activity.get("conversation") or {}
+    conversation_id: str = (conversation.get("id") or "").strip()
+    reply_to_id: str = (activity.get("replyToId") or activity.get("id") or "").strip()
+    if conversation_id and reply_to_id:
+        return f"{conversation_id}:{reply_to_id}"
+    return conversation_id or None
+
+
+async def _record_teams_inbound_failure(
+    *,
+    activity: dict[str, Any],
+    error: Exception,
+) -> None:
+    """Record a failed Teams inbound turn when we error before turn completion."""
+    from services.query_outcome_metrics import normalize_failure_reason, record_query_outcome
+
+    try:
+        await record_query_outcome(
+            platform="teams",
+            was_success=False,
+            failure_reason=normalize_failure_reason(str(error)),
+            conversation_id=_conversation_id_from_teams_activity(activity),
+        )
+    except Exception:
+        logger.exception("[teams_events] Failed to record inbound failure metric")
 
 
 @router.post("/messages", response_model=None)
