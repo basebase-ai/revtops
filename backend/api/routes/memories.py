@@ -61,6 +61,19 @@ class UpdateMemoryRequest(BaseModel):
     content: str
 
 
+def _build_memory_response(memory: Memory) -> MemoryResponse:
+    """Materialize a response model from a Memory row while session is still active."""
+    return MemoryResponse(
+        id=str(memory.id),
+        entity_type=memory.entity_type,
+        category=memory.category,
+        content=memory.content,
+        created_by_user_id=str(memory.created_by_user_id) if memory.created_by_user_id else None,
+        created_at=f"{memory.created_at.isoformat()}Z" if memory.created_at else None,
+        updated_at=f"{memory.updated_at.isoformat()}Z" if memory.updated_at else None,
+    )
+
+
 @router.get("/{organization_id}", response_model=MemoryDashboardResponse)
 async def list_memories(organization_id: str, user_id: str) -> MemoryDashboardResponse:
     """Return user-stored memories for an org/user pair."""
@@ -81,20 +94,9 @@ async def list_memories(organization_id: str, user_id: str) -> MemoryDashboardRe
         )
         memories = memory_result.scalars().all()
 
-    return MemoryDashboardResponse(
-        memories=[
-            MemoryResponse(
-                id=str(memory.id),
-                entity_type=memory.entity_type,
-                category=memory.category,
-                content=memory.content,
-                created_by_user_id=str(memory.created_by_user_id) if memory.created_by_user_id else None,
-                created_at=f"{memory.created_at.isoformat()}Z" if memory.created_at else None,
-                updated_at=f"{memory.updated_at.isoformat()}Z" if memory.updated_at else None,
-            )
-            for memory in memories
-        ],
-    )
+        memory_responses = [_build_memory_response(memory) for memory in memories]
+
+    return MemoryDashboardResponse(memories=memory_responses)
 
 
 @router.post("/{organization_id}/user", response_model=MemoryResponse)
@@ -129,16 +131,11 @@ async def create_user_memory(
         await session.commit()
         await session.refresh(memory)
 
-    logger.info("[Memories API] Created memory %s for user %s", memory.id, user_id)
-    return MemoryResponse(
-        id=str(memory.id),
-        entity_type=memory.entity_type,
-        category=memory.category,
-        content=memory.content,
-        created_by_user_id=str(memory.created_by_user_id) if memory.created_by_user_id else None,
-        created_at=f"{memory.created_at.isoformat()}Z" if memory.created_at else None,
-        updated_at=f"{memory.updated_at.isoformat()}Z" if memory.updated_at else None,
-    )
+        response = _build_memory_response(memory)
+        memory_id = str(memory.id)
+
+    logger.info("[Memories API] Created memory %s for user %s", memory_id, user_id)
+    return response
 
 
 @router.patch("/{organization_id}/user/{memory_id}", response_model=MemoryResponse)
@@ -174,17 +171,10 @@ async def update_user_memory(organization_id: str, memory_id: str, user_id: str,
         memory.content = content
         await session.commit()
         await session.refresh(memory)
+        response = _build_memory_response(memory)
 
         logger.info("[Memories API] Updated memory %s for user %s", memory_id, user_id)
-        return MemoryResponse(
-            id=str(memory.id),
-            entity_type=memory.entity_type,
-            category=memory.category,
-            content=memory.content,
-            created_by_user_id=str(memory.created_by_user_id) if memory.created_by_user_id else None,
-            created_at=f"{memory.created_at.isoformat()}Z" if memory.created_at else None,
-            updated_at=f"{memory.updated_at.isoformat()}Z" if memory.updated_at else None,
-        )
+        return response
 
 
 @router.delete("/{organization_id}/user/{memory_id}")
