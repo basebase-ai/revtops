@@ -182,6 +182,7 @@ class AnthropicAdapter:
         if thinking:
             api_kwargs["thinking"] = {"type": "adaptive"}
 
+        self._current_block_type = "text"
         async with self._client.messages.stream(**api_kwargs) as stream:
             async for event in stream:
                 for se in self._translate_event(event):
@@ -195,12 +196,15 @@ class AnthropicAdapter:
                     output_tokens=final.usage.output_tokens,
                 )
 
+    _current_block_type: str = "text"
+
     def _translate_event(self, event: Any) -> list[StreamEvent]:
         """Translate a single Anthropic stream event into common StreamEvents."""
         results: list[StreamEvent] = []
 
         if event.type == "content_block_start":
             block = event.content_block
+            self._current_block_type = block.type
             if block.type == "thinking":
                 results.append(StreamEvent(type="thinking_start"))
             elif block.type == "text":
@@ -228,7 +232,12 @@ class AnthropicAdapter:
                 )
 
         elif event.type == "content_block_stop":
-            results.append(StreamEvent(type="text_stop"))
+            if self._current_block_type == "tool_use":
+                results.append(StreamEvent(type="tool_use_stop"))
+            elif self._current_block_type == "thinking":
+                results.append(StreamEvent(type="thinking_stop"))
+            else:
+                results.append(StreamEvent(type="text_stop"))
 
         return results
 
