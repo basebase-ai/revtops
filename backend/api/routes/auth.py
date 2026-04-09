@@ -703,6 +703,9 @@ class SyncOrganizationData(BaseModel):
     name: str
     logo_url: Optional[str] = None
     handle: Optional[str] = None
+    llm_provider: Optional[str] = None
+    llm_primary_model: Optional[str] = None
+    llm_cheap_model: Optional[str] = None
     subscription_required: bool = True
 
 
@@ -916,6 +919,9 @@ async def sync_user(request: SyncUserRequest) -> SyncUserResponse:
                         name=org.name,
                         logo_url=org.logo_url,
                         handle=org.handle,
+                        llm_provider=org.llm_provider,
+                        llm_primary_model=org.llm_primary_model,
+                        llm_cheap_model=org.llm_cheap_model,
                         subscription_required=not _sub_ok,
                     )
                 title_result = await session.execute(
@@ -1004,6 +1010,9 @@ async def sync_user(request: SyncUserRequest) -> SyncUserResponse:
                             name=org_retry.name,
                             logo_url=org_retry.logo_url,
                             handle=org_retry.handle,
+                            llm_provider=org_retry.llm_provider,
+                            llm_primary_model=org_retry.llm_primary_model,
+                            llm_cheap_model=org_retry.llm_cheap_model,
                             subscription_required=not _sub_ok,
                         )
                 return SyncUserResponse(
@@ -2384,6 +2393,11 @@ async def update_organization(
         else:
             org.llm_provider = None
 
+        logger.info(
+            "update_organization org=%s primary_model=%s cheap_model=%s inferred_provider=%s",
+            org_id, org.llm_primary_model, org.llm_cheap_model, org.llm_provider,
+        )
+
         await session.commit()
         await session.refresh(org)
 
@@ -2664,6 +2678,9 @@ async def get_masquerade_user(
                     name=org.name,
                     logo_url=org.logo_url,
                     handle=org.handle,
+                    llm_provider=org.llm_provider,
+                    llm_primary_model=org.llm_primary_model,
+                    llm_cheap_model=org.llm_cheap_model,
                     subscription_required=not _sub_ok,
                 )
 
