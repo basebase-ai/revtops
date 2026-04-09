@@ -75,6 +75,14 @@ async def resolve_llm_config(
                 exc_info=True,
             )
 
+    # Infer provider from model when not explicitly set
+    if provider == _DEFAULT_PROVIDER:
+        inferred_model: str | None = primary_model or cheap_model
+        if inferred_model:
+            inferred: str | None = provider_for_model(inferred_model)
+            if inferred:
+                provider = inferred  # type: ignore[assignment]
+
     # Resolve models — org override → global env defaults → per-provider hardcoded defaults
     provider_defaults: dict[str, str] = PROVIDER_DEFAULT_MODELS.get(
         provider, PROVIDER_DEFAULT_MODELS["anthropic"]
@@ -127,15 +135,40 @@ async def get_org_llm_config_and_adapter(
     return config, adapter
 
 
+def _parse_model_map() -> dict[str, str]:
+    """Parse ALL_MODEL_STRINGS ('model:provider,...') into {model: provider}."""
+    raw: str = settings.ALL_MODEL_STRINGS.strip()
+    if not raw:
+        return {}
+    result: dict[str, str] = {}
+    for entry in raw.split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        if ":" in entry:
+            model, provider = entry.rsplit(":", 1)
+            result[model.strip()] = provider.strip()
+        else:
+            result[entry] = ""
+    return result
+
+
+def get_model_provider_map() -> dict[str, str]:
+    """Return the full {model_name: provider} map from ALL_MODEL_STRINGS."""
+    return _parse_model_map()
+
+
 def get_allowed_models() -> list[str]:
-    """Return the allowlist of model strings from ALL_MODEL_STRINGS.
+    """Return the allowlist of model names from ALL_MODEL_STRINGS.
 
     Returns an empty list when unset (meaning no restriction).
     """
-    raw: str = settings.ALL_MODEL_STRINGS.strip()
-    if not raw:
-        return []
-    return [m.strip() for m in raw.split(",") if m.strip()]
+    return list(_parse_model_map().keys())
+
+
+def provider_for_model(model: str) -> str | None:
+    """Look up the provider for a model name. Returns None if unknown."""
+    return _parse_model_map().get(model) or None
 
 
 def is_model_allowed(model: str) -> bool:
@@ -143,7 +176,7 @@ def is_model_allowed(model: str) -> bool:
 
     Always returns True when ALL_MODEL_STRINGS is empty (no restriction).
     """
-    allowed: list[str] = get_allowed_models()
-    if not allowed:
+    model_map: dict[str, str] = _parse_model_map()
+    if not model_map:
         return True
-    return model in allowed
+    return model in model_map

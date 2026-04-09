@@ -88,7 +88,6 @@ interface UpdateOrganizationParams {
   userId: string;
   name?: string;
   logoUrl?: string;
-  llmProvider?: string | null;
   llmPrimaryModel?: string | null;
   llmCheapModel?: string | null;
 }
@@ -165,7 +164,6 @@ async function updateOrganization(params: UpdateOrganizationParams): Promise<Org
   const body: Record<string, string | null> = {};
   if (params.name !== undefined) body.name = params.name;
   if (params.logoUrl !== undefined) body.logo_url = params.logoUrl;
-  if (params.llmProvider !== undefined) body.llm_provider = params.llmProvider ?? "";
   if (params.llmPrimaryModel !== undefined) body.llm_primary_model = params.llmPrimaryModel ?? "";
   if (params.llmCheapModel !== undefined) body.llm_cheap_model = params.llmCheapModel ?? "";
 

@@ -184,10 +184,9 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
   const [isInvitingMissingFromSlack, setIsInvitingMissingFromSlack] = useState(false);
   const [orgName, setOrgName] = useState(organization.name);
   const [logoUrl, setLogoUrl] = useState(organization.logoUrl);
-  const [llmProvider, setLlmProvider] = useState<string>(organization.llmProvider ?? '');
   const [llmPrimaryModel, setLlmPrimaryModel] = useState<string>(organization.llmPrimaryModel ?? '');
   const [llmCheapModel, setLlmCheapModel] = useState<string>(organization.llmCheapModel ?? '');
-  const [llmAllowedModels, setLlmAllowedModels] = useState<string[]>([]);
+  const [llmModelMap, setLlmModelMap] = useState<Record<string, string>>({});
   const [settingsSaved, setSettingsSaved] = useState(false);
   const [isUploadingLogo, setIsUploadingLogo] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -200,19 +199,18 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
   useEffect(() => {
     setOrgName(organization.name);
     setLogoUrl(organization.logoUrl);
-    setLlmProvider(organization.llmProvider ?? '');
     setLlmPrimaryModel(organization.llmPrimaryModel ?? '');
     setLlmCheapModel(organization.llmCheapModel ?? '');
     setSettingsSaved(false);
     setExpandedMemberId(null);
     setMenuOpenMemberId(null);
-  }, [organization.id, organization.name, organization.logoUrl, organization.llmProvider, organization.llmPrimaryModel, organization.llmCheapModel]);
+  }, [organization.id, organization.name, organization.logoUrl, organization.llmPrimaryModel, organization.llmCheapModel]);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const { data } = await apiRequest<{ providers: string[]; models: string[] }>('/auth/llm-options');
-      if (!cancelled && data?.models?.length) setLlmAllowedModels(data.models);
+      const { data } = await apiRequest<{ models: Record<string, string> }>('/auth/llm-options');
+      if (!cancelled && data?.models) setLlmModelMap(data.models);
     })();
     return () => { cancelled = true; };
   }, []);
@@ -515,7 +513,6 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
         userId: currentUser.id,
       };
       if (orgName !== organization.name) params.name = orgName;
-      if (llmProvider !== (organization.llmProvider ?? '')) params.llmProvider = llmProvider || null;
       if (llmPrimaryModel !== (organization.llmPrimaryModel ?? '')) params.llmPrimaryModel = llmPrimaryModel || null;
       if (llmCheapModel !== (organization.llmCheapModel ?? '')) params.llmCheapModel = llmCheapModel || null;
 
@@ -525,7 +522,6 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
       setOrganization({
         ...organization,
         name: orgName,
-        llmProvider: llmProvider || null,
         llmPrimaryModel: llmPrimaryModel || null,
         llmCheapModel: llmCheapModel || null,
       });
@@ -616,7 +612,6 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
 
   const hasUnsavedChanges: boolean = (
     orgName !== organization.name
-    || llmProvider !== (organization.llmProvider ?? '')
     || llmPrimaryModel !== (organization.llmPrimaryModel ?? '')
     || llmCheapModel !== (organization.llmCheapModel ?? '')
   );
@@ -1353,72 +1348,40 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
               <div className="pt-6 border-t border-surface-800">
                 <h3 className="text-sm font-medium text-surface-200 mb-3">AI Model</h3>
                 <div className="space-y-4">
-                  <div>
-                    <label className="block text-sm text-surface-400 mb-1.5">Provider</label>
-                    <select
-                      value={llmProvider}
-                      onChange={(e) => {
-                        setLlmProvider(e.target.value);
-                        setLlmPrimaryModel('');
-                        setLlmCheapModel('');
-                      }}
-                      className="input-field"
-                    >
-                      <option value="">Default (Anthropic)</option>
-                      <option value="anthropic">Anthropic</option>
-                      <option value="openai">OpenAI</option>
-                      <option value="gemini">Google Gemini</option>
-                      <option value="minimax">MiniMax</option>
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-sm text-surface-400 mb-1.5">Primary model</label>
-                    {llmAllowedModels.length > 0 ? (
-                      <select
-                        value={llmPrimaryModel}
-                        onChange={(e) => setLlmPrimaryModel(e.target.value)}
-                        className="input-field"
-                      >
-                        <option value="">Default</option>
-                        {llmAllowedModels.map((m) => (
-                          <option key={m} value={m}>{m}</option>
-                        ))}
-                      </select>
-                    ) : (
-                      <input
-                        type="text"
-                        value={llmPrimaryModel}
-                        onChange={(e) => setLlmPrimaryModel(e.target.value)}
-                        placeholder="Default"
-                        className="input-field"
-                      />
-                    )}
-                    <p className="text-xs text-surface-500 mt-1">Leave blank for provider default</p>
-                  </div>
-                  <div>
-                    <label className="block text-sm text-surface-400 mb-1.5">Fast model</label>
-                    {llmAllowedModels.length > 0 ? (
-                      <select
-                        value={llmCheapModel}
-                        onChange={(e) => setLlmCheapModel(e.target.value)}
-                        className="input-field"
-                      >
-                        <option value="">Default</option>
-                        {llmAllowedModels.map((m) => (
-                          <option key={m} value={m}>{m}</option>
-                        ))}
-                      </select>
-                    ) : (
-                      <input
-                        type="text"
-                        value={llmCheapModel}
-                        onChange={(e) => setLlmCheapModel(e.target.value)}
-                        placeholder="Default"
-                        className="input-field"
-                      />
-                    )}
-                    <p className="text-xs text-surface-500 mt-1">Used for summaries, titles, and background tasks</p>
-                  </div>
+                  {Object.keys(llmModelMap).length > 0 ? (
+                    <>
+                      <div>
+                        <label className="block text-sm text-surface-400 mb-1.5">Primary model</label>
+                        <select
+                          value={llmPrimaryModel}
+                          onChange={(e) => setLlmPrimaryModel(e.target.value)}
+                          className="input-field"
+                        >
+                          <option value="">Default</option>
+                          {Object.entries(llmModelMap).map(([model, provider]) => (
+                            <option key={model} value={model}>{model} ({provider})</option>
+                          ))}
+                        </select>
+                        <p className="text-xs text-surface-500 mt-1">Leave blank for provider default</p>
+                      </div>
+                      <div>
+                        <label className="block text-sm text-surface-400 mb-1.5">Fast model</label>
+                        <select
+                          value={llmCheapModel}
+                          onChange={(e) => setLlmCheapModel(e.target.value)}
+                          className="input-field"
+                        >
+                          <option value="">Default</option>
+                          {Object.entries(llmModelMap).map(([model, provider]) => (
+                            <option key={model} value={model}>{model} ({provider})</option>
+                          ))}
+                        </select>
+                        <p className="text-xs text-surface-500 mt-1">Used for summaries, titles, and background tasks</p>
+                      </div>
+                    </>
+                  ) : (
+                    <p className="text-sm text-surface-500">No models configured. Set <code className="text-surface-400">ALL_MODEL_STRINGS</code> to enable model selection.</p>
+                  )}
                 </div>
               </div>
 
