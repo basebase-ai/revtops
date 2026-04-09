@@ -52,7 +52,7 @@ def test_evaluate_incident_creation_first_failure_allowed(monkeypatch: pytest.Mo
     assert reason == "new_failure"
 
 
-def test_evaluate_incident_creation_suppresses_repeated_failure_within_3h(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_evaluate_incident_creation_suppresses_repeated_failure_within_90m(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(throttling.aioredis, "from_url", lambda *args, **kwargs: _FakeRedis())
 
     import asyncio
@@ -67,7 +67,7 @@ def test_evaluate_incident_creation_suppresses_repeated_failure_within_3h(monkey
     assert reason.startswith("suppressed_for_")
 
 
-def test_evaluate_incident_creation_allows_after_3h(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_evaluate_incident_creation_allows_after_90m(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(throttling.aioredis, "from_url", lambda *args, **kwargs: _FakeRedis())
 
     import asyncio
@@ -75,7 +75,7 @@ def test_evaluate_incident_creation_allows_after_3h(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(throttling.time, "time", lambda: 1000)
     asyncio.run(throttling.evaluate_incident_creation("Auth JWKS"))
 
-    monkeypatch.setattr(throttling.time, "time", lambda: 1000 + (3 * 60 * 60))
+    monkeypatch.setattr(throttling.time, "time", lambda: 1000 + (90 * 60))
     should_create, reason = asyncio.run(throttling.evaluate_incident_creation("Auth JWKS"))
 
     assert should_create is True
