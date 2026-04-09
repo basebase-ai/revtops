@@ -35,6 +35,7 @@ import {
   useActiveTasksByConversation,
   useConnectedIntegrations,
   useIsOrgAdmin,
+  useOrganization,
   type AppBlock,
   type ChatMessage,
   type ConversationSummaryText,
@@ -379,6 +380,9 @@ export function Chat({
   const chatSummary: ConversationSummaryText | null = conversationState?.summary ?? null;
   const conversationThinking = conversationState?.isThinking ?? false;
   
+  const orgInfo = useOrganization();
+  const activeModelName: string | null = orgInfo?.llmPrimaryModel ?? null;
+
   // Get actions from Zustand (stable references)
   const addConversationMessage = useAppStore((s) => s.addConversationMessage);
   const setConversationMessages = useAppStore((s) => s.setConversationMessages);
@@ -2675,53 +2679,10 @@ export function Chat({
               </button>
             );
 
-            // Scope toggle: shown for new conversations and existing ones the user owns
-            const isNewConversation: boolean = !chatId && !localConversationId;
-            const activeScope: 'private' | 'shared' = isNewConversation ? newConversationScope : conversationScope;
-            const showScopeToggle: boolean = isNewConversation || canToggleChatScope;
-            const scopeToggle: JSX.Element | null = showScopeToggle ? (
-              <div
-                className="flex shrink-0 rounded border border-surface-600 p-px gap-px bg-surface-900"
-                role="group"
-                aria-label="Conversation visibility"
-                onMouseDown={(e) => e.preventDefault()} // Prevent blur stealing click in Safari
-              >
-                <button
-                  type="button"
-                  disabled={scopeToggleSaving || activeScope === 'shared'}
-                  onMouseDown={(e) => e.preventDefault()}
-                  onClick={() => {
-                    if (isNewConversation) { setNewConversationScope('shared'); }
-                    else { void handleMakeShared(); }
-                  }}
-                  className={`flex items-center justify-center gap-0.5 px-1.5 py-0.5 rounded-l-[3px] text-[11px] font-medium transition-colors ${
-                    activeScope === 'shared'
-                      ? 'bg-primary-500/20 text-primary-400'
-                      : 'text-surface-500 hover:bg-surface-800 hover:text-surface-300'
-                  } disabled:opacity-40`}
-                  title="Shared: teammates can join this conversation"
-                >
-                  Shared
-                </button>
-                <button
-                  type="button"
-                  disabled={scopeToggleSaving || activeScope === 'private'}
-                  onMouseDown={(e) => e.preventDefault()}
-                  onClick={() => {
-                    if (isNewConversation) { setNewConversationScope('private'); }
-                    else { void handleMakePrivate(); }
-                  }}
-                  className={`flex items-center justify-center gap-0.5 px-1.5 py-0.5 rounded-r-[3px] text-[11px] font-medium transition-colors ${
-                    activeScope === 'private'
-                      ? 'bg-primary-500/20 text-primary-400'
-                      : 'text-surface-500 hover:bg-surface-800 hover:text-surface-300'
-                  } disabled:opacity-40`}
-                  title="Private: only you can see this conversation"
-                >
-                  <ScopeLockIcon className="w-3 h-3 shrink-0" />
-                  Private
-                </button>
-              </div>
+            const modelLabel: JSX.Element | null = activeModelName ? (
+              <span className="text-[11px] text-surface-500 truncate max-w-[160px]" title={activeModelName}>
+                {activeModelName}
+              </span>
             ) : null;
 
             return (
@@ -2799,28 +2760,18 @@ export function Chat({
                     />
 
                     <div className="flex items-center justify-between gap-2 border-t border-surface-700/40 px-1.5 py-1 min-w-0">
-                      <div className="flex min-w-0 items-center gap-0.5">
+                      <div className="flex min-w-0 items-center gap-1.5">
                         {attachButton}
-                        {scopeToggle && (
-                          <>
-                            <div className="w-px h-4 bg-surface-700 mx-0.5" />
-                            {scopeToggle}
-                          </>
-                        )}
+                        {modelLabel}
                       </div>
                       {sendStopButton}
                     </div>
                   </>
                 ) : (
                   <div className="flex items-center gap-1 px-1.5 py-1 min-w-0">
-                    <div className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden">
+                    <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden">
                       {attachButton}
-                      {scopeToggle && (
-                        <>
-                          <div className="w-px h-4 bg-surface-700 mx-0.5 shrink-0" />
-                          {scopeToggle}
-                        </>
-                      )}
+                      {modelLabel}
                       <textarea
                         ref={inputRef}
                         value={input}
