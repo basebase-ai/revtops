@@ -201,9 +201,9 @@ register_tool(
     name="list_connected_connectors",
     description="""Refresh and return the capabilities manifest for all connected connectors.
 
-Use this to get an up-to-date list of connected integrations and their capabilities
+Use this to get an up-to-date list of connected connectors and their capabilities
 (query, write, action). The manifest shows available operations and their parameters
-for each connector. Useful when the user asks about available integrations or when you
+for each connector. Useful when the user asks about available connectors or when you
 need to verify a connector is connected before using it.""",
     input_schema={
         "type": "object",
