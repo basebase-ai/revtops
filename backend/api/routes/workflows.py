@@ -17,6 +17,7 @@ from sqlalchemy import select, and_, func, or_
 from models.database import get_session
 from models.workflow import Workflow, WorkflowRun
 from api.auth_middleware import AuthContext, require_organization
+from services.llm_provider import is_model_allowed
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -88,6 +89,7 @@ class CreateWorkflowRequest(BaseModel):
     input_schema: Optional[dict[str, Any]] = None  # JSON Schema for typed inputs
     output_schema: Optional[dict[str, Any]] = None  # JSON Schema for typed outputs
     child_workflows: list[str] = []  # IDs of workflows this can call
+    llm_model: Optional[str] = None  # Optional per-workflow model override
     output_config: Optional[dict[str, Any]] = None
     is_enabled: bool = True
 
@@ -105,6 +107,7 @@ class UpdateWorkflowRequest(BaseModel):
     input_schema: Optional[dict[str, Any]] = None
     output_schema: Optional[dict[str, Any]] = None
     child_workflows: Optional[list[str]] = None
+    llm_model: Optional[str] = None
     output_config: Optional[dict[str, Any]] = None
     is_enabled: Optional[bool] = None
 
@@ -125,6 +128,7 @@ class WorkflowResponse(BaseModel):
     input_schema: Optional[dict[str, Any]]  # JSON Schema for typed inputs
     output_schema: Optional[dict[str, Any]]  # JSON Schema for typed outputs
     child_workflows: list[str]  # IDs of workflows this can call
+    llm_model: Optional[str]  # Optional per-workflow model override
     output_config: Optional[dict[str, Any]]
     archived_at: Optional[str]
     is_enabled: bool
@@ -434,6 +438,8 @@ async def create_workflow(
                 status_code=400,
                 detail=f"Invalid cron expression: {e}",
             )
+    if request.llm_model and not is_model_allowed(request.llm_model):
+        raise HTTPException(status_code=400, detail=f"Model not allowed: {request.llm_model}")
 
     async with get_session(
         organization_id=organization_id,
@@ -452,6 +458,7 @@ async def create_workflow(
             input_schema=request.input_schema,
             output_schema=request.output_schema,
             child_workflows=request.child_workflows,
+            llm_model=request.llm_model or None,
             output_config=request.output_config,
             is_enabled=request.is_enabled,
         )
@@ -514,6 +521,10 @@ async def update_workflow(
             workflow.output_schema = request.output_schema
         if request.child_workflows is not None:
             workflow.child_workflows = request.child_workflows
+        if request.llm_model is not None:
+            if request.llm_model and not is_model_allowed(request.llm_model):
+                raise HTTPException(status_code=400, detail=f"Model not allowed: {request.llm_model}")
+            workflow.llm_model = request.llm_model or None
         if request.output_config is not None:
             workflow.output_config = request.output_config
         if request.is_enabled is not None:

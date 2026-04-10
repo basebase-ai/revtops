@@ -41,6 +41,7 @@ interface Workflow {
   input_schema: Record<string, unknown> | null;  // JSON Schema for typed inputs
   output_schema: Record<string, unknown> | null;  // JSON Schema for typed outputs
   child_workflows: string[];  // IDs of workflows this can call
+  llm_model: string | null;  // Optional per-workflow model override
   archived_at: string | null;
   is_enabled: boolean;
   last_run_at: string | null;
@@ -148,6 +149,7 @@ interface CreateWorkflowParams {
   input_schema?: Record<string, unknown> | null;
   output_schema?: Record<string, unknown> | null;
   child_workflows?: string[];
+  llm_model?: string | null;
 }
 
 interface WorkflowDraft {
@@ -161,6 +163,7 @@ interface WorkflowDraft {
   inputSchemaText: string;
   outputSchemaText: string;
   selectedChildWorkflows: string[];
+  llmModel: string;
 }
 
 const WORKFLOW_DRAFT_VERSION = 'v1';
@@ -215,6 +218,7 @@ async function createWorkflow(orgId: string, userId: string, params: CreateWorkf
       input_schema: params.input_schema ?? null,
       output_schema: params.output_schema ?? null,
       child_workflows: params.child_workflows ?? [],
+      llm_model: params.llm_model ?? null,
       is_enabled: true,
     }),
   });
@@ -238,6 +242,7 @@ async function updateWorkflow(orgId: string, workflowId: string, params: CreateW
       input_schema: params.input_schema,
       output_schema: params.output_schema,
       child_workflows: params.child_workflows,
+      llm_model: params.llm_model,
     }),
   });
   if (error || !data) throw new Error(error ?? 'Failed to update workflow');
@@ -705,6 +710,8 @@ function WorkflowModal({
   const [selectedChildWorkflows, setSelectedChildWorkflows] = useState<string[]>(
     workflow?.child_workflows ?? createDraft?.selectedChildWorkflows ?? []
   );
+  const [llmModel, setLlmModel] = useState(workflow?.llm_model ?? createDraft?.llmModel ?? '');
+  const [llmModelMap, setLlmModelMap] = useState<Record<string, string>>({});
 
   useEffect(() => {
     if (isEditMode) return;
@@ -720,6 +727,7 @@ function WorkflowModal({
       inputSchemaText,
       outputSchemaText,
       selectedChildWorkflows,
+      llmModel,
     });
   }, [
     autoApproveTools,
@@ -733,8 +741,20 @@ function WorkflowModal({
     prompt,
     selectedChildWorkflows,
     showAdvanced,
+    llmModel,
     triggerType,
   ]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const { data } = await apiRequest<{ models: Record<string, string> }>('/auth/llm-options');
+      if (!cancelled && data?.models) setLlmModelMap(data.models);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Get all workflows for child workflow selection (exclude current workflow)
   const { data: allWorkflows = [] } = useQuery({
@@ -827,6 +847,7 @@ function WorkflowModal({
       input_schema: inputSchema,
       output_schema: outputSchema,
       child_workflows: selectedChildWorkflows.length > 0 ? selectedChildWorkflows : undefined,
+      llm_model: llmModel || '',
     });
   };
 
@@ -1004,7 +1025,7 @@ function WorkflowModal({
             </div>
           )}
 
-          {/* Advanced: Input/Output Schemas */}
+          {/* Advanced: Typed Schemas + Model */}
           <div className="border-t border-surface-800 pt-4">
             <button
               type="button"
@@ -1019,7 +1040,7 @@ function WorkflowModal({
               >
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
               </svg>
-              Advanced: Typed Input/Output Schemas
+              Advanced: Typed Schema and Model
             </button>
             
             {showAdvanced && (
@@ -1034,6 +1055,25 @@ function WorkflowModal({
                     {schemaError}
                   </div>
                 )}
+
+                <div>
+                  <label className="block text-sm font-medium text-surface-300 mb-1">
+                    Workflow Model Override
+                  </label>
+                  <select
+                    value={llmModel}
+                    onChange={(e) => setLlmModel(e.target.value)}
+                    className="w-full px-3 py-2 bg-surface-800 border border-surface-700 rounded-lg text-surface-100 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                  >
+                    <option value="">Default workflow model</option>
+                    {Object.entries(llmModelMap).map(([model, provider]) => (
+                      <option key={model} value={model}>{model} ({provider})</option>
+                    ))}
+                  </select>
+                  <p className="text-xs text-surface-500 mt-1">
+                    Optional: override the organization workflow model for this workflow only.
+                  </p>
+                </div>
 
                 {/* Input Schema */}
                 <div>

@@ -109,6 +109,10 @@ class Workflow(Base):
         JSONB, nullable=False, default=list
     )
 
+    # Optional model override for this workflow only.
+    # When null, workflow execution uses organization workflow model fallback.
+    llm_model: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+
     # Output configuration (optional, can also be in last step)
     # Example: { "channel": "email", "to": "user@example.com" }
     output_config: Mapped[Optional[dict[str, Any]]] = mapped_column(
@@ -154,6 +158,7 @@ class Workflow(Base):
             "input_schema": self.input_schema,
             "output_schema": self.output_schema,
             "child_workflows": self.child_workflows,
+            "llm_model": self.llm_model,
             "output_config": self.output_config,
             "archived_at": f"{self.archived_at.isoformat()}Z" if self.archived_at else None,
             "is_enabled": self.is_enabled,
