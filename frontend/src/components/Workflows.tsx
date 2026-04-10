@@ -596,10 +596,10 @@ function WorkflowDetail({
         </div>
 
         {/* Footer */}
-        <div className="px-6 py-4 border-t border-surface-800 flex items-center justify-between">
+        <div className="px-6 py-4 border-t border-surface-800 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
             {showDeleteConfirm ? (
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <span className="text-sm text-red-400">Delete this workflow?</span>
                 <button
                   onClick={() => {
@@ -618,33 +618,33 @@ function WorkflowDetail({
                 </button>
               </div>
             ) : (
-              <div className="flex items-center gap-3">
+              <div className="grid grid-cols-2 gap-2 sm:flex sm:items-center sm:gap-3">
                 <button
                   onClick={onArchive}
-                  className="text-sm text-surface-300 hover:text-surface-100"
+                  className="w-full min-h-10 px-4 py-2 rounded-lg bg-surface-800 text-sm font-medium text-surface-300 hover:bg-surface-700 hover:text-surface-100 transition-colors"
                 >
                   Archive workflow
                 </button>
                 <button
                   onClick={() => setShowDeleteConfirm(true)}
-                  className="text-sm text-red-400 hover:text-red-300"
+                  className="w-full min-h-10 px-4 py-2 rounded-lg bg-red-600/20 text-sm font-medium text-red-400 hover:bg-red-600/30 hover:text-red-300 transition-colors"
                 >
                   Delete workflow
                 </button>
               </div>
             )}
           </div>
-          <div className="flex items-center gap-2">
+          <div className="grid w-full grid-cols-2 gap-2 sm:w-auto sm:flex sm:items-center">
             <button
               onClick={onEdit}
-              className="px-4 py-2 bg-surface-700 hover:bg-surface-600 text-surface-200 rounded-lg text-sm font-medium transition-colors"
+              className="w-full min-h-10 px-4 py-2 bg-surface-700 hover:bg-surface-600 text-surface-200 rounded-lg text-sm font-medium transition-colors"
             >
               Edit
             </button>
             <button
               onClick={onTrigger}
               disabled={!workflow.is_enabled || isTriggering}
-              className="px-4 py-2 bg-primary-600 hover:bg-primary-700 disabled:bg-surface-700 disabled:text-surface-500 text-white rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
+              className="w-full min-h-10 px-4 py-2 bg-primary-600 hover:bg-primary-700 disabled:bg-surface-700 disabled:text-surface-500 text-white rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2"
             >
               {isTriggering && (
                 <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
