@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
+
 import httpx
 
 from config import settings
@@ -25,7 +27,10 @@ def _pagerduty_incidents_enabled() -> bool:
         return True
 
     logger.info(
-        "PagerDuty incident skipped: incidenting disabled (PAGERDUTY_INCIDENTS_ENABLED=false)"
+        "PagerDuty incident skipped: incidenting disabled "
+        "(parsed_enabled=%s raw_env=%r)",
+        settings.PAGERDUTY_INCIDENTS_ENABLED,
+        os.getenv("PAGERDUTY_INCIDENTS_ENABLED"),
     )
     return False
 

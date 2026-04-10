@@ -28,8 +28,13 @@ def to_iso8601(dt: datetime | date | None) -> str | None:
     # date only - no timezone
     return dt.isoformat()
 
-# Find .env file - check current dir, then parent (for when running from backend/)
-_env_file = Path(".env")
+# Find .env file deterministically from repository layout first, then CWD fallbacks.
+# This avoids silently missing .env when processes start with an unexpected working directory.
+_config_dir = Path(__file__).resolve().parent
+_repo_root = _config_dir.parent
+_env_file = _repo_root / ".env"
+if not _env_file.exists():
+    _env_file = Path(".env")
 if not _env_file.exists():
     _env_file = Path("../.env")
 
