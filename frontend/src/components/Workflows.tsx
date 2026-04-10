@@ -642,14 +642,14 @@ function WorkflowDetail({
           <div className="grid w-full grid-cols-2 gap-2 sm:w-auto sm:flex sm:items-center">
             <button
               onClick={onEdit}
-              className="w-full min-h-10 px-4 py-2 bg-surface-700 hover:bg-surface-600 text-sm font-medium text-surface-200 rounded-lg transition-colors whitespace-nowrap sm:min-h-9 sm:px-3 sm:py-1.5 sm:min-w-32"
+              className="w-full min-h-10 px-4 py-2 bg-surface-700 hover:bg-surface-600 text-sm font-medium text-surface-200 rounded-lg transition-colors whitespace-nowrap sm:min-w-32"
             >
               Edit
             </button>
             <button
               onClick={onTrigger}
               disabled={!workflow.is_enabled || isTriggering}
-              className="w-full min-h-10 px-4 py-2 bg-primary-600 hover:bg-primary-700 disabled:bg-surface-700 disabled:text-surface-500 text-sm font-medium text-white rounded-lg transition-colors flex items-center justify-center gap-2 whitespace-nowrap sm:min-h-9 sm:px-3 sm:py-1.5 sm:min-w-32"
+              className="w-full min-h-10 px-4 py-2 bg-primary-600 hover:bg-primary-700 disabled:bg-surface-700 disabled:text-surface-500 text-sm font-medium text-white rounded-lg transition-colors flex items-center justify-center gap-2 whitespace-nowrap sm:min-w-32"
             >
               {isTriggering && (
                 <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
