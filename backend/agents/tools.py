@@ -693,6 +693,62 @@ async def _get_connector_instance(
     return instance, None
 
 
+def _build_cross_user_connector_warning(
+    connector_slug: str,
+    connector_instance: Any,
+    requester_user_id: str | None,
+) -> str | None:
+    """Return a user-facing warning when we used a teammate's connector."""
+    if not requester_user_id:
+        return None
+    if connector_slug in {"slack", "teams"}:
+        return None
+
+    raw_integration_user_id: Any = getattr(connector_instance, "user_id", None)
+    integration_user_id: str | None = (
+        raw_integration_user_id if isinstance(raw_integration_user_id, str) else None
+    )
+    if not integration_user_id or integration_user_id == requester_user_id:
+        return None
+
+    service_name: str = connector_slug.replace("_", " ").title()
+    try:
+        from connectors.registry import resolve_connector
+
+        connector_cls = resolve_connector(connector_slug)
+        if connector_cls is not None and getattr(connector_cls, "meta", None) is not None:
+            service_name = connector_cls.meta.name
+    except Exception:
+        logger.debug(
+            "[Tools] Failed to resolve connector display name for cross-user warning slug=%s",
+            connector_slug,
+            exc_info=True,
+        )
+
+    return (
+        f"To perform this action, we used another teammate's connector for {service_name}. "
+        f"You may want to connect to {service_name} as yourself."
+    )
+
+
+def _attach_cross_user_connector_warning(result: Any, warning: str | None) -> dict[str, Any]:
+    """Attach cross-user connector warning text to tool result payloads."""
+    if not warning:
+        if isinstance(result, dict):
+            return result
+        return {"result": result}
+
+    if isinstance(result, dict):
+        if "warning" in result:
+            existing_warning = result.get("warning")
+            result["warning"] = f"{existing_warning}\n\n{warning}" if existing_warning else warning
+        else:
+            result["warning"] = warning
+        return result
+
+    return {"result": result, "warning": warning}
+
+
 async def _list_connected_connectors(organization_id: str) -> dict[str, Any]:
     """Return the connectors manifest for all connected connectors."""
     from connectors.registry import Capability, ConnectorMeta, discover_connectors, resolve_connector
@@ -940,8 +996,11 @@ async def _query_on_connector(
         return {"error": error}
     assert instance is not None
 
+    cross_user_warning = _build_cross_user_connector_warning(connector, instance, user_id)
+
     try:
-        return await instance.query(query)
+        result = await instance.query(query)
+        return _attach_cross_user_connector_warning(result, cross_user_warning)
     except Exception as exc:
         logger.error("[Tools] query_on_connector(%s) failed: %s", connector, exc, exc_info=True)
         return await _attach_connector_docs(
@@ -1014,10 +1073,12 @@ async def _write_on_connector(
         dispatch_type="write", operation=operation, data=data,
         connector_instance=instance,
     )
+    cross_user_warning = _build_cross_user_connector_warning(connector, instance, user_id)
+
     try:
         result = await instance.write(operation, data)
         await record_outcome(change_id, organization_id, result)
-        return result
+        return _attach_cross_user_connector_warning(result, cross_user_warning)
     except Exception as exc:
         await record_outcome(change_id, organization_id, {"error": str(exc)})
         logger.error("[Tools] write_on_connector(%s, %s) failed: %s", connector, operation, exc, exc_info=True)
@@ -1080,10 +1141,12 @@ async def _run_on_connector(
         dispatch_type="action", operation=action, data=action_params,
         connector_instance=instance,
     )
+    cross_user_warning = _build_cross_user_connector_warning(connector, instance, user_id)
+
     try:
         result = await instance.execute_action(action, action_params)
         await record_outcome(change_id, organization_id, result)
-        return result
+        return _attach_cross_user_connector_warning(result, cross_user_warning)
     except Exception as exc:
         await record_outcome(change_id, organization_id, {"error": str(exc)})
         logger.error("[Tools] run_on_connector(%s, %s) failed: %s", connector, action, exc, exc_info=True)

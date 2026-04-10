@@ -502,6 +502,7 @@ class TestChokepoints:
         from agents import tools
 
         fake_instance = MagicMock()
+        fake_instance.user_id = "user-1"
         fake_instance.write = AsyncMock(return_value={"id": "99", "status": "ok"})
 
         change_id = uuid.uuid4()
@@ -526,6 +527,32 @@ class TestChokepoints:
         outcome_args = mock_outcome.call_args
         assert outcome_args[0][0] == change_id
         assert outcome_args[0][2] == {"id": "99", "status": "ok"}
+
+    def test_write_on_connector_adds_warning_for_cross_user_non_slack(self) -> None:
+        """Cross-user non-Slack/Teams connector use should add a user-facing warning."""
+        from agents import tools
+
+        fake_instance = MagicMock()
+        fake_instance.user_id = "teammate-1"
+        fake_instance.write = AsyncMock(return_value={"id": "99", "status": "ok"})
+
+        with patch.object(tools, "_get_connector_instance", new=AsyncMock(return_value=(fake_instance, None))), \
+             patch.object(tools, "check_connector_call", new=AsyncMock(return_value=MagicMock(allowed=True))), \
+             patch("services.action_ledger.record_intent", new=AsyncMock(return_value=uuid.uuid4())), \
+             patch("services.action_ledger.record_outcome", new=AsyncMock()):
+
+            result = asyncio.run(tools._write_on_connector(
+                params={"connector": "hubspot", "operation": "update_deal", "data": {"deal_id": "1"}},
+                organization_id="org-1",
+                user_id="user-1",
+                skip_approval=True,
+                context={"conversation_id": "conv-1"},
+            ))
+
+        assert result.get("id") == "99"
+        assert "warning" in result
+        assert "HubSpot" in str(result["warning"])
+        assert "connect to HubSpot as yourself" in str(result["warning"])
 
     def test_write_on_connector_records_error_on_exception(self) -> None:
         """When instance.write raises, record_outcome should still be called with error."""
