@@ -1397,9 +1397,6 @@ export function Workflows(): JSX.Element {
             </p>
           </div>
           <div className="flex items-center gap-3">
-            <span className="text-sm text-surface-500">
-              {filteredWorkflows.length} workflow{filteredWorkflows.length !== 1 ? "s" : ""}
-            </span>
             <button
               type="button"
               onClick={openCreateModal}
@@ -1545,7 +1542,7 @@ export function Workflows(): JSX.Element {
             {userWorkflows.length > 0 && (
               <div>
                 <h2 className="text-sm font-medium text-surface-400 uppercase tracking-wider mb-4">
-                  My Workflows
+                  My Workflows ({userWorkflows.length})
                 </h2>
                 <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
                   {userWorkflows.map((workflow) => (
@@ -1564,7 +1561,7 @@ export function Workflows(): JSX.Element {
             {otherWorkflows.length > 0 && (
               <div>
                 <h2 className="text-sm font-medium text-surface-400 uppercase tracking-wider mb-4">
-                  Team Workflows
+                  Team Workflows ({otherWorkflows.length})
                 </h2>
                 <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
                   {otherWorkflows.map((workflow) => (
@@ -1593,8 +1590,7 @@ export function Workflows(): JSX.Element {
                 >
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
                 </svg>
-                Archived
-                {showArchived ? ` (${archivedWorkflows.length})` : ''}
+                Archived ({archivedWorkflows.length})
               </button>
               {showArchived && (
                 <div className="mt-4 space-y-2">
