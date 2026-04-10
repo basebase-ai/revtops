@@ -1722,7 +1722,7 @@ function WorkflowCard({
       }`}
     >
       <div className="flex items-start justify-between mb-2">
-        <h3 className="font-medium text-surface-100 truncate flex-1">{workflow.name}</h3>
+        <h3 className="font-medium text-surface-100 flex-1 min-w-0 break-words leading-snug">{workflow.name}</h3>
         <div className="ml-2 flex items-center gap-2">
           {isActive ? (
             <span className="relative flex h-2.5 w-2.5">
@@ -1746,7 +1746,10 @@ function WorkflowCard({
       
       <div className="flex items-center gap-1 flex-wrap">
         {workflow.steps.slice(0, 3).map((step, idx) => (
-          <span key={idx} className="px-2 py-0.5 bg-surface-800 rounded text-xs text-surface-400">
+          <span
+            key={idx}
+            className="px-2 py-0.5 bg-surface-800 rounded text-xs text-surface-400 max-w-full whitespace-normal break-words"
+          >
             {getActionDisplayName(step.action)}
           </span>
         ))}
