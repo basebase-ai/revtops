@@ -1113,6 +1113,7 @@ async def _execute_workflow_via_agent(
         "is_workflow": True,
         "workflow_id": str(workflow.id),
         "workflow_run_id": str(run.id),
+        "workflow_model_override": getattr(workflow, "llm_model", None),
         "runtime_context": runtime_context,
         "auto_approve_tools": effective_auto_approve_tools,
         "allowed_slack_channels": _extract_allowed_slack_channels(workflow),
