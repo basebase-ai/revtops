@@ -15,6 +15,7 @@ _TITLE_ABBREVIATIONS: set[str] = {
     "dr",
     "prof",
     "st",
+    "vs",
     "saint",
 }
 
