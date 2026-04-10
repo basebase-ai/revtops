@@ -17,7 +17,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from models.action_ledger import ActionLedgerEntry
-from services.action_ledger import _extract_entity, record_intent, record_outcome
+from services.action_ledger import (
+    _extract_entity,
+    _truncate_value_for_log,
+    record_intent,
+    record_outcome,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -253,6 +258,32 @@ class TestRecordIntentFailureIsolation:
         # Should still succeed — before_state is best-effort
         assert isinstance(result, uuid.UUID)
 
+    def test_google_drive_intent_truncates_long_strings(self) -> None:
+        added_entries: list[ActionLedgerEntry] = []
+
+        @asynccontextmanager
+        async def _fake_session(*_a: object, **_kw: object):
+            mock = MagicMock()
+            mock.add = MagicMock(side_effect=lambda e: added_entries.append(e))
+            mock.commit = AsyncMock()
+            yield mock
+
+        long_text = "x" * 250
+        with patch("services.action_ledger.get_session", _fake_session):
+            result = asyncio.run(record_intent(
+                organization_id="00000000-0000-0000-0000-000000000001",
+                user_id=None,
+                context={},
+                connector="google_drive",
+                dispatch_type="action",
+                operation="insert_text",
+                data={"text": long_text, "external_id": "file-1"},
+            ))
+
+        assert isinstance(result, uuid.UUID)
+        assert len(added_entries) == 1
+        assert len(added_entries[0].intent["changes"]["text"]) == 200
+
 
 class TestRecordOutcomeFailureIsolation:
     """record_outcome must never raise."""
@@ -320,6 +351,36 @@ class TestRecordOutcomeFailureIsolation:
 
         assert mock_entry.outcome["status"] == "error"
         assert mock_entry.outcome["error"] == "Connection refused"
+
+    def test_google_drive_outcome_truncates_long_strings(self) -> None:
+        mock_entry = MagicMock()
+        mock_entry.connector = "google_drive"
+        mock_entry.outcome = None
+        mock_entry.executed_at = None
+
+        @asynccontextmanager
+        async def _fake_session(*_a: object, **_kw: object):
+            mock = MagicMock()
+            mock.get = AsyncMock(return_value=mock_entry)
+            mock.commit = AsyncMock()
+            yield mock
+
+        with patch("services.action_ledger.get_session", _fake_session):
+            asyncio.run(record_outcome(
+                uuid.uuid4(), "00000000-0000-0000-0000-000000000001",
+                {"content": "y" * 500},
+            ))
+
+        assert mock_entry.outcome["status"] == "success"
+        assert len(mock_entry.outcome["response"]["content"]) == 200
+
+
+def test_truncate_value_for_log_truncates_nested_strings() -> None:
+    payload = {"a": "b" * 250, "nested": [{"c": "d" * 205}, "ok"]}
+    truncated = _truncate_value_for_log(payload)
+    assert len(truncated["a"]) == 200
+    assert len(truncated["nested"][0]["c"]) == 200
+    assert truncated["nested"][1] == "ok"
 
 
 # ---------------------------------------------------------------------------

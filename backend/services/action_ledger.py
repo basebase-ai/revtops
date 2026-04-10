@@ -15,6 +15,7 @@ from models.action_ledger import ActionLedgerEntry
 from models.database import get_session
 
 logger = logging.getLogger(__name__)
+GOOGLE_DRIVE_LOG_MAX_CHARS = 200
 
 # Best-effort entity extraction from operation name + data dict.
 _ENTITY_HEURISTICS: dict[str, tuple[str, str]] = {
@@ -32,6 +33,22 @@ _ENTITY_HEURISTICS: dict[str, tuple[str, str]] = {
     "create_file": ("file", ""),
     "append_rows": ("sheet", "external_id"),
 }
+
+
+def _truncate_value_for_log(value: Any, max_chars: int = GOOGLE_DRIVE_LOG_MAX_CHARS) -> Any:
+    """Recursively truncate string values for log-safe persistence."""
+    if isinstance(value, str):
+        return value if len(value) <= max_chars else value[:max_chars]
+    if isinstance(value, dict):
+        return {k: _truncate_value_for_log(v, max_chars=max_chars) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_truncate_value_for_log(v, max_chars=max_chars) for v in value]
+    return value
+
+
+def _sanitize_google_drive_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Truncate nested string fields in Google Drive tool payloads."""
+    return _truncate_value_for_log(payload, max_chars=GOOGLE_DRIVE_LOG_MAX_CHARS)
 
 
 def _extract_entity(operation: str, data: dict[str, Any]) -> tuple[Optional[str], Optional[str]]:
@@ -70,6 +87,10 @@ async def record_intent(
         workflow_id = ctx.get("workflow_id")
 
         change_id = uuid.uuid4()
+        sanitized_data: dict[str, Any] = (
+            _sanitize_google_drive_payload(data) if connector == "google_drive" else data
+        )
+
         entry = ActionLedgerEntry(
             id=change_id,
             organization_id=uuid.UUID(organization_id),
@@ -81,7 +102,7 @@ async def record_intent(
             operation=operation,
             entity_type=entity_type,
             entity_id=entity_id,
-            intent={"changes": data, "before_state": before_state},
+            intent={"changes": sanitized_data, "before_state": before_state},
         )
 
         async with get_session(organization_id) as session:
@@ -113,6 +134,8 @@ async def record_outcome(
         async with get_session(organization_id) as session:
             entry: ActionLedgerEntry | None = await session.get(ActionLedgerEntry, change_id)
             if entry:
+                if entry.connector == "google_drive":
+                    outcome = _truncate_value_for_log(outcome)
                 entry.outcome = outcome
                 entry.executed_at = datetime.utcnow()
                 await session.commit()
