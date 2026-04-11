@@ -30,7 +30,7 @@ from sqlalchemy import select
 from config import settings
 from models.org_member import OrgMember, ORG_MEMBER_SCOPING_STATUSES
 from models.user import User
-from services.incident_throttling import evaluate_incident_creation
+from services.incident_throttling import evaluate_incident_creation, mark_incident_created
 from services.pagerduty import create_pagerduty_incident
 
 logger = logging.getLogger(__name__)
@@ -228,13 +228,15 @@ async def _get_jwks() -> dict:
     should_create, reason = await evaluate_incident_creation("Auth JWKS")
     if should_create:
         logger.warning("PagerDuty incident allowed for Auth JWKS reason=%s", reason)
-        await create_pagerduty_incident(
+        incident_created = await create_pagerduty_incident(
             title="Auth JWKS endpoint unreachable",
             details=(
                 "Auth middleware failed to fetch JWKS after 3 attempts and has no cache fallback. "
                 f"JWKS URL: {jwks_url}. Last error: {last_error}"
             ),
         )
+        if incident_created:
+            await mark_incident_created("Auth JWKS")
     else:
         logger.info("PagerDuty incident suppressed for Auth JWKS reason=%s", reason)
     raise HTTPException(

@@ -8,7 +8,7 @@ from collections import Counter
 import redis.asyncio as aioredis
 
 from config import get_redis_connection_kwargs, settings
-from services.incident_throttling import clear_incident_failure, evaluate_incident_creation
+from services.incident_throttling import clear_incident_failure, evaluate_incident_creation, mark_incident_created
 from services.pagerduty import create_pagerduty_incident
 
 logger = logging.getLogger(__name__)
@@ -184,7 +184,7 @@ async def _maybe_raise_query_success_incident(
     if not should_create:
         return
 
-    await create_pagerduty_incident(
+    incident_created = await create_pagerduty_incident(
         title="Rolling query success dropped to 25% or below",
         details=(
             f"Rolling 30-minute query success dropped to {success_rate_pct:.2f}% "
@@ -194,3 +194,5 @@ async def _maybe_raise_query_success_incident(
             f"incident_reason={reason}"
         ),
     )
+    if incident_created:
+        await mark_incident_created(_QUERY_SUCCESS_CHECK_NAME)

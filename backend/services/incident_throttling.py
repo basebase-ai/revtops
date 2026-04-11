@@ -38,7 +38,6 @@ async def evaluate_incident_creation(check_name: str) -> tuple[bool, str]:
                     key,
                     mapping={
                         "first_failed_at": str(now),
-                        "last_incident_at": str(now),
                     },
                 )
                 await redis_client.expire(key, _INCIDENT_KEY_TTL_SECONDS)
@@ -56,8 +55,6 @@ async def evaluate_incident_creation(check_name: str) -> tuple[bool, str]:
                 last_incident_at = 0
 
             if now - last_incident_at >= _INCIDENT_COOLDOWN_SECONDS:
-                await redis_client.hset(key, mapping={"last_incident_at": str(now)})
-                await redis_client.expire(key, _INCIDENT_KEY_TTL_SECONDS)
                 return True, "cooldown_elapsed"
 
             suppress_for = _INCIDENT_COOLDOWN_SECONDS - (now - last_incident_at)
@@ -68,6 +65,30 @@ async def evaluate_incident_creation(check_name: str) -> tuple[bool, str]:
             check_name,
         )
         return True, "throttle_unavailable"
+
+
+async def mark_incident_created(check_name: str) -> None:
+    """Persist incident timestamp after PagerDuty accepts incident creation."""
+    now = int(time.time())
+    redis_client = aioredis.from_url(
+        settings.REDIS_URL,
+        **get_redis_connection_kwargs(),
+    )
+    key = _incident_key(check_name)
+
+    try:
+        async with redis_client:
+            await redis_client.hset(
+                key,
+                mapping={
+                    "first_failed_at": str(now),
+                    "last_incident_at": str(now),
+                },
+            )
+            await redis_client.expire(key, _INCIDENT_KEY_TTL_SECONDS)
+        logger.info("Marked incident throttle window start check=%s timestamp=%s", check_name, now)
+    except Exception:
+        logger.exception("Failed to mark incident throttle window start for check=%s", check_name)
 
 
 async def clear_incident_failure(check_name: str) -> None:

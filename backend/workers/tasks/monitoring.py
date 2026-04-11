@@ -12,7 +12,7 @@ from sqlalchemy import text
 
 from config import get_redis_connection_kwargs, settings
 from models.database import get_admin_session
-from services.incident_throttling import clear_incident_failure, evaluate_incident_creation
+from services.incident_throttling import clear_incident_failure, evaluate_incident_creation, mark_incident_created
 from services.pagerduty import create_pagerduty_incident
 from workers.celery_app import celery_app
 
@@ -222,15 +222,18 @@ async def _check_redis(timeout_s: float = 10.0) -> CheckResult:
 async def _create_pagerduty_incident(
     *,
     check_result: CheckResult,
-) -> None:
+) -> bool:
     """Create an incident in PagerDuty v2 REST API."""
-    await create_pagerduty_incident(
+    incident_created = await create_pagerduty_incident(
         title=f"{check_result.name} is down",
         details=(
             "Automated Basebase dependency monitor detected an outage. "
             f"Dependency: {check_result.name}. Details: {check_result.details}"
         ),
     )
+    if incident_created:
+        await mark_incident_created(check_result.name)
+    return incident_created
 
 
 async def _run_dependency_checks() -> list[CheckResult]:

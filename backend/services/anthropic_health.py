@@ -6,7 +6,7 @@ from typing import Any
 
 from anthropic import APIStatusError
 
-from services.incident_throttling import clear_incident_failure, evaluate_incident_creation
+from services.incident_throttling import clear_incident_failure, evaluate_incident_creation, mark_incident_created
 from services.pagerduty import create_pagerduty_incident
 
 logger = logging.getLogger(__name__)
@@ -92,10 +92,12 @@ async def report_anthropic_call_failure(*, exc: Exception, source: str) -> None:
         )
         return
 
-    await create_pagerduty_incident(
+    incident_created = await create_pagerduty_incident(
         title="Anthropic credits exhausted",
         details=(
             "Passive Anthropic credit health check observed an out-of-credits response. "
             f"Source={source}. Reason={reason}. Error={exc}"
         ),
     )
+    if incident_created:
+        await mark_incident_created(_ANTHROPIC_CREDITS_CHECK_NAME)
