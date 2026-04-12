@@ -194,3 +194,58 @@ async def test_post_message_sends_when_last_thread_message_differs():
         thread_ts="1710711600.000",
         blocks=None,
     )
+
+
+@pytest.mark.asyncio
+async def test_enrich_message_context_resolves_slack_mentions_via_mapping_table():
+    messenger = SlackMessenger()
+    org_id = str(uuid4())
+    message = InboundMessage(
+        text="who is <@UJON123>?",
+        message_type=MessageType.MENTION,
+        external_user_id="U_SENDER",
+        message_id="123.456",
+        messenger_context={"workspace_id": "T123", "channel_id": "C456"},
+        mentions=[{"type": "user", "external_user_id": "UJON123"}],
+    )
+
+    mock_session = AsyncMock()
+    mock_result = MagicMock()
+    mock_result.all.return_value = [("UJON123", "Jon Alferness", "", "T123")]
+    mock_session.execute.return_value = mock_result
+    mock_ctx = MagicMock(__aenter__=AsyncMock(return_value=mock_session), __aexit__=AsyncMock(return_value=None))
+
+    with patch.object(messenger, "resolve_channel_name", return_value="general"), patch(
+        "messengers.slack.get_admin_session", return_value=mock_ctx
+    ):
+        await messenger.enrich_message_context(message, org_id)
+
+    assert message.text == "who is @Jon Alferness?"
+
+
+@pytest.mark.asyncio
+async def test_enrich_message_context_keeps_unresolved_mentions_unchanged():
+    messenger = SlackMessenger()
+    org_id = str(uuid4())
+    original = "who is <@UUNKNOWN>?"
+    message = InboundMessage(
+        text=original,
+        message_type=MessageType.MENTION,
+        external_user_id="U_SENDER",
+        message_id="123.456",
+        messenger_context={"workspace_id": "T123", "channel_id": "C456"},
+        mentions=[{"type": "user", "external_user_id": "UUNKNOWN"}],
+    )
+
+    mock_session = AsyncMock()
+    mock_result = MagicMock()
+    mock_result.all.return_value = []
+    mock_session.execute.return_value = mock_result
+    mock_ctx = MagicMock(__aenter__=AsyncMock(return_value=mock_session), __aexit__=AsyncMock(return_value=None))
+
+    with patch.object(messenger, "resolve_channel_name", return_value="general"), patch(
+        "messengers.slack.get_admin_session", return_value=mock_ctx
+    ):
+        await messenger.enrich_message_context(message, org_id)
+
+    assert message.text == original

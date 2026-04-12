@@ -10,13 +10,20 @@ from __future__ import annotations
 
 import logging
 import re
+from uuid import UUID
 from typing import Any
 
 from connectors.slack import SlackConnector, markdown_to_mrkdwn
 from messengers._workspace import WorkspaceMessenger
 from messengers.base import InboundMessage, MessengerMeta, ResponseMode
+from models.database import get_admin_session
+from models.messenger_user_mapping import MessengerUserMapping
+from models.user import User
+from sqlalchemy import case, or_, select
 
 logger = logging.getLogger(__name__)
+
+_SLACK_USER_MENTION_RE = re.compile(r"<@([A-Z0-9]+)(?:\|[^>]+)?>")
 
 
 def _normalize_slack_dedupe_text(text: str) -> str:
@@ -57,7 +64,7 @@ class SlackMessenger(WorkspaceMessenger):
         message: InboundMessage,
         organization_id: str,
     ) -> None:
-        """Attach human-readable channel name to messenger context."""
+        """Attach channel metadata and resolve ``<@...>`` user mentions in text."""
         ctx = message.messenger_context
         workspace_id: str | None = ctx.get("workspace_id")
         channel_id: str = ctx.get("channel_id", "")
@@ -70,6 +77,101 @@ class SlackMessenger(WorkspaceMessenger):
         )
         if channel_name:
             ctx.setdefault("channel_name", channel_name)
+
+        await self._resolve_user_mentions_in_text(
+            message=message,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+        )
+
+    async def _resolve_user_mentions_in_text(
+        self,
+        *,
+        message: InboundMessage,
+        organization_id: str,
+        workspace_id: str,
+    ) -> None:
+        """Replace Slack ``<@U…>`` tokens with ``@Display Name`` when we can map them."""
+        raw_text: str = message.text or ""
+        if "<@" not in raw_text:
+            return
+
+        mention_matches: list[re.Match[str]] = list(_SLACK_USER_MENTION_RE.finditer(raw_text))
+        if not mention_matches:
+            return
+
+        external_ids: list[str] = []
+        for match in mention_matches:
+            external_id: str = match.group(1)
+            if external_id not in external_ids:
+                external_ids.append(external_id)
+
+        if not external_ids:
+            return
+
+        org_uuid: UUID = UUID(organization_id)
+        display_name_by_external_id: dict[str, str] = {}
+        async with get_admin_session() as session:
+            stmt = (
+                select(
+                    MessengerUserMapping.external_user_id,
+                    User.name,
+                    User.email,
+                    MessengerUserMapping.workspace_id,
+                )
+                .join(User, User.id == MessengerUserMapping.user_id)
+                .where(MessengerUserMapping.platform == "slack")
+                .where(MessengerUserMapping.organization_id == org_uuid)
+                .where(MessengerUserMapping.external_user_id.in_(external_ids))
+                .where(
+                    or_(
+                        MessengerUserMapping.workspace_id == workspace_id,
+                        MessengerUserMapping.workspace_id.is_(None),
+                    )
+                )
+                .order_by(
+                    case((MessengerUserMapping.workspace_id == workspace_id, 0), else_=1),
+                    MessengerUserMapping.external_user_id,
+                )
+            )
+            rows: list[Any] = list((await session.execute(stmt)).all())
+
+        for row in rows:
+            external_id: str = row[0]
+            if external_id in display_name_by_external_id:
+                continue
+            name: str = (row[1] or "").strip()
+            email: str = (row[2] or "").strip()
+            if name:
+                display_name_by_external_id[external_id] = name
+            elif email:
+                display_name_by_external_id[external_id] = email
+
+        if not display_name_by_external_id:
+            logger.info(
+                "[slack] No mapped user names for mention tokens org=%s workspace=%s mentioned=%s",
+                organization_id,
+                workspace_id,
+                external_ids,
+            )
+            return
+
+        def _replace_mention(match: re.Match[str]) -> str:
+            external_id: str = match.group(1)
+            display_name: str | None = display_name_by_external_id.get(external_id)
+            if not display_name:
+                return match.group(0)
+            return f"@{display_name}"
+
+        resolved_text: str = _SLACK_USER_MENTION_RE.sub(_replace_mention, raw_text)
+        if resolved_text != raw_text:
+            logger.info(
+                "[slack] Resolved mention tokens for org=%s workspace=%s resolved=%d",
+                organization_id,
+                workspace_id,
+                len(display_name_by_external_id),
+            )
+            message.text = resolved_text
 
     async def post_message(
         self,
