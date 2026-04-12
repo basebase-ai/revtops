@@ -425,7 +425,8 @@ async def _process_event_callback_impl(payload: dict[str, Any]) -> None:
     if inner_type == "app_mention":
         channel_id = event.get("channel", "")
         user_id = event.get("user", "")
-        text = re.sub(r"<@[A-Z0-9]+>\s*", "", event.get("text", "")).strip()
+        raw_text: str = event.get("text", "") or ""
+        text = _strip_bot_mentions(raw_text, bot_user_ids) if bot_user_ids else raw_text.strip()
         event_ts: str = event.get("event_ts", "")
         message_ts = event.get("ts", "") or event_ts
         thread_ts = event.get("thread_ts")

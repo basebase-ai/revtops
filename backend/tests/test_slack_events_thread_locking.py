@@ -127,3 +127,44 @@ def test_strip_bot_mentions_removes_only_known_bot_mentions() -> None:
     text = "<@UBOT> hi <@UOTHER> and <@UBOT>"
     cleaned = slack_events._strip_bot_mentions(text, {"UBOT"})
     assert cleaned == "hi <@UOTHER> and"
+
+
+def test_app_mention_keeps_non_bot_user_mentions_in_text(monkeypatch) -> None:
+    captured: list[InboundMessage] = []
+
+    async def _fake_is_duplicate_event(_event_id: str) -> bool:
+        return False
+
+    async def _fake_is_duplicate_message(_channel_id: str, _message_ts: str) -> bool:
+        return False
+
+    async def _fake_process_inbound(self, message: InboundMessage):
+        captured.append(message)
+        return {"status": "success"}
+
+    monkeypatch.setattr(slack_events, "is_duplicate_event", _fake_is_duplicate_event)
+    monkeypatch.setattr(slack_events, "is_duplicate_message", _fake_is_duplicate_message)
+    monkeypatch.setattr(SlackMessenger, "process_inbound", _fake_process_inbound)
+
+    payload = {
+        "type": "event_callback",
+        "event_id": "EvAppMention1",
+        "team_id": "T123",
+        "authed_users": ["UBOT"],
+        "event": {
+            "type": "app_mention",
+            "channel_type": "channel",
+            "channel": "C123",
+            "user": "U123",
+            "event_ts": "1700000000.001",
+            "ts": "1700000000.001",
+            "text": "<@UBOT> who is <@UJON123>?",
+        },
+    }
+
+    asyncio.run(slack_events._process_event_callback_impl(payload))
+
+    assert len(captured) == 1
+    msg: InboundMessage = captured[0]
+    assert msg.message_type == MessageType.MENTION
+    assert msg.text == "who is <@UJON123>?"
