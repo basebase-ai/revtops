@@ -51,3 +51,43 @@ def test_workflow_cannot_update_child_workflow_to_run_automatically() -> None:
 
     assert "error" in result
     assert "cannot enable or configure schedule/event triggers" in result["error"]
+
+
+def test_sql_write_passes_user_id_to_session(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class _FakeResult:
+        rowcount = 1
+
+    class _FakeSession:
+        async def execute(self, _query: object) -> _FakeResult:
+            return _FakeResult()
+
+        async def commit(self) -> None:
+            return None
+
+    class _FakeSessionCtx:
+        async def __aenter__(self) -> _FakeSession:
+            return _FakeSession()
+
+        async def __aexit__(self, exc_type, exc, tb) -> bool:
+            return False
+
+    def _fake_get_session(*, organization_id: str, user_id: str | None = None) -> _FakeSessionCtx:
+        captured["organization_id"] = organization_id
+        captured["user_id"] = user_id
+        return _FakeSessionCtx()
+
+    monkeypatch.setattr("agents.tools.get_session", _fake_get_session)
+
+    result = asyncio.run(
+        _run_sql_write(
+            params={"query": "UPDATE org_members SET title = 'CTO' WHERE id = '8ab46e6b-93a7-424a-898e-ff8bac468756'"},
+            organization_id=ORG_ID,
+            user_id=USER_ID,
+            context=None,
+        )
+    )
+
+    assert result.get("success") is True
+    assert captured == {"organization_id": ORG_ID, "user_id": USER_ID}

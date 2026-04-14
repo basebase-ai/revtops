@@ -1776,7 +1776,7 @@ async def _run_sql_write(
     # Non-CRM Tables: Direct execution
     # ==========================================================================
     try:
-        async with get_session(organization_id=organization_id) as session:
+        async with get_session(organization_id=organization_id, user_id=user_id) as session:
             
             # For INSERT, inject required columns
             final_query = query_to_use
