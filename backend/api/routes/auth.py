@@ -2199,6 +2199,105 @@ class UpdateMemberRoleRequest(BaseModel):
     role: str
 
 
+class UpdateMemberRequest(BaseModel):
+    """Update editable org_members fields for a member."""
+
+    title: Optional[str] = Field(default=None, max_length=255)
+    reports_to_membership_id: Optional[str] = None
+
+
+@router.patch("/organizations/{org_id}/members/{target_user_id}")
+async def update_organization_member(
+    org_id: str,
+    target_user_id: str,
+    request: UpdateMemberRequest,
+    user_id: Optional[str] = None,
+) -> dict[str, Optional[str]]:
+    """Update a member row. Users can edit themselves; org/global admins can edit anyone in-org."""
+    from models.org_member import OrgMember, ORG_MEMBER_SCOPING_STATUSES
+
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        org_uuid = UUID(org_id)
+        target_uuid = UUID(target_user_id)
+        requester_uuid = UUID(user_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid ID format")
+
+    async with get_admin_session() as session:
+        requester: Optional[User] = await session.get(User, requester_uuid)
+        can_administer: bool = await _can_administer_org(session, requester, org_uuid)
+
+        if not can_administer:
+            if requester_uuid != target_uuid:
+                raise HTTPException(status_code=403, detail="You can only edit your own membership")
+            if await _get_org_membership(session, requester_uuid, org_uuid) is None:
+                raise HTTPException(status_code=403, detail="Not a member of this organization")
+
+        target_result = await session.execute(
+            select(OrgMember).where(
+                OrgMember.user_id == target_uuid,
+                OrgMember.organization_id == org_uuid,
+                OrgMember.status.in_(ORG_MEMBER_SCOPING_STATUSES),
+            )
+        )
+        target_membership: Optional[OrgMember] = target_result.scalar_one_or_none()
+        if not target_membership:
+            raise HTTPException(status_code=404, detail="Member not found")
+
+        if request.title is not None:
+            sanitized_title: str = request.title.strip()
+            target_membership.title = sanitized_title or None
+
+        if request.reports_to_membership_id is not None:
+            reports_to_raw: str = request.reports_to_membership_id.strip()
+            if not reports_to_raw:
+                target_membership.reports_to_membership_id = None
+            else:
+                try:
+                    reports_to_uuid = UUID(reports_to_raw)
+                except ValueError:
+                    raise HTTPException(status_code=400, detail="Invalid reports_to_membership_id format")
+
+                if reports_to_uuid == target_membership.id:
+                    raise HTTPException(status_code=400, detail="reports_to_membership_id cannot reference self")
+
+                manager_result = await session.execute(
+                    select(OrgMember.id).where(
+                        OrgMember.id == reports_to_uuid,
+                        OrgMember.organization_id == org_uuid,
+                        OrgMember.status.in_(MEMBER_ACTIVE_STATUSES),
+                    )
+                )
+                if manager_result.scalar_one_or_none() is None:
+                    raise HTTPException(status_code=400, detail="reports_to_membership_id must reference an active manager in this organization")
+
+                target_membership.reports_to_membership_id = reports_to_uuid
+
+        await session.commit()
+
+        logger.info(
+            "Updated org member row org=%s target_user=%s by_user=%s title_updated=%s reports_to_updated=%s",
+            org_uuid,
+            target_uuid,
+            requester_uuid,
+            request.title is not None,
+            request.reports_to_membership_id is not None,
+        )
+
+        return {
+            "status": "updated",
+            "title": target_membership.title,
+            "reports_to_membership_id": (
+                str(target_membership.reports_to_membership_id)
+                if target_membership.reports_to_membership_id
+                else None
+            ),
+        }
+
+
 @router.patch("/organizations/{org_id}/members/{target_user_id}/role")
 async def update_organization_member_role(
     org_id: str,
