@@ -56,6 +56,19 @@ def _sanitize_workflow_auto_approve_tools(tools: list[str] | None) -> list[str]:
     return sanitized
 
 
+def _workflow_conversation_participants(
+    workflow_creator_user_id: UUID | None,
+    trigger_user_uuid: UUID | None,
+) -> list[UUID]:
+    """Build workflow conversation participants for visibility controls."""
+    participants: list[UUID] = []
+    if workflow_creator_user_id:
+        participants.append(workflow_creator_user_id)
+    if trigger_user_uuid and trigger_user_uuid not in participants:
+        participants.append(trigger_user_uuid)
+    return participants
+
+
 # ============================================================================
 # Request/Response Models
 # ============================================================================
@@ -637,6 +650,10 @@ async def trigger_workflow(
         # For prompt-based workflows, create conversation upfront so we can return its ID
         conversation_id: str | None = None
         if workflow.prompt and workflow.prompt.strip():
+            participants = _workflow_conversation_participants(
+                workflow_creator_user_id=workflow.created_by_user_id,
+                trigger_user_uuid=trigger_user_uuid,
+            )
             conversation = Conversation(
                 user_id=trigger_user_uuid or workflow.created_by_user_id,
                 organization_id=workflow.organization_id,
@@ -644,9 +661,12 @@ async def trigger_workflow(
                 scope="private",
                 workflow_id=workflow.id,
                 title=f"Workflow: {workflow.name}",
+                participating_user_ids=participants,
             )
             logger.info(
-                "[Workflows API] Creating workflow conversation with private default scope",
+                "[Workflows API] Creating workflow conversation with private default scope "
+                "participants=%s",
+                [str(user_id) for user_id in participants],
                 extra={
                     "workflow_id": str(workflow.id),
                     "conversation_scope": "private",

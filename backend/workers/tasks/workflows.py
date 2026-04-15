@@ -39,6 +39,31 @@ WORKFLOW_NESTING_GUARDRAIL = (
 )
 
 
+def _workflow_conversation_participants(
+    workflow_creator_user_id: UUID | None,
+    triggered_by_user_id: str | None,
+    existing_participants: list[UUID] | None = None,
+) -> list[UUID]:
+    """Return merged participant IDs for workflow conversations."""
+    participants: list[UUID] = list(existing_participants or [])
+
+    if workflow_creator_user_id and workflow_creator_user_id not in participants:
+        participants.append(workflow_creator_user_id)
+
+    if triggered_by_user_id:
+        try:
+            trigger_user_uuid = UUID(triggered_by_user_id)
+            if trigger_user_uuid not in participants:
+                participants.append(trigger_user_uuid)
+        except ValueError:
+            logger.warning(
+                "[Workflow] Invalid triggered_by_user_id for participants merge: %s",
+                triggered_by_user_id,
+            )
+
+    return participants
+
+
 async def _record_workflow_query_outcome(
     *,
     result: dict[str, Any] | None,
@@ -946,6 +971,10 @@ async def _execute_workflow_via_agent(
                 workflow.id,
                 triggered_by_user_id,
             )
+    workflow_participants = _workflow_conversation_participants(
+        workflow_creator_user_id=workflow.created_by_user_id,
+        triggered_by_user_id=triggered_by_user_id,
+    )
 
     # Use existing conversation or create a new one
     if existing_conversation_id:
@@ -964,15 +993,32 @@ async def _execute_workflow_via_agent(
                 workflow_id=workflow.id,
                 title=f"Workflow: {workflow.name}",
                 parent_conversation_id=parent_conversation_id,
+                participating_user_ids=workflow_participants,
             )
             logger.info(
                 "[Workflow] Creating fallback workflow conversation with private scope "
-                "workflow_id=%s parent_conversation_id=%s",
+                "workflow_id=%s parent_conversation_id=%s participants=%s",
                 workflow.id,
                 parent_conversation_id,
+                [str(user_id) for user_id in workflow_participants],
             )
             session.add(conversation)
             await session.flush()
+        else:
+            merged_participants = _workflow_conversation_participants(
+                workflow_creator_user_id=workflow.created_by_user_id,
+                triggered_by_user_id=triggered_by_user_id,
+                existing_participants=conversation.participating_user_ids,
+            )
+            if merged_participants != (conversation.participating_user_ids or []):
+                conversation.participating_user_ids = merged_participants
+                logger.info(
+                    "[Workflow] Updated existing workflow conversation participants "
+                    "workflow_id=%s conversation_id=%s participants=%s",
+                    workflow.id,
+                    conversation.id,
+                    [str(user_id) for user_id in merged_participants],
+                )
     else:
         # Create a new workflow conversation
         conversation = Conversation(
@@ -983,12 +1029,14 @@ async def _execute_workflow_via_agent(
             workflow_id=workflow.id,
             title=f"Workflow: {workflow.name}",
             parent_conversation_id=parent_conversation_id,
+            participating_user_ids=workflow_participants,
         )
         logger.info(
             "[Workflow] Creating workflow conversation with private scope "
-            "workflow_id=%s parent_conversation_id=%s",
+            "workflow_id=%s parent_conversation_id=%s participants=%s",
             workflow.id,
             parent_conversation_id,
+            [str(user_id) for user_id in workflow_participants],
         )
         session.add(conversation)
         await session.flush()
