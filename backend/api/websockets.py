@@ -298,24 +298,12 @@ async def broadcast_conversation_message(
 # Chat WebSocket Handler
 # =============================================================================
 
-from agents.orchestrator import ChatOrchestrator
-from agents.tools import (
-    execute_crm_operation,
-    cancel_crm_operation,
-    update_tool_call_result,
-    execute_send_email_from,
-    execute_send_slack,
-    execute_save_memory,
-    execute_keep_notes,
-)
 from models.conversation import Conversation
 from models.database import get_session
 from models.user import User
 from models.chat_message import ChatMessage
 from models.workflow import WorkflowRun
 from sqlalchemy import and_, select
-from services.credits import can_use_credits
-from services.task_manager import task_manager
 
 
 def _generate_title(message: str) -> str:
@@ -491,6 +479,8 @@ async def _execute_tool_approval(
     from models.pending_operation import PendingOperation, CrmOperation
     from models.database import get_session
     from agents.tools import (
+        cancel_crm_operation,
+        execute_crm_operation,
         get_pending_operation,
         remove_pending_operation,
         execute_send_email_from,
@@ -608,6 +598,14 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     Args:
         websocket: The WebSocket connection
     """
+    from agents.tools import (
+        cancel_crm_operation,
+        execute_crm_operation,
+        update_tool_call_result,
+    )
+    from services.credits import can_use_credits
+    from services.task_manager import task_manager
+
     # Verify JWT token BEFORE accepting the connection
     from api.auth_middleware import verify_websocket_token
     
