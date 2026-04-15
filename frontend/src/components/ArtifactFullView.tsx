@@ -209,7 +209,7 @@ export function ArtifactFullView({
   const handleCopyLink = async (): Promise<void> => {
     const isPublic: boolean = visibility === "public";
     const url: string = isPublic
-      ? `${window.location.origin}/public/artifacts/${artifactId}`
+      ? `${window.location.origin}/api/public/share/artifacts/${artifactId}`
       : `${window.location.origin}${prefix}/artifacts/${artifactId}`;
     await navigator.clipboard.writeText(url);
     setLinkCopied(true);
@@ -223,7 +223,7 @@ export function ArtifactFullView({
       );
       return;
     }
-    const url: string = `${window.location.origin}/public/artifacts/${artifactId}`;
+    const url: string = `${window.location.origin}/api/public/share/artifacts/${artifactId}`;
     const snippet: string = `<iframe src="${url}" width="100%" height="600" frameborder="0"></iframe>`;
     await navigator.clipboard.writeText(snippet);
     setEmbedCopied(true);

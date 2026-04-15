@@ -6,19 +6,24 @@ Uses admin session with explicit visibility filter (RLS bypass).
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel
 from sqlalchemy import select
 
+from config import settings
 from models.app import App
 from models.artifact import Artifact
 from models.database import get_admin_session, get_session
 from services.app_query_runner import AppQueryResponse as QueryResponse, run_named_app_query
+from services.public_previews import build_preview_html, decode_data_url_image, render_card_png
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 @router.get("/apps/{app_id}")
@@ -139,3 +144,129 @@ async def get_public_artifact(artifact_id: str) -> PublicArtifactResponse:
         user_id=str(artifact.user_id) if artifact.user_id else None,
         visibility="public",
     )
+
+
+def _frontend_origin() -> str:
+    return settings.FRONTEND_URL.rstrip("/")
+
+
+@router.get("/share/apps/{app_id}", response_class=HTMLResponse)
+async def get_public_app_share_preview(app_id: str, request: Request) -> HTMLResponse:
+    """HTML metadata endpoint used by Slack + external scrapers for public app links."""
+    try:
+        app_uuid = UUID(app_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid app ID")
+
+    async with get_admin_session() as session:
+        result = await session.execute(
+            select(App).where(App.id == app_uuid, App.visibility == "public")
+        )
+        app: App | None = result.scalar_one_or_none()
+    if app is None:
+        raise HTTPException(status_code=404, detail="App not found")
+
+    logger.info("[public_preview] rendering app preview app_id=%s", app_id)
+    canonical_url = f"{_frontend_origin()}/public/apps/{app_id}"
+    image_url = f"{request.base_url}api/public/share/apps/{app_id}/snapshot.png"
+    title = app.title or "Basebase App"
+    description = app.description or "Interactive app shared from Basebase."
+    html = build_preview_html(
+        page_title=title,
+        description=description,
+        canonical_url=canonical_url,
+        image_url=image_url,
+        redirect_url=canonical_url,
+    )
+    return HTMLResponse(content=html, headers={"Cache-Control": "public, max-age=300"})
+
+
+@router.get("/share/apps/{app_id}/snapshot.png")
+async def get_public_app_share_snapshot(app_id: str) -> Response:
+    """Snapshot image used by link preview scrapers for shared app links."""
+    try:
+        app_uuid = UUID(app_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid app ID")
+
+    async with get_admin_session() as session:
+        result = await session.execute(
+            select(App).where(App.id == app_uuid, App.visibility == "public")
+        )
+        app: App | None = result.scalar_one_or_none()
+    if app is None:
+        raise HTTPException(status_code=404, detail="App not found")
+
+    screenshot_data_url: str | None = (app.widget_config or {}).get("screenshot")
+    decoded = decode_data_url_image(screenshot_data_url)
+    if decoded is not None:
+        image_bytes, mime_type = decoded
+        logger.info("[public_preview] serving app screenshot app_id=%s mime=%s", app_id, mime_type)
+        return Response(content=image_bytes, media_type=mime_type, headers={"Cache-Control": "public, max-age=300"})
+
+    logger.info("[public_preview] app screenshot missing; serving generated card app_id=%s", app_id)
+    image_bytes = render_card_png(
+        heading="Basebase App",
+        title=app.title or "Untitled App",
+        description=app.description or "Interactive app shared from Basebase.",
+        footer=f"App ID: {app_id}",
+    )
+    return Response(content=image_bytes, media_type="image/png", headers={"Cache-Control": "public, max-age=300"})
+
+
+@router.get("/share/artifacts/{artifact_id}", response_class=HTMLResponse)
+async def get_public_artifact_share_preview(artifact_id: str, request: Request) -> HTMLResponse:
+    """HTML metadata endpoint used by Slack + external scrapers for public artifact links."""
+    try:
+        artifact_uuid = UUID(artifact_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid artifact ID")
+
+    async with get_admin_session() as session:
+        result = await session.execute(
+            select(Artifact).where(Artifact.id == artifact_uuid, Artifact.visibility == "public")
+        )
+        artifact: Artifact | None = result.scalar_one_or_none()
+    if artifact is None:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+
+    logger.info("[public_preview] rendering artifact preview artifact_id=%s", artifact_id)
+    canonical_url = f"{_frontend_origin()}/public/artifacts/{artifact_id}"
+    image_url = f"{request.base_url}api/public/share/artifacts/{artifact_id}/snapshot.png"
+    title = artifact.title or "Basebase Artifact"
+    description = artifact.description or (artifact.content or "Shared artifact from Basebase.")
+    html = build_preview_html(
+        page_title=title,
+        description=description[:240],
+        canonical_url=canonical_url,
+        image_url=image_url,
+        redirect_url=canonical_url,
+    )
+    return HTMLResponse(content=html, headers={"Cache-Control": "public, max-age=300"})
+
+
+@router.get("/share/artifacts/{artifact_id}/snapshot.png")
+async def get_public_artifact_share_snapshot(artifact_id: str) -> Response:
+    """Snapshot image used by link preview scrapers for shared artifact links."""
+    try:
+        artifact_uuid = UUID(artifact_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid artifact ID")
+
+    async with get_admin_session() as session:
+        result = await session.execute(
+            select(Artifact).where(Artifact.id == artifact_uuid, Artifact.visibility == "public")
+        )
+        artifact: Artifact | None = result.scalar_one_or_none()
+    if artifact is None:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+
+    summary = (artifact.description or artifact.content or "Shared artifact from Basebase.").replace("\n", " ")
+    image_bytes = render_card_png(
+        heading="Basebase Artifact",
+        title=artifact.title or "Untitled Artifact",
+        description=summary,
+        footer=f"Type: {artifact.content_type or artifact.type or 'document'}",
+    )
+    logger.info("[public_preview] serving generated artifact snapshot artifact_id=%s", artifact_id)
+    return Response(content=image_bytes, media_type="image/png", headers={"Cache-Control": "public, max-age=300"})
