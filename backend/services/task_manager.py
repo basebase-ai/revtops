@@ -13,17 +13,19 @@ import json
 import logging
 from datetime import datetime, timedelta
 from contextlib import asynccontextmanager
-from typing import Any, Callable, Coroutine
+from typing import TYPE_CHECKING, Any, Callable, Coroutine
 from uuid import UUID, uuid4
 
 from fastapi import WebSocket
 from sqlalchemy import and_, or_, select, update
 
-from agents.orchestrator import ChatOrchestrator
 from models.agent_task import AgentTask
 from models.chat_message import ChatMessage
 from models.conversation import Conversation
 from models.database import get_admin_session, get_session
+
+if TYPE_CHECKING:
+    from agents.orchestrator import ChatOrchestrator
 
 logger = logging.getLogger(__name__)
 
@@ -248,6 +250,9 @@ class TaskManager:
         failure_reason: str | None = None
         try:
             async with self._conversation_execution_lock(conversation_id):
+                # Late import to avoid module import cycles during app startup.
+                from agents.orchestrator import ChatOrchestrator
+
                 orchestrator = ChatOrchestrator(
                     user_id=user_id,
                     organization_id=organization_id,
