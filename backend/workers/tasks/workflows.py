@@ -27,6 +27,7 @@ from uuid import UUID
 from workers.celery_app import celery_app
 from services.automated_agent_footer import ensure_automated_agent_footer
 from services.anthropic_health import report_anthropic_call_failure, report_anthropic_call_success
+from services.workflow_pause import get_workflow_execution_pause_until
 
 logger = logging.getLogger(__name__)
 
@@ -621,6 +622,18 @@ async def _check_scheduled_workflows() -> dict[str, Any]:
     from croniter import croniter
     
     now = datetime.utcnow()
+    pause_until = await get_workflow_execution_pause_until()
+    if pause_until is not None:
+        logger.warning(
+            "[Workflow Scheduler] Skipping scheduled workflow checks due to admin pause until %s",
+            pause_until.isoformat(),
+        )
+        return {
+            "checked_at": now.isoformat(),
+            "workflows_triggered": [],
+            "paused_until": pause_until.isoformat(),
+        }
+
     triggered: list[str] = []
     
     # Admin session: iterates across ALL organizations' workflows
@@ -682,6 +695,18 @@ async def _process_pending_events() -> dict[str, Any]:
     from models.workflow import Workflow
     from workers.events import get_pending_events
     
+    pause_until = await get_workflow_execution_pause_until()
+    if pause_until is not None:
+        logger.warning(
+            "[Workflow Events] Skipping pending event processing due to admin pause until %s",
+            pause_until.isoformat(),
+        )
+        return {
+            "events_processed": 0,
+            "workflows_triggered": [],
+            "paused_until": pause_until.isoformat(),
+        }
+
     events = await get_pending_events(limit=100)
     if not events:
         return {"events_processed": 0, "workflows_triggered": []}
@@ -755,7 +780,20 @@ async def _execute_workflow(
     from models.workflow import Workflow, WorkflowRun
     
     started_at = datetime.utcnow()
-    
+    pause_until = await get_workflow_execution_pause_until()
+    if pause_until is not None:
+        logger.warning(
+            "[Workflow] Aborting execution due to admin pause workflow_id=%s organization_id=%s pause_until=%s",
+            workflow_id,
+            organization_id,
+            pause_until.isoformat(),
+        )
+        return {
+            "status": "skipped",
+            "reason": "workflow_execution_paused",
+            "paused_until": pause_until.isoformat(),
+        }
+
     async with get_session(organization_id=organization_id) as session:
         # Load workflow
         result = await session.execute(

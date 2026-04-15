@@ -18,6 +18,7 @@ from models.database import get_session
 from models.workflow import Workflow, WorkflowRun
 from api.auth_middleware import AuthContext, require_organization
 from services.llm_provider import is_model_allowed
+from services.workflow_pause import get_workflow_execution_pause_until
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -679,6 +680,19 @@ async def trigger_workflow(
 
     # Queue execution via Celery
     from workers.tasks.workflows import execute_workflow
+    pause_until = await get_workflow_execution_pause_until()
+    if pause_until is not None:
+        logger.warning(
+            "[Workflows API] Manual trigger blocked by workflow execution pause workflow_id=%s organization_id=%s pause_until=%s",
+            workflow_id,
+            organization_id,
+            pause_until.isoformat(),
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=f"Workflow execution temporarily paused until {pause_until.isoformat()}",
+        )
+
     logger.info(
         "[Workflows API] Queueing manual workflow run",
         extra={
