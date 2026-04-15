@@ -153,6 +153,19 @@ def _frontend_origin() -> str:
     return settings.FRONTEND_URL.rstrip("/")
 
 
+def _public_origin(request: Request) -> str:
+    """Best-effort absolute origin for public preview assets behind proxies."""
+    configured = (settings.BACKEND_PUBLIC_URL or "").strip().rstrip("/")
+    if configured:
+        return configured
+
+    forwarded_proto = (request.headers.get("x-forwarded-proto") or "").split(",")[0].strip()
+    forwarded_host = (request.headers.get("x-forwarded-host") or "").split(",")[0].strip()
+    scheme = forwarded_proto or request.url.scheme or "https"
+    host = forwarded_host or request.headers.get("host") or request.url.netloc
+    return f"{scheme}://{host}".rstrip("/")
+
+
 def _owner_label(user: User | None) -> str:
     """Return a compact owner label suitable for public descriptions."""
     if user is None:
@@ -225,7 +238,7 @@ async def get_public_app_share_preview(app_id: str, request: Request) -> HTMLRes
     logger.info("[public_preview] rendering app preview app_id=%s", app_id)
     canonical_url = f"{_frontend_origin()}/basebase/apps/{app_id}"
     redirect_url = f"{_frontend_origin()}/public/apps/{app_id}"
-    image_url = f"{request.base_url}api/public/share/apps/{app_id}/snapshot.png"
+    image_url = f"{_public_origin(request)}/api/public/share/apps/{app_id}/snapshot.png"
     title = _public_preview_title(app=app)
     description = _public_preview_description(conversation=conversation, app=app, owner=owner)
     logger.info(
@@ -306,7 +319,7 @@ async def get_public_artifact_share_preview(artifact_id: str, request: Request) 
     logger.info("[public_preview] rendering artifact preview artifact_id=%s", artifact_id)
     canonical_url = f"{_frontend_origin()}/basebase/documents/{artifact_id}"
     redirect_url = f"{_frontend_origin()}/public/artifacts/{artifact_id}"
-    image_url = f"{request.base_url}api/public/share/artifacts/{artifact_id}/snapshot.png"
+    image_url = f"{_public_origin(request)}/api/public/share/artifacts/{artifact_id}/snapshot.png"
     title = _public_preview_title(artifact=artifact)
     description = _public_preview_description(conversation=conversation, artifact=artifact, owner=owner)
     logger.info(

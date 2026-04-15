@@ -75,6 +75,8 @@ def build_preview_html(
     <meta property="og:description" content="{safe_desc}" />
     <meta property="og:url" content="{safe_canonical}" />
     <meta property="og:image" content="{safe_image}" />
+    <meta property="og:image:secure_url" content="{safe_image}" />
+    <meta property="og:image:alt" content="{safe_title}" />
     <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:title" content="{safe_title}" />
     <meta name="twitter:description" content="{safe_desc}" />

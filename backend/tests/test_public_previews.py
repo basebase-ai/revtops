@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 from types import SimpleNamespace
 
-from api.routes.public import _public_preview_description, _public_preview_title
+from api.routes.public import _public_origin, _public_preview_description, _public_preview_title
 from services.public_previews import build_preview_html, decode_data_url_image, render_card_png
 
 
@@ -26,6 +26,7 @@ def test_build_preview_html_includes_og_and_twitter_tags() -> None:
     )
     assert 'property="og:title" content="Example"' in html
     assert 'name="twitter:image" content="https://example.com/api/public/share/apps/abc/snapshot.png"' in html
+    assert 'property="og:image:secure_url" content="https://example.com/api/public/share/apps/abc/snapshot.png"' in html
     assert 'http-equiv="refresh"' in html
 
 
@@ -65,3 +66,11 @@ def test_public_preview_title_uses_app_title_when_present() -> None:
 def test_public_preview_title_falls_back_when_artifact_title_missing() -> None:
     title = _public_preview_title(artifact=SimpleNamespace(title=None))
     assert title == "Shared Document · Basebase"
+
+
+def test_public_origin_prefers_forwarded_proxy_headers() -> None:
+    request = SimpleNamespace(
+        headers={"x-forwarded-proto": "https", "x-forwarded-host": "app.basebase.com"},
+        url=SimpleNamespace(scheme="http", netloc="internal:8000"),
+    )
+    assert _public_origin(request) == "https://app.basebase.com"
