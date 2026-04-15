@@ -75,12 +75,13 @@ async def _record_workflow_query_outcome(
         return
 
     status = (result.get("status") or "").strip().lower()
-    if status not in {"completed", "failed", "error"}:
+    is_fast_fail = _is_workflow_fast_fail_result(result=result)
+    if status not in {"completed", "failed", "error"} and not is_fast_fail:
         return
 
     from services.query_outcome_metrics import normalize_failure_reason, record_query_outcome
 
-    was_success = status == "completed"
+    was_success = status == "completed" and not is_fast_fail
     failure_reason = (
         str(result.get("error") or result.get("reason") or "workflow_failed")
         if not was_success
@@ -107,6 +108,36 @@ async def _record_workflow_query_outcome(
             conversation_id,
             failure_reason,
         )
+
+
+def _is_workflow_fast_fail_result(*, result: dict[str, Any]) -> bool:
+    """Detect workflow turn fast-fail results that should count as failures."""
+    status = str(result.get("status") or "").strip().lower()
+    if status not in {"skipped", "rejected", "fast_failed", "fast-failed"}:
+        return False
+
+    reason_text = " ".join(
+        str(value).strip().lower()
+        for value in (
+            result.get("reason"),
+            result.get("error"),
+            result.get("message"),
+            result.get("detail"),
+        )
+        if value
+    )
+    if not reason_text:
+        return False
+
+    fast_fail_markers = (
+        "insufficient privilege",
+        "insufficient privileges",
+        "permission denied",
+        "not authorized",
+        "row-level security",
+        "rls",
+    )
+    return any(marker in reason_text for marker in fast_fail_markers)
 
 
 def _extract_allowed_slack_channels(workflow: Any) -> list[str]:
