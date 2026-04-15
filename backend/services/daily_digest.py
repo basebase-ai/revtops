@@ -11,7 +11,7 @@ from typing import Any
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, or_, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from config import settings
@@ -680,6 +680,16 @@ async def generate_org_digests_for_session(
     errors: list[str] = []
     for m in members:
         try:
+            await session.execute(
+                text("SELECT set_config('app.current_user_id', :uid, false)"),
+                {"uid": str(m.user_id)},
+            )
+            logger.debug(
+                "daily_digest set app.current_user_id for member generation org=%s user_id=%s date=%s",
+                organization_id,
+                m.user_id,
+                digest_date,
+            )
             await generate_member_digest(session, organization_id, m.user_id, digest_date)
             generated += 1
         except Exception as exc:
@@ -688,6 +698,9 @@ async def generate_org_digests_for_session(
             logger.exception("daily_digest member failed %s", err_msg)
 
     try:
+        await session.execute(
+            text("SELECT set_config('app.current_user_id', '', false)")
+        )
         await generate_team_summary(session, organization_id, digest_date)
     except Exception as exc:
         errors.append(f"team_summary: {exc}")
