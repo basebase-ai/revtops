@@ -184,6 +184,19 @@ def _public_preview_description(
     return f"Application — {owner_label}"
 
 
+def _public_preview_title(*, app: App | None = None, artifact: Artifact | None = None) -> str:
+    """Build a specific page title so social previews never look generic."""
+    if app and app.title:
+        return f"{app.title} · Basebase"
+    if artifact and artifact.title:
+        return f"{artifact.title} · Basebase"
+    if app:
+        return "Shared App · Basebase"
+    if artifact:
+        return "Shared Document · Basebase"
+    return "Basebase"
+
+
 @router.get("/share/apps/{app_id}", response_class=HTMLResponse)
 @share_router.get("/basebase/apps/{app_id}", response_class=HTMLResponse)
 async def get_public_app_share_preview(app_id: str, request: Request) -> HTMLResponse:
@@ -213,7 +226,7 @@ async def get_public_app_share_preview(app_id: str, request: Request) -> HTMLRes
     canonical_url = f"{_frontend_origin()}/basebase/apps/{app_id}"
     redirect_url = f"{_frontend_origin()}/public/apps/{app_id}"
     image_url = f"{request.base_url}api/public/share/apps/{app_id}/snapshot.png"
-    title = "base base"
+    title = _public_preview_title(app=app)
     description = _public_preview_description(conversation=conversation, app=app, owner=owner)
     logger.info(
         "[public_preview] app metadata app_id=%s title=%s description=%s",
@@ -294,7 +307,7 @@ async def get_public_artifact_share_preview(artifact_id: str, request: Request) 
     canonical_url = f"{_frontend_origin()}/basebase/documents/{artifact_id}"
     redirect_url = f"{_frontend_origin()}/public/artifacts/{artifact_id}"
     image_url = f"{request.base_url}api/public/share/artifacts/{artifact_id}/snapshot.png"
-    title = "base base"
+    title = _public_preview_title(artifact=artifact)
     description = _public_preview_description(conversation=conversation, artifact=artifact, owner=owner)
     logger.info(
         "[public_preview] artifact metadata artifact_id=%s title=%s description=%s",

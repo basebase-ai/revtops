@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 from types import SimpleNamespace
 
-from api.routes.public import _public_preview_description
+from api.routes.public import _public_preview_description, _public_preview_title
 from services.public_previews import build_preview_html, decode_data_url_image, render_card_png
 
 
@@ -55,3 +55,13 @@ def test_public_preview_description_falls_back_to_document_and_owner_email() -> 
         owner=SimpleNamespace(name=None, email="owner@example.com"),
     )
     assert description == "Document — owner@example.com"
+
+
+def test_public_preview_title_uses_app_title_when_present() -> None:
+    title = _public_preview_title(app=SimpleNamespace(title="Revenue Tracker"))
+    assert title == "Revenue Tracker · Basebase"
+
+
+def test_public_preview_title_falls_back_when_artifact_title_missing() -> None:
+    title = _public_preview_title(artifact=SimpleNamespace(title=None))
+    assert title == "Shared Document · Basebase"
