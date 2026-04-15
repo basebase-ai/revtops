@@ -44,6 +44,12 @@ function formatDisplayDate(isoDate: string): string {
   return `${mm}/${dd}/${yy}`;
 }
 
+function formatDayMonth(isoDate: string): string {
+  const [, mm, dd] = isoDate.split("-");
+  if (!mm || !dd) return isoDate;
+  return `${dd}/${mm}`;
+}
+
 function getNarrative(summary: DigestSummaryJson | null): string {
   return summary?.narrative?.trim() ?? "";
 }
@@ -401,8 +407,8 @@ export function DailyDigestGrid({ digestDate, onDigestDateChange }: DailyDigestG
   return (
     <div className="flex flex-col gap-4">
       {/* Toolbar: date nav + search + layout toggle + actions */}
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-2">
+      <div className="flex flex-col md:flex-row md:flex-wrap md:items-center md:justify-between gap-3">
+        <div className="flex items-center justify-center md:justify-start gap-2 w-full md:w-auto">
           <button
             type="button"
             onClick={handlePrev}
@@ -424,7 +430,7 @@ export function DailyDigestGrid({ digestDate, onDigestDateChange }: DailyDigestG
           </button>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2 w-full md:w-auto overflow-x-auto pr-1">
           {/* Search */}
           <div className="relative">
             <svg className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-surface-500 pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -435,7 +441,7 @@ export function DailyDigestGrid({ digestDate, onDigestDateChange }: DailyDigestG
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="Search members…"
-              className="w-40 pl-7 pr-2 py-1 rounded-md border border-surface-600 bg-surface-800 text-surface-200 text-xs placeholder:text-surface-500 focus:outline-none focus:border-primary-500"
+              className="w-32 sm:w-40 pl-7 pr-2 py-1 rounded-md border border-surface-600 bg-surface-800 text-surface-200 text-xs placeholder:text-surface-500 focus:outline-none focus:border-primary-500"
             />
           </div>
 
@@ -466,14 +472,14 @@ export function DailyDigestGrid({ digestDate, onDigestDateChange }: DailyDigestG
             type="button"
             disabled={generating}
             onClick={() => void handleGenerate()}
-            className="text-xs text-surface-300 hover:text-surface-100 disabled:opacity-50"
+            className="inline-flex items-center justify-center min-w-[8.5rem] md:min-w-[9rem] h-8 px-3 rounded-md border border-surface-600 text-xs text-surface-300 hover:text-surface-100 hover:bg-surface-800 disabled:opacity-50"
           >
-            {generating ? "Generating…" : "Generate for this day"}
+            {generating ? "Generating…" : `Generate for ${formatDayMonth(digestDate)}`}
           </button>
           <button
             type="button"
             onClick={() => void load()}
-            className="text-xs text-primary-400 hover:text-primary-300"
+            className="inline-flex items-center justify-center min-w-[8.5rem] md:min-w-[9rem] h-8 px-3 rounded-md border border-primary-500/40 text-xs text-primary-400 hover:text-primary-300 hover:bg-primary-500/10"
           >
             Refresh
           </button>
