@@ -600,8 +600,13 @@ class WorkspaceMessenger(BaseMessenger):
                     changed = True
 
                 if revtops_user_id and conversation.user_id != UUID(revtops_user_id):
-                    conversation.user_id = UUID(revtops_user_id)
-                    changed = True
+                    logger.info(
+                        "[%s] Preserving original conversation owner for %s: existing_user_id=%s incoming_user_id=%s",
+                        source,
+                        conversation.id,
+                        conversation.user_id,
+                        revtops_user_id,
+                    )
 
                 if conversation.scope != target_scope:
                     conversation.scope = target_scope
