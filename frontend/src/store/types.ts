@@ -275,6 +275,7 @@ export interface ConversationState {
   messages: ChatMessage[];
   title: string;
   isThinking: boolean;
+  activeModelName: string | null;
   streamingMessageId: string | null;
   activeTaskId: string | null;
   lastChunkIndex: number;

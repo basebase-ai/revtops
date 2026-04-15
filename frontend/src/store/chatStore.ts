@@ -66,6 +66,7 @@ const defaultConversationState: ConversationState = {
   messages: [],
   title: "New Chat",
   isThinking: false,
+  activeModelName: null,
   streamingMessageId: null,
   activeTaskId: null,
   lastChunkIndex: -1,
@@ -169,6 +170,10 @@ export interface ChatState {
   setConversationThinking: (
     conversationId: string,
     thinking: boolean,
+  ) => void;
+  setConversationActiveModel: (
+    conversationId: string,
+    modelName: string | null,
   ) => void;
   setConversationActiveTask: (
     conversationId: string,
@@ -1057,6 +1062,19 @@ export const useChatStore = create<ChatState>()(
       });
     },
 
+    setConversationActiveModel: (conversationId, modelName) => {
+      const { conversations } = get();
+      const current = conversations[conversationId] ?? {
+        ...defaultConversationState,
+      };
+      set({
+        conversations: {
+          ...conversations,
+          [conversationId]: { ...current, activeModelName: modelName },
+        },
+      });
+    },
+
     setConversationActiveTask: (conversationId, taskId) => {
       const { conversations, activeTasksByConversation } = get();
       const current = conversations[conversationId] ?? {
@@ -1076,7 +1094,7 @@ export const useChatStore = create<ChatState>()(
           [conversationId]: {
             ...current,
             activeTaskId: taskId,
-            ...(taskId ? { lastChunkIndex: -1, pendingChunks: [] } : {}),
+            ...(taskId ? { lastChunkIndex: -1, pendingChunks: [] } : { activeModelName: null }),
           },
         },
         activeTasksByConversation: updatedActiveTasks,

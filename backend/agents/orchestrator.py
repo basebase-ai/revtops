@@ -1083,6 +1083,12 @@ class ChatOrchestrator:
             is_workflow_run,
             workflow_model_override,
         )
+        yield _json_dumps({
+            "type": "model_selected",
+            "model": selected_model,
+            "provider": self._llm_config.provider,
+            "is_workflow": is_workflow_run,
+        })
 
         # Keep track of content blocks for saving (preserves interleaving order)
         content_blocks: list[dict[str, Any]] = []

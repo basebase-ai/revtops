@@ -381,7 +381,11 @@ export function Chat({
   const conversationThinking = conversationState?.isThinking ?? false;
   
   const orgInfo = useOrganization();
-  const activeModelName: string | null = orgInfo?.llmPrimaryModel ?? null;
+  const configuredPrimaryModel: string | null = orgInfo?.llmPrimaryModel ?? null;
+  const activeModelName: string | null = conversationState?.activeModelName ?? configuredPrimaryModel;
+  const activeModelLabel: string | null = conversationState?.activeModelName
+    ? `Running: ${conversationState.activeModelName}`
+    : (configuredPrimaryModel ? `Default: ${configuredPrimaryModel}` : null);
 
   // Get actions from Zustand (stable references)
   const addConversationMessage = useAppStore((s) => s.addConversationMessage);
@@ -2679,9 +2683,9 @@ export function Chat({
               </button>
             );
 
-            const modelLabel: JSX.Element | null = activeModelName ? (
-              <span className="text-[11px] text-surface-500 truncate max-w-[160px]" title={activeModelName}>
-                {activeModelName}
+            const modelLabel: JSX.Element | null = activeModelLabel ? (
+              <span className="text-[11px] text-surface-500 truncate max-w-[200px]" title={activeModelName ?? undefined}>
+                {activeModelLabel}
               </span>
             ) : null;
 

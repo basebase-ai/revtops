@@ -328,6 +328,7 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
   const markConversationMessageComplete = useAppStore((state) => state.markConversationMessageComplete);
   const advanceConversationChunkIndex = useAppStore((state) => state.advanceConversationChunkIndex);
   const setConversationThinking = useAppStore((state) => state.setConversationThinking);
+  const setConversationActiveModel = useAppStore((state) => state.setConversationActiveModel);
   const updateConversationToolMessage = useAppStore((state) => state.updateConversationToolMessage);
   const addConversationArtifactBlock = useAppStore((state) => state.addConversationArtifactBlock);
   const addConversationAppBlock = useAppStore((state) => state.addConversationAppBlock);
@@ -770,7 +771,12 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
           } else if (typeof chunkData === 'object' && chunkData !== null) {
             const data = chunkData as Record<string, unknown>;
 
-            if (data.type === 'thinking_start') {
+            if (data.type === 'model_selected') {
+              const selectedModel = typeof data.model === 'string' && data.model.trim().length > 0
+                ? data.model.trim()
+                : null;
+              setConversationActiveModel(conversation_id, selectedModel);
+            } else if (data.type === 'thinking_start') {
               const state = useAppStore.getState();
               const convState = state.conversations[conversation_id];
               const thinkingBlock = { type: 'thinking' as const, text: '', isStreaming: true };
@@ -1287,7 +1293,12 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
                 }
               } else if (typeof chunkData === 'object' && chunkData !== null) {
                 const data = chunkData as Record<string, unknown>;
-                if (data.type === 'thinking_start') {
+                if (data.type === 'model_selected') {
+                  const selectedModel = typeof data.model === 'string' && data.model.trim().length > 0
+                    ? data.model.trim()
+                    : null;
+                  setConversationActiveModel(conversationId, selectedModel);
+                } else if (data.type === 'thinking_start') {
                   const state = useAppStore.getState();
                   const convState = state.conversations[conversationId];
                   const thinkingBlock = { type: 'thinking' as const, text: '', isStreaming: true };
@@ -1636,7 +1647,7 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
     }
   }, [
     shouldBroadcastWebSocket,
-    setActiveTasks, setConversationActiveTask, setConversationThinking,
+    setActiveTasks, setConversationActiveTask, setConversationThinking, setConversationActiveModel,
     addConversation, addConversationMessage, appendToConversationStreaming,
     startConversationStreaming, markConversationMessageComplete, updateConversationToolMessage,
     addConversationArtifactBlock, addConversationAppBlock, setCurrentChatId,
