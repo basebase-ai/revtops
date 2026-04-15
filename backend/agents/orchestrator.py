@@ -1111,10 +1111,17 @@ class ChatOrchestrator:
             user_block += f"- User ID: {self.user_id}\n"
             if self.organization_name:
                 user_block += f"- Organization (team): {self.organization_name}\n"
+            user_block += f"- Model for this turn: {selected_model}\n"
+            user_block += f"- Model provider: {self._llm_config.provider}\n"
             user_block += "\nWhen the user asks about 'my' data, use this email to filter queries. **Team** and **organization** refer to the same entity — use 'team' when speaking to users (matches the UI); use 'organization' when referring to the database schema."
             system_prompt_parts.append(user_block)
         elif not self.user_id:
-            system_prompt_parts.append("\n\n## Current User\nThe specific user is not identified in Basebase.")
+            system_prompt_parts.append(
+                "\n\n## Current User\n"
+                "The specific user is not identified in Basebase.\n"
+                f"- Model for this turn: {selected_model}\n"
+                f"- Model provider: {self._llm_config.provider}\n"
+            )
 
         server_utc_now: str = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         time_block: str = "\n\n## Current Time Context\n"
