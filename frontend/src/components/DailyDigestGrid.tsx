@@ -472,14 +472,14 @@ export function DailyDigestGrid({ digestDate, onDigestDateChange }: DailyDigestG
             type="button"
             disabled={generating}
             onClick={() => void handleGenerate()}
-            className="inline-flex items-center justify-center min-w-[8.5rem] md:min-w-[9rem] h-8 px-3 rounded-md border border-surface-600 text-xs text-surface-300 hover:text-surface-100 hover:bg-surface-800 disabled:opacity-50"
+            className="inline-flex items-center justify-center w-[4.25rem] md:w-auto md:min-w-[9rem] h-8 px-2 md:px-3 rounded-md border border-surface-600 text-xs text-surface-300 hover:text-surface-100 hover:bg-surface-800 disabled:opacity-50"
           >
             {generating ? "Generating…" : `Generate for ${formatDayMonth(digestDate)}`}
           </button>
           <button
             type="button"
             onClick={() => void load()}
-            className="inline-flex items-center justify-center min-w-[8.5rem] md:min-w-[9rem] h-8 px-3 rounded-md border border-primary-500/40 text-xs text-primary-400 hover:text-primary-300 hover:bg-primary-500/10"
+            className="inline-flex items-center justify-center w-[4.25rem] md:w-auto md:min-w-[9rem] h-8 px-2 md:px-3 rounded-md border border-primary-500/40 text-xs text-primary-400 hover:text-primary-300 hover:bg-primary-500/10"
           >
             Refresh
           </button>
