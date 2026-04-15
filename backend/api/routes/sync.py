@@ -19,7 +19,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from connectors.github import GitHubConnector
 from connectors.hubspot import HubSpotConnector
@@ -681,11 +681,14 @@ async def kill_all_admin_jobs(
 ) -> AdminKillAllJobsResponse:
     """Terminate all active worker tasks, purge queued work, and pause workflows briefly."""
     from workers.celery_app import celery_app
+    from services.task_manager import task_manager
     from services.workflow_pause import pause_workflow_execution_for_seconds
 
     revoked_ids: set[str] = set()
     queue_purged_count = 0
     pause_seconds = 60
+    cancelled_chat_count = 0
+    cancelled_workflow_count = 0
 
     try:
         inspector = celery_app.control.inspect(timeout=2.0)
@@ -743,17 +746,68 @@ async def kill_all_admin_jobs(
         logger.exception("Admin %s failed to purge celery queues during kill-all: %s", auth.user_id, exc)
         raise HTTPException(status_code=503, detail="Failed to purge queued tasks") from exc
 
+    # Cancel in-process chat jobs first, then mark any remaining DB rows as cancelled
+    # so the admin jobs pane does not continue to show stale "running" work.
+    async with get_admin_session() as session:
+        running_chat_ids_result = await session.execute(
+            select(AgentTask.id).where(AgentTask.status == "running")
+        )
+        running_chat_ids = [str(row[0]) for row in running_chat_ids_result.all()]
+    for task_id in running_chat_ids:
+        try:
+            if await task_manager.cancel_task(task_id):
+                cancelled_chat_count += 1
+        except Exception:
+            logger.exception("Admin %s failed to cancel chat task %s during kill-all", auth.user_id, task_id)
+
+    async with get_admin_session() as session:
+        now = datetime.utcnow()
+        chat_update_result = await session.execute(
+            update(AgentTask)
+            .where(AgentTask.status == "running")
+            .values(
+                status="cancelled",
+                completed_at=now,
+                last_activity_at=now,
+                error_message="Cancelled by admin kill-all",
+            )
+            .execution_options(synchronize_session=False)
+        )
+        cancelled_chat_count = int(chat_update_result.rowcount or 0)
+        await session.commit()
+
+    # Mark DB-backed workflow runs as cancelled when they are still pending/running.
+    async with get_admin_session() as session:
+        now = datetime.utcnow()
+        workflow_update_result = await session.execute(
+            update(WorkflowRun)
+            .where(WorkflowRun.status.in_(["pending", "running"]))
+            .values(
+                status="cancelled",
+                completed_at=now,
+                error_message="Cancelled by admin kill-all",
+            )
+            .execution_options(synchronize_session=False)
+        )
+        cancelled_workflow_count = int(workflow_update_result.rowcount or 0)
+        await session.commit()
+
     workflow_pause_until = await pause_workflow_execution_for_seconds(seconds=pause_seconds)
     logger.warning(
-        "Admin %s executed kill-all jobs operation revoked=%d purged=%d workflow_pause_until=%s",
+        "Admin %s executed kill-all jobs operation revoked=%d purged=%d cancelled_chats=%d cancelled_workflows=%d workflow_pause_until=%s",
         auth.user_id,
         len(revoked_ids),
         queue_purged_count,
+        cancelled_chat_count,
+        cancelled_workflow_count,
         workflow_pause_until.isoformat(),
     )
     return AdminKillAllJobsResponse(
         status="ok",
-        message="All active work was terminated, queued tasks purged, and workflow execution paused for 60 seconds",
+        message=(
+            "All active work was terminated, queued tasks purged, "
+            "in-flight chat/workflow records cancelled, and workflow execution paused for 60 seconds"
+        ),
         revoked_task_count=len(revoked_ids),
         queue_purged_count=queue_purged_count,
         workflow_pause_until=workflow_pause_until.isoformat(),
