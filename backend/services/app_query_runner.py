@@ -42,6 +42,14 @@ def validate_sql_is_select(sql: str) -> None:
 
 def json_serial(obj: Any) -> Any:
     """JSON serializer for types not handled by default."""
+    if isinstance(obj, dict):
+        return {str(k): json_serial(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [json_serial(item) for item in obj]
+    if isinstance(obj, set):
+        return [json_serial(item) for item in sorted(obj, key=str)]
+    if isinstance(obj, (str, int, float, bool, type(None))):
+        return obj
     if isinstance(obj, datetime):
         if obj.tzinfo is not None:
             return obj.isoformat()
