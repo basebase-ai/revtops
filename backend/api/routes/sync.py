@@ -178,6 +178,16 @@ class AdminCancelJobResponse(BaseModel):
     message: str
 
 
+class AdminKillAllJobsResponse(BaseModel):
+    """Response model for emergency kill-all jobs operation."""
+
+    status: str
+    message: str
+    revoked_task_count: int
+    queue_purged_count: int
+    workflow_pause_until: str
+
+
 def _ensure_org_path_matches_auth(organization_id: str, auth: AuthContext) -> None:
     """Require active org context and that path org matches JWT org (unless global admin)."""
     if auth.is_global_admin:
@@ -662,6 +672,91 @@ async def cancel_admin_running_job(
         job_id=job_id,
         job_type=request.job_type,
         message="Celery task revoke requested",
+    )
+
+
+@router.post("/admin/jobs/kill-all", response_model=AdminKillAllJobsResponse)
+async def kill_all_admin_jobs(
+    auth: AuthContext = Depends(require_global_admin),
+) -> AdminKillAllJobsResponse:
+    """Terminate all active worker tasks, purge queued work, and pause workflows briefly."""
+    from workers.celery_app import celery_app
+    from services.workflow_pause import pause_workflow_execution_for_seconds
+
+    revoked_ids: set[str] = set()
+    queue_purged_count = 0
+    pause_seconds = 60
+
+    try:
+        inspector = celery_app.control.inspect(timeout=2.0)
+        active_by_worker = inspector.active() or {}
+        reserved_by_worker = inspector.reserved() or {}
+        scheduled_by_worker = inspector.scheduled() or {}
+    except Exception as exc:
+        logger.exception("Admin %s failed to inspect celery jobs for kill-all: %s", auth.user_id, exc)
+        raise HTTPException(status_code=503, detail="Failed to inspect worker queues") from exc
+
+    def _revoke_task(task_id: str) -> None:
+        normalized_task_id = str(task_id).strip()
+        if not normalized_task_id or normalized_task_id in revoked_ids:
+            return
+        celery_app.control.revoke(normalized_task_id, terminate=True, signal="SIGKILL")
+        revoked_ids.add(normalized_task_id)
+
+    for worker_name, tasks in active_by_worker.items():
+        for task in tasks:
+            task_id = str(task.get("id") or "")
+            _revoke_task(task_id)
+        logger.warning(
+            "Admin %s kill-all revoked %d active task(s) on worker=%s",
+            auth.user_id,
+            len(tasks),
+            worker_name,
+        )
+
+    for worker_name, tasks in reserved_by_worker.items():
+        for task in tasks:
+            task_id = str(task.get("id") or "")
+            _revoke_task(task_id)
+        logger.warning(
+            "Admin %s kill-all revoked %d reserved task(s) on worker=%s",
+            auth.user_id,
+            len(tasks),
+            worker_name,
+        )
+
+    for worker_name, tasks in scheduled_by_worker.items():
+        for task in tasks:
+            request = task.get("request") if isinstance(task, dict) else None
+            task_id = str((request or {}).get("id") or task.get("id") or "") if isinstance(task, dict) else ""
+            _revoke_task(task_id)
+        logger.warning(
+            "Admin %s kill-all revoked %d scheduled task(s) on worker=%s",
+            auth.user_id,
+            len(tasks),
+            worker_name,
+        )
+
+    try:
+        queue_purged_count = int(celery_app.control.purge() or 0)
+    except Exception as exc:
+        logger.exception("Admin %s failed to purge celery queues during kill-all: %s", auth.user_id, exc)
+        raise HTTPException(status_code=503, detail="Failed to purge queued tasks") from exc
+
+    workflow_pause_until = await pause_workflow_execution_for_seconds(seconds=pause_seconds)
+    logger.warning(
+        "Admin %s executed kill-all jobs operation revoked=%d purged=%d workflow_pause_until=%s",
+        auth.user_id,
+        len(revoked_ids),
+        queue_purged_count,
+        workflow_pause_until.isoformat(),
+    )
+    return AdminKillAllJobsResponse(
+        status="ok",
+        message="All active work was terminated, queued tasks purged, and workflow execution paused for 60 seconds",
+        revoked_task_count=len(revoked_ids),
+        queue_purged_count=queue_purged_count,
+        workflow_pause_until=workflow_pause_until.isoformat(),
     )
 
 

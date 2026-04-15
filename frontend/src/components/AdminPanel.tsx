@@ -520,6 +520,7 @@ export function AdminPanel(): JSX.Element {
   const [jobsLoading, setJobsLoading] = useState<boolean>(true);
   const [jobsError, setJobsError] = useState<string | null>(null);
   const [cancellingJobId, setCancellingJobId] = useState<string | null>(null);
+  const [killingAllJobs, setKillingAllJobs] = useState<boolean>(false);
 
   // Dashboard tab state
   const [creditUsage, setCreditUsage] = useState<CreditUsageResponse | null>(null);
@@ -761,6 +762,44 @@ export function AdminPanel(): JSX.Element {
       alert('Failed to cancel job: ' + (err instanceof Error ? err.message : 'Unknown error'));
     } finally {
       setCancellingJobId(null);
+    }
+  };
+
+  const handleKillAllJobs = async (): Promise<void> => {
+    if (!user || killingAllJobs) return;
+
+    const shouldProceed = window.confirm(
+      'Are you sure? This will disrupt all current work. It will terminate running jobs, clear queued work, and pause workflow execution for 1 minute.'
+    );
+    if (!shouldProceed) return;
+
+    setKillingAllJobs(true);
+    try {
+      const authHeaders = await getAuthenticatedRequestHeaders();
+      const response = await fetch(`${API_BASE}/sync/admin/jobs/kill-all`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
+      });
+
+      if (!response.ok) {
+        const data = await response.json() as { detail?: string };
+        throw new Error(data.detail ?? 'Failed to kill all jobs');
+      }
+
+      const result = await response.json() as {
+        revoked_task_count: number;
+        queue_purged_count: number;
+        workflow_pause_until: string;
+      };
+      alert(
+        `Kill-all completed. Revoked ${result.revoked_task_count} active/reserved tasks, purged ${result.queue_purged_count} queued tasks, workflows paused until ${new Date(result.workflow_pause_until).toLocaleTimeString()}.`
+      );
+      await fetchRunningJobs();
+    } catch (err) {
+      console.error('Failed to kill all jobs:', err);
+      alert('Failed to kill all jobs: ' + (err instanceof Error ? err.message : 'Unknown error'));
+    } finally {
+      setKillingAllJobs(false);
     }
   };
 
@@ -2569,12 +2608,21 @@ export function AdminPanel(): JSX.Element {
           <div className="space-y-4">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <p className="text-sm text-surface-400">Manage currently running chat, workflow, and connector sync jobs.</p>
-              <button
-                onClick={() => void fetchRunningJobs()}
-                className="rounded-lg border border-surface-700 bg-surface-800 px-3 py-1.5 text-sm text-surface-200 hover:bg-surface-700 sm:self-auto self-start"
-              >
-                Refresh
-              </button>
+              <div className="flex items-center gap-2 sm:self-auto self-start">
+                <button
+                  onClick={() => void handleKillAllJobs()}
+                  disabled={killingAllJobs}
+                  className="rounded-lg border border-red-500/40 bg-red-500/15 px-3 py-1.5 text-sm text-red-200 hover:bg-red-500/25 disabled:opacity-50"
+                >
+                  {killingAllJobs ? 'Killing all jobs...' : 'Kill all jobs'}
+                </button>
+                <button
+                  onClick={() => void fetchRunningJobs()}
+                  className="rounded-lg border border-surface-700 bg-surface-800 px-3 py-1.5 text-sm text-surface-200 hover:bg-surface-700"
+                >
+                  Refresh
+                </button>
+              </div>
             </div>
 
             {jobsError && (
