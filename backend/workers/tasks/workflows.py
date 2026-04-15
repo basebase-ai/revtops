@@ -753,6 +753,50 @@ async def _process_pending_events() -> dict[str, Any]:
     }
 
 
+async def _resolve_workflow_organization_id(
+    *,
+    workflow_id: str,
+    organization_id: str | None,
+) -> str | None:
+    """Return an organization ID for workflow execution, deriving it when omitted."""
+    if organization_id:
+        return organization_id
+
+    from sqlalchemy import select
+    from models.database import get_admin_session
+    from models.workflow import Workflow
+
+    try:
+        workflow_uuid = UUID(workflow_id)
+    except ValueError:
+        logger.warning(
+            "[Workflow] Unable to resolve organization for invalid workflow_id=%s",
+            workflow_id,
+        )
+        return None
+
+    async with get_admin_session() as session:
+        result = await session.execute(
+            select(Workflow.organization_id).where(Workflow.id == workflow_uuid)
+        )
+        resolved_org_id = result.scalar_one_or_none()
+
+    if resolved_org_id is None:
+        logger.warning(
+            "[Workflow] Unable to resolve organization_id because workflow was not found workflow_id=%s",
+            workflow_id,
+        )
+        return None
+
+    resolved_org_str = str(resolved_org_id)
+    logger.info(
+        "[Workflow] Resolved missing organization_id from workflow row workflow_id=%s organization_id=%s",
+        workflow_id,
+        resolved_org_str,
+    )
+    return resolved_org_str
+
+
 async def _execute_workflow(
     workflow_id: str,
     triggered_by: str,
@@ -794,7 +838,24 @@ async def _execute_workflow(
             "paused_until": pause_until.isoformat(),
         }
 
-    async with get_session(organization_id=organization_id) as session:
+    resolved_organization_id = await _resolve_workflow_organization_id(
+        workflow_id=workflow_id,
+        organization_id=organization_id,
+    )
+
+    if not resolved_organization_id:
+        result_payload = {
+            "status": "failed",
+            "workflow_id": workflow_id,
+            "error": "Unable to resolve organization_id for workflow execution",
+        }
+        await _record_workflow_query_outcome(
+            result=result_payload,
+            workflow_id=workflow_id,
+        )
+        return result_payload
+
+    async with get_session(organization_id=resolved_organization_id) as session:
         # Load workflow
         result = await session.execute(
             select(Workflow).where(Workflow.id == UUID(workflow_id))
