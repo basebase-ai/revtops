@@ -1620,6 +1620,10 @@ class ChatOrchestrator:
                 t_name: str, t_input: dict[str, Any], t_id: str, t_ctx: dict[str, Any],
             ) -> dict[str, Any]:
                 """Execute one tool with timeout; returns result dict (never raises)."""
+                if t_name == "query_on_connector":
+                    tool_info: dict[str, Any] = dict(t_input.get("info") or {})
+                    tool_info.setdefault("orchestrator_model", model_name)
+                    t_input = {**t_input, "info": tool_info}
                 logger.info(
                     "[Orchestrator] Tool call: %s | input=%s | org_id=%s | user_id=%s",
                     t_name, t_input, self.organization_id, self.user_id,
