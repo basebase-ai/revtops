@@ -828,6 +828,57 @@ async def _resolve_workflow_organization_id(
     return resolved_org_str
 
 
+async def _resolve_workflow_execution_user_id(
+    *,
+    workflow_id: str,
+    triggered_by_user_id: str | None,
+) -> str | None:
+    """Return a user ID to seed RLS context for workflow execution writes."""
+    if triggered_by_user_id:
+        try:
+            return str(UUID(triggered_by_user_id))
+        except ValueError:
+            logger.warning(
+                "[Workflow] Invalid triggered_by_user_id for RLS context workflow_id=%s user_id=%s",
+                workflow_id,
+                triggered_by_user_id,
+            )
+
+    from sqlalchemy import select
+    from models.database import get_admin_session
+    from models.workflow import Workflow
+
+    try:
+        workflow_uuid = UUID(workflow_id)
+    except ValueError:
+        logger.warning(
+            "[Workflow] Unable to resolve execution user for invalid workflow_id=%s",
+            workflow_id,
+        )
+        return None
+
+    async with get_admin_session() as session:
+        result = await session.execute(
+            select(Workflow.created_by_user_id).where(Workflow.id == workflow_uuid)
+        )
+        creator_user_id = result.scalar_one_or_none()
+
+    if creator_user_id is None:
+        logger.warning(
+            "[Workflow] No created_by_user_id found for workflow execution context workflow_id=%s",
+            workflow_id,
+        )
+        return None
+
+    execution_user_id = str(creator_user_id)
+    logger.info(
+        "[Workflow] Resolved execution user from workflow owner workflow_id=%s user_id=%s",
+        workflow_id,
+        execution_user_id,
+    )
+    return execution_user_id
+
+
 async def _execute_workflow(
     workflow_id: str,
     triggered_by: str,
@@ -886,7 +937,21 @@ async def _execute_workflow(
         )
         return result_payload
 
-    async with get_session(organization_id=resolved_organization_id) as session:
+    execution_user_id = await _resolve_workflow_execution_user_id(
+        workflow_id=workflow_id,
+        triggered_by_user_id=triggered_by_user_id,
+    )
+    logger.info(
+        "[Workflow] Opening RLS session for execution workflow_id=%s organization_id=%s user_id=%s",
+        workflow_id,
+        resolved_organization_id,
+        execution_user_id,
+    )
+
+    async with get_session(
+        organization_id=resolved_organization_id,
+        user_id=execution_user_id,
+    ) as session:
         # Load workflow
         result = await session.execute(
             select(Workflow).where(Workflow.id == UUID(workflow_id))
