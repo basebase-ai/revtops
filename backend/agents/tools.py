@@ -976,6 +976,7 @@ async def _query_on_connector(
     """Dispatch a query to a QUERY-capable connector."""
     connector: str = (params.get("connector") or "").strip()
     query: str = (params.get("query") or "").strip()
+    info: dict[str, Any] = dict(params.get("info") or {})
     if not connector:
         return {"error": "connector is required"}
     if not query:
@@ -987,7 +988,10 @@ async def _query_on_connector(
         provider=connector,
         operation="query",
     )
-    dp_result = await check_connector_call(dp_ctx, {"connector": connector, "query": query})
+    dp_result = await check_connector_call(
+        dp_ctx,
+        {"connector": connector, "query": query, "info": info} if info else {"connector": connector, "query": query},
+    )
     if not dp_result.allowed:
         return {"error": dp_result.deny_reason or "Connector query not allowed"}
 
@@ -999,7 +1003,15 @@ async def _query_on_connector(
     cross_user_warning = _build_cross_user_connector_warning(connector, instance, user_id)
 
     try:
+        if info:
+            logger.info(
+                "[Tools] query_on_connector(%s) info=%s",
+                connector,
+                info,
+            )
         result = await instance.query(query)
+        if info and isinstance(result, dict):
+            result.setdefault("info", info)
         return _attach_cross_user_connector_warning(result, cross_user_warning)
     except Exception as exc:
         logger.error("[Tools] query_on_connector(%s) failed: %s", connector, exc, exc_info=True)
