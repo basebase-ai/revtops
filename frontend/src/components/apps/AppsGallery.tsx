@@ -355,7 +355,7 @@ export function AppsGallery(): JSX.Element {
               Interactive dashboards and data views created by Basebase
             </p>
           </div>
-          <span className="text-sm text-surface-500">
+          <span className="hidden sm:inline text-sm text-surface-500">
             {apps.length} app{apps.length !== 1 ? "s" : ""}
           </span>
         </div>
