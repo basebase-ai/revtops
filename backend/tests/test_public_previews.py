@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from api.routes.public import (
     _cache_get_html,
     _cache_set_html,
+    _is_unfurlable_visibility,
     _public_origin,
     _public_preview_description,
     _public_preview_title,
@@ -91,3 +92,11 @@ def test_preview_html_cache_hit_and_expiry(monkeypatch) -> None:
 
     fake_now["value"] += 301.0
     assert _cache_get_html("preview:test") is None
+
+
+def test_is_unfurlable_visibility_allows_known_levels() -> None:
+    assert _is_unfurlable_visibility("public")
+    assert _is_unfurlable_visibility("team")
+    assert _is_unfurlable_visibility("private")
+    assert not _is_unfurlable_visibility(None)
+    assert not _is_unfurlable_visibility("archived")

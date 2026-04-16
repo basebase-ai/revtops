@@ -33,6 +33,7 @@ _PREVIEW_CACHE_TTL_SECONDS = 300
 _PREVIEW_CACHE_MAX_ITEMS = 512
 _preview_html_cache: dict[str, tuple[float, str]] = {}
 _preview_image_cache: dict[str, tuple[float, bytes, str]] = {}
+_UNFURLABLE_VISIBILITIES: frozenset[str] = frozenset({"private", "team", "public"})
 
 
 def _cache_get_html(key: str) -> str | None:
@@ -73,6 +74,10 @@ def _cache_set_image(key: str, image_bytes: bytes, mime_type: str) -> None:
         image_bytes,
         mime_type,
     )
+
+
+def _is_unfurlable_visibility(visibility: str | None) -> bool:
+    return visibility in _UNFURLABLE_VISIBILITIES
 
 
 @router.get("/apps/{app_id}")
@@ -266,12 +271,16 @@ async def get_public_app_share_preview(app_id: str, request: Request) -> HTMLRes
         raise HTTPException(status_code=400, detail="Invalid app ID")
 
     async with get_admin_session() as session:
-        result = await session.execute(
-            select(App).where(App.id == app_uuid, App.visibility == "public")
-        )
+        result = await session.execute(select(App).where(App.id == app_uuid))
         app: App | None = result.scalar_one_or_none()
-    if app is None:
+    if app is None or not _is_unfurlable_visibility(app.visibility):
         raise HTTPException(status_code=404, detail="App not found")
+    if app.visibility != "public":
+        logger.info(
+            "[public_preview] rendering non-public app unfurl app_id=%s visibility=%s",
+            app_id,
+            app.visibility,
+        )
 
     logger.info("[public_preview] rendering app preview app_id=%s", app_id)
     app_updated_at = app.updated_at.isoformat() if app.updated_at else "none"
@@ -328,12 +337,16 @@ async def get_public_app_share_snapshot(app_id: str) -> Response:
         raise HTTPException(status_code=400, detail="Invalid app ID")
 
     async with get_admin_session() as session:
-        result = await session.execute(
-            select(App).where(App.id == app_uuid, App.visibility == "public")
-        )
+        result = await session.execute(select(App).where(App.id == app_uuid))
         app: App | None = result.scalar_one_or_none()
-    if app is None:
+    if app is None or not _is_unfurlable_visibility(app.visibility):
         raise HTTPException(status_code=404, detail="App not found")
+    if app.visibility != "public":
+        logger.info(
+            "[public_preview] serving non-public app snapshot app_id=%s visibility=%s",
+            app_id,
+            app.visibility,
+        )
     app_updated_at = app.updated_at.isoformat() if app.updated_at else "none"
     image_cache_key = f"app_snapshot:{app_id}:{app_updated_at}"
     cached_image = _cache_get_image(image_cache_key)
@@ -384,12 +397,16 @@ async def get_public_artifact_share_preview(artifact_id: str, request: Request) 
         raise HTTPException(status_code=400, detail="Invalid artifact ID")
 
     async with get_admin_session() as session:
-        result = await session.execute(
-            select(Artifact).where(Artifact.id == artifact_uuid, Artifact.visibility == "public")
-        )
+        result = await session.execute(select(Artifact).where(Artifact.id == artifact_uuid))
         artifact: Artifact | None = result.scalar_one_or_none()
-    if artifact is None:
+    if artifact is None or not _is_unfurlable_visibility(artifact.visibility):
         raise HTTPException(status_code=404, detail="Artifact not found")
+    if artifact.visibility != "public":
+        logger.info(
+            "[public_preview] rendering non-public artifact unfurl artifact_id=%s visibility=%s",
+            artifact_id,
+            artifact.visibility,
+        )
 
     logger.info("[public_preview] rendering artifact preview artifact_id=%s", artifact_id)
     artifact_version = ":".join(
@@ -453,12 +470,16 @@ async def get_public_artifact_share_snapshot(artifact_id: str) -> Response:
         raise HTTPException(status_code=400, detail="Invalid artifact ID")
 
     async with get_admin_session() as session:
-        result = await session.execute(
-            select(Artifact).where(Artifact.id == artifact_uuid, Artifact.visibility == "public")
-        )
+        result = await session.execute(select(Artifact).where(Artifact.id == artifact_uuid))
         artifact: Artifact | None = result.scalar_one_or_none()
-    if artifact is None:
+    if artifact is None or not _is_unfurlable_visibility(artifact.visibility):
         raise HTTPException(status_code=404, detail="Artifact not found")
+    if artifact.visibility != "public":
+        logger.info(
+            "[public_preview] serving non-public artifact snapshot artifact_id=%s visibility=%s",
+            artifact_id,
+            artifact.visibility,
+        )
     artifact_version = ":".join(
         [
             str(artifact.created_at.isoformat() if artifact.created_at else "none"),
