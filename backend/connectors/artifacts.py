@@ -28,6 +28,7 @@ from connectors.registry import (
 )
 from models.artifact import Artifact
 from models.database import get_session
+from models.organization import Organization
 from services.public_preview_warmup import warm_public_preview_cache
 from services.slack_identity import get_alternate_slack_user_ids_for_identity
 
@@ -395,7 +396,8 @@ class ArtifactConnector(BaseConnector):
             title,
         )
         await warm_public_preview_cache("artifact", artifact_id_str)
-        view_url: str = f"{settings.FRONTEND_URL.rstrip('/')}/artifacts/{artifact_id_str}"
+        artifact_uri_path: str = await self._build_artifact_uri_path(artifact_id_str)
+        view_url: str = f"{settings.FRONTEND_URL.rstrip('/')}{artifact_uri_path}"
         return {
             "status": "success",
             "artifact_id": artifact_id_str,
@@ -405,8 +407,10 @@ class ArtifactConnector(BaseConnector):
                 "filename": filename,
                 "contentType": content_type,
                 "mimeType": mime_type,
+                "uri": artifact_uri_path,
                 "viewUrl": view_url,
             },
+            "uri": artifact_uri_path,
             "view_url": view_url,
             "message": f"Created {content_type} artifact: {title}",
         }
@@ -470,7 +474,8 @@ class ArtifactConnector(BaseConnector):
         final_filename: str = filename if filename is not None else prev_filename
         final_content_type: str = content_type if content_type is not None else prev_content_type
         artifact_id_str: str = str(artifact_uuid)
-        view_url: str = f"{settings.FRONTEND_URL.rstrip('/')}/artifacts/{artifact_id_str}"
+        artifact_uri_path: str = await self._build_artifact_uri_path(artifact_id_str)
+        view_url: str = f"{settings.FRONTEND_URL.rstrip('/')}{artifact_uri_path}"
 
         logger.info("[ArtifactConnector] Updated artifact: id=%s", artifact_id_str)
         return {
@@ -482,9 +487,26 @@ class ArtifactConnector(BaseConnector):
                 "filename": final_filename,
                 "contentType": final_content_type,
                 "mimeType": CONTENT_TYPE_TO_MIME.get(final_content_type, "application/octet-stream"),
+                "uri": artifact_uri_path,
                 "viewUrl": view_url,
                 "updated": True,
             },
+            "uri": artifact_uri_path,
             "view_url": view_url,
             "message": f"Updated artifact: {final_title}",
         }
+
+    async def _build_artifact_uri_path(self, artifact_id: str) -> str:
+        org_handle: str | None = await self._get_org_handle()
+        if org_handle:
+            return f"/{org_handle}/artifacts/{artifact_id}"
+        return f"/artifacts/{artifact_id}"
+
+    async def _get_org_handle(self) -> str | None:
+        async with get_session(organization_id=self.organization_id) as session:
+            result = await session.execute(
+                select(Organization.handle).where(Organization.id == UUID(self.organization_id))
+            )
+            org_handle: str | None = result.scalar_one_or_none()
+        normalized: str = (org_handle or "").strip()
+        return normalized or None
