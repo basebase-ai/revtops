@@ -47,7 +47,7 @@ function formatDisplayDate(isoDate: string): string {
 function formatDayMonth(isoDate: string): string {
   const [, mm, dd] = isoDate.split("-");
   if (!mm || !dd) return isoDate;
-  return `${dd}/${mm}`;
+  return `${mm}/${dd}`;
 }
 
 function getNarrative(summary: DigestSummaryJson | null): string {
