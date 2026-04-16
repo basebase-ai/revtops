@@ -26,6 +26,8 @@ from uuid import UUID, uuid4
 if TYPE_CHECKING:
     from connectors.base import BaseConnector
 
+from connectors.base import ExternalConnectionRevokedError
+
 import httpx
 from openai import AsyncOpenAI
 from sqlalchemy import select, text
@@ -970,6 +972,23 @@ async def _attach_connector_docs(
     return error_result
 
 
+def _build_connection_revoked_result(
+    connector: str, operation_label: str, exc: Exception,
+) -> dict[str, Any]:
+    """Build a tool-result dict with user_guidance for a revoked/expired connection."""
+    from connectors.base import get_provider_display_name
+
+    provider_name: str = get_provider_display_name(connector)
+    return {
+        "error": f"{operation_label} failed: {exc}",
+        "user_guidance": (
+            f"The {provider_name} connection has expired or been revoked. "
+            f"To fix this, go to the Connectors page (/connectors), "
+            f"disconnect {provider_name}, and reconnect it."
+        ),
+    }
+
+
 async def _query_on_connector(
     params: dict[str, Any], organization_id: str, user_id: str | None
 ) -> dict[str, Any]:
@@ -1013,6 +1032,12 @@ async def _query_on_connector(
         if info and isinstance(result, dict):
             result.setdefault("info", info)
         return _attach_cross_user_connector_warning(result, cross_user_warning)
+    except ExternalConnectionRevokedError as exc:
+        logger.warning("[Tools] query_on_connector(%s) connection revoked: %s", connector, exc)
+        return await _attach_connector_docs(
+            _build_connection_revoked_result(connector, f"Query to {connector}", exc),
+            connector, organization_id,
+        )
     except Exception as exc:
         logger.error("[Tools] query_on_connector(%s) failed: %s", connector, exc, exc_info=True)
         return await _attach_connector_docs(
@@ -1091,6 +1116,13 @@ async def _write_on_connector(
         result = await instance.write(operation, data)
         await record_outcome(change_id, organization_id, result)
         return _attach_cross_user_connector_warning(result, cross_user_warning)
+    except ExternalConnectionRevokedError as exc:
+        await record_outcome(change_id, organization_id, {"error": str(exc)})
+        logger.warning("[Tools] write_on_connector(%s, %s) connection revoked: %s", connector, operation, exc)
+        return await _attach_connector_docs(
+            _build_connection_revoked_result(connector, f"Write to {connector}.{operation}", exc),
+            connector, organization_id,
+        )
     except Exception as exc:
         await record_outcome(change_id, organization_id, {"error": str(exc)})
         logger.error("[Tools] write_on_connector(%s, %s) failed: %s", connector, operation, exc, exc_info=True)
@@ -1159,6 +1191,13 @@ async def _run_on_connector(
         result = await instance.execute_action(action, action_params)
         await record_outcome(change_id, organization_id, result)
         return _attach_cross_user_connector_warning(result, cross_user_warning)
+    except ExternalConnectionRevokedError as exc:
+        await record_outcome(change_id, organization_id, {"error": str(exc)})
+        logger.warning("[Tools] run_on_connector(%s, %s) connection revoked: %s", connector, action, exc)
+        return await _attach_connector_docs(
+            _build_connection_revoked_result(connector, f"Action {connector}.{action}", exc),
+            connector, organization_id,
+        )
     except Exception as exc:
         await record_outcome(change_id, organization_id, {"error": str(exc)})
         logger.error("[Tools] run_on_connector(%s, %s) failed: %s", connector, action, exc, exc_info=True)

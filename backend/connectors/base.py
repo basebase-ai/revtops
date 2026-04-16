@@ -63,6 +63,7 @@ _CONNECTION_REMOVED_ERROR_SNIPPETS: tuple[str, ...] = (
     "connection not found",
     "404 not found",
     "404 client error",
+    "400 bad request",
     "invalid_auth",
     "account_inactive",
     "token_revoked",
@@ -90,8 +91,8 @@ def build_connection_removed_message(provider: str) -> str:
     """Return a coherent reconnect message when upstream access was removed."""
     provider_name = get_provider_display_name(provider)
     return (
-        f"The {provider_name} connection was removed or revoked in {provider_name}. "
-        f"Please disconnect it in Basebase and reconnect it if you still want to sync."
+        f"The {provider_name} connection has expired or been revoked. "
+        f"Please go to Connectors (/connectors) to disconnect and reconnect {provider_name}."
     )
 
 
