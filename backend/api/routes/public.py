@@ -265,7 +265,6 @@ def _public_preview_title(*, app: App | None = None, artifact: Artifact | None =
 
 
 @router.get("/share/apps/{app_id}", response_class=HTMLResponse)
-@share_router.get("/apps/{app_id}", response_class=HTMLResponse)
 @share_router.get("/basebase/apps/{app_id}", response_class=HTMLResponse)
 @share_router.get("/{org_slug}/apps/{app_id}", response_class=HTMLResponse)
 @share_router.get("/apps/{org_slug}/{app_id}", response_class=HTMLResponse)

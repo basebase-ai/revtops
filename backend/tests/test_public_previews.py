@@ -89,18 +89,6 @@ def test_build_preview_html_uses_public_apps_redirect_url() -> None:
     assert 'window.location.replace("https://app.basebase.com/public/apps/abc")' in html
 
 
-def test_build_preview_html_supports_direct_apps_path_links() -> None:
-    html = build_preview_html(
-        page_title="Example",
-        description="Description",
-        canonical_url="https://app.basebase.com/apps/abc",
-        image_url="https://app.basebase.com/api/public/share/apps/abc/snapshot.png",
-        redirect_url="https://app.basebase.com/public/apps/abc",
-    )
-    assert 'property="og:url" content="https://app.basebase.com/apps/abc"' in html
-    assert 'window.location.replace("https://app.basebase.com/public/apps/abc")' in html
-
-
 def test_public_preview_title_uses_app_title_when_present() -> None:
     title = _public_preview_title(app=SimpleNamespace(title="Revenue Tracker"))
     assert title == "Revenue Tracker · Basebase"
