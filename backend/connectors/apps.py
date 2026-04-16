@@ -321,29 +321,20 @@ class AppsConnector(BaseConnector):
         conversation_id: str | None = data.get("conversation_id")
         user_uuid: UUID | None = None
         conversation_uuid: UUID | None = None
-        if conversation_id:
+
+        if self.user_id:
             try:
-                conversation_uuid = UUID(conversation_id)
+                user_uuid = UUID(self.user_id)
             except (ValueError, TypeError, AttributeError):
                 logger.warning(
-                    "[AppsConnector] Could not parse conversation_id as UUID for owner resolution: conversation_id=%s",
-                    conversation_id,
+                    "[AppsConnector] Could not parse connector user_id as UUID for owner resolution: user_id=%s",
+                    self.user_id,
                 )
             else:
-                async with get_session(organization_id=self.organization_id) as session:
-                    row = await session.execute(
-                        select(Conversation.user_id).where(
-                            Conversation.id == conversation_uuid,
-                        )
-                    )
-                    conversation_user_id: UUID | None = row.scalar_one_or_none()
-                    if conversation_user_id is not None:
-                        user_uuid = conversation_user_id
-                        logger.info(
-                            "[AppsConnector] Resolved app owner from conversation owner: conversation_id=%s user_id=%s",
-                            conversation_id,
-                            conversation_user_id,
-                        )
+                logger.info(
+                    "[AppsConnector] Resolved app owner from connector user context: user_id=%s",
+                    user_uuid,
+                )
 
         if message_id:
             try:
@@ -369,12 +360,29 @@ class AppsConnector(BaseConnector):
                             message_user_id,
                         )
 
-        if not user_uuid and self.user_id:
-            user_uuid = UUID(self.user_id)
-            logger.info(
-                "[AppsConnector] Falling back to connector user context for app owner: user_id=%s",
-                user_uuid,
-            )
+        if conversation_id:
+            try:
+                conversation_uuid = UUID(conversation_id)
+            except (ValueError, TypeError, AttributeError):
+                logger.warning(
+                    "[AppsConnector] Could not parse conversation_id as UUID for owner resolution fallback: conversation_id=%s",
+                    conversation_id,
+                )
+            else:
+                async with get_session(organization_id=self.organization_id) as session:
+                    row = await session.execute(
+                        select(Conversation.user_id).where(
+                            Conversation.id == conversation_uuid,
+                        )
+                    )
+                    conversation_user_id: UUID | None = row.scalar_one_or_none()
+                    if conversation_user_id is not None and user_uuid is None:
+                        user_uuid = conversation_user_id
+                        logger.info(
+                            "[AppsConnector] Resolved app owner from conversation owner fallback: conversation_id=%s user_id=%s",
+                            conversation_id,
+                            conversation_user_id,
+                        )
 
         if not user_uuid:
             return {
