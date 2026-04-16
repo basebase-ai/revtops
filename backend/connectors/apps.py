@@ -402,6 +402,14 @@ class AppsConnector(BaseConnector):
         user_uuid: UUID | None = None
         conversation_uuid: UUID | None = None
 
+        logger.info(
+            "[AppsConnector] Creating app with ownership context: org_id=%s message_id=%s conversation_id=%s connector_user_id=%s",
+            self.organization_id,
+            message_id,
+            conversation_id,
+            self.user_id,
+        )
+
         connector_user_uuid: UUID | None = None
         if self.user_id:
             try:
@@ -495,6 +503,13 @@ class AppsConnector(BaseConnector):
                             )
 
         if not user_uuid:
+            logger.warning(
+                "[AppsConnector] App owner unresolved; aborting app creation: org_id=%s message_id=%s conversation_id=%s connector_user_id=%s",
+                self.organization_id,
+                message_id,
+                conversation_id,
+                self.user_id,
+            )
             return {
                 "error": "App creation requires a user context. This can happen in some automated flows; try creating the app from a normal chat message.",
             }

@@ -18,6 +18,7 @@ from config import settings
 from connectors.base import BaseConnector
 from models.chat_message import ChatMessage
 from models.conversation import Conversation
+from models.external_identity_mapping import ExternalIdentityMapping
 from connectors.registry import (
     AuthType,
     Capability,
@@ -28,6 +29,7 @@ from connectors.registry import (
 from models.artifact import Artifact
 from models.database import get_session
 from services.public_preview_warmup import warm_public_preview_cache
+from services.slack_identity import get_alternate_slack_user_ids_for_identity
 
 logger = logging.getLogger(__name__)
 
@@ -153,6 +155,84 @@ class ArtifactConnector(BaseConnector):
     def _normalise_content_type(cls, raw: str) -> str:
         return cls._MIME_TO_SHORT.get(raw, raw)
 
+    async def _resolve_user_from_external_actor(
+        self,
+        *,
+        source: str | None,
+        external_user_id: str | None,
+    ) -> UUID | None:
+        """Resolve an internal user from an external actor identifier."""
+        normalized_source: str = (source or "").strip().lower()
+        normalized_external_user: str = (external_user_id or "").strip().upper()
+        if not normalized_source or not normalized_external_user:
+            logger.debug(
+                "[ArtifactConnector] External actor resolution skipped due to missing source/external_user_id: source=%s external_user_id=%s",
+                source,
+                external_user_id,
+            )
+            return None
+
+        if normalized_source != "slack":
+            logger.debug(
+                "[ArtifactConnector] External actor resolution skipped for unsupported source: source=%s external_user_id=%s",
+                normalized_source,
+                normalized_external_user,
+            )
+            return None
+
+        org_uuid: UUID = UUID(self.organization_id)
+        candidate_external_user_ids: list[str] = [normalized_external_user]
+        async with get_session(organization_id=self.organization_id) as session:
+            alternate_slack_ids: list[str] = await get_alternate_slack_user_ids_for_identity(
+                organization_id=self.organization_id,
+                slack_user_id=normalized_external_user,
+                session=session,
+            )
+            for alternate_slack_id in alternate_slack_ids:
+                normalized_alternate: str = str(alternate_slack_id).strip().upper()
+                if normalized_alternate and normalized_alternate not in candidate_external_user_ids:
+                    candidate_external_user_ids.append(normalized_alternate)
+
+            logger.info(
+                "[ArtifactConnector] Attempting external actor owner resolution across Slack identities: source=%s external_user_ids=%s",
+                normalized_source,
+                candidate_external_user_ids,
+            )
+
+            mapping_rows = await session.execute(
+                select(
+                    ExternalIdentityMapping.external_userid,
+                    ExternalIdentityMapping.source,
+                    ExternalIdentityMapping.user_id,
+                )
+                .where(ExternalIdentityMapping.organization_id == org_uuid)
+                .where(ExternalIdentityMapping.external_userid.in_(candidate_external_user_ids))
+                .where(ExternalIdentityMapping.source.in_(("slack", "revtops_unknown")))
+                .where(ExternalIdentityMapping.user_id.is_not(None))
+                .order_by(ExternalIdentityMapping.updated_at.desc())
+            )
+            mappings: list[tuple[str, str, UUID]] = list(mapping_rows.all())
+            if mappings:
+                selected_external_user_id: str
+                selected_source: str
+                selected_user_id: UUID
+                selected_external_user_id, selected_source, selected_user_id = mappings[0]
+                logger.info(
+                    "[ArtifactConnector] Resolved artifact owner from Slack identity candidates: selected_external_user_id=%s source=%s user_id=%s total_candidate_mappings=%d",
+                    selected_external_user_id,
+                    selected_source,
+                    selected_user_id,
+                    len(mappings),
+                )
+                return selected_user_id
+
+        logger.debug(
+            "[ArtifactConnector] Could not resolve artifact owner from external actor: source=%s external_user_id=%s",
+            normalized_source,
+            normalized_external_user,
+        )
+        return None
+
     async def _create(self, data: dict[str, Any]) -> dict[str, Any]:
         title: str = str(data.get("title", "Untitled"))
         filename: str = str(data.get("filename", "artifact.txt"))
@@ -160,6 +240,14 @@ class ArtifactConnector(BaseConnector):
         content: str = str(data.get("content", ""))
         conversation_id: str | None = data.get("conversation_id")
         message_id: str | None = data.get("message_id")
+
+        logger.info(
+            "[ArtifactConnector] Creating artifact with ownership context: org_id=%s message_id=%s conversation_id=%s connector_user_id=%s",
+            self.organization_id,
+            message_id,
+            conversation_id,
+            self.user_id,
+        )
 
         if content_type not in self._VALID_TYPES:
             return {
@@ -207,24 +295,81 @@ class ArtifactConnector(BaseConnector):
                             message_user_id,
                         )
 
-        if not user_uuid and self.user_id:
-            user_uuid = UUID(self.user_id)
+        connector_user_uuid: UUID | None = None
+        if self.user_id:
+            try:
+                connector_user_uuid = UUID(self.user_id)
+            except (ValueError, TypeError, AttributeError):
+                logger.warning(
+                    "[ArtifactConnector] Could not parse connector user_id as UUID for owner resolution: user_id=%s",
+                    self.user_id,
+                )
 
         if not user_uuid and conversation_id:
-            async with get_session(organization_id=self.organization_id) as session:
-                row = await session.execute(
-                    select(Conversation.user_id).where(
-                        Conversation.id == UUID(conversation_id),
-                    )
+            try:
+                conversation_uuid: UUID = UUID(conversation_id)
+            except (ValueError, TypeError, AttributeError):
+                logger.warning(
+                    "[ArtifactConnector] Could not parse conversation_id as UUID for owner resolution fallback: conversation_id=%s",
+                    conversation_id,
                 )
-                conv_user_id: UUID | None = row.scalar_one_or_none()
-                if conv_user_id is not None:
-                    user_uuid = conv_user_id
-                    logger.info(
-                        "[ArtifactConnector] Falling back to conversation owner for artifact owner: conversation_id=%s user_id=%s",
-                        conversation_id,
-                        conv_user_id,
+            else:
+                async with get_session(organization_id=self.organization_id) as session:
+                    row = await session.execute(
+                        select(
+                            Conversation.user_id,
+                            Conversation.source,
+                            Conversation.source_user_id,
+                        ).where(
+                            Conversation.id == conversation_uuid,
+                        )
                     )
+                    conversation_record: tuple[UUID | None, str | None, str | None] | None = row.one_or_none()
+                    conversation_user_id: UUID | None = None
+                    conversation_source: str | None = None
+                    conversation_source_user_id: str | None = None
+                    if conversation_record is not None:
+                        (
+                            conversation_user_id,
+                            conversation_source,
+                            conversation_source_user_id,
+                        ) = conversation_record
+                    if conversation_user_id is not None:
+                        user_uuid = conversation_user_id
+                        logger.info(
+                            "[ArtifactConnector] Falling back to conversation owner for artifact owner: conversation_id=%s user_id=%s",
+                            conversation_id,
+                            conversation_user_id,
+                        )
+                    else:
+                        external_actor_user_id: UUID | None = await self._resolve_user_from_external_actor(
+                            source=conversation_source,
+                            external_user_id=conversation_source_user_id,
+                        )
+                        if external_actor_user_id is not None:
+                            user_uuid = external_actor_user_id
+                            logger.info(
+                                "[ArtifactConnector] Resolved artifact owner from external actor mapping: conversation_id=%s source=%s external_user_id=%s user_id=%s",
+                                conversation_id,
+                                conversation_source,
+                                conversation_source_user_id,
+                                external_actor_user_id,
+                            )
+
+        if user_uuid is None and connector_user_uuid is not None:
+            user_uuid = connector_user_uuid
+            logger.info(
+                "[ArtifactConnector] Falling back to connector user context for artifact owner: user_id=%s",
+                connector_user_uuid,
+            )
+
+        if user_uuid is None:
+            logger.warning(
+                "[ArtifactConnector] Artifact owner unresolved; creating ownerless artifact: org_id=%s message_id=%s conversation_id=%s",
+                self.organization_id,
+                message_id,
+                conversation_id,
+            )
 
         async with get_session(organization_id=self.organization_id) as session:
             artifact = Artifact(
