@@ -356,7 +356,7 @@ function App(): JSX.Element {
   if (legacyAppsSlugMatch && legacyAppsSlugMatch[1]) {
     const normalized = `/apps/${legacyAppsSlugMatch[1]}${window.location.search}${window.location.hash}`;
     window.location.replace(normalized);
-    return null;
+    return <></>;
   }
 
   if (path === '/auth/callback') {
