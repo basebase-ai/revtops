@@ -143,3 +143,10 @@ def test_is_unfurlable_visibility_allows_known_levels() -> None:
 def test_share_router_supports_apps_uuid_path_for_unfurl_links() -> None:
     route_paths = {route.path for route in share_router.routes}
     assert "/apps/{app_id}" in route_paths
+
+
+def test_share_router_supports_artifact_paths_for_unfurl_links() -> None:
+    route_paths = {route.path for route in share_router.routes}
+    assert "/artifacts/{artifact_id}" in route_paths
+    assert "/{org_slug}/artifacts/{artifact_id}" in route_paths
+    assert "/artifacts/{org_slug}/{artifact_id}" in route_paths
