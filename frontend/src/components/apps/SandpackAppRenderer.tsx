@@ -343,23 +343,37 @@ export function SandpackAppRenderer({
 
         screenshotCapturedRef.current = true;
         console.log("[screenshot] Capturing with html2canvas...", appId);
+        const previewWidth = 1200;
+        const previewHeight = 630;
         html2canvas(iframeDoc.body, {
           backgroundColor: "#18181b",
-          scale: 0.5,
+          // Capture at full DOM resolution so gallery previews stay crisp.
+          scale: 1,
           logging: false,
           useCORS: true,
-          width: iframeDoc.body.scrollWidth,
-          height: Math.min(iframeDoc.body.scrollHeight, 800),
+          width: previewWidth,
+          height: previewHeight,
+          windowWidth: previewWidth,
+          windowHeight: previewHeight,
         }).then((canvas) => {
-          const dataUrl = canvas.toDataURL("image/jpeg", 0.7);
-          console.log(`[screenshot] Captured! size=${dataUrl.length} appId=${appId}`);
+          let quality = 0.9;
+          let dataUrl = canvas.toDataURL("image/jpeg", quality);
+          while (dataUrl.length >= 2_000_000 && quality > 0.55) {
+            quality -= 0.1;
+            dataUrl = canvas.toDataURL("image/jpeg", quality);
+          }
+
+          console.log(
+            `[screenshot] Captured! size=${dataUrl.length} quality=${quality.toFixed(2)} ` +
+            `dimensions=${canvas.width}x${canvas.height} appId=${appId}`
+          );
           if (dataUrl.length < 2_000_000) {
             void apiRequest("/apps/" + appId + "/screenshot", {
               method: "POST",
               body: JSON.stringify({ screenshot: dataUrl }),
             });
           } else {
-            console.warn("[screenshot] Too large:", dataUrl.length);
+            console.warn("[screenshot] Too large after quality fallback:", dataUrl.length, "appId=", appId);
           }
         }).catch((err) => {
           console.error("[screenshot] html2canvas failed:", err);
