@@ -8,6 +8,7 @@ StreamBreakStrategy = Literal["best", "quickest_safe"]
 _SENTENCE_BREAK_RE: re.Pattern[str] = re.compile(r"[.!?](?:\s|$)")
 _FENCE_RE: re.Pattern[str] = re.compile(r"^```", re.MULTILINE)
 _PIPE_TABLE_LINE_RE: re.Pattern[str] = re.compile(r"\|.+\||[^|\n]+(?:\|[^|\n]+){2,}")
+_URI_SCHEME_RE: re.Pattern[str] = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
 _TITLE_ABBREVIATIONS: set[str] = {
     "mr",
     "mrs",
@@ -58,6 +59,19 @@ def _is_valid_sentence_break(text: str, punct_idx: int) -> bool:
         token_match: re.Match[str] | None = re.search(r"([A-Za-z]+)$", text[:punct_idx])
         if token_match and token_match.group(1).lower() in _TITLE_ABBREVIATIONS:
             return False
+    token_start: int = text.rfind(" ", 0, punct_idx) + 1
+    token_start = max(token_start, text.rfind("\n", 0, punct_idx) + 1)
+    token_end_space: int = text.find(" ", punct_idx)
+    token_end_newline: int = text.find("\n", punct_idx)
+    token_end_candidates: list[int] = [len(text)]
+    if token_end_space >= 0:
+        token_end_candidates.append(token_end_space)
+    if token_end_newline >= 0:
+        token_end_candidates.append(token_end_newline)
+    token_end: int = min(token_end_candidates)
+    token: str = text[token_start:token_end]
+    if _URI_SCHEME_RE.match(token):
+        return False
 
     line_start: int = text.rfind("\n", 0, punct_idx) + 1
     line_end: int = text.find("\n", punct_idx)
