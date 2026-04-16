@@ -73,10 +73,23 @@ def test_public_preview_description_prefers_app_description_with_owner() -> None
 def test_public_preview_description_falls_back_to_document_and_owner_email() -> None:
     description = _public_preview_description(
         conversation=None,
-        artifact=SimpleNamespace(title=None),
+        artifact=SimpleNamespace(title=None, content=None),
         owner=SimpleNamespace(name=None, email="owner@example.com"),
     )
     assert description == "Document — owner@example.com"
+
+
+def test_public_preview_description_uses_first_80_chars_of_artifact_content() -> None:
+    content = (
+        "This is a shared artifact document body with enough characters to verify truncation occurs "
+        "at exactly eighty characters."
+    )
+    description = _public_preview_description(
+        conversation=None,
+        artifact=SimpleNamespace(title="Doc", content=content),
+        owner=SimpleNamespace(name="Alex", email="alex@example.com"),
+    )
+    assert description == content[:80]
 
 
 def test_build_preview_html_uses_public_apps_redirect_url() -> None:

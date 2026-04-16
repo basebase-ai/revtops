@@ -236,6 +236,11 @@ def _public_preview_description(
     owner: User | None,
 ) -> str:
     """Build a concise public description for social preview unfurls."""
+    if artifact:
+        artifact_document_text = " ".join((artifact.content or "").split())
+        if artifact_document_text:
+            return artifact_document_text[:80]
+
     owner_label = _owner_label(owner)
     app_description = (getattr(app, "description", None) or "").strip() if app else ""
     if app_description:
