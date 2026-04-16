@@ -398,9 +398,16 @@ async def get_public_app_share_snapshot(app_id: str) -> Response:
 
 
 @router.get("/share/artifacts/{artifact_id}", response_class=HTMLResponse)
+@share_router.get("/artifacts/{artifact_id}", response_class=HTMLResponse)
 @share_router.get("/basebase/documents/{artifact_id}", response_class=HTMLResponse)
 @share_router.get("/basebase/artifacts/{artifact_id}", response_class=HTMLResponse)
-async def get_public_artifact_share_preview(artifact_id: str, request: Request) -> HTMLResponse:
+@share_router.get("/{org_slug}/artifacts/{artifact_id}", response_class=HTMLResponse)
+@share_router.get("/artifacts/{org_slug}/{artifact_id}", response_class=HTMLResponse)
+async def get_public_artifact_share_preview(
+    artifact_id: str,
+    request: Request,
+    org_slug: str | None = None,
+) -> HTMLResponse:
     """HTML metadata endpoint used by Slack + external scrapers for public artifact links."""
     try:
         artifact_uuid = UUID(artifact_id)
@@ -419,7 +426,11 @@ async def get_public_artifact_share_preview(artifact_id: str, request: Request) 
             artifact.visibility,
         )
 
-    logger.info("[public_preview] rendering artifact preview artifact_id=%s", artifact_id)
+    logger.info(
+        "[public_preview] rendering artifact preview artifact_id=%s org_slug=%s",
+        artifact_id,
+        org_slug,
+    )
     artifact_version = ":".join(
         [
             str(artifact.created_at.isoformat() if artifact.created_at else "none"),
@@ -447,7 +458,8 @@ async def get_public_artifact_share_preview(artifact_id: str, request: Request) 
         if artifact.user_id:
             owner = await session.scalar(select(User).where(User.id == artifact.user_id))
 
-    canonical_url = f"{_frontend_origin()}/basebase/documents/{artifact_id}"
+    canonical_path = request.url.path if request.url.path else f"/basebase/artifacts/{artifact_id}"
+    canonical_url = f"{_frontend_origin()}{canonical_path}"
     redirect_url = f"{_frontend_origin()}/public/artifacts/{artifact_id}"
     image_url = f"{_public_origin(request)}/api/public/share/artifacts/{artifact_id}/snapshot.png"
     title = _public_preview_title(artifact=artifact)
