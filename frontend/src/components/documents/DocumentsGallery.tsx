@@ -199,7 +199,7 @@ export function DocumentsGallery(): JSX.Element {
               Reports, charts, and files created for you by Basebase
             </p>
           </div>
-          <span className="text-sm text-surface-500">
+          <span className="hidden sm:inline text-sm text-surface-500">
             {artifacts.length} document{artifacts.length !== 1 ? "s" : ""}
           </span>
         </div>
