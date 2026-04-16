@@ -137,6 +137,7 @@ class AppsConnector(BaseConnector):
                     {"name": "queries", "type": "object", "required": True, "description": "Named SQL queries. Each key is query name, value is {sql, params}. SQL must be SELECT-only."},
                     {"name": "frontend_code", "type": "string", "required": True, "description": "React JSX code. Must export default component."},
                     {"name": "description", "type": "string", "required": False, "description": "Brief description of the app"},
+                    {"name": "app created by", "type": "string", "required": False, "description": "Optional owner override UUID. If provided, this value is used for ownership instead of message/conversation/turn context."},
                 ],
             ),
             WriteOperation(
@@ -397,6 +398,22 @@ class AppsConnector(BaseConnector):
         if errors:
             return {"error": "SQL validation failed:\n" + "\n".join(errors)}
 
+        owner_override_raw: Any = data.get("app created by")
+        if owner_override_raw is None:
+            owner_override_raw = data.get(" app created by")
+
+        owner_override_provided: bool = owner_override_raw is not None
+        owner_override_value: str | None = None
+        if owner_override_provided:
+            owner_override_value = str(owner_override_raw).strip()
+            if not owner_override_value:
+                logger.warning(
+                    "[AppsConnector] App owner override was provided but empty: org_id=%s override=%s",
+                    self.organization_id,
+                    owner_override_raw,
+                )
+                return {"error": "Invalid 'app created by' value. Expected a non-empty user UUID."}
+
         message_id: str | None = data.get("message_id")
         conversation_id: str | None = data.get("conversation_id")
         user_uuid: UUID | None = None
@@ -411,6 +428,21 @@ class AppsConnector(BaseConnector):
         )
 
         connector_user_uuid: UUID | None = None
+        if owner_override_provided and owner_override_value is not None:
+            try:
+                user_uuid = UUID(owner_override_value)
+            except (ValueError, TypeError, AttributeError):
+                logger.warning(
+                    "[AppsConnector] Invalid app owner override UUID; aborting app creation: org_id=%s override=%s",
+                    self.organization_id,
+                    owner_override_value,
+                )
+                return {"error": "Invalid 'app created by' value. Expected a valid user UUID."}
+            logger.info(
+                "[AppsConnector] Using explicit app owner override: user_id=%s",
+                user_uuid,
+            )
+
         if self.user_id:
             try:
                 connector_user_uuid = UUID(self.user_id)
@@ -419,13 +451,6 @@ class AppsConnector(BaseConnector):
                     "[AppsConnector] Could not parse connector user_id as UUID for owner resolution: user_id=%s",
                     self.user_id,
                 )
-
-        if connector_user_uuid is not None:
-            user_uuid = connector_user_uuid
-            logger.info(
-                "[AppsConnector] Using current turn user context for app owner: user_id=%s",
-                connector_user_uuid,
-            )
 
         if message_id and user_uuid is None:
             try:
@@ -501,6 +526,13 @@ class AppsConnector(BaseConnector):
                                 conversation_source_user_id,
                                 external_actor_user_id,
                             )
+
+        if user_uuid is None and connector_user_uuid is not None:
+            user_uuid = connector_user_uuid
+            logger.info(
+                "[AppsConnector] Falling back to current turn user context for app owner: user_id=%s",
+                connector_user_uuid,
+            )
 
         if not user_uuid:
             logger.warning(

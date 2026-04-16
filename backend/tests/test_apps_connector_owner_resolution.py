@@ -187,3 +187,86 @@ def test_create_resolves_owner_from_slack_identity_mapping_when_conversation_use
     assert fake_session.committed is True
     assert len(fake_session.added) == 1
     assert fake_session.added[0].user_id == resolved_user_id
+
+
+def test_create_owner_override_takes_precedence_over_other_owner_sources(monkeypatch):
+    org_id = "00000000-0000-0000-0000-000000000010"
+    override_user_id = UUID("00000000-0000-0000-0000-000000000222")
+    message_user_id = UUID("00000000-0000-0000-0000-000000000012")
+    conversation_user_id = UUID("00000000-0000-0000-0000-000000000013")
+    fake_session = _FakeSession(
+        message_user_id=message_user_id,
+        conversation_user_id=conversation_user_id,
+    )
+
+    @asynccontextmanager
+    async def _fake_get_session(*_args, **_kwargs):
+        yield fake_session
+
+    async def _fake_warm(*_args, **_kwargs):
+        return None
+
+    async def _fake_test_execute_queries(*_args, **_kwargs):
+        return []
+
+    async def _fake_alternate(*_args, **_kwargs):
+        return []
+
+    monkeypatch.setattr("connectors.apps.get_session", _fake_get_session)
+    monkeypatch.setattr("connectors.apps.warm_public_preview_cache", _fake_warm)
+    monkeypatch.setattr("connectors.apps.get_alternate_slack_user_ids_for_identity", _fake_alternate)
+    monkeypatch.setattr("utils.transpile_jsx.transpile_jsx", lambda _code: (None,))
+    monkeypatch.setattr("connectors.apps.AppsConnector._test_execute_queries", _fake_test_execute_queries)
+
+    connector = AppsConnector(organization_id=org_id, user_id="00000000-0000-0000-0000-000000000011")
+
+    result = asyncio.run(
+        connector._create(
+            {
+                "title": "Override-owned app",
+                "queries": {
+                    "q": {"sql": "SELECT 1 AS n", "params": {}},
+                },
+                "frontend_code": "export default function App(){ return <div/>; }",
+                "app created by": str(override_user_id),
+                "message_id": "00000000-0000-0000-0000-000000000014",
+                "conversation_id": "00000000-0000-0000-0000-000000000015",
+            }
+        )
+    )
+
+    assert result["status"] == "success"
+    assert fake_session.committed is True
+    assert len(fake_session.added) == 1
+    assert fake_session.added[0].user_id == override_user_id
+
+
+def test_create_owner_override_rejects_invalid_uuid(monkeypatch):
+    org_id = "00000000-0000-0000-0000-000000000010"
+
+    async def _fake_warm(*_args, **_kwargs):
+        return None
+
+    async def _fake_test_execute_queries(*_args, **_kwargs):
+        return []
+
+    monkeypatch.setattr("connectors.apps.warm_public_preview_cache", _fake_warm)
+    monkeypatch.setattr("utils.transpile_jsx.transpile_jsx", lambda _code: (None,))
+    monkeypatch.setattr("connectors.apps.AppsConnector._test_execute_queries", _fake_test_execute_queries)
+
+    connector = AppsConnector(organization_id=org_id, user_id="00000000-0000-0000-0000-000000000011")
+
+    result = asyncio.run(
+        connector._create(
+            {
+                "title": "Invalid override",
+                "queries": {
+                    "q": {"sql": "SELECT 1 AS n", "params": {}},
+                },
+                "frontend_code": "export default function App(){ return <div/>; }",
+                "app created by": "not-a-uuid",
+            }
+        )
+    )
+
+    assert result == {"error": "Invalid 'app created by' value. Expected a valid user UUID."}
