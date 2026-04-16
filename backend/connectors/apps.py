@@ -27,6 +27,7 @@ from models.app import App
 from models.chat_message import ChatMessage
 from models.conversation import Conversation
 from models.database import get_session
+from models.external_identity_mapping import ExternalIdentityMapping
 from services.public_preview_warmup import warm_public_preview_cache
 
 logger = logging.getLogger(__name__)
@@ -297,6 +298,74 @@ class AppsConnector(BaseConnector):
             "frontend_code_with_lines": self._add_line_numbers(app.frontend_code),
         }
 
+    async def _resolve_user_from_external_actor(
+        self,
+        *,
+        source: str | None,
+        external_user_id: str | None,
+    ) -> UUID | None:
+        """Resolve an internal user from an external actor identifier."""
+        normalized_source: str = (source or "").strip().lower()
+        normalized_external_user: str = (external_user_id or "").strip()
+        if not normalized_source or not normalized_external_user:
+            logger.debug(
+                "[AppsConnector] External actor resolution skipped due to missing source/external_user_id: source=%s external_user_id=%s",
+                source,
+                external_user_id,
+            )
+            return None
+
+        if normalized_source != "slack":
+            logger.debug(
+                "[AppsConnector] External actor resolution skipped for unsupported source: source=%s external_user_id=%s",
+                normalized_source,
+                normalized_external_user,
+            )
+            return None
+
+        org_uuid: UUID = UUID(self.organization_id)
+        async with get_session(organization_id=self.organization_id) as session:
+            slack_row = await session.execute(
+                select(ExternalIdentityMapping.user_id).where(
+                    ExternalIdentityMapping.organization_id == org_uuid,
+                    ExternalIdentityMapping.external_userid == normalized_external_user,
+                    ExternalIdentityMapping.source == "slack",
+                    ExternalIdentityMapping.user_id.is_not(None),
+                )
+            )
+            slack_user_id: UUID | None = slack_row.scalar_one_or_none()
+            if slack_user_id is not None:
+                logger.debug(
+                    "[AppsConnector] Resolved app owner from Slack identity mapping: external_user_id=%s user_id=%s",
+                    normalized_external_user,
+                    slack_user_id,
+                )
+                return slack_user_id
+
+            legacy_row = await session.execute(
+                select(ExternalIdentityMapping.user_id).where(
+                    ExternalIdentityMapping.organization_id == org_uuid,
+                    ExternalIdentityMapping.external_userid == normalized_external_user,
+                    ExternalIdentityMapping.source == "revtops_unknown",
+                    ExternalIdentityMapping.user_id.is_not(None),
+                )
+            )
+            legacy_user_id: UUID | None = legacy_row.scalar_one_or_none()
+            if legacy_user_id is not None:
+                logger.debug(
+                    "[AppsConnector] Resolved app owner from legacy revtops_unknown identity mapping: external_user_id=%s user_id=%s",
+                    normalized_external_user,
+                    legacy_user_id,
+                )
+                return legacy_user_id
+
+        logger.debug(
+            "[AppsConnector] Could not resolve app owner from external actor: source=%s external_user_id=%s",
+            normalized_source,
+            normalized_external_user,
+        )
+        return None
+
     async def _create(self, data: dict[str, Any]) -> dict[str, Any]:
         """Create a new app."""
         title: str = str(data.get("title", "Untitled App"))
@@ -371,11 +440,24 @@ class AppsConnector(BaseConnector):
             else:
                 async with get_session(organization_id=self.organization_id) as session:
                     row = await session.execute(
-                        select(Conversation.user_id).where(
+                        select(
+                            Conversation.user_id,
+                            Conversation.source,
+                            Conversation.source_user_id,
+                        ).where(
                             Conversation.id == conversation_uuid,
                         )
                     )
-                    conversation_user_id: UUID | None = row.scalar_one_or_none()
+                    conversation_record: tuple[UUID | None, str | None, str | None] | None = row.one_or_none()
+                    conversation_user_id: UUID | None = None
+                    conversation_source: str | None = None
+                    conversation_source_user_id: str | None = None
+                    if conversation_record is not None:
+                        (
+                            conversation_user_id,
+                            conversation_source,
+                            conversation_source_user_id,
+                        ) = conversation_record
                     if conversation_user_id is not None and user_uuid is None:
                         user_uuid = conversation_user_id
                         logger.info(
@@ -383,6 +465,20 @@ class AppsConnector(BaseConnector):
                             conversation_id,
                             conversation_user_id,
                         )
+                    elif user_uuid is None:
+                        external_actor_user_id: UUID | None = await self._resolve_user_from_external_actor(
+                            source=conversation_source,
+                            external_user_id=conversation_source_user_id,
+                        )
+                        if external_actor_user_id is not None:
+                            user_uuid = external_actor_user_id
+                            logger.info(
+                                "[AppsConnector] Resolved app owner from external actor mapping: conversation_id=%s source=%s external_user_id=%s user_id=%s",
+                                conversation_id,
+                                conversation_source,
+                                conversation_source_user_id,
+                                external_actor_user_id,
+                            )
 
         if not user_uuid:
             return {

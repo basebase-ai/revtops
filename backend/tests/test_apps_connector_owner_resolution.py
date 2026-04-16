@@ -12,20 +12,49 @@ class _FakeExecuteResult:
     def scalar_one_or_none(self):
         return self._value
 
+    def one_or_none(self):
+        return self._value
+
 
 class _FakeSession:
-    def __init__(self, *, message_user_id: UUID | None, conversation_user_id: UUID | None):
+    def __init__(
+        self,
+        *,
+        message_user_id: UUID | None,
+        conversation_user_id: UUID | None,
+        conversation_source: str | None = None,
+        conversation_source_user_id: str | None = None,
+        slack_mapping_user_id: UUID | None = None,
+        legacy_mapping_user_id: UUID | None = None,
+    ):
         self.message_user_id = message_user_id
         self.conversation_user_id = conversation_user_id
+        self.conversation_source = conversation_source
+        self.conversation_source_user_id = conversation_source_user_id
+        self.slack_mapping_user_id = slack_mapping_user_id
+        self.legacy_mapping_user_id = legacy_mapping_user_id
+        self.mapping_query_calls = 0
         self.added = []
-        self.execute_calls = 0
         self.committed = False
 
-    async def execute(self, _query, _params=None):
-        self.execute_calls += 1
-        if self.execute_calls == 1:
+    async def execute(self, query, _params=None):
+        q = str(query)
+        if "chat_messages" in q:
             return _FakeExecuteResult(self.message_user_id)
-        return _FakeExecuteResult(self.conversation_user_id)
+        if "conversations" in q:
+            return _FakeExecuteResult(
+                (
+                    self.conversation_user_id,
+                    self.conversation_source,
+                    self.conversation_source_user_id,
+                )
+            )
+        if "user_mappings_for_identity" in q:
+            self.mapping_query_calls += 1
+            if self.mapping_query_calls == 1:
+                return _FakeExecuteResult(self.slack_mapping_user_id)
+            return _FakeExecuteResult(self.legacy_mapping_user_id)
+        raise AssertionError(f"Unexpected query: {q}")
 
     def add(self, obj):
         self.added.append(obj)
@@ -51,9 +80,13 @@ def test_create_prefers_turn_user_over_conversation_owner(monkeypatch):
     async def _fake_warm(*_args, **_kwargs):
         return None
 
+    async def _fake_test_execute_queries(*_args, **_kwargs):
+        return []
+
     monkeypatch.setattr("connectors.apps.get_session", _fake_get_session)
     monkeypatch.setattr("connectors.apps.warm_public_preview_cache", _fake_warm)
     monkeypatch.setattr("utils.transpile_jsx.transpile_jsx", lambda _code: (None,))
+    monkeypatch.setattr("connectors.apps.AppsConnector._test_execute_queries", _fake_test_execute_queries)
 
     connector = AppsConnector(organization_id=org_id, user_id=turn_user_id)
 
@@ -75,3 +108,51 @@ def test_create_prefers_turn_user_over_conversation_owner(monkeypatch):
     assert fake_session.committed is True
     assert len(fake_session.added) == 1
     assert fake_session.added[0].user_id == UUID(turn_user_id)
+
+
+def test_create_resolves_owner_from_slack_identity_mapping_when_conversation_user_missing(monkeypatch):
+    org_id = "00000000-0000-0000-0000-000000000010"
+    resolved_user_id = UUID("00000000-0000-0000-0000-000000000099")
+    fake_session = _FakeSession(
+        message_user_id=None,
+        conversation_user_id=None,
+        conversation_source="slack",
+        conversation_source_user_id="U123SLACK",
+        slack_mapping_user_id=resolved_user_id,
+    )
+
+    @asynccontextmanager
+    async def _fake_get_session(*_args, **_kwargs):
+        yield fake_session
+
+    async def _fake_warm(*_args, **_kwargs):
+        return None
+
+    async def _fake_test_execute_queries(*_args, **_kwargs):
+        return []
+
+    monkeypatch.setattr("connectors.apps.get_session", _fake_get_session)
+    monkeypatch.setattr("connectors.apps.warm_public_preview_cache", _fake_warm)
+    monkeypatch.setattr("utils.transpile_jsx.transpile_jsx", lambda _code: (None,))
+    monkeypatch.setattr("connectors.apps.AppsConnector._test_execute_queries", _fake_test_execute_queries)
+
+    connector = AppsConnector(organization_id=org_id, user_id=None)
+
+    result = asyncio.run(
+        connector._create(
+            {
+                "title": "Slack-owned app",
+                "queries": {
+                    "q": {"sql": "SELECT 1 AS n", "params": {}},
+                },
+                "frontend_code": "export default function App(){ return <div/>; }",
+                "message_id": "00000000-0000-0000-0000-000000000014",
+                "conversation_id": "00000000-0000-0000-0000-000000000015",
+            }
+        )
+    )
+
+    assert result["status"] == "success"
+    assert fake_session.committed is True
+    assert len(fake_session.added) == 1
+    assert fake_session.added[0].user_id == resolved_user_id
