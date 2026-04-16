@@ -25,6 +25,7 @@ class _FakeSession:
         *,
         message_user_id: UUID | None,
         conversation_user_id: UUID | None,
+        org_handle: str | None = None,
         conversation_source: str | None = None,
         conversation_source_user_id: str | None = None,
         slack_mapping_user_id: UUID | None = None,
@@ -32,6 +33,7 @@ class _FakeSession:
     ):
         self.message_user_id = message_user_id
         self.conversation_user_id = conversation_user_id
+        self.org_handle = org_handle
         self.conversation_source = conversation_source
         self.conversation_source_user_id = conversation_source_user_id
         self.slack_mapping_user_id = slack_mapping_user_id
@@ -77,6 +79,8 @@ class _FakeSession:
                     )
                 ]
             )
+        if "organizations.handle" in q:
+            return _FakeExecuteResult(self.org_handle)
         raise AssertionError(f"Unexpected query: {q}")
 
     def add(self, obj):
@@ -132,6 +136,7 @@ def test_create_prefers_conversation_owner_over_turn_user_and_message_user(monke
     )
 
     assert result["status"] == "success"
+    assert "/apps/" in result["uri"]
     assert fake_session.committed is True
     assert len(fake_session.added) == 1
     assert fake_session.added[0].user_id == conversation_user_id
@@ -184,6 +189,7 @@ def test_create_resolves_owner_from_slack_identity_mapping_when_conversation_use
     )
 
     assert result["status"] == "success"
+    assert "/apps/" in result["uri"]
     assert fake_session.committed is True
     assert len(fake_session.added) == 1
     assert fake_session.added[0].user_id == resolved_user_id
@@ -237,6 +243,7 @@ def test_create_uses_explicit_owner_override_before_other_context(monkeypatch):
     )
 
     assert result["status"] == "success"
+    assert "/apps/" in result["uri"]
     assert fake_session.committed is True
     assert len(fake_session.added) == 1
     assert fake_session.added[0].user_id == UUID(override_user_id)
@@ -276,3 +283,46 @@ def test_create_rejects_invalid_explicit_owner_override(monkeypatch):
 
     assert "error" in result
     assert "app created by" in result["error"]
+
+
+def test_create_returns_org_handle_scoped_uri_when_handle_present(monkeypatch):
+    org_id = "00000000-0000-0000-0000-000000000010"
+    fake_session = _FakeSession(
+        message_user_id=UUID("00000000-0000-0000-0000-000000000012"),
+        conversation_user_id=None,
+        org_handle="acme",
+    )
+
+    @asynccontextmanager
+    async def _fake_get_session(*_args, **_kwargs):
+        yield fake_session
+
+    async def _fake_warm(*_args, **_kwargs):
+        return None
+
+    async def _fake_test_execute_queries(*_args, **_kwargs):
+        return []
+
+    async def _fake_alternate(*_args, **_kwargs):
+        return []
+
+    monkeypatch.setattr("connectors.apps.get_session", _fake_get_session)
+    monkeypatch.setattr("connectors.apps.warm_public_preview_cache", _fake_warm)
+    monkeypatch.setattr("connectors.apps.get_alternate_slack_user_ids_for_identity", _fake_alternate)
+    monkeypatch.setattr("utils.transpile_jsx.transpile_jsx", lambda _code: (None,))
+    monkeypatch.setattr("connectors.apps.AppsConnector._test_execute_queries", _fake_test_execute_queries)
+
+    connector = AppsConnector(organization_id=org_id, user_id=None)
+    result = asyncio.run(
+        connector._create(
+            {
+                "title": "Handle-scoped app",
+                "queries": {"q": {"sql": "SELECT 1 AS n", "params": {}}},
+                "frontend_code": "export default function App(){ return <div/>; }",
+                "message_id": "00000000-0000-0000-0000-000000000014",
+            }
+        )
+    )
+
+    assert result["status"] == "success"
+    assert result["uri"].startswith("/acme/apps/")

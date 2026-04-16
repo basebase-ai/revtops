@@ -25,6 +25,7 @@ class _FakeSession:
         *,
         message_user_id: UUID | None,
         conversation_user_id: UUID | None,
+        org_handle: str | None = None,
         conversation_source: str | None = None,
         conversation_source_user_id: str | None = None,
         slack_mapping_user_id: UUID | None = None,
@@ -32,6 +33,7 @@ class _FakeSession:
     ):
         self.message_user_id = message_user_id
         self.conversation_user_id = conversation_user_id
+        self.org_handle = org_handle
         self.conversation_source = conversation_source
         self.conversation_source_user_id = conversation_source_user_id
         self.slack_mapping_user_id = slack_mapping_user_id
@@ -65,6 +67,8 @@ class _FakeSession:
             return _FakeExecuteResult([
                 (self.conversation_source_user_id, "revtops_unknown", self.legacy_mapping_user_id)
             ])
+        if "organizations.handle" in q:
+            return _FakeExecuteResult(self.org_handle)
         raise AssertionError(f"Unexpected query: {q}")
 
     def add(self, obj):
@@ -115,6 +119,7 @@ def test_create_prefers_turn_user_over_conversation_owner(monkeypatch):
     )
 
     assert result["status"] == "success"
+    assert "/artifacts/" in result["uri"]
     assert fake_session.committed is True
     assert len(fake_session.added) == 1
     assert fake_session.added[0].user_id == message_user_id
@@ -162,6 +167,46 @@ def test_create_resolves_owner_from_slack_identity_mapping_when_conversation_use
     )
 
     assert result["status"] == "success"
+    assert "/artifacts/" in result["uri"]
     assert fake_session.committed is True
     assert len(fake_session.added) == 1
     assert fake_session.added[0].user_id == resolved_user_id
+
+
+def test_create_returns_org_handle_scoped_uri_when_handle_present(monkeypatch):
+    org_id = "00000000-0000-0000-0000-000000000010"
+    fake_session = _FakeSession(
+        message_user_id=UUID("00000000-0000-0000-0000-000000000012"),
+        conversation_user_id=None,
+        org_handle="acme",
+    )
+
+    @asynccontextmanager
+    async def _fake_get_session(*_args, **_kwargs):
+        yield fake_session
+
+    async def _fake_warm(*_args, **_kwargs):
+        return None
+
+    async def _fake_alternate(*_args, **_kwargs):
+        return []
+
+    monkeypatch.setattr("connectors.artifacts.get_session", _fake_get_session)
+    monkeypatch.setattr("connectors.artifacts.warm_public_preview_cache", _fake_warm)
+    monkeypatch.setattr("connectors.artifacts.get_alternate_slack_user_ids_for_identity", _fake_alternate)
+
+    connector = ArtifactConnector(organization_id=org_id, user_id=None)
+    result = asyncio.run(
+        connector._create(
+            {
+                "title": "Handle-scoped artifact",
+                "filename": "artifact.md",
+                "content_type": "markdown",
+                "content": "hello",
+                "message_id": "00000000-0000-0000-0000-000000000014",
+            }
+        )
+    )
+
+    assert result["status"] == "success"
+    assert result["uri"].startswith("/acme/artifacts/")

@@ -28,6 +28,7 @@ from models.chat_message import ChatMessage
 from models.conversation import Conversation
 from models.database import get_session
 from models.external_identity_mapping import ExternalIdentityMapping
+from models.organization import Organization
 from services.public_preview_warmup import warm_public_preview_cache
 from services.slack_identity import get_alternate_slack_user_ids_for_identity
 
@@ -576,7 +577,8 @@ class AppsConnector(BaseConnector):
         )
         await warm_public_preview_cache("app", app_id_str)
 
-        app_url: str = f"{settings.FRONTEND_URL.rstrip('/')}/apps/{app_id_str}"
+        app_uri_path: str = await self._build_app_uri_path(app_id_str)
+        app_url: str = f"{settings.FRONTEND_URL.rstrip('/')}{app_uri_path}"
         return {
             "status": "success",
             "app_id": app_id_str,
@@ -587,6 +589,7 @@ class AppsConnector(BaseConnector):
                 "frontendCode": frontend_code,
                 "frontendCodeCompiled": compiled_code,
             },
+            "uri": app_uri_path,
             "url": app_url,
             "message": f"Created interactive app: {title}. View it at {app_url}",
         }
@@ -650,7 +653,8 @@ class AppsConnector(BaseConnector):
 
             logger.info("[AppsConnector] Updated app: id=%s, title=%s", app_id_raw, app.title)
 
-        app_url: str = f"{settings.FRONTEND_URL.rstrip('/')}/apps/{app_id_raw}"
+        app_uri_path: str = await self._build_app_uri_path(app_id_raw)
+        app_url: str = f"{settings.FRONTEND_URL.rstrip('/')}{app_uri_path}"
         return {
             "status": "success",
             "app_id": app_id_raw,
@@ -661,9 +665,25 @@ class AppsConnector(BaseConnector):
                 "frontendCode": app.frontend_code,
                 "frontendCodeCompiled": app.frontend_code_compiled,
             },
+            "uri": app_uri_path,
             "url": app_url,
             "message": f"Updated app: {app.title}. View it at {app_url}",
         }
+
+    async def _build_app_uri_path(self, app_id: str) -> str:
+        org_handle: str | None = await self._get_org_handle()
+        if org_handle:
+            return f"/{org_handle}/apps/{app_id}"
+        return f"/apps/{app_id}"
+
+    async def _get_org_handle(self) -> str | None:
+        async with get_session(organization_id=self.organization_id) as session:
+            result = await session.execute(
+                select(Organization.handle).where(Organization.id == UUID(self.organization_id))
+            )
+            org_handle: str | None = result.scalar_one_or_none()
+        normalized: str = (org_handle or "").strip()
+        return normalized or None
 
     async def _test_query(self, data: dict[str, Any]) -> dict[str, Any]:
         """Run a query from an app and return sample data."""
