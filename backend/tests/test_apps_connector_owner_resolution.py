@@ -86,7 +86,7 @@ class _FakeSession:
         self.committed = True
 
 
-def test_create_prefers_message_user_over_turn_user_and_conversation_owner(monkeypatch):
+def test_create_prefers_conversation_owner_over_turn_user_and_message_user(monkeypatch):
     org_id = "00000000-0000-0000-0000-000000000010"
     turn_user_id = "00000000-0000-0000-0000-000000000011"
     message_user_id = UUID("00000000-0000-0000-0000-000000000012")
@@ -134,7 +134,7 @@ def test_create_prefers_message_user_over_turn_user_and_conversation_owner(monke
     assert result["status"] == "success"
     assert fake_session.committed is True
     assert len(fake_session.added) == 1
-    assert fake_session.added[0].user_id == message_user_id
+    assert fake_session.added[0].user_id == conversation_user_id
 
 
 def test_create_resolves_owner_from_slack_identity_mapping_when_conversation_user_missing(monkeypatch):

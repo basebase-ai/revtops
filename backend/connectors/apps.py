@@ -420,38 +420,7 @@ class AppsConnector(BaseConnector):
                     self.user_id,
                 )
 
-        if connector_user_uuid is not None:
-            user_uuid = connector_user_uuid
-            logger.info(
-                "[AppsConnector] Using current turn user context for app owner: user_id=%s",
-                connector_user_uuid,
-            )
-
-        if message_id and user_uuid is None:
-            try:
-                message_uuid = UUID(message_id)
-            except (ValueError, TypeError, AttributeError):
-                logger.warning(
-                    "[AppsConnector] Could not parse message_id as UUID for owner resolution fallback: message_id=%s",
-                    message_id,
-                )
-            else:
-                async with get_session(organization_id=self.organization_id) as session:
-                    row = await session.execute(
-                        select(ChatMessage.user_id).where(
-                            ChatMessage.id == message_uuid,
-                        )
-                    )
-                    message_user_id: UUID | None = row.scalar_one_or_none()
-                    if message_user_id is not None and user_uuid is None:
-                        user_uuid = message_user_id
-                        logger.info(
-                            "[AppsConnector] Resolved app owner from initiating message: message_id=%s user_id=%s",
-                            message_id,
-                            message_user_id,
-                        )
-
-        if conversation_id and user_uuid is None:
+        if conversation_id:
             try:
                 conversation_uuid = UUID(conversation_id)
             except (ValueError, TypeError, AttributeError):
@@ -480,14 +449,20 @@ class AppsConnector(BaseConnector):
                             conversation_source,
                             conversation_source_user_id,
                         ) = conversation_record
-                    if conversation_user_id is not None and user_uuid is None:
+                    if conversation_user_id is not None:
                         user_uuid = conversation_user_id
                         logger.info(
-                            "[AppsConnector] Resolved app owner from conversation owner fallback: conversation_id=%s user_id=%s",
+                            "[AppsConnector] Resolved app owner from conversation owner: conversation_id=%s user_id=%s",
                             conversation_id,
                             conversation_user_id,
                         )
-                    elif user_uuid is None:
+                        if connector_user_uuid is not None and connector_user_uuid != conversation_user_id:
+                            logger.info(
+                                "[AppsConnector] Conversation owner overrides connector user for app owner: conversation_owner_id=%s connector_user_id=%s",
+                                conversation_user_id,
+                                connector_user_uuid,
+                            )
+                    else:
                         external_actor_user_id: UUID | None = await self._resolve_user_from_external_actor(
                             source=conversation_source,
                             external_user_id=conversation_source_user_id,
@@ -501,6 +476,37 @@ class AppsConnector(BaseConnector):
                                 conversation_source_user_id,
                                 external_actor_user_id,
                             )
+
+        if message_id and user_uuid is None:
+            try:
+                message_uuid = UUID(message_id)
+            except (ValueError, TypeError, AttributeError):
+                logger.warning(
+                    "[AppsConnector] Could not parse message_id as UUID for owner resolution fallback: message_id=%s",
+                    message_id,
+                )
+            else:
+                async with get_session(organization_id=self.organization_id) as session:
+                    row = await session.execute(
+                        select(ChatMessage.user_id).where(
+                            ChatMessage.id == message_uuid,
+                        )
+                    )
+                    message_user_id: UUID | None = row.scalar_one_or_none()
+                    if message_user_id is not None and user_uuid is None:
+                        user_uuid = message_user_id
+                        logger.info(
+                            "[AppsConnector] Resolved app owner from initiating message: message_id=%s user_id=%s",
+                            message_id,
+                            message_user_id,
+                        )
+
+        if connector_user_uuid is not None and user_uuid is None:
+            user_uuid = connector_user_uuid
+            logger.info(
+                "[AppsConnector] Using current turn user context for app owner fallback: user_id=%s",
+                connector_user_uuid,
+            )
 
         if not user_uuid:
             logger.warning(
