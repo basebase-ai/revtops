@@ -34,7 +34,8 @@ def test_build_preview_html_includes_og_and_twitter_tags() -> None:
     assert 'property="og:title" content="Example"' in html
     assert 'name="twitter:image" content="https://example.com/api/public/share/apps/abc/snapshot.png"' in html
     assert 'property="og:image:secure_url" content="https://example.com/api/public/share/apps/abc/snapshot.png"' in html
-    assert 'http-equiv="refresh"' in html
+    assert 'window.location.replace("https://example.com/public/apps/abc")' in html
+    assert '<noscript>' in html
 
 
 def test_render_card_png_returns_png_bytes() -> None:

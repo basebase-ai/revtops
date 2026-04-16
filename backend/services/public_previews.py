@@ -81,9 +81,18 @@ def build_preview_html(
     <meta name="twitter:title" content="{safe_title}" />
     <meta name="twitter:description" content="{safe_desc}" />
     <meta name="twitter:image" content="{safe_image}" />
-    <meta http-equiv="refresh" content="0;url={safe_redirect}" />
   </head>
   <body>
-    <script>window.location.replace("{safe_redirect}");</script>
+    <script>
+      // Keep metadata discoverable for unfurl bots that may follow/meta-refresh redirects.
+      // Real browsers still navigate to the interactive public page immediately.
+      window.location.replace("{safe_redirect}");
+    </script>
+    <noscript>
+      <p>
+        Continue to the shared page:
+        <a href="{safe_redirect}">{safe_redirect}</a>
+      </p>
+    </noscript>
   </body>
 </html>"""
