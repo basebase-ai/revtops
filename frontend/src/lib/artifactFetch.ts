@@ -1,9 +1,9 @@
 import { API_BASE, DIRECT_API_BASE, getAuthenticatedRequestHeaders } from "./api";
 
-interface ArtifactLikePayload {
+type ArtifactLikePayload = Record<string, unknown> & {
   id?: unknown;
   content?: unknown;
-}
+};
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
