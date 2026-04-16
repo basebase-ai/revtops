@@ -117,6 +117,7 @@ class ArtifactConnector(BaseConnector):
         except ValueError:
             return {"error": "Invalid artifact_id format (must be a valid UUID)"}
 
+        artifact_payload: dict[str, str] | None = None
         async with get_session(organization_id=self.organization_id) as session:
             result = await session.execute(
                 select(Artifact).where(
@@ -125,16 +126,21 @@ class ArtifactConnector(BaseConnector):
                 )
             )
             artifact: Artifact | None = result.scalar_one_or_none()
-        if not artifact:
-            return {"error": "Artifact not found or access denied"}
+            if artifact:
+                # Copy values while the row is still session-bound.
+                # get_session() performs a rollback in cleanup, which expires ORM
+                # attributes; reading after context exit can raise DetachedInstanceError.
+                artifact_payload = {
+                    "id": str(artifact.id),
+                    "title": artifact.title or "Untitled",
+                    "filename": artifact.filename or "artifact.txt",
+                    "content_type": artifact.content_type or "text",
+                    "content": artifact.content or "",
+                }
 
-        return {
-            "id": str(artifact.id),
-            "title": artifact.title or "Untitled",
-            "filename": artifact.filename or "artifact.txt",
-            "content_type": artifact.content_type or "text",
-            "content": artifact.content or "",
-        }
+        if not artifact_payload:
+            return {"error": "Artifact not found or access denied"}
+        return artifact_payload
 
     async def write(self, operation: str, data: dict[str, Any]) -> dict[str, Any]:
         if operation == "create":
